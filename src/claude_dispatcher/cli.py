@@ -17,6 +17,7 @@ from . import run as run_cmd
 from . import status as status_cmd
 from . import resume as resume_cmd
 from . import report as report_cmd
+from . import forecast_bridge
 
 
 DEFAULT_FINANCIAL_PATHS = ",".join([
@@ -141,7 +142,82 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--runs-dir", default="docs/runs")
     rp.set_defaults(func=report_cmd.execute)
 
+    # --- forecast-create ---------------------------------------------------
+    fc = sub.add_parser(
+        "forecast-create",
+        help="For each task row with a placeholder key, run `forecast jira create` "
+             "and write the new Jira key back to the YAML. No-op if forecast is "
+             "not installed or not configured.",
+    )
+    fc.add_argument("tasks_yaml", help="Path to the tasks YAML")
+    fc.add_argument("--dry-run", action="store_true",
+                    help="Print what would be created without invoking forecast")
+    fc.set_defaults(func=_forecast_create)
+
+    # --- forecast-sync -----------------------------------------------------
+    fs = sub.add_parser(
+        "forecast-sync",
+        help="For each task row in a terminal status (Done/Blocked/Escalated), "
+             "run `forecast jira transition` to bring Jira into sync. No-op if "
+             "forecast is not installed or not configured.",
+    )
+    fs.add_argument("tasks_yaml", help="Path to the tasks YAML")
+    fs.add_argument("--dry-run", action="store_true",
+                    help="Print what would be transitioned without invoking forecast")
+    fs.set_defaults(func=_forecast_sync)
+
     return parser
+
+
+def _forecast_create(args) -> int:
+    """Run the create-missing-tickets bridge. Always exits 0 if forecast is
+    just not present — that's a "bridge not applicable" case, not an error.
+    """
+    from pathlib import Path
+    yaml_path = Path(args.tasks_yaml).resolve()
+    if not yaml_path.exists():
+        print(f"error: tasks YAML not found: {yaml_path}", file=sys.stderr)
+        return 2
+    result = forecast_bridge.create_missing_tickets(yaml_path, dry_run=args.dry_run)
+    return _print_bridge_result(result, action="create")
+
+
+def _forecast_sync(args) -> int:
+    from pathlib import Path
+    yaml_path = Path(args.tasks_yaml).resolve()
+    if not yaml_path.exists():
+        print(f"error: tasks YAML not found: {yaml_path}", file=sys.stderr)
+        return 2
+    result = forecast_bridge.sync_terminal_statuses(yaml_path, dry_run=args.dry_run)
+    return _print_bridge_result(result, action="sync")
+
+
+def _print_bridge_result(result: dict, *, action: str) -> int:
+    """Render the bridge result to stdout/stderr. Returns 0 for graceful skip
+    and for full success, 1 if any errors occurred (so callers can detect).
+    """
+    if result.get("skipped_all"):
+        print(f"forecast bridge skipped: {result['reason']}")
+        print("(this is a soft skip; chain `&& dispatcher {action}` safely)".format(action=action))
+        return 0
+
+    if action == "create":
+        for old, new in result["created"]:
+            print(f"  created  {old} -> {new}")
+        for k in result["skipped"]:
+            print(f"  skipped  {k}")
+    else:  # sync
+        for k, target in result["transitioned"]:
+            print(f"  -> {target:<20}  {k}")
+        for k in result["skipped"]:
+            print(f"  skipped  {k}")
+
+    if result["errors"]:
+        print("Errors:", file=sys.stderr)
+        for k, msg in result["errors"]:
+            print(f"  {k}: {msg}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

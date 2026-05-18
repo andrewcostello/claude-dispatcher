@@ -65,7 +65,41 @@ dispatcher run <tasks-yaml> [options]
 dispatcher status <run-id>                  current state of a run            (not yet implemented)
 dispatcher resume <run-id>                  pick up an interrupted run        (not yet implemented)
 dispatcher report <run-id>                  summary of completed tasks         (not yet implemented)
+
+dispatcher forecast-create <tasks-yaml> [--dry-run]
+                                            For each row with a placeholder key (default `TBD-*`),
+                                            run `forecast jira create` and write the new Jira key
+                                            back to the YAML row. Soft-skips with exit 0 when
+                                            forecast is not installed or not configured.
+
+dispatcher forecast-sync <tasks-yaml> [--dry-run]
+                                            For each row in a terminal status (Done/Blocked/Escalated)
+                                            with a real Jira key, run `forecast jira transition` to
+                                            bring Jira into sync. Soft-skips when forecast missing.
 ```
+
+### Forecast bridge (optional)
+
+The dispatcher's tasks YAML is intentionally shaped to mirror `forecast jira create` flags. If your project uses the [forecast](https://github.com/andrewcostello/forecast) Jira tool, you can chain:
+
+```bash
+# Materialize Jira tickets from rows with placeholder keys (TBD-1, TBD-2, ...)
+dispatcher forecast-create tasks.yaml
+
+# Dispatch as normal
+dispatcher run tasks.yaml --mode unattended
+
+# Transition Jira to match dispatcher outcomes (Done/Blocked/Escalated)
+dispatcher forecast-sync tasks.yaml
+```
+
+Both bridge subcommands smart-detect:
+- `forecast` binary on `$PATH`
+- `.forecast/config.yaml` in the project root (walks up from the YAML)
+
+If either is missing, the subcommand prints a soft-skip message and exits 0 — safe to chain in CI pipelines on machines without the forecast tool.
+
+The mappable YAML fields (`priority`, `epic`, `parent`, `story_points`, `due_date`, `assignee`, `fix_versions`, `components`) are documented in `claude-workflow/skills/forecast-fields.md`. The dispatcher passively round-trips fields it doesn't recognize, so populating forecast-only fields costs nothing for projects that don't use the bridge.
 
 ### Unattended permission flags
 
