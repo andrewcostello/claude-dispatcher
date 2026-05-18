@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-dispatcher"
+version = "0.1.0"
+description = "Orchestrate the Tasker role across many tasks in a YAML file. Each task runs in an isolated Claude Code session with fresh context."
+requires-python = ">=3.11"
+dependencies = [
+    "ruamel.yaml>=0.18,<0.19",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+    "pytest-cov>=4",
+]
+
+[project.scripts]
+dispatcher = "claude_dispatcher.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -q"

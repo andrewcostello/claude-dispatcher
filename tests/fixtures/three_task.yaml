@@ -1,0 +1,55 @@
+project: TEST
+epic: SMOKE
+# Smoke-test fixture for the dispatcher.
+#
+# Three tasks with a simple dependency chain: A blocks C, B is independent.
+# Used by integration tests that exercise the dry-run path and (in step 5)
+# the live-spawn path.
+
+tasks:
+
+  # ============================================================
+  # GROUP 0: trivial standalone work
+  # ============================================================
+
+  - key: SMOKE-A
+    summary: "Smoke: trivial unblocked task with no dependencies"
+    description: |
+      Echo a placeholder message. Used to test the basic dispatch path.
+
+      Acceptance:
+        - Summary file written with Status: Done
+        - No PR raised (the smoke harness flags this)
+    type: Task
+    estimate: 5m
+    labels: [size:XS, area:smoke]
+
+  - key: SMOKE-B
+    summary: "Smoke: trivial independent task — runs in parallel with A"
+    description: |
+      Same as A but independent. Used to verify --max-parallel=2 actually
+      dispatches both at once.
+
+      Acceptance:
+        - Summary file written with Status: Done
+    type: Task
+    estimate: 5m
+    labels: [size:XS, area:smoke]
+
+  # ============================================================
+  # GROUP 1: depends on Group 0
+  # ============================================================
+
+  - key: SMOKE-C
+    summary: "Smoke: depends on SMOKE-A — verifies the runnable-set unblocks correctly"
+    description: |
+      Becomes runnable only after SMOKE-A lands Done. Used to verify that
+      the dispatcher recomputes the runnable set on each completion.
+
+      Acceptance:
+        - Not dispatched before SMOKE-A is Done
+        - Summary file written with Status: Done
+    type: Task
+    estimate: 5m
+    labels: [size:XS, area:smoke]
+    blockedBy: [SMOKE-A]

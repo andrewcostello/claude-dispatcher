@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+build/
+dist/
+.venv/
+*.swp
+
+# Per-run dispatcher artifacts (run.log, per-task summaries, checkpoints).
+# These are produced when dispatcher is invoked from inside the repo's
+# own working directory during dev/test; they belong in the target
+# project's docs/runs/, not in the dispatcher's source tree.
+docs/runs/
