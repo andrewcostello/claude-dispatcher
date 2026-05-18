@@ -25,8 +25,8 @@ from typing import Any
 from . import yaml_io
 
 
-# A real Jira key looks like SMG-123, FSG-2, FOO-7. Anything not matching
-# this AND not the configured placeholder prefix is treated as "needs creation".
+# A real Jira key looks like SMG-123, FSG-2, FOO-7. Used for the
+# `jira_key` field check and the backward-compat fallback in sync.
 _JIRA_KEY_RE = re.compile(r"^[A-Z][A-Z0-9]*-\d+$")
 
 # Default SMG-flavored status mapping per evenplay-mono CLAUDE.md.
@@ -132,15 +132,31 @@ def _find_forecast_config(start: Path) -> Path | None:
 # --- key classification ----------------------------------------------------
 
 
-def is_placeholder_key(key: str, placeholder_prefix: str) -> bool:
-    """True iff this key is a placeholder waiting for `forecast jira create`."""
-    if not key:
-        return True
-    if key.startswith(placeholder_prefix):
-        return True
-    if not _JIRA_KEY_RE.match(key):
-        return True
-    return False
+def needs_create(row: dict) -> bool:
+    """True iff this row needs `forecast jira create` to run.
+
+    The bridge cares only about `jira_key`. A row needs creation iff
+    `jira_key` is missing or empty.
+
+    The dispatcher's `key` field is the *local* identifier (e.g.,
+    `BSA-E2E-0-1` or `TBD-1`) — the bridge never reads or writes it.
+    If you have an existing Jira ticket that should NOT be created
+    again, set `jira_key: SMG-1234` explicitly on that row.
+    """
+    return jira_key_of(row) is None
+
+
+def jira_key_of(row: dict) -> str | None:
+    """Return the Jira issue key for this row, or None if no real Jira
+    ticket yet exists.
+
+    Only reads `jira_key`. The dispatcher's `key` is treated as a local
+    identifier even if it happens to match the Jira-key shape.
+    """
+    jk = str(row.get("jira_key", "")).strip()
+    if jk and _JIRA_KEY_RE.match(jk):
+        return jk
+    return None
 
 
 # --- create flow -----------------------------------------------------------
@@ -238,31 +254,33 @@ def create_missing_tickets(
         errors: list[tuple[str, str]] = []
 
         for row in doc.get("tasks", []) or []:
-            key = str(row.get("key", "")).strip()
-            if not is_placeholder_key(key, ctx.placeholder_prefix):
-                skipped.append(key)
+            local_key = str(row.get("key", "")).strip()
+            if not needs_create(row):
+                skipped.append(f"{local_key} (jira_key={jira_key_of(row)} already set)")
                 continue
             if "summary" not in row or not row.get("summary"):
-                errors.append((key, "row has no summary; cannot create"))
+                errors.append((local_key, "row has no summary; cannot create"))
                 continue
             argv = build_create_argv(ctx.forecast_bin, row, default_epic)
             if dry_run:
-                created.append((key, "(dry-run, not created)"))
+                created.append((local_key, "(dry-run, not created)"))
                 continue
             try:
                 proc = runner(argv, capture_output=True, text=True, timeout=60, check=False)
             except FileNotFoundError as e:
-                errors.append((key, f"forecast invocation failed: {e}"))
+                errors.append((local_key, f"forecast invocation failed: {e}"))
                 continue
             if proc.returncode != 0:
-                errors.append((key, f"forecast exit={proc.returncode}: {proc.stderr.strip()}"))
+                errors.append((local_key, f"forecast exit={proc.returncode}: {proc.stderr.strip()}"))
                 continue
-            new_key = parse_create_output(proc.stdout)
-            if not new_key:
-                errors.append((key, f"could not parse Created: line from output: {proc.stdout!r}"))
+            new_jira_key = parse_create_output(proc.stdout)
+            if not new_jira_key:
+                errors.append((local_key, f"could not parse Created: line from output: {proc.stdout!r}"))
                 continue
-            row["key"] = new_key
-            created.append((key, new_key))
+            # WRITE to jira_key, NOT key. The local identifier survives so
+            # blockedBy references and runnable-set computation keep working.
+            row["jira_key"] = new_jira_key
+            created.append((local_key, new_jira_key))
 
         if created and not dry_run:
             yaml_io.dump(doc, yaml_path)
@@ -297,35 +315,36 @@ def sync_terminal_statuses(
     errors: list[tuple[str, str]] = []
 
     for row in doc.get("tasks", []) or []:
-        key = str(row.get("key", "")).strip()
+        local_key = str(row.get("key", "")).strip()
         status = str(row.get("status", "")).strip()
-        if is_placeholder_key(key, ctx.placeholder_prefix):
-            skipped.append(f"{key} (not a real Jira key)")
+        jira_key = jira_key_of(row)
+        if jira_key is None:
+            skipped.append(f"{local_key} (no jira_key; run forecast-create first)")
             continue
         if status not in ctx.status_mapping:
-            skipped.append(f"{key} (status {status!r} has no Jira mapping)")
+            skipped.append(f"{local_key} (status {status!r} has no Jira mapping)")
             continue
         target, resolution = ctx.status_mapping[status]
         comment = _build_transition_comment(row, status)
         argv = [
-            ctx.forecast_bin, "jira", "transition", key, "--to", target,
+            ctx.forecast_bin, "jira", "transition", jira_key, "--to", target,
         ]
         if resolution:
             argv += ["--resolution", resolution]
         if comment:
             argv += ["--comment", comment]
         if dry_run:
-            transitioned.append((key, f"{target} (dry-run)"))
+            transitioned.append((jira_key, f"{target} (dry-run)"))
             continue
         try:
             proc = runner(argv, capture_output=True, text=True, timeout=60, check=False)
         except FileNotFoundError as e:
-            errors.append((key, f"forecast invocation failed: {e}"))
+            errors.append((jira_key, f"forecast invocation failed: {e}"))
             continue
         if proc.returncode != 0:
-            errors.append((key, f"forecast exit={proc.returncode}: {proc.stderr.strip()}"))
+            errors.append((jira_key, f"forecast exit={proc.returncode}: {proc.stderr.strip()}"))
             continue
-        transitioned.append((key, target))
+        transitioned.append((jira_key, target))
 
     return {"skipped_all": False, "transitioned": transitioned, "skipped": skipped, "errors": errors}
 

@@ -67,15 +67,19 @@ dispatcher resume <run-id>                  pick up an interrupted run        (n
 dispatcher report <run-id>                  summary of completed tasks         (not yet implemented)
 
 dispatcher forecast-create <tasks-yaml> [--dry-run]
-                                            For each row with a placeholder key (default `TBD-*`),
-                                            run `forecast jira create` and write the new Jira key
-                                            back to the YAML row. Soft-skips with exit 0 when
-                                            forecast is not installed or not configured.
+                                            For each row with no `jira_key`, run `forecast jira
+                                            create` with mapped flags and write the assigned
+                                            Jira key to `row.jira_key`. The dispatcher's local
+                                            `key` field is left untouched, so semantic
+                                            identifiers like `BSA-E2E-0-1` survive intact.
+                                            Soft-skips with exit 0 when forecast is not
+                                            installed or not configured.
 
 dispatcher forecast-sync <tasks-yaml> [--dry-run]
                                             For each row in a terminal status (Done/Blocked/Escalated)
-                                            with a real Jira key, run `forecast jira transition` to
-                                            bring Jira into sync. Soft-skips when forecast missing.
+                                            whose `jira_key` is set, run `forecast jira transition`
+                                            to bring Jira into sync. Soft-skips when forecast
+                                            missing or `jira_key` not yet populated.
 ```
 
 ### Forecast bridge (optional)

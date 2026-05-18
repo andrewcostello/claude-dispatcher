@@ -94,18 +94,30 @@ def test_detect_picks_up_yaml_overrides(tmp_path: Path, monkeypatch) -> None:
 
 # --- key classification ----------------------------------------------------
 
-@pytest.mark.parametrize("key,prefix,expected", [
-    ("", "TBD-", True),
-    ("TBD-1", "TBD-", True),
-    ("TBD-77", "TBD-", True),
-    ("STUB-1", "STUB-", True),
-    ("SMG-123", "TBD-", False),
-    ("FSG-9", "TBD-", False),
-    ("FOO_BAR-99", "TBD-", True),  # underscore not in regex class — treat as placeholder
-    ("random-string", "TBD-", True),
+@pytest.mark.parametrize("row,expected_needs_create", [
+    ({"key": "TBD-1"}, True),                          # no jira_key → needs create
+    ({"key": "TBD-1", "jira_key": ""}, True),          # empty jira_key → needs create
+    ({"key": "TBD-1", "jira_key": "SMG-100"}, False),  # set + valid Jira shape → done
+    ({"key": "SMG-1234"}, True),                       # key looks like Jira but jira_key empty → needs create
+    ({"key": "BSA-E2E-0-1"}, True),                    # semantic local key, no jira_key → needs create
+    ({"key": "BSA-E2E-0-1", "jira_key": "SMG-2890"}, False),  # local key + populated jira_key → done
+    ({"key": "x", "jira_key": "not-a-jira-key"}, True),    # invalid jira_key shape → still needs create
 ])
-def test_is_placeholder_key(key, prefix, expected) -> None:
-    assert forecast_bridge.is_placeholder_key(key, prefix) is expected
+def test_needs_create(row, expected_needs_create) -> None:
+    assert forecast_bridge.needs_create(row) is expected_needs_create
+
+
+@pytest.mark.parametrize("row,expected", [
+    ({"jira_key": "SMG-1"}, "SMG-1"),
+    ({"jira_key": "FSG-2"}, "FSG-2"),
+    ({"jira_key": ""}, None),
+    ({}, None),
+    ({"key": "SMG-1234"}, None),               # key alone never inferred as jira_key
+    ({"key": "TBD-1"}, None),
+    ({"jira_key": "bad-shape"}, None),
+])
+def test_jira_key_of(row, expected) -> None:
+    assert forecast_bridge.jira_key_of(row) == expected
 
 
 # --- argv building ---------------------------------------------------------
@@ -190,26 +202,31 @@ def test_create_skips_all_when_forecast_not_detected(tmp_path: Path, monkeypatch
     assert doc["tasks"][0]["key"] == "TBD-1"
 
 
-def test_create_creates_missing_keys_and_writes_back(forecast_project: Path) -> None:
+def test_create_writes_jira_key_and_preserves_local_key(forecast_project: Path) -> None:
+    """The bridge writes to `jira_key`, never to `key`. Local identifiers
+    like `BSA-E2E-0-1` survive intact; blockedBy references stay valid.
+    """
     yaml_path = forecast_project / "tasks.yaml"
     _write_tasks_yaml(yaml_path, dedent("""
         epic: BSA
         tasks:
-          - key: TBD-1
+          - key: BSA-E2E-0-1
             summary: First task
             description: Do the first thing
             type: Task
             labels: [size:S]
-          - key: SMG-9999
-            summary: Already exists in Jira
+          - key: BSA-E2E-0-2
+            jira_key: SMG-9999
+            summary: Already exists in Jira (explicit jira_key)
             description: Skip me
             type: Task
             labels: [size:M]
-          - key: TBD-2
-            summary: Second task
+          - key: BSA-E2E-0-3
+            summary: Second new task
             description: Do the second thing
             type: Task
             labels: [size:M]
+            blockedBy: [BSA-E2E-0-1]
     """).lstrip())
 
     runner = _make_runner([
@@ -218,13 +235,19 @@ def test_create_creates_missing_keys_and_writes_back(forecast_project: Path) -> 
     ])
     result = forecast_bridge.create_missing_tickets(yaml_path, runner=runner)
     assert result["skipped_all"] is False
-    assert result["created"] == [("TBD-1", "SMG-1001"), ("TBD-2", "SMG-1002")]
-    assert result["skipped"] == ["SMG-9999"]
+    assert result["created"] == [("BSA-E2E-0-1", "SMG-1001"), ("BSA-E2E-0-3", "SMG-1002")]
+    assert len(result["skipped"]) == 1 and "BSA-E2E-0-2" in result["skipped"][0]
     assert result["errors"] == []
 
     doc = yaml_io.load(yaml_path)
+    # Local keys preserved
     keys = [t["key"] for t in doc["tasks"]]
-    assert keys == ["SMG-1001", "SMG-9999", "SMG-1002"]
+    assert keys == ["BSA-E2E-0-1", "BSA-E2E-0-2", "BSA-E2E-0-3"]
+    # jira_key written for newly-created rows; pre-existing row unchanged
+    jira_keys = [t.get("jira_key") for t in doc["tasks"]]
+    assert jira_keys == ["SMG-1001", "SMG-9999", "SMG-1002"]
+    # blockedBy reference still valid
+    assert doc["tasks"][2]["blockedBy"] == ["BSA-E2E-0-1"]
 
 
 def test_create_records_errors_without_corrupting_yaml(forecast_project: Path) -> None:
@@ -242,9 +265,10 @@ def test_create_records_errors_without_corrupting_yaml(forecast_project: Path) -
     assert result["created"] == []
     assert len(result["errors"]) == 1
     assert "API auth failed" in result["errors"][0][1]
-    # YAML untouched on error
+    # YAML untouched on error — key preserved, no jira_key written
     doc = yaml_io.load(yaml_path)
     assert doc["tasks"][0]["key"] == "TBD-1"
+    assert "jira_key" not in doc["tasks"][0]
 
 
 def test_create_dry_run_doesnt_invoke_runner(forecast_project: Path) -> None:
@@ -274,7 +298,8 @@ def test_sync_skips_all_when_forecast_not_detected(tmp_path: Path, monkeypatch) 
     yaml_path = tmp_path / "tasks.yaml"
     _write_tasks_yaml(yaml_path, dedent("""
         tasks:
-          - key: SMG-1
+          - key: BSA-1
+            jira_key: SMG-1
             summary: x
             description: y
             type: Task
@@ -286,10 +311,14 @@ def test_sync_skips_all_when_forecast_not_detected(tmp_path: Path, monkeypatch) 
 
 
 def test_sync_transitions_terminal_statuses(forecast_project: Path) -> None:
+    """Sync uses `jira_key`, never `key`. Rows without `jira_key` are
+    skipped even if their `key` field happens to look Jira-shaped.
+    """
     yaml_path = forecast_project / "tasks.yaml"
     _write_tasks_yaml(yaml_path, dedent("""
         tasks:
-          - key: SMG-1
+          - key: BSA-E2E-0-1
+            jira_key: SMG-1
             summary: Done one
             description: x
             type: Task
@@ -297,21 +326,23 @@ def test_sync_transitions_terminal_statuses(forecast_project: Path) -> None:
             status: Done
             pr_url: https://github.com/test/repo/pull/1
             iteration_count: 1
-          - key: SMG-2
+          - key: BSA-E2E-0-2
+            jira_key: SMG-2
             summary: Blocked one
             description: x
             type: Task
             labels: [size:S]
             status: Blocked
             blocked_reason: awaiting human PR approval
-          - key: SMG-3
+          - key: BSA-E2E-0-3
+            jira_key: SMG-3
             summary: In progress (should skip)
             description: x
             type: Task
             labels: [size:S]
             status: In Progress
-          - key: TBD-4
-            summary: Not a real Jira key
+          - key: BSA-E2E-0-4
+            summary: No jira_key yet (must be skipped)
             description: x
             type: Task
             labels: [size:S]
@@ -351,7 +382,8 @@ def test_sync_dry_run(forecast_project: Path) -> None:
     yaml_path = forecast_project / "tasks.yaml"
     _write_tasks_yaml(yaml_path, dedent("""
         tasks:
-          - key: SMG-1
+          - key: BSA-1
+            jira_key: SMG-1
             summary: x
             description: y
             type: Task
