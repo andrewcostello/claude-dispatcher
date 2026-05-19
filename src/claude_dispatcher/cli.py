@@ -147,8 +147,18 @@ def build_parser() -> argparse.ArgumentParser:
     rs.set_defaults(func=resume_cmd.execute)
 
     # --- report ------------------------------------------------------------
-    rp = sub.add_parser("report", help="Summarize completed tasks for a run")
-    rp.add_argument("run_id")
+    rp = sub.add_parser(
+        "report",
+        help=("Quality dashboard for a run: per-task scores, iterations, "
+              "deferred findings, gate trips, parked-for-approval list, "
+              "PRs raised, concerning-tasks highlight. Mid-run-safe."),
+    )
+    rp.add_argument(
+        "run_id",
+        nargs="?",
+        default="latest",
+        help="Run ID to report on. Defaults to the latest run in --runs-dir.",
+    )
     rp.add_argument("--runs-dir", default="docs/runs")
     rp.set_defaults(func=report_cmd.execute)
 
