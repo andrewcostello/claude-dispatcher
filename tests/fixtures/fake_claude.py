@@ -20,6 +20,8 @@ from pathlib import Path
 
 SCENARIOS = {
     "done": "Done",
+    "done-no-commit": "Done",        # Done but skip the git commit step
+    "done-commit-retry": "Done",     # Done; first run skips commit, second commits
     "blocked-malformed": "Garbage",  # invalid status → parser marks malformed
     "escalated": "Escalated",
     "blocked-iteration-cap": "Blocked",
@@ -39,6 +41,35 @@ def main() -> int:
     summary_path = Path(summary_path_raw)
     scenario = os.environ.get("FAKE_CLAUDE_SCENARIO", "done")
     status = SCENARIOS.get(scenario, "Done")
+
+    # Simulate the Tasker's commit step — real Tasker must `git add` +
+    # `git commit` before Done; the dispatcher now verifies this. The fake
+    # makes a trivial commit so the dispatcher's `_has_commits_on_branch`
+    # check passes. Exceptions:
+    #   - `done-no-commit`   — reports Done WITHOUT committing (tests the
+    #                           dispatcher's detect-and-retry path).
+    #   - `done-commit-retry` — first invocation skips commit; second
+    #                           invocation (the retry) DOES commit. Tracked
+    #                           via a sentinel file in the worktree.
+    def _do_commit():
+        import subprocess
+        marker = Path(f"smoke-marker-{task_key}.txt")
+        marker.write_text(f"smoke marker for {task_key}\n", encoding="utf-8")
+        subprocess.run(["git", "add", str(marker)], check=False, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", f"feat(smoke): [{task_key}] simulated work"],
+            check=False, capture_output=True,
+        )
+
+    if scenario in ("done", "awaiting-human-pr"):
+        _do_commit()
+    elif scenario == "done-commit-retry":
+        sentinel = Path(f".fake-claude-retry-{task_key}")
+        if sentinel.exists():
+            _do_commit()  # second invocation = the retry; commit this time
+        else:
+            sentinel.write_text("first invocation skipped commit\n", encoding="utf-8")
+    # `done-no-commit` leaves the worktree uncommitted on every invocation
 
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     lines = [

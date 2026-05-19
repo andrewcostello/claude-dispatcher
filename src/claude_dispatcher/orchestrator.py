@@ -263,6 +263,30 @@ def _run_task(
         _mark_blocked(cfg, snap.key, reason=f"summary_malformed: {s.malformed_reason}")
         return plan_mod.BLOCKED
 
+    # If the Tasker reported Done (or any terminal-success status) but the
+    # branch has no commits beyond base_branch, the work is uncommitted in
+    # the worktree. This is recoverable: re-prompt the Tasker to commit
+    # (NOT a Block — it's a "forgot to commit" mistake, fixable with one
+    # corrective spawn). Max 1 commit-retry; if commits still missing
+    # after, only then is this a real failure.
+    if (s.status == "Done"
+            and not _has_commits_on_branch(wt, cfg.base_branch, log_path, snap.key)):
+        _log(log_path, f"  {snap.key} reported Done but no commits on branch — retrying with commit-only prompt")
+        retry_status = _retry_for_commit(
+            cfg, snap, wt, summary_path, env, log_path,
+        )
+        if retry_status is None:
+            # Retry failed — really no work. Mark Blocked with clear reason.
+            _mark_blocked(cfg, snap.key,
+                          reason="no commits produced after commit-retry; Tasker spawn 2x failed to commit")
+            return plan_mod.BLOCKED
+        # Retry succeeded — re-parse summary and continue with Done flow.
+        s = summary_mod.parse(result.summary_path)
+        if s.malformed:
+            _mark_blocked(cfg, snap.key,
+                          reason=f"summary_malformed after commit retry: {s.malformed_reason}")
+            return plan_mod.BLOCKED
+
     # Awaiting-human-approval handling — supervised may raise the PR.
     final_status, final_url, final_blocked_reason = _resolve_summary(
         cfg, snap, s, wt, log_path
@@ -292,6 +316,100 @@ def _run_task(
 
     _mutate_row(cfg, snap.key, _apply)
     return final_status
+
+
+def _has_commits_on_branch(wt: wt_mod.Worktree, base_branch: str,
+                            log_path: Path, task_key: str) -> bool:
+    """True iff the worktree's branch has any commit beyond `base_branch`.
+
+    Used to detect the "Tasker reported Done but forgot to commit" failure
+    mode. We don't care HOW many commits — just that at least one exists,
+    which proves the Tasker actually did `git commit` instead of leaving
+    work uncommitted in the worktree.
+    """
+    import subprocess
+    try:
+        proc = subprocess.run(
+            ["git", "rev-list", "--count", f"{base_branch}..HEAD"],
+            cwd=str(wt.path), capture_output=True, text=True, check=False, timeout=30,
+        )
+    except Exception as e:
+        _log(log_path, f"  {task_key} commit check failed (treating as no-commits): {e}")
+        return False
+    if proc.returncode != 0:
+        _log(log_path, f"  {task_key} `git rev-list` exit={proc.returncode}: {proc.stderr.strip()}")
+        return False
+    count = (proc.stdout or "").strip()
+    try:
+        return int(count) > 0
+    except ValueError:
+        return False
+
+
+_COMMIT_RETRY_PROMPT_PREFIX = """\
+Your previous run on this task reported `Status: Done` in the summary file
+but produced ZERO commits on this branch. The work files exist in the
+worktree but have not been `git commit`ed.
+
+This is a recoverable mistake — the work is right there, just uncommitted.
+
+Please do ONLY these steps. Do NOT redo the implementation or analysis:
+
+1. Run `git status` to see exactly what's uncommitted in this worktree.
+2. Run `git add <files>` for the files that should be tracked (review
+   the list — don't blindly `git add -A` if there are stray build
+   artifacts you don't want committed).
+3. Run `git commit -m "<message>"` with a conventional-commit message
+   following the project's CLAUDE.md commit format: `type(scope): summary`.
+   For BSA tickets, include `[<TASK_KEY>]` in the subject line. No author
+   attribution (no Co-Authored-By, no "Generated with").
+4. Verify with `git log --oneline {base_branch}..HEAD` that your commit
+   is on the branch.
+5. Update the summary file at $SUMMARY_PATH so its "Files changed"
+   section reflects the actual committed files (run `git diff --name-only
+   {base_branch}..HEAD` to get the list). Status stays `Done`.
+
+The dispatcher will verify commits exist before accepting Done this time.
+If you still produce no commits, the task will be Blocked.
+
+Task context (for reference, do NOT redo):
+"""
+
+
+def _retry_for_commit(cfg: RunConfig, snap: TaskSnapshot, wt: wt_mod.Worktree,
+                      summary_path: Path, env: dict, log_path: Path) -> str | None:
+    """Re-spawn the Tasker with a corrective prompt asking only for the
+    missing commit. Returns the spawn result's exit-code-based outcome
+    or None if the retry left no commits.
+    """
+    prompt = _COMMIT_RETRY_PROMPT_PREFIX.format(base_branch=cfg.base_branch)
+    prompt += spawn_mod.build_prompt(
+        task_key=snap.key,
+        task_summary=snap.summary,
+        task_type=snap.type,
+        task_labels=snap.labels,
+        task_description=snap.description,
+        branch=wt.branch,
+        summary_path=summary_path,
+        run_id=cfg.run_id,
+        max_iterations=cfg.max_iterations,
+        financial_paths=cfg.financial_paths,
+        skip_design=cfg.skip_design,
+        skip_security_linter=cfg.skip_security_linter,
+        reviewer_count=cfg.reviewer_count,
+    )
+    try:
+        result = spawn_mod.spawn_claude(
+            claude_bin=cfg.claude_bin, cwd=wt.path, env=env, prompt=prompt,
+            extra_args=cfg.claude_extra_args,
+        )
+    except Exception as e:
+        _log(log_path, f"  {snap.key} commit-retry spawn failed: {e}")
+        return None
+    _log(log_path, f"  {snap.key} commit-retry exited code={result.exit_code}")
+    if not _has_commits_on_branch(wt, cfg.base_branch, log_path, snap.key):
+        return None
+    return "retried_ok"
 
 
 def _resolve_summary(
