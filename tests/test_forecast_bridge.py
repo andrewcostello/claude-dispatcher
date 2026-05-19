@@ -372,11 +372,12 @@ def test_sync_transitions_terminal_statuses(forecast_project: Path) -> None:
     assert result["transitioned"] == [("SMG-1", "Done"), ("SMG-2", "Is Blocked")]
     assert len(result["skipped"]) == 2  # In Progress + TBD-4
 
-    # SMG-1 call: --to Done, --resolution Done, comment includes PR URL
+    # SMG-1 call: --to Done, no --resolution by default (SMG's Skip-to-Done
+    # transition doesn't admit it), comment includes PR URL
     smg1_call = captured_calls[0]
     assert smg1_call[3] == "SMG-1"
     assert "Done" in smg1_call
-    assert "--resolution" in smg1_call
+    assert "--resolution" not in smg1_call
     # Comment is the next arg after --comment
     comment_idx = smg1_call.index("--comment")
     assert "https://github.com/test/repo/pull/1" in smg1_call[comment_idx + 1]

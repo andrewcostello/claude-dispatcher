@@ -31,8 +31,14 @@ _JIRA_KEY_RE = re.compile(r"^[A-Z][A-Z0-9]*-\d+$")
 
 # Default SMG-flavored status mapping per evenplay-mono CLAUDE.md.
 # Overrideable per-YAML via top-level forecast.status_mapping.
+#
+# Resolution defaults to None: setting --resolution at transition time
+# requires the resolution field to be on the transition's screen, and the
+# default SMG transitions ("Skip to Done", "Skip to Cancel") don't include
+# it. Pass resolution explicitly in the YAML override if your Jira workflow
+# admits it: `Done: {to: "Done", resolution: "Done"}`.
 DEFAULT_STATUS_MAPPING = {
-    "Done": ("Done", "Done"),                  # (target_status, resolution_or_None)
+    "Done": ("Done", None),                  # (target_status, resolution_or_None)
     "Blocked": ("Is Blocked", None),
     "Escalated": ("Is Blocked", None),
 }
