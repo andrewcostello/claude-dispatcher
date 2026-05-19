@@ -95,13 +95,25 @@ def test_detect_picks_up_yaml_overrides(tmp_path: Path, monkeypatch) -> None:
 # --- key classification ----------------------------------------------------
 
 @pytest.mark.parametrize("row,expected_needs_create", [
-    ({"key": "TBD-1"}, True),                          # no jira_key → needs create
-    ({"key": "TBD-1", "jira_key": ""}, True),          # empty jira_key → needs create
-    ({"key": "TBD-1", "jira_key": "SMG-100"}, False),  # set + valid Jira shape → done
-    ({"key": "SMG-1234"}, True),                       # key looks like Jira but jira_key empty → needs create
-    ({"key": "BSA-E2E-0-1"}, True),                    # semantic local key, no jira_key → needs create
-    ({"key": "BSA-E2E-0-1", "jira_key": "SMG-2890"}, False),  # local key + populated jira_key → done
-    ({"key": "x", "jira_key": "not-a-jira-key"}, True),    # invalid jira_key shape → still needs create
+    # No jira_key, no status (defaults to To Do) → needs create
+    ({"key": "TBD-1"}, True),
+    ({"key": "TBD-1", "status": "To Do"}, True),
+    # Empty jira_key + To Do → needs create
+    ({"key": "TBD-1", "jira_key": "", "status": "To Do"}, True),
+    # Real jira_key already set → skip
+    ({"key": "TBD-1", "jira_key": "SMG-100"}, False),
+    # Semantic local key, no jira_key, To Do → needs create
+    ({"key": "BSA-E2E-0-1"}, True),
+    # Semantic key + real jira_key → skip
+    ({"key": "BSA-E2E-0-1", "jira_key": "SMG-2890"}, False),
+    # Invalid jira_key shape → treated as not-set, needs create
+    ({"key": "x", "jira_key": "not-a-jira-key"}, True),
+    # Terminal-status rows (no jira_key) → SKIP, do not over-create
+    ({"key": "X", "status": "Done"}, False),
+    ({"key": "X", "status": "Blocked"}, False),
+    ({"key": "X", "status": "Escalated"}, False),
+    # In Progress (mid-flight) → also skip; ticket should already exist
+    ({"key": "X", "status": "In Progress"}, False),
 ])
 def test_needs_create(row, expected_needs_create) -> None:
     assert forecast_bridge.needs_create(row) is expected_needs_create

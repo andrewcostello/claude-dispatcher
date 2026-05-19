@@ -135,15 +135,24 @@ def _find_forecast_config(start: Path) -> Path | None:
 def needs_create(row: dict) -> bool:
     """True iff this row needs `forecast jira create` to run.
 
-    The bridge cares only about `jira_key`. A row needs creation iff
-    `jira_key` is missing or empty.
+    A row needs creation iff BOTH:
+      - It has no `jira_key` (the Jira-side identifier the bridge writes), AND
+      - Its `status` is `To Do` (or absent, which defaults to To Do).
+
+    Rows in any other state (`In Progress`, `Done`, `Blocked`, `Escalated`)
+    are skipped — they represent work already in flight or already
+    settled in some terminal way, where creating a fresh "To Do" Jira
+    ticket would be wrong.
 
     The dispatcher's `key` field is the *local* identifier (e.g.,
     `BSA-E2E-0-1` or `TBD-1`) — the bridge never reads or writes it.
     If you have an existing Jira ticket that should NOT be created
     again, set `jira_key: SMG-1234` explicitly on that row.
     """
-    return jira_key_of(row) is None
+    if jira_key_of(row) is not None:
+        return False
+    status = (row.get("status") or "To Do").strip()
+    return status == "To Do"
 
 
 def jira_key_of(row: dict) -> str | None:
