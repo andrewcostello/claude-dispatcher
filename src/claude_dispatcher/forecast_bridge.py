@@ -177,17 +177,28 @@ def jira_key_of(row: dict) -> str | None:
 # --- create flow -----------------------------------------------------------
 
 
-def build_create_argv(forecast_bin: str, row: dict, default_epic: str | None) -> list[str]:
+def build_create_argv(forecast_bin: str, row: dict, default_epic: str | None,
+                      config_path: Path | None = None) -> list[str]:
     """Translate one YAML task row into a `forecast jira create` argv.
 
     Required row fields: summary, type. Description and labels are passed
     when present. Optional forecast-mappable fields (priority, epic, parent,
     story_points, due_date, assignee, fix_versions, components) are added
     when set.
+
+    `config_path` is passed via the global `--config` flag so forecast
+    resolves Jira URL/auth without depending on the subprocess's cwd.
+    Without this, the bridge breaks when invoked from a process whose cwd
+    doesn't contain `.forecast/config.yaml` — the failure mode is
+    "unsupported protocol scheme" because forecast falls back to empty
+    config.
     """
     summary = str(row["summary"]).strip()
     type_ = str(row.get("type", "Task")).strip()
-    argv = [forecast_bin, "jira", "create", "--summary", summary, "--type", type_]
+    argv = [forecast_bin]
+    if config_path:
+        argv += ["--config", str(config_path)]
+    argv += ["jira", "create", "--summary", summary, "--type", type_]
 
     desc = row.get("description")
     if isinstance(desc, str) and desc.strip():
@@ -276,7 +287,7 @@ def create_missing_tickets(
             if "summary" not in row or not row.get("summary"):
                 errors.append((local_key, "row has no summary; cannot create"))
                 continue
-            argv = build_create_argv(ctx.forecast_bin, row, default_epic)
+            argv = build_create_argv(ctx.forecast_bin, row, default_epic, ctx.config_path)
             if dry_run:
                 created.append((local_key, "(dry-run, not created)"))
                 continue
@@ -341,9 +352,8 @@ def sync_terminal_statuses(
             continue
         target, resolution = ctx.status_mapping[status]
         comment = _build_transition_comment(row, status)
-        argv = [
-            ctx.forecast_bin, "jira", "transition", jira_key, "--to", target,
-        ]
+        argv = [ctx.forecast_bin, "--config", str(ctx.config_path),
+                "jira", "transition", jira_key, "--to", target]
         if resolution:
             argv += ["--resolution", resolution]
         if comment:
