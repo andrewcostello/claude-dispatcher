@@ -94,6 +94,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument(
+        "--base-branch",
+        default=None,
+        help=(
+            "Branch to fork each task's worktree from. Precedence: this flag > "
+            "the YAML's top-level `base_branch` > `main` (default). Use this when "
+            "your work lives on an epic branch (e.g., epic/bay-session-architecture) "
+            "and forking from main would produce empty/stale worktrees."
+        ),
+    )
+    run.add_argument(
         "--claude-bin",
         default="claude",
         help="claude CLI binary name (default: claude)",

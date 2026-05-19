@@ -54,7 +54,11 @@ def execute(args: argparse.Namespace) -> int:
     selected = plan_mod.filter_tasks(tasks, label_filter, only)
 
     if args.mode == "dry-run":
-        return _dry_run(args, tasks, selected, tasks_path)
+        # Resolve base_branch from CLI or YAML top-level for the dry-run display
+        cli_base = getattr(args, "base_branch", None)
+        yaml_base = doc.get("base_branch") if isinstance(doc, dict) else None
+        resolved_base = cli_base or yaml_base or "main"
+        return _dry_run(args, tasks, selected, tasks_path, resolved_base)
 
     return orchestrator.execute(args)
 
@@ -64,6 +68,7 @@ def _dry_run(
     all_tasks: list[plan_mod.Task],
     selected: list[plan_mod.Task],
     tasks_path: Path,
+    base_branch: str = "main",
 ) -> int:
     """Print a human-readable dispatch plan and exit cleanly.
 
@@ -95,6 +100,7 @@ def _dry_run(
         runnable_keys=runnable_keys,
         waves=waves,
         unreachable=plan_mod.unreachable(all_tasks, waves),
+        base_branch=base_branch,
     ))
     return 0
 

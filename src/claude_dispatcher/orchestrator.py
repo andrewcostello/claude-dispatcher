@@ -87,6 +87,7 @@ class RunConfig:
     only_keys: list[str] | None
     gh_bin: str = "gh"
     claude_extra_args: list[str] = field(default_factory=list)
+    base_branch: str = "main"
 
 
 @dataclass
@@ -118,6 +119,12 @@ def execute(args: argparse.Namespace) -> int:
     except plan_mod.ValidationError as e:
         print(f"error: invalid tasks YAML: {e}", file=sys.stderr)
         return 2
+
+    # Resolve base_branch: CLI > YAML top-level > "main".
+    if cfg.base_branch == "main":  # i.e., user didn't override on CLI
+        yaml_base = (doc.get("base_branch") if isinstance(doc, dict) else None)
+        if yaml_base:
+            cfg.base_branch = str(yaml_base).strip()
 
     run_dir = cfg.runs_dir / cfg.run_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -191,7 +198,8 @@ def _run_task(
     _log(log_path, f"  {snap.key} starting")
 
     branch = wt_mod.branch_name(snap.type, snap.key, snap.summary)
-    wt = wt_mod.create(repo_root, snap.key, branch, base_path=cfg.worktree_base)
+    wt = wt_mod.create(repo_root, snap.key, branch,
+                       base_branch=cfg.base_branch, base_path=cfg.worktree_base)
     _log(log_path, f"  {snap.key} worktree at {wt.path} branch {wt.branch}")
 
     summary_path = run_dir / snap.key / "summary.md"
@@ -374,6 +382,9 @@ def _mark_blocked(cfg: RunConfig, task_key: str, *, reason: str) -> None:
 
 def _build_config(args: argparse.Namespace) -> RunConfig:
     extra = getattr(args, "claude_extra_args", "") or ""
+    # CLI base_branch wins if explicitly set; else fall back to "main" here
+    # and let execute() check the YAML's top-level before final resolution.
+    cli_base = getattr(args, "base_branch", None)
     return RunConfig(
         tasks_path=Path(args.tasks_yaml).resolve(),
         runs_dir=Path(args.runs_dir).resolve(),
@@ -391,6 +402,7 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
         only_keys=_split_keys(args.only_keys),
         gh_bin=getattr(args, "gh_bin", "gh"),
         claude_extra_args=extra.split() if extra else [],
+        base_branch=cli_base if cli_base else "main",
     )
 
 

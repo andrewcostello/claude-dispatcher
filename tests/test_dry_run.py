@@ -120,3 +120,42 @@ def test_dry_run_with_reviewer_count_override_shows_in_plan(
 
 # test_supervised_mode_not_yet_implemented removed — supervised mode is wired
 # as of step 6. The full supervised flow is covered in tests/test_supervised.py.
+
+
+def test_dry_run_default_base_branch_is_main(
+    three_task_yaml: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc, out, _ = _invoke(
+        ["run", str(three_task_yaml), "--mode", "dry-run"], capsys
+    )
+    assert rc == 0
+    assert "Base branch:    main" in out
+
+
+def test_dry_run_yaml_top_level_base_branch_wins(
+    three_task_yaml: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """If the YAML has `base_branch: epic/foo`, dry-run displays it."""
+    content = three_task_yaml.read_text(encoding="utf-8")
+    new = "project: TEST\nbase_branch: epic/bay-session-architecture\n" + content[content.index("epic:"):]
+    three_task_yaml.write_text(new, encoding="utf-8")
+    rc, out, _ = _invoke(
+        ["run", str(three_task_yaml), "--mode", "dry-run"], capsys
+    )
+    assert rc == 0
+    assert "Base branch:    epic/bay-session-architecture" in out
+
+
+def test_dry_run_cli_base_branch_overrides_yaml(
+    three_task_yaml: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CLI --base-branch wins over YAML top-level."""
+    content = three_task_yaml.read_text(encoding="utf-8")
+    new = "project: TEST\nbase_branch: epic/foo\n" + content[content.index("epic:"):]
+    three_task_yaml.write_text(new, encoding="utf-8")
+    rc, out, _ = _invoke(
+        ["run", str(three_task_yaml), "--mode", "dry-run", "--base-branch", "main"],
+        capsys,
+    )
+    assert rc == 0
+    assert "Base branch:    main" in out

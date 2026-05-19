@@ -37,6 +37,7 @@ def render(
     runnable_keys: set[str],
     waves: list[plan_mod.Wave],
     unreachable: list[plan_mod.Task],
+    base_branch: str = "main",
 ) -> str:
     """Return the multi-line dispatch plan as a string."""
     lines: list[str] = []
@@ -46,6 +47,7 @@ def render(
     lines.append(f"  Run ID:         {run_id}")
     lines.append(f"  Max parallel:   {max_parallel}")
     lines.append(f"  Max iterations: {max_iterations}")
+    lines.append(f"  Base branch:    {base_branch}")
     if reviewer_count is not None:
         lines.append(f"  Reviewer count: {reviewer_count} (override)")
     if skip_design:
