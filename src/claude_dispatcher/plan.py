@@ -42,6 +42,13 @@ class Task:
     blocked_by: list[str]
     status: str
     raw: Any  # the underlying ruamel mapping — so writes go back to the right row
+    # Optional per-task model override. When set, the dispatcher passes
+    # `--model <value>` to `claude --print` for this task only. Useful when
+    # a task is well-suited to a cheaper / faster model (e.g. trivial
+    # documentation or simple migrations on Sonnet; intricate state-machine
+    # work on Opus). Absent or empty → use whatever the run-level
+    # --claude-extra-args supplies (or the CLI's default).
+    model: str | None = None
 
     @property
     def size_label(self) -> str | None:
@@ -105,6 +112,10 @@ def load_tasks(doc: Any) -> list[Task]:
         if key in seen_keys:
             raise ValidationError(f"duplicate task key: {key}")
         seen_keys.add(key)
+        model_val = row.get("model")
+        model = str(model_val).strip() if model_val else None
+        if model == "":
+            model = None
         tasks.append(
             Task(
                 key=key,
@@ -115,6 +126,7 @@ def load_tasks(doc: Any) -> list[Task]:
                 blocked_by=_as_str_list(row.get("blockedBy")),
                 status=str(row.get("status", TODO)),
                 raw=row,
+                model=model,
             )
         )
 

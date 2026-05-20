@@ -110,6 +110,7 @@ class TaskSnapshot:
     description: str
     type: str
     labels: list[str]
+    model: str | None = None
 
 
 # --- entry point -----------------------------------------------------------
@@ -159,6 +160,7 @@ def execute(args: argparse.Namespace) -> int:
                     description=t.description,
                     type=t.type,
                     labels=list(t.labels),
+                    model=t.model,
                 )
                 # Mark In Progress on the YAML BEFORE submit. If we submit
                 # first, the main thread could re-load and re-dispatch the
@@ -243,13 +245,19 @@ def _run_task(
         skip_security_linter=cfg.skip_security_linter,
         reviewer_count=cfg.reviewer_count,
     )
+    # Per-task model override stacks on top of run-level --claude-extra-args.
+    # `claude` processes flags left-to-right; appending --model at the END
+    # means the per-task value wins if the run-level args also set --model.
+    spawn_extra = list(cfg.claude_extra_args)
+    if snap.model:
+        spawn_extra.extend(["--model", snap.model])
     try:
         result = spawn_mod.spawn_claude(
             claude_bin=cfg.claude_bin,
             cwd=wt.path,
             env=env,
             prompt=prompt,
-            extra_args=cfg.claude_extra_args,
+            extra_args=spawn_extra,
         )
     except Exception as e:
         _log(log_path, f"  {snap.key} spawn failed: {e}")
@@ -480,10 +488,13 @@ def _retry_for_commit(cfg: RunConfig, snap: TaskSnapshot, wt: wt_mod.Worktree,
         skip_security_linter=cfg.skip_security_linter,
         reviewer_count=cfg.reviewer_count,
     )
+    retry_extra = list(cfg.claude_extra_args)
+    if snap.model:
+        retry_extra.extend(["--model", snap.model])
     try:
         result = spawn_mod.spawn_claude(
             claude_bin=cfg.claude_bin, cwd=wt.path, env=env, prompt=prompt,
-            extra_args=cfg.claude_extra_args,
+            extra_args=retry_extra,
         )
     except Exception as e:
         _log(log_path, f"  {snap.key} commit-retry spawn failed: {e}")
