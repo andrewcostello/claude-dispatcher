@@ -121,6 +121,48 @@ def _render(run_dir: Path, run_id: str, yaml_path: Path) -> str:
             lines.append(f"  {status:13}  {n}")
     lines.append("")
 
+    # --- run-level cost + token totals -----------------------------------
+    # Tasks that participated in this run record cost_usd / token counts on
+    # their row. Sum across tasks with completion timestamps in this run for
+    # the run's total spend; show per-task average for cross-strategy compare.
+    cost_total = 0.0
+    cost_tasks = 0
+    input_total = 0
+    output_total = 0
+    cache_read_total = 0
+    cache_creation_total = 0
+    duration_total_ms = 0
+    for t in tasks:
+        if t.get("dispatcher_run_id") != run_id:
+            continue
+        c = t.get("cost_usd")
+        if isinstance(c, (int, float)):
+            cost_total += float(c)
+            cost_tasks += 1
+        if isinstance(t.get("input_tokens"), int):
+            input_total += t["input_tokens"]
+        if isinstance(t.get("output_tokens"), int):
+            output_total += t["output_tokens"]
+        if isinstance(t.get("cache_read_input_tokens"), int):
+            cache_read_total += t["cache_read_input_tokens"]
+        if isinstance(t.get("cache_creation_input_tokens"), int):
+            cache_creation_total += t["cache_creation_input_tokens"]
+        if isinstance(t.get("duration_ms"), int):
+            duration_total_ms += t["duration_ms"]
+    if cost_tasks > 0:
+        lines.append("Run cost / token usage:")
+        lines.append(f"  Total cost (USD)         ${cost_total:>8.4f}")
+        lines.append(f"  Tasks billed             {cost_tasks}")
+        if cost_tasks:
+            lines.append(f"  Avg cost per task        ${cost_total / cost_tasks:>8.4f}")
+        lines.append(f"  Total input tokens       {input_total:>10,}")
+        lines.append(f"  Total output tokens      {output_total:>10,}")
+        lines.append(f"  Cache-read tokens        {cache_read_total:>10,}")
+        lines.append(f"  Cache-creation tokens    {cache_creation_total:>10,}")
+        if duration_total_ms:
+            lines.append(f"  Sum of task durations    {duration_total_ms / 1000:>8.1f} s")
+        lines.append("")
+
     # --- per-task table for this run only --------------------------------
     run_tasks = [t for t in tasks if t.get("dispatcher_run_id") == run_id
                  or t.get("key") in run_summaries]

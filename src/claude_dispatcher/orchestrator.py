@@ -375,6 +375,26 @@ def _run_task(
                 "skipped-no-commits",
             ):
                 row["auto_integrate_detail"] = integrate_result.detail[:500]
+        # Stamp per-task token/cost usage from the Claude CLI's JSON output.
+        # All optional — if --output-format=json wasn't honored or parsing
+        # failed, the SpawnUsage fields are None and we skip writing them.
+        u = result.usage
+        if u.cost_usd is not None:
+            row["cost_usd"] = u.cost_usd
+        if u.input_tokens is not None:
+            row["input_tokens"] = u.input_tokens
+        if u.output_tokens is not None:
+            row["output_tokens"] = u.output_tokens
+        if u.cache_read_input_tokens is not None:
+            row["cache_read_input_tokens"] = u.cache_read_input_tokens
+        if u.cache_creation_input_tokens is not None:
+            row["cache_creation_input_tokens"] = u.cache_creation_input_tokens
+        if u.duration_ms is not None:
+            row["duration_ms"] = u.duration_ms
+        if u.num_turns is not None:
+            row["num_turns"] = u.num_turns
+        if u.model is not None:
+            row["model"] = u.model
 
     _mutate_row(cfg, snap.key, _apply)
     return final_status
