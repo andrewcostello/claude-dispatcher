@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from . import auto_integrate as ai_mod
 from . import plan as plan_mod
 from . import pr as pr_mod
 from . import spawn as spawn_mod
@@ -88,6 +89,12 @@ class RunConfig:
     gh_bin: str = "gh"
     claude_extra_args: list[str] = field(default_factory=list)
     base_branch: str = "main"
+    # If True, after each Tasker reports Done with commits on its feat
+    # branch, the dispatcher attempts to merge that branch into base_branch
+    # before marking the row Done. Prevents the "fork-from-stale-base"
+    # problem where sibling tasks fork from the same epic SHA and can't see
+    # each other's work. See auto_integrate.py for the integration rules.
+    auto_integrate: bool = False
 
 
 @dataclass
@@ -292,6 +299,47 @@ def _run_task(
         cfg, snap, s, wt, log_path
     )
 
+    # Auto-integrate: if the Tasker landed work and the run config asks for
+    # auto-integration, merge feat → base_branch BEFORE we flip the YAML
+    # status to Done. The status flip is what makes a task's row visible to
+    # the dispatcher's runnable check, so dependents only become eligible
+    # AFTER the base_branch advance. Auto-integration only fires for the
+    # "Done" terminal; Blocked / Escalated tasks are out of scope (the
+    # Tasker hasn't produced work to integrate).
+    integrate_result: ai_mod.IntegrateResult | None = None
+    if cfg.auto_integrate and final_status == "Done":
+        try:
+            integrate_result = ai_mod.integrate(
+                repo_root=repo_root,
+                yaml_path=cfg.tasks_path,
+                base_branch=cfg.base_branch,
+                feat_branch=branch,
+                task_key=snap.key,
+                log=lambda m: _log(log_path, m),
+                enabled=True,
+            )
+        except Exception as e:
+            _log(log_path, f"  {snap.key} auto-integrate raised: {e}")
+            integrate_result = ai_mod.IntegrateResult(
+                status="error", detail=f"exception: {e}",
+            )
+        # If integration failed in a way that means dependents shouldn't
+        # proceed, flip status to Blocked so the dispatch loop holds. The
+        # Tasker's work isn't lost — its commits are still on the feat
+        # branch and the row records the failure reason for human triage.
+        if integrate_result.status not in (
+            "integrated", "skipped-disabled", "skipped-already-on",
+            "skipped-no-commits",
+        ):
+            _log(log_path,
+                 f"  {snap.key} auto-integrate {integrate_result.status}: "
+                 f"flipping status from Done → Blocked")
+            final_status = plan_mod.BLOCKED
+            final_blocked_reason = (
+                f"auto_integrate_{integrate_result.status}: "
+                f"{integrate_result.detail[:300]}"
+            )
+
     def _apply(row):
         row["status"] = final_status
         row["completed_at"] = _now_iso()
@@ -313,6 +361,20 @@ def _run_task(
             row["prepared_pr_title"] = s.prepared_pr_title
         if s.prepared_pr_branch:
             row["prepared_pr_branch"] = s.prepared_pr_branch
+        # Stamp the auto-integrate outcome for forensic + later sweep.
+        if integrate_result is not None:
+            row["auto_integrate_status"] = integrate_result.status
+            if integrate_result.merge_sha:
+                row["auto_integrate_merge_sha"] = integrate_result.merge_sha
+            if integrate_result.services_built:
+                row["auto_integrate_services"] = list(
+                    integrate_result.services_built
+                )
+            if integrate_result.detail and integrate_result.status not in (
+                "integrated", "skipped-disabled", "skipped-already-on",
+                "skipped-no-commits",
+            ):
+                row["auto_integrate_detail"] = integrate_result.detail[:500]
 
     _mutate_row(cfg, snap.key, _apply)
     return final_status
@@ -521,6 +583,7 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
         gh_bin=getattr(args, "gh_bin", "gh"),
         claude_extra_args=extra.split() if extra else [],
         base_branch=cli_base if cli_base else "main",
+        auto_integrate=getattr(args, "auto_integrate", False),
     )
 
 

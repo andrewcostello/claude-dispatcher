@@ -123,6 +123,21 @@ def build_parser() -> argparse.ArgumentParser:
         default="gh",
         help="gh CLI binary name (default: gh, used for `gh pr create` in supervised mode)",
     )
+    run.add_argument(
+        "--auto-integrate",
+        action="store_true",
+        default=False,
+        help=(
+            "After each Tasker reports Done with commits, attempt to merge "
+            "its feat branch into --base-branch atomically (git merge --no-ff "
+            "+ sqlc/buf regen + go build + go vet). On clean integration, "
+            "the base branch advances so the next dispatched task forks "
+            "from the updated SHA. On conflict or build-fail, the task is "
+            "flipped to Blocked (work preserved on feat branch). Prevents "
+            "the 'fork-from-stale-base' problem where sibling tasks can't "
+            "see each other's work. Off by default; opt-in per run."
+        ),
+    )
     run.set_defaults(func=run_cmd.execute)
 
     # --- status ------------------------------------------------------------
