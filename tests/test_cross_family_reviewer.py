@@ -735,6 +735,85 @@ def test_reviewer_unavailable_on_timeout():
     assert "timed out" in (rv.error or "")
 
 
+# --- serialization + factory -----------------------------------------------
+
+
+def test_finding_to_dict_roundtrip():
+    f = cfr.Finding(
+        severity=cfr.Severity.CRITICAL,
+        location="x.go:42",
+        description="d",
+        fix="f",
+    )
+    d = f.to_dict()
+    assert d == {
+        "severity": "CRITICAL", "location": "x.go:42",
+        "description": "d", "fix": "f",
+    }
+
+
+def test_reviewer_verdict_to_dict_includes_findings():
+    rv = cfr.ReviewerVerdict(
+        family="claude",
+        verdict=cfr.Verdict.CHANGES_REQUESTED,
+        dimensions={"Correctness": 3},
+        findings=[
+            cfr.Finding(severity=cfr.Severity.HIGH, location="a:1", description="d", fix=""),
+        ],
+        notes="n",
+        error=None,
+        duration_seconds=12.3,
+    )
+    d = rv.to_dict()
+    assert d["family"] == "claude"
+    assert d["verdict"] == "CHANGES_REQUESTED"
+    assert d["dimensions"] == {"Correctness": 3}
+    assert d["findings"][0]["severity"] == "HIGH"
+    assert d["duration_seconds"] == 12.3
+
+
+def test_panel_verdict_to_dict_has_consensus_and_reviewers():
+    p = cfr.aggregate([_approve_verdict("claude"), _approve_verdict("gemini"), _approve_verdict("codex")])
+    d = p.to_dict()
+    assert d["consensus"] == "approve"
+    assert len(d["reviewers"]) == 3
+    assert d["blocking_findings"] == []
+
+
+def test_default_reviewers_returns_three_families():
+    revs = cfr.default_reviewers()
+    assert [r.family for r in revs] == ["claude", "gemini", "codex"]
+    assert all(isinstance(r, cfr.Reviewer) for r in revs)
+    # Each carries the per-class default cli_bin.
+    families_to_bins = {r.family: r.cli_bin for r in revs}
+    assert families_to_bins == {"claude": "claude", "gemini": "gemini", "codex": "codex"}
+
+
+def test_default_reviewers_propagates_timeout():
+    revs = cfr.default_reviewers(timeout_seconds=42)
+    assert all(r.timeout_seconds == 42 for r in revs)
+
+
+def test_reviewer_review_retry_path_catches_second_exception():
+    """If the retry raises, the original PARSE_FAILED verdict is returned
+    with the retry error recorded on it — never crashes the panel.
+    """
+    class _Flaky(cfr.Reviewer):
+        family = "claude"
+        def __init__(self):
+            super().__init__()
+            self.call_count = 0
+        def _invoke_cli(self, prompt: str) -> str:
+            self.call_count += 1
+            if self.call_count == 1:
+                return "not a verdict"
+            raise RuntimeError("retry boom")
+
+    rv = _Flaky().review("p")
+    assert rv.verdict == cfr.Verdict.PARSE_FAILED
+    assert "retry boom" in (rv.error or "")
+
+
 def test_collect_diff_truncation(tmp_path: Path):
     import subprocess
     repo = tmp_path / "r"
