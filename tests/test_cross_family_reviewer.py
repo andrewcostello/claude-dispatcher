@@ -1,0 +1,594 @@
+"""Unit tests for the cross-family reviewer module.
+
+No real CLI is invoked — `_invoke_cli` is overridden on subclasses so the
+tests are hermetic. Real-CLI integration is exercised via
+tools/cross_family_panel.py, not the test suite (the brief asked us not to
+spend tokens on real LLM calls during pytest runs).
+"""
+
+from __future__ import annotations
+
+import textwrap
+from pathlib import Path
+
+import pytest
+
+from claude_dispatcher import cross_family_reviewer as cfr
+
+
+# --- panel_required gating --------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "labels,task_type,expected",
+    [
+        # Bare tokens
+        (["critical"], None, True),
+        (["high"], None, True),
+        (["security"], None, True),
+        (["financial"], None, True),
+        # Prefixed forms
+        (["risk:critical"], None, True),
+        (["risk:high"], None, True),
+        (["tier:financial"], None, True),
+        (["severity:security"], None, True),
+        (["priority:critical"], None, True),
+        # Case-insensitive
+        (["CRITICAL"], None, True),
+        (["Risk:High"], None, True),
+        # Non-matching
+        (["medium"], None, False),
+        (["low"], None, False),
+        (["size:M"], None, False),
+        (["area:smoke"], None, False),
+        ([], None, False),
+        (None, None, False),
+        # Mixed — any matching tier wins
+        (["size:M", "risk:high"], None, True),
+        # docs / test type skips even with high-risk label
+        (["critical"], "docs", False),
+        (["high"], "test", False),
+        # Unknown task_type doesn't short-circuit
+        (["critical"], "Task", True),
+    ],
+)
+def test_panel_required(labels, task_type, expected):
+    assert cfr.panel_required(labels, task_type=task_type) is expected
+
+
+# --- parser robustness ------------------------------------------------------
+
+
+def test_parse_canonical_approve():
+    raw = textwrap.dedent("""\
+        ## Verdict
+        APPROVE
+
+        ## Dimension scores
+        - Correctness: 5
+        - Security: 4
+        - Compliance: 4
+        - Resilience: 4
+        - Idempotency: 4
+        - Observability: 4
+        - Performance: 4
+        - Maintainability: 4
+
+        ## Findings
+    """)
+    rv = cfr.parse_review_output("claude", raw)
+    assert rv.verdict == cfr.Verdict.APPROVE
+    assert rv.dimensions == {
+        "Correctness": 5, "Security": 4, "Compliance": 4, "Resilience": 4,
+        "Idempotency": 4, "Observability": 4, "Performance": 4, "Maintainability": 4,
+    }
+    assert rv.findings == []
+    assert not rv.is_blocker()
+
+
+def test_parse_changes_requested_with_findings():
+    raw = textwrap.dedent("""\
+        ## Verdict
+        CHANGES_REQUESTED
+
+        ## Dimension scores
+        - Correctness: 3
+        - Security: 4
+        - Compliance: 4
+        - Resilience: 4
+        - Idempotency: 4
+        - Observability: 3
+        - Performance: 4
+        - Maintainability: 3
+
+        ## Findings
+
+        ### HIGH: apps/wallet/service.go:42
+        Description: The transfer path does not validate the source balance
+        before debiting. A concurrent debit could push the balance negative.
+        Fix: Wrap the debit in `SELECT ... FOR UPDATE` and check `balance >= amount`
+        before issuing the UPDATE.
+
+        ### MEDIUM: apps/wallet/service.go:99
+        Description: Missing structured log on the success path.
+        Fix: Add a structured `transfer_committed` log line with from/to/amount.
+    """)
+    rv = cfr.parse_review_output("gemini", raw)
+    assert rv.verdict == cfr.Verdict.CHANGES_REQUESTED
+    assert len(rv.findings) == 2
+    assert rv.findings[0].severity == cfr.Severity.HIGH
+    assert rv.findings[0].location == "apps/wallet/service.go:42"
+    assert "concurrent debit" in rv.findings[0].description
+    assert "FOR UPDATE" in rv.findings[0].fix
+    assert rv.findings[1].severity == cfr.Severity.MEDIUM
+    assert rv.is_blocker()
+    assert len(rv.blocking_findings()) == 1
+
+
+def test_parse_tolerates_preamble_narrative():
+    raw = textwrap.dedent("""\
+        I reviewed the change and ran tests. Here is my verdict:
+
+        ## Verdict
+        REJECT
+
+        ## Dimension scores
+        - Correctness: 1
+        - Security: 2
+        - Compliance: 2
+        - Resilience: 2
+        - Idempotency: 2
+        - Observability: 2
+        - Performance: 2
+        - Maintainability: 2
+
+        ## Findings
+
+        ### CRITICAL: apps/wallet/service.go:42
+        Description: SQL injection via concatenated string.
+        Fix: Use parameterized query.
+
+        ## Notes
+        I would recommend a full rewrite of this module.
+    """)
+    rv = cfr.parse_review_output("codex", raw)
+    assert rv.verdict == cfr.Verdict.REJECT
+    assert len(rv.findings) == 1
+    assert rv.findings[0].severity == cfr.Severity.CRITICAL
+    assert "rewrite" in rv.notes
+
+
+def test_parse_tolerates_score_with_max():
+    raw = textwrap.dedent("""\
+        ## Verdict
+        APPROVE
+
+        ## Dimension scores
+        - Correctness: 5/5
+        - Security: 4/5
+        - Compliance: 4 / 5
+        - Resilience: **4**
+        - Idempotency: 4
+        - Observability: 4
+        - Performance: 4
+        - Maintainability: 4
+
+        ## Findings
+    """)
+    rv = cfr.parse_review_output("claude", raw)
+    assert rv.verdict == cfr.Verdict.APPROVE
+    assert rv.dimensions["Correctness"] == 5
+    assert rv.dimensions["Security"] == 4
+    assert rv.dimensions["Resilience"] == 4
+
+
+def test_parse_tolerates_ansi_escape():
+    # Some CLIs (gemini in particular) can emit ANSI even with TTY off.
+    raw = "\x1b[32m## Verdict\x1b[0m\nAPPROVE\n\n## Dimension scores\n- Correctness: 5\n\n## Findings\n"
+    rv = cfr.parse_review_output("gemini", raw)
+    assert rv.verdict == cfr.Verdict.APPROVE
+
+
+def test_parse_fallback_when_no_verdict_section():
+    # Reviewer dropped the template but mentioned the verdict word.
+    raw = "I'm done reviewing. My final answer is REJECT — the implementation is broken."
+    rv = cfr.parse_review_output("codex", raw)
+    assert rv.verdict == cfr.Verdict.REJECT
+
+
+def test_parse_returns_parse_failed_on_garbage():
+    rv = cfr.parse_review_output("codex", "lorem ipsum")
+    assert rv.verdict == cfr.Verdict.PARSE_FAILED
+    assert rv.error is not None
+
+
+def test_parse_returns_parse_failed_on_empty():
+    rv = cfr.parse_review_output("codex", "")
+    assert rv.verdict == cfr.Verdict.PARSE_FAILED
+
+
+def test_parse_clamps_scores():
+    raw = textwrap.dedent("""\
+        ## Verdict
+        APPROVE
+        ## Dimension scores
+        - Correctness: 99
+        - Security: -2
+        ## Findings
+    """)
+    rv = cfr.parse_review_output("claude", raw)
+    assert rv.dimensions["Correctness"] == 5
+    assert rv.dimensions["Security"] == 0
+
+
+def test_parse_unavailable_self_report():
+    raw = textwrap.dedent("""\
+        ## Verdict
+        UNAVAILABLE
+        ## Dimension scores
+        - Correctness: 0
+        ## Findings
+        ## Notes
+        No diff was provided to review.
+    """)
+    rv = cfr.parse_review_output("gemini", raw)
+    assert rv.verdict == cfr.Verdict.UNAVAILABLE
+    assert "No diff" in rv.notes
+
+
+# --- aggregation rules ------------------------------------------------------
+
+
+def _approve_verdict(family: str) -> cfr.ReviewerVerdict:
+    return cfr.ReviewerVerdict(
+        family=family, verdict=cfr.Verdict.APPROVE,
+        dimensions={d: 4 for d in cfr.DIMENSION_NAMES},
+        findings=[],
+    )
+
+
+def _changes_verdict(family: str, sev: cfr.Severity = cfr.Severity.HIGH) -> cfr.ReviewerVerdict:
+    return cfr.ReviewerVerdict(
+        family=family, verdict=cfr.Verdict.CHANGES_REQUESTED,
+        dimensions={d: 4 for d in cfr.DIMENSION_NAMES} | {"Correctness": 3},
+        findings=[cfr.Finding(severity=sev, location="x.go:1", description="d", fix="f")],
+    )
+
+
+def _unavailable_verdict(family: str) -> cfr.ReviewerVerdict:
+    return cfr.ReviewerVerdict(
+        family=family, verdict=cfr.Verdict.UNAVAILABLE,
+        dimensions={}, findings=[], error="cli not found",
+    )
+
+
+def test_aggregate_all_approve():
+    panel = cfr.aggregate([_approve_verdict("claude"), _approve_verdict("gemini"), _approve_verdict("codex")])
+    assert panel.consensus == "approve"
+    assert panel.is_approve
+    assert panel.blocking_findings == []
+
+
+def test_aggregate_single_dissenter_blocks():
+    panel = cfr.aggregate([_approve_verdict("claude"), _approve_verdict("gemini"), _changes_verdict("codex")])
+    assert panel.consensus == "block"
+    assert not panel.is_approve
+    assert len(panel.blocking_findings) == 1
+
+
+def test_aggregate_unavailable_yields_incomplete():
+    panel = cfr.aggregate([_approve_verdict("claude"), _approve_verdict("gemini"), _unavailable_verdict("codex")])
+    assert panel.consensus == "incomplete"
+    assert not panel.is_approve
+
+
+def test_aggregate_critical_finding_alone_blocks_even_if_verdict_is_approve():
+    # A reviewer that returns APPROVE but lists a CRITICAL finding is
+    # self-contradicting — the finding wins, panel blocks.
+    rv = _approve_verdict("claude")
+    rv.findings = [cfr.Finding(severity=cfr.Severity.CRITICAL, location="x:1",
+                                description="d", fix="f")]
+    panel = cfr.aggregate([rv, _approve_verdict("gemini"), _approve_verdict("codex")])
+    assert panel.consensus == "block"
+    assert len(panel.blocking_findings) == 1
+
+
+def test_aggregate_parse_failed_blocks():
+    rv = cfr.ReviewerVerdict(family="codex", verdict=cfr.Verdict.PARSE_FAILED)
+    panel = cfr.aggregate([_approve_verdict("claude"), _approve_verdict("gemini"), rv])
+    assert panel.consensus == "block"
+
+
+def test_aggregate_empty_reviews_is_incomplete():
+    panel = cfr.aggregate([])
+    assert panel.consensus == "incomplete"
+
+
+# --- panel runner with stub reviewers ---------------------------------------
+
+
+class _StubReviewer(cfr.Reviewer):
+    """Test double that returns a canned output without shelling out."""
+
+    family = "stub"
+
+    def __init__(self, family: str, output: str, *, raise_exc: Exception | None = None):
+        super().__init__()
+        self.family = family
+        self._output = output
+        self._raise = raise_exc
+        self.call_count = 0
+
+    def _invoke_cli(self, prompt: str) -> str:
+        self.call_count += 1
+        if self._raise is not None:
+            raise self._raise
+        return self._output
+
+
+def test_run_panel_three_stubs_all_approve():
+    out = textwrap.dedent("""\
+        ## Verdict
+        APPROVE
+        ## Dimension scores
+        - Correctness: 5
+        - Security: 5
+        - Compliance: 5
+        - Resilience: 4
+        - Idempotency: 4
+        - Observability: 4
+        - Performance: 4
+        - Maintainability: 4
+        ## Findings
+    """)
+    revs = [_StubReviewer(f, out) for f in ("claude", "gemini", "codex")]
+    panel = cfr.run_panel(
+        ticket_key="T1", ticket_summary="s", summary_md="sm", diff="d",
+        branch="feat/t1", base_branch="main", reviewers=revs,
+    )
+    assert panel.consensus == "approve"
+    assert len(panel.reviewers) == 3
+    assert all(r.call_count == 1 for r in revs)
+
+
+def test_run_panel_one_dissenter_blocks():
+    approve = textwrap.dedent("""\
+        ## Verdict
+        APPROVE
+        ## Dimension scores
+        - Correctness: 5
+        - Security: 5
+        - Compliance: 5
+        - Resilience: 4
+        - Idempotency: 4
+        - Observability: 4
+        - Performance: 4
+        - Maintainability: 4
+        ## Findings
+    """)
+    block = textwrap.dedent("""\
+        ## Verdict
+        CHANGES_REQUESTED
+        ## Dimension scores
+        - Correctness: 3
+        - Security: 4
+        - Compliance: 4
+        - Resilience: 4
+        - Idempotency: 4
+        - Observability: 4
+        - Performance: 4
+        - Maintainability: 4
+        ## Findings
+        ### HIGH: x.go:1
+        Description: race on shared state.
+        Fix: lock it.
+    """)
+    revs = [
+        _StubReviewer("claude", approve),
+        _StubReviewer("gemini", approve),
+        _StubReviewer("codex", block),
+    ]
+    panel = cfr.run_panel(
+        ticket_key="T2", ticket_summary="s", summary_md="sm", diff="d",
+        branch="feat/t2", base_branch="main", reviewers=revs,
+    )
+    assert panel.consensus == "block"
+    assert len(panel.blocking_findings) == 1
+    assert panel.blocking_findings[0].severity == cfr.Severity.HIGH
+
+
+def test_run_panel_unavailable_reviewer_yields_incomplete():
+    out = textwrap.dedent("""\
+        ## Verdict
+        APPROVE
+        ## Dimension scores
+        - Correctness: 5
+        - Security: 5
+        - Compliance: 5
+        - Resilience: 4
+        - Idempotency: 4
+        - Observability: 4
+        - Performance: 4
+        - Maintainability: 4
+        ## Findings
+    """)
+    revs = [
+        _StubReviewer("claude", out),
+        _StubReviewer("gemini", out),
+        _StubReviewer("codex", "", raise_exc=FileNotFoundError("codex")),
+    ]
+    panel = cfr.run_panel(
+        ticket_key="T3", ticket_summary="s", summary_md="sm", diff="d",
+        branch="feat/t3", base_branch="main", reviewers=revs,
+    )
+    assert panel.consensus == "incomplete"
+    codex_rv = next(r for r in panel.reviewers if r.family == "codex")
+    assert codex_rv.verdict == cfr.Verdict.UNAVAILABLE
+    assert "not found" in (codex_rv.error or "")
+
+
+def test_run_panel_parse_failure_triggers_one_retry():
+    """A reviewer whose first output is unparseable should be retried once
+    with a strict-template reminder. If the retry succeeds, that verdict wins.
+    """
+    good = textwrap.dedent("""\
+        ## Verdict
+        APPROVE
+        ## Dimension scores
+        - Correctness: 5
+        - Security: 5
+        - Compliance: 5
+        - Resilience: 4
+        - Idempotency: 4
+        - Observability: 4
+        - Performance: 4
+        - Maintainability: 4
+        ## Findings
+    """)
+
+    class _FlakyReviewer(cfr.Reviewer):
+        family = "claude"
+        def __init__(self):
+            super().__init__()
+            self.call_count = 0
+        def _invoke_cli(self, prompt: str) -> str:
+            self.call_count += 1
+            if self.call_count == 1:
+                return "lorem ipsum totally not a verdict"
+            return good
+
+    flaky = _FlakyReviewer()
+    panel = cfr.run_panel(
+        ticket_key="T4", ticket_summary="s", summary_md="sm", diff="d",
+        branch="feat/t4", base_branch="main",
+        reviewers=[flaky, _StubReviewer("gemini", good), _StubReviewer("codex", good)],
+    )
+    assert flaky.call_count == 2  # retry occurred
+    assert panel.consensus == "approve"
+
+
+def test_run_panel_parse_failure_twice_blocks():
+    """Reviewer that fails to produce a parseable verdict on BOTH attempts
+    must end up PARSE_FAILED — which counts as a blocker.
+    """
+    revs = [
+        _StubReviewer("claude", "still not a verdict either way"),
+        _StubReviewer("gemini", textwrap.dedent("""\
+            ## Verdict
+            APPROVE
+            ## Dimension scores
+            - Correctness: 5
+            ## Findings
+        """)),
+        _StubReviewer("codex", textwrap.dedent("""\
+            ## Verdict
+            APPROVE
+            ## Dimension scores
+            - Correctness: 5
+            ## Findings
+        """)),
+    ]
+    panel = cfr.run_panel(
+        ticket_key="T5", ticket_summary="s", summary_md="sm", diff="d",
+        branch="feat/t5", base_branch="main", reviewers=revs,
+    )
+    assert panel.consensus == "block"
+    claude_rv = next(r for r in panel.reviewers if r.family == "claude")
+    assert claude_rv.verdict == cfr.Verdict.PARSE_FAILED
+    assert revs[0].call_count == 2  # the flaky reviewer was retried
+
+
+# --- render output ----------------------------------------------------------
+
+
+def test_render_findings_markdown_approve():
+    panel = cfr.aggregate([
+        _approve_verdict("claude"), _approve_verdict("gemini"), _approve_verdict("codex"),
+    ])
+    md = cfr.render_findings_markdown(panel)
+    assert "Verdict: APPROVE" in md
+    assert "consensus=approve" in md
+
+
+def test_render_findings_markdown_block_lists_findings():
+    panel = cfr.aggregate([
+        _approve_verdict("claude"), _approve_verdict("gemini"),
+        _changes_verdict("codex", cfr.Severity.CRITICAL),
+    ])
+    md = cfr.render_findings_markdown(panel)
+    assert "block" in md.lower()
+    assert "CRITICAL" in md
+    assert "x.go:1" in md
+
+
+# --- prompt rendering -------------------------------------------------------
+
+
+def test_build_review_prompt_includes_all_inputs():
+    p = cfr.build_review_prompt(
+        family="claude",
+        ticket_key="TICK-1",
+        ticket_summary="add escrow state",
+        summary_md="## Status\nDone",
+        diff="--- a/x.go\n+++ b/x.go\n@@ -1,3 +1,3 @@\n-old\n+new\n",
+        branch="feat/x",
+        base_branch="main",
+    )
+    assert "TICK-1" in p
+    assert "add escrow state" in p
+    assert "## Status\nDone" in p
+    assert "+new" in p
+    assert "main" in p and "feat/x" in p
+    # Family-specific preamble must be present
+    assert "Claude reviewer" in p
+
+
+def test_build_review_prompt_unknown_family_raises():
+    with pytest.raises(FileNotFoundError):
+        cfr.build_review_prompt(
+            family="bogus", ticket_key="T", ticket_summary="",
+            summary_md="", diff="", branch="b", base_branch="m",
+        )
+
+
+# --- collect_diff -----------------------------------------------------------
+
+
+def test_collect_diff_uses_three_dot_form(tmp_path: Path):
+    import subprocess
+    # Build a tiny repo with two branches and a divergent commit.
+    repo = tmp_path / "r"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True, capture_output=True)
+    (repo / "f.txt").write_text("base\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "checkout", "-q", "-b", "feat"], cwd=repo, check=True, capture_output=True)
+    (repo / "f.txt").write_text("base\nfeature line\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-q", "-m", "feat"], cwd=repo, check=True, capture_output=True)
+
+    diff = cfr.collect_diff(repo_root=repo, base_branch="main", branch="feat")
+    assert "feature line" in diff
+
+
+def test_collect_diff_truncation(tmp_path: Path):
+    import subprocess
+    repo = tmp_path / "r"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True, capture_output=True)
+    (repo / "f.txt").write_text("x\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "checkout", "-q", "-b", "feat"], cwd=repo, check=True, capture_output=True)
+    # Generate a big diff.
+    (repo / "f.txt").write_text("\n".join(f"line {i}" for i in range(1000)) + "\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-q", "-m", "feat"], cwd=repo, check=True, capture_output=True)
+
+    diff = cfr.collect_diff(repo_root=repo, base_branch="main", branch="feat", max_lines=50)
+    assert "diff truncated" in diff
