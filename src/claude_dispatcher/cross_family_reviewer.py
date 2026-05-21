@@ -655,11 +655,11 @@ class ClaudeReviewer(Reviewer):
 
 
 class GeminiReviewer(Reviewer):
-    """Reviewer that shells out to `gemini --yolo -p <prompt>`.
+    """Reviewer that shells out to `gemini --yolo -p <prompt> -o text`.
 
-    `--yolo` auto-approves any tool calls (none expected); `-p / --prompt`
-    is the non-interactive headless mode flag. Output goes to stdout as
-    plain text.
+    `--yolo` auto-approves any tool calls (none expected). `-p / --prompt`
+    is the non-interactive headless mode flag. `-o text` pins plain text
+    output (the default, but explicit guards against config drift).
     """
 
     family = "gemini"
@@ -667,7 +667,7 @@ class GeminiReviewer(Reviewer):
 
     def _invoke_cli(self, prompt: str) -> str:
         proc = subprocess.run(
-            [self.cli_bin, "--yolo", "-p", prompt],
+            [self.cli_bin, "--yolo", "-o", "text", "-p", prompt],
             capture_output=True,
             text=True,
             check=False,
@@ -681,33 +681,61 @@ class GeminiReviewer(Reviewer):
 
 
 class CodexReviewer(Reviewer):
-    """Reviewer that shells out to `codex exec`.
+    """Reviewer that shells out to `codex exec --full-auto`.
 
-    `exec -c approval_mode=full-auto <prompt>` runs Codex non-interactively
-    with no approval gates. Codex emits structured TOML config + assistant
-    output; the parser strips its preamble.
+    `exec --full-auto` runs Codex non-interactively with workspace-write
+    sandboxing and no approval gates. Codex's stdout interleaves agent
+    progress (commands run, files read) with the final response, so we use
+    `--output-last-message <tmpfile>` to capture ONLY the final assistant
+    message — same role as Claude's `--output-format json` envelope.
+
+    `--color never` disables ANSI so the parser doesn't have to strip it.
+    `--skip-git-repo-check` lets us run outside a repo (review doesn't need
+    git context — it has the diff already in the prompt).
     """
 
     family = "codex"
     cli_bin = "codex"
 
     def _invoke_cli(self, prompt: str) -> str:
-        proc = subprocess.run(
-            [
-                self.cli_bin, "exec",
-                "-c", "approval_mode=full-auto",
-                prompt,
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=self.timeout_seconds,
-        )
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"codex exit={proc.returncode}: {proc.stderr.strip()[-400:]}"
+        import tempfile
+
+        # tempfile.NamedTemporaryFile with delete=False so codex can write
+        # to it; we read and unlink ourselves. Use the default tmpdir.
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", prefix="codex-review-", delete=False,
+        ) as tf:
+            out_path = Path(tf.name)
+        try:
+            proc = subprocess.run(
+                [
+                    self.cli_bin, "exec",
+                    "--full-auto",
+                    "--color", "never",
+                    "--skip-git-repo-check",
+                    "--output-last-message", str(out_path),
+                    prompt,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=self.timeout_seconds,
             )
-        return proc.stdout
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    f"codex exit={proc.returncode}: {proc.stderr.strip()[-400:]}"
+                )
+            # Prefer the captured last-message file; fall back to stdout.
+            try:
+                text = out_path.read_text(encoding="utf-8")
+            except (OSError, FileNotFoundError):
+                text = ""
+            return text or proc.stdout
+        finally:
+            try:
+                out_path.unlink()
+            except OSError:
+                pass
 
 
 def _extract_claude_message(stdout: str) -> str | None:

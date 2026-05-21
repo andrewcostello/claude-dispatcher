@@ -8,6 +8,7 @@ spend tokens on real LLM calls during pytest runs).
 
 from __future__ import annotations
 
+import subprocess
 import textwrap
 from pathlib import Path
 
@@ -572,6 +573,166 @@ def test_collect_diff_uses_three_dot_form(tmp_path: Path):
 
     diff = cfr.collect_diff(repo_root=repo, base_branch="main", branch="feat")
     assert "feature line" in diff
+
+
+# --- per-family adapter wiring ---------------------------------------------
+
+
+def test_claude_message_extraction_strips_json_envelope():
+    raw = '{"type":"result","result":"## Verdict\\nAPPROVE\\n","cost_usd":0.01}'
+    msg = cfr._extract_claude_message(raw)
+    assert msg == "## Verdict\nAPPROVE\n"
+
+
+def test_claude_message_extraction_falls_back_for_non_json():
+    # If stdout isn't a JSON envelope, _extract_claude_message returns
+    # None and the adapter falls back to raw stdout.
+    assert cfr._extract_claude_message("not json") is None
+    assert cfr._extract_claude_message("") is None
+    # Array root is also non-conforming.
+    assert cfr._extract_claude_message("[1,2,3]") is None
+
+
+def test_claude_reviewer_uses_correct_cli_flags(monkeypatch, tmp_path: Path):
+    """ClaudeReviewer must invoke `claude --print --output-format json` with the
+    bypass-permissions flags so the reviewer can run without stdin prompts.
+    """
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["input"] = kwargs.get("input")
+        # Simulate a JSON envelope on stdout.
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0,
+            stdout='{"result":"## Verdict\\nAPPROVE\\n## Dimension scores\\n- Correctness: 5\\n## Findings\\n"}',
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    r = cfr.ClaudeReviewer()
+    out = r._invoke_cli("hello prompt")
+    assert "## Verdict" in out
+    cmd = captured["cmd"]
+    assert "claude" in cmd[0]
+    assert "--print" in cmd
+    assert "--output-format" in cmd
+    assert "json" in cmd
+    assert "--permission-mode" in cmd
+    assert "bypassPermissions" in cmd
+    assert "--allow-dangerously-skip-permissions" in cmd
+    # Prompt must go via stdin, not argv.
+    assert captured["input"] == "hello prompt"
+    assert "hello prompt" not in cmd
+
+
+def test_gemini_reviewer_uses_yolo_and_text_output(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0,
+            stdout="## Verdict\nAPPROVE\n## Dimension scores\n- Correctness: 5\n## Findings\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    r = cfr.GeminiReviewer()
+    out = r._invoke_cli("hello gemini")
+    assert "## Verdict" in out
+    cmd = captured["cmd"]
+    assert "gemini" in cmd[0]
+    assert "--yolo" in cmd
+    assert "-o" in cmd and "text" in cmd
+    assert "-p" in cmd
+    # Prompt goes as -p argv, not stdin.
+    assert "hello gemini" in cmd
+
+
+def test_codex_reviewer_uses_output_last_message(monkeypatch, tmp_path: Path):
+    """Codex's stdout interleaves agent progress with the final answer.
+    The adapter must use --output-last-message so we get a clean response.
+    """
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = list(cmd)
+        # Find the --output-last-message tmpfile arg and write a synthetic
+        # response there.
+        for i, a in enumerate(cmd):
+            if a == "--output-last-message":
+                Path(cmd[i + 1]).write_text(
+                    "## Verdict\nAPPROVE\n## Dimension scores\n- Correctness: 5\n## Findings\n",
+                    encoding="utf-8",
+                )
+                break
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0,
+            stdout="agent: noisy progress output unrelated to the verdict",
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    r = cfr.CodexReviewer()
+    out = r._invoke_cli("hello codex")
+    cmd = captured["cmd"]
+    assert "codex" in cmd[0]
+    assert "exec" in cmd
+    assert "--full-auto" in cmd
+    assert "--color" in cmd and "never" in cmd
+    assert "--skip-git-repo-check" in cmd
+    assert "--output-last-message" in cmd
+    # The output should be the clean response from the tmpfile, NOT the noisy stdout.
+    assert "## Verdict" in out
+    assert "APPROVE" in out
+    assert "noisy progress" not in out
+
+
+def test_codex_reviewer_falls_back_to_stdout_when_tmpfile_missing(monkeypatch):
+    """If codex doesn't populate the last-message file (older build,
+    config mismatch), the adapter should fall back to stdout instead of
+    silently returning empty.
+    """
+    def fake_run(cmd, **kwargs):
+        # Do NOT populate the tmpfile.
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0,
+            stdout="## Verdict\nAPPROVE\n## Dimension scores\n- Correctness: 5\n## Findings\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    r = cfr.CodexReviewer()
+    out = r._invoke_cli("p")
+    assert "APPROVE" in out
+
+
+def test_reviewer_unavailable_on_filenotfounderror():
+    """If the CLI is not installed, FileNotFoundError propagates from
+    subprocess.run; Reviewer.review() must catch and turn it into
+    UNAVAILABLE without crashing the panel.
+    """
+    class _MissingCli(cfr.Reviewer):
+        family = "claude"
+        def _invoke_cli(self, prompt: str) -> str:
+            raise FileNotFoundError("no such binary: claude")
+
+    rv = _MissingCli().review("p")
+    assert rv.verdict == cfr.Verdict.UNAVAILABLE
+    assert "not found" in (rv.error or "")
+    assert rv.duration_seconds is not None and rv.duration_seconds >= 0
+
+
+def test_reviewer_unavailable_on_timeout():
+    class _Slow(cfr.Reviewer):
+        family = "codex"
+        def _invoke_cli(self, prompt: str) -> str:
+            raise subprocess.TimeoutExpired(cmd="codex", timeout=1)
+
+    rv = _Slow().review("p")
+    assert rv.verdict == cfr.Verdict.UNAVAILABLE
+    assert "timed out" in (rv.error or "")
 
 
 def test_collect_diff_truncation(tmp_path: Path):
