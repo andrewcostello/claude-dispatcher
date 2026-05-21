@@ -180,7 +180,10 @@ def execute(args: argparse.Namespace) -> int:
                     fut.result()  # propagate exceptions
                 except Exception as e:
                     _log(log_path, f"  worker {key} raised: {e}")
-                    _mark_blocked(cfg, key, reason=f"worker_exception: {e}")
+                    try:
+                        _mark_blocked(cfg, key, reason=f"worker_exception: {e}")
+                    except Exception as mark_err:
+                        _log(log_path, f"  worker {key} _mark_blocked itself raised: {mark_err}")
 
     tasks = _load_tasks_snapshot(cfg)
     blocked = [t for t in tasks if t.status == plan_mod.BLOCKED]
@@ -552,19 +555,28 @@ def _resolve_summary(
 # --- YAML mutation helpers -------------------------------------------------
 
 
-def _mutate_row(cfg: RunConfig, task_key: str, mutator) -> None:
+def _mutate_row(cfg: RunConfig, task_key: str, mutator) -> bool:
     """Acquire the FileLock, load the YAML, find the row by key, apply
     `mutator(row)`, save. The mutator is called with the row's ruamel mapping.
+
+    Returns True if the row was found and mutated, False if no row matched
+    `task_key`. A missing row is logged to stderr but is NOT fatal -- the
+    YAML may have been edited externally between plan-load and write, and
+    crashing the dispatcher because a status flip can't land is a worse
+    outcome than letting the run continue.
     """
     with yaml_io.FileLock(cfg.tasks_path):
         doc = yaml_io.load(cfg.tasks_path)
         for row in doc.get("tasks", []):
             if str(row.get("key")) == task_key:
                 mutator(row)
-                break
-        else:
-            raise KeyError(f"task {task_key!r} not in YAML at write time")
-        yaml_io.dump(doc, cfg.tasks_path)
+                yaml_io.dump(doc, cfg.tasks_path)
+                return True
+        sys.stderr.write(
+            f"warning: _mutate_row: task {task_key!r} not in YAML at write time "
+            f"(skipping status flip; YAML may have been edited mid-run)\n"
+        )
+        return False
 
 
 def _mark_in_progress(cfg: RunConfig, snap: TaskSnapshot, run_dir: Path) -> None:
