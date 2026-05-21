@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from . import auto_integrate as ai_mod
+from . import cross_family_reviewer as cfr_mod
 from . import plan as plan_mod
 from . import pr as pr_mod
 from . import spawn as spawn_mod
@@ -95,6 +96,20 @@ class RunConfig:
     # problem where sibling tasks fork from the same epic SHA and can't see
     # each other's work. See auto_integrate.py for the integration rules.
     auto_integrate: bool = False
+    # Cross-family reviewer panel: after a Tasker reports Done, run three
+    # independent reviewers (one Claude, one Gemini, one Codex) over the
+    # diff + summary. ALL THREE must APPROVE for auto-integrate to fire;
+    # any dissenter or critical/high finding blocks. Values:
+    #   "auto"   — run only for risk-gated tickets (critical/security/
+    #              financial/high labels). Default.
+    #   "always" — run for every Done ticket regardless of labels.
+    #   "never"  — disable. The Tasker's in-cycle panel still runs; only
+    #              the cross-family checkpoint is skipped.
+    # See cross_family_reviewer.panel_required() for the gating rules.
+    cross_family_panel: str = "auto"
+    # Per-reviewer wall-clock budget (seconds). Each reviewer runs in its
+    # own thread; the panel wall-clock is the slowest reviewer.
+    cross_family_panel_timeout: int = cfr_mod.DEFAULT_REVIEWER_TIMEOUT_SECONDS
 
 
 @dataclass
@@ -322,6 +337,47 @@ def _run_task(
         cfg, snap, s, wt, log_path
     )
 
+    # Cross-family reviewer panel. Runs ONLY for Done tasks that match
+    # the configured gating mode (always | auto via labels | never).
+    # Diff bounds: prefer base_sha_before..feat-tip so the direct-to-base
+    # workflow is covered (where feat == base_branch by the time we get
+    # here). Falls back to base_branch..feat for plain feat-branch work.
+    panel_verdict: cfr_mod.PanelVerdict | None = None
+    if final_status == plan_mod.DONE and _panel_should_run(cfg, snap):
+        try:
+            panel_verdict = _run_cross_family_panel(
+                cfg=cfg, snap=snap, wt=wt,
+                summary_path=result.summary_path,
+                repo_root=repo_root,
+                base_sha_before=base_sha_before,
+                log_path=log_path,
+            )
+        except Exception as e:
+            # Panel framework error (not a reviewer dissent — those are
+            # captured in the verdict). Surface as Block so a human can
+            # decide whether to retry, but DON'T lose the Tasker's work.
+            _log(log_path, f"  {snap.key} cross-family panel raised: {e}")
+            panel_verdict = None
+            final_status = plan_mod.BLOCKED
+            final_blocked_reason = f"cross_family_panel_error: {e}"
+
+        if panel_verdict is not None and not panel_verdict.is_approve:
+            # Panel didn't reach 3/3 approve. Flip to Blocked so dependents
+            # hold and the human sees the findings in the summary.
+            final_status = plan_mod.BLOCKED
+            final_blocked_reason = (
+                f"cross_family_panel: {panel_verdict.summary}"
+            )
+            _append_panel_findings_to_summary(
+                result.summary_path, panel_verdict, log_path, snap.key,
+            )
+        elif panel_verdict is not None:
+            # Panel approved — record it in the summary too, so the audit
+            # trail shows the three reviewers signed off.
+            _append_panel_findings_to_summary(
+                result.summary_path, panel_verdict, log_path, snap.key,
+            )
+
     # Auto-integrate: if the Tasker landed work and the run config asks for
     # auto-integration, merge feat → base_branch BEFORE we flip the YAML
     # status to Done. The status flip is what makes a task's row visible to
@@ -384,6 +440,17 @@ def _run_task(
             row["prepared_pr_title"] = s.prepared_pr_title
         if s.prepared_pr_branch:
             row["prepared_pr_branch"] = s.prepared_pr_branch
+        # Stamp the cross-family panel outcome for forensics + later
+        # sweep. Per-reviewer verdicts let an auditor see whether the
+        # block was 2/3 or 1/3, and what each family flagged.
+        if panel_verdict is not None:
+            row["panel_consensus"] = panel_verdict.consensus
+            row["panel_summary"] = panel_verdict.summary
+            row["panel_blocking_findings"] = len(panel_verdict.blocking_findings)
+            for r in panel_verdict.reviewers:
+                row[f"panel_verdict_{r.family}"] = r.verdict.value
+                if r.error:
+                    row[f"panel_error_{r.family}"] = r.error[:300]
         # Stamp the auto-integrate outcome for forensic + later sweep.
         if integrate_result is not None:
             row["auto_integrate_status"] = integrate_result.status
@@ -421,6 +488,127 @@ def _run_task(
 
     _mutate_row(cfg, snap.key, _apply)
     return final_status
+
+
+def _panel_should_run(cfg: RunConfig, snap: TaskSnapshot) -> bool:
+    """Decide whether to fire the cross-family panel for this Done task.
+
+    Reads `cfg.cross_family_panel`:
+      - "never"  → no
+      - "always" → yes (regardless of labels)
+      - "auto"   → yes iff the labels indicate critical/security/financial/high
+
+    "auto" is the default. docs/test-type tickets always skip the panel,
+    even with high-risk labels, because they don't ship code paths that
+    need the safety net.
+    """
+    mode = (cfg.cross_family_panel or "auto").lower()
+    if mode == "never":
+        return False
+    if mode == "always":
+        # docs/tests still skip — same rule as auto.
+        if snap.type and snap.type.lower() in cfr_mod._PANEL_SKIP_TYPES:
+            return False
+        return True
+    # "auto" — risk-tier gating
+    return cfr_mod.panel_required(snap.labels, task_type=snap.type)
+
+
+def _run_cross_family_panel(
+    *,
+    cfg: RunConfig,
+    snap: TaskSnapshot,
+    wt: wt_mod.Worktree,
+    summary_path: Path,
+    repo_root: Path,
+    base_sha_before: str | None,
+    log_path: Path,
+) -> cfr_mod.PanelVerdict:
+    """Invoke the three-family panel against the Tasker's committed work.
+
+    Computes the diff using `base_sha_before..HEAD` when available — this
+    covers the direct-to-base workflow where feat == base_branch by the
+    time the panel runs. Falls back to `base_branch..feat_branch` for
+    standard feat-branch work.
+    """
+    # Resolve the diff bounds.
+    feat_tip = _branch_sha(repo_root, wt.branch, log_path, snap.key)
+    if base_sha_before and feat_tip and base_sha_before != feat_tip:
+        diff_base = base_sha_before
+        diff_branch = feat_tip
+    else:
+        diff_base = cfg.base_branch
+        diff_branch = wt.branch
+
+    _log(log_path,
+         f"  {snap.key} cross-family panel: diff {diff_base[:8] if len(diff_base) >= 8 else diff_base}"
+         f"...{diff_branch[:8] if len(diff_branch) >= 8 else diff_branch}")
+
+    diff = cfr_mod.collect_diff(
+        repo_root=repo_root,
+        base_branch=diff_base,
+        branch=diff_branch,
+    )
+
+    summary_md = ""
+    try:
+        summary_md = summary_path.read_text(encoding="utf-8")
+    except (OSError, FileNotFoundError) as e:
+        _log(log_path, f"  {snap.key} panel: summary.md read failed: {e}")
+
+    return cfr_mod.run_panel(
+        ticket_key=snap.key,
+        ticket_summary=snap.summary,
+        summary_md=summary_md,
+        diff=diff,
+        branch=diff_branch,
+        base_branch=diff_base,
+        reviewers=_panel_reviewer_factory(cfg),
+        log=lambda m: _log(log_path, m),
+    )
+
+
+# Hook for tests to inject stub reviewers without subclassing or
+# monkeypatching subprocess.run. Production code never sets this.
+_panel_reviewers_override: list[cfr_mod.Reviewer] | None = None
+
+
+def set_panel_reviewers(reviewers: list[cfr_mod.Reviewer] | None) -> None:
+    """Test-only: override the reviewer set the panel uses. None restores defaults."""
+    global _panel_reviewers_override
+    _panel_reviewers_override = reviewers
+
+
+def _panel_reviewer_factory(cfg: RunConfig) -> list[cfr_mod.Reviewer]:
+    if _panel_reviewers_override is not None:
+        return _panel_reviewers_override
+    return cfr_mod.default_reviewers(timeout_seconds=cfg.cross_family_panel_timeout)
+
+
+def _append_panel_findings_to_summary(
+    summary_path: Path, panel: cfr_mod.PanelVerdict,
+    log_path: Path, task_key: str,
+) -> None:
+    """Append the rendered panel verdict to the Tasker's summary.md.
+
+    The summary.md is the artefact the human reads when triaging a Blocked
+    task. Appending the panel findings here means the auditor sees the
+    three families' verdicts inline, not buried in the YAML row.
+
+    Best-effort — a write failure is logged but not fatal.
+    """
+    try:
+        existing = summary_path.read_text(encoding="utf-8") if summary_path.exists() else ""
+        block = cfr_mod.render_findings_markdown(panel)
+        # Avoid double-appending on re-run.
+        if "## Cross-family panel" in existing:
+            _log(log_path,
+                 f"  {task_key} panel findings already in summary.md; not re-appending")
+            return
+        sep = "\n\n" if existing and not existing.endswith("\n\n") else ""
+        summary_path.write_text(existing + sep + block, encoding="utf-8")
+    except OSError as e:
+        _log(log_path, f"  {task_key} append-panel-to-summary failed: {e}")
 
 
 def _branch_sha(repo_root: Path, branch: str,
@@ -738,6 +926,11 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
         claude_extra_args=extra.split() if extra else [],
         base_branch=cli_base if cli_base else "main",
         auto_integrate=getattr(args, "auto_integrate", False),
+        cross_family_panel=getattr(args, "cross_family_panel", "auto"),
+        cross_family_panel_timeout=getattr(
+            args, "cross_family_panel_timeout",
+            cfr_mod.DEFAULT_REVIEWER_TIMEOUT_SECONDS,
+        ),
     )
 
 

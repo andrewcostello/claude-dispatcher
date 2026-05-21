@@ -138,6 +138,34 @@ def build_parser() -> argparse.ArgumentParser:
             "see each other's work. Off by default; opt-in per run."
         ),
     )
+    run.add_argument(
+        "--cross-family-panel",
+        choices=["auto", "always", "never"],
+        default="auto",
+        help=(
+            "Cross-family reviewer panel: after each Tasker reports Done, "
+            "fire three independent reviewers (Claude, Gemini, Codex) over "
+            "the diff + summary. ALL THREE must APPROVE for auto-integrate "
+            "to proceed; any dissenter or CRITICAL/HIGH finding blocks. "
+            "Values: 'auto' (default) runs the panel only for risk-gated "
+            "tickets (labels: critical/security/financial/high); 'always' "
+            "runs for every Done ticket; 'never' disables the cross-family "
+            "checkpoint. The Tasker's in-cycle panel still runs in all "
+            "modes — this is an additional safety net for cross-family "
+            "blind spots."
+        ),
+    )
+    run.add_argument(
+        "--cross-family-panel-timeout",
+        type=int,
+        default=600,
+        help=(
+            "Per-reviewer wall-clock budget for the cross-family panel "
+            "(seconds; default: 600). Reviewers run in parallel, so the "
+            "panel wall-clock is bounded by the slowest one. UNAVAILABLE "
+            "on timeout (treated as 'incomplete' panel — does not approve)."
+        ),
+    )
     run.set_defaults(func=run_cmd.execute)
 
     # --- status ------------------------------------------------------------

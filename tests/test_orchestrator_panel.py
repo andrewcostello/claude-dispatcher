@@ -1,0 +1,441 @@
+"""Orchestrator integration of the cross-family reviewer panel.
+
+These tests drive the live-spawn dispatch loop through the fake_claude
+binary (so no real LLM tasker is invoked) and inject stub reviewers via
+`orchestrator.set_panel_reviewers` (so no real LLM reviewer is invoked).
+
+We verify:
+  - Panel fires only for risk-gated tickets in mode=auto
+  - Mode=always fires for every Done ticket
+  - Mode=never skips the panel entirely
+  - A unanimous APPROVE leaves the task Done (panel acts like a no-op)
+  - A single dissenter flips the task to Blocked with a clear reason
+  - A reviewer that times out → "incomplete" → still blocks (does not auto-integrate)
+  - Panel findings are appended to the summary.md
+  - YAML row carries panel_consensus + per-family verdicts
+"""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
+
+import pytest
+
+from claude_dispatcher import (
+    cross_family_reviewer as cfr,
+    orchestrator,
+    spawn as spawn_mod,
+    yaml_io,
+)
+from claude_dispatcher.cli import build_parser
+
+
+FIXTURE_DIR = Path(__file__).parent / "fixtures"
+FAKE_CLAUDE = FIXTURE_DIR / "fake_claude.py"
+
+
+# A small per-task YAML where the only task has a `risk:critical` label —
+# so panel_required() returns True under mode=auto. Mirrors what a real
+# financial-domain task row looks like.
+_CRITICAL_TASK_YAML = """\
+project: TEST
+epic: PANEL
+
+tasks:
+  - key: PANEL-A
+    summary: "panel-test: high-risk ticket"
+    description: |
+      A high-risk ticket. The cross-family panel must fire for this one
+      under mode=auto.
+    type: Task
+    estimate: 5m
+    labels: [size:XS, risk:critical]
+"""
+
+_LOW_RISK_TASK_YAML = """\
+project: TEST
+epic: PANEL
+
+tasks:
+  - key: PANEL-B
+    summary: "panel-test: low-risk ticket"
+    description: A docs change. Panel should NOT fire under mode=auto.
+    type: Task
+    estimate: 5m
+    labels: [size:XS, risk:low]
+"""
+
+
+@pytest.fixture
+def repo(tmp_path: Path) -> Path:
+    """A git repo with a configurable tasks.yaml, gitless until populated."""
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo_dir)],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo_dir,
+                   check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo_dir,
+                   check=True, capture_output=True)
+    roles = repo_dir / ".claude" / "workflow" / "roles"
+    roles.mkdir(parents=True)
+    (roles / "tasker.md").write_text("stub", encoding="utf-8")
+    return repo_dir
+
+
+def _seed_yaml(repo: Path, content: str) -> None:
+    (repo / "tasks.yaml").write_text(content, encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo,
+                   check=True, capture_output=True)
+
+
+def _args(repo: Path, *, key: str, panel_mode: str = "auto", **overrides):
+    parser = build_parser()
+    argv = [
+        "run", str(repo / "tasks.yaml"),
+        "--mode", "unattended", "--max-parallel", "1",
+        "--run-id", "panel-test",
+        "--runs-dir", str(repo / "_runs"),
+        "--worktree-base", str(repo.parent / "wt"),
+        "--claude-bin", sys.executable,
+        "--only", key,
+        "--cross-family-panel", panel_mode,
+    ]
+    for k, v in overrides.items():
+        argv += [f"--{k.replace('_', '-')}", str(v)]
+    return parser.parse_args(argv)
+
+
+def _patch_spawn(monkeypatch) -> None:
+    def fake(claude_bin, cwd, env, prompt, extra_args=None, timeout_seconds=3600):
+        proc = subprocess.run(
+            [sys.executable, str(FAKE_CLAUDE)],
+            input=prompt, capture_output=True, text=True,
+            cwd=str(cwd), env=env, timeout=timeout_seconds,
+        )
+        return spawn_mod.SpawnResult(
+            exit_code=proc.returncode,
+            summary_path=Path(env["SUMMARY_PATH"]),
+            stdout=proc.stdout, stderr=proc.stderr,
+        )
+    monkeypatch.setattr(spawn_mod, "spawn_claude", fake)
+
+
+class _StubReviewer(cfr.Reviewer):
+    """Returns a canned parse-ready output. Records call_count for assertions."""
+
+    def __init__(self, family: str, output: str) -> None:
+        super().__init__()
+        self.family = family
+        self._output = output
+        self.call_count = 0
+
+    def _invoke_cli(self, prompt: str) -> str:
+        self.call_count += 1
+        return self._output
+
+
+_APPROVE_OUTPUT = textwrap.dedent("""\
+    ## Verdict
+    APPROVE
+
+    ## Dimension scores
+    - Correctness: 5
+    - Security: 5
+    - Compliance: 5
+    - Resilience: 4
+    - Idempotency: 4
+    - Observability: 4
+    - Performance: 4
+    - Maintainability: 4
+
+    ## Findings
+""")
+
+_CHANGES_REQUESTED_OUTPUT = textwrap.dedent("""\
+    ## Verdict
+    CHANGES_REQUESTED
+
+    ## Dimension scores
+    - Correctness: 3
+    - Security: 4
+    - Compliance: 4
+    - Resilience: 4
+    - Idempotency: 4
+    - Observability: 4
+    - Performance: 4
+    - Maintainability: 4
+
+    ## Findings
+
+    ### HIGH: apps/wallet/service.go:42
+    Description: Concurrent debit path lacks SELECT FOR UPDATE; the race
+    can drive the balance negative under contention.
+    Fix: Wrap the debit in a row-level lock and check balance >= amount
+    before issuing the UPDATE.
+""")
+
+
+def _set_reviewers(monkeypatch, families_and_outputs: list[tuple[str, str]]) -> list[_StubReviewer]:
+    revs = [_StubReviewer(fam, out) for fam, out in families_and_outputs]
+    orchestrator.set_panel_reviewers(revs)
+    monkeypatch.setattr(
+        orchestrator, "set_panel_reviewers",
+        orchestrator.set_panel_reviewers,  # keep symbol
+    )
+    # Ensure cleanup so a later test doesn't see stale reviewers.
+    monkeypatch.setattr(
+        orchestrator, "_panel_reviewers_override",
+        orchestrator._panel_reviewers_override,
+        raising=False,
+    )
+    return revs
+
+
+@pytest.fixture(autouse=True)
+def _reset_reviewers():
+    """Make sure each test starts and ends with no global override."""
+    orchestrator.set_panel_reviewers(None)
+    yield
+    orchestrator.set_panel_reviewers(None)
+
+
+# --- panel gating per mode --------------------------------------------------
+
+
+def test_panel_auto_fires_on_risk_critical_label(repo: Path, monkeypatch) -> None:
+    _seed_yaml(repo, _CRITICAL_TASK_YAML)
+    _patch_spawn(monkeypatch)
+    revs = _set_reviewers(monkeypatch, [
+        ("claude", _APPROVE_OUTPUT),
+        ("gemini", _APPROVE_OUTPUT),
+        ("codex", _APPROVE_OUTPUT),
+    ])
+
+    rc = orchestrator.execute(_args(repo, key="PANEL-A", panel_mode="auto"))
+    assert rc == 0, "all-approve panel should leave task Done"
+    doc = yaml_io.load(repo / "tasks.yaml")
+    row = next(t for t in doc["tasks"] if t["key"] == "PANEL-A")
+
+    assert row["status"] == "Done"
+    assert row["panel_consensus"] == "approve"
+    assert row["panel_verdict_claude"] == "APPROVE"
+    assert row["panel_verdict_gemini"] == "APPROVE"
+    assert row["panel_verdict_codex"] == "APPROVE"
+    assert all(r.call_count == 1 for r in revs)
+
+
+def test_panel_auto_skips_low_risk(repo: Path, monkeypatch) -> None:
+    _seed_yaml(repo, _LOW_RISK_TASK_YAML)
+    _patch_spawn(monkeypatch)
+    revs = _set_reviewers(monkeypatch, [
+        ("claude", _APPROVE_OUTPUT),
+        ("gemini", _APPROVE_OUTPUT),
+        ("codex", _APPROVE_OUTPUT),
+    ])
+
+    rc = orchestrator.execute(_args(repo, key="PANEL-B", panel_mode="auto"))
+    assert rc == 0
+    doc = yaml_io.load(repo / "tasks.yaml")
+    row = next(t for t in doc["tasks"] if t["key"] == "PANEL-B")
+    assert row["status"] == "Done"
+    # No panel ran — no panel_* fields stamped.
+    assert "panel_consensus" not in row
+    assert all(r.call_count == 0 for r in revs)
+
+
+def test_panel_always_fires_for_low_risk(repo: Path, monkeypatch) -> None:
+    _seed_yaml(repo, _LOW_RISK_TASK_YAML)
+    _patch_spawn(monkeypatch)
+    revs = _set_reviewers(monkeypatch, [
+        ("claude", _APPROVE_OUTPUT),
+        ("gemini", _APPROVE_OUTPUT),
+        ("codex", _APPROVE_OUTPUT),
+    ])
+
+    rc = orchestrator.execute(_args(repo, key="PANEL-B", panel_mode="always"))
+    assert rc == 0
+    doc = yaml_io.load(repo / "tasks.yaml")
+    row = next(t for t in doc["tasks"] if t["key"] == "PANEL-B")
+    assert row["status"] == "Done"
+    assert row["panel_consensus"] == "approve"
+    assert all(r.call_count == 1 for r in revs)
+
+
+def test_panel_never_skips_even_for_critical(repo: Path, monkeypatch) -> None:
+    _seed_yaml(repo, _CRITICAL_TASK_YAML)
+    _patch_spawn(monkeypatch)
+    revs = _set_reviewers(monkeypatch, [
+        ("claude", _APPROVE_OUTPUT),
+        ("gemini", _APPROVE_OUTPUT),
+        ("codex", _APPROVE_OUTPUT),
+    ])
+
+    rc = orchestrator.execute(_args(repo, key="PANEL-A", panel_mode="never"))
+    assert rc == 0
+    doc = yaml_io.load(repo / "tasks.yaml")
+    row = next(t for t in doc["tasks"] if t["key"] == "PANEL-A")
+    assert row["status"] == "Done"
+    assert "panel_consensus" not in row
+    assert all(r.call_count == 0 for r in revs)
+
+
+# --- dissent / block path ---------------------------------------------------
+
+
+def test_panel_dissenter_flips_task_to_blocked(repo: Path, monkeypatch) -> None:
+    """One reviewer flags a HIGH finding — the task must be Blocked, with
+    panel_consensus=block, and findings appended to summary.md.
+    """
+    _seed_yaml(repo, _CRITICAL_TASK_YAML)
+    _patch_spawn(monkeypatch)
+    revs = _set_reviewers(monkeypatch, [
+        ("claude", _APPROVE_OUTPUT),
+        ("gemini", _APPROVE_OUTPUT),
+        ("codex", _CHANGES_REQUESTED_OUTPUT),
+    ])
+
+    rc = orchestrator.execute(_args(repo, key="PANEL-A", panel_mode="auto"))
+    assert rc == 1, "expected partial completion (task Blocked by panel)"
+    doc = yaml_io.load(repo / "tasks.yaml")
+    row = next(t for t in doc["tasks"] if t["key"] == "PANEL-A")
+
+    assert row["status"] == "Blocked"
+    assert "cross_family_panel" in row.get("blocked_reason", "")
+    assert row["panel_consensus"] == "block"
+    assert row["panel_verdict_codex"] == "CHANGES_REQUESTED"
+    assert row["panel_verdict_claude"] == "APPROVE"
+    assert row["panel_verdict_gemini"] == "APPROVE"
+    assert row["panel_blocking_findings"] >= 1
+
+    # Findings appended to summary.md
+    summary_text = Path(row["summary_path"]).read_text(encoding="utf-8")
+    assert "Cross-family panel" in summary_text
+    assert "block" in summary_text.lower()
+    assert "HIGH" in summary_text
+    assert "service.go:42" in summary_text
+
+
+def test_panel_unavailable_yields_incomplete_and_blocks(repo: Path, monkeypatch) -> None:
+    """If one reviewer's CLI is missing, the panel returns 'incomplete'.
+    Incomplete is treated as block — task does NOT proceed to Done.
+    """
+    _seed_yaml(repo, _CRITICAL_TASK_YAML)
+    _patch_spawn(monkeypatch)
+
+    class _Unavailable(cfr.Reviewer):
+        family = "codex"
+        def _invoke_cli(self, prompt: str) -> str:
+            raise FileNotFoundError("codex not installed")
+
+    revs = [
+        _StubReviewer("claude", _APPROVE_OUTPUT),
+        _StubReviewer("gemini", _APPROVE_OUTPUT),
+        _Unavailable(),
+    ]
+    orchestrator.set_panel_reviewers(revs)
+
+    rc = orchestrator.execute(_args(repo, key="PANEL-A", panel_mode="auto"))
+    assert rc == 1
+    doc = yaml_io.load(repo / "tasks.yaml")
+    row = next(t for t in doc["tasks"] if t["key"] == "PANEL-A")
+
+    assert row["status"] == "Blocked"
+    assert row["panel_consensus"] == "incomplete"
+    assert row["panel_verdict_codex"] == "UNAVAILABLE"
+    assert "not installed" in (row.get("panel_error_codex") or "")
+
+
+def test_panel_block_short_circuits_auto_integrate(repo: Path, monkeypatch) -> None:
+    """When the panel blocks, auto-integrate must not fire — even if
+    the run was configured with --auto-integrate.
+    """
+    _seed_yaml(repo, _CRITICAL_TASK_YAML)
+    _patch_spawn(monkeypatch)
+    _set_reviewers(monkeypatch, [
+        ("claude", _APPROVE_OUTPUT),
+        ("gemini", _APPROVE_OUTPUT),
+        ("codex", _CHANGES_REQUESTED_OUTPUT),
+    ])
+    args = _args(repo, key="PANEL-A", panel_mode="auto")
+    args.auto_integrate = True  # simulate --auto-integrate
+
+    orchestrator.execute(args)
+    doc = yaml_io.load(repo / "tasks.yaml")
+    row = next(t for t in doc["tasks"] if t["key"] == "PANEL-A")
+    assert row["status"] == "Blocked"
+    # auto_integrate_* must NOT be stamped — it never ran.
+    assert "auto_integrate_status" not in row
+
+
+def test_panel_findings_not_double_appended(repo: Path, monkeypatch) -> None:
+    """Re-running the dispatcher on a Blocked task should not double-append
+    panel findings to summary.md (defense against summary growth on retry).
+    """
+    _seed_yaml(repo, _CRITICAL_TASK_YAML)
+    _patch_spawn(monkeypatch)
+
+    # Pre-seed the summary.md with a panel block.
+    summary_dir = repo / "_runs" / "panel-test" / "PANEL-A"
+    summary_dir.mkdir(parents=True)
+    summary_path = summary_dir / "summary.md"
+    summary_path.write_text(textwrap.dedent("""\
+        # PANEL-A: stub
+
+        **Status:** Done
+
+        ## Cross-family panel
+
+        Verdict: APPROVE (consensus=approve | claude=APPROVE | gemini=APPROVE | codex=APPROVE)
+    """), encoding="utf-8")
+
+    panel = cfr.aggregate([
+        cfr.ReviewerVerdict(
+            family="claude", verdict=cfr.Verdict.APPROVE,
+            dimensions={d: 4 for d in cfr.DIMENSION_NAMES},
+        ),
+        cfr.ReviewerVerdict(
+            family="gemini", verdict=cfr.Verdict.APPROVE,
+            dimensions={d: 4 for d in cfr.DIMENSION_NAMES},
+        ),
+        cfr.ReviewerVerdict(
+            family="codex", verdict=cfr.Verdict.APPROVE,
+            dimensions={d: 4 for d in cfr.DIMENSION_NAMES},
+        ),
+    ])
+
+    from claude_dispatcher.orchestrator import _append_panel_findings_to_summary
+    _append_panel_findings_to_summary(
+        summary_path, panel, repo / "_runs" / "panel-test" / "log", "PANEL-A",
+    )
+
+    text = summary_path.read_text(encoding="utf-8")
+    # Only ONE "## Cross-family panel" section.
+    assert text.count("## Cross-family panel") == 1
+
+
+def test_panel_runner_exception_marks_blocked_not_crash(repo: Path, monkeypatch) -> None:
+    """If the panel framework itself raises (not a reviewer dissent), the
+    Tasker's work must be preserved and the task Blocked with a clear
+    reason — never lose the work.
+    """
+    _seed_yaml(repo, _CRITICAL_TASK_YAML)
+    _patch_spawn(monkeypatch)
+
+    def _raise_panel(*a, **kw):
+        raise RuntimeError("synthetic panel framework failure")
+
+    monkeypatch.setattr(orchestrator.cfr_mod, "run_panel", _raise_panel)
+
+    rc = orchestrator.execute(_args(repo, key="PANEL-A", panel_mode="always"))
+    assert rc == 1
+    doc = yaml_io.load(repo / "tasks.yaml")
+    row = next(t for t in doc["tasks"] if t["key"] == "PANEL-A")
+    assert row["status"] == "Blocked"
+    assert "cross_family_panel_error" in row.get("blocked_reason", "")
+    assert "synthetic" in row.get("blocked_reason", "")
