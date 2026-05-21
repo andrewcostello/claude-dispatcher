@@ -254,6 +254,16 @@ def _run_task(
     spawn_extra = list(cfg.claude_extra_args)
     if snap.model:
         spawn_extra.extend(["--model", snap.model])
+
+    # Snapshot base_branch's tip SHA BEFORE the spawn. This is the
+    # discriminator for the direct-to-base workflow: a Tasker that
+    # fast-forwards feat/X into base_branch leaves feat/X equal to
+    # base_branch, so the standard "rev-list base..feat" check returns 0
+    # even though the work landed. Comparing base_branch's tip before vs
+    # after the spawn detects the FF advance. See
+    # _has_commits_on_branch() for the two-condition success check.
+    base_sha_before = _branch_sha(repo_root, cfg.base_branch, log_path, snap.key)
+
     try:
         result = spawn_mod.spawn_claude(
             claude_bin=cfg.claude_bin,
@@ -288,10 +298,12 @@ def _run_task(
     # corrective spawn). Max 1 commit-retry; if commits still missing
     # after, only then is this a real failure.
     if (s.status == "Done"
-            and not _has_commits_on_branch(wt, cfg.base_branch, log_path, snap.key)):
+            and not _has_commits_on_branch(
+                wt, cfg.base_branch, repo_root,
+                base_sha_before, log_path, snap.key)):
         _log(log_path, f"  {snap.key} reported Done but no commits on branch — retrying with commit-only prompt")
         retry_status = _retry_for_commit(
-            cfg, snap, wt, summary_path, env, log_path,
+            cfg, snap, wt, repo_root, summary_path, env, log_path,
         )
         if retry_status is None:
             # Retry failed — really no work. Mark Blocked with clear reason.
@@ -411,16 +423,61 @@ def _run_task(
     return final_status
 
 
-def _has_commits_on_branch(wt: wt_mod.Worktree, base_branch: str,
-                            log_path: Path, task_key: str) -> bool:
-    """True iff the worktree's branch has any commit beyond `base_branch`.
+def _branch_sha(repo_root: Path, branch: str,
+                log_path: Path, task_key: str) -> str | None:
+    """Return the tip SHA of `branch` in `repo_root`, or None on error.
 
-    Used to detect the "Tasker reported Done but forgot to commit" failure
-    mode. We don't care HOW many commits — just that at least one exists,
-    which proves the Tasker actually did `git commit` instead of leaving
-    work uncommitted in the worktree.
+    Used to snapshot base_branch's tip before a spawn so we can later
+    detect a fast-forward advance into base (the direct-to-base workflow
+    pattern). On any git failure returns None — callers treat that as
+    "no snapshot available, fall back to the feat-branch check only."
     """
     import subprocess
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", branch],
+            cwd=str(repo_root), capture_output=True, text=True,
+            check=False, timeout=30,
+        )
+    except Exception as e:
+        _log(log_path, f"  {task_key} base-sha snapshot failed: {e}")
+        return None
+    if proc.returncode != 0:
+        _log(log_path,
+             f"  {task_key} `git rev-parse {branch}` exit={proc.returncode}: "
+             f"{proc.stderr.strip()}")
+        return None
+    sha = (proc.stdout or "").strip()
+    return sha or None
+
+
+def _has_commits_on_branch(wt: wt_mod.Worktree, base_branch: str,
+                            repo_root: Path,
+                            base_sha_before: str | None,
+                            log_path: Path, task_key: str) -> bool:
+    """True iff the spawn produced new commits, on the feat branch OR on
+    `base_branch` directly (the direct-to-base workflow).
+
+    Two success modes:
+    1. **Feature-branch mode (standard)**: the worktree's feat branch has
+       at least one commit beyond `base_branch`. This is the original
+       check — Tasker ran `git commit` on feat/X without merging.
+    2. **Direct-to-base mode (BSA-style)**: `base_branch`'s tip has
+       advanced past `base_sha_before` (the SHA snapshot taken before
+       the spawn). This catches the Tasker that fast-forwarded feat/X
+       into `base_branch`, leaving the feat-branch check returning 0 —
+       which mis-fires as "no commits" when in fact the work landed
+       directly on base.
+
+    Either condition is sufficient. If `base_sha_before` is None (the
+    pre-spawn snapshot failed for any reason), only mode 1 is checked.
+
+    Used to detect the "Tasker reported Done but forgot to commit"
+    failure mode while NOT false-firing on a successful direct-to-base
+    merge.
+    """
+    import subprocess
+    # Mode 1: feat branch has commits past base_branch.
     try:
         proc = subprocess.run(
             ["git", "rev-list", "--count", f"{base_branch}..HEAD"],
@@ -434,9 +491,51 @@ def _has_commits_on_branch(wt: wt_mod.Worktree, base_branch: str,
         return False
     count = (proc.stdout or "").strip()
     try:
-        return int(count) > 0
+        feat_count = int(count)
     except ValueError:
+        feat_count = 0
+    if feat_count > 0:
+        return True
+
+    # Mode 2: base_branch tip advanced since the spawn started. Detects
+    # the direct-to-base workflow where the Tasker FF-merged feat/X into
+    # base_branch, leaving feat/X == base_branch (so mode 1 returns 0
+    # despite the work landing).
+    if base_sha_before is None:
         return False
+    base_sha_after = _branch_sha(repo_root, base_branch, log_path, task_key)
+    if base_sha_after is None:
+        return False
+    if base_sha_after == base_sha_before:
+        return False
+    # Confirm base actually moved FORWARD (not a force-reset or rewind).
+    try:
+        proc = subprocess.run(
+            ["git", "rev-list", "--count",
+             f"{base_sha_before}..{base_sha_after}"],
+            cwd=str(repo_root), capture_output=True, text=True,
+            check=False, timeout=30,
+        )
+    except Exception as e:
+        _log(log_path,
+             f"  {task_key} direct-to-base check failed: {e}")
+        return False
+    if proc.returncode != 0:
+        _log(log_path,
+             f"  {task_key} `git rev-list {base_sha_before}..{base_sha_after}` "
+             f"exit={proc.returncode}: {proc.stderr.strip()}")
+        return False
+    try:
+        advance_count = int((proc.stdout or "").strip())
+    except ValueError:
+        advance_count = 0
+    if advance_count > 0:
+        _log(log_path,
+             f"  {task_key} direct-to-base advance detected: "
+             f"{base_branch} moved {base_sha_before[:8]}..{base_sha_after[:8]} "
+             f"({advance_count} commit(s))")
+        return True
+    return False
 
 
 _COMMIT_RETRY_PROMPT_PREFIX = """\
@@ -470,10 +569,15 @@ Task context (for reference, do NOT redo):
 
 
 def _retry_for_commit(cfg: RunConfig, snap: TaskSnapshot, wt: wt_mod.Worktree,
-                      summary_path: Path, env: dict, log_path: Path) -> str | None:
+                      repo_root: Path, summary_path: Path, env: dict,
+                      log_path: Path) -> str | None:
     """Re-spawn the Tasker with a corrective prompt asking only for the
     missing commit. Returns the spawn result's exit-code-based outcome
     or None if the retry left no commits.
+
+    `repo_root` is needed so the post-spawn commit check can also detect
+    a direct-to-base fast-forward (the retry Tasker may FF into
+    base_branch instead of leaving commits on the feat branch).
     """
     prompt = _COMMIT_RETRY_PROMPT_PREFIX.format(base_branch=cfg.base_branch)
     prompt += spawn_mod.build_prompt(
@@ -494,6 +598,11 @@ def _retry_for_commit(cfg: RunConfig, snap: TaskSnapshot, wt: wt_mod.Worktree,
     retry_extra = list(cfg.claude_extra_args)
     if snap.model:
         retry_extra.extend(["--model", snap.model])
+    # Snapshot base_branch tip BEFORE the retry spawn so we can detect a
+    # direct-to-base advance the retry may produce (parallel to the
+    # check performed on the first-spawn path).
+    retry_base_sha_before = _branch_sha(
+        repo_root, cfg.base_branch, log_path, snap.key)
     try:
         result = spawn_mod.spawn_claude(
             claude_bin=cfg.claude_bin, cwd=wt.path, env=env, prompt=prompt,
@@ -503,7 +612,9 @@ def _retry_for_commit(cfg: RunConfig, snap: TaskSnapshot, wt: wt_mod.Worktree,
         _log(log_path, f"  {snap.key} commit-retry spawn failed: {e}")
         return None
     _log(log_path, f"  {snap.key} commit-retry exited code={result.exit_code}")
-    if not _has_commits_on_branch(wt, cfg.base_branch, log_path, snap.key):
+    if not _has_commits_on_branch(
+            wt, cfg.base_branch, repo_root,
+            retry_base_sha_before, log_path, snap.key):
         return None
     return "retried_ok"
 
