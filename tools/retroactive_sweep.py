@@ -255,10 +255,20 @@ def main(argv: list[str] | None = None) -> int:
                    help="Per-reviewer timeout in seconds (default: 900).")
     p.add_argument("--only", default=None,
                    help="Comma-separated ticket keys to run (others skipped).")
+    p.add_argument("--regenerate-report", action="store_true",
+                   help="Skip sweeping; just regenerate REPORT.md from existing "
+                        "panel.json files under results-dir. Used after a partial "
+                        "re-run to refresh the rollup.")
     args = p.parse_args(argv)
 
     results_dir = Path(args.results_dir).resolve()
     results_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.regenerate_report:
+        results = _load_results_from_disk(results_dir)
+        report_path = write_report(results, results_dir)
+        print(f"regenerated report: {report_path}", file=sys.stderr)
+        return 0
 
     only = set(args.only.split(",")) if args.only else None
     queue = [t for t in TICKETS if (only is None or t["key"] in only)]
@@ -283,9 +293,76 @@ def main(argv: list[str] | None = None) -> int:
             log(f"[{t['key']}] FAILED: {e}")
             results.append({"key": t["key"], "skipped": f"exception: {e}"})
 
+    # If `--only` was used, fold the existing on-disk results from the
+    # other tickets into the report so it stays complete.
+    if args.only:
+        merged = _load_results_from_disk(results_dir)
+        rerun_keys = {r["key"] for r in results if not r.get("skipped")}
+        merged = [m for m in merged if m["key"] not in rerun_keys] + results
+        # Preserve canonical ticket order.
+        order = {t["key"]: i for i, t in enumerate(TICKETS)}
+        merged.sort(key=lambda r: order.get(r["key"], 999))
+        results = merged
+
     report_path = write_report(results, results_dir)
     log(f"sweep complete. report: {report_path}")
     return 0
+
+
+def _load_results_from_disk(results_dir: Path) -> list[dict]:
+    """Reconstruct per-ticket result dicts from previously-saved panel.json
+    files. Used by --regenerate-report and by --only re-runs that want to
+    merge with prior sweep output.
+    """
+    out: list[dict] = []
+    for t in TICKETS:
+        pj = results_dir / t["key"] / "panel.json"
+        if not pj.exists():
+            continue
+        try:
+            d = json.loads(pj.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        reviewers = d.get("reviewers", [])
+        blocking = sum(
+            len([f for f in r.get("findings", [])
+                 if f.get("severity") in ("CRITICAL", "HIGH")])
+            for r in reviewers
+        )
+        # Estimate diff lines by reading the cached raw output, falling
+        # back to 0; this field is informational.
+        # The longest individual reviewer duration is the panel wall-clock
+        # (reviewers run in parallel). Round to 1 decimal for the report.
+        wall = round(max(
+            (r.get("duration_seconds") or 0) for r in reviewers
+        ) if reviewers else 0, 1)
+        out.append({
+            "key": t["key"],
+            "consensus": d.get("consensus", "?"),
+            "summary": d.get("summary", ""),
+            "auto_integrate_status": t["auto_integrate_status"],
+            "elapsed_seconds": wall,
+            "blocking_findings": blocking,
+            "per_family": {r["family"]: r["verdict"] for r in reviewers},
+            "per_family_errors": {
+                r["family"]: r["error"] for r in reviewers if r.get("error")
+            },
+            # diff_lines wasn't stored in panel.json originally. Recompute
+            # from git for accuracy. Cheap (single subprocess call).
+            "diff_lines": _diff_line_count(t),
+        })
+    return out
+
+
+def _diff_line_count(ticket: dict) -> int:
+    """Compute base...feat diff line count for the ticket. Returns 0 on any error."""
+    proc = subprocess.run(
+        ["git", "diff", f"{ticket['merge_sha']}^1...{ticket['merge_sha']}"],
+        cwd=str(EVENPLAY), capture_output=True, text=True, check=False, timeout=60,
+    )
+    if proc.returncode != 0:
+        return 0
+    return proc.stdout.count("\n")
 
 
 if __name__ == "__main__":

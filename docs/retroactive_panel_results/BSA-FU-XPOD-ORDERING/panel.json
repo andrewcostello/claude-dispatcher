@@ -1,0 +1,173 @@
+{
+  "consensus": "block",
+  "summary": "consensus=block | claude=CHANGES_REQUESTED, gemini=CHANGES_REQUESTED, codex=CHANGES_REQUESTED | blocking=6 (0C/6H)",
+  "reviewers": [
+    {
+      "family": "claude",
+      "verdict": "CHANGES_REQUESTED",
+      "dimensions": {
+        "Correctness": 3,
+        "Security": 5,
+        "Compliance": 4,
+        "Resilience": 4,
+        "Idempotency": 3,
+        "Observability": 3,
+        "Performance": 5,
+        "Maintainability": 4
+      },
+      "findings": [
+        {
+          "severity": "HIGH",
+          "location": "apps/platform-domain/bay-session/cmd/bay-session/stream_target.go:660",
+          "description": "Stale-frame drops do not advance `lastSeq`, which produces phantom sequence-gap metric increments under exactly the cross-pod inversion this change is designed to handle. The drain loop now drops a frame via `continue` after the `msgDBVersion <= curDBVersion` test but before `lastSeq.Store(msgSeq)` at line ~691. The next delivered frame's broker_seq is then compared against the OLD `lastSeq`, and `gap := msgSeq - curSeq - 1` registers a non-zero gap even though the broker delivered every frame contiguously. The Tasker explicitly tells SRE in `deploy/bay-session.yaml` (HPA block) that `bay_session_subscriber_sequence_gap_total` is now an \"orthogonal\" broker-delivery-loss signal \u2014 but this code path makes it co-vary 1:1 with `droppedStaleFrames`. After HPA enable, every cross-pod correction will look like a broker-loss event.",
+          "fix": "Update `lastSeq.Store(msgSeq)` before the `continue` on the stale-drop path (without running the gap math). The broker DID deliver this frame; the gap accounting must reflect broker truth, not post-dedup truth. Add a regression test that drives a stale drop and asserts `sequenceGap` does NOT increment."
+        },
+        {
+          "severity": "HIGH",
+          "location": "apps/platform-domain/bay-session/cmd/bay-session/stream_target.go:662",
+          "description": "The back-compat fallthrough `msgDBVersion > 0 && msgDBVersion <= curDBVersion` silently disables causal dedupe for any frame whose db_version is zero. There is no warning log, no metric, no guard. In a financial system, a future producer path that constructs a `SessionStateUpdate` without going through `publishStationSnapshot` (e.g., a replay tool, a migration job, a copy-paste in a new handler) will bypass the entire correctness contract this ticket is supposed to deliver \u2014 and there will be no observable signal that it is happening. The Tasker's summary acknowledges this as deferred-and-untracked: \"once all producers are confirmed BSA-FU-XPOD-ORDERING-aware the guard can be tightened in a follow-up.\" No follow-up ticket is referenced.",
+          "fix": "Either (a) drop the `> 0` guard now and fix the test fakes that omit the field \u2014 the test churn is small and the production safety gain is large; or (b) keep the guard but add a `bay_session_subscriber_unstamped_frames_total{target_kind}` counter incremented every time the guard rescues a zero-version frame, and file the follow-up ticket explicitly in this PR's deferred-findings block. Without one of these, the contract has a silent escape hatch."
+        },
+        {
+          "severity": "HIGH",
+          "location": "libs/protos/pkg/bay_session/v1/bay_session.proto:57",
+          "description": "The monotonicity contract for `db_version` rests entirely on the statement (Tasker summary): \"the source of truth the FOR UPDATE row lock serialises against [is `bay_session_state.updated_at`].\" That is only true if `updated_at` is assigned inside the lock window using a clock source that is monotonic across pods. The diff does not show the UPDATE statement that assigns `updated_at`. If it uses Postgres `now()` / `current_timestamp` (transaction-start time), two pods serializing on the FOR UPDATE lock can produce non-monotonic `updated_at` values \u2014 Pod B that started its transaction earlier but committed later under contention will write an EARLIER `updated_at`, and the consumer will then incorrectly drop B's (newer-by-commit-order) frame as \"stale.\" If `updated_at` is assigned via Go `time.Now()` in app code, inter-pod clock skew (NTP-normal drift is tens of ms) can flip the ordering in the same way. Only `clock_timestamp()` or a sequence-backed monotonic source is safe here. For a financial system, this assumption needs to be proven, not asserted.",
+          "fix": "In this PR, either link to or include the SQL that assigns `bay_session_state.updated_at` and demonstrate it uses `clock_timestamp()` (or equivalent). If it uses `now()` / app `time.Now()`, switch to `clock_timestamp()` AND add an integration test that holds the FOR UPDATE lock on Pod A while Pod B's transaction queues, then asserts Pod B's `updated_at` > Pod A's. The current property tests only exercise the consumer-side reorder rule; they assume the producer-side invariant holds."
+        },
+        {
+          "severity": "MEDIUM",
+          "location": "apps/platform-domain/bay-session/cmd/bay-session/stream_target.go:662",
+          "description": "The inclusive `<=` dedupe rule drops the LATER frame on a microsecond collision. The Tasker's summary acknowledges this and claims \"full-snapshot supersedure means no data loss\" \u2014 but that property only holds when a subsequent mutation arrives. Under an idle period after a collision (two commits resolving inside the same microsecond, then traffic quiesces), the consumer is stuck with the OLDER causal state until the next mutation. For a UI consuming this stream \u2014 particularly anything showing bet state \u2014 that's an observable stale-state window. No metric distinguishes \"stale drop because broker reordered\" (the intended path) from \"stale drop because aliasing dropped the newer frame\" (the data-loss path).",
+          "fix": "Either tighten the watermark to a (db_version, broker_seq) tuple so collisions break by broker_seq, or document that the supersedure assumption requires bounded idle time and add a metric / log line on equal-version drops so the collision rate is observable."
+        },
+        {
+          "severity": "MEDIUM",
+          "location": "apps/platform-domain/bay-session/cmd/bay-session/stream_session_property_test.go:104",
+          "description": "The property test deliberately excludes db_version=0 via `rapid.Int64Range(1, 50)`, with the comment that \"exercising that path here would conflate the dedupe contract with the bypass path.\" But the bypass path IS in production code and IS reachable from a misbehaving producer \u2014 there is no test anywhere that pins what happens when a mix of zero-version and positive-version frames interleave with the snapshot baseline. Given the back-compat fallthrough exists, its behavior is part of the contract and needs property coverage.",
+          "fix": "Add a second property test (or extend this one) that draws db_versions from `Int64Range(0, 50)` and asserts the documented behavior: zero-version frames always deliver, positive-version frames dedupe normally, and zero-version frames never advance the watermark."
+        },
+        {
+          "severity": "MEDIUM",
+          "location": "apps/platform-domain/bay-session/cmd/bay-session/stream_target.go:691",
+          "description": "After a stale drop, the heartbeat path will continue to echo the prior `lastSeq` (the broker_seq before the dropped frame), even though the broker has moved on. Operator running `bay_session_subscriber_heartbeat_last_seq` will see a \"stuck\" heartbeat that doesn't match the current broker tip, then a jump when the next non-stale frame arrives. Not a correctness bug, but it pairs poorly with HIGH #1: under HPA scale-out, operators looking at heartbeats AND sequence_gap will both see misleading signals.",
+          "fix": "Advancing `lastSeq` on stale drops (HIGH #1 fix) resolves this too."
+        },
+        {
+          "severity": "LOW",
+          "location": "apps/platform-domain/bay-session/cmd/bay-session/stream_target.go:706",
+          "description": "`messageDBVersion` does a nil-check on the adapter hook; `MessageSequence` does not. Inconsistent defensiveness within the same struct. Either both should be nil-safe or neither.",
+          "fix": "Drop the nil check from `messageDBVersion` and require all adapters to populate `MessageDBVersion` (the two production adapters already do; only stale test fakes would break, and they should be updated)."
+        }
+      ],
+      "notes": "The shape of this change is right \u2014 broker sequence cannot be the causal authority across pods, and stamping a producer-side watermark is the correct fix. My objection is to the execution: the gap-metric regression (HIGH #1) is visible directly in the diff and will materially mislead SRE on the very rollout this ticket enables; the back-compat fallthrough (HIGH #2) is an unguarded escape hatch in a financial system; and the producer-side monotonicity (HIGH #3) is asserted, not demonstrated. The Tasker self-approved under the BSA direct-branch workflow without external review \u2014 exactly the case where cross-family review needs to bite. I would re-review on a respin that fixes #1, picks one of the two options for #2, and includes evidence (SQL or integration test) for #3.",
+      "error": null,
+      "duration_seconds": 163.4065765021369
+    },
+    {
+      "family": "gemini",
+      "verdict": "CHANGES_REQUESTED",
+      "dimensions": {
+        "Correctness": 3,
+        "Security": 5,
+        "Compliance": 5,
+        "Resilience": 4,
+        "Idempotency": 3,
+        "Observability": 3,
+        "Performance": 5,
+        "Maintainability": 4
+      },
+      "findings": [
+        {
+          "severity": "HIGH",
+          "location": "apps/platform-domain/bay-session/cmd/bay-session/stream_target.go:653",
+          "description": "Regression in deduplication logic for legacy producers. By removing the `msgSeq <= cur` check and replacing it with only the `msgDBVersion` check, the consumer no longer dedupes frames from legacy producers (or test fakes) that omit the `db_version` field. JetStream redeliveries or overlapping replays of legacy frames will pass the `msgDBVersion > 0` guard and be processed multiple times, violating the full-snapshot supersedure contract and potentially causing state flickering in the subscriber.",
+          "fix": "Re-introduce the broker-sequence deduplication check (`msgSeq <= curSeq`) as the primary filter for all incoming messages. The causal `db_version` check should be an additional filter that specifically addresses cross-pod reordering for new producers, but basic broker-level sequence monotonicity must still be enforced for all traffic."
+        },
+        {
+          "severity": "MEDIUM",
+          "location": "apps/platform-domain/bay-session/cmd/bay-session/stream_target.go:663",
+          "description": "Conflation of `sequenceGap` and `droppedStaleFrames` metrics. The `lastSeq` watermark is only updated for successfully delivered frames. When a frame is dropped because its `db_version` is stale, `lastSeq` remains at the previous value; the subsequent successful delivery will then detect a sequence jump and incorrectly record a broker-level gap. This breaks the observability contract described in `deploy/bay-session.yaml` which promises that broker delivery loss and causal reordering are separate, independent signals.",
+          "fix": "Perform broker-sequence gap accounting and update the `lastSeq` watermark for every message that arrives from the broker (immediately after the watchdog reset), regardless of whether the message is later dropped by the causal deduplication rule."
+        },
+        {
+          "severity": "LOW",
+          "location": "apps/platform-domain/bay-session/cmd/bay-session/session_logic.go:731",
+          "description": "Microsecond collision resolution. While the Tasker acknowledges that sub-millisecond commits aliasing to the same `db_version` will result in the later frame being dropped, this assumes the `updated_at` resolution of the underlying database (PostgreSQL) is always sufficient to distinguish sequential commits. If a high-volume producer emits two different states with the same timestamp, the second is lost.",
+          "fix": "No immediate action required given the full-snapshot supersedure model, but consider documented guidance that the DB `updated_at` column must have microsecond precision (e.g., `timestamptz(6)`)."
+        }
+      ],
+      "notes": "The core implementation of causal ordering via DB version is sound and correctly addresses the cross-pod reordering bug. However, the removal of the broker-sequence deduplication check creates a regression for any non-migrated producers or replayed traffic. Additionally, the telemetry conflation will lead to \"phantom gaps\" in SRE dashboards during scale-out events, which undermines the quality of the new observability hooks. Fixing these two logic points in `drainTargetBuffer` will bring this to reference quality.",
+      "error": null,
+      "duration_seconds": 74.91089027421549
+    },
+    {
+      "family": "codex",
+      "verdict": "CHANGES_REQUESTED",
+      "dimensions": {
+        "Correctness": 2,
+        "Security": 4,
+        "Compliance": 4,
+        "Resilience": 3,
+        "Idempotency": 3,
+        "Observability": 4,
+        "Performance": 4,
+        "Maintainability": 3
+      },
+      "findings": [
+        {
+          "severity": "HIGH",
+          "location": "apps/platform-domain/bay-session/cmd/bay-session/stream_target.go:402",
+          "description": "The replay/resume path discards the causal baseline by returning `snapshotDBVersion=0` whenever `sinceSeq` is used. After this change, stale-frame suppression depends on `db_version`, not broker sequence. That means a client that reconnects after seeing a newer causal frame can still be replayed an older causal frame with a higher broker sequence and the server will forward it, because `lastDBVersion` starts at zero. This reintroduces the exact cross-pod ordering bug on reconnects, which is a normal production path, so the fix is incomplete.",
+          "fix": "Resume state must carry the last delivered causal watermark, not only the last broker sequence. Add `db_version` to the client resume contract/heartbeat surface and seed `lastDBVersion` from it on replay, or force the reconnect path back through a fresh snapshot so the server can reconstruct a correct causal baseline before forwarding live/replayed messages."
+        },
+        {
+          "severity": "HIGH",
+          "location": "apps/platform-domain/bay-session/cmd/bay-session/session_logic.go:742",
+          "description": "`db_version` is derived from `updated_at.UnixMicro()` and `drainTargetBuffer` drops any frame with `db_version <= lastDBVersion`. Two distinct commits that land in the same microsecond therefore alias to the same watermark, causing the later state to be dropped permanently as a duplicate even though it is newer. In a financial system this is not a harmless optimization: a subscriber can remain on stale state until some later mutation happens, and if no later mutation occurs the stream is wrong indefinitely.",
+          "fix": "Use a strictly monotonic version source instead of wall-clock microseconds, such as a DB sequence/version column that advances on every committed mutation. If the schema cannot change immediately, the dedupe rule cannot safely treat equal timestamps as duplicates; you need an additional tie-breaker that is monotonic per station and preserved across publishers."
+        }
+      ],
+      "notes": "The new tests cover live-stream broker-sequence inversion, but they do not cover the replay path or equal-`db_version` collisions, which is why both regressions remain undetected.",
+      "error": null,
+      "duration_seconds": 28.967658791225404
+    }
+  ],
+  "blocking_findings": [
+    {
+      "severity": "HIGH",
+      "location": "apps/platform-domain/bay-session/cmd/bay-session/stream_target.go:660",
+      "description": "Stale-frame drops do not advance `lastSeq`, which produces phantom sequence-gap metric increments under exactly the cross-pod inversion this change is designed to handle. The drain loop now drops a frame via `continue` after the `msgDBVersion <= curDBVersion` test but before `lastSeq.Store(msgSeq)` at line ~691. The next delivered frame's broker_seq is then compared against the OLD `lastSeq`, and `gap := msgSeq - curSeq - 1` registers a non-zero gap even though the broker delivered every frame contiguously. The Tasker explicitly tells SRE in `deploy/bay-session.yaml` (HPA block) that `bay_session_subscriber_sequence_gap_total` is now an \"orthogonal\" broker-delivery-loss signal \u2014 but this code path makes it co-vary 1:1 with `droppedStaleFrames`. After HPA enable, every cross-pod correction will look like a broker-loss event.",
+      "fix": "Update `lastSeq.Store(msgSeq)` before the `continue` on the stale-drop path (without running the gap math). The broker DID deliver this frame; the gap accounting must reflect broker truth, not post-dedup truth. Add a regression test that drives a stale drop and asserts `sequenceGap` does NOT increment."
+    },
+    {
+      "severity": "HIGH",
+      "location": "apps/platform-domain/bay-session/cmd/bay-session/stream_target.go:662",
+      "description": "The back-compat fallthrough `msgDBVersion > 0 && msgDBVersion <= curDBVersion` silently disables causal dedupe for any frame whose db_version is zero. There is no warning log, no metric, no guard. In a financial system, a future producer path that constructs a `SessionStateUpdate` without going through `publishStationSnapshot` (e.g., a replay tool, a migration job, a copy-paste in a new handler) will bypass the entire correctness contract this ticket is supposed to deliver \u2014 and there will be no observable signal that it is happening. The Tasker's summary acknowledges this as deferred-and-untracked: \"once all producers are confirmed BSA-FU-XPOD-ORDERING-aware the guard can be tightened in a follow-up.\" No follow-up ticket is referenced.",
+      "fix": "Either (a) drop the `> 0` guard now and fix the test fakes that omit the field \u2014 the test churn is small and the production safety gain is large; or (b) keep the guard but add a `bay_session_subscriber_unstamped_frames_total{target_kind}` counter incremented every time the guard rescues a zero-version frame, and file the follow-up ticket explicitly in this PR's deferred-findings block. Without one of these, the contract has a silent escape hatch."
+    },
+    {
+      "severity": "HIGH",
+      "location": "libs/protos/pkg/bay_session/v1/bay_session.proto:57",
+      "description": "The monotonicity contract for `db_version` rests entirely on the statement (Tasker summary): \"the source of truth the FOR UPDATE row lock serialises against [is `bay_session_state.updated_at`].\" That is only true if `updated_at` is assigned inside the lock window using a clock source that is monotonic across pods. The diff does not show the UPDATE statement that assigns `updated_at`. If it uses Postgres `now()` / `current_timestamp` (transaction-start time), two pods serializing on the FOR UPDATE lock can produce non-monotonic `updated_at` values \u2014 Pod B that started its transaction earlier but committed later under contention will write an EARLIER `updated_at`, and the consumer will then incorrectly drop B's (newer-by-commit-order) frame as \"stale.\" If `updated_at` is assigned via Go `time.Now()` in app code, inter-pod clock skew (NTP-normal drift is tens of ms) can flip the ordering in the same way. Only `clock_timestamp()` or a sequence-backed monotonic source is safe here. For a financial system, this assumption needs to be proven, not asserted.",
+      "fix": "In this PR, either link to or include the SQL that assigns `bay_session_state.updated_at` and demonstrate it uses `clock_timestamp()` (or equivalent). If it uses `now()` / app `time.Now()`, switch to `clock_timestamp()` AND add an integration test that holds the FOR UPDATE lock on Pod A while Pod B's transaction queues, then asserts Pod B's `updated_at` > Pod A's. The current property tests only exercise the consumer-side reorder rule; they assume the producer-side invariant holds."
+    },
+    {
+      "severity": "HIGH",
+      "location": "apps/platform-domain/bay-session/cmd/bay-session/stream_target.go:653",
+      "description": "Regression in deduplication logic for legacy producers. By removing the `msgSeq <= cur` check and replacing it with only the `msgDBVersion` check, the consumer no longer dedupes frames from legacy producers (or test fakes) that omit the `db_version` field. JetStream redeliveries or overlapping replays of legacy frames will pass the `msgDBVersion > 0` guard and be processed multiple times, violating the full-snapshot supersedure contract and potentially causing state flickering in the subscriber.",
+      "fix": "Re-introduce the broker-sequence deduplication check (`msgSeq <= curSeq`) as the primary filter for all incoming messages. The causal `db_version` check should be an additional filter that specifically addresses cross-pod reordering for new producers, but basic broker-level sequence monotonicity must still be enforced for all traffic."
+    },
+    {
+      "severity": "HIGH",
+      "location": "apps/platform-domain/bay-session/cmd/bay-session/stream_target.go:402",
+      "description": "The replay/resume path discards the causal baseline by returning `snapshotDBVersion=0` whenever `sinceSeq` is used. After this change, stale-frame suppression depends on `db_version`, not broker sequence. That means a client that reconnects after seeing a newer causal frame can still be replayed an older causal frame with a higher broker sequence and the server will forward it, because `lastDBVersion` starts at zero. This reintroduces the exact cross-pod ordering bug on reconnects, which is a normal production path, so the fix is incomplete.",
+      "fix": "Resume state must carry the last delivered causal watermark, not only the last broker sequence. Add `db_version` to the client resume contract/heartbeat surface and seed `lastDBVersion` from it on replay, or force the reconnect path back through a fresh snapshot so the server can reconstruct a correct causal baseline before forwarding live/replayed messages."
+    },
+    {
+      "severity": "HIGH",
+      "location": "apps/platform-domain/bay-session/cmd/bay-session/session_logic.go:742",
+      "description": "`db_version` is derived from `updated_at.UnixMicro()` and `drainTargetBuffer` drops any frame with `db_version <= lastDBVersion`. Two distinct commits that land in the same microsecond therefore alias to the same watermark, causing the later state to be dropped permanently as a duplicate even though it is newer. In a financial system this is not a harmless optimization: a subscriber can remain on stale state until some later mutation happens, and if no later mutation occurs the stream is wrong indefinitely.",
+      "fix": "Use a strictly monotonic version source instead of wall-clock microseconds, such as a DB sequence/version column that advances on every committed mutation. If the schema cannot change immediately, the dedupe rule cannot safely treat equal timestamps as duplicates; you need an additional tie-breaker that is monotonic per station and preserved across publishers."
+    }
+  ]
+}

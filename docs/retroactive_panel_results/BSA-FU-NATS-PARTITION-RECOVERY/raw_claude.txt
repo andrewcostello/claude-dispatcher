@@ -1,0 +1,37 @@
+## Verdict
+APPROVE
+
+## Dimension scores
+- Correctness: 4
+- Security: 5
+- Compliance: 5
+- Resilience: 4
+- Idempotency: 5
+- Observability: 4
+- Performance: 4
+- Maintainability: 4
+
+## Findings
+
+### MEDIUM: apps/platform-domain/bay-session/cmd/publish-recovery/worker.go:194
+Description: The recovery worker's stamp call uses the parent context with no per-call timeout, while the hot-path `stampLastPublishedAt` (session_logic.go:786) explicitly wraps stamp in `context.WithTimeout(..., 2*time.Second)`. If Postgres becomes slow, fanout goroutines block indefinitely on stamp, consuming FanoutConcurrency slots and stalling the entire drainOnce iteration. The worker's outer loop has no per-iteration deadline either, so backlog drain can stop without surfacing as a drain error.
+Fix: Wrap the stamp UPDATE in `context.WithTimeout(ctx, w.cfg.PublishTimeout)` (or a dedicated stamp timeout), matching the hot-path pattern. Failing fast on a slow stamp lets the next poll re-try and keeps fanout slots free.
+
+### MEDIUM: apps/platform-domain/bay-session/cmd/publish-recovery/worker.go:213
+Description: `marshalSnapshotOrEmpty` swallows a `proto.Marshal` error and returns `nil` bytes. The caller then publishes a SessionStateUpdate with empty `state_snapshot` but valid `Reason=SESSION_RESYNC`, `DbVersion`, and `StationId`. The stamp then runs and the outcome is counted as `outcomeOK` — operators have no signal a corrupt frame went out. Consumers whose baseline db_version is below this one will accept the resync and decode a zero-valued SessionState. Proto marshal on a typed struct is unlikely, but the silent-success behavior is wrong: a marshal failure should skip publish, skip stamp, and increment `outcomeSnapshotError`.
+Fix: Return the marshal error from a renamed helper; on error in `resync`, log, increment `resyncsTotal{outcome=snapshot_error}`, and return without publishing or stamping.
+
+### MEDIUM: apps/platform-domain/bay-session/cmd/publish-recovery/health.go:21
+Description: `/healthz` always returns 200 as long as the HTTP server is alive. A worker stuck in an infinite blocked-stamp / blocked-snapshot state (see the per-call-timeout finding) keeps the HTTP server responsive while making zero forward progress. Kubernetes will never restart a stuck pod. Combined with the absence of a per-drain deadline, a single pod can silently rot while `publish_recovery_stale_stations` saturates.
+Fix: Track a "last successful drainOnce completion" timestamp on the worker; `/healthz` returns 503 if the last completion is older than (e.g.) `2 * PollInterval + PublishTimeout`. Alternatively, surface a heartbeat counter and let Kubernetes liveness probe a real signal.
+
+### LOW: apps/platform-domain/bay-session/cmd/publish-recovery/worker.go:177
+Description: The resync `SessionStateUpdate` does not set `Sequence`. The hot-path publish presumably sets it (not shown in diff). Subscribers gate on `db_version` per the BSA-FU-XPOD-ORDERING docstring, so this is not load-bearing for ordering — but a zero `Sequence` may show up oddly in operator/debug tooling that surfaces sequence in a "last received frame" panel.
+Fix: Either explicitly document that recovery emits `Sequence=0` (and update operator dashboards / docs), or set a per-publish monotonic counter.
+
+### LOW: apps/platform-domain/bay-session/cmd/publish-recovery/worker_integration_test.go:64
+Description: The integration test seeds a SOLO station with no players. The summary says the integration test is the "load-bearing canary" that catches a missed schema addition in `sessionsnap.Build` by asserting wire-equivalence between hot-path and recovery-path publishes for the same DB state. As written it does not compare to a hot-path-emitted frame at all — it only checks that recovery emits a valid SESSION_RESYNC. A schema addition that the recovery builder misses (but the hot path catches) would not be observed.
+Fix: Seed a representative roster (multi-player ROTATION with confirmation settings, FRS fields, active bet). Either (a) emit a hot-path publish for the same row and compare the proto bytes, or (b) snapshot the proto and compare to a golden file.
+
+## Notes
+The three-layer dedupe (broker MsgId + db_version + monotonic stamp) is well-designed and the watermark = snapshot.UpdatedAt vs. NOW() rationale is correct — stamping NOW() would create the mask window described in the summary. The `TestQueries_AllUpdatesSetUpdatedAt` carve-out is appropriately scoped: the column-set check rejects mixed UPDATEs that touch any state column. The partial index predicate matches the scan predicate exactly and stays empty in steady state. The `context.WithoutCancel` + 2s timeout in the hot path is the right call — stamp must survive client disconnect or the watermark drifts. My findings are quality / operability nits; nothing here blocks ship, but I would not skip the per-stamp timeout fix before this scales to full venue rollout.

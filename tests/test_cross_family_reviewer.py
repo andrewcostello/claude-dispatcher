@@ -631,6 +631,7 @@ def test_gemini_reviewer_uses_yolo_and_text_output(monkeypatch):
 
     def fake_run(cmd, **kwargs):
         captured["cmd"] = cmd
+        captured["input"] = kwargs.get("input")
         return subprocess.CompletedProcess(
             args=cmd, returncode=0,
             stdout="## Verdict\nAPPROVE\n## Dimension scores\n- Correctness: 5\n## Findings\n",
@@ -639,25 +640,29 @@ def test_gemini_reviewer_uses_yolo_and_text_output(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     r = cfr.GeminiReviewer()
-    out = r._invoke_cli("hello gemini")
+    out = r._invoke_cli("hello gemini" + "x" * 200000)  # big prompt
     assert "## Verdict" in out
     cmd = captured["cmd"]
     assert "gemini" in cmd[0]
     assert "--yolo" in cmd
     assert "-o" in cmd and "text" in cmd
     assert "-p" in cmd
-    # Prompt goes as -p argv, not stdin.
-    assert "hello gemini" in cmd
+    # Prompt MUST be on stdin, NOT in argv — argv limit is ~128KB.
+    assert captured["input"].startswith("hello gemini")
+    assert not any(len(a) > 1024 for a in cmd), "no argv element should carry the prompt"
 
 
 def test_codex_reviewer_uses_output_last_message(monkeypatch, tmp_path: Path):
     """Codex's stdout interleaves agent progress with the final answer.
-    The adapter must use --output-last-message so we get a clean response.
+    The adapter must use --output-last-message so we get a clean response,
+    and the prompt MUST go on stdin (with `-` as the positional arg) so
+    large diffs don't blow ARG_MAX.
     """
     captured = {}
 
     def fake_run(cmd, **kwargs):
         captured["cmd"] = list(cmd)
+        captured["input"] = kwargs.get("input")
         # Find the --output-last-message tmpfile arg and write a synthetic
         # response there.
         for i, a in enumerate(cmd):
@@ -675,7 +680,7 @@ def test_codex_reviewer_uses_output_last_message(monkeypatch, tmp_path: Path):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     r = cfr.CodexReviewer()
-    out = r._invoke_cli("hello codex")
+    out = r._invoke_cli("hello codex" + "x" * 200000)  # big prompt
     cmd = captured["cmd"]
     assert "codex" in cmd[0]
     assert "exec" in cmd
@@ -683,6 +688,11 @@ def test_codex_reviewer_uses_output_last_message(monkeypatch, tmp_path: Path):
     assert "--color" in cmd and "never" in cmd
     assert "--skip-git-repo-check" in cmd
     assert "--output-last-message" in cmd
+    # `-` MUST be the positional prompt — tells codex to read from stdin.
+    assert cmd[-1] == "-", f"expected '-' as the last argv (stdin marker), got {cmd[-1]!r}"
+    # Prompt MUST be on stdin, NOT in argv.
+    assert captured["input"].startswith("hello codex")
+    assert not any(len(a) > 1024 for a in cmd), "no argv element should carry the prompt"
     # The output should be the clean response from the tmpfile, NOT the noisy stdout.
     assert "## Verdict" in out
     assert "APPROVE" in out

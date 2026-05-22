@@ -1,0 +1,24 @@
+## Verdict
+CHANGES_REQUESTED
+
+## Dimension scores
+- Correctness: 2
+- Security: 4
+- Compliance: 4
+- Resilience: 3
+- Idempotency: 3
+- Observability: 4
+- Performance: 4
+- Maintainability: 3
+
+## Findings
+### HIGH: apps/platform-domain/bay-session/cmd/bay-session/stream_target.go:402
+Description: The replay/resume path discards the causal baseline by returning `snapshotDBVersion=0` whenever `sinceSeq` is used. After this change, stale-frame suppression depends on `db_version`, not broker sequence. That means a client that reconnects after seeing a newer causal frame can still be replayed an older causal frame with a higher broker sequence and the server will forward it, because `lastDBVersion` starts at zero. This reintroduces the exact cross-pod ordering bug on reconnects, which is a normal production path, so the fix is incomplete.
+Fix: Resume state must carry the last delivered causal watermark, not only the last broker sequence. Add `db_version` to the client resume contract/heartbeat surface and seed `lastDBVersion` from it on replay, or force the reconnect path back through a fresh snapshot so the server can reconstruct a correct causal baseline before forwarding live/replayed messages.
+
+### HIGH: apps/platform-domain/bay-session/cmd/bay-session/session_logic.go:742
+Description: `db_version` is derived from `updated_at.UnixMicro()` and `drainTargetBuffer` drops any frame with `db_version <= lastDBVersion`. Two distinct commits that land in the same microsecond therefore alias to the same watermark, causing the later state to be dropped permanently as a duplicate even though it is newer. In a financial system this is not a harmless optimization: a subscriber can remain on stale state until some later mutation happens, and if no later mutation occurs the stream is wrong indefinitely.
+Fix: Use a strictly monotonic version source instead of wall-clock microseconds, such as a DB sequence/version column that advances on every committed mutation. If the schema cannot change immediately, the dedupe rule cannot safely treat equal timestamps as duplicates; you need an additional tie-breaker that is monotonic per station and preserved across publishers.
+
+## Notes
+The new tests cover live-stream broker-sequence inversion, but they do not cover the replay path or equal-`db_version` collisions, which is why both regressions remain undetected.

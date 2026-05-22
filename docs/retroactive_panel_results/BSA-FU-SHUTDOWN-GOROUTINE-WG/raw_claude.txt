@@ -1,0 +1,33 @@
+## Verdict
+APPROVE
+
+## Dimension scores
+- Correctness: 4
+- Security: 5
+- Compliance: 5
+- Resilience: 4
+- Idempotency: 4
+- Observability: 4
+- Performance: 5
+- Maintainability: 4
+
+## Findings
+
+### MEDIUM: apps/platform-domain/bay-session/cmd/bay-session/shutdown_drain.go:178
+Description: `recoverBootGoroutine` silently swallows panics in boot goroutines. The Tasker's stated justification ("a leaked Add(1) would deadlock the drain forever") is incorrect — Go runs deferred functions during panic propagation, so `wg.Done()` and `registry.done()` would execute even without the `recover()`. The real effect of `recover()` here is a behavior change: before this ticket a panic in `runFrsIdleSweeper` / `runWelcomeEmailConsumer` would crash the pod and trigger a clean k8s restart; after this ticket the same panic is logged and the worker silently stops while the pod keeps serving traffic. In a financial system, a silently-stopped FRS sweeper (the very worker this ticket was designed to protect) is a worse failure mode than a crash, because the "stamp DB + publish" path simply ceases and dashboards still show a healthy pod.
+Fix: Either (a) drop the `recover()` and let panics crash the pod — defers will still run so the WG is not at risk — or (b) keep `recover()` but re-panic after running the WG/registry defers, or (c) keep `recover()` AND add a `bay_session_boot_goroutine_panic_total{goroutine=<name>}` counter so SRE has a paging surface beyond log search. Update the doc-comment to remove the inaccurate WG-deadlock reasoning regardless.
+
+### MEDIUM: apps/platform-domain/bay-session/cmd/bay-session/shutdown_drain.go:228
+Description: `waitForShutdownDrain` unconditionally bumps `CascadeRefundShutdownAbandonedTotal{phase="wait_timeout"}` on any drain timeout, including timeouts where only named boot goroutines were in flight and zero cascade refunds were active. Existing alerts paired with the refund-recovery worker (which scans for un-stamped smg_bet rows) will fire spurious tickets when only boot goroutines stalled. The Tasker documents this as "operationally acceptable" because the recovery worker's scan is a no-op, but a noisy false-positive alert is still operationally costly at 3am.
+Fix: Only bump the cascade counter when the WG had cascade-refund work in flight. The cleanest path: split the WaitGroup back into two (`detachedWG` for cascade refunds, `bootWG` for named workers) and drain them in parallel via a single `time.After` so the cumulative budget is still bounded. Alternatively, add a `cascadeInFlight atomic.Int64` to track active cascade refunds and only bump the legacy counter when it is non-zero.
+
+### LOW: apps/platform-domain/bay-session/cmd/bay-session/main.go:455
+Description: `cleanup()` falls back to `defaultGoroutineDrainTimeout` (25s) when `cfg.GoroutineDrainTimeout <= 0`, bypassing the `< ShutdownTimeout` invariant that `validateCoreFields` enforces only when the value is non-zero. A test fixture that constructs `Config{ShutdownTimeout: 10*time.Second}` directly will end up with a 25s drain budget inside a 10s shutdown — the property the validation was designed to prevent.
+Fix: Either tighten validation to reject zero (force every caller to set it explicitly), or have the cleanup-time fallback clamp to `min(defaultGoroutineDrainTimeout, ShutdownTimeout - someBuffer)`. The Tasker's stated reason for tolerating zero is test-fixture ergonomics — a small helper `defaultDrainBudget(cfg)` would solve that without the silent overrun risk.
+
+### LOW: apps/platform-domain/bay-session/cmd/bay-session/config.go:706
+Description: `parsePositiveSecondsEnvVar` does `time.Duration(secs) * time.Second` with no upper bound on `secs`. On 64-bit hosts an attacker (or a fat-fingered operator) setting `BAY_SESSION_GOROUTINE_DRAIN_TIMEOUT_SECONDS=10000000000` overflows `time.Duration` (int64 nanoseconds, ~292 years max) and yields a negative or wrapped value.
+Fix: Add an upper bound (e.g. `secs <= 86400` — a one-day cap is more than enough for any sensible drain) and return a wrapped error above it.
+
+## Notes
+The mechanism is sound: shared WG covering cascade refunds + named boot workers, bounded drain with per-name attribution, validation that the drain budget fits inside `ShutdownTimeout`. `TestSigtermMidFrsSweep_PublishLandsBeforeCleanup` is honest about being a mechanism test (worker doesn't observe ctx); the assertion `publishTS < closeTS` is the right behavioural shape and would survive a from-scratch rewrite of `waitForShutdownDrain`. The panic-recovery point is the only one I'd push back on hard — the stated rationale is technically wrong and the resulting failure mode is non-obvious. None of the findings block ship; the panic-recovery concern is worth a follow-up ticket before this lands in production.

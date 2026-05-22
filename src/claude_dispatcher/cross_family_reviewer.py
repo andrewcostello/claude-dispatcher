@@ -655,11 +655,15 @@ class ClaudeReviewer(Reviewer):
 
 
 class GeminiReviewer(Reviewer):
-    """Reviewer that shells out to `gemini --yolo -p <prompt> -o text`.
+    """Reviewer that shells out to `gemini --yolo -o text -p ""` with the
+    prompt piped on stdin.
 
-    `--yolo` auto-approves any tool calls (none expected). `-p / --prompt`
-    is the non-interactive headless mode flag. `-o text` pins plain text
-    output (the default, but explicit guards against config drift).
+    `--yolo` auto-approves any tool calls (none expected). `-o text` pins
+    plain text output (the default, but explicit guards against config
+    drift). `-p ""` triggers non-interactive headless mode; gemini's help
+    states "Appended to input on stdin (if any)", so the real prompt goes
+    on stdin to avoid E2BIG on large diffs (Linux ARG_MAX is ~128KB per
+    arg; a 3000-line diff easily exceeds that).
     """
 
     family = "gemini"
@@ -667,7 +671,8 @@ class GeminiReviewer(Reviewer):
 
     def _invoke_cli(self, prompt: str) -> str:
         proc = subprocess.run(
-            [self.cli_bin, "--yolo", "-o", "text", "-p", prompt],
+            [self.cli_bin, "--yolo", "-o", "text", "-p", ""],
+            input=prompt,
             capture_output=True,
             text=True,
             check=False,
@@ -707,6 +712,11 @@ class CodexReviewer(Reviewer):
         ) as tf:
             out_path = Path(tf.name)
         try:
+            # Pass `-` as the positional prompt so codex reads from stdin.
+            # Per `codex exec --help`: "If not provided as an argument (or
+            # if `-` is used), instructions are read from stdin." This
+            # avoids E2BIG when the prompt exceeds Linux's per-arg limit
+            # (~128KB), which happens on diffs >~2000 lines.
             proc = subprocess.run(
                 [
                     self.cli_bin, "exec",
@@ -714,8 +724,9 @@ class CodexReviewer(Reviewer):
                     "--color", "never",
                     "--skip-git-repo-check",
                     "--output-last-message", str(out_path),
-                    prompt,
+                    "-",
                 ],
+                input=prompt,
                 capture_output=True,
                 text=True,
                 check=False,

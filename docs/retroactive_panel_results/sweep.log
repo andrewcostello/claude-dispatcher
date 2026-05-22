@@ -1,0 +1,84 @@
+2026-05-22T00:13:54+00:00 sweep start: 7 tickets, timeout 900s/reviewer
+2026-05-22T00:13:54+00:00 [BSA-FU-AUTH-PEER-BRIDGE] computing diff baa11620^1..baa11620
+2026-05-22T00:13:54+00:00 [BSA-FU-AUTH-PEER-BRIDGE] diff: 1326 lines
+2026-05-22T00:13:54+00:00 [BSA-FU-AUTH-PEER-BRIDGE] running panel (timeout 900s/reviewer)...
+2026-05-22T00:13:54+00:00   panel[BSA-FU-AUTH-PEER-BRIDGE] claude: starting
+2026-05-22T00:13:54+00:00   panel[BSA-FU-AUTH-PEER-BRIDGE] gemini: starting
+2026-05-22T00:13:54+00:00   panel[BSA-FU-AUTH-PEER-BRIDGE] codex: starting
+2026-05-22T00:14:42+00:00   panel[BSA-FU-AUTH-PEER-BRIDGE] codex: verdict=CHANGES_REQUESTED findings=1 blocking=1 dur=48.9s
+2026-05-22T00:15:53+00:00   panel[BSA-FU-AUTH-PEER-BRIDGE] claude: verdict=CHANGES_REQUESTED findings=4 blocking=1 dur=119.3s
+2026-05-22T00:18:29+00:00   panel[BSA-FU-AUTH-PEER-BRIDGE] gemini: verdict=CHANGES_REQUESTED findings=1 blocking=1 dur=275.0s
+2026-05-22T00:18:29+00:00 [BSA-FU-AUTH-PEER-BRIDGE] panel.consensus=block dur=275.0s
+2026-05-22T00:18:29+00:00 [BSA-FU-RECOVERY-REFUND-PRIO] computing diff 49efcc8b^1..49efcc8b
+2026-05-22T00:18:29+00:00 [BSA-FU-RECOVERY-REFUND-PRIO] diff: 787 lines
+2026-05-22T00:18:29+00:00 [BSA-FU-RECOVERY-REFUND-PRIO] running panel (timeout 900s/reviewer)...
+2026-05-22T00:18:29+00:00   panel[BSA-FU-RECOVERY-REFUND-PRIO] claude: starting
+2026-05-22T00:18:29+00:00   panel[BSA-FU-RECOVERY-REFUND-PRIO] gemini: starting
+2026-05-22T00:18:29+00:00   panel[BSA-FU-RECOVERY-REFUND-PRIO] codex: starting
+2026-05-22T00:19:20+00:00   panel[BSA-FU-RECOVERY-REFUND-PRIO] codex: verdict=REJECT findings=2 blocking=1 dur=51.1s
+2026-05-22T00:20:37+00:00   panel[BSA-FU-RECOVERY-REFUND-PRIO] claude: verdict=CHANGES_REQUESTED findings=3 blocking=1 dur=128.8s
+2026-05-22T00:22:41+00:00   panel[BSA-FU-RECOVERY-REFUND-PRIO] gemini: verdict=REJECT findings=1 blocking=1 dur=252.2s
+2026-05-22T00:22:41+00:00 [BSA-FU-RECOVERY-REFUND-PRIO] panel.consensus=block dur=252.2s
+2026-05-22T00:22:41+00:00 [BSA-FU-RECOVERY-OUTCOME] computing diff 4037c784^1..4037c784
+2026-05-22T00:22:41+00:00 [BSA-FU-RECOVERY-OUTCOME] diff: 1114 lines
+2026-05-22T00:22:41+00:00 [BSA-FU-RECOVERY-OUTCOME] running panel (timeout 900s/reviewer)...
+2026-05-22T00:22:41+00:00   panel[BSA-FU-RECOVERY-OUTCOME] claude: starting
+2026-05-22T00:22:41+00:00   panel[BSA-FU-RECOVERY-OUTCOME] gemini: starting
+2026-05-22T00:22:41+00:00   panel[BSA-FU-RECOVERY-OUTCOME] codex: starting
+2026-05-22T00:23:22+00:00   panel[BSA-FU-RECOVERY-OUTCOME] codex: verdict=APPROVE findings=0 blocking=0 dur=41.1s
+2026-05-22T00:26:04+00:00   panel[BSA-FU-RECOVERY-OUTCOME] gemini: verdict=APPROVE findings=0 blocking=0 dur=203.0s
+2026-05-22T00:27:05+00:00   panel[BSA-FU-RECOVERY-OUTCOME] claude: verdict=APPROVE findings=4 blocking=0 dur=264.1s
+2026-05-22T00:27:05+00:00 [BSA-FU-RECOVERY-OUTCOME] panel.consensus=approve dur=264.1s
+2026-05-22T00:27:05+00:00 [BSA-FU-CASCADE-REFUND-DRAIN] computing diff 0e2fe088^1..0e2fe088
+2026-05-22T00:27:05+00:00 [BSA-FU-CASCADE-REFUND-DRAIN] diff: 2996 lines
+2026-05-22T00:27:05+00:00 [BSA-FU-CASCADE-REFUND-DRAIN] running panel (timeout 900s/reviewer)...
+2026-05-22T00:27:05+00:00   panel[BSA-FU-CASCADE-REFUND-DRAIN] claude: starting
+2026-05-22T00:27:05+00:00   panel[BSA-FU-CASCADE-REFUND-DRAIN] gemini: starting
+2026-05-22T00:27:05+00:00   panel[BSA-FU-CASCADE-REFUND-DRAIN] codex: starting
+2026-05-22T00:27:59+00:00   panel[BSA-FU-CASCADE-REFUND-DRAIN] codex: verdict=CHANGES_REQUESTED findings=3 blocking=1 dur=53.8s
+2026-05-22T00:29:54+00:00   panel[BSA-FU-CASCADE-REFUND-DRAIN] claude: verdict=APPROVE findings=6 blocking=0 dur=169.0s
+2026-05-22T00:31:21+00:00   panel[BSA-FU-CASCADE-REFUND-DRAIN] gemini: verdict=APPROVE findings=0 blocking=0 dur=255.8s
+2026-05-22T00:31:21+00:00 [BSA-FU-CASCADE-REFUND-DRAIN] panel.consensus=block dur=255.8s
+2026-05-22T00:31:21+00:00 [BSA-FU-XPOD-ORDERING] computing diff 83708bdf^1..83708bdf
+2026-05-22T00:31:21+00:00 [BSA-FU-XPOD-ORDERING] diff: 1470 lines
+2026-05-22T00:31:21+00:00 [BSA-FU-XPOD-ORDERING] running panel (timeout 900s/reviewer)...
+2026-05-22T00:31:21+00:00   panel[BSA-FU-XPOD-ORDERING] claude: starting
+2026-05-22T00:31:21+00:00   panel[BSA-FU-XPOD-ORDERING] gemini: starting
+2026-05-22T00:31:21+00:00   panel[BSA-FU-XPOD-ORDERING] codex: starting
+2026-05-22T00:31:50+00:00   panel[BSA-FU-XPOD-ORDERING] codex: verdict=CHANGES_REQUESTED findings=2 blocking=2 dur=29.0s
+2026-05-22T00:32:36+00:00   panel[BSA-FU-XPOD-ORDERING] gemini: verdict=CHANGES_REQUESTED findings=3 blocking=1 dur=74.9s
+2026-05-22T00:34:04+00:00   panel[BSA-FU-XPOD-ORDERING] claude: verdict=CHANGES_REQUESTED findings=7 blocking=3 dur=163.4s
+2026-05-22T00:34:04+00:00 [BSA-FU-XPOD-ORDERING] panel.consensus=block dur=163.4s
+2026-05-22T00:34:04+00:00 [BSA-FU-NATS-PARTITION-RECOVERY] computing diff a1c42956^1..a1c42956
+2026-05-22T00:34:04+00:00 [BSA-FU-NATS-PARTITION-RECOVERY] diff: 3032 lines
+2026-05-22T00:34:04+00:00 [BSA-FU-NATS-PARTITION-RECOVERY] running panel (timeout 900s/reviewer)...
+2026-05-22T00:34:04+00:00   panel[BSA-FU-NATS-PARTITION-RECOVERY] claude: starting
+2026-05-22T00:34:04+00:00   panel[BSA-FU-NATS-PARTITION-RECOVERY] gemini: starting
+2026-05-22T00:34:04+00:00   panel[BSA-FU-NATS-PARTITION-RECOVERY] codex: starting
+2026-05-22T00:34:04+00:00   panel[BSA-FU-NATS-PARTITION-RECOVERY] gemini: verdict=UNAVAILABLE findings=0 blocking=0 dur=0.0s
+2026-05-22T00:34:04+00:00   panel[BSA-FU-NATS-PARTITION-RECOVERY] codex: verdict=UNAVAILABLE findings=0 blocking=0 dur=0.0s
+2026-05-22T00:38:17+00:00   panel[BSA-FU-NATS-PARTITION-RECOVERY] claude: verdict=APPROVE findings=6 blocking=0 dur=253.3s
+2026-05-22T00:38:17+00:00 [BSA-FU-NATS-PARTITION-RECOVERY] panel.consensus=incomplete dur=253.3s
+2026-05-22T00:38:17+00:00 [BSA-FU-SHUTDOWN-GOROUTINE-WG] computing diff 6593e1f0^1..6593e1f0
+2026-05-22T00:38:17+00:00 [BSA-FU-SHUTDOWN-GOROUTINE-WG] diff: 1162 lines
+2026-05-22T00:38:17+00:00 [BSA-FU-SHUTDOWN-GOROUTINE-WG] running panel (timeout 900s/reviewer)...
+2026-05-22T00:38:17+00:00   panel[BSA-FU-SHUTDOWN-GOROUTINE-WG] claude: starting
+2026-05-22T00:38:17+00:00   panel[BSA-FU-SHUTDOWN-GOROUTINE-WG] gemini: starting
+2026-05-22T00:38:17+00:00   panel[BSA-FU-SHUTDOWN-GOROUTINE-WG] codex: starting
+2026-05-22T00:39:15+00:00   panel[BSA-FU-SHUTDOWN-GOROUTINE-WG] codex: verdict=CHANGES_REQUESTED findings=2 blocking=1 dur=57.7s
+2026-05-22T00:40:42+00:00   panel[BSA-FU-SHUTDOWN-GOROUTINE-WG] claude: verdict=APPROVE findings=4 blocking=0 dur=144.4s
+2026-05-22T00:43:48+00:00   panel[BSA-FU-SHUTDOWN-GOROUTINE-WG] gemini: verdict=CHANGES_REQUESTED findings=2 blocking=2 dur=330.5s
+2026-05-22T00:43:48+00:00 [BSA-FU-SHUTDOWN-GOROUTINE-WG] panel.consensus=block dur=330.5s
+2026-05-22T00:43:48+00:00 sweep complete. report: /home/andrew/Project/claude-dispatcher/docs/retroactive_panel_results/REPORT.md
+2026-05-22T00:46:08+00:00 sweep start: 1 tickets, timeout 900s/reviewer
+2026-05-22T00:46:08+00:00 [BSA-FU-NATS-PARTITION-RECOVERY] computing diff a1c42956^1..a1c42956
+2026-05-22T00:46:08+00:00 [BSA-FU-NATS-PARTITION-RECOVERY] diff: 3032 lines
+2026-05-22T00:46:08+00:00 [BSA-FU-NATS-PARTITION-RECOVERY] running panel (timeout 900s/reviewer)...
+2026-05-22T00:46:08+00:00   panel[BSA-FU-NATS-PARTITION-RECOVERY] claude: starting
+2026-05-22T00:46:08+00:00   panel[BSA-FU-NATS-PARTITION-RECOVERY] gemini: starting
+2026-05-22T00:46:08+00:00   panel[BSA-FU-NATS-PARTITION-RECOVERY] codex: starting
+2026-05-22T00:47:03+00:00   panel[BSA-FU-NATS-PARTITION-RECOVERY] codex: verdict=CHANGES_REQUESTED findings=1 blocking=1 dur=54.7s
+2026-05-22T00:50:13+00:00   panel[BSA-FU-NATS-PARTITION-RECOVERY] claude: verdict=APPROVE findings=5 blocking=0 dur=245.6s
+2026-05-22T00:51:54+00:00   panel[BSA-FU-NATS-PARTITION-RECOVERY] gemini: verdict=REJECT findings=3 blocking=2 dur=345.7s
+2026-05-22T00:51:54+00:00 [BSA-FU-NATS-PARTITION-RECOVERY] panel.consensus=block dur=345.7s
+2026-05-22T00:51:54+00:00 sweep complete. report: /home/andrew/Project/claude-dispatcher/docs/retroactive_panel_results/REPORT.md

@@ -1,0 +1,86 @@
+{
+  "consensus": "approve",
+  "summary": "consensus=approve | claude=APPROVE, gemini=APPROVE, codex=APPROVE",
+  "reviewers": [
+    {
+      "family": "claude",
+      "verdict": "APPROVE",
+      "dimensions": {
+        "Correctness": 5,
+        "Security": 5,
+        "Compliance": 5,
+        "Resilience": 4,
+        "Idempotency": 5,
+        "Observability": 5,
+        "Performance": 4,
+        "Maintainability": 4
+      },
+      "findings": [
+        {
+          "severity": "MEDIUM",
+          "location": "apps/platform-domain/bay-session/cmd/committed-bet-recovery/worker.go:451",
+          "description": "The skip-wallet branch (when `bet.DebitConfirmedAt.IsZero()` is false) silently bypasses the wallet RPC with no log emission. An operator triaging \"why did this bet settle without a wallet.Bet line in the audit log?\" has to infer it from the absence of the wallet call rather than seeing a positive signal. Given this codepath is post-incident-recovery and the audit trail is the primary forensic surface, a one-line debug/info log (\"skipping wallet.Bet \u2014 debit already confirmed at <timestamp>\") would close the loop. Not blocking because the structured \"recovery: confirmed debit + advanced to settling\" log at the end captures the final state, but operators reading from the wallet side will see a gap.",
+          "fix": "Add a single `w.logger.WithContext(ctx).Debug(\"recovery: skipping wallet.Bet \u2014 debit already confirmed\", slog.Int64(\"bet_id\", bet.BetID), slog.Time(\"debit_confirmed_at\", bet.DebitConfirmedAt))` immediately before the implicit \"skip\" branch (i.e., as the else of the `IsZero()` check, or as a guard log just before line 451)."
+        },
+        {
+          "severity": "MEDIUM",
+          "location": "apps/platform-domain/bay-session/cmd/committed-bet-recovery/worker.go:619",
+          "description": "`payout_amount_projected` is computed and logged here but explicitly NOT persisted to `smg_bet` (per summary, BSA-7-2 recomputes downstream). If BSA-7-2 recomputes via a path that doesn't invoke `outcome.Compute` \u2014 e.g., reads stored `multiplier` and does its own arithmetic \u2014 there's no test or invariant pinning that the two paths produce equal results. The current commit doesn't introduce drift (BSA-7-2 only sees the now-correct multiplier on disk), but the log's \"projected\" value will be unverifiable against the ultimately-persisted value without a cross-check.",
+          "fix": "Either persist the projected payout as a column on `smg_bet` here (so downstream can CHECK it) OR add a comment-pointer in BSA-7-2's payout-compute path that it MUST call `outcome.Compute` to stay bit-identical. The latter is cheaper and matches the leaf-package architecture established by this change."
+        },
+        {
+          "severity": "LOW",
+          "location": "apps/platform-domain/bay-session/cmd/committed-bet-recovery/worker.go:454",
+          "description": "`defer cancel()` is declared inside the `if bet.DebitConfirmedAt.IsZero()` block. In Go, deferred calls execute at function return, not block exit \u2014 so the wallet-call's timeout context lingers across the entire settlement-write block (hit-read, compute, transition). The context is unused past the wallet call, so this is purely a resource-cleanup-timing nit, not a correctness issue.",
+          "fix": "Wrap the wallet RPC + mark-debit in an inline anonymous function or extract to a method so the `defer cancel()` fires at the wallet-call boundary. Optional polish."
+        },
+        {
+          "severity": "LOW",
+          "location": "apps/platform-domain/bay-session/internal/outcome/outcome.go:106",
+          "description": "The property test `TestCompute_PayoutIsAmountTimesMultiplierDiv100` caps `amount` at 1e9, which never exercises the int64 multiplication boundary close to `BetAmountOverflowGuard \u00d7 top_multiplier`. The single explicit `amount over guard` test pins rejection of the +1 case but doesn't pin the *just-below-overflow* arithmetic (e.g., `amount = BetAmountOverflowGuard, multiplier = 300` \u2192 `payout = 3e16`).",
+          "fix": "Add a single-case test asserting `Compute(0, BetAmountOverflowGuard)` succeeds (lose path, no overflow) and `Compute(48, BetAmountOverflowGuard)` returns the expected win-path payout without overflow. Pins the guard semantics at the boundary the `init()` invariant defends."
+        }
+      ],
+      "notes": "The pure-leaf-package extraction is the right call \u2014 same-input/same-output between hot and recovery paths is now compiler-enforced rather than convention-enforced. The ORDER BY hit_id ASC LIMIT 1 fix is correct and matches the hot-path convention. The MarkDebitConfirmedRecovery-before-downstream-branches ordering correctly prevents the over-counting-in-liability-query failure mode that Codex Rev B flagged. The `init()` overflow invariant is a nice touch \u2014 it converts a \"future engineer adds a zone\" footgun into a startup panic. The NaN/Inf defensive branches correctly refuse to mis-settle (bumping retry rather than silently mapping to loss), which is the right safety posture for a money path. Tests assert behavior on the data model (state, outcome, multiplier, debit_confirmed_at) rather than mock-call sequences.",
+      "error": null,
+      "duration_seconds": 264.0513666521292
+    },
+    {
+      "family": "gemini",
+      "verdict": "APPROVE",
+      "dimensions": {
+        "Correctness": 5,
+        "Security": 5,
+        "Compliance": 5,
+        "Resilience": 5,
+        "Idempotency": 5,
+        "Observability": 5,
+        "Performance": 4,
+        "Maintainability": 4
+      },
+      "findings": [],
+      "notes": "The changes efficiently address the findings from the previous review. The extraction of the outcome computation into a pure, dependency-free package (`internal/outcome`) is excellent for testability and guarantees consistency between the hot path and the recovery worker. The wallet RPC skip logic when `DebitConfirmedAt` is already set is correctly implemented, safely scoped, and successfully avoids unnecessary capacity consumption. The explicit lock/unlock pattern around the wallet call remains slightly awkward but is acceptable given the iteration's minimal scope. The N+1 query pattern remains tracked as a medium-priority optimization, which is reasonable given current system loads. Excellent test coverage and safety guards (e.g., overflow panic guard at init).",
+      "error": null,
+      "duration_seconds": 203.0358499889262
+    },
+    {
+      "family": "codex",
+      "verdict": "APPROVE",
+      "dimensions": {
+        "Correctness": 4,
+        "Security": 5,
+        "Compliance": 4,
+        "Resilience": 4,
+        "Idempotency": 4,
+        "Observability": 4,
+        "Performance": 4,
+        "Maintainability": 4
+      },
+      "findings": [],
+      "notes": "",
+      "error": null,
+      "duration_seconds": 41.05897019500844
+    }
+  ],
+  "blocking_findings": []
+}
