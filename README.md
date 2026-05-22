@@ -150,13 +150,17 @@ human auditor sees the three families' verdicts inline.
 
 **The three CLIs**
 
-The panel shells out to `claude`, `gemini`, and `codex` — all three must
+The panel shells out to `claude`, `agy` (Antigravity CLI; Google
+rebranded `gemini` → `agy` in 2026-05), and `codex` — all three must
 be on `$PATH` (or the panel records that family as `UNAVAILABLE` and
 treats consensus as `incomplete`, which blocks auto-integrate the same as
 a `block` verdict). The Claude invocation reuses the Tasker spawn pattern
 (`--print --output-format json --permission-mode bypassPermissions`);
-Gemini uses `--yolo -o text -p`; Codex uses `exec --full-auto
---output-last-message`. Per-reviewer timeout defaults to 10 min
+the gemini-family reviewer uses `agy --print "" --print-timeout {N}s`
+with the prompt on stdin; Codex uses `exec --full-auto
+--output-last-message`. The family identifier stays `gemini` for column
+compatibility with historical panel records even though the CLI binary
+is `agy`. Per-reviewer timeout defaults to 10 min
 (`--cross-family-panel-timeout`).
 
 **Retroactive validation**

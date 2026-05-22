@@ -626,7 +626,11 @@ def test_claude_reviewer_uses_correct_cli_flags(monkeypatch, tmp_path: Path):
     assert "hello prompt" not in cmd
 
 
-def test_gemini_reviewer_uses_yolo_and_text_output(monkeypatch):
+def test_gemini_reviewer_invokes_agy_with_stdin(monkeypatch):
+    """Gemini family CLI is `agy` (Antigravity, post-2026-05 rebrand). The
+    family identifier stays "gemini" for column compatibility, but the
+    binary and flags moved. Prompt must arrive via stdin.
+    """
     captured = {}
 
     def fake_run(cmd, **kwargs):
@@ -643,10 +647,11 @@ def test_gemini_reviewer_uses_yolo_and_text_output(monkeypatch):
     out = r._invoke_cli("hello gemini" + "x" * 200000)  # big prompt
     assert "## Verdict" in out
     cmd = captured["cmd"]
-    assert "gemini" in cmd[0]
-    assert "--yolo" in cmd
-    assert "-o" in cmd and "text" in cmd
-    assert "-p" in cmd
+    assert cmd[0] == "agy"
+    assert "--print" in cmd
+    assert "--print-timeout" in cmd
+    # Family identifier stays "gemini" for record compatibility.
+    assert r.family == "gemini"
     # Prompt MUST be on stdin, NOT in argv — argv limit is ~128KB.
     assert captured["input"].startswith("hello gemini")
     assert not any(len(a) > 1024 for a in cmd), "no argv element should carry the prompt"
@@ -794,9 +799,11 @@ def test_default_reviewers_returns_three_families():
     revs = cfr.default_reviewers()
     assert [r.family for r in revs] == ["claude", "gemini", "codex"]
     assert all(isinstance(r, cfr.Reviewer) for r in revs)
-    # Each carries the per-class default cli_bin.
+    # Each carries the per-class default cli_bin. The gemini-family
+    # reviewer uses agy (Antigravity, post-2026-05 rebrand of gemini); the
+    # family identifier remains "gemini" for record compatibility.
     families_to_bins = {r.family: r.cli_bin for r in revs}
-    assert families_to_bins == {"claude": "claude", "gemini": "gemini", "codex": "codex"}
+    assert families_to_bins == {"claude": "claude", "gemini": "agy", "codex": "codex"}
 
 
 def test_default_reviewers_propagates_timeout():

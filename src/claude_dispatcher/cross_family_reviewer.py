@@ -655,23 +655,37 @@ class ClaudeReviewer(Reviewer):
 
 
 class GeminiReviewer(Reviewer):
-    """Reviewer that shells out to `gemini --yolo -o text -p ""` with the
-    prompt piped on stdin.
+    """Reviewer that shells out to `agy --print ""` with the prompt piped on
+    stdin.
 
-    `--yolo` auto-approves any tool calls (none expected). `-o text` pins
-    plain text output (the default, but explicit guards against config
-    drift). `-p ""` triggers non-interactive headless mode; gemini's help
-    states "Appended to input on stdin (if any)", so the real prompt goes
-    on stdin to avoid E2BIG on large diffs (Linux ARG_MAX is ~128KB per
-    arg; a 3000-line diff easily exceeds that).
+    Google rebranded `gemini` CLI → `agy` (Antigravity CLI). The model
+    family identifier stays "gemini" so historical panel records and
+    column headers (panel_verdict_gemini) remain comparable; only the
+    binary name and flag set changed.
+
+    Empty positional arg + stdin avoids E2BIG on large diffs (Linux
+    ARG_MAX ~128KB per arg; a 3000-line diff easily exceeds that). Agy's
+    `--print ""` accepts the real prompt on stdin, mirroring the old
+    gemini `-p ""` behavior. `--print-timeout` is set to match the
+    dispatcher's outer timeout so agy doesn't internally bail at its
+    5-minute default before subprocess.run does.
+
+    Agy has no `--yolo` / `-o text` equivalents — both are silently
+    ignored (printed help, returncode 0), so we deliberately omit them.
+    `--dangerously-skip-permissions` is NOT used: it causes agy to
+    auto-execute tool calls (workspace init, file edits) when the prompt
+    looks remotely actionable, which is wrong for a stateless reviewer.
     """
 
     family = "gemini"
-    cli_bin = "gemini"
+    cli_bin = "agy"
 
     def _invoke_cli(self, prompt: str) -> str:
         proc = subprocess.run(
-            [self.cli_bin, "--yolo", "-o", "text", "-p", ""],
+            [
+                self.cli_bin, "--print", "",
+                "--print-timeout", f"{int(self.timeout_seconds)}s",
+            ],
             input=prompt,
             capture_output=True,
             text=True,
@@ -680,7 +694,7 @@ class GeminiReviewer(Reviewer):
         )
         if proc.returncode != 0:
             raise RuntimeError(
-                f"gemini exit={proc.returncode}: {proc.stderr.strip()[-400:]}"
+                f"agy exit={proc.returncode}: {proc.stderr.strip()[-400:]}"
             )
         return proc.stdout
 
