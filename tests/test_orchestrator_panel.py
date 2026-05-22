@@ -419,6 +419,170 @@ def test_panel_findings_not_double_appended(repo: Path, monkeypatch) -> None:
     assert text.count("## Cross-family panel") == 1
 
 
+# --- panel iterate ----------------------------------------------------------
+
+
+class _SequencedStubReviewer(cfr.Reviewer):
+    """Returns a different canned output per call. Used to model a panel
+    that blocks on the first run and approves on the second after the
+    Tasker iterated.
+    """
+
+    def __init__(self, family: str, outputs: list[str]) -> None:
+        super().__init__()
+        self.family = family
+        self._outputs = list(outputs)
+        self.call_count = 0
+
+    def _invoke_cli(self, prompt: str) -> str:
+        idx = min(self.call_count, len(self._outputs) - 1)
+        self.call_count += 1
+        return self._outputs[idx]
+
+
+def test_panel_iterate_block_then_approve_lands_done(repo: Path, monkeypatch) -> None:
+    """N=1: panel blocks, Tasker re-spawn produces a new commit, panel
+    re-runs and approves. Final status is Done. panel_iterations_used=1.
+    """
+    _seed_yaml(repo, _CRITICAL_TASK_YAML)
+    _patch_spawn(monkeypatch)
+    revs = [
+        _SequencedStubReviewer("claude", [_APPROVE_OUTPUT, _APPROVE_OUTPUT]),
+        _SequencedStubReviewer("gemini", [_APPROVE_OUTPUT, _APPROVE_OUTPUT]),
+        # Codex blocks on round 1, approves on round 2 (post-iterate).
+        _SequencedStubReviewer("codex", [_CHANGES_REQUESTED_OUTPUT, _APPROVE_OUTPUT]),
+    ]
+    orchestrator.set_panel_reviewers(revs)
+
+    rc = orchestrator.execute(_args(
+        repo, key="PANEL-A", panel_mode="auto",
+        cross_family_panel_iterate=1,
+    ))
+    assert rc == 0, "panel iterate should recover and land Done"
+    doc = yaml_io.load(repo / "tasks.yaml")
+    row = next(t for t in doc["tasks"] if t["key"] == "PANEL-A")
+
+    assert row["status"] == "Done"
+    assert row["panel_consensus"] == "approve"
+    assert row.get("panel_iterations_used") == 1
+    # Each reviewer ran twice (initial + post-iterate).
+    assert all(r.call_count == 2 for r in revs)
+
+
+def test_panel_iterate_exhausts_budget_stays_blocked(repo: Path, monkeypatch) -> None:
+    """N=2: panel keeps blocking on every iteration. After 2 iterations,
+    task is Blocked. panel_iterations_used should equal the budget.
+    """
+    _seed_yaml(repo, _CRITICAL_TASK_YAML)
+    _patch_spawn(monkeypatch)
+    revs = [
+        _StubReviewer("claude", _APPROVE_OUTPUT),
+        _StubReviewer("gemini", _APPROVE_OUTPUT),
+        # Codex always blocks.
+        _StubReviewer("codex", _CHANGES_REQUESTED_OUTPUT),
+    ]
+    orchestrator.set_panel_reviewers(revs)
+
+    rc = orchestrator.execute(_args(
+        repo, key="PANEL-A", panel_mode="auto",
+        cross_family_panel_iterate=2,
+    ))
+    assert rc == 1
+    doc = yaml_io.load(repo / "tasks.yaml")
+    row = next(t for t in doc["tasks"] if t["key"] == "PANEL-A")
+
+    assert row["status"] == "Blocked"
+    assert row["panel_consensus"] == "block"
+    assert row.get("panel_iterations_used") == 2
+    assert "after 2 iterate attempt(s)" in row.get("blocked_reason", "")
+    # Codex was called 3x (initial + 2 iterations).
+    codex = next(r for r in revs if r.family == "codex")
+    assert codex.call_count == 3
+
+
+def test_panel_iterate_default_zero_blocks_immediately(repo: Path, monkeypatch) -> None:
+    """N=0 (default): panel block flips straight to Blocked without
+    re-spawning the Tasker. No panel_iterations_used field stamped.
+    """
+    _seed_yaml(repo, _CRITICAL_TASK_YAML)
+    _patch_spawn(monkeypatch)
+    revs = [
+        _StubReviewer("claude", _APPROVE_OUTPUT),
+        _StubReviewer("gemini", _APPROVE_OUTPUT),
+        _StubReviewer("codex", _CHANGES_REQUESTED_OUTPUT),
+    ]
+    orchestrator.set_panel_reviewers(revs)
+
+    # No --cross-family-panel-iterate flag → default 0.
+    rc = orchestrator.execute(_args(repo, key="PANEL-A", panel_mode="auto"))
+    assert rc == 1
+    doc = yaml_io.load(repo / "tasks.yaml")
+    row = next(t for t in doc["tasks"] if t["key"] == "PANEL-A")
+
+    assert row["status"] == "Blocked"
+    assert "panel_iterations_used" not in row
+    # Reviewers ran exactly once each.
+    assert all(r.call_count == 1 for r in revs)
+
+
+def test_panel_iterate_short_circuits_when_tasker_produces_no_commits(
+    repo: Path, monkeypatch,
+) -> None:
+    """If the iterate spawn exits but doesn't produce a new commit (the
+    Tasker decided no fix was needed or got confused), the orchestrator
+    must stop iterating instead of looping forever on the same diff.
+    """
+    _seed_yaml(repo, _CRITICAL_TASK_YAML)
+
+    # Initial fake_claude scenario produces a commit; the iterate spawn
+    # should NOT produce a commit (use done-no-commit so the spawn exits
+    # cleanly but commits nothing).
+    spawn_call_count = {"n": 0}
+    original_spawn = None
+
+    def fake(claude_bin, cwd, env, prompt, extra_args=None, timeout_seconds=3600):
+        spawn_call_count["n"] += 1
+        # First spawn: normal (commits). Second spawn (the iterate): skip commit.
+        env_local = dict(env)
+        if spawn_call_count["n"] >= 2:
+            env_local["FAKE_CLAUDE_SCENARIO"] = "done-no-commit"
+        proc = subprocess.run(
+            [sys.executable, str(FAKE_CLAUDE)],
+            input=prompt, capture_output=True, text=True,
+            cwd=str(cwd), env=env_local, timeout=timeout_seconds,
+        )
+        return spawn_mod.SpawnResult(
+            exit_code=proc.returncode,
+            summary_path=Path(env["SUMMARY_PATH"]),
+            stdout=proc.stdout, stderr=proc.stderr,
+        )
+
+    monkeypatch.setattr(spawn_mod, "spawn_claude", fake)
+
+    revs = [
+        _StubReviewer("claude", _APPROVE_OUTPUT),
+        _StubReviewer("gemini", _APPROVE_OUTPUT),
+        _StubReviewer("codex", _CHANGES_REQUESTED_OUTPUT),
+    ]
+    orchestrator.set_panel_reviewers(revs)
+
+    rc = orchestrator.execute(_args(
+        repo, key="PANEL-A", panel_mode="auto",
+        cross_family_panel_iterate=3,
+    ))
+    assert rc == 1
+    doc = yaml_io.load(repo / "tasks.yaml")
+    row = next(t for t in doc["tasks"] if t["key"] == "PANEL-A")
+    assert row["status"] == "Blocked"
+    # Only ONE iterate attempt should have run (then short-circuited).
+    assert row.get("panel_iterations_used") == 1
+    # Codex called 2x: initial panel + one re-run after the no-op iterate
+    # spawn aborted. Wait, no — the no-op iterate aborts BEFORE the panel
+    # re-runs. So codex was called exactly 1x.
+    codex = next(r for r in revs if r.family == "codex")
+    assert codex.call_count == 1
+
+
 def test_panel_runner_exception_marks_blocked_not_crash(repo: Path, monkeypatch) -> None:
     """If the panel framework itself raises (not a reviewer dissent), the
     Tasker's work must be preserved and the task Blocked with a clear

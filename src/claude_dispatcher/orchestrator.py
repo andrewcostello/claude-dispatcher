@@ -110,6 +110,14 @@ class RunConfig:
     # Per-reviewer wall-clock budget (seconds). Each reviewer runs in its
     # own thread; the panel wall-clock is the slowest reviewer.
     cross_family_panel_timeout: int = cfr_mod.DEFAULT_REVIEWER_TIMEOUT_SECONDS
+    # When the cross-family panel returns block, optionally re-spawn the
+    # Tasker with the panel's blocking findings as a corrective prompt,
+    # then re-run the panel against the new diff. Default 0 = no iterate
+    # (current behavior; panel block → Blocked status). Each iteration is
+    # one extra Tasker spawn + one extra panel run. The panel verdict
+    # stamped on the YAML row is from the FINAL run (which may be approve
+    # if the Tasker successfully addressed the findings).
+    cross_family_panel_iterate: int = 0
 
 
 @dataclass
@@ -342,38 +350,64 @@ def _run_task(
     # Diff bounds: prefer base_sha_before..feat-tip so the direct-to-base
     # workflow is covered (where feat == base_branch by the time we get
     # here). Falls back to base_branch..feat for plain feat-branch work.
+    #
+    # When `cross_family_panel_iterate > 0` and the panel blocks, the
+    # dispatcher re-spawns the Tasker with the blocking findings as a
+    # corrective prompt and re-runs the panel up to N times before giving
+    # up. Each iteration is one extra Tasker spawn + one extra panel run.
     panel_verdict: cfr_mod.PanelVerdict | None = None
+    panel_iterations_used = 0
     if final_status == plan_mod.DONE and _panel_should_run(cfg, snap):
-        try:
-            panel_verdict = _run_cross_family_panel(
-                cfg=cfg, snap=snap, wt=wt,
+        iterations_remaining = max(0, cfg.cross_family_panel_iterate)
+        while True:
+            try:
+                panel_verdict = _run_cross_family_panel(
+                    cfg=cfg, snap=snap, wt=wt,
+                    summary_path=result.summary_path,
+                    repo_root=repo_root,
+                    base_sha_before=base_sha_before,
+                    log_path=log_path,
+                )
+            except Exception as e:
+                _log(log_path, f"  {snap.key} cross-family panel raised: {e}")
+                panel_verdict = None
+                final_status = plan_mod.BLOCKED
+                final_blocked_reason = f"cross_family_panel_error: {e}"
+                break
+
+            if panel_verdict.is_approve or iterations_remaining <= 0:
+                break
+
+            _log(log_path,
+                 f"  {snap.key} cross-family panel block — iterating "
+                 f"({iterations_remaining} attempt(s) left)")
+            corrective_ok = _spawn_panel_iterate(
+                cfg=cfg, snap=snap, wt=wt, repo_root=repo_root,
                 summary_path=result.summary_path,
-                repo_root=repo_root,
-                base_sha_before=base_sha_before,
-                log_path=log_path,
+                env=env, log_path=log_path,
+                panel=panel_verdict,
+                iterations_left=iterations_remaining,
             )
-        except Exception as e:
-            # Panel framework error (not a reviewer dissent — those are
-            # captured in the verdict). Surface as Block so a human can
-            # decide whether to retry, but DON'T lose the Tasker's work.
-            _log(log_path, f"  {snap.key} cross-family panel raised: {e}")
-            panel_verdict = None
-            final_status = plan_mod.BLOCKED
-            final_blocked_reason = f"cross_family_panel_error: {e}"
+            panel_iterations_used += 1
+            iterations_remaining -= 1
+            if not corrective_ok:
+                _log(log_path,
+                     f"  {snap.key} panel-iterate spawn failed — leaving "
+                     f"last panel verdict in place")
+                break
+            # Loop: re-run the panel against the now-updated diff.
 
         if panel_verdict is not None and not panel_verdict.is_approve:
-            # Panel didn't reach 3/3 approve. Flip to Blocked so dependents
-            # hold and the human sees the findings in the summary.
             final_status = plan_mod.BLOCKED
             final_blocked_reason = (
                 f"cross_family_panel: {panel_verdict.summary}"
+                + (f" (after {panel_iterations_used} iterate attempt(s))"
+                   if panel_iterations_used else "")
             )
             _append_panel_findings_to_summary(
                 result.summary_path, panel_verdict, log_path, snap.key,
             )
         elif panel_verdict is not None:
-            # Panel approved — record it in the summary too, so the audit
-            # trail shows the three reviewers signed off.
             _append_panel_findings_to_summary(
                 result.summary_path, panel_verdict, log_path, snap.key,
             )
@@ -447,6 +481,8 @@ def _run_task(
             row["panel_consensus"] = panel_verdict.consensus
             row["panel_summary"] = panel_verdict.summary
             row["panel_blocking_findings"] = len(panel_verdict.blocking_findings)
+            if panel_iterations_used:
+                row["panel_iterations_used"] = panel_iterations_used
             for r in panel_verdict.reviewers:
                 row[f"panel_verdict_{r.family}"] = r.verdict.value
                 if r.error:
@@ -566,6 +602,131 @@ def _run_cross_family_panel(
         reviewers=_panel_reviewer_factory(cfg),
         log=lambda m: _log(log_path, m),
     )
+
+
+def _spawn_panel_iterate(
+    *,
+    cfg: RunConfig,
+    snap: TaskSnapshot,
+    wt: wt_mod.Worktree,
+    repo_root: Path,
+    summary_path: Path,
+    env: dict,
+    log_path: Path,
+    panel: cfr_mod.PanelVerdict,
+    iterations_left: int,
+) -> bool:
+    """Re-spawn the Tasker with the panel's blocking findings as a
+    corrective prompt. Returns True iff the spawn exited cleanly with at
+    least one new commit (or new direct-to-base advance) — i.e., the
+    Tasker actually addressed something.
+
+    Errors are logged and propagated as False (the caller decides what to
+    do with a failed iterate; today: stop iterating and keep the last
+    panel verdict).
+    """
+    if not panel.blocking_findings:
+        # Defensive: caller should only invoke when panel.is_approve is
+        # False, but a panel can block on PARSE_FAILED / CHANGES_REQUESTED
+        # without blocking_findings. In that case there's nothing concrete
+        # to ask the Tasker to fix; skip iterating.
+        _log(log_path,
+             f"  {snap.key} panel block without blocking findings — "
+             f"skipping iterate (no concrete fixes to propose)")
+        return False
+
+    findings_block = _render_findings_for_iterate_prompt(panel)
+    iter_prompt = _PANEL_ITERATE_PROMPT_PREFIX.format(
+        n_findings=len(panel.blocking_findings),
+        panel_summary=panel.summary,
+        findings_block=findings_block,
+        task_key=snap.key,
+        iteration_n=cfg.cross_family_panel_iterate - iterations_left + 1,
+        iterations_left=iterations_left - 1,
+    )
+    iter_prompt += spawn_mod.build_prompt(
+        task_key=snap.key,
+        task_summary=snap.summary,
+        task_type=snap.type,
+        task_labels=snap.labels,
+        task_description=snap.description,
+        branch=wt.branch,
+        summary_path=summary_path,
+        run_id=cfg.run_id,
+        max_iterations=cfg.max_iterations,
+        financial_paths=cfg.financial_paths,
+        skip_design=cfg.skip_design,
+        skip_security_linter=cfg.skip_security_linter,
+        reviewer_count=cfg.reviewer_count,
+    )
+    extra = list(cfg.claude_extra_args)
+    if snap.model:
+        extra.extend(["--model", snap.model])
+
+    # Snapshot feat HEAD AND base_branch tip BEFORE the iterate spawn.
+    # The "did the iterate actually produce a commit?" check needs to
+    # compare against feat-before-iterate, NOT base — the initial spawn
+    # already produced commits on feat, so `base..HEAD > 0` is true
+    # regardless of whether this iteration added anything.
+    feat_sha_before_iter = _branch_sha(repo_root, wt.branch, log_path, snap.key)
+    base_sha_before_iter = _branch_sha(repo_root, cfg.base_branch, log_path, snap.key)
+
+    try:
+        result = spawn_mod.spawn_claude(
+            claude_bin=cfg.claude_bin, cwd=wt.path, env=env, prompt=iter_prompt,
+            extra_args=extra,
+        )
+    except Exception as e:
+        _log(log_path, f"  {snap.key} panel-iterate spawn failed: {e}")
+        return False
+
+    _log(log_path,
+         f"  {snap.key} panel-iterate spawn exit={result.exit_code}")
+    if result.exit_code != 0:
+        return False
+
+    # Did this iterate produce a new commit on feat OR advance base
+    # (direct-to-base workflow)? Either counts as "Tasker did something".
+    # If neither — no-op iterate; re-running the panel on the same diff
+    # will produce the same verdict, so short-circuit.
+    feat_sha_after = _branch_sha(repo_root, wt.branch, log_path, snap.key)
+    base_sha_after = _branch_sha(repo_root, cfg.base_branch, log_path, snap.key)
+    feat_advanced = (
+        feat_sha_before_iter and feat_sha_after
+        and feat_sha_before_iter != feat_sha_after
+    )
+    base_advanced = (
+        base_sha_before_iter and base_sha_after
+        and base_sha_before_iter != base_sha_after
+    )
+    if not (feat_advanced or base_advanced):
+        _log(log_path,
+             f"  {snap.key} panel-iterate produced no new commits; "
+             f"treating as no-op iteration")
+        return False
+    return True
+
+
+def _render_findings_for_iterate_prompt(panel: cfr_mod.PanelVerdict) -> str:
+    """Format blocking findings as a numbered, scannable block for the
+    Tasker's corrective prompt. Distinct from
+    `cfr_mod.render_findings_markdown` (which is human-readable for
+    summary.md); this format is instruction-shaped for an LLM.
+    """
+    lines: list[str] = []
+    for i, f in enumerate(panel.blocking_findings, 1):
+        lines.append(
+            f"{i}. **{f.severity.value}** at `{f.location}`"
+        )
+        if f.description:
+            # Indent description so the Tasker reads it as part of the
+            # bullet, not a new section.
+            for ln in f.description.splitlines():
+                lines.append(f"   {ln}")
+        if f.fix:
+            lines.append(f"   *Fix:* {f.fix}")
+        lines.append("")  # blank line between findings
+    return "\n".join(lines).rstrip()
 
 
 # Hook for tests to inject stub reviewers without subclassing or
@@ -724,6 +885,44 @@ def _has_commits_on_branch(wt: wt_mod.Worktree, base_branch: str,
              f"({advance_count} commit(s))")
         return True
     return False
+
+
+_PANEL_ITERATE_PROMPT_PREFIX = """\
+A cross-family review panel (three independent reviewers, one each from
+Claude, Gemini, and Codex) found {n_findings} blocking finding(s) on the
+work you already committed on this branch. Your job is to address ONLY
+the findings below. DO NOT redo the implementation. DO NOT re-investigate
+the requirements.
+
+Panel verdict: {panel_summary}
+
+Blocking findings (CRITICAL and HIGH only — MEDIUM/LOW are informational):
+
+{findings_block}
+
+Steps:
+1. For each finding, locate the cited `file:line` and apply the suggested
+   Fix. If you disagree with the Fix, apply the spirit of the finding
+   (the underlying defect the reviewer identified) and add a short
+   "Panel iteration note" subsection to $SUMMARY_PATH explaining your
+   decision. DO NOT silently skip a finding.
+2. Run / update tests for any code path you change. If a finding is
+   specifically about test quality (a vacuous test, a tautology, a
+   missing edge case), the fix is the test itself — write a test that
+   would fail under the defect the reviewer described.
+3. `git add` the modified files. Commit:
+   `git commit -m "fix(<scope>): [{task_key}] address cross-family panel findings"`.
+   (Conventional-commit format per CLAUDE.md. No author attribution.)
+4. Append a "Panel iteration {iteration_n}" section to $SUMMARY_PATH
+   summarising what changed for each finding. Status stays Done.
+
+The dispatcher will re-run the panel against your updated diff. If the
+panel still raises blocking findings, this corrective cycle may repeat
+up to {iterations_left} more time(s) before the task is marked Blocked
+for human triage.
+
+Task context for reference (DO NOT redo):
+"""
 
 
 _COMMIT_RETRY_PROMPT_PREFIX = """\
@@ -930,6 +1129,9 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
         cross_family_panel_timeout=getattr(
             args, "cross_family_panel_timeout",
             cfr_mod.DEFAULT_REVIEWER_TIMEOUT_SECONDS,
+        ),
+        cross_family_panel_iterate=getattr(
+            args, "cross_family_panel_iterate", 0,
         ),
     )
 

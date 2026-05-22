@@ -166,6 +166,22 @@ def build_parser() -> argparse.ArgumentParser:
             "on timeout (treated as 'incomplete' panel — does not approve)."
         ),
     )
+    run.add_argument(
+        "--cross-family-panel-iterate",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "When the cross-family panel returns block, re-spawn the Tasker "
+            "with the blocking findings as a corrective prompt and re-run "
+            "the panel against the new diff. Up to N iterations before "
+            "giving up and marking Blocked for human triage. Default: 0 "
+            "(no iterate — block goes straight to Blocked status). Each "
+            "iteration is one extra Tasker spawn + one extra panel run. "
+            "Always fires on any block regardless of severity or vote "
+            "split; no CRITICAL or single-dissenter gating."
+        ),
+    )
     run.set_defaults(func=run_cmd.execute)
 
     # --- status ------------------------------------------------------------

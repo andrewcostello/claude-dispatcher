@@ -63,6 +63,7 @@ dispatcher run <tasks-yaml> [options]
   --gh-bin NAME                             default: gh
   --cross-family-panel {auto,always,never}   default: auto — see Cross-family panel below
   --cross-family-panel-timeout SECONDS      default: 600 — per-reviewer wall-clock budget
+  --cross-family-panel-iterate N            default: 0 — on block, re-spawn Tasker with findings up to N times
 
 dispatcher status <run-id>                  current state of a run            (not yet implemented)
 dispatcher resume <run-id>                  pick up an interrupted run        (not yet implemented)
@@ -162,6 +163,29 @@ with the prompt on stdin; Codex uses `exec --full-auto
 compatibility with historical panel records even though the CLI binary
 is `agy`. Per-reviewer timeout defaults to 10 min
 (`--cross-family-panel-timeout`).
+
+**Iterate on block (optional)**
+
+`--cross-family-panel-iterate N` (default `0`) makes the dispatcher
+re-spawn the Tasker with the panel's blocking findings as a corrective
+prompt when the panel returns `block`, then re-run the panel against the
+new diff. Up to `N` iterations before giving up and marking the task
+`Blocked` for human triage.
+
+Each iteration is one extra Tasker spawn + one extra panel run, so cost
+grows linearly with `N`. The iterate path fires on ANY panel block
+regardless of severity or vote split — no CRITICAL or single-dissenter
+gating. The Tasker is given the findings in the format the in-cycle
+reviewer feedback uses, with explicit instructions to address only the
+cited issues and not redo the implementation.
+
+If an iterate spawn exits cleanly but produces no new commit (the Tasker
+decided nothing needed changing, or got confused), the dispatcher
+short-circuits — re-running the panel on the same diff would produce
+the same verdict.
+
+YAML row gains `panel_iterations_used: N` so an auditor can see how many
+corrective cycles ran before the final verdict landed.
 
 **Retroactive validation**
 

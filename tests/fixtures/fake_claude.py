@@ -55,12 +55,29 @@ def main() -> int:
     #                           invocation (the retry) DOES commit. Tracked
     #                           via a sentinel file in the worktree.
     def _do_commit():
+        """Make a fresh commit on each invocation.
+
+        Uses a per-worktree counter so consecutive spawns (e.g., the
+        panel-iterate corrective spawn) produce distinct commits. Without
+        this, the second spawn would write the same content and `git
+        commit` would no-op, defeating tests that rely on iterate
+        actually producing new history.
+        """
         import subprocess
+        counter_path = Path(f".fake-claude-counter-{task_key}")
+        try:
+            n = int(counter_path.read_text()) + 1
+        except (OSError, ValueError):
+            n = 1
+        counter_path.write_text(str(n), encoding="utf-8")
         marker = Path(f"smoke-marker-{task_key}.txt")
-        marker.write_text(f"smoke marker for {task_key}\n", encoding="utf-8")
+        marker.write_text(
+            f"smoke marker for {task_key} #{n}\n", encoding="utf-8",
+        )
         subprocess.run(["git", "add", str(marker)], check=False, capture_output=True)
         subprocess.run(
-            ["git", "commit", "-m", f"feat(smoke): [{task_key}] simulated work"],
+            ["git", "commit", "-m",
+             f"feat(smoke): [{task_key}] simulated work #{n}"],
             check=False, capture_output=True,
         )
 
