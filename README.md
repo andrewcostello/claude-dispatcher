@@ -64,6 +64,9 @@ dispatcher run <tasks-yaml> [options]
   --cross-family-panel {auto,always,never}   default: auto — see Cross-family panel below
   --cross-family-panel-timeout SECONDS      default: 600 — per-reviewer wall-clock budget
   --cross-family-panel-iterate N            default: 0 — on block, re-spawn Tasker with findings up to N times
+  --ntfy-topic TOPIC                        push events to https://ntfy.sh/<topic>  (env: DISPATCHER_NTFY_TOPIC)
+  --ntfy-server URL                         self-hosted ntfy server                 (env: DISPATCHER_NTFY_SERVER)
+  --slack-webhook-url URL                   Slack incoming webhook URL              (env: DISPATCHER_SLACK_WEBHOOK)
 
 dispatcher status <run-id>                  current state of a run            (not yet implemented)
 dispatcher resume <run-id>                  pick up an interrupted run        (not yet implemented)
@@ -207,6 +210,58 @@ Exit codes: `0` on approve, `1` on block, `2` on incomplete (CI-gateable).
 `--family one` runs a single reviewer for prompt iteration.
 `--dry-run-with-stub-output FILE` substitutes the canned text for all
 three reviewers — exercises the parser without LLM calls.
+
+### Notifications (ntfy.sh / Slack)
+
+The dispatcher can push events to your phone or chat so you know when
+the run needs you, without watching the terminal. Four events fire:
+
+| Event | Urgency | When |
+|-------|---------|------|
+| `task_blocked` | default | Any task lands in `Blocked` (panel block, spawn failure, auto-integrate failure, malformed summary, etc.). One per task. |
+| `awaiting_pr_approval` | high | The Tasker parks at the Critical/financial-paths PR gate. Fires in both `supervised` and `unattended` modes — in unattended you also get the gate trip on your phone, then the task is left Blocked for sweep. |
+| `run_complete` | high if anything Blocked/Escalated, else default | One rollup at the end of the dispatch loop. Lists the first 10 blocked-task reasons inline. |
+| `worker_exception` | high | A worker thread raised something other than a task failure — i.e., the dispatcher itself errored. Should be rare. |
+
+Notifications carry a `click_url` pointing at a `file://` path (typically
+the per-task `summary.md` or the tasks YAML) so tapping the notification
+opens the relevant artefact.
+
+**ntfy.sh** is the lowest-friction sink — no account, no API key. Install
+the ntfy app, subscribe to a topic name only you know, and pass that
+topic to the dispatcher:
+
+```bash
+# CLI flag
+dispatcher run tasks.yaml --ntfy-topic andrew-dispatcher-3a7b
+
+# Or env var (keeps the secret out of shell history)
+export DISPATCHER_NTFY_TOPIC=andrew-dispatcher-3a7b
+dispatcher run tasks.yaml
+```
+
+The topic IS the secret — pick something unguessable.
+
+**Slack incoming webhook** uses Block Kit for rich formatting (header,
+section, context block with tags + click URL). The webhook URL is the
+secret; prefer the env-var form:
+
+```bash
+export DISPATCHER_SLACK_WEBHOOK=https://hooks.slack.com/services/T0/B0/XXXX
+dispatcher run tasks.yaml
+```
+
+Both can be configured simultaneously — events fan out to all configured
+channels. Failures on one channel don't block the others. Channel
+failures are logged to stderr but never raise into the dispatch loop —
+the dispatcher's job is to dispatch tasks, not to deliver SMS.
+
+**Back-channel "approve from phone" is NOT supported yet.** Both ntfy and
+Slack allow interactive action buttons that POST to a URL, but that
+requires the dispatcher to run an HTTP listener with a public HTTPS
+endpoint. If your PR-approval gate fires often enough to make that worth
+building, file an issue — until then, notifications are one-way push and
+you walk back to the laptop for the supervised stdin gate.
 
 ### Unattended permission flags
 

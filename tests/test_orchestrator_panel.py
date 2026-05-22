@@ -603,3 +603,110 @@ def test_panel_runner_exception_marks_blocked_not_crash(repo: Path, monkeypatch)
     assert row["status"] == "Blocked"
     assert "cross_family_panel_error" in row.get("blocked_reason", "")
     assert "synthetic" in row.get("blocked_reason", "")
+
+
+# --- notifier integration ---------------------------------------------------
+
+
+def _install_recording_notifier(monkeypatch):
+    """Wrap orchestrator._build_config so the returned cfg has a
+    NullNotifier we can introspect. Returns the notifier instance.
+    """
+    from claude_dispatcher import notify
+
+    recording = notify.NullNotifier()
+    orig = orchestrator._build_config
+
+    def patched(args):
+        cfg = orig(args)
+        cfg.notifier = recording
+        return cfg
+
+    monkeypatch.setattr(orchestrator, "_build_config", patched)
+    return recording
+
+
+def test_notifier_fires_run_complete_on_clean_done(repo: Path, monkeypatch) -> None:
+    """A clean run (all tasks Done) fires one run-complete notification.
+    No task-blocked or worker-exception events for this happy path.
+    """
+    _seed_yaml(repo, _CRITICAL_TASK_YAML)
+    _patch_spawn(monkeypatch)
+    _set_reviewers(monkeypatch, [
+        ("claude", _APPROVE_OUTPUT),
+        ("gemini", _APPROVE_OUTPUT),
+        ("codex", _APPROVE_OUTPUT),
+    ])
+    recording = _install_recording_notifier(monkeypatch)
+
+    rc = orchestrator.execute(_args(repo, key="PANEL-A", panel_mode="auto"))
+    assert rc == 0
+
+    titles = [n.title for n in recording.sent]
+    # Exactly one event: run complete.
+    assert len(titles) == 1
+    assert "run complete" in titles[0]
+    rc_note = recording.sent[0]
+    assert "1 done" in rc_note.title
+    assert rc_note.urgency == "default"  # clean run = default urgency
+
+
+def test_notifier_fires_task_blocked_and_run_complete(repo: Path, monkeypatch) -> None:
+    """Panel block → task_blocked notification AND run_complete rollup
+    listing the blocked task with its reason.
+    """
+    _seed_yaml(repo, _CRITICAL_TASK_YAML)
+    _patch_spawn(monkeypatch)
+    _set_reviewers(monkeypatch, [
+        ("claude", _APPROVE_OUTPUT),
+        ("gemini", _APPROVE_OUTPUT),
+        ("codex", _CHANGES_REQUESTED_OUTPUT),
+    ])
+    recording = _install_recording_notifier(monkeypatch)
+
+    rc = orchestrator.execute(_args(repo, key="PANEL-A", panel_mode="auto"))
+    assert rc == 1
+
+    titles = [n.title for n in recording.sent]
+    # task_blocked event for PANEL-A + run_complete rollup.
+    assert any("Blocked" in t for t in titles)
+    assert any("run complete" in t for t in titles)
+    blocked_note = next(n for n in recording.sent if "Blocked" in n.title)
+    assert "PANEL-A" in blocked_note.title
+    assert "cross_family_panel" in blocked_note.body
+    assert blocked_note.click_url is not None
+    rc_note = next(n for n in recording.sent if "run complete" in n.title)
+    assert rc_note.urgency == "high"  # has blocked tasks
+    assert "PANEL-A" in rc_note.body
+
+
+def test_notifier_fires_awaiting_pr_approval_in_unattended(repo: Path, monkeypatch) -> None:
+    """When the Tasker parks awaiting human PR approval, the notification
+    fires regardless of mode (we want to wake up the human via phone
+    even in unattended).
+    """
+    _seed_yaml(repo, _CRITICAL_TASK_YAML)
+    monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "awaiting-human-pr")
+    _patch_spawn(monkeypatch)
+    # No reviewers — panel won't fire because PR-gate path Blocks first.
+    recording = _install_recording_notifier(monkeypatch)
+
+    rc = orchestrator.execute(_args(repo, key="PANEL-A", panel_mode="never"))
+    assert rc == 1
+    titles = [n.title for n in recording.sent]
+    assert any("awaiting PR approval" in t for t in titles)
+    pr_note = next(n for n in recording.sent if "awaiting PR approval" in n.title)
+    assert pr_note.urgency == "high"
+    assert "PANEL-A" in pr_note.title
+
+
+def test_notifier_no_op_when_no_channel_configured(repo: Path, monkeypatch) -> None:
+    """Default RunConfig has NullNotifier; events are recorded but no
+    network calls happen. (We verify this end-to-end by NOT installing
+    the recording notifier and checking the dispatcher exits clean.)
+    """
+    _seed_yaml(repo, _LOW_RISK_TASK_YAML)
+    _patch_spawn(monkeypatch)
+    # No reviewer override → panel skipped on low-risk.
+    rc = orchestrator.execute(_args(repo, key="PANEL-B", panel_mode="auto"))
+    assert rc == 0  # silent success path

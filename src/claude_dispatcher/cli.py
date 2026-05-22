@@ -182,6 +182,38 @@ def build_parser() -> argparse.ArgumentParser:
             "split; no CRITICAL or single-dissenter gating."
         ),
     )
+    run.add_argument(
+        "--ntfy-topic",
+        default=None,
+        metavar="TOPIC",
+        help=(
+            "ntfy.sh topic to push notifications to. Install the ntfy "
+            "phone app and subscribe to the same topic to get pushed "
+            "events: per-task Blocked, awaiting-human-approval gate, "
+            "run-complete rollup, dispatcher worker exception. The topic "
+            "IS the secret — pick something unguessable. Env var "
+            "fallback: DISPATCHER_NTFY_TOPIC."
+        ),
+    )
+    run.add_argument(
+        "--ntfy-server",
+        default=None,
+        metavar="URL",
+        help=(
+            "Self-hosted ntfy server base URL. Defaults to "
+            "https://ntfy.sh. Env var fallback: DISPATCHER_NTFY_SERVER."
+        ),
+    )
+    run.add_argument(
+        "--slack-webhook-url",
+        default=None,
+        metavar="URL",
+        help=(
+            "Slack incoming-webhook URL. The URL IS the secret — prefer "
+            "the env-var form to keep it out of argv / shell history. "
+            "Env var fallback: DISPATCHER_SLACK_WEBHOOK."
+        ),
+    )
     run.set_defaults(func=run_cmd.execute)
 
     # --- status ------------------------------------------------------------

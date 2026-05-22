@@ -32,6 +32,7 @@ from typing import Any
 
 from . import auto_integrate as ai_mod
 from . import cross_family_reviewer as cfr_mod
+from . import notify as notify_mod
 from . import plan as plan_mod
 from . import pr as pr_mod
 from . import spawn as spawn_mod
@@ -118,6 +119,10 @@ class RunConfig:
     # stamped on the YAML row is from the FINAL run (which may be approve
     # if the Tasker successfully addressed the findings).
     cross_family_panel_iterate: int = 0
+    # Notification channels for human-attention events. Built once at
+    # execute() time from CLI flags + env vars; injected into _run_task
+    # via this slot so tests can substitute a recording stub.
+    notifier: notify_mod.Notifier = field(default_factory=notify_mod.NullNotifier)
 
 
 @dataclass
@@ -203,15 +208,45 @@ def execute(args: argparse.Namespace) -> int:
                     fut.result()  # propagate exceptions
                 except Exception as e:
                     _log(log_path, f"  worker {key} raised: {e}")
+                    # Notify on a dispatcher-internal error before
+                    # stamping Blocked (separate channel from a normal
+                    # task failure — see notify.worker_exception_*).
+                    try:
+                        cfg.notifier.send(notify_mod.worker_exception_notification(
+                            task_key=key,
+                            run_id=cfg.run_id,
+                            exception_repr=repr(e),
+                            tasks_yaml=str(cfg.tasks_path),
+                        ))
+                    except Exception:
+                        pass
                     try:
                         _mark_blocked(cfg, key, reason=f"worker_exception: {e}")
                     except Exception as mark_err:
                         _log(log_path, f"  worker {key} _mark_blocked itself raised: {mark_err}")
 
     tasks = _load_tasks_snapshot(cfg)
+    done_tasks = [t for t in tasks if t.status == plan_mod.DONE]
     blocked = [t for t in tasks if t.status == plan_mod.BLOCKED]
     escalated = [t for t in tasks if t.status == plan_mod.ESCALATED]
     _log(log_path, f"end run blocked={len(blocked)} escalated={len(escalated)}")
+    # Run-complete rollup notification. Always fires (including on clean
+    # runs — knowing the run finished is signal). Best-effort.
+    try:
+        blocked_rollup = [
+            (t.key, str(t.raw.get("blocked_reason") or "unknown"))
+            for t in blocked + escalated
+        ]
+        cfg.notifier.send(notify_mod.run_complete_notification(
+            run_id=cfg.run_id,
+            done=len(done_tasks),
+            blocked=len(blocked),
+            escalated=len(escalated),
+            blocked_rollup=blocked_rollup,
+            tasks_yaml=str(cfg.tasks_path),
+        ))
+    except Exception:
+        pass
     return 1 if (blocked or escalated) else 0
 
 
@@ -523,6 +558,26 @@ def _run_task(
             row["model"] = u.model
 
     _mutate_row(cfg, snap.key, _apply)
+
+    # If the final status is Blocked (panel block, auto-integrate fail,
+    # awaiting-PR-in-unattended-mode), fire the task-blocked notification
+    # here. Early-return Blocked paths (spawn failures, summary missing)
+    # notify via _mark_blocked instead — the two paths are disjoint, so
+    # exactly one notification fires per Blocked outcome.
+    if final_status == plan_mod.BLOCKED:
+        try:
+            cfg.notifier.send(notify_mod.task_blocked_notification(
+                task_key=snap.key,
+                summary=snap.summary,
+                reason=final_blocked_reason or "blocked",
+                run_id=cfg.run_id,
+                summary_path=str(result.summary_path)
+                    if result.summary_path.exists() else None,
+                tasks_yaml=str(cfg.tasks_path),
+            ))
+        except Exception:
+            pass
+
     return final_status
 
 
@@ -1020,6 +1075,21 @@ def _resolve_summary(
     if not s.awaiting_human_approval:
         return s.status or plan_mod.BLOCKED, None, None
 
+    # PR-gate event: notify here so the human sees the gate trip on
+    # their phone whether the dispatcher proceeds to stdin (supervised)
+    # or parks the task Blocked (unattended). Best-effort.
+    try:
+        cfg.notifier.send(notify_mod.awaiting_pr_approval_notification(
+            task_key=snap.key,
+            summary=snap.summary,
+            pr_title=s.prepared_pr_title,
+            pr_branch=s.prepared_pr_branch,
+            run_id=cfg.run_id,
+            summary_path=None,  # _resolve_summary doesn't have summary_path
+        ))
+    except Exception:
+        pass
+
     # Awaiting human PR approval.
     if cfg.mode == "unattended":
         _log(log_path, f"  {snap.key} awaiting human PR approval — left Blocked")
@@ -1090,12 +1160,35 @@ def _mark_in_progress(cfg: RunConfig, snap: TaskSnapshot, run_dir: Path) -> None
 
 
 def _mark_blocked(cfg: RunConfig, task_key: str, *, reason: str) -> None:
+    summary_for_notify = {"summary": "", "summary_path": None}
+
     def _apply(row):
         row["status"] = plan_mod.BLOCKED
         row["completed_at"] = _now_iso()
         row["blocked_reason"] = reason
+        # Capture for the post-write notification.
+        summary_for_notify["summary"] = str(row.get("summary") or "")
+        sp = row.get("summary_path")
+        if sp:
+            summary_for_notify["summary_path"] = str(sp)
 
     _mutate_row(cfg, task_key, _apply)
+    # Best-effort notification. Failures are swallowed inside the
+    # Notifier — never let a flaky webhook break the dispatch loop.
+    try:
+        cfg.notifier.send(notify_mod.task_blocked_notification(
+            task_key=task_key,
+            summary=summary_for_notify["summary"],
+            reason=reason,
+            run_id=cfg.run_id,
+            summary_path=summary_for_notify["summary_path"],
+            tasks_yaml=str(cfg.tasks_path),
+        ))
+    except Exception:
+        # Last-resort guard against a notifier that bypassed its own
+        # try/except. We do NOT want to convert a Blocked-state stamp
+        # into a dispatcher crash on a notification bug.
+        pass
 
 
 # --- misc helpers -----------------------------------------------------------
@@ -1132,6 +1225,11 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
         ),
         cross_family_panel_iterate=getattr(
             args, "cross_family_panel_iterate", 0,
+        ),
+        notifier=notify_mod.build_notifier_from_env(
+            cli_ntfy_topic=getattr(args, "ntfy_topic", None),
+            cli_ntfy_server=getattr(args, "ntfy_server", None),
+            cli_slack_webhook=getattr(args, "slack_webhook_url", None),
         ),
     )
 
