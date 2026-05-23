@@ -251,6 +251,11 @@ export DISPATCHER_SLACK_WEBHOOK=https://hooks.slack.com/services/T0/B0/XXXX
 dispatcher run tasks.yaml
 ```
 
+A ready-to-paste Slack app manifest is bundled at
+[`docs/slack-app-manifest.json`](docs/slack-app-manifest.json); see
+[`docs/slack-app-setup.md`](docs/slack-app-setup.md) for the 4-step
+walkthrough.
+
 Both can be configured simultaneously — events fan out to all configured
 channels. Failures on one channel don't block the others. Channel
 failures are logged to stderr but never raise into the dispatch loop —

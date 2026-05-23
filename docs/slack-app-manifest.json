@@ -1,0 +1,32 @@
+{
+    "display_information": {
+        "name": "Claude Dispatcher Notifier",
+        "description": "Push notifications from claude-dispatcher dispatch loops",
+        "background_color": "#1F2937",
+        "long_description": "Pushes events from the claude-dispatcher dispatch loop into a Slack channel of your choice so a human can know when the run needs them, without watching the terminal.\n\nFour event types fire:\n\n• task_blocked (default urgency) — any task lands in Blocked status. Causes include the cross-family review panel blocking after the iterate budget is exhausted, the in-cycle Tasker spawn failing, the auto-integrate step hitting a merge conflict or build failure, the task's summary.md being malformed or missing, the task hitting its iteration cap, or the cross-family panel framework itself raising an unhandled error. The notification body carries the task key, the human-readable summary, the run id, the blocked_reason text, and a file:// URL pointing at the per-task summary.md so tapping the notification opens the relevant artefact for triage.\n\n• awaiting_pr_approval (high urgency) — the Tasker prepared a PR but the change is Critical-risk or touches one of the configured financial-paths globs, so the dispatcher parks at the human-gate checkpoint. Fires in both supervised mode (where you also get a stdin prompt at the terminal you launched from) and unattended mode (where the task is left Blocked with reason 'awaiting human PR approval' and the prepared PR title and branch stamped on the YAML row for later sweep). The notification carries the prepared PR title and branch so you can decide approve/reject/skip without opening the file.\n\n• run_complete (high urgency if anything is Blocked or Escalated, else default urgency) — one rollup notification at the end of the dispatch loop with Done / Blocked / Escalated counts. Includes the first ten blocked-reason lines inline so you can triage from the notification alone without opening the YAML. The click_url points at the tasks YAML.\n\n• worker_exception (high urgency) — a worker thread raised something other than a normal task failure, i.e., the dispatcher itself errored on this task. Should be rare; carries the exception repr in the body and points at the tasks YAML. The dispatcher will then attempt to stamp the task Blocked with reason 'worker_exception: <repr>' and continue with the rest of the run.\n\nThis app currently only uses incoming-webhook — strictly one-way push from the dispatcher into Slack. A future iteration may add interactive action buttons for approve/reject/skip of PR gates directly from the notification itself, which would require this app to gain the chat:write scope and the dispatcher to run an HTTP listener with a public HTTPS endpoint for Slack to POST interactivity events to. That listener path is not built yet."
+    },
+    "features": {
+        "bot_user": {
+            "display_name": "dispatcher",
+            "always_online": false
+        }
+    },
+    "oauth_config": {
+        "scopes": {
+            "bot": [
+                "incoming-webhook"
+            ]
+        }
+    },
+    "settings": {
+        "event_subscriptions": {
+            "bot_events": []
+        },
+        "interactivity": {
+            "is_enabled": false
+        },
+        "org_deploy_enabled": false,
+        "socket_mode_enabled": false,
+        "token_rotation_enabled": false
+    }
+}
