@@ -575,6 +575,29 @@ written without sight of the final implementation.**
   debt from this run: reconcile DISP-11's journal fork onto DISP-8/9's
   module; wire DISP-10's status to the real journal.
 
+**Run #3 (2026-06-10T20-26-55Z) + integration: 4/4 Done, blocked=0, $37.77,
+~100 min. All integration debt cleared; journal chain cryptographically
+verified (ok=True, 19 events) using the module the run was built to deploy.**
+- INT-1 superseded held PR #10 (closed with disposition); INT-2/INT-3/INT-4
+  landed `status`-from-journal, push verification, and the dispatch-time
+  dependency rule. All four Taskers pushed + raised PRs unprompted.
+- INT-4 exceeded spec: found and fixed a subtle interaction (merged
+  dependency commits masking forgot-to-commit; `feat_baseline_sha`), and
+  spawned its own adversarial review subagent — 1 MEDIUM found and fixed
+  in-task. Self-arranged review prefigures the Phase 4/8 gates.
+- Integration conflicts were all INT-1's `_run_loop` refactor vs siblings:
+  field unions in status (needs_push + journal enrichment) and one real port
+  (worker-side task_started into the refactored loop; `blocked_by` snapshot
+  field initially lost in resolution — caught by INT-4's own test, the
+  fixture suite doing exactly its job).
+- **Open dispositions (no-deferral) — INT-4's review LOWs, for Andrew:**
+  (1) non-conflict merge failures report reason `dependency_merge_conflict`
+  with git stderr attached — imprecise label, proposed: fix task in next
+  run; (2) `--no-ff` dependency merges create merge commits the Tasker
+  didn't author — proposed: accept (auditability rationale, per reviewer).
+- `resume` declines pre-run_config runs by design (genesis lacks
+  `run_config` before INT-1); all future runs are resumable.
+
 ## Open questions — resolutions (2026-06-10)
 
 1. **Per-repo e2e provisioning** — RESOLVED: per repo. Each repo owns its

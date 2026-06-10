@@ -38,7 +38,26 @@ tasks:
     type: Task
     estimate: 3h
     labels: [size:M, area:cli, area:journal, phase:1]
+    status: Done
+    started_at: '2026-06-10T13:26:55-07:00'
+    dispatcher_run_id: 2026-06-10T20-26-55Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-10T20-26-55Z-tasks/INT-1/summary.md
 
+    branch: feat/INT-1-reconcile-dispatcher-resume-onto-the
+    completed_at: '2026-06-10T13:48:13-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 5
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/13
+    cost_usd: 11.278888500000004
+    input_tokens: 14496
+    output_tokens: 81075
+    cache_read_input_tokens: 10933151
+    cache_creation_input_tokens: 190052
+    duration_ms: 1277276
+    num_turns: 78
+    model: claude-opus-4-8[1m]
   - key: INT-2
     summary: "Wire `dispatcher status` to the journal (liveness + event data)"
     description: |
@@ -61,7 +80,27 @@ tasks:
     type: Task
     estimate: 2h
     labels: [size:S, area:cli, area:journal, phase:1]
+    status: Done
+    started_at: '2026-06-10T13:26:55-07:00'
+    dispatcher_run_id: 2026-06-10T20-26-55Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-10T20-26-55Z-tasks/INT-2/summary.md
 
+    branch: feat/INT-2-wire-dispatcher-status-to-the
+    completed_at: '2026-06-10T13:39:00-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    final_quality_score: 24
+    human_gate_fired: false
+    deferred_findings_count: 2
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/12
+    cost_usd: 6.0150099999999975
+    input_tokens: 14216
+    output_tokens: 44266
+    cache_read_input_tokens: 6515561
+    cache_creation_input_tokens: 122754
+    duration_ms: 723525
+    num_turns: 66
+    model: claude-opus-4-8[1m]
   - key: INT-3
     summary: "Post-Done push/PR verification (DISP-9 forgot to push)"
     description: |
@@ -85,7 +124,26 @@ tasks:
     type: Task
     estimate: 3h
     labels: [size:M, area:orchestrator, phase:0]
+    status: Done
+    started_at: '2026-06-10T13:26:55-07:00'
+    dispatcher_run_id: 2026-06-10T20-26-55Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-10T20-26-55Z-tasks/INT-3/summary.md
 
+    branch: feat/INT-3-post-done-push-pr-verification
+    completed_at: '2026-06-10T13:48:24-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 2
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/14
+    cost_usd: 11.626929749999999
+    input_tokens: 14915
+    output_tokens: 80321
+    cache_read_input_tokens: 14488708
+    cache_creation_input_tokens: 194874
+    duration_ms: 1287193
+    num_turns: 95
+    model: claude-opus-4-8[1m]
   - key: INT-4
     summary: "Dispatch-time dependency rule: dependents branch from base + blockedBy branches"
     description: |
@@ -115,3 +173,22 @@ tasks:
     estimate: 4h
     labels: [size:M, area:orchestrator, area:worktree, phase:3]
     blockedBy: [INT-3]
+    status: Done
+    started_at: '2026-06-10T13:48:24-07:00'
+    dispatcher_run_id: 2026-06-10T20-26-55Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-10T20-26-55Z-tasks/INT-4/summary.md
+    branch: feat/INT-4-dispatch-time-dependency-rule-dependents
+    completed_at: '2026-06-10T14:07:52-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 2
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/15
+    cost_usd: 8.845751750000003
+    input_tokens: 14206
+    output_tokens: 78414
+    cache_read_input_tokens: 9271371
+    cache_creation_input_tokens: 196305
+    duration_ms: 1167334
+    num_turns: 61
+    model: claude-opus-4-8[1m]
