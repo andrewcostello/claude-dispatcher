@@ -102,18 +102,24 @@ dispatcher forecast-sync <tasks-yaml> [--dry-run]
 ### Run status
 
 `dispatcher status <run-id>` reconstructs the live (or finished) state of a run
-from two artifacts the orchestrator already maintains — there is no separate
-event-journal subsystem yet:
+from the artifacts the orchestrator maintains:
 
 - the **tasks YAML**, the authoritative per-task state (status, `started_at`/
   `completed_at`, `model`, `cost_usd`, `iteration_count`, `blocked_reason`,
-  `pr_url`, …), and
-- the run's **`run.log`**, the append-only event log, used for *liveness*: the
-  age of the last logged event tells you whether the run is still moving.
+  `pr_url`, …),
+- the run's **`journal.jsonl`** (the hash-chained [event journal](docs/journal-format.md)),
+  the *preferred* liveness source — the age of its last event tells you whether
+  the run is still moving — and the source of each task's `journal` enrichment
+  block (spawn token usage, panel verdicts), and
+- the run's legacy **`run.log`**, used as a *fallback* liveness source for
+  pre-journal runs whose directory predates the journal. When liveness comes
+  from `run.log`, `liveness.source` is `"run.log"` so the reading is labeled as
+  the fallback.
 
 It is read-only and mid-run-safe — it never touches the YAML or worktrees, and
-tolerates a partially-written final `run.log` line (a live run may be appending
-as you read).
+parses the journal leniently (a torn/partial final line on a live run is skipped,
+never an error; for chain integrity use `journal.verify`), as well as tolerating
+a partially-written final `run.log` line.
 
 ```bash
 # Human-readable table
@@ -127,10 +133,13 @@ The YAML is normally auto-discovered from the run's summary files. For a fresh
 run that has no summaries yet, pass `--tasks-yaml PATH` explicitly.
 
 The `--json` document carries `run_id`, `current_wave` / `wave_count`,
-`run_complete`, a `liveness` block (`last_event_at`, `last_event_age_seconds`,
-`last_event`), a `totals` block (`by_status` counts, `run_cost_usd`,
-`tasks_billed`), and a key-sorted `tasks` array with each task's per-run state
-and dependency `wave`.
+`run_complete`, a `liveness` block (`source` — `"journal"`/`"run.log"`/`null` —
+`journal_present`, `run_log_present`, `last_event_at`, `last_event_age_seconds`,
+`last_event`, plus `last_event_type`/`last_event_seq` when sourced from the
+journal), a `totals` block (`by_status` counts, `run_cost_usd`, `tasks_billed`),
+and a key-sorted `tasks` array with each task's per-run state, dependency `wave`,
+and a `journal` enrichment block (spawn token usage + last panel verdict, or
+`null` on pre-journal runs / tasks with no events yet).
 
 ### Forecast bridge (optional)
 
@@ -519,10 +528,14 @@ $ dispatcher status 2026-06-10T18-24-47Z-tasks --json
   "current_wave": 4,
   "wave_count": 4,
   "liveness": {
+    "source": "journal",
+    "journal_present": true,
     "run_log_present": true,
     "last_event_at": "2026-06-10T12:24:53-07:00",
     "last_event_age_seconds": 268.722,
-    "last_event": "DISP-12 worktree at ..."
+    "last_event": "task_spawn_finished (DISP-12)",
+    "last_event_type": "task_spawn_finished",
+    "last_event_seq": 37
   },
   "totals": {
     "task_count": 12,
@@ -543,9 +556,16 @@ $ dispatcher status 2026-06-10T18-24-47Z-tasks --json
       "iteration_count": 1,
       "blocked_reason": null,
       "pr_url": "https://github.com/.../pull/1",
-      "dispatcher_run_id": "2026-06-10T18-24-47Z-tasks"
+      "dispatcher_run_id": "2026-06-10T18-24-47Z-tasks",
+      "journal": {
+        "spawn": { "input_tokens": 81000, "output_tokens": 12400,
+                   "cache_read_input_tokens": 600000, "cache_creation_input_tokens": 9000,
+                   "duration_ms": 358000, "num_turns": 24 },
+        "panel": { "consensus": "approve", "blocking_findings": 0,
+                   "verdicts": { "claude": "approve", "codex": "approve", "gemini": "approve" } }
+      }
     }
-    // ... one object per task, key-sorted
+    // ... one object per task, key-sorted; "journal" is null on pre-journal runs
   ]
 }
 ```
