@@ -68,9 +68,18 @@ dispatcher run <tasks-yaml> [options]
   --ntfy-server URL                         self-hosted ntfy server                 (env: DISPATCHER_NTFY_SERVER)
   --slack-webhook-url URL                   Slack incoming webhook URL              (env: DISPATCHER_SLACK_WEBHOOK)
 
-dispatcher status <run-id>                  current state of a run            (not yet implemented)
-dispatcher resume <run-id>                  pick up an interrupted run        (not yet implemented)
-dispatcher report <run-id>                  summary of completed tasks         (not yet implemented)
+dispatcher status <run-id> [--json] [--tasks-yaml PATH] [--runs-dir PATH]
+                                            Current state of a run: per-task state,
+                                            current wave, totals, cost so far, and run
+                                            liveness. Mid-run-safe. --json emits the
+                                            structured document. See "Observing a run".
+dispatcher resume <run-id> [--strategy {continue,mark-blocked}] [--force] [--runs-dir PATH]
+                                            Pick up an interrupted run from its journal —
+                                            re-dispatch in-flight tasks, leave terminal
+                                            rows untouched. See "Resume".
+dispatcher report <run-id>                  Quality dashboard for a run: counts, per-task
+                                            gate fields, concerning-tasks highlights, and
+                                            the per-reviewer/per-dimension breakdown.
 
 dispatcher forecast-create <tasks-yaml> [--dry-run]
                                             For each row with no `jira_key`, run `forecast jira
@@ -425,6 +434,168 @@ Worktrees on `Done` are left for `git worktree remove` (or housekeeping cron) to
 
 ---
 
+## Observing a run
+
+A run is observable two ways: **`dispatcher status`** for point-in-time state,
+and the per-run **event journal** for the append-only event stream. Both are
+read-only and mid-run-safe — they never touch the YAML or the worktrees, and
+tolerate a partially-written file on a live run.
+
+### `dispatcher status`
+
+`status <run-id>` reconstructs run state from the tasks YAML (authoritative
+per-task state) and the run's `run.log` (for liveness — the age of the last
+logged event tells you whether the run is still moving). It prints a
+human-readable table by default:
+
+```
+$ dispatcher status 2026-06-10T18-24-47Z-tasks
+========================================================================================
+Dispatcher status — 2026-06-10T18-24-47Z-tasks
+  Tasks YAML:   /home/you/project/features/phase0-1/tasks.yaml
+  Generated at: 2026-06-10T12:29:17-07:00
+  Run complete: no    Current wave: 4 / 4
+  Liveness:     last event 2026-06-10T12:24:53-07:00 (265s ago) — DISP-12 worktree at ...
+========================================================================================
+
+Tasks (12):  To Do: 0  In Progress: 1  Done: 11  Blocked: 0  Escalated: 0
+Run cost:    $48.5504  across 11 billed task(s)
+
+  KEY              STATUS       WAVE      COST ITERS MODEL              NOTE
+  --------------------------------------------------------------------------
+  DISP-1           Done         1      $2.2895 1     claude-opus-4-8[1m] https://github.com/.../pull/1
+  DISP-11          Done         3      $6.5795 1     claude-opus-4-8[1m] https://github.com/.../pull/10
+  DISP-12          In Progress  4            — —     —
+  DISP-8           Done         1      $9.2351 1     claude-opus-4-8[1m] https://github.com/.../pull/8
+  ...
+```
+
+`--json` emits a machine-readable document instead — per-task rows plus run
+totals, dependency-wave position, and liveness:
+
+```
+$ dispatcher status 2026-06-10T18-24-47Z-tasks --json
+{
+  "run_id": "2026-06-10T18-24-47Z-tasks",
+  "tasks_yaml": "/home/you/project/features/phase0-1/tasks.yaml",
+  "generated_at": "2026-06-10T12:29:21-07:00",
+  "run_complete": false,
+  "current_wave": 4,
+  "wave_count": 4,
+  "liveness": {
+    "run_log_present": true,
+    "last_event_at": "2026-06-10T12:24:53-07:00",
+    "last_event_age_seconds": 268.722,
+    "last_event": "DISP-12 worktree at ..."
+  },
+  "totals": {
+    "task_count": 12,
+    "by_status": { "To Do": 0, "In Progress": 1, "Done": 11, "Blocked": 0, "Escalated": 0 },
+    "run_cost_usd": 48.550377,
+    "tasks_billed": 11
+  },
+  "tasks": [
+    {
+      "key": "DISP-1",
+      "summary": "auto_integrate: discover sqlc/buf via shutil.which + env override",
+      "status": "Done",
+      "wave": 1,
+      "started_at": "2026-06-10T11:24:47-07:00",
+      "completed_at": "2026-06-10T11:30:45-07:00",
+      "model": "claude-opus-4-8[1m]",
+      "cost_usd": 2.2894807,
+      "iteration_count": 1,
+      "blocked_reason": null,
+      "pr_url": "https://github.com/.../pull/1",
+      "dispatcher_run_id": "2026-06-10T18-24-47Z-tasks"
+    }
+    // ... one object per task, key-sorted
+  ]
+}
+```
+
+The full JSON schema is documented in `src/claude_dispatcher/status.py`. The
+tasks YAML is auto-discovered from the run's `summary.md` files; pass
+`--tasks-yaml PATH` for a fresh run that has no summaries to trace from yet.
+
+### Event journal
+
+Every run also writes an append-only, hash-chained **event journal** at
+`<runs-dir>/<run-id>/journal.jsonl` — one JSON object per line, fsync'd per
+event, covering all 14 lifecycle event types (`run_started` through
+`run_complete`). It is the run's tamper-evident audit trail and the supported
+event feed for external tools. The full specification — event types, field
+semantics, the hash-chain construction and verification algorithm, the genesis
+provenance fields, the single-writer rule, and the location convention — is in
+**[`docs/journal-format.md`](docs/journal-format.md)**, written to be complete
+enough to implement an independent reader from.
+
+To follow a live run:
+
+```bash
+tail -F docs/runs/<run-id>/journal.jsonl | jq -c '{seq, event_type, task_key}'
+```
+
+### Note for monitoring agents
+
+`dispatcher status --json` (point-in-time state) and tailing
+`journal.jsonl` (the event stream) are the **supported integration surface**
+for an external monitoring agent. Build against those two — not against the
+tasks YAML, `run.log`, or internal module APIs, which are implementation
+details that may change. Both observation paths are read-only, so a monitor
+can never perturb a run.
+
+---
+
+## Resume
+
+Every run writes the [event journal](#event-journal) described above; its
+`run_started` (genesis) event captures the run's configuration. If a run is
+interrupted — `kill -9`, a crashed host, a closed laptop — `dispatcher resume
+<run-id>` reconstructs it from that journal plus the current tasks YAML. You do
+not re-supply the YAML path; it comes from the genesis provenance.
+
+```bash
+# Resume a run by id (looks under --runs-dir, default docs/runs)
+dispatcher resume 2026-06-10T18-24-47Z-tasks
+
+# After a hard kill the journal may still look "fresh" — force past the guard
+dispatcher resume 2026-06-10T18-24-47Z-tasks --force
+```
+
+**Recovery rules:**
+
+| Row state at resume | Action |
+|---------------------|--------|
+| `In Progress` (interrupted spawn) | **Re-dispatched.** Reset to `To Do` so the loop re-spawns it fresh. The worktree is reused if it still exists (`git worktree add` is idempotent); a missing one is recreated. |
+| `Done` / `Blocked` / `Escalated` | **Untouched.** Terminal rows are never re-run. |
+| `To Do` not yet reached | Dispatched normally once its `blockedBy` deps are `Done`. |
+
+A resume appends a marker event linking back to the prior genesis, so the
+journal records that the run was picked up.
+
+**Liveness guard (`--force`).** Resuming a run that is *still running* would
+double-dispatch in-flight tasks. Before resuming, the dispatcher checks the age
+of the journal's most recent event; if it is too recent the run may still be
+live, and resume refuses (exit code 4) and points you at `--force`. A genuinely
+dead run stops emitting events, so its journal ages past the threshold and
+resumes without `--force`. Use `--force` only when you are certain the original
+process is gone.
+
+**Completed runs are a no-op.** If no rows are `In Progress` and nothing is left
+runnable, resume prints `Run <id> is already complete — nothing to resume (...)`
+and exits 0 without touching the YAML.
+
+**`--strategy`:**
+
+- `continue` *(default)* — reset interrupted `In Progress` rows to `To Do` and
+  re-dispatch them.
+- `mark-blocked` — write `Status: Blocked` for interrupted rows instead of
+  re-running them, then dispatch any remaining runnable tasks. Use this when you
+  want a human to inspect what an interrupted task was doing before it is retried.
+
+---
+
 ## Layout
 
 ```
@@ -442,9 +613,10 @@ src/claude_dispatcher/
 ├── cross_family_reviewer.py     # three-family review panel
 ├── reviewer_prompts/            # _shared.md + claude.md / gemini.md / codex.md
 ├── dispatch_plan.py             # dry-run report renderer
-├── status.py                    # `dispatcher status` (stubbed)
-├── resume.py                    # `dispatcher resume` (stubbed)
-└── report.py                    # `dispatcher report` (stubbed)
+├── journal.py                   # append-only hash-chained event journal (one JSONL/run)
+├── status.py                    # `dispatcher status` — run state, table or --json
+├── resume.py                    # `dispatcher resume` — recover an interrupted run
+└── report.py                    # `dispatcher report` — quality dashboard
 
 tools/
 └── cross_family_panel.py        # standalone runner for the review panel
@@ -461,7 +633,13 @@ tests/
 ├── test_orchestrator_panel.py  # cross-family panel integration
 ├── test_cross_family_reviewer.py  # panel parser + adapters + aggregation
 ├── test_supervised.py          # supervised approve / reject / skip
-└── test_concurrency.py         # --max-parallel overlap + YAML serialization
+├── test_concurrency.py         # --max-parallel overlap + YAML serialization
+├── test_journal.py             # journal: append / read / genesis / hash-chain verify
+├── test_orchestrator_journal.py # orchestrator emits every lifecycle event
+├── test_status.py              # status: table + --json, waves, liveness
+└── test_resume.py              # resume: no-op, liveness guard + --force, kill-9 recovery
 ```
 
-Run the suite: `.venv/bin/pytest -q`. As of the cross-family panel build: 182 tests, all green. Coverage on `cross_family_reviewer.py`: 93%.
+Run the suite: `.venv/bin/pytest -q`. The control-surface work (event journal,
+`status`, `resume`) added the dedicated suites above on top of the cross-family
+panel build.
