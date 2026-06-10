@@ -138,12 +138,96 @@ def test_invalid_status_marks_malformed() -> None:
     s = summary.parse_text(_summary_text("Garbage"))
     assert s.malformed is True
     assert "Status" in s.malformed_reason
+    # The specific reason names the invalid value and is mirrored into problems.
+    assert s.problems == [s.malformed_reason]
+    assert any("invalid status value" in p and "Garbage" in p for p in s.problems)
+
+
+def test_missing_status_line_marks_malformed() -> None:
+    """No `**Status:**` line at all is distinct from an invalid value."""
+    no_status = textwrap.dedent("""\
+        # SMOKE-A: trivial task
+
+        **Started:** 2026-05-18T09:15:00-07:00
+        **Completed:** 2026-05-18T09:17:00-07:00
+
+        ## What landed
+        Nothing.
+
+        ## PR
+        Not raised: low-risk dry run
+    """)
+    s = summary.parse_text(no_status)
+    assert s.malformed is True
+    assert any("missing Status line" in p for p in s.problems)
 
 
 def test_missing_file_marks_malformed(tmp_path) -> None:
     s = summary.parse(tmp_path / "does-not-exist.md")
     assert s.malformed is True
     assert "not found" in s.malformed_reason
+    assert any("not found" in p for p in s.problems)
+
+
+def test_unterminated_fence_marks_malformed() -> None:
+    """A dangling code fence (truncated/fence-confused file) is recorded."""
+    truncated = textwrap.dedent("""\
+        # SMOKE-A: trivial task
+
+        **Status:** Done
+        **Started:** 2026-05-18T09:15:00-07:00
+        **Completed:** 2026-05-18T09:17:00-07:00
+
+        ## PR
+        Prepared, awaiting human approval
+
+        ### Prepared PR
+        **Title:** fix(x): [SMG-1] thing
+        **Branch:** fix/SMG-1-thing
+        **Body:**
+        ```
+        ## What
+        Body got cut off before the closing fence
+    """)
+    s = summary.parse_text(truncated)
+    assert s.malformed is True
+    assert any("unterminated code fence" in p for p in s.problems)
+
+
+def test_unparseable_pr_section_marks_malformed() -> None:
+    """A PR section whose first line matches none of the known forms is flagged."""
+    s = summary.parse_text(_summary_text(
+        "Done",
+        pr_block="raised it somewhere, check slack",
+    ))
+    assert s.malformed is True
+    assert any("unparseable PR section" in p for p in s.problems)
+
+
+def test_awaiting_approval_missing_fields_marks_malformed() -> None:
+    """'Awaiting approval' without the prepared-PR metadata is unparseable."""
+    pr_block = textwrap.dedent("""\
+        Prepared, awaiting human approval
+
+        ### Prepared PR
+        **Title:** fix(wallet): [SMG-1657] add escrow state
+    """).rstrip()
+    s = summary.parse_text(_summary_text("Blocked", pr_block=pr_block, human_gate=True))
+    assert s.malformed is True
+    problem = next(p for p in s.problems if "awaiting human approval" in p)
+    assert "Branch" in problem and "Body" in problem
+
+
+def test_multiple_problems_recorded() -> None:
+    """All distinct problems accumulate; malformed_reason joins them."""
+    s = summary.parse_text(_summary_text(
+        "Garbage",
+        pr_block="totally unexpected pr line",
+    ))
+    assert len(s.problems) == 2
+    assert s.malformed_reason == "; ".join(s.problems)
+    assert any("invalid status value" in p for p in s.problems)
+    assert any("unparseable PR section" in p for p in s.problems)
 
 
 def test_score_not_reviewed_returns_none() -> None:

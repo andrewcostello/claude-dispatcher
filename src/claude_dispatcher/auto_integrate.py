@@ -24,6 +24,8 @@ Safety rails:
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,10 +34,32 @@ from typing import Callable
 from . import yaml_io
 
 
-# Hard-coded paths to the codegen toolchain. Override via the function args
-# if the dispatcher is deployed somewhere these aren't valid.
-DEFAULT_SQLC_BIN = "/home/andrew/go/bin/sqlc"
-DEFAULT_BUF_BIN = "/home/andrew/go/bin/buf"
+# Env vars that override codegen-binary discovery. Set these when the
+# toolchain lives somewhere shutil.which() can't find it.
+SQLC_BIN_ENV = "DISPATCHER_SQLC_BIN"
+BUF_BIN_ENV = "DISPATCHER_BUF_BIN"
+
+
+def _discover_bin(name: str, env_var: str) -> str:
+    """Resolve the path to a codegen binary.
+
+    Resolution order (no silent fallback — a missing binary is a hard error):
+      1. The env var override (`env_var`), if set and non-empty.
+      2. `shutil.which(name)` — the binary on PATH.
+      3. Otherwise raise RuntimeError naming the binary and both mechanisms.
+    """
+    override = os.environ.get(env_var)
+    if override:
+        return override
+    found = shutil.which(name)
+    if found:
+        return found
+    raise RuntimeError(
+        f"codegen binary {name!r} not found: set ${env_var} to its path, "
+        f"or make {name!r} available on PATH (looked it up via "
+        f"shutil.which({name!r})). No silent fallback — install the "
+        f"toolchain or set the override."
+    )
 
 # Go-module candidate directories. The auto-integrator only build-checks
 # directories that have a go.mod AND have been touched by the merge.
@@ -86,8 +110,8 @@ def integrate(
     log: Callable[[str], None],
     enabled: bool = True,
     lock_timeout_seconds: float = 30.0,
-    sqlc_bin: str = DEFAULT_SQLC_BIN,
-    buf_bin: str = DEFAULT_BUF_BIN,
+    sqlc_bin: str | None = None,
+    buf_bin: str | None = None,
 ) -> IntegrateResult:
     """Attempt to integrate `feat_branch` into `base_branch` in `repo_root`.
 
@@ -108,6 +132,11 @@ def integrate(
 
     `enabled=False` is a fast no-op for callers that want to check the flag
     in one place.
+
+    `sqlc_bin` / `buf_bin` are optional explicit overrides. When None (the
+    default), the binary is discovered lazily — only if the merge actually
+    brings new query/proto sources — via `_discover_bin` (env override →
+    PATH → hard error). Codegen tools are never silently skipped.
     """
     if not enabled:
         return IntegrateResult(status="skipped-disabled")
@@ -199,12 +228,24 @@ def integrate(
 
         # Codegen regen — sqlc + buf — for files newly merged in.
         services_diff = _services_touched(repo_root, base_branch, feat_branch)
-        sqlc_regen = _maybe_regen_sqlc(
-            repo_root, base_branch, feat_branch, sqlc_bin, log, task_key,
-        )
-        buf_regen = _maybe_regen_buf(
-            repo_root, base_branch, feat_branch, buf_bin, log, task_key,
-        )
+        try:
+            sqlc_regen = _maybe_regen_sqlc(
+                repo_root, base_branch, feat_branch, sqlc_bin, log, task_key,
+            )
+            buf_regen = _maybe_regen_buf(
+                repo_root, base_branch, feat_branch, buf_bin, log, task_key,
+            )
+        except RuntimeError as e:
+            # A required codegen binary couldn't be discovered. Don't leave the
+            # merge half-applied — revert and surface the clear reason.
+            _reset_merge(repo_root)
+            if stashed:
+                _run(["git", "stash", "pop"], cwd=repo_root)
+            return IntegrateResult(
+                status="skipped-codegen-fail",
+                detail=str(e),
+                services_built=sorted(services_diff),
+            )
 
         # Build + vet every Go module the merge touched.
         ok, build_err = _build_check(repo_root, services_diff)
@@ -297,11 +338,10 @@ def _maybe_regen_sqlc(
     code. Returns the list of services where regen ran. Safe: sqlc generate
     writes only to gitignored store/sqlc/ directories.
 
-    Skipped if sqlc binary doesn't exist, or no store/queries/* files were
-    touched, or the service has no sqlc.yaml.
+    No regen (empty list) if no store/queries/*.sql files were touched, or no
+    touched service has a sqlc.yaml. The sqlc binary is only discovered when
+    regen is actually required; if it can't be found `_discover_bin` raises.
     """
-    if not Path(sqlc_bin).exists():
-        return []
     rc, out, _ = _run(
         ["git", "diff", "--name-only", f"{base}...{feat}"], cwd=repo_root,
     )
@@ -316,10 +356,13 @@ def _maybe_regen_sqlc(
             svc = "/".join(parts[:store_idx])
             if svc and (repo_root / svc / "sqlc.yaml").exists():
                 regen_services.add(svc)
+    if not regen_services:
+        return []
+    bin_path = sqlc_bin or _discover_bin("sqlc", SQLC_BIN_ENV)
     regenerated = []
     for svc in sorted(regen_services):
         log(f"  {task_key} auto-integrate: sqlc generate in {svc}")
-        rc, _, err = _run([sqlc_bin, "generate"], cwd=repo_root / svc)
+        rc, _, err = _run([bin_path, "generate"], cwd=repo_root / svc)
         if rc == 0:
             regenerated.append(svc)
         else:
@@ -332,9 +375,8 @@ def _maybe_regen_buf(
     log: Callable[[str], None], task_key: str,
 ) -> list[str]:
     """If the merge brought new .proto files, regen the gitignored .pb.go.
-    Same pattern as sqlc regen."""
-    if not Path(buf_bin).exists():
-        return []
+    Same pattern as sqlc regen — the buf binary is only discovered when regen
+    is actually required, and `_discover_bin` raises if it can't be found."""
     rc, out, _ = _run(
         ["git", "diff", "--name-only", f"{base}...{feat}"], cwd=repo_root,
     )
@@ -351,15 +393,17 @@ def _maybe_regen_buf(
                 regen_services.add(str(cur))
                 break
             cur = cur.parent
+    if not regen_services:
+        return []
+    bin_path = buf_bin or _discover_bin("buf", BUF_BIN_ENV)
     regenerated = []
     for svc in sorted(regen_services):
         log(f"  {task_key} auto-integrate: buf generate in {svc}")
         # buf generate needs the protoc-gen plugins on PATH.
-        import os
         env = os.environ.copy()
-        env["PATH"] = f"{Path(buf_bin).parent}:{env.get('PATH', '')}"
+        env["PATH"] = f"{Path(bin_path).parent}:{env.get('PATH', '')}"
         proc = subprocess.run(
-            [buf_bin, "generate"], cwd=str(repo_root / svc),
+            [bin_path, "generate"], cwd=str(repo_root / svc),
             capture_output=True, text=True, env=env,
         )
         if proc.returncode == 0:
