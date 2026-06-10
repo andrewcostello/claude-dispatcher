@@ -151,3 +151,116 @@ def test_round_trip_preserves_unknown_keys_and_comments(tmp_path: Path) -> None:
     cfg = repo_config.load(tmp_path)
     assert cfg.test == "pytest -q"
     assert cfg.unknown_keys == ("e2e", "risk")
+
+
+# --- panel.advisory (VG-5) ----------------------------------------------------
+
+
+def test_panel_advisory_happy_path(tmp_path: Path) -> None:
+    _write(tmp_path, 'test: "pytest -q"\npanel:\n  advisory: [grok]\n')
+    cfg = repo_config.load(tmp_path)
+    assert cfg.test == "pytest -q"
+    assert cfg.panel_advisory == ("grok",)
+    # `panel` is a KNOWN top-level key now — not reported as unknown.
+    assert cfg.unknown_keys == ()
+
+
+def test_panel_advisory_multiple_names_preserved_in_order(tmp_path: Path) -> None:
+    _write(tmp_path, "panel:\n  advisory: [grok, foo]\n")
+    cfg = repo_config.load(tmp_path)
+    assert cfg.panel_advisory == ("grok", "foo")
+
+
+def test_panel_absent_yields_empty_advisory(tmp_path: Path) -> None:
+    _write(tmp_path, 'test: "pytest -q"\n')
+    assert repo_config.load(tmp_path).panel_advisory == ()
+
+
+def test_absent_file_yields_empty_advisory(tmp_path: Path) -> None:
+    assert repo_config.load(tmp_path).panel_advisory == ()
+
+
+def test_panel_without_advisory_yields_empty_tuple(tmp_path: Path) -> None:
+    """`panel:` present but `advisory:` absent → (); the unknown inner key
+    is reported as panel.<key>."""
+    _write(tmp_path, "panel:\n  weight: 0.5\n")
+    cfg = repo_config.load(tmp_path)
+    assert cfg.panel_advisory == ()
+    assert cfg.unknown_keys == ("panel.weight",)
+
+
+def test_panel_advisory_empty_list_is_empty_tuple(tmp_path: Path) -> None:
+    _write(tmp_path, "panel:\n  advisory: []\n")
+    cfg = repo_config.load(tmp_path)
+    assert cfg.panel_advisory == ()
+    assert cfg.unknown_keys == ()
+
+
+def test_panel_unknown_inner_keys_tolerated_and_reported(tmp_path: Path) -> None:
+    _write(tmp_path, "panel:\n  advisory: [grok]\n  weight: 0.5\n")
+    cfg = repo_config.load(tmp_path)
+    assert cfg.panel_advisory == ("grok",)
+    assert cfg.unknown_keys == ("panel.weight",)
+
+
+def test_panel_inner_unknowns_sorted_with_top_level_unknowns(tmp_path: Path) -> None:
+    _write(tmp_path, "e2e: make e2e\npanel:\n  weight: 1\n  advisory: [grok]\n")
+    cfg = repo_config.load(tmp_path)
+    assert cfg.unknown_keys == ("e2e", "panel.weight")
+
+
+@pytest.mark.parametrize(
+    "yaml_value",
+    ["[grok]", '"grok"', "123", "true"],
+    ids=["list", "string", "int", "bool"],
+)
+def test_panel_non_mapping_rejected(tmp_path: Path, yaml_value: str) -> None:
+    cfg_path = _write(tmp_path, f"panel: {yaml_value}\n")
+    with pytest.raises(RepoConfigError) as excinfo:
+        repo_config.load(tmp_path)
+    assert str(cfg_path) in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "yaml_value",
+    ['"grok"', "123", "true", "{name: grok}"],
+    ids=["string", "int", "bool", "map"],
+)
+def test_panel_advisory_non_list_rejected(tmp_path: Path, yaml_value: str) -> None:
+    cfg_path = _write(tmp_path, f"panel:\n  advisory: {yaml_value}\n")
+    with pytest.raises(RepoConfigError) as excinfo:
+        repo_config.load(tmp_path)
+    assert str(cfg_path) in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "entries",
+    ['[""]', '["   "]', "[123]", "[true]", "[grok, 5]"],
+    ids=["empty", "whitespace", "int", "bool", "mixed"],
+)
+def test_panel_advisory_bad_entries_rejected(tmp_path: Path, entries: str) -> None:
+    """Edge 5 (strict half): every advisory entry must be a non-empty
+    string — bool included, since YAML bare `true` is not a str."""
+    cfg_path = _write(tmp_path, f"panel:\n  advisory: {entries}\n")
+    with pytest.raises(RepoConfigError) as excinfo:
+        repo_config.load(tmp_path)
+    assert str(cfg_path) in str(excinfo.value)
+
+
+def test_config_to_factory_path_produces_grok_reviewer(tmp_path: Path) -> None:
+    """The config→factory pipeline (VG-5): a repo with
+    `panel: {advisory: [grok]}` yields exactly one real GrokReviewer with
+    the requested timeout — verified without ever running the panel live.
+    """
+    from claude_dispatcher import cross_family_reviewer as cfr
+
+    _write(tmp_path, "panel:\n  advisory: [grok]\n")
+    cfg = repo_config.load(tmp_path)
+    assert cfg.panel_advisory == ("grok",)
+    reviewers, unknown = cfr.advisory_reviewers_from_names(
+        cfg.panel_advisory, timeout_seconds=123,
+    )
+    assert unknown == []
+    assert len(reviewers) == 1
+    assert isinstance(reviewers[0], cfr.GrokReviewer)
+    assert reviewers[0].timeout_seconds == 123
