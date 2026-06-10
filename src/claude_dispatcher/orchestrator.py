@@ -412,13 +412,15 @@ def _run_task(
     _emit_event(cfg, journal_mod.EventType.task_started,
                 _task_started_payload(snap, merge_result), task_key=snap.key)
     if merge_result.conflict is not None:
-        # Conflicting dependency branches: do NOT dispatch a Tasker into a
-        # conflicted tree. Block with a dependency_merge_conflict reason; the
-        # task_started event above already journaled the conflict detail.
+        # Failed dependency merge: do NOT dispatch a Tasker into the tree.
+        # Block with the precise label — dependency_merge_conflict for a
+        # genuine content conflict, dependency_merge_failure for any other
+        # merge failure (e.g. missing committer identity); the task_started
+        # event above already journaled the detail.
         c = merge_result.conflict
         _mark_blocked(
             cfg, snap.key,
-            reason=f"dependency_merge_conflict: {c.key} ({c.branch}): {c.detail}",
+            reason=f"{c.reason}: {c.key} ({c.branch}): {c.detail}",
         )
         return plan_mod.BLOCKED
 
@@ -1885,10 +1887,13 @@ def _task_started_payload(
     ``merged_dependencies`` carries each merged dependency's branch + tip SHA
     so an auditor can reconstruct exactly which dependency commits this task
     was built on. ``dependencies_already_on_base`` / ``dependencies_unresolved``
-    record the no-op and unresolved deps. On a conflict,
-    ``dependency_merge_conflict`` carries the offending dependency + detail.
-    Fields beyond the base metadata are omitted when empty/absent (e.g. a
-    worktree-create failure passes ``merge_result=None``).
+    record the no-op and unresolved deps. On a failed merge, a key named
+    after the failure label — ``dependency_merge_conflict`` for a genuine
+    content conflict (so existing journal readers are unaffected),
+    ``dependency_merge_failure`` for any other merge failure — carries the
+    offending dependency + detail. Fields beyond the base metadata are
+    omitted when empty/absent (e.g. a worktree-create failure passes
+    ``merge_result=None``).
     """
     payload: dict[str, Any] = {
         "summary": snap.summary,
@@ -1907,7 +1912,7 @@ def _task_started_payload(
             payload["dependencies_unresolved"] = list(merge_result.unresolved)
         if merge_result.conflict is not None:
             c = merge_result.conflict
-            payload["dependency_merge_conflict"] = {
+            payload[c.reason] = {
                 "key": c.key, "branch": c.branch, "detail": c.detail[:300],
             }
     return payload
