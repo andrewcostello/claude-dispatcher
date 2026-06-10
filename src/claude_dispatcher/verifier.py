@@ -13,8 +13,11 @@ Three layers:
     task row, summary, and (truncated) diff.
   * `run_verifier` — spawns the claude CLI with the prompt on stdin and
     captures usage from the JSON envelope.
-  * `parse_verdict` — pulls a strict verdict line out of the verifier's
-    response, tolerant of surrounding narrative.
+  * `parse_verdict` — pulls a verdict out of the verifier's response,
+    preferring the last fenced block that contains one; tolerant of
+    surrounding narrative, asymmetric in the conservative direction
+    (strict line required for VERIFIED, loose suffixed evidence suffices
+    for INCOMPLETE).
 
 Conservative contract: the verifier can block an integration but can never
 rubber-stamp one by accident. A spawn failure, unparseable output,
@@ -201,10 +204,26 @@ def _strip_ansi(text: str) -> str:
 # (end-of-line under MULTILINE) anchor is load-bearing: the prompt's
 # instruction echo `Verdict: VERIFIED | INCOMPLETE` must NOT match, and a
 # response truncated mid-token (`Verdict: VERIF`) must NOT match either.
+# VERIFIED is accepted ONLY from this strict shape.
 _VERDICT_LINE_RE = re.compile(
     r"^[ \t]*(?:[-*>]\s+)?(?:\*\*|`+)?\s*"
     r"Verdict:\s*(VERIFIED|INCOMPLETE)"
     r"\s*(?:\*\*|`+)?[ \t]*$",
+    re.MULTILINE,
+)
+
+# LOOSE evidence of an INCOMPLETE verdict: a line-leading `Verdict:
+# INCOMPLETE` with any trailing suffix tolerated (`Verdict: INCOMPLETE —
+# claimed tests absent` is natural model output). Detection is deliberately
+# asymmetric: a suffixed VERIFIED never verifies, but suffixed INCOMPLETE
+# evidence always blocks verification — ambiguity must only ever push the
+# verdict in the conservative direction. The `(?!\s*\|)` lookahead keeps
+# the instruction echo `Verdict: VERIFIED | INCOMPLETE` (in either token
+# order) matching neither verdict.
+_INCOMPLETE_EVIDENCE_RE = re.compile(
+    r"^[ \t]*(?:[-*>]\s+)?(?:\*\*|`+)?\s*"
+    r"Verdict:\s*(?:\*\*|`+)?\s*INCOMPLETE\b(?!\s*\|)"
+    r"(?P<suffix>[^\n]*)$",
     re.MULTILINE,
 )
 
@@ -219,7 +238,8 @@ _GAP_ITEM_STUB_RE = re.compile(r"^\s*\d+[.)]?\s*$")
 # Optional "Gaps:" header between the verdict line and the first item.
 _GAPS_HEADER_RE = re.compile(r"^\s*(?:\*\*)?Gaps:?(?:\*\*)?\s*$", re.IGNORECASE)
 
-# A code-fence line terminates gap scanning (the verdict block is fenced).
+# A code-fence line. Delimits fenced blocks for verdict scoping and
+# terminates gap scanning (the verdict block is fenced).
 _FENCE_RE = re.compile(r"^\s*```")
 
 # Leading location token of a gap item: `path.ext:NN`, `path.ext:?`, or bare
@@ -232,43 +252,128 @@ _GAP_LOCATION_RE = re.compile(
 )
 
 
+def _fenced_blocks(text: str) -> list[str]:
+    """Split out the contents of ``` fenced blocks, in document order.
+
+    A trailing fence left unclosed (output truncated mid-stream) still
+    yields its partial content — a verdict that arrived before the cut
+    must not be lost to a missing closing fence.
+    """
+    blocks: list[str] = []
+    current: list[str] | None = None
+    for line in text.splitlines():
+        if _FENCE_RE.match(line):
+            if current is None:
+                current = []
+            else:
+                blocks.append("\n".join(current))
+                current = None
+        elif current is not None:
+            current.append(line)
+    if current:
+        blocks.append("\n".join(current))
+    return blocks
+
+
+def _verdict_scope(cleaned: str) -> str:
+    """The text region the verdict is read from.
+
+    The prompt contract puts the verdict in the response's final fenced
+    block, so when any fenced block contains verdict evidence the LAST
+    such block is the scope. Whole-text scanning is the fallback for
+    models that skip the fence entirely.
+    """
+    for block in reversed(_fenced_blocks(cleaned)):
+        if _VERDICT_LINE_RE.search(block) or _INCOMPLETE_EVIDENCE_RE.search(
+            block
+        ):
+            return block
+    return cleaned
+
+
+def _suffix_gap(suffix: str) -> list[Gap]:
+    """Promote a verdict-line suffix to a single location-less Gap.
+
+    `Verdict: INCOMPLETE — claimed tests absent` carries its reason on
+    the verdict line itself; when no numbered gaps parse, that suffix is
+    the only explanation available and is surfaced rather than dropped.
+    Pure formatting/punctuation (e.g. the `**` closing a bold verdict
+    line) is not a reason — no gap is fabricated from it.
+    """
+    text = re.sub(r"^(?:\s|[—–:-]|\*\*|`)+", "", suffix.strip())
+    text = re.sub(r"(?:\s|\*\*|`)+$", "", text)
+    if not re.search(r"\w", text):
+        return []
+    return [Gap(index=1, location=None, description=text)]
+
+
 def parse_verdict(raw: str) -> VerifierVerdict:
     """Pull a structured verdict out of the verifier's response text.
 
-    Tolerant of surrounding prose, narrative, and ANSI escapes; strict
-    about the verdict line itself. Never raises. The decision table is
-    conservative — ambiguity never auto-verifies:
+    Tolerant of surrounding prose, narrative, and ANSI escapes. Never
+    raises. The verdict is read from the LAST fenced block containing
+    verdict evidence (the documented contract); the whole text is scanned
+    only when no fenced block carries one. Detection is asymmetric in the
+    conservative direction — ambiguity never auto-verifies:
 
-      * no strict verdict line   → INCOMPLETE, reason=REASON_MALFORMED
-      * both verdicts present    → INCOMPLETE, reason=REASON_CONFLICTING
-                                   (gaps = whatever parses after the last
-                                   INCOMPLETE line)
-      * only VERIFIED line(s)    → VERIFIED, no gaps
-      * only INCOMPLETE line(s)  → INCOMPLETE; gaps parsed after the LAST
-                                   verdict line. Zero parseable gaps →
-                                   reason=REASON_GAPS_UNPARSED.
+      * VERIFIED requires a STRICT full verdict line inside the parsed
+        scope; an echoed/suffixed VERIFIED elsewhere never verifies.
+      * any loose `Verdict: INCOMPLETE ...` line (suffix tolerated)
+        ANYWHERE in the response counts as INCOMPLETE evidence — it can
+        only make the verdict more conservative, never less.
+      * the instruction echo `Verdict: VERIFIED | INCOMPLETE` matches
+        neither.
+
+    Decision table:
+
+      * no verdict evidence at all → INCOMPLETE, reason=REASON_MALFORMED
+      * strict VERIFIED in scope AND INCOMPLETE evidence anywhere
+                                   → INCOMPLETE, reason=REASON_CONFLICTING
+                                     (gaps = whatever parses after the
+                                     last INCOMPLETE evidence line)
+      * only strict VERIFIED       → VERIFIED, no gaps
+      * only INCOMPLETE evidence   → INCOMPLETE; gaps parsed after the
+        LAST INCOMPLETE line in scope. No numbered gaps but a suffix on
+        the verdict line → the suffix becomes a single location-less
+        Gap. Neither → reason=REASON_GAPS_UNPARSED.
     """
     raw = raw or ""
     cleaned = _strip_ansi(raw)
-    matches = list(_VERDICT_LINE_RE.finditer(cleaned))
-    if not matches:
-        # Covers empty/whitespace-only/garbage/truncated-mid-token output.
+    scope = _verdict_scope(cleaned)
+
+    verified = [
+        m
+        for m in _VERDICT_LINE_RE.finditer(scope)
+        if m.group(1) == "VERIFIED"
+    ]
+    incomplete_in_scope = list(_INCOMPLETE_EVIDENCE_RE.finditer(scope))
+    incomplete_anywhere = list(_INCOMPLETE_EVIDENCE_RE.finditer(cleaned))
+
+    if not verified and not incomplete_anywhere:
+        # Covers empty/whitespace-only/garbage/truncated-mid-token output
+        # and pipe-adjacent instruction echoes.
         return VerifierVerdict(
             verdict=VerdictKind.INCOMPLETE,
             reason=REASON_MALFORMED,
             raw_output=raw,
         )
-
-    kinds = {m.group(1) for m in matches}
-    if kinds == {"VERIFIED"}:
+    if not incomplete_anywhere:
         return VerifierVerdict(verdict=VerdictKind.VERIFIED, raw_output=raw)
 
-    # INCOMPLETE is present (alone or alongside VERIFIED). Gaps live in the
-    # text following the LAST INCOMPLETE line.
-    last_incomplete = [m for m in matches if m.group(1) == "INCOMPLETE"][-1]
-    gaps = _parse_gaps(cleaned[last_incomplete.end():])
+    # INCOMPLETE evidence is present (alone or alongside VERIFIED). Gaps
+    # live in the text following the LAST INCOMPLETE evidence line —
+    # preferring the parsed scope, falling back to the whole text when
+    # the evidence sits outside the scoped fence.
+    if incomplete_in_scope:
+        last_incomplete = incomplete_in_scope[-1]
+        gaps = _parse_gaps(scope[last_incomplete.end():])
+    else:
+        last_incomplete = incomplete_anywhere[-1]
+        gaps = _parse_gaps(cleaned[last_incomplete.end():])
+    if not gaps:
+        gaps = _suffix_gap(last_incomplete.group("suffix"))
 
-    if "VERIFIED" in kinds:
+    if verified:
         # Self-contradicting output. Keep any gaps for the human, but the
         # reason code marks the verdict as machine-forced.
         return VerifierVerdict(

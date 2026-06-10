@@ -205,7 +205,10 @@ def test_parse_truncated_gap_list_keeps_parsed_gaps():
     assert v.gaps[0].description == "first gap parsed fully"
 
 
-def test_parse_conflicting_verdict_lines():
+def test_parse_multiple_fenced_blocks_last_one_wins():
+    # Contract: the verdict lives in the LAST fenced block that contains
+    # one. A model that changes its mind and re-emits the fence gets its
+    # final answer honored cleanly — not flagged as conflicting.
     raw = textwrap.dedent("""\
         ```
         Verdict: VERIFIED
@@ -221,10 +224,49 @@ def test_parse_conflicting_verdict_lines():
     """)
     v = vf.parse_verdict(raw)
     assert v.verdict == vf.VerdictKind.INCOMPLETE
-    assert v.reason == vf.REASON_CONFLICTING
-    # Gaps after the last INCOMPLETE line are still surfaced.
+    assert v.reason is None
     assert len(v.gaps) == 1
     assert v.gaps[0].location == "tests/test_frob.py:?"
+
+
+def test_parse_incomplete_fence_then_verified_fence_stays_incomplete():
+    # The conservative asymmetry: INCOMPLETE evidence anywhere can only
+    # make the verdict MORE conservative. A later VERIFIED fence never
+    # overrides earlier INCOMPLETE evidence — that is a conflict.
+    raw = textwrap.dedent("""\
+        ```
+        Verdict: INCOMPLETE
+        Gaps:
+        1. a.py:1 — stub where real logic was required
+        ```
+
+        Actually, never mind:
+
+        ```
+        Verdict: VERIFIED
+        ```
+    """)
+    v = vf.parse_verdict(raw)
+    assert v.verdict == vf.VerdictKind.INCOMPLETE
+    assert v.reason == vf.REASON_CONFLICTING
+    # Gaps from the INCOMPLETE evidence are still surfaced for the human.
+    assert len(v.gaps) == 1
+    assert v.gaps[0].location == "a.py:1"
+
+
+def test_parse_conflicting_lines_within_one_fence():
+    raw = textwrap.dedent("""\
+        ```
+        Verdict: VERIFIED
+        Verdict: INCOMPLETE
+        Gaps:
+        1. a.py:1 — stub where real logic was required
+        ```
+    """)
+    v = vf.parse_verdict(raw)
+    assert v.verdict == vf.VerdictKind.INCOMPLETE
+    assert v.reason == vf.REASON_CONFLICTING
+    assert len(v.gaps) == 1
 
 
 def test_parse_incomplete_without_parseable_gaps():
@@ -251,6 +293,134 @@ def test_parse_tolerates_bold_and_bullet_verdict_line():
     assert v.verdict == vf.VerdictKind.INCOMPLETE
     assert v.reason is None
     assert len(v.gaps) == 1
+
+
+# --- parse_verdict: false-VERIFY regressions (asymmetric detection + fenced
+# --- block scoping) ------------------------------------------------------------
+
+
+def test_parse_checklist_verified_echoes_with_suffixed_incomplete():
+    # Reviewer repro 1: a per-item checklist emits `- Verdict: VERIFIED`
+    # bullets for passing items, then the REAL verdict arrives with a
+    # natural-language suffix. The old strict-only parser saw only the
+    # VERIFIED bullets and auto-verified. Must be INCOMPLETE.
+    raw = textwrap.dedent("""\
+        Acceptance walk, item by item:
+        - frobnicate the spline: present in the diff.
+        - Verdict: VERIFIED
+        - add tests: summary claims tests, the diff contains none.
+        - Verdict: VERIFIED
+
+        Verdict: INCOMPLETE — claimed tests absent from the diff
+    """)
+    v = vf.parse_verdict(raw)
+    assert v.verdict == vf.VerdictKind.INCOMPLETE
+    assert v.reason == vf.REASON_CONFLICTING
+    # The verdict-line suffix is surfaced as a single location-less gap.
+    assert len(v.gaps) == 1
+    assert v.gaps[0].location is None
+    assert v.gaps[0].description == "claimed tests absent from the diff"
+
+
+def test_parse_contract_echo_verified_with_prose_incomplete():
+    # Reviewer repro 2: a standalone contract-echo `Verdict: VERIFIED`
+    # line in prose, with the INCOMPLETE intent expressed only in
+    # suffixed form. Must be INCOMPLETE, never VERIFIED.
+    raw = textwrap.dedent("""\
+        On success the contract would have me answer:
+        Verdict: VERIFIED
+        However the diff does not contain the claimed tests, so my answer is
+        Verdict: INCOMPLETE — claimed tests absent from the diff
+    """)
+    v = vf.parse_verdict(raw)
+    assert v.verdict == vf.VerdictKind.INCOMPLETE
+    assert v.reason == vf.REASON_CONFLICTING
+    assert len(v.gaps) == 1
+    assert v.gaps[0].description == "claimed tests absent from the diff"
+
+
+def test_parse_prose_verdict_loses_to_fenced_block():
+    # Fenced-block scoping: prose mentions VERIFIED on its own line, but
+    # the fenced block disagrees — the fenced block wins, cleanly.
+    raw = textwrap.dedent("""\
+        If every item were present my answer would be
+        Verdict: VERIFIED
+        but the tests are missing, so:
+
+        ```
+        Verdict: INCOMPLETE
+        Gaps:
+        1. tests/test_frob.py:? — claimed tests absent from diff
+        ```
+    """)
+    v = vf.parse_verdict(raw)
+    assert v.verdict == vf.VerdictKind.INCOMPLETE
+    assert v.reason is None
+    assert len(v.gaps) == 1
+    assert v.gaps[0].location == "tests/test_frob.py:?"
+
+
+def test_parse_suffixed_incomplete_alone_yields_suffix_gap():
+    # `Verdict: INCOMPLETE — reason` with no numbered gaps: the suffix
+    # becomes the single gap and REASON_GAPS_UNPARSED does NOT apply.
+    v = vf.parse_verdict("Verdict: INCOMPLETE — claimed tests absent from the diff")
+    assert v.verdict == vf.VerdictKind.INCOMPLETE
+    assert v.reason is None
+    assert len(v.gaps) == 1
+    assert v.gaps[0].index == 1
+    assert v.gaps[0].location is None
+    assert v.gaps[0].description == "claimed tests absent from the diff"
+
+
+def test_parse_suffixed_incomplete_with_numbered_gaps_prefers_numbered():
+    raw = "```\nVerdict: INCOMPLETE — see gaps\nGaps:\n1. a.py:1 — stub\n```\n"
+    v = vf.parse_verdict(raw)
+    assert v.verdict == vf.VerdictKind.INCOMPLETE
+    assert v.reason is None
+    assert len(v.gaps) == 1
+    assert v.gaps[0].location == "a.py:1"
+    assert v.gaps[0].description == "stub"
+
+
+def test_parse_bold_suffixed_incomplete_strips_formatting_from_suffix():
+    v = vf.parse_verdict("**Verdict: INCOMPLETE** — claimed tests absent")
+    assert v.verdict == vf.VerdictKind.INCOMPLETE
+    assert v.reason is None
+    assert len(v.gaps) == 1
+    assert v.gaps[0].description == "claimed tests absent"
+
+
+def test_parse_suffixed_verified_never_verifies():
+    # The asymmetry only runs in the conservative direction: a suffixed
+    # VERIFIED is NOT a strict verdict line and must not verify.
+    v = vf.parse_verdict("```\nVerdict: VERIFIED — everything matches\n```")
+    assert v.verdict == vf.VerdictKind.INCOMPLETE
+    assert v.reason == vf.REASON_MALFORMED
+
+
+def test_parse_pipe_echo_incomplete_first_matches_neither():
+    # Pipe-adjacent echo in the other order must also match neither.
+    v = vf.parse_verdict("Verdict: INCOMPLETE | VERIFIED")
+    assert v.verdict == vf.VerdictKind.INCOMPLETE
+    assert v.reason == vf.REASON_MALFORMED
+
+
+def test_parse_fenced_block_without_verdict_falls_back_to_prose():
+    # Tolerance preserved: a fenced block that merely quotes code does not
+    # capture the scope; the prose verdict is still honored.
+    raw = textwrap.dedent("""\
+        The diff adds this function:
+
+        ```
+        def frob():
+            return spline
+        ```
+
+        Verdict: VERIFIED
+    """)
+    v = vf.parse_verdict(raw)
+    assert v.verdict == vf.VerdictKind.VERIFIED
+    assert v.reason is None
 
 
 # --- run_verifier: CLI adapter -------------------------------------------------

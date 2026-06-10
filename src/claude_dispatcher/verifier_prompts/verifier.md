@@ -79,8 +79,12 @@ Rules:
 - Gaps are a numbered list. Use a `file:line` location where possible and
   `file:?` when the file is known but the line is not; omit the location
   entirely when no file applies.
-- You may write narrative analysis before the fenced block; everything
-  outside the final fenced block is ignored by the parser.
+- You may write narrative analysis before the fenced block. The parser
+  reads the verdict from the LAST fenced block that contains one; text
+  outside the fences is consulted only when no fenced block carries a
+  verdict. A stray `Verdict: INCOMPLETE` line outside the fence can only
+  make the result more conservative (INCOMPLETE) — it can never produce
+  VERIFIED. Do not write bare `Verdict:` lines in your narrative.
 
 ---
 
