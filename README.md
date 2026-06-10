@@ -77,8 +77,6 @@ dispatcher resume <run-id> [--strategy {continue,mark-blocked}] [--force] [--run
                                             Pick up an interrupted run from its journal —
                                             re-dispatch in-flight tasks, leave terminal
                                             rows untouched. See "Resume".
-                                            (Reconciliation pending — held in PR #10,
-                                            lands via run #3.)
 dispatcher report <run-id>                  Quality dashboard for a run: counts, per-task
                                             gate fields, concerning-tasks highlights, and
                                             the per-reviewer/per-dimension breakdown.
@@ -671,7 +669,7 @@ src/claude_dispatcher/
 ├── dispatch_plan.py             # dry-run report renderer
 ├── journal.py                   # append-only hash-chained event journal (one JSONL/run)
 ├── status.py                    # `dispatcher status` — run state, table or --json
-├── resume.py                    # `dispatcher resume` — recover an interrupted run (PR #10, pending)
+├── resume.py                    # `dispatcher resume` — recover an interrupted run
 └── report.py                    # `dispatcher report` — quality dashboard
 
 tools/
