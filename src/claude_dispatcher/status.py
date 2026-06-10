@@ -1,22 +1,28 @@
 """`dispatcher status <run-id>` — current state of a run, as JSON or a table.
 
-Reconstructs run state from the two artifacts the orchestrator already
-maintains; there is no separate event-journal subsystem yet (that is a
-distinct Phase 1 deliverable, see docs/improvement-plan.md "Event journal"):
+Reconstructs run state from the artifacts the orchestrator maintains:
 
   * **tasks YAML** — authoritative per-task run state. The orchestrator
     stamps `status`, `started_at`, `completed_at`, `dispatcher_run_id`,
     `model`, `cost_usd`, `iteration_count`, `blocked_reason`, `pr_url`,
     etc. onto each row as the run progresses (orchestrator._mark_* /
     _apply). This is the same source `dispatcher report` reads.
-  * **run.log** — the append-only event log in the run directory, one
-    timestamped line per event (`<iso-8601>  <message>`, written by
-    orchestrator._log). Used here for run *liveness*: the age of the last
-    event tells an observer whether a run is still moving or has stalled.
+  * **journal.jsonl** — the append-only, hash-chained event journal in the
+    run directory (see docs/journal-format.md). The orchestrator emits an
+    event at every lifecycle point. This is the *preferred* liveness source
+    (age of the last event) and the source of the per-task `journal`
+    enrichment block (spawn token usage, panel verdicts).
+  * **run.log** — the legacy free-text event log (`<iso-8601>  <message>`
+    lines, written by orchestrator._log). Used as a *fallback* liveness
+    source for pre-journal runs whose directory predates the journal; when
+    liveness comes from here, ``liveness.source`` is ``"run.log"`` so the
+    output labels the fallback.
 
-Read-only and mid-run-safe: never touches the YAML or worktrees, and
-tolerates a partially-written final run.log line (a live run may be
-appending to it as we read).
+Read-only and mid-run-safe: never touches the YAML or worktrees, parses the
+journal leniently (a torn/partial final line on a live run is skipped, never
+an error — status is best-effort observability, not chain verification; use
+``journal.verify`` for integrity), and tolerates a partially-written final
+run.log line.
 
 JSON schema (``--json``)
 ------------------------
@@ -33,10 +39,18 @@ A single object::
                                    #   (To Do / In Progress); null when complete
       "wave_count":   int,         # number of dependency waves in the graph
       "liveness": {
+        "source":                 str | null,   # "journal" | "run.log" | null
+                                                 #   which artifact liveness came
+                                                 #   from; "run.log" is the labeled
+                                                 #   pre-journal fallback
+        "journal_present":        bool,
         "run_log_present":        bool,
-        "last_event_at":          str | null,    # ISO-8601 of last parseable line
+        "last_event_at":          str | null,    # ISO-8601 of last event
         "last_event_age_seconds": float | null,  # generated_at - last_event_at
-        "last_event":             str | null      # message text of that line
+        "last_event":             str | null,     # human label of that event
+        "last_event_type":        str | null,    # journal event_type; null for
+                                                  #   run.log fallback
+        "last_event_seq":         int | null      # journal seq; null for run.log
       },
       "totals": {
         "task_count":   int,
@@ -57,7 +71,24 @@ A single object::
           "iteration_count": int | null,
           "blocked_reason":  str | null,
           "pr_url":          str | null,
-          "dispatcher_run_id": str | null  # which run last touched this row
+          "dispatcher_run_id": str | null, # which run last touched this row
+          "journal": {                     # enrichment from journal events for
+                                           #   this task; null on pre-journal runs
+                                           #   or tasks with no events yet
+            "spawn": {                     # last task_spawn_finished, or null
+              "input_tokens":                int | null,
+              "output_tokens":               int | null,
+              "cache_read_input_tokens":     int | null,
+              "cache_creation_input_tokens": int | null,
+              "duration_ms":                 int | null,
+              "num_turns":                   int | null
+            } | null,
+            "panel": {                     # last (non-error) panel_verdict, or null
+              "consensus":         str,
+              "blocking_findings": int | null,
+              "verdicts":          { "<family>": "<verdict>", ... }
+            } | null
+          } | null
         },
         ...
       ]
@@ -75,6 +106,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from . import journal as journal_mod
 from . import plan as plan_mod
 from . import report as report_mod
 from . import yaml_io
@@ -150,6 +182,12 @@ def build_status(
     wave_memo: dict[str, int] = {}
     waves = {t.key: _wave_index(t, by_key, wave_memo) for t in tasks}
 
+    # Read the journal once: it feeds both liveness (preferred source) and the
+    # per-task enrichment index. Absent (pre-journal run) → empty list.
+    journal_path = run_dir / journal_mod.JOURNAL_FILENAME
+    events = _read_journal_events(journal_path) if journal_path.is_file() else []
+    journal_index = _journal_task_index(events)
+
     task_entries: list[dict[str, Any]] = []
     by_status: dict[str, int] = {s: 0 for s in _STATUS_ORDER}
     cost_total = 0.0
@@ -178,6 +216,7 @@ def build_status(
             "blocked_reason": _str_or_none(row.get("blocked_reason")),
             "pr_url": _str_or_none(row.get("pr_url")),
             "dispatcher_run_id": _str_or_none(row.get("dispatcher_run_id")),
+            "journal": journal_index.get(t.key),
         })
 
     pending_waves = [
@@ -187,7 +226,7 @@ def build_status(
     current_wave = min(pending_waves) if pending_waves else None
     run_complete = not pending_waves and bool(tasks)
 
-    liveness = _liveness(run_dir / "run.log", now)
+    liveness = _liveness(run_dir, events, now)
 
     return {
         "run_id": run_id,
@@ -228,60 +267,201 @@ def _wave_index(
     return depth
 
 
-def _liveness(run_log: Path, now: dt.datetime) -> dict[str, Any]:
-    """Derive run liveness from the last parseable line of run.log.
+def _liveness(
+    run_dir: Path, events: list[dict[str, Any]], now: dt.datetime
+) -> dict[str, Any]:
+    """Derive run liveness, preferring the journal over run.log.
 
-    Each line is ``<iso-8601>  <message>``. We scan for the LAST line whose
-    leading token parses as an ISO timestamp — this naturally skips a
-    half-written final line on a live run (the partial-last-line case) as
-    well as any blank lines.
+    The journal (``journal.jsonl``) is the supported structured feed, so it is
+    the primary source: liveness is the age of its last event. ``run.log`` is
+    kept only as a *fallback* for pre-journal runs whose directory predates the
+    journal — when liveness comes from there, ``source`` is ``"run.log"`` so the
+    caller can label it. ``source`` is ``None`` when neither artifact yields a
+    parseable event.
+
+    ``events`` is the already-parsed journal (parsed once in build_status); it
+    tolerates a torn final line (see :func:`_read_journal_events`).
     """
+    journal_path = run_dir / journal_mod.JOURNAL_FILENAME
+    run_log = run_dir / "run.log"
     base: dict[str, Any] = {
-        "run_log_present": run_log.exists(),
+        "source": None,
+        "journal_present": journal_path.is_file(),
+        "run_log_present": run_log.is_file(),
         "last_event_at": None,
         "last_event_age_seconds": None,
         "last_event": None,
+        "last_event_type": None,
+        "last_event_seq": None,
     }
-    if not run_log.exists():
+
+    # Prefer the journal: walk from the tail to the last event carrying a
+    # parseable timestamp (a parsed line missing one is implausible but skipped
+    # defensively rather than crashing the status tool).
+    for ev in reversed(events):
+        ts = _parse_iso(ev.get("timestamp"))
+        if ts is None:
+            continue
+        etype = ev.get("event_type")
+        seq = ev.get("seq")
+        base.update(
+            source="journal",
+            last_event_at=ts.isoformat(timespec="seconds"),
+            last_event_age_seconds=_age_seconds(ts, now),
+            last_event=_journal_event_label(etype, ev.get("task_key")),
+            last_event_type=etype if isinstance(etype, str) else None,
+            last_event_seq=seq if isinstance(seq, int) and not isinstance(seq, bool) else None,
+        )
         return base
 
+    # Fallback: the legacy run.log. Each line is ``<iso-8601>  <message>``; the
+    # LAST line whose leading token parses as a timestamp wins (this naturally
+    # skips a half-written final line and blank lines).
+    rl = _run_log_last_event(run_log, now)
+    if rl is not None:
+        base.update(
+            source="run.log",
+            last_event_at=rl[0],
+            last_event_age_seconds=rl[1],
+            last_event=rl[2],
+        )
+    return base
+
+
+def _run_log_last_event(
+    run_log: Path, now: dt.datetime
+) -> tuple[str, float | None, str] | None:
+    """Last parseable ``<iso-8601>  <message>`` line of run.log as
+    ``(iso, age_seconds, message)``, or None if no line parses."""
+    if not run_log.is_file():
+        return None
     try:
         text = run_log.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return base
-
+        return None
     last_ts: dt.datetime | None = None
-    last_msg: str | None = None
+    last_msg = ""
     for line in text.splitlines():
         ts_str, sep, msg = line.partition("  ")
         if not sep:
             continue
-        try:
-            parsed = dt.datetime.fromisoformat(ts_str.strip())
-        except ValueError:
+        parsed = _parse_iso(ts_str.strip())
+        if parsed is None:
             continue
         last_ts = parsed
         last_msg = msg.strip()
-
     if last_ts is None:
-        return base
+        return None
+    return (last_ts.isoformat(timespec="seconds"), _age_seconds(last_ts, now), last_msg)
 
-    age = None
-    if now is not None:
-        # Both ends should be tz-aware (orchestrator stamps local-tz ISO,
-        # _now() is tz-aware). Guard against a naive fixture timestamp.
-        ref = now
-        if last_ts.tzinfo is None and ref.tzinfo is not None:
-            ref = ref.replace(tzinfo=None)
-        elif last_ts.tzinfo is not None and ref.tzinfo is None:
-            last_ts_cmp = last_ts.replace(tzinfo=None)
-            last_ts = last_ts_cmp
-        age = round((ref - last_ts).total_seconds(), 3)
 
-    base["last_event_at"] = last_ts.isoformat(timespec="seconds")
-    base["last_event_age_seconds"] = age
-    base["last_event"] = last_msg
-    return base
+def _read_journal_events(journal_path: Path) -> list[dict[str, Any]]:
+    """Parse ``journal.jsonl`` leniently into raw event dicts, in file order.
+
+    Status is best-effort observability, not chain verification: we skip blank
+    lines and any line that fails to parse as a JSON object — including a torn
+    final line on a live run (a flush-mid-write fragment). Use ``journal.verify``
+    for integrity checks.
+    """
+    events: list[dict[str, Any]] = []
+    try:
+        text = journal_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return events
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            obj = json.loads(stripped)
+        except ValueError:
+            continue
+        if isinstance(obj, dict):
+            events.append(obj)
+    return events
+
+
+def _journal_task_index(
+    events: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Index per-task enrichment from journal events: for each task_key, the
+    LAST ``task_spawn_finished`` usage block and the LAST non-error
+    ``panel_verdict``. Iterating to the last event of each kind means a task
+    that re-spawned (commit retry, panel iterate) shows its most recent state.
+
+    Tasks with no relevant events do not appear, so build_status renders
+    ``journal: null`` for them (and for every task on a pre-journal run).
+    """
+    spawn: dict[str, dict[str, Any]] = {}
+    panel: dict[str, dict[str, Any]] = {}
+    for ev in events:
+        tk = ev.get("task_key")
+        payload = ev.get("payload")
+        if not isinstance(tk, str) or not isinstance(payload, dict):
+            continue
+        etype = ev.get("event_type")
+        if etype == "task_spawn_finished":
+            spawn[tk] = {
+                "input_tokens": payload.get("input_tokens"),
+                "output_tokens": payload.get("output_tokens"),
+                "cache_read_input_tokens": payload.get("cache_read_input_tokens"),
+                "cache_creation_input_tokens": payload.get("cache_creation_input_tokens"),
+                "duration_ms": payload.get("duration_ms"),
+                "num_turns": payload.get("num_turns"),
+            }
+        elif etype == "panel_verdict" and isinstance(payload.get("consensus"), str):
+            # The error-form payload ({"error": ...}) carries no consensus —
+            # skip it so a transient panel exception doesn't erase a prior
+            # real verdict from the enrichment. Requiring a *string* consensus
+            # (not merely the key's presence) keeps the emitted `consensus`
+            # matching its schema even for a pathological null-valued payload.
+            verdicts = payload.get("verdicts")
+            panel[tk] = {
+                "consensus": payload.get("consensus"),
+                "blocking_findings": payload.get("blocking_findings"),
+                "verdicts": verdicts if isinstance(verdicts, dict) else {},
+            }
+    index: dict[str, dict[str, Any]] = {}
+    for tk in spawn.keys() | panel.keys():
+        index[tk] = {"spawn": spawn.get(tk), "panel": panel.get(tk)}
+    return index
+
+
+def _journal_event_label(event_type: Any, task_key: Any) -> str | None:
+    """Human-readable one-liner for a journal event used as the liveness label,
+    e.g. ``"task_spawn_finished (INT-2)"`` or ``"run_complete"``."""
+    if not isinstance(event_type, str):
+        return None
+    if isinstance(task_key, str) and task_key:
+        return f"{event_type} ({task_key})"
+    return event_type
+
+
+def _parse_iso(value: Any) -> dt.datetime | None:
+    """Parse an ISO-8601 string to a datetime, or None if it isn't one."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return dt.datetime.fromisoformat(value.strip())
+    except ValueError:
+        return None
+
+
+def _age_seconds(last_ts: dt.datetime, now: dt.datetime | None) -> float | None:
+    """Seconds between ``last_ts`` and ``now`` (3 dp), or None if no clock.
+
+    The orchestrator stamps tz-aware local-zone ISO and ``_now()`` is tz-aware,
+    but a fixture timestamp may be naive — normalize both ends to the same
+    awareness before subtracting so the arithmetic never raises.
+    """
+    if now is None:
+        return None
+    ref = now
+    if last_ts.tzinfo is None and ref.tzinfo is not None:
+        ref = ref.replace(tzinfo=None)
+    elif last_ts.tzinfo is not None and ref.tzinfo is None:
+        last_ts = last_ts.replace(tzinfo=None)
+    return round((ref - last_ts).total_seconds(), 3)
 
 
 def render_table(status: dict[str, Any]) -> str:
@@ -299,16 +479,20 @@ def render_table(status: dict[str, Any]) -> str:
     )
 
     live = status["liveness"]
-    if not live["run_log_present"]:
-        lines.append("  Liveness:     run.log not present")
-    elif live["last_event_at"] is None:
-        lines.append("  Liveness:     run.log present but no parseable events")
+    if live["source"] is None:
+        if not live["journal_present"] and not live["run_log_present"]:
+            detail = "neither journal.jsonl nor run.log present"
+        else:
+            detail = "no parseable events"
+        lines.append(f"  Liveness:     {detail}")
     else:
         age = live["last_event_age_seconds"]
         age_str = f"{age:.0f}s ago" if age is not None else "?"
+        # Label the source so a run.log reading is visibly the pre-journal fallback.
+        src = "journal" if live["source"] == "journal" else "run.log fallback — pre-journal run"
         lines.append(
             f"  Liveness:     last event {live['last_event_at']} ({age_str}) "
-            f"— {live['last_event']}"
+            f"— {live['last_event']}  [{src}]"
         )
     lines.append("=" * 88)
     lines.append("")
@@ -337,12 +521,27 @@ def render_table(status: dict[str, Any]) -> str:
         iters = t["iteration_count"]
         iters_str = str(iters) if iters is not None else "—"
         model = t["model"] or "—"
-        note = t["blocked_reason"] or t["pr_url"] or ""
+        note = t["blocked_reason"] or t["pr_url"] or _journal_note(t.get("journal"))
         lines.append(
             f"  {t['key']:16} {t['status']:12} {t['wave']:<4} {cost_str:>9} "
             f"{iters_str:5} {model:18} {note[:40]}"
         )
     return "\n".join(lines)
+
+
+def _journal_note(journal: dict[str, Any] | None) -> str:
+    """A compact NOTE-column hint from journal enrichment when the row has no
+    blocked reason or PR: the panel consensus, then output-token count."""
+    if not journal:
+        return ""
+    parts: list[str] = []
+    panel = journal.get("panel")
+    if isinstance(panel, dict) and panel.get("consensus"):
+        parts.append(f"panel:{panel['consensus']}")
+    spawn = journal.get("spawn")
+    if isinstance(spawn, dict) and isinstance(spawn.get("output_tokens"), int):
+        parts.append(f"out:{spawn['output_tokens']}tok")
+    return "  ".join(parts)
 
 
 # --- small coercion helpers -------------------------------------------------
