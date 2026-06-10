@@ -5,6 +5,7 @@ Sub-commands:
   dispatcher status — current state of a run (which tasks are mid-flight, blocked, done)
   dispatcher resume — pick up an interrupted run from its checkpoint
   dispatcher report — summary of completed tasks for a run
+  dispatcher doctor — probe the machine (agent CLIs, tools) and write machine.yaml
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from . import status as status_cmd
 from . import resume as resume_cmd
 from . import report as report_cmd
 from . import forecast_bridge
+from . import doctor as doctor_cmd
 
 
 DEFAULT_FINANCIAL_PATHS = ",".join([
@@ -305,6 +307,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rp.add_argument("--runs-dir", default="docs/runs")
     rp.set_defaults(func=report_cmd.execute)
+
+    # --- doctor --------------------------------------------------------------
+    dr = sub.add_parser(
+        "doctor",
+        help=("Probe the machine (agent CLIs, tools, dispatcher install) and "
+              "write the profile to $XDG_CONFIG_HOME/claude-dispatcher/"
+              "machine.yaml. The `manual:` section and file comments are "
+              "preserved across re-probes."),
+    )
+    dr.add_argument(
+        "--check",
+        action="store_true",
+        help=("Exit 1 if a required entry (claude, git) is missing. All other "
+              "entries are soft: reported but never affect the exit code."),
+    )
+    dr.add_argument(
+        "--config-dir",
+        default=None,
+        help=("Override the config directory machine.yaml is written to "
+              "(default: $XDG_CONFIG_HOME/claude-dispatcher, falling back to "
+              "~/.config/claude-dispatcher)."),
+    )
+    dr.set_defaults(func=doctor_cmd.execute)
 
     # --- forecast-create ---------------------------------------------------
     fc = sub.add_parser(
