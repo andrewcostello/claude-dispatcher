@@ -32,6 +32,7 @@ from typing import Any
 
 from . import auto_integrate as ai_mod
 from . import cross_family_reviewer as cfr_mod
+from . import journal as journal_mod
 from . import notify as notify_mod
 from . import plan as plan_mod
 from . import pr as pr_mod
@@ -129,6 +130,12 @@ class RunConfig:
     # execute() time from CLI flags + env vars; injected into _run_task
     # via this slot so tests can substitute a recording stub.
     notifier: notify_mod.Notifier = field(default_factory=notify_mod.NullNotifier)
+    # Append-only event journal for this run (one JSONL file under run_dir).
+    # Created in execute() once run_dir exists; left None if creation fails
+    # (an unwritable runs dir must NOT abort the run — journaling is
+    # best-effort, mirroring the notifier policy). Every emit goes through
+    # _emit_event(), which is a no-op when this is None. See journal.py.
+    journal: journal_mod.Journal | None = None
 
 
 @dataclass
@@ -175,6 +182,13 @@ def execute(args: argparse.Namespace) -> int:
 
     repo_root = wt_mod.detect_repo_root(cfg.tasks_path.parent)
 
+    # Open the event journal. Its genesis (run_started, seq 0) event records
+    # the run's provenance — dispatcher version, tasks.yaml + reviewer-prompts
+    # content hashes, host. If creation fails (e.g. an unwritable runs dir),
+    # we warn and run journal-less: a control-surface convenience must never
+    # be load-bearing for the run completing.
+    cfg.journal = _open_journal(cfg, run_dir, repo_root, log_path)
+
     in_flight: dict[Future[str], str] = {}
     with ThreadPoolExecutor(max_workers=max(cfg.max_parallel, 1)) as exe:
         while True:
@@ -200,6 +214,12 @@ def execute(args: argparse.Namespace) -> int:
                 # first, the main thread could re-load and re-dispatch the
                 # same key before the worker has stamped In Progress.
                 _mark_in_progress(cfg, snap, run_dir)
+                _emit_event(cfg, journal_mod.EventType.task_started, {
+                    "summary": snap.summary,
+                    "type": snap.type,
+                    "labels": list(snap.labels),
+                    "model": snap.model,
+                }, task_key=snap.key)
                 fut = exe.submit(_run_task, snap, cfg, run_dir, log_path, repo_root)
                 in_flight[fut] = snap.key
                 _log(log_path, f"dispatch {snap.key} submitted")
@@ -217,15 +237,12 @@ def execute(args: argparse.Namespace) -> int:
                     # Notify on a dispatcher-internal error before
                     # stamping Blocked (separate channel from a normal
                     # task failure — see notify.worker_exception_*).
-                    try:
-                        cfg.notifier.send(notify_mod.worker_exception_notification(
-                            task_key=key,
-                            run_id=cfg.run_id,
-                            exception_repr=repr(e),
-                            tasks_yaml=str(cfg.tasks_path),
-                        ))
-                    except Exception:
-                        pass
+                    _send_notification(cfg, notify_mod.worker_exception_notification(
+                        task_key=key,
+                        run_id=cfg.run_id,
+                        exception_repr=repr(e),
+                        tasks_yaml=str(cfg.tasks_path),
+                    ), task_key=key)
                     try:
                         _mark_blocked(cfg, key, reason=f"worker_exception: {e}")
                     except Exception as mark_err:
@@ -237,13 +254,16 @@ def execute(args: argparse.Namespace) -> int:
     escalated = [t for t in tasks if t.status == plan_mod.ESCALATED]
     _log(log_path, f"end run blocked={len(blocked)} escalated={len(escalated)}")
     # Run-complete rollup notification. Always fires (including on clean
-    # runs — knowing the run finished is signal). Best-effort.
+    # runs — knowing the run finished is signal). Best-effort. Sent BEFORE
+    # the run_complete journal event so that event stays the terminal record
+    # of the chain.
+    blocked_rollup = []
     try:
         blocked_rollup = [
             (t.key, str(t.raw.get("blocked_reason") or "unknown"))
             for t in blocked + escalated
         ]
-        cfg.notifier.send(notify_mod.run_complete_notification(
+        _send_notification(cfg, notify_mod.run_complete_notification(
             run_id=cfg.run_id,
             done=len(done_tasks),
             blocked=len(blocked),
@@ -253,6 +273,14 @@ def execute(args: argparse.Namespace) -> int:
         ))
     except Exception:
         pass
+    # Terminal journal event: closes the chain with the run's tallies. An
+    # external observer that reads run_complete knows no more events follow.
+    _emit_event(cfg, journal_mod.EventType.run_complete, {
+        "done": len(done_tasks),
+        "blocked": len(blocked),
+        "escalated": len(escalated),
+        "blocked_rollup": [{"key": k, "reason": r} for k, r in blocked_rollup],
+    })
     return 1 if (blocked or escalated) else 0
 
 
@@ -343,6 +371,12 @@ def _run_task(
         return plan_mod.BLOCKED
 
     _log(log_path, f"  {snap.key} spawn exited code={result.exit_code}")
+    # Spawn-completion event: carries the per-task usage/cost payload parsed
+    # from the Claude CLI's JSON output (all fields optional — None when the
+    # CLI didn't emit usage). Emitted for every spawn outcome, success or
+    # non-zero exit, so the journal records the cost even of a failed run.
+    _emit_event(cfg, journal_mod.EventType.task_spawn_finished,
+                _spawn_usage_payload(result), task_key=snap.key)
     if result.exit_code != 0:
         _mark_blocked(cfg, snap.key, reason=f"session_exit_code_{result.exit_code}")
         return plan_mod.BLOCKED
@@ -352,6 +386,8 @@ def _run_task(
         return plan_mod.BLOCKED
 
     s = summary_mod.parse(result.summary_path)
+    _emit_event(cfg, journal_mod.EventType.summary_parsed,
+                _summary_parsed_payload(s), task_key=snap.key)
     if s.malformed:
         _log_summary_problems(log_path, snap.key, s)
         _mark_blocked(cfg, snap.key,
@@ -372,6 +408,10 @@ def _run_task(
         retry_status = _retry_for_commit(
             cfg, snap, wt, repo_root, summary_path, env, log_path,
         )
+        _emit_event(cfg, journal_mod.EventType.commit_retry, {
+            "trigger": "reported Done with no commits on branch",
+            "outcome": "committed" if retry_status is not None else "still_no_commits",
+        }, task_key=snap.key)
         if retry_status is None:
             # Retry failed — really no work. Mark Blocked with clear reason.
             _mark_blocked(cfg, snap.key,
@@ -379,6 +419,9 @@ def _run_task(
             return plan_mod.BLOCKED
         # Retry succeeded — re-parse summary and continue with Done flow.
         s = summary_mod.parse(result.summary_path)
+        _emit_event(cfg, journal_mod.EventType.summary_parsed,
+                    {**_summary_parsed_payload(s), "after_commit_retry": True},
+                    task_key=snap.key)
         if s.malformed:
             _log_summary_problems(log_path, snap.key, s)
             _mark_blocked(
@@ -406,6 +449,10 @@ def _run_task(
     if final_status == plan_mod.DONE and _panel_should_run(cfg, snap):
         iterations_remaining = max(0, cfg.cross_family_panel_iterate)
         while True:
+            _emit_event(cfg, journal_mod.EventType.panel_started, {
+                "iteration": panel_iterations_used,
+                "iterations_remaining": iterations_remaining,
+            }, task_key=snap.key)
             try:
                 panel_verdict = _run_cross_family_panel(
                     cfg=cfg, snap=snap, wt=wt,
@@ -416,11 +463,15 @@ def _run_task(
                 )
             except Exception as e:
                 _log(log_path, f"  {snap.key} cross-family panel raised: {e}")
+                _emit_event(cfg, journal_mod.EventType.panel_verdict,
+                            {"error": str(e)[:300]}, task_key=snap.key)
                 panel_verdict = None
                 final_status = plan_mod.BLOCKED
                 final_blocked_reason = f"cross_family_panel_error: {e}"
                 break
 
+            _emit_event(cfg, journal_mod.EventType.panel_verdict,
+                        _panel_verdict_payload(panel_verdict), task_key=snap.key)
             if panel_verdict.is_approve or iterations_remaining <= 0:
                 break
 
@@ -436,6 +487,12 @@ def _run_task(
             )
             panel_iterations_used += 1
             iterations_remaining -= 1
+            _emit_event(cfg, journal_mod.EventType.panel_iterate, {
+                "iteration": panel_iterations_used,
+                "iterations_remaining": iterations_remaining,
+                "corrective_spawn_ok": bool(corrective_ok),
+                "blocking_findings": len(panel_verdict.blocking_findings),
+            }, task_key=snap.key)
             if not corrective_ok:
                 _log(log_path,
                      f"  {snap.key} panel-iterate spawn failed — leaving "
@@ -483,6 +540,13 @@ def _run_task(
             integrate_result = ai_mod.IntegrateResult(
                 status="error", detail=f"exception: {e}",
             )
+        _emit_event(cfg, journal_mod.EventType.integrate_result, {
+            "status": integrate_result.status,
+            "merge_sha": integrate_result.merge_sha,
+            "services_built": list(integrate_result.services_built)
+                if integrate_result.services_built else [],
+            "detail": (integrate_result.detail or "")[:500],
+        }, task_key=snap.key)
         # If integration failed in a way that means dependents shouldn't
         # proceed, flip status to Blocked so the dispatch loop holds. The
         # Tasker's work isn't lost — its commits are still on the feat
@@ -571,24 +635,41 @@ def _run_task(
 
     _mutate_row(cfg, snap.key, _apply)
 
+    # Terminal per-task journal event. Done → task_done; anything else (the
+    # in-worker Blocked paths: panel block, auto-integrate fail,
+    # awaiting-PR-in-unattended-mode) → task_blocked. Early-return paths
+    # (spawn failure, summary missing/malformed, commit-retry exhaustion)
+    # journal their own task_blocked via _mark_blocked — disjoint from this
+    # one, so exactly one terminal event fires per task.
+    if final_status == plan_mod.DONE:
+        _emit_event(cfg, journal_mod.EventType.task_done, {
+            "pr_url": final_url or s.pr_url,
+            "iterations": s.iterations,
+            "final_quality_score": s.final_quality_score,
+            "panel_consensus": panel_verdict.consensus if panel_verdict else None,
+            "auto_integrate_status": integrate_result.status
+                if integrate_result else None,
+        }, task_key=snap.key)
+    else:
+        _emit_event(cfg, journal_mod.EventType.task_blocked, {
+            "reason": final_blocked_reason or "blocked",
+        }, task_key=snap.key)
+
     # If the final status is Blocked (panel block, auto-integrate fail,
     # awaiting-PR-in-unattended-mode), fire the task-blocked notification
     # here. Early-return Blocked paths (spawn failures, summary missing)
     # notify via _mark_blocked instead — the two paths are disjoint, so
     # exactly one notification fires per Blocked outcome.
     if final_status == plan_mod.BLOCKED:
-        try:
-            cfg.notifier.send(notify_mod.task_blocked_notification(
-                task_key=snap.key,
-                summary=snap.summary,
-                reason=final_blocked_reason or "blocked",
-                run_id=cfg.run_id,
-                summary_path=str(result.summary_path)
-                    if result.summary_path.exists() else None,
-                tasks_yaml=str(cfg.tasks_path),
-            ))
-        except Exception:
-            pass
+        _send_notification(cfg, notify_mod.task_blocked_notification(
+            task_key=snap.key,
+            summary=snap.summary,
+            reason=final_blocked_reason or "blocked",
+            run_id=cfg.run_id,
+            summary_path=str(result.summary_path)
+                if result.summary_path.exists() else None,
+            tasks_yaml=str(cfg.tasks_path),
+        ), task_key=snap.key)
 
     return final_status
 
@@ -1092,21 +1173,30 @@ def _resolve_summary(
     # PR-gate event: notify here so the human sees the gate trip on
     # their phone whether the dispatcher proceeds to stdin (supervised)
     # or parks the task Blocked (unattended). Best-effort.
-    try:
-        cfg.notifier.send(notify_mod.awaiting_pr_approval_notification(
-            task_key=snap.key,
-            summary=snap.summary,
-            pr_title=s.prepared_pr_title,
-            pr_branch=s.prepared_pr_branch,
-            run_id=cfg.run_id,
-            summary_path=None,  # _resolve_summary doesn't have summary_path
-        ))
-    except Exception:
-        pass
+    _send_notification(cfg, notify_mod.awaiting_pr_approval_notification(
+        task_key=snap.key,
+        summary=snap.summary,
+        pr_title=s.prepared_pr_title,
+        pr_branch=s.prepared_pr_branch,
+        run_id=cfg.run_id,
+        summary_path=None,  # _resolve_summary doesn't have summary_path
+    ), task_key=snap.key)
+
+    def _gate(decision: str, **extra) -> None:
+        """Journal one pr_gate decision. Records who decided and the outcome
+        so an auditor can reconstruct every gate trip from the journal."""
+        _emit_event(cfg, journal_mod.EventType.pr_gate, {
+            "decision": decision,
+            "mode": cfg.mode,
+            "pr_title": s.prepared_pr_title,
+            "pr_branch": s.prepared_pr_branch,
+            **extra,
+        }, task_key=snap.key)
 
     # Awaiting human PR approval.
     if cfg.mode == "unattended":
         _log(log_path, f"  {snap.key} awaiting human PR approval — left Blocked")
+        _gate("deferred-unattended")
         return plan_mod.BLOCKED, None, "awaiting human PR approval"
 
     # supervised: ask
@@ -1124,13 +1214,17 @@ def _resolve_summary(
         )
         if result.url:
             _log(log_path, f"  {snap.key} PR raised after human approval: {result.url}")
+            _gate("approve", pr_url=result.url)
             return plan_mod.DONE, result.url, None
         _log(log_path, f"  {snap.key} gh pr create failed: {result.error}")
+        _gate("approve", pr_url=None, error=f"gh pr create failed: {result.error}"[:300])
         return plan_mod.BLOCKED, None, f"gh pr create failed: {result.error}"
     if decision == "reject":
         _log(log_path, f"  {snap.key} human rejected PR")
+        _gate("reject")
         return plan_mod.BLOCKED, None, "human rejected PR"
     _log(log_path, f"  {snap.key} human skipped PR approval")
+    _gate("skip")
     return plan_mod.BLOCKED, None, "human skipped PR approval"
 
 
@@ -1187,22 +1281,23 @@ def _mark_blocked(cfg: RunConfig, task_key: str, *, reason: str) -> None:
             summary_for_notify["summary_path"] = str(sp)
 
     _mutate_row(cfg, task_key, _apply)
-    # Best-effort notification. Failures are swallowed inside the
-    # Notifier — never let a flaky webhook break the dispatch loop.
-    try:
-        cfg.notifier.send(notify_mod.task_blocked_notification(
-            task_key=task_key,
-            summary=summary_for_notify["summary"],
-            reason=reason,
-            run_id=cfg.run_id,
-            summary_path=summary_for_notify["summary_path"],
-            tasks_yaml=str(cfg.tasks_path),
-        ))
-    except Exception:
-        # Last-resort guard against a notifier that bypassed its own
-        # try/except. We do NOT want to convert a Blocked-state stamp
-        # into a dispatcher crash on a notification bug.
-        pass
+    # Terminal journal event for the early-return Blocked paths (spawn
+    # failure, summary missing/malformed, commit-retry exhaustion,
+    # worker exception). Disjoint from the in-worker Blocked task_blocked
+    # in _run_task, so exactly one terminal event fires per task.
+    _emit_event(cfg, journal_mod.EventType.task_blocked,
+                {"reason": reason}, task_key=task_key)
+    # Best-effort notification + notify_sent journal event. Failures are
+    # swallowed — never let a flaky webhook (or a journal write) break the
+    # dispatch loop.
+    _send_notification(cfg, notify_mod.task_blocked_notification(
+        task_key=task_key,
+        summary=summary_for_notify["summary"],
+        reason=reason,
+        run_id=cfg.run_id,
+        summary_path=summary_for_notify["summary_path"],
+        tasks_yaml=str(cfg.tasks_path),
+    ), task_key=task_key)
 
 
 # --- misc helpers -----------------------------------------------------------
@@ -1272,6 +1367,145 @@ def _log(log_path: Path, message: str) -> None:
     with _log_lock:
         with log_path.open("a", encoding="utf-8") as fh:
             fh.write(f"{ts}  {message}\n")
+
+
+# --- event journal helpers --------------------------------------------------
+
+
+def _open_journal(
+    cfg: RunConfig, run_dir: Path, repo_root: Path, log_path: Path,
+) -> journal_mod.Journal | None:
+    """Create this run's event journal, or return None on failure.
+
+    Journaling is a control-surface convenience, NOT a precondition for the
+    run: if the genesis write fails for any reason (unwritable runs dir,
+    hashing error, …) we warn to stderr + run.log and return None so the
+    dispatch loop proceeds journal-less. Every later emit is a no-op when
+    the journal is None. Mirrors the notifier's best-effort policy.
+    """
+    journal_path = run_dir / journal_mod.JOURNAL_FILENAME
+    reviewer_prompts_dir = getattr(
+        cfr_mod, "_PROMPTS_DIR",
+        Path(journal_mod.__file__).parent / "reviewer_prompts",
+    )
+    try:
+        j = journal_mod.Journal.create(
+            journal_path,
+            tasks_yaml_path=cfg.tasks_path,
+            reviewer_prompts_dir=reviewer_prompts_dir,
+            run_id=cfg.run_id,
+        )
+        _log(log_path, f"event journal at {journal_path}")
+        return j
+    except Exception as e:
+        msg = f"journal creation failed ({journal_path}): {e} — running journal-less"
+        _log(log_path, msg)
+        sys.stderr.write(f"warning: {msg}\n")
+        return None
+
+
+def _emit_event(
+    cfg: RunConfig,
+    event_type: journal_mod.EventType,
+    payload: dict[str, Any] | None = None,
+    *,
+    task_key: str | None = None,
+) -> None:
+    """Append one event to the run journal, best-effort.
+
+    A journal write must NEVER crash a run — on any failure we warn to
+    stderr and continue (mirroring the notifier policy). A no-op when
+    journaling is disabled (cfg.journal is None). Thread-safe: Journal.append
+    serializes concurrent worker appends behind its own lock.
+    """
+    j = cfg.journal
+    if j is None:
+        return
+    try:
+        j.append(event_type, payload or {}, task_key=task_key)
+    except Exception as e:
+        et = getattr(event_type, "value", event_type)
+        sys.stderr.write(
+            f"warning: journal append failed for {et!r}"
+            + (f" (task {task_key})" if task_key else "")
+            + f": {e}\n"
+        )
+
+
+def _send_notification(
+    cfg: RunConfig, notification: notify_mod.Notification, *, task_key: str | None = None,
+) -> bool:
+    """Send a notification and journal a notify_sent event — both best-effort.
+
+    Neither a flaky webhook nor a journal write may break the dispatch loop,
+    so both calls are guarded. Returns whether the channel reported delivery.
+    The notify_sent event records the delivery outcome so the journal shows
+    not just that we tried to notify, but whether it landed.
+    """
+    delivered = False
+    try:
+        delivered = bool(cfg.notifier.send(notification))
+    except Exception:
+        # Defensive: Notifier.send is contractually non-raising, but a buggy
+        # channel must not convert a notification into a dispatcher crash.
+        pass
+    _emit_event(cfg, journal_mod.EventType.notify_sent, {
+        "title": notification.title,
+        "urgency": notification.urgency,
+        "tags": list(notification.tags),
+        "delivered": delivered,
+    }, task_key=task_key)
+    return delivered
+
+
+def _spawn_usage_payload(result: spawn_mod.SpawnResult) -> dict[str, Any]:
+    """Build the task_spawn_finished payload: exit code + per-task usage/cost.
+
+    Every usage field is optional — None when the Claude CLI didn't emit a
+    JSON usage block — and is carried through as-is (the journal records the
+    absence as faithfully as a value)."""
+    u = result.usage
+    return {
+        "exit_code": result.exit_code,
+        "cost_usd": u.cost_usd,
+        "input_tokens": u.input_tokens,
+        "output_tokens": u.output_tokens,
+        "cache_read_input_tokens": u.cache_read_input_tokens,
+        "cache_creation_input_tokens": u.cache_creation_input_tokens,
+        "duration_ms": u.duration_ms,
+        "num_turns": u.num_turns,
+        "model": u.model,
+    }
+
+
+def _summary_parsed_payload(s: summary_mod.Summary) -> dict[str, Any]:
+    """Build the summary_parsed payload. On a malformed parse the discovered
+    reasons ride along in `problems` (DISP-3) so a journal reader sees *why*
+    the summary was rejected, not merely that it was."""
+    return {
+        "status": s.status,
+        "malformed": bool(s.malformed),
+        "problems": list(s.problems),
+        "iterations": s.iterations,
+        "linter_cycles": s.linter_cycles,
+        "final_quality_score": s.final_quality_score,
+        "awaiting_human_approval": bool(s.awaiting_human_approval),
+    }
+
+
+def _panel_verdict_payload(panel: cfr_mod.PanelVerdict) -> dict[str, Any]:
+    """Build the panel_verdict payload: the consensus gate, its summary, and
+    each family's verdict. On a block the blocking findings' locations ride
+    along so the reason is reconstructable from the journal alone."""
+    return {
+        "consensus": panel.consensus,
+        "summary": panel.summary,
+        "blocking_findings": len(panel.blocking_findings),
+        "verdicts": {r.family: r.verdict.value for r in panel.reviewers},
+        "blocking_locations": [
+            f.location for f in panel.blocking_findings if f.location
+        ],
+    }
 
 
 def _log_summary_problems(log_path: Path, task_key: str, s: summary_mod.Summary) -> None:
