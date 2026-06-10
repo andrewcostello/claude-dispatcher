@@ -39,6 +39,7 @@ from . import plan as plan_mod
 from . import pr as pr_mod
 from . import preflight as preflight_mod
 from . import push_verify as pv_mod
+from . import repo_config as repo_config_mod
 from . import spawn as spawn_mod
 from . import summary as summary_mod
 from . import worktree as wt_mod
@@ -650,6 +651,11 @@ def _run_task(
 
             _emit_event(cfg, journal_mod.EventType.panel_verdict,
                         _panel_verdict_payload(panel_verdict), task_key=snap.key)
+            # Scorecard groundwork (VG-5): one event per advisory finding.
+            # Advisory verdicts never gate anything — these events (plus
+            # the advisory_verdicts map in panel_verdict) are the raw
+            # material for a future promotion decision.
+            _emit_advisory_finding_events(cfg, panel_verdict, snap.key)
             if panel_verdict.is_approve or iterations_remaining <= 0:
                 break
 
@@ -963,6 +969,9 @@ def _run_cross_family_panel(
         branch=diff_branch,
         base_branch=diff_base,
         reviewers=_panel_reviewer_factory(cfg),
+        advisory_reviewers=_panel_advisory_reviewer_factory(
+            cfg, repo_root, log_path, snap.key,
+        ),
         log=lambda m: _log(log_path, m),
     )
 
@@ -1108,6 +1117,75 @@ def _panel_reviewer_factory(cfg: RunConfig) -> list[cfr_mod.Reviewer]:
     if _panel_reviewers_override is not None:
         return _panel_reviewers_override
     return cfr_mod.default_reviewers(timeout_seconds=cfg.cross_family_panel_timeout)
+
+
+# Test hook for ADVISORY (probationary, non-blocking) reviewers, mirroring
+# `set_panel_reviewers`. None means "derive from the target repo's
+# .dispatcher.yaml"; an explicit EMPTY LIST forces no advisory reviewers —
+# the two are deliberately distinct. Production code never sets this.
+_panel_advisory_override: list[cfr_mod.Reviewer] | None = None
+
+
+def set_panel_advisory_reviewers(reviewers: list[cfr_mod.Reviewer] | None) -> None:
+    """Test-only: override the advisory reviewer set the panel uses.
+
+    None restores config-derived behaviour; [] forces no advisory seats.
+    """
+    global _panel_advisory_override
+    _panel_advisory_override = reviewers
+
+
+def _panel_advisory_reviewer_factory(
+    cfg: RunConfig, repo_root: Path, log_path: Path, task_key: str,
+) -> list[cfr_mod.Reviewer]:
+    """Resolve the advisory (probationary) reviewer seats for one panel run.
+
+    Source of truth is the target repo's `.dispatcher.yaml` `panel.advisory`
+    list. This path must NEVER break the authoritative panel: a malformed
+    config is logged and yields no advisory reviewers; unknown names are
+    skipped and logged.
+    """
+    if _panel_advisory_override is not None:
+        return _panel_advisory_override
+    try:
+        repo_cfg = repo_config_mod.load(repo_root)
+    except repo_config_mod.RepoConfigError as e:
+        _log(log_path,
+             f"  {task_key} panel: invalid .dispatcher.yaml — running "
+             f"without advisory reviewers: {e}")
+        return []
+    if not repo_cfg.panel_advisory:
+        return []
+    reviewers, unknown = cfr_mod.advisory_reviewers_from_names(
+        repo_cfg.panel_advisory,
+        timeout_seconds=cfg.cross_family_panel_timeout,
+    )
+    for name in unknown:
+        _log(log_path,
+             f"  {task_key} panel: unknown advisory reviewer {name!r} in "
+             f".dispatcher.yaml — skipped")
+    return reviewers
+
+
+def _emit_advisory_finding_events(
+    cfg: RunConfig, panel: cfr_mod.PanelVerdict, task_key: str,
+) -> None:
+    """Emit one `panel_advisory_finding` event per advisory finding.
+
+    The scorecard raw material: family + severity + location + the
+    advisory reviewer's overall verdict, truncated like other journal
+    payloads. No advisory reviewers (or none with findings) → no events.
+    """
+    for adv in panel.advisory:
+        for f in adv.findings:
+            _emit_event(cfg, journal_mod.EventType.panel_advisory_finding, {
+                "family": adv.family,
+                "severity": f.severity.value,
+                "location": f.location,
+                "description": (f.description or "")[:500],
+                "fix": (f.fix or "")[:500],
+                "advisory_verdict": adv.verdict.value,
+            }, task_key=task_key)
 
 
 def _append_panel_findings_to_summary(
@@ -2034,7 +2112,11 @@ def _summary_parsed_payload(s: summary_mod.Summary) -> dict[str, Any]:
 def _panel_verdict_payload(panel: cfr_mod.PanelVerdict) -> dict[str, Any]:
     """Build the panel_verdict payload: the consensus gate, its summary, and
     each family's verdict. On a block the blocking findings' locations ride
-    along so the reason is reconstructable from the journal alone."""
+    along so the reason is reconstructable from the journal alone.
+
+    `advisory_verdicts` is always present ({} when no advisory reviewer
+    ran) — the scorecard groundwork for the probationary tier (VG-5). It
+    never feeds the consensus."""
     return {
         "consensus": panel.consensus,
         "summary": panel.summary,
@@ -2043,6 +2125,9 @@ def _panel_verdict_payload(panel: cfr_mod.PanelVerdict) -> dict[str, Any]:
         "blocking_locations": [
             f.location for f in panel.blocking_findings if f.location
         ],
+        "advisory_verdicts": {
+            r.family: r.verdict.value for r in panel.advisory
+        },
     }
 
 

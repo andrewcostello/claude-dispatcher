@@ -864,3 +864,315 @@ def test_notifier_no_op_when_no_channel_configured(repo: Path, monkeypatch) -> N
     # No reviewer override → panel skipped on low-risk.
     rc = orchestrator.execute(_args(repo, key="PANEL-B", panel_mode="auto"))
     assert rc == 0  # silent success path
+
+
+# --- advisory (probationary) reviewers — VG-5 --------------------------------
+
+
+from claude_dispatcher import journal as journal_mod  # noqa: E402
+from claude_dispatcher import repo_config  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _reset_advisory_reviewers():
+    """Each test starts and ends with the config-derived advisory behaviour
+    (override None). Mirrors _reset_reviewers."""
+    orchestrator.set_panel_advisory_reviewers(None)
+    yield
+    orchestrator.set_panel_advisory_reviewers(None)
+
+
+def _journal_events(repo: Path) -> list[journal_mod.JournalEvent]:
+    jpath = repo / "_runs" / "panel-test" / journal_mod.JOURNAL_FILENAME
+    return list(journal_mod.read_events(jpath))
+
+
+_ADVISORY_CRITICAL_OUTPUT = textwrap.dedent("""\
+    ## Verdict
+    CHANGES_REQUESTED
+
+    ## Dimension scores
+    - Correctness: 2
+
+    ## Findings
+
+    ### CRITICAL: apps/wallet/payout.go:7
+    Description: Advisory-only: payout rounding favours the house.
+    Fix: Use banker's rounding for the payout calculation.
+""")
+
+
+def test_advisory_blocker_never_blocks_or_iterates(repo: Path, monkeypatch) -> None:
+    """Edge 2 (e2e): advisory CHANGES_REQUESTED with a CRITICAL finding,
+    authoritative 3/3 APPROVE, iterate budget available → task lands Done,
+    NO panel_iterate fires, the finding is journaled as
+    panel_advisory_finding and rendered in the advisory appendix only.
+    """
+    _seed_yaml(repo, _CRITICAL_TASK_YAML)
+    _patch_spawn(monkeypatch)
+    _set_reviewers(monkeypatch, [
+        ("claude", _APPROVE_OUTPUT),
+        ("gemini", _APPROVE_OUTPUT),
+        ("codex", _APPROVE_OUTPUT),
+    ])
+    adv = _StubReviewer("grok", _ADVISORY_CRITICAL_OUTPUT)
+    orchestrator.set_panel_advisory_reviewers([adv])
+
+    rc = orchestrator.execute(_args(
+        repo, key="PANEL-A", panel_mode="auto",
+        cross_family_panel_iterate=1,
+    ))
+    assert rc == 0, "advisory dissent must never block the task"
+    doc = yaml_io.load(repo / "tasks.yaml")
+    row = next(t for t in doc["tasks"] if t["key"] == "PANEL-A")
+
+    assert row["status"] == "Done"
+    assert row["panel_consensus"] == "approve"
+    assert row["panel_blocking_findings"] == 0
+    assert "panel_iterations_used" not in row
+    # Advisory verdicts must NOT leak into the authoritative YAML columns.
+    assert "panel_verdict_grok" not in row
+    assert row["panel_verdict_claude"] == "APPROVE"
+    assert adv.call_count == 1
+
+    events = _journal_events(repo)
+    types = [e.event_type for e in events]
+    assert "panel_iterate" not in types, "advisory findings must not trigger iterate"
+    pv = next(e for e in events if e.event_type == "panel_verdict")
+    assert pv.payload["advisory_verdicts"] == {"grok": "CHANGES_REQUESTED"}
+    assert pv.payload["verdicts"] == {
+        "claude": "APPROVE", "gemini": "APPROVE", "codex": "APPROVE",
+    }
+    assert pv.payload["blocking_findings"] == 0
+
+    adv_events = [e for e in events if e.event_type == "panel_advisory_finding"]
+    assert len(adv_events) == 1
+    payload = adv_events[0].payload
+    assert payload["family"] == "grok"
+    assert payload["severity"] == "CRITICAL"
+    assert payload["location"] == "apps/wallet/payout.go:7"
+    assert "rounding" in payload["description"]
+    assert "banker" in payload["fix"]
+    assert payload["advisory_verdict"] == "CHANGES_REQUESTED"
+    assert adv_events[0].task_key == "PANEL-A"
+
+    # Findings live in the clearly-labelled advisory appendix of summary.md,
+    # and there is no blocking-findings section at all.
+    summary_text = Path(row["summary_path"]).read_text(encoding="utf-8")
+    assert "### Advisory reviewers (non-blocking, probationary)" in summary_text
+    assert "payout.go:7" in summary_text
+    assert "### Blocking findings" not in summary_text
+
+
+def test_advisory_unavailable_panel_still_approves(repo: Path, monkeypatch) -> None:
+    """Edge 1 (e2e): advisory CLI missing while authoritative 3/3 APPROVE →
+    consensus "approve" (NOT "incomplete"); advisory_verdicts records
+    UNAVAILABLE; no advisory finding events.
+    """
+    _seed_yaml(repo, _CRITICAL_TASK_YAML)
+    _patch_spawn(monkeypatch)
+    _set_reviewers(monkeypatch, [
+        ("claude", _APPROVE_OUTPUT),
+        ("gemini", _APPROVE_OUTPUT),
+        ("codex", _APPROVE_OUTPUT),
+    ])
+
+    class _MissingGrok(cfr.Reviewer):
+        family = "grok"
+        def _invoke_cli(self, prompt: str) -> str:
+            raise FileNotFoundError("grok not installed")
+
+    orchestrator.set_panel_advisory_reviewers([_MissingGrok()])
+
+    rc = orchestrator.execute(_args(repo, key="PANEL-A", panel_mode="auto"))
+    assert rc == 0
+    doc = yaml_io.load(repo / "tasks.yaml")
+    row = next(t for t in doc["tasks"] if t["key"] == "PANEL-A")
+    assert row["status"] == "Done"
+    assert row["panel_consensus"] == "approve"
+
+    events = _journal_events(repo)
+    pv = next(e for e in events if e.event_type == "panel_verdict")
+    assert pv.payload["advisory_verdicts"] == {"grok": "UNAVAILABLE"}
+    assert not [e for e in events if e.event_type == "panel_advisory_finding"]
+
+
+def test_advisory_findings_never_reach_iterate_prompt(repo: Path, monkeypatch) -> None:
+    """Edge 3 (e2e): an authoritative reviewer blocks while advisory raises
+    its own CRITICAL → consensus "block", and the corrective iterate prompt
+    contains ONLY the authoritative findings.
+    """
+    _seed_yaml(repo, _CRITICAL_TASK_YAML)
+    prompts: list[str] = []
+
+    def fake(claude_bin, cwd, env, prompt, extra_args=None, timeout_seconds=3600):
+        prompts.append(prompt)
+        proc = subprocess.run(
+            [sys.executable, str(FAKE_CLAUDE)],
+            input=prompt, capture_output=True, text=True,
+            cwd=str(cwd), env=env, timeout=timeout_seconds,
+        )
+        return spawn_mod.SpawnResult(
+            exit_code=proc.returncode,
+            summary_path=Path(env["SUMMARY_PATH"]),
+            stdout=proc.stdout, stderr=proc.stderr,
+        )
+
+    monkeypatch.setattr(spawn_mod, "spawn_claude", fake)
+    revs = [
+        _StubReviewer("claude", _APPROVE_OUTPUT),
+        _StubReviewer("gemini", _APPROVE_OUTPUT),
+        _StubReviewer("codex", _CHANGES_REQUESTED_OUTPUT),  # always blocks
+    ]
+    orchestrator.set_panel_reviewers(revs)
+    orchestrator.set_panel_advisory_reviewers(
+        [_StubReviewer("grok", _ADVISORY_CRITICAL_OUTPUT)]
+    )
+
+    rc = orchestrator.execute(_args(
+        repo, key="PANEL-A", panel_mode="auto",
+        cross_family_panel_iterate=1,
+    ))
+    assert rc == 1
+    doc = yaml_io.load(repo / "tasks.yaml")
+    row = next(t for t in doc["tasks"] if t["key"] == "PANEL-A")
+    assert row["status"] == "Blocked"
+    assert row["panel_consensus"] == "block"
+
+    # Two spawns: initial + one iterate. The iterate prompt carries the
+    # authoritative finding and NOT the advisory one.
+    assert len(prompts) == 2
+    iterate_prompt = prompts[1]
+    assert "apps/wallet/service.go:42" in iterate_prompt
+    assert "payout.go:7" not in iterate_prompt
+
+
+def test_no_advisory_configured_is_noop(repo: Path, monkeypatch) -> None:
+    """Edge 4 (e2e): no .dispatcher.yaml, no override → behaviour identical
+    to today; advisory_verdicts is {} and no advisory events fire.
+    """
+    _seed_yaml(repo, _CRITICAL_TASK_YAML)
+    _patch_spawn(monkeypatch)
+    _set_reviewers(monkeypatch, [
+        ("claude", _APPROVE_OUTPUT),
+        ("gemini", _APPROVE_OUTPUT),
+        ("codex", _APPROVE_OUTPUT),
+    ])
+    # Override deliberately left at None — config-derived path with no config.
+
+    rc = orchestrator.execute(_args(repo, key="PANEL-A", panel_mode="auto"))
+    assert rc == 0
+    doc = yaml_io.load(repo / "tasks.yaml")
+    row = next(t for t in doc["tasks"] if t["key"] == "PANEL-A")
+    assert row["status"] == "Done"
+    assert row["panel_consensus"] == "approve"
+
+    events = _journal_events(repo)
+    pv = next(e for e in events if e.event_type == "panel_verdict")
+    assert pv.payload["advisory_verdicts"] == {}
+    assert not [e for e in events if e.event_type == "panel_advisory_finding"]
+
+
+def test_unknown_advisory_name_in_config_skipped_and_logged(repo: Path, monkeypatch) -> None:
+    """Edge 5 (e2e): `.dispatcher.yaml` lists an unknown advisory family →
+    it is skipped + logged and the authoritative panel runs normally.
+    """
+    (repo / ".dispatcher.yaml").write_text(
+        "panel:\n  advisory: [foo]\n", encoding="utf-8",
+    )
+    _seed_yaml(repo, _CRITICAL_TASK_YAML)
+    _patch_spawn(monkeypatch)
+    _set_reviewers(monkeypatch, [
+        ("claude", _APPROVE_OUTPUT),
+        ("gemini", _APPROVE_OUTPUT),
+        ("codex", _APPROVE_OUTPUT),
+    ])
+
+    rc = orchestrator.execute(_args(repo, key="PANEL-A", panel_mode="auto"))
+    assert rc == 0
+    doc = yaml_io.load(repo / "tasks.yaml")
+    row = next(t for t in doc["tasks"] if t["key"] == "PANEL-A")
+    assert row["status"] == "Done"
+    assert row["panel_consensus"] == "approve"
+
+    pv = next(e for e in _journal_events(repo)
+              if e.event_type == "panel_verdict")
+    assert pv.payload["advisory_verdicts"] == {}
+
+    log_text = (repo / "_runs" / "panel-test" / "run.log").read_text(encoding="utf-8")
+    assert "unknown advisory reviewer 'foo'" in log_text
+
+
+def test_malformed_dispatcher_yaml_does_not_break_panel(repo: Path, monkeypatch) -> None:
+    """A malformed `.dispatcher.yaml` (panel not a mapping) must be logged
+    and the authoritative panel must still run — with no advisory seats.
+    """
+    (repo / ".dispatcher.yaml").write_text(
+        "panel: [not, a, mapping]\n", encoding="utf-8",
+    )
+    _seed_yaml(repo, _CRITICAL_TASK_YAML)
+    _patch_spawn(monkeypatch)
+    _set_reviewers(monkeypatch, [
+        ("claude", _APPROVE_OUTPUT),
+        ("gemini", _APPROVE_OUTPUT),
+        ("codex", _APPROVE_OUTPUT),
+    ])
+
+    rc = orchestrator.execute(_args(repo, key="PANEL-A", panel_mode="auto"))
+    assert rc == 0
+    doc = yaml_io.load(repo / "tasks.yaml")
+    row = next(t for t in doc["tasks"] if t["key"] == "PANEL-A")
+    assert row["status"] == "Done"
+    assert row["panel_consensus"] == "approve"
+
+    pv = next(e for e in _journal_events(repo)
+              if e.event_type == "panel_verdict")
+    assert pv.payload["advisory_verdicts"] == {}
+    log_text = (repo / "_runs" / "panel-test" / "run.log").read_text(encoding="utf-8")
+    assert "invalid .dispatcher.yaml" in log_text
+
+
+def test_advisory_empty_list_override_forces_none(repo: Path, monkeypatch) -> None:
+    """set_panel_advisory_reviewers([]) forces zero advisory seats even when
+    the repo config asks for grok — [] and None are deliberately distinct,
+    and this is also what keeps the real grok binary out of the test run.
+    """
+    (repo / ".dispatcher.yaml").write_text(
+        "panel:\n  advisory: [grok]\n", encoding="utf-8",
+    )
+    _seed_yaml(repo, _CRITICAL_TASK_YAML)
+    _patch_spawn(monkeypatch)
+    _set_reviewers(monkeypatch, [
+        ("claude", _APPROVE_OUTPUT),
+        ("gemini", _APPROVE_OUTPUT),
+        ("codex", _APPROVE_OUTPUT),
+    ])
+    orchestrator.set_panel_advisory_reviewers([])  # force NO advisory
+
+    rc = orchestrator.execute(_args(repo, key="PANEL-A", panel_mode="auto"))
+    assert rc == 0
+    pv = next(e for e in _journal_events(repo)
+              if e.event_type == "panel_verdict")
+    assert pv.payload["advisory_verdicts"] == {}
+
+
+def test_advisory_factory_reads_repo_config(tmp_path: Path) -> None:
+    """Unit: the orchestrator factory resolves `panel: {advisory: [grok]}`
+    from a repo root into a real GrokReviewer carrying the panel timeout —
+    without running the panel.
+    """
+    (tmp_path / ".dispatcher.yaml").write_text(
+        "panel:\n  advisory: [grok]\n", encoding="utf-8",
+    )
+
+    class _Cfg:
+        cross_family_panel_timeout = 321
+
+    reviewers = orchestrator._panel_advisory_reviewer_factory(
+        _Cfg(), tmp_path, tmp_path / "run.log", "VG-T",
+    )
+    assert len(reviewers) == 1
+    assert isinstance(reviewers[0], cfr.GrokReviewer)
+    assert reviewers[0].timeout_seconds == 321
+    # Sanity: the loader saw exactly what the factory consumed.
+    assert repo_config.load(tmp_path).panel_advisory == ("grok",)
