@@ -39,6 +39,7 @@
       "iteration_count": 0,
       "blocked_reason": null,
       "pr_url": "https://example.test/pr/1",
+      "needs_push": false,
       "dispatcher_run_id": "fixture-run",
       "journal": null
     },
@@ -54,6 +55,7 @@
       "iteration_count": null,
       "blocked_reason": null,
       "pr_url": null,
+      "needs_push": false,
       "dispatcher_run_id": "fixture-run",
       "journal": null
     },
@@ -69,6 +71,7 @@
       "iteration_count": null,
       "blocked_reason": null,
       "pr_url": null,
+      "needs_push": false,
       "dispatcher_run_id": null,
       "journal": null
     },
@@ -84,6 +87,7 @@
       "iteration_count": null,
       "blocked_reason": "spawn_failed: boom",
       "pr_url": null,
+      "needs_push": false,
       "dispatcher_run_id": "fixture-run",
       "journal": null
     }

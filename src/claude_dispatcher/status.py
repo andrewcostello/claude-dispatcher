@@ -71,6 +71,7 @@ A single object::
           "iteration_count": int | null,
           "blocked_reason":  str | null,
           "pr_url":          str | null,
+          "needs_push":      bool,         # Done but branch unpushed / PR missing
           "dispatcher_run_id": str | null, # which run last touched this row
           "journal": {                     # enrichment from journal events for
                                            #   this task; null on pre-journal runs
@@ -215,6 +216,7 @@ def build_status(
             "iteration_count": _int_or_none(row.get("iteration_count")),
             "blocked_reason": _str_or_none(row.get("blocked_reason")),
             "pr_url": _str_or_none(row.get("pr_url")),
+            "needs_push": bool(row.get("needs_push")),
             "dispatcher_run_id": _str_or_none(row.get("dispatcher_run_id")),
             "journal": journal_index.get(t.key),
         })
@@ -521,7 +523,14 @@ def render_table(status: dict[str, Any]) -> str:
         iters = t["iteration_count"]
         iters_str = str(iters) if iters is not None else "—"
         model = t["model"] or "—"
-        note = t["blocked_reason"] or t["pr_url"] or _journal_note(t.get("journal"))
+        # A Done task flagged needs_push committed but never pushed (or its PR
+        # is missing); surface it ahead of the journal note.
+        note = (
+            t["blocked_reason"]
+            or t["pr_url"]
+            or ("⚠ needs_push (branch unpushed / PR missing)" if t.get("needs_push") else "")
+            or _journal_note(t.get("journal"))
+        )
         lines.append(
             f"  {t['key']:16} {t['status']:12} {t['wave']:<4} {cost_str:>9} "
             f"{iters_str:5} {model:18} {note[:40]}"

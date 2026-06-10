@@ -264,6 +264,25 @@ re-spawn was issued.
 | `trigger` | string | Why the retry fired. |
 | `outcome` | string | `committed` or `still_no_commits`. |
 
+**`push_verify`** — post-Done push/PR verification ran. Emitted once per Done
+task on the PR-raising workflow (skipped for auto-integrate runs, which merge
+direct-to-base and never push). One event is emitted for *every* outcome,
+including the no-remote skip, so the decision is reconstructable from the
+journal alone. The `needs_push` outcome corresponds to the row's `needs_push:
+true` field — Done landed but the branch is still unpushed (or its PR missing)
+after one corrective re-spawn; status stays Done (an advisory signal, not a
+block).
+
+| Key                 | Type           | Notes |
+|---------------------|----------------|-------|
+| `expect_pr`         | bool           | Whether a PR was expected (true unless auto-integrate). |
+| `outcome`           | string         | `pushed`, `recovered`, `needs_push`, `skipped-no-remote`, or `error`. |
+| `reason`            | string         | Human-readable detail (e.g. `branch absent on origin`). |
+| `retry_attempted`   | bool           | Whether the corrective push/PR-only re-spawn fired. |
+| `pr_checked`        | bool           | Present when a push was confirmed: whether `gh` was actually consulted (false = PR check inconclusive). |
+| `pre_retry_status`  | string         | Present when `retry_attempted`: the pre-retry verdict (`not-pushed` / `no-pr`). |
+| `post_retry_status` | string         | Present on `needs_push`: the still-failing post-retry verdict. |
+
 **`panel_started`** — a cross-family review panel run began.
 
 | Key                    | Type | Notes |

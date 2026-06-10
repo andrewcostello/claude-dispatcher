@@ -25,6 +25,15 @@ SCENARIOS = {
     "done-direct-to-base": "Done",   # Done; commits on feat/X AND FF-merges into
                                      # base_branch (BSA-style direct-to-base
                                      # workflow). Leaves feat == base.
+    "done-pushed": "Done",           # Done; commits AND pushes the branch to
+                                     # origin on the first run (the happy path).
+    "done-no-push": "Done",          # Done; commits but NEVER pushes (the DISP-9
+                                     # failure mode — surfaces needs_push).
+    "done-push-retry": "Done",       # Done; first run commits-but-no-push,
+                                     # the push-retry invocation pushes.
+    "done-pushed-not-raised": "Done",  # Done; commits + pushes, but the PR
+                                     # section honestly says "Not raised: ..."
+                                     # (a deliberately PR-less Done).
     "blocked-malformed": "Garbage",  # invalid status → parser marks malformed
     "escalated": "Escalated",
     "blocked-iteration-cap": "Blocked",
@@ -124,8 +133,41 @@ def main() -> int:
             check=False, capture_output=True,
         )
 
+    def _push_current_branch():
+        """Push the worktree's current branch to origin, setting upstream.
+
+        The worktree shares the parent repo's remotes, so `origin` resolves
+        even though we're inside a `git worktree`. Best-effort: a missing
+        remote (the no-remote scenarios) just no-ops under check=False.
+        """
+        import subprocess
+        branch = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            check=False, capture_output=True, text=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "push", "-u", "origin", branch],
+            check=False, capture_output=True,
+        )
+
     if scenario in ("done", "awaiting-human-pr"):
         _do_commit()
+    elif scenario in ("done-pushed", "done-pushed-not-raised"):
+        _do_commit()
+        _push_current_branch()
+    elif scenario == "done-no-push":
+        # Commit (so the commit-retry gate passes) but never push — even on the
+        # push-retry invocation — so the dispatcher must flag needs_push.
+        _do_commit()
+    elif scenario == "done-push-retry":
+        sentinel = Path(f".fake-claude-push-{task_key}")
+        if sentinel.exists():
+            # Second invocation = the push retry. The commit already exists on
+            # the branch from the first run; just push it this time.
+            _push_current_branch()
+        else:
+            sentinel.write_text("first invocation skipped push\n", encoding="utf-8")
+            _do_commit()
     elif scenario == "done-commit-retry":
         sentinel = Path(f".fake-claude-retry-{task_key}")
         if sentinel.exists():
@@ -195,6 +237,8 @@ def main() -> int:
         lines.append("Not raised: REJECT verdict")
         lines += ["", "## Escalation reason (if Blocked or Escalated)",
                   "Fundamental design flaw identified by multiple reviewers."]
+    elif scenario == "done-pushed-not-raised":
+        lines.append("Not raised: docs-only change landed direct; no PR required")
     else:
         lines.append(f"https://github.com/test/repo/pull/smoke-{task_key.lower()}")
 

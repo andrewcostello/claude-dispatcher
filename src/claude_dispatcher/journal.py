@@ -113,6 +113,7 @@ class EventType(str, Enum):
     task_spawn_finished = "task_spawn_finished"
     summary_parsed = "summary_parsed"
     commit_retry = "commit_retry"
+    push_verify = "push_verify"
     panel_started = "panel_started"
     panel_verdict = "panel_verdict"
     panel_iterate = "panel_iterate"

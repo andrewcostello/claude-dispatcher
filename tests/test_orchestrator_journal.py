@@ -240,6 +240,7 @@ def test_full_run_journal_chain_and_sequence(repo: Path, monkeypatch) -> None:
             "task_started",
             "task_spawn_finished",
             "summary_parsed",
+            "push_verify",     # no remote in the fixture → skipped-no-remote
             "task_done",
         ], f"unexpected lifecycle for {key}"
 
@@ -276,6 +277,7 @@ def test_single_task_exact_sequence(repo: Path, monkeypatch) -> None:
         "task_started",
         "task_spawn_finished",
         "summary_parsed",
+        "push_verify",     # no remote in the fixture → skipped-no-remote
         "task_done",
         "notify_sent",     # run-complete rollup notification
         "run_complete",
