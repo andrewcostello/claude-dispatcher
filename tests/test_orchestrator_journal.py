@@ -85,6 +85,8 @@ def _args(repo: Path, **overrides):
         "--runs-dir", str(repo / "_runs"),
         "--worktree-base", str(repo.parent / "wt"),
         "--claude-bin", sys.executable,
+        # Preflight-clean: the journal harness runs WITH preflight enabled.
+        "--claude-extra-args=--permission-mode bypassPermissions",
     ]
     for k, v in overrides.items():
         if v is None:
@@ -274,6 +276,7 @@ def test_single_task_exact_sequence(repo: Path, monkeypatch) -> None:
     assert rc == 0
     assert _types(_events(repo)) == [
         "run_started",
+        "preflight",       # run-start preflight outcome (OPS-3)
         "task_started",
         "task_spawn_finished",
         "summary_parsed",

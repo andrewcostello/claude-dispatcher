@@ -72,6 +72,9 @@ def _args(repo: Path, **overrides):
         "--runs-dir", str(repo / "_runs"),
         "--worktree-base", str(repo.parent / "wt"),
         "--claude-bin", sys.executable,
+        # Permission-bypass flag so the run-start preflight (OPS-3) passes;
+        # these tests run WITH preflight enabled, mirroring test_orchestrator.
+        "--claude-extra-args=--permission-mode bypassPermissions",
     ]
     for k, v in overrides.items():
         if v is None:
@@ -290,9 +293,13 @@ def test_capture_failure_run_completes_fields_degrade(
     but NOT agent_version, and nothing is blocked because of it."""
     _patch_spawn(monkeypatch)  # spawning is stubbed, so the bad bin only
     # affects capture_agent_version.
+    # skip_preflight: preflight (OPS-3) correctly refuses a missing claude
+    # binary before dispatch — but this test's premise is a bad binary at
+    # CAPTURE time, so bypass preflight to keep testing the degradation path.
     rc = orchestrator.execute(_args(
         repo, only="SMOKE-A",
         claude_bin=str(repo / "no-such-claude-binary"),
+        skip_preflight=True,
     ))
     assert rc == 0, "version-capture failure must never fail the run"
     assert "warning: agent version capture failed" in capsys.readouterr().err

@@ -55,6 +55,7 @@ def _args(repo: Path, **overrides):
         "--worktree-base", str(repo.parent / "wt"),
         "--claude-bin", sys.executable,
         "--only", "SMOKE-A",
+        "--claude-extra-args=--permission-mode bypassPermissions",
     ]
     for k, v in overrides.items():
         argv += [f"--{k.replace('_', '-')}", str(v)]

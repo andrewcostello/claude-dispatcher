@@ -105,6 +105,7 @@ def _args(repo: Path, *, key: str, panel_mode: str = "auto", **overrides):
         "--claude-bin", sys.executable,
         "--only", key,
         "--cross-family-panel", panel_mode,
+        "--claude-extra-args=--permission-mode bypassPermissions",
     ]
     for k, v in overrides.items():
         argv += [f"--{k.replace('_', '-')}", str(v)]

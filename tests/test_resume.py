@@ -84,6 +84,7 @@ def _run_args(repo: Path, run_id: str, **overrides):
         "--worktree-base", str(repo.parent / "wt"),
         "--claude-bin", sys.executable,
         "--cross-family-panel", "never",
+        "--claude-extra-args=--permission-mode bypassPermissions",
     ]
     for k, v in overrides.items():
         argv += [f"--{k.replace('_', '-')}", str(v)]
@@ -340,7 +341,16 @@ def test_kill9_midrun_then_resume_matches_uninterrupted(tmp_path: Path, monkeypa
     fake_bin.write_text(FAKE_CLAUDE.read_text(), encoding="utf-8")
     fake_bin.chmod(0o755)
 
-    env = dict(os.environ)
+    # This test spawns a REAL dispatcher subprocess. Under dogfood, the test
+    # suite itself runs inside a dispatcher session, so the outer session's
+    # contract env (TASK_KEY, SUMMARY_PATH, ...) would otherwise leak into
+    # the child — and fake_claude would overwrite the real session's summary
+    # and commit into the developer's checkout. Strip every dispatcher
+    # contract / fake_claude var before setting this test's own, and pin
+    # cwd to tmp_path so nothing the child does can land in the real repo.
+    _leaky = {"TASK_KEY", "SUMMARY_PATH", "DISPATCHER_RUN_ID", "MAX_ITERATIONS"}
+    env = {k: v for k, v in os.environ.items()
+           if k not in _leaky and not k.startswith("FAKE_CLAUDE_")}
     env["PYTHONPATH"] = str(SRC_DIR)
     env["FAKE_CLAUDE_KILL_KEY"] = "SMOKE-B"
     env["FAKE_CLAUDE_SCENARIO"] = "done"
@@ -351,8 +361,9 @@ def test_kill9_midrun_then_resume_matches_uninterrupted(tmp_path: Path, monkeypa
          "--run-id", "KILLED", "--runs-dir", str(repo / "_runs"),
          "--worktree-base", str(repo.parent / "wt"),
          "--claude-bin", str(fake_bin),
-         "--cross-family-panel", "never"],
-        env=env, capture_output=True, text=True, timeout=120,
+         "--cross-family-panel", "never",
+         "--claude-extra-args=--permission-mode bypassPermissions"],
+        cwd=str(tmp_path), env=env, capture_output=True, text=True, timeout=120,
     )
     # The dispatcher was killed by SIGKILL → negative returncode.
     assert proc.returncode < 0, (

@@ -309,6 +309,7 @@ def _args(repo: Path, **overrides):
         "--runs-dir", str(repo / "_runs"),
         "--worktree-base", str(repo.parent / "wt"),
         "--claude-bin", sys.executable,
+        "--claude-extra-args=--permission-mode bypassPermissions",
     ]
     for k, v in overrides.items():
         if v is None:

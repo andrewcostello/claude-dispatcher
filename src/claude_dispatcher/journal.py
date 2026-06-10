@@ -108,6 +108,11 @@ class EventType(str, Enum):
     """
 
     run_started = "run_started"
+    # Run-start preflight outcome (OPS-3). Emitted once, right after the
+    # journal opens — a separate event type rather than a genesis-payload
+    # extension so the genesis schema / GENESIS_PROVENANCE_KEYS / verify()
+    # stay untouched. See preflight.py's module docstring.
+    preflight = "preflight"
     heartbeat = "heartbeat"
     task_started = "task_started"
     task_spawn_finished = "task_spawn_finished"

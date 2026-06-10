@@ -23,7 +23,8 @@ def repo(tmp_path: Path) -> Path:
                    check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "test@test"], cwd=tmp_path, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True, capture_output=True)
-    roles = tmp_path / ".claude" / "roles"
+    # Tracked at the canonical path so the run-start preflight passes.
+    roles = tmp_path / ".claude" / "workflow" / "roles"
     roles.mkdir(parents=True)
     (roles / "tasker.md").write_text("stub", encoding="utf-8")
     src = Path(__file__).parent / "fixtures" / "three_task.yaml"
@@ -43,6 +44,8 @@ def _args(repo: Path, **overrides):
         "--worktree-base", str(repo.parent / "worktrees-sup"),
         "--claude-bin", sys.executable,
         "--only", "SMOKE-A",
+        # Preflight applies to supervised mode too — keep the harness clean.
+        "--claude-extra-args=--permission-mode bypassPermissions",
     ]
     for k, v in overrides.items():
         argv += [f"--{k.replace('_', '-')}", str(v)]

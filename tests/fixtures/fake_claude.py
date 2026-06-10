@@ -42,10 +42,14 @@ SCENARIOS = {
 
 
 def main() -> int:
-    # `--version` must be handled BEFORE the stdin read: the dispatcher's
-    # capture_agent_version() invokes `<bin> --version` with stdin=DEVNULL
-    # and a real claude prints its version without touching stdin.
-    if "--version" in sys.argv:
+    # --version MUST be handled first, before any stdin read, env reads, or
+    # side effects. Both the run-start preflight / `dispatcher doctor` probes
+    # (OPS-3) and capture_agent_version() (OPS-4) invoke `<bin> --version`
+    # (stdin=DEVNULL); a real `claude --version` is side-effect-free, so the
+    # stub must be too — without this guard a probe would run the full Tasker
+    # simulation below (reading inherited SUMMARY_PATH/TASK_KEY and
+    # `git commit`ing in the developer's real repo).
+    if "--version" in sys.argv[1:]:
         print("1.0.0 (fake-claude)")
         return 0
 
