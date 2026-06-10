@@ -61,6 +61,12 @@ dispatcher run <tasks-yaml> [options]
   --claude-bin NAME                         default: claude
   --claude-extra-args "..."                  extra args passed to `claude` after --print
   --gh-bin NAME                             default: gh
+  --cross-family-panel {auto,always,never}   default: auto — see Cross-family panel below
+  --cross-family-panel-timeout SECONDS      default: 600 — per-reviewer wall-clock budget
+  --cross-family-panel-iterate N            default: 0 — on block, re-spawn Tasker with findings up to N times
+  --ntfy-topic TOPIC                        push events to https://ntfy.sh/<topic>  (env: DISPATCHER_NTFY_TOPIC)
+  --ntfy-server URL                         self-hosted ntfy server                 (env: DISPATCHER_NTFY_SERVER)
+  --slack-webhook-url URL                   Slack incoming webhook URL              (env: DISPATCHER_SLACK_WEBHOOK)
 
 dispatcher status <run-id>                  current state of a run            (not yet implemented)
 dispatcher resume <run-id>                  pick up an interrupted run        (not yet implemented)
@@ -104,6 +110,163 @@ Both bridge subcommands smart-detect:
 If either is missing, the subcommand prints a soft-skip message and exits 0 — safe to chain in CI pipelines on machines without the forecast tool.
 
 The mappable YAML fields (`priority`, `epic`, `parent`, `story_points`, `due_date`, `assignee`, `fix_versions`, `components`) are documented in `claude-workflow/skills/forecast-fields.md`. The dispatcher passively round-trips fields it doesn't recognize, so populating forecast-only fields costs nothing for projects that don't use the bridge.
+
+### Cross-family panel
+
+After a Tasker reports `Done`, the dispatcher can run a panel of three
+independent reviewers — one Claude, one Gemini, one Codex — over the diff
+and the Tasker's `summary.md`. **All three must `APPROVE`** for the panel
+to clear; a single dissenter or any `CRITICAL`/`HIGH` finding flips the
+task to `Blocked` and short-circuits `--auto-integrate`. This is an
+additional safety net on top of the Tasker's in-cycle review panel — the
+in-cycle reviewers are also Claude, so they share Claude's blind spots.
+Cross-family review surfaces what same-family review provably misses.
+
+**When the panel fires**
+
+| `--cross-family-panel` | Behaviour |
+|------------------------|-----------|
+| `auto` (default) | Fires only for risk-gated tickets. A ticket is risk-gated if any of its labels matches `critical`, `security`, `financial`, or `high` (bare or prefixed `risk:`, `tier:`, `severity:`, `priority:`). |
+| `always` | Fires for every `Done` ticket. Useful when you want a cross-family audit of an entire epic. |
+| `never` | Skips the cross-family panel. The Tasker's in-cycle panel still runs. |
+
+Tickets with `type: docs` or `type: test` always skip the panel — they
+don't ship code paths that need this safety net.
+
+**What gets recorded**
+
+When the panel runs, these fields are stamped on the YAML row:
+
+```yaml
+- key: BSA-0-2
+  status: Blocked                                  # or Done if 3/3 APPROVE
+  panel_consensus: block                           # approve | block | incomplete
+  panel_summary: "consensus=block | claude=APPROVE | gemini=APPROVE | codex=CHANGES_REQUESTED | blocking=1 (0C/1H)"
+  panel_verdict_claude: APPROVE
+  panel_verdict_gemini: APPROVE
+  panel_verdict_codex: CHANGES_REQUESTED
+  panel_blocking_findings: 1
+  blocked_reason: "cross_family_panel: consensus=block | ..."
+```
+
+The rendered findings are also appended to the per-task `summary.md` so a
+human auditor sees the three families' verdicts inline.
+
+**The three CLIs**
+
+The panel shells out to `claude`, `agy` (Antigravity CLI; Google
+rebranded `gemini` → `agy` in 2026-05), and `codex` — all three must
+be on `$PATH` (or the panel records that family as `UNAVAILABLE` and
+treats consensus as `incomplete`, which blocks auto-integrate the same as
+a `block` verdict). The Claude invocation reuses the Tasker spawn pattern
+(`--print --output-format json --permission-mode bypassPermissions`);
+the gemini-family reviewer uses `agy --print "" --print-timeout {N}s`
+with the prompt on stdin; Codex uses `exec --full-auto
+--output-last-message`. The family identifier stays `gemini` for column
+compatibility with historical panel records even though the CLI binary
+is `agy`. Per-reviewer timeout defaults to 10 min
+(`--cross-family-panel-timeout`).
+
+**Iterate on block (optional)**
+
+`--cross-family-panel-iterate N` (default `0`) makes the dispatcher
+re-spawn the Tasker with the panel's blocking findings as a corrective
+prompt when the panel returns `block`, then re-run the panel against the
+new diff. Up to `N` iterations before giving up and marking the task
+`Blocked` for human triage.
+
+Each iteration is one extra Tasker spawn + one extra panel run, so cost
+grows linearly with `N`. The iterate path fires on ANY panel block
+regardless of severity or vote split — no CRITICAL or single-dissenter
+gating. The Tasker is given the findings in the format the in-cycle
+reviewer feedback uses, with explicit instructions to address only the
+cited issues and not redo the implementation.
+
+If an iterate spawn exits cleanly but produces no new commit (the Tasker
+decided nothing needed changing, or got confused), the dispatcher
+short-circuits — re-running the panel on the same diff would produce
+the same verdict.
+
+YAML row gains `panel_iterations_used: N` so an auditor can see how many
+corrective cycles ran before the final verdict landed.
+
+**Retroactive validation**
+
+The `tools/cross_family_panel.py` script runs the panel against an
+arbitrary `(repo, base, branch, summary.md)` quadruple — useful for
+dry-running the panel against an already-integrated ticket to validate
+that the prompts catch real defects:
+
+```bash
+python tools/cross_family_panel.py \
+    --repo /path/to/repo \
+    --base epic/my-epic \
+    --branch fix/MY-TICKET-foo \
+    --ticket MY-TICKET \
+    --summary-md /path/to/summary.md
+```
+
+Exit codes: `0` on approve, `1` on block, `2` on incomplete (CI-gateable).
+`--family one` runs a single reviewer for prompt iteration.
+`--dry-run-with-stub-output FILE` substitutes the canned text for all
+three reviewers — exercises the parser without LLM calls.
+
+### Notifications (ntfy.sh / Slack)
+
+The dispatcher can push events to your phone or chat so you know when
+the run needs you, without watching the terminal. Four events fire:
+
+| Event | Urgency | When |
+|-------|---------|------|
+| `task_blocked` | default | Any task lands in `Blocked` (panel block, spawn failure, auto-integrate failure, malformed summary, etc.). One per task. |
+| `awaiting_pr_approval` | high | The Tasker parks at the Critical/financial-paths PR gate. Fires in both `supervised` and `unattended` modes — in unattended you also get the gate trip on your phone, then the task is left Blocked for sweep. |
+| `run_complete` | high if anything Blocked/Escalated, else default | One rollup at the end of the dispatch loop. Lists the first 10 blocked-task reasons inline. |
+| `worker_exception` | high | A worker thread raised something other than a task failure — i.e., the dispatcher itself errored. Should be rare. |
+
+Notifications carry a `click_url` pointing at a `file://` path (typically
+the per-task `summary.md` or the tasks YAML) so tapping the notification
+opens the relevant artefact.
+
+**ntfy.sh** is the lowest-friction sink — no account, no API key. Install
+the ntfy app, subscribe to a topic name only you know, and pass that
+topic to the dispatcher:
+
+```bash
+# CLI flag
+dispatcher run tasks.yaml --ntfy-topic andrew-dispatcher-3a7b
+
+# Or env var (keeps the secret out of shell history)
+export DISPATCHER_NTFY_TOPIC=andrew-dispatcher-3a7b
+dispatcher run tasks.yaml
+```
+
+The topic IS the secret — pick something unguessable.
+
+**Slack incoming webhook** uses Block Kit for rich formatting (header,
+section, context block with tags + click URL). The webhook URL is the
+secret; prefer the env-var form:
+
+```bash
+export DISPATCHER_SLACK_WEBHOOK=https://hooks.slack.com/services/T0/B0/XXXX
+dispatcher run tasks.yaml
+```
+
+A ready-to-paste Slack app manifest is bundled at
+[`docs/slack-app-manifest.json`](docs/slack-app-manifest.json); see
+[`docs/slack-app-setup.md`](docs/slack-app-setup.md) for the 4-step
+walkthrough.
+
+Both can be configured simultaneously — events fan out to all configured
+channels. Failures on one channel don't block the others. Channel
+failures are logged to stderr but never raise into the dispatch loop —
+the dispatcher's job is to dispatch tasks, not to deliver SMS.
+
+**Back-channel "approve from phone" is NOT supported yet.** Both ntfy and
+Slack allow interactive action buttons that POST to a URL, but that
+requires the dispatcher to run an HTTP listener with a public HTTPS
+endpoint. If your PR-approval gate fires often enough to make that worth
+building, file an issue — until then, notifications are one-way push and
+you walk back to the laptop for the supervised stdin gate.
 
 ### Unattended permission flags
 
@@ -254,6 +417,9 @@ Tasks with `blockedBy` only enter the runnable set after every dependency reache
 | `--max-parallel 4` with only 2 runnable tasks | Workers idle; no error. The next dispatch wave fills as dependencies unblock. |
 | Network failure mid-PR-raise | Tasker reports `pr_url: null`; dispatcher marks `Blocked` with reason `pr_raise_failed`. |
 | Worker thread exception | Task `Blocked`, `blocked_reason: worker_exception: <repr>`. |
+| Cross-family panel dissent (any reviewer non-APPROVE) | Task `Blocked`, `blocked_reason: cross_family_panel: <summary>`. Findings appended to `summary.md`. Auto-integrate short-circuited. |
+| Cross-family reviewer CLI missing | That family records `UNAVAILABLE`. Panel `consensus=incomplete`. Treated as block. |
+| Cross-family panel framework error (not a reviewer dissent) | Task `Blocked`, `blocked_reason: cross_family_panel_error: <repr>`. Tasker's work preserved. |
 
 Worktrees on `Done` are left for `git worktree remove` (or housekeeping cron) to clean up later — the dispatcher does not auto-remove. Worktrees on `Blocked`/`Escalated` are explicitly preserved for inspection.
 
@@ -263,19 +429,25 @@ Worktrees on `Done` are left for `git worktree remove` (or housekeeping cron) to
 
 ```
 src/claude_dispatcher/
-├── cli.py             # argparse, subcommand dispatch
-├── run.py             # `dispatcher run` glue
-├── orchestrator.py    # the parallel dispatch loop
-├── yaml_io.py         # round-trip load/dump + FileLock
-├── plan.py            # runnable-set, label filter, wave planner
-├── summary.py         # parser for the Tasker's summary.md
-├── spawn.py           # claude subprocess + env + prompt
-├── worktree.py        # git worktree create/remove, branch naming
-├── pr.py              # gh pr create wrapper
-├── dispatch_plan.py   # dry-run report renderer
-├── status.py          # `dispatcher status` (stubbed)
-├── resume.py          # `dispatcher resume` (stubbed)
-└── report.py          # `dispatcher report` (stubbed)
+├── cli.py                       # argparse, subcommand dispatch
+├── run.py                       # `dispatcher run` glue
+├── orchestrator.py              # the parallel dispatch loop
+├── yaml_io.py                   # round-trip load/dump + FileLock
+├── plan.py                      # runnable-set, label filter, wave planner
+├── summary.py                   # parser for the Tasker's summary.md
+├── spawn.py                     # claude subprocess + env + prompt
+├── worktree.py                  # git worktree create/remove, branch naming
+├── pr.py                        # gh pr create wrapper
+├── auto_integrate.py            # post-Done merge feat → base_branch
+├── cross_family_reviewer.py     # three-family review panel
+├── reviewer_prompts/            # _shared.md + claude.md / gemini.md / codex.md
+├── dispatch_plan.py             # dry-run report renderer
+├── status.py                    # `dispatcher status` (stubbed)
+├── resume.py                    # `dispatcher resume` (stubbed)
+└── report.py                    # `dispatcher report` (stubbed)
+
+tools/
+└── cross_family_panel.py        # standalone runner for the review panel
 
 tests/
 ├── fixtures/
@@ -285,9 +457,11 @@ tests/
 ├── test_plan.py           # validation, runnable-set, filter, waves
 ├── test_summary.py        # parser, malformed, prepared PR
 ├── test_dry_run.py        # CLI dry-run path
-├── test_orchestrator.py   # live-spawn end-to-end with fake claude
-├── test_supervised.py     # supervised approve / reject / skip
-└── test_concurrency.py    # --max-parallel overlap + YAML serialization
+├── test_orchestrator.py        # live-spawn end-to-end with fake claude
+├── test_orchestrator_panel.py  # cross-family panel integration
+├── test_cross_family_reviewer.py  # panel parser + adapters + aggregation
+├── test_supervised.py          # supervised approve / reject / skip
+└── test_concurrency.py         # --max-parallel overlap + YAML serialization
 ```
 
-Run the suite: `.venv/bin/pytest -q`. As of the v0.1.0 build: 49 tests, all green.
+Run the suite: `.venv/bin/pytest -q`. As of the cross-family panel build: 182 tests, all green. Coverage on `cross_family_reviewer.py`: 93%.

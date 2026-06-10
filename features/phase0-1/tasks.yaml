@@ -1,0 +1,279 @@
+project: DISP
+epic: PHASE-0-1
+# ============================================================================
+# Dispatcher self-improvement, run #1: Phase 0 (hygiene) + Phase 1 (control
+# surface) + adapter fixes. Source plan: docs/improvement-plan.md.
+#
+# This is the first dogfood run — the dispatcher dispatching work on itself.
+# Hand-written (the Feature Planner role does not exist yet; see plan
+# Phase 13). All tasks target this repo; base branch: main.
+#
+# Wave shape: groups 0/1 are fully parallel; group 2 is the journal chain.
+# No task larger than M — practicing the Phase 5 rule before it's enforced.
+# ============================================================================
+
+tasks:
+
+  # ============================================================
+  # GROUP 0: Phase 0 hygiene — independent, parallel-safe
+  # ============================================================
+
+  - key: DISP-1
+    summary: "auto_integrate: discover sqlc/buf via shutil.which + env override"
+    description: |
+      auto_integrate.py:37-38 hardcodes /home/andrew/go/bin/{sqlc,buf}.
+      Replace with: env var override (DISPATCHER_SQLC_BIN / DISPATCHER_BUF_BIN)
+      if set, else shutil.which(), else raise a clear error naming the missing
+      binary and both discovery mechanisms. No silent fallback.
+
+      Acceptance:
+        - No absolute user paths remain in auto_integrate.py
+        - Unit tests cover: env override wins; which() fallback; clear error
+          when absent
+        - Existing test_auto_integrate.py suite still green
+    type: Task
+    estimate: 1h
+    labels: [size:XS, area:integrate, phase:0]
+
+  - key: DISP-2
+    summary: "worktree: robust path layout check + graceful creation failures"
+    description: |
+      worktree.py:99 decides layout via str(base).startswith("/worktrees") —
+      replace with explicit Path-based comparison (base.name == "worktrees" or
+      an explicit layout enum). Wrap `git worktree add` (worktree.py:104-109)
+      so CalledProcessError and the concurrent same-key race (two workers, one
+      path) surface as a typed WorktreeError with the git stderr attached,
+      not a raw traceback.
+
+      Acceptance:
+        - No string-prefix path checks remain in worktree.py
+        - Concurrent same-key creation test: second caller gets WorktreeError
+          (or reuses idempotently if .git exists), never a traceback
+        - Existing worktree behavior unchanged for the normal path
+    type: Task
+    estimate: 2h
+    labels: [size:S, area:worktree, phase:0]
+
+  - key: DISP-3
+    summary: "summary parser: log parse-failure reasons instead of silent malformed flag"
+    description: |
+      summary.py marks Summary.malformed=True without recording why. Add a
+      `problems: list[str]` to the Summary dataclass populated with specific
+      reasons (missing Status line, invalid status value, unparseable PR
+      section regex, truncated file, fence-state confusion). Orchestrator
+      writes problems to the run log when present, and includes them in the
+      Blocked reason for summary_malformed blocks.
+
+      Acceptance:
+        - Every code path that sets malformed=True (or returns status=None)
+          records a human-readable reason
+        - Blocked-row detail for malformed summaries names the actual problem
+        - test_summary.py extended: each malformed fixture asserts its reason
+    type: Task
+    estimate: 2h
+    labels: [size:S, area:summary, phase:0]
+
+  - key: DISP-4
+    summary: "Configurable YAML lock timeout and spawn timeout"
+    description: |
+      yaml_io.py:75 hardcodes the 30s FileLock timeout; spawn.py:213 hardcodes
+      the 4h Claude timeout. Expose both as CLI flags on `dispatcher run`
+      (--lock-timeout-seconds, --task-timeout-seconds) with current values as
+      defaults, threaded through orchestrator to both call sites.
+
+      Acceptance:
+        - Both flags appear in `dispatcher run --help` with defaults shown
+        - Values flow end-to-end (unit test with a tiny timeout proves each
+          is honored)
+        - Defaults unchanged: 30s lock, 4h spawn
+    type: Task
+    estimate: 2h
+    labels: [size:S, area:cli, phase:0]
+
+  - key: DISP-5
+    summary: "End-to-end tests for the panel-iterate loop"
+    description: |
+      orchestrator.py:396-441 (panel blocks -> re-spawn Tasker with findings ->
+      re-review, up to N times) has no end-to-end coverage. Using the existing
+      fake-claude harness from test_orchestrator_panel.py, add tests for:
+      block -> iterate -> approve on attempt 2; iteration exhaustion -> Blocked
+      with findings attached; reviewer UNAVAILABLE mid-iteration; and findings
+      text actually reaching the re-spawn prompt.
+
+      Acceptance:
+        - All four scenarios covered and green
+        - No changes to production code unless a real bug is found; if one is
+          found, fix it in this task and call it out in the summary
+    type: Task
+    estimate: 3h
+    labels: [size:M, area:panel, area:tests, phase:0]
+
+  # ============================================================
+  # GROUP 1: adapter fixes (from 2026-06-10 research) — parallel-safe
+  # ============================================================
+
+  - key: DISP-6
+    summary: "Codex adapter: replace deprecated --full-auto, harden stdin, version-gate usage parser"
+    description: |
+      Three changes to the Codex reviewer/spawn adapter from the 2026-06-10
+      research (see docs/improvement-plan.md, open question 2):
+      1. `--full-auto` is deprecated -> use `--sandbox workspace-write`.
+      2. Spawn with stdin closed or </dev/null — a non-TTY stdin left open
+         makes codex exec wait for EOF and hang (openai/codex#20919).
+      3. Usage parser: tolerate presence/absence of reasoning_output_tokens
+         (added between codex 0.122-0.139; machine currently runs 0.139.0).
+
+      Acceptance:
+        - No --full-auto anywhere in the repo
+        - Subprocess invocation provably closes/redirects stdin (test asserts
+          stdin handle)
+        - Usage parsing tests cover both JSON shapes (with and without
+          reasoning_output_tokens)
+    type: Task
+    estimate: 2h
+    labels: [size:S, area:cfr, area:spawn, phase:0]
+
+  - key: DISP-7
+    summary: "agy adapter: guard against non-TTY stdout drop (antigravity-cli#76)"
+    description: |
+      antigravity-cli has an open bug where --print output can be silently
+      dropped when stdout is a non-TTY pipe — exactly how the orchestrator
+      consumes it. Gemini CLI (the predecessor) shuts off 2026-06-18, so agy
+      is the only Google-family path.
+
+      Deliverables:
+        1. tools/verify_agy_pipe.sh — smoke script that runs a trivial agy
+           --print prompt with stdout piped, asserts non-empty output, and
+           prints a clear PASS/FAIL. Runnable standalone and in CI-ish checks.
+        2. Defensive handling in the agy adapter: empty stdout with exit 0 is
+           treated as reviewer UNAVAILABLE with reason "empty stdout
+           (suspected antigravity-cli#76)", never as an APPROVE/parse attempt.
+        3. Run the smoke script on this machine and record the result in the
+           task summary.
+
+      Acceptance:
+        - Script exists, executable, PASS/FAIL exit codes
+        - Adapter unit test: empty stdout + exit 0 -> UNAVAILABLE with the
+          suspected-bug reason
+        - Summary reports the live result against agy 1.0.7
+    type: Task
+    estimate: 2h
+    labels: [size:S, area:cfr, phase:0]
+
+  # ============================================================
+  # GROUP 2: Phase 1 control surface — the journal chain
+  # ============================================================
+
+  - key: DISP-8
+    summary: "Event journal module: hash-chained append-only JSONL per run"
+    description: |
+      New module journal.py. One JSONL file per run (runs/<run-id>/journal.jsonl
+      or similar — propose location in the task summary). Each event: seq,
+      timestamp, event type, task key (nullable), payload dict, prev_hash,
+      hash (SHA-256 over canonical serialization of the event minus its own
+      hash). Genesis event records: dispatcher version, tasks.yaml path +
+      content hash, reviewer-prompts content hash, machine hostname.
+
+      Event type enum (initial set): run_started, task_started,
+      task_spawn_finished, summary_parsed, commit_retry, panel_started,
+      panel_verdict, panel_iterate, task_done, task_blocked, pr_gate,
+      integrate_result, notify_sent, run_complete.
+
+      Writer: append + fsync; single-writer assumption documented (worker
+      threads hand events to the orchestrator thread or use a lock — choose
+      and document). Reader: iterate events, verify chain integrity, return
+      typed records. `journal verify` helper for tests.
+
+      Acceptance:
+        - Round-trip: write N events, read back, chain verifies
+        - Tamper test: editing any byte breaks verification at that event
+        - Genesis event contains all four provenance fields
+        - No orchestrator changes in this task (wiring is DISP-9)
+    type: Task
+    estimate: 4h
+    labels: [size:M, area:journal, phase:1]
+
+  - key: DISP-9
+    summary: "Orchestrator emits journal events at every lifecycle point"
+    description: |
+      Wire journal.py (DISP-8) into orchestrator.py: emit events at run start,
+      task dispatch, spawn completion (with usage/cost payload), summary parse
+      (including malformed reasons from DISP-3 if landed), commit-retry, panel
+      start/verdict/iterate, PR gate decisions, auto-integrate results,
+      notification sends, task terminal status, run completion. Journal writes
+      must never crash a run (best-effort with stderr warning, mirroring the
+      notifier policy).
+
+      Acceptance:
+        - A full fake-claude orchestrator test run produces a journal whose
+          event sequence matches the task lifecycle, chain-verified
+        - A panel-blocked run and a malformed-summary run produce the
+          corresponding events with reasons in payloads
+        - Journal failure (e.g. unwritable dir) degrades to warning, run
+          completes
+    type: Task
+    estimate: 4h
+    labels: [size:M, area:journal, area:orchestrator, phase:1]
+    blockedBy: [DISP-8]
+
+  - key: DISP-10
+    summary: "Implement `dispatcher status --json`"
+    description: |
+      Replace the status stub: read tasks.yaml + the run journal and emit
+      structured JSON: per-task state (status, started_at, agent/model, cost
+      so far, blocked reason), current wave, totals (tasks by status, run
+      cost), and run liveness (last journal event age). Human-readable table
+      without --json. Works on a live run (file being appended) and a
+      finished one.
+
+      Acceptance:
+        - JSON schema documented in the command docstring
+        - Works mid-run (tolerates partial last line) and post-run
+        - test: status output for a fixture journal matches expected snapshot
+        - README status section updated, "not implemented" note removed
+    type: Task
+    estimate: 3h
+    labels: [size:M, area:cli, phase:1]
+    blockedBy: [DISP-9]
+
+  - key: DISP-11
+    summary: "Implement `dispatcher resume`"
+    description: |
+      Replace the resume stub: given tasks.yaml (+ journal), recover an
+      interrupted run. Rules: In Progress tasks whose worktree exists but
+      whose spawn is gone -> re-dispatch (fresh spawn, same worktree if clean,
+      else recreate); Done/Blocked rows untouched; journal records a
+      resume_started event linking to the prior genesis. Refuse to resume if
+      a live heartbeat suggests the run is still active (check last event
+      age, overridable with --force).
+
+      Acceptance:
+        - kill -9 mid-run fixture (fake claude) -> resume completes the
+          remaining tasks; YAML ends identical to an uninterrupted run
+        - Resume on a completed run is a clean no-op with a clear message
+        - --force documented and tested
+        - README resume section updated, "not implemented" note removed
+    type: Task
+    estimate: 4h
+    labels: [size:M, area:cli, area:orchestrator, phase:1]
+    blockedBy: [DISP-9]
+
+  - key: DISP-12
+    summary: "Docs: journal format spec + control-surface README updates"
+    description: |
+      Write docs/journal-format.md: event types, field semantics, hash-chain
+      construction and verification, genesis provenance fields, single-writer
+      rule, location convention. Update README: status/resume now real,
+      journal section under a new "Observing a run" heading, and a short
+      "monitoring agent" note pointing at status --json + journal tailing as
+      the supported integration surface.
+
+      Acceptance:
+        - docs/journal-format.md complete enough to write an independent
+          reader implementation from
+        - README examples for status (table + --json) and resume
+        - No stale "not yet implemented" text remains anywhere
+    type: Task
+    estimate: 2h
+    labels: [size:S, area:docs, phase:1]
+    blockedBy: [DISP-10, DISP-11]

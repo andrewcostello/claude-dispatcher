@@ -1,0 +1,28 @@
+## Verdict
+CHANGES_REQUESTED
+
+## Dimension scores
+- Correctness: 3
+- Security: 5
+- Compliance: 5
+- Resilience: 4
+- Idempotency: 3
+- Observability: 3
+- Performance: 5
+- Maintainability: 4
+
+## Findings
+### HIGH: apps/platform-domain/bay-session/cmd/bay-session/stream_target.go:653
+Description: Regression in deduplication logic for legacy producers. By removing the `msgSeq <= cur` check and replacing it with only the `msgDBVersion` check, the consumer no longer dedupes frames from legacy producers (or test fakes) that omit the `db_version` field. JetStream redeliveries or overlapping replays of legacy frames will pass the `msgDBVersion > 0` guard and be processed multiple times, violating the full-snapshot supersedure contract and potentially causing state flickering in the subscriber.
+Fix: Re-introduce the broker-sequence deduplication check (`msgSeq <= curSeq`) as the primary filter for all incoming messages. The causal `db_version` check should be an additional filter that specifically addresses cross-pod reordering for new producers, but basic broker-level sequence monotonicity must still be enforced for all traffic.
+
+### MEDIUM: apps/platform-domain/bay-session/cmd/bay-session/stream_target.go:663
+Description: Conflation of `sequenceGap` and `droppedStaleFrames` metrics. The `lastSeq` watermark is only updated for successfully delivered frames. When a frame is dropped because its `db_version` is stale, `lastSeq` remains at the previous value; the subsequent successful delivery will then detect a sequence jump and incorrectly record a broker-level gap. This breaks the observability contract described in `deploy/bay-session.yaml` which promises that broker delivery loss and causal reordering are separate, independent signals.
+Fix: Perform broker-sequence gap accounting and update the `lastSeq` watermark for every message that arrives from the broker (immediately after the watchdog reset), regardless of whether the message is later dropped by the causal deduplication rule.
+
+### LOW: apps/platform-domain/bay-session/cmd/bay-session/session_logic.go:731
+Description: Microsecond collision resolution. While the Tasker acknowledges that sub-millisecond commits aliasing to the same `db_version` will result in the later frame being dropped, this assumes the `updated_at` resolution of the underlying database (PostgreSQL) is always sufficient to distinguish sequential commits. If a high-volume producer emits two different states with the same timestamp, the second is lost.
+Fix: No immediate action required given the full-snapshot supersedure model, but consider documented guidance that the DB `updated_at` column must have microsecond precision (e.g., `timestamptz(6)`).
+
+## Notes
+The core implementation of causal ordering via DB version is sound and correctly addresses the cross-pod reordering bug. However, the removal of the broker-sequence deduplication check creates a regression for any non-migrated producers or replayed traffic. Additionally, the telemetry conflation will lead to "phantom gaps" in SRE dashboards during scale-out events, which undermines the quality of the new observability hooks. Fixing these two logic points in `drainTargetBuffer` will bring this to reference quality.

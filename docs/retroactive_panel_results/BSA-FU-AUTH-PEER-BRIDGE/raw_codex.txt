@@ -1,0 +1,20 @@
+## Verdict
+CHANGES_REQUESTED
+
+## Dimension scores
+- Correctness: 4
+- Security: 4
+- Compliance: 4
+- Resilience: 4
+- Idempotency: 4
+- Observability: 4
+- Performance: 4
+- Maintainability: 3
+
+## Findings
+### HIGH: apps/platform-domain/bay-session/cmd/bay-session/peer_allowlist_test.go:93
+Description: The new allowlist test does not actually verify the per-RPC authorization surface it claims to protect. Every subtest just calls `requireSimulator` or `requireSimulatorOrPeer` directly, with procedure names used only as labels. That means regressions at the real call sites would still pass: for example, if `SetActivePlayer` were changed back to `requireSimulator`, or if the inline `isSmgCorePeer` guard were removed from `GetSessionState` / `StreamSessionState`, this test suite would remain green. In a high-risk auth change, a test that gives false confidence around the exact RPC allowlist is blocking.
+Fix: Replace this with behavioral tests against the actual handler methods or another mechanism that inspects the real call sites. At minimum, each allowlisted RPC should be exercised through its handler path with peer claims and shown to succeed, and each non-allowlisted RPC should be shown to reject the same peer claims. For the dual-handler inline guards, the test must hit `GetSessionState` and `StreamSessionState` specifically rather than assuming `requireSimulatorOrPeer` covers them.
+
+## Notes
+The bridge hardening itself looks directionally sound: issuer/audience pinning, mandatory non-empty `jti`, and fail-closed deny-list checks are all appropriate. The blocker is that the most security-sensitive part of the change, narrowing the peer bypass to five RPCs, is not actually protected by the new tests.

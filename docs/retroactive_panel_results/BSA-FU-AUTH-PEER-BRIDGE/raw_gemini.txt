@@ -1,0 +1,21 @@
+## Verdict
+CHANGES_REQUESTED
+
+## Dimension scores
+- Correctness: 3
+- Security: 5
+- Compliance: 4
+- Resilience: 4
+- Idempotency: 4
+- Observability: 4
+- Performance: 4
+- Maintainability: 3
+
+## Findings
+
+### HIGH: apps/platform-domain/bay-session/cmd/bay-session/peer_allowlist_test.go:106
+Description: The `TestPeerAllowlist_SimulatorHandlerProcedures` test provides false confidence. It aims to verify that specific handlers enforce or bypass the peer check, but it merely iterates over an array of hardcoded procedure names (strings) and directly invokes the helper functions (`requireSimulator` and `requireSimulatorOrPeer`). It never actually invokes the RPC handlers it claims to be testing (e.g., `PushFrsUpdate` or `SetActivePlayer`). Consequently, if a developer mistakenly applies the wrong helper in a handler, this test will still pass because it only evaluates the helpers against string literals. 
+Fix: Refactor the test to instantiate a `SimulatorHandler` (or the respective dual handler) and explicitly invoke each actual RPC method with the synthesized peer context. Assert that the appropriate gRPC error code (e.g., `connect.CodePermissionDenied` / `authz.ErrWrongStation`) is returned for rejected procedures, and that allowlisted procedures proceed without authz rejection.
+
+## Notes
+The RSA bridge logic, policy gates (iss/aud/jti), and fail-closed deny-list behaviour are solidly implemented and highly secure. However, the allowlist test provides zero actual coverage of the handler surface it claims to protect, creating a hazardous blind spot for future regressions. Fix the test to evaluate the actual call sites.

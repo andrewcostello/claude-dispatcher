@@ -22,6 +22,9 @@ SCENARIOS = {
     "done": "Done",
     "done-no-commit": "Done",        # Done but skip the git commit step
     "done-commit-retry": "Done",     # Done; first run skips commit, second commits
+    "done-direct-to-base": "Done",   # Done; commits on feat/X AND FF-merges into
+                                     # base_branch (BSA-style direct-to-base
+                                     # workflow). Leaves feat == base.
     "blocked-malformed": "Garbage",  # invalid status → parser marks malformed
     "escalated": "Escalated",
     "blocked-iteration-cap": "Blocked",
@@ -52,12 +55,57 @@ def main() -> int:
     #                           invocation (the retry) DOES commit. Tracked
     #                           via a sentinel file in the worktree.
     def _do_commit():
+        """Make a fresh commit on each invocation.
+
+        Uses a per-worktree counter so consecutive spawns (e.g., the
+        panel-iterate corrective spawn) produce distinct commits. Without
+        this, the second spawn would write the same content and `git
+        commit` would no-op, defeating tests that rely on iterate
+        actually producing new history.
+        """
         import subprocess
+        counter_path = Path(f".fake-claude-counter-{task_key}")
+        try:
+            n = int(counter_path.read_text()) + 1
+        except (OSError, ValueError):
+            n = 1
+        counter_path.write_text(str(n), encoding="utf-8")
         marker = Path(f"smoke-marker-{task_key}.txt")
-        marker.write_text(f"smoke marker for {task_key}\n", encoding="utf-8")
+        marker.write_text(
+            f"smoke marker for {task_key} #{n}\n", encoding="utf-8",
+        )
         subprocess.run(["git", "add", str(marker)], check=False, capture_output=True)
         subprocess.run(
-            ["git", "commit", "-m", f"feat(smoke): [{task_key}] simulated work"],
+            ["git", "commit", "-m",
+             f"feat(smoke): [{task_key}] simulated work #{n}"],
+            check=False, capture_output=True,
+        )
+
+    def _do_commit_and_ff_into_base(base_branch: str) -> None:
+        """Simulate the BSA direct-to-base workflow: commit on feat/X
+        then fast-forward base_branch in the main repo to match feat/X's
+        tip. Leaves feat == base, which the standard 'rev-list
+        base..HEAD' check misreads as 'no commits made'.
+        """
+        import subprocess
+        _do_commit()
+        sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            check=False, capture_output=True, text=True,
+        ).stdout.strip()
+        # Locate the main repo's .git/ — works whether --git-common-dir
+        # returns absolute or worktree-relative.
+        cd_proc = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],
+            check=False, capture_output=True, text=True,
+        )
+        common_dir = Path(cd_proc.stdout.strip())
+        if not common_dir.is_absolute():
+            common_dir = (Path.cwd() / common_dir).resolve()
+        main_repo = common_dir.parent
+        subprocess.run(
+            ["git", "-C", str(main_repo), "update-ref",
+             f"refs/heads/{base_branch}", sha],
             check=False, capture_output=True,
         )
 
@@ -69,6 +117,11 @@ def main() -> int:
             _do_commit()  # second invocation = the retry; commit this time
         else:
             sentinel.write_text("first invocation skipped commit\n", encoding="utf-8")
+    elif scenario == "done-direct-to-base":
+        # base_branch defaults to "main" in the test fixture; allow
+        # override via env for parity with other tests.
+        base_branch = os.environ.get("FAKE_CLAUDE_BASE_BRANCH", "main")
+        _do_commit_and_ff_into_base(base_branch)
     # `done-no-commit` leaves the worktree uncommitted on every invocation
 
     summary_path.parent.mkdir(parents=True, exist_ok=True)

@@ -1,0 +1,137 @@
+{
+  "consensus": "block",
+  "summary": "consensus=block | claude=APPROVE, gemini=REJECT, codex=CHANGES_REQUESTED | blocking=3 (1C/2H)",
+  "reviewers": [
+    {
+      "family": "claude",
+      "verdict": "APPROVE",
+      "dimensions": {
+        "Correctness": 4,
+        "Security": 5,
+        "Compliance": 5,
+        "Resilience": 4,
+        "Idempotency": 5,
+        "Observability": 4,
+        "Performance": 4,
+        "Maintainability": 4
+      },
+      "findings": [
+        {
+          "severity": "MEDIUM",
+          "location": "apps/platform-domain/bay-session/cmd/publish-recovery/worker.go:194",
+          "description": "The recovery worker's stamp call uses the parent context with no per-call timeout, while the hot-path `stampLastPublishedAt` (session_logic.go:786) explicitly wraps stamp in `context.WithTimeout(..., 2*time.Second)`. If Postgres becomes slow, fanout goroutines block indefinitely on stamp, consuming FanoutConcurrency slots and stalling the entire drainOnce iteration. The worker's outer loop has no per-iteration deadline either, so backlog drain can stop without surfacing as a drain error.",
+          "fix": "Wrap the stamp UPDATE in `context.WithTimeout(ctx, w.cfg.PublishTimeout)` (or a dedicated stamp timeout), matching the hot-path pattern. Failing fast on a slow stamp lets the next poll re-try and keeps fanout slots free."
+        },
+        {
+          "severity": "MEDIUM",
+          "location": "apps/platform-domain/bay-session/cmd/publish-recovery/worker.go:213",
+          "description": "`marshalSnapshotOrEmpty` swallows a `proto.Marshal` error and returns `nil` bytes. The caller then publishes a SessionStateUpdate with empty `state_snapshot` but valid `Reason=SESSION_RESYNC`, `DbVersion`, and `StationId`. The stamp then runs and the outcome is counted as `outcomeOK` \u2014 operators have no signal a corrupt frame went out. Consumers whose baseline db_version is below this one will accept the resync and decode a zero-valued SessionState. Proto marshal on a typed struct is unlikely, but the silent-success behavior is wrong: a marshal failure should skip publish, skip stamp, and increment `outcomeSnapshotError`.",
+          "fix": "Return the marshal error from a renamed helper; on error in `resync`, log, increment `resyncsTotal{outcome=snapshot_error}`, and return without publishing or stamping."
+        },
+        {
+          "severity": "MEDIUM",
+          "location": "apps/platform-domain/bay-session/cmd/publish-recovery/health.go:21",
+          "description": "`/healthz` always returns 200 as long as the HTTP server is alive. A worker stuck in an infinite blocked-stamp / blocked-snapshot state (see the per-call-timeout finding) keeps the HTTP server responsive while making zero forward progress. Kubernetes will never restart a stuck pod. Combined with the absence of a per-drain deadline, a single pod can silently rot while `publish_recovery_stale_stations` saturates.",
+          "fix": "Track a \"last successful drainOnce completion\" timestamp on the worker; `/healthz` returns 503 if the last completion is older than (e.g.) `2 * PollInterval + PublishTimeout`. Alternatively, surface a heartbeat counter and let Kubernetes liveness probe a real signal."
+        },
+        {
+          "severity": "LOW",
+          "location": "apps/platform-domain/bay-session/cmd/publish-recovery/worker.go:177",
+          "description": "The resync `SessionStateUpdate` does not set `Sequence`. The hot-path publish presumably sets it (not shown in diff). Subscribers gate on `db_version` per the BSA-FU-XPOD-ORDERING docstring, so this is not load-bearing for ordering \u2014 but a zero `Sequence` may show up oddly in operator/debug tooling that surfaces sequence in a \"last received frame\" panel.",
+          "fix": "Either explicitly document that recovery emits `Sequence=0` (and update operator dashboards / docs), or set a per-publish monotonic counter."
+        },
+        {
+          "severity": "LOW",
+          "location": "apps/platform-domain/bay-session/cmd/publish-recovery/worker_integration_test.go:64",
+          "description": "The integration test seeds a SOLO station with no players. The summary says the integration test is the \"load-bearing canary\" that catches a missed schema addition in `sessionsnap.Build` by asserting wire-equivalence between hot-path and recovery-path publishes for the same DB state. As written it does not compare to a hot-path-emitted frame at all \u2014 it only checks that recovery emits a valid SESSION_RESYNC. A schema addition that the recovery builder misses (but the hot path catches) would not be observed.",
+          "fix": "Seed a representative roster (multi-player ROTATION with confirmation settings, FRS fields, active bet). Either (a) emit a hot-path publish for the same row and compare the proto bytes, or (b) snapshot the proto and compare to a golden file."
+        }
+      ],
+      "notes": "The three-layer dedupe (broker MsgId + db_version + monotonic stamp) is well-designed and the watermark = snapshot.UpdatedAt vs. NOW() rationale is correct \u2014 stamping NOW() would create the mask window described in the summary. The `TestQueries_AllUpdatesSetUpdatedAt` carve-out is appropriately scoped: the column-set check rejects mixed UPDATEs that touch any state column. The partial index predicate matches the scan predicate exactly and stays empty in steady state. The `context.WithoutCancel` + 2s timeout in the hot path is the right call \u2014 stamp must survive client disconnect or the watermark drifts. My findings are quality / operability nits; nothing here blocks ship, but I would not skip the per-stamp timeout fix before this scales to full venue rollout.",
+      "error": null,
+      "duration_seconds": 245.58525124099106
+    },
+    {
+      "family": "gemini",
+      "verdict": "REJECT",
+      "dimensions": {
+        "Correctness": 2,
+        "Security": 5,
+        "Compliance": 5,
+        "Resilience": 2,
+        "Idempotency": 5,
+        "Observability": 4,
+        "Performance": 2,
+        "Maintainability": 4
+      },
+      "findings": [
+        {
+          "severity": "CRITICAL",
+          "location": "apps/platform-domain/bay-session/cmd/publish-recovery/worker.go:133",
+          "description": "The `RunWithReadyHook` loop uses immediate-redrain semantics (`if n < w.cfg.BatchSize { break }`) to rapidly clear backlogs. However, if a row permanently fails to publish (e.g., due to a malformed `SnapshotStation` read or a NATS payload rejection), it is never stamped and remains in the stale set indefinitely. If the number of such poisoned rows reaches `BatchSize` (100), `ListStalePublishStations` will continually return these same failing rows. `drainOnce` will repeatedly return `100, nil` (as individual `resync` errors do not bubble up to abort the drain), causing the loop to immediately re-drain without waiting for the `PollInterval` ticker. This creates a tight, unthrottled infinite loop that will DoS the database, peg the CPU, and completely starve the recovery of any newer stale stations (head-of-line blocking).",
+          "fix": "Remove the immediate-redrain bypass so the loop always honors the `PollInterval` backoff, or implement a bounded retry mechanism (such as updating the row to a terminal DLQ state after N failures) so permanently poisoned rows are evicted from the scan."
+        },
+        {
+          "severity": "HIGH",
+          "location": "apps/platform-domain/bay-session/cmd/publish-recovery/worker.go:152",
+          "description": "Database operations (`ListStalePublishStations`, `SnapshotStation`, and `StampSessionLastPublishedAt`) are executed using the background context, which is only cancelled upon pod shutdown. If a Postgres connection hangs\u2014such as from a network partition without a TCP RST, or severe lock contention\u2014the queries will block indefinitely. This will stall the recovery pipeline forever. Because the liveness probe at `/healthz` does not verify loop progress, Kubernetes will not detect the stall and the pod will not be restarted.",
+          "fix": "Wrap the context passed to database operations with explicit timeouts. For example, use `context.WithTimeout(ctx, w.cfg.PollInterval)` for the batch claim, and apply targeted timeouts for the per-row snapshot and stamp operations."
+        },
+        {
+          "severity": "MEDIUM",
+          "location": "apps/platform-domain/bay-session/cmd/publish-recovery/main.go:118",
+          "description": "The deploy manifest comment asserts that \"the in-flight drainOnce completes its current batch before the pod exits\" upon SIGTERM. However, `runServers` passes the `parent` context (which cancels immediately on SIGTERM) directly to the worker. When cancelled, `runServers` exits, and `bootstrap`'s deferred `cleanup()` function eagerly closes the Postgres pool and NATS publisher while the worker goroutines are still trying to execute their batch. This leads to aborted queries and dropped publishes rather than a graceful batch completion.",
+          "fix": "Decouple the worker's shutdown context from the immediate SIGTERM context and implement a `sync.WaitGroup` to wait for the worker to return gracefully before invoking `cleanup()` and exiting the process."
+        }
+      ],
+      "notes": "The extraction of the session state builder into `internal/sessionsnap` is an excellent architectural choice that ensures the recovery payload matches the hot-path perfectly. The deduplication mechanism via deterministic JetStream `Nats-Msg-Id` and consumer-side `db_version` is also extremely robust. However, the lack of defensive bounding on the failure paths (missing DB timeouts and the unbounded tight retry loop on poisoned rows) fundamentally undermines the reliability of the worker and requires remediation before shipping.",
+      "error": null,
+      "duration_seconds": 345.70757981110364
+    },
+    {
+      "family": "codex",
+      "verdict": "CHANGES_REQUESTED",
+      "dimensions": {
+        "Correctness": 3,
+        "Security": 5,
+        "Compliance": 4,
+        "Resilience": 3,
+        "Idempotency": 4,
+        "Observability": 4,
+        "Performance": 4,
+        "Maintainability": 4
+      },
+      "findings": [
+        {
+          "severity": "HIGH",
+          "location": "apps/platform-domain/bay-session/cmd/publish-recovery/config.go:95",
+          "description": "The worker does not enforce the documented/spec floor for `GracePeriod`. The file comments state the grace window must not go below 15 seconds, but `minGracePeriod` is set to 5 seconds and `Validate()` accepts any value from 5s to 14s. That creates a real correctness hazard: with a too-small grace period, the recovery worker can classify an in-flight hot-path publish/stamp as stale and emit a false recovery publish. In this system that means unnecessary duplicate session-state traffic, polluted recovery metrics/alerts, and avoidable pressure on broker/storage exactly during degraded conditions.",
+          "fix": "Make the validation match the stated contract. If 15 seconds is the required floor, set `minGracePeriod = 15 * time.Second` and keep the error text/comments consistent. If 5 seconds is actually intended, then the spec comments and ticket summary need to be corrected everywhere, because the current implementation and documentation disagree on a load-bearing safety bound."
+        }
+      ],
+      "notes": "The main worker/store design is otherwise coherent: monotonic stamping, DB-sourced snapshots, and deterministic `Nats-Msg-Id` are sensible for replay safety. The blocking issue is the grace-period guard mismatch because it weakens the core stale-row predicate under misconfiguration.",
+      "error": null,
+      "duration_seconds": 54.68650559196249
+    }
+  ],
+  "blocking_findings": [
+    {
+      "severity": "CRITICAL",
+      "location": "apps/platform-domain/bay-session/cmd/publish-recovery/worker.go:133",
+      "description": "The `RunWithReadyHook` loop uses immediate-redrain semantics (`if n < w.cfg.BatchSize { break }`) to rapidly clear backlogs. However, if a row permanently fails to publish (e.g., due to a malformed `SnapshotStation` read or a NATS payload rejection), it is never stamped and remains in the stale set indefinitely. If the number of such poisoned rows reaches `BatchSize` (100), `ListStalePublishStations` will continually return these same failing rows. `drainOnce` will repeatedly return `100, nil` (as individual `resync` errors do not bubble up to abort the drain), causing the loop to immediately re-drain without waiting for the `PollInterval` ticker. This creates a tight, unthrottled infinite loop that will DoS the database, peg the CPU, and completely starve the recovery of any newer stale stations (head-of-line blocking).",
+      "fix": "Remove the immediate-redrain bypass so the loop always honors the `PollInterval` backoff, or implement a bounded retry mechanism (such as updating the row to a terminal DLQ state after N failures) so permanently poisoned rows are evicted from the scan."
+    },
+    {
+      "severity": "HIGH",
+      "location": "apps/platform-domain/bay-session/cmd/publish-recovery/worker.go:152",
+      "description": "Database operations (`ListStalePublishStations`, `SnapshotStation`, and `StampSessionLastPublishedAt`) are executed using the background context, which is only cancelled upon pod shutdown. If a Postgres connection hangs\u2014such as from a network partition without a TCP RST, or severe lock contention\u2014the queries will block indefinitely. This will stall the recovery pipeline forever. Because the liveness probe at `/healthz` does not verify loop progress, Kubernetes will not detect the stall and the pod will not be restarted.",
+      "fix": "Wrap the context passed to database operations with explicit timeouts. For example, use `context.WithTimeout(ctx, w.cfg.PollInterval)` for the batch claim, and apply targeted timeouts for the per-row snapshot and stamp operations."
+    },
+    {
+      "severity": "HIGH",
+      "location": "apps/platform-domain/bay-session/cmd/publish-recovery/config.go:95",
+      "description": "The worker does not enforce the documented/spec floor for `GracePeriod`. The file comments state the grace window must not go below 15 seconds, but `minGracePeriod` is set to 5 seconds and `Validate()` accepts any value from 5s to 14s. That creates a real correctness hazard: with a too-small grace period, the recovery worker can classify an in-flight hot-path publish/stamp as stale and emit a false recovery publish. In this system that means unnecessary duplicate session-state traffic, polluted recovery metrics/alerts, and avoidable pressure on broker/storage exactly during degraded conditions.",
+      "fix": "Make the validation match the stated contract. If 15 seconds is the required floor, set `minGracePeriod = 15 * time.Second` and keep the error text/comments consistent. If 5 seconds is actually intended, then the spec comments and ticket summary need to be corrected everywhere, because the current implementation and documentation disagree on a load-bearing safety bound."
+    }
+  ]
+}

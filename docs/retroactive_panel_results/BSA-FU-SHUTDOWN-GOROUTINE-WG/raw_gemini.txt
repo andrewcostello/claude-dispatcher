@@ -1,0 +1,24 @@
+## Verdict
+CHANGES_REQUESTED
+
+## Dimension scores
+- Correctness: 3
+- Security: 5
+- Compliance: 5
+- Resilience: 3
+- Idempotency: 4
+- Observability: 4
+- Performance: 4
+- Maintainability: 4
+
+## Findings
+### HIGH: apps/platform-domain/bay-session/cmd/bay-session/config.go:552
+Description: `validateCoreFields` skips the validation check `c.GoroutineDrainTimeout >= c.ShutdownTimeout` when `c.GoroutineDrainTimeout == 0` (to support ergonomic test fixtures). However, in `buildDeps`'s `cleanup()`, a zero value is replaced with `defaultGoroutineDrainTimeout` (25s) before being used. If `Config{}` is instantiated directly with a zero `GoroutineDrainTimeout` and a short `ShutdownTimeout` (e.g., 10s), the fallback causes the drain budget to silently exceed the overall shutdown timeout. This causes a timeout inversion where the orchestrator forcefully kills the process before the graceful drain can complete.
+Fix: Resolve the default fallback value *before* asserting the timeout invariant in `validateCoreFields`. For example: `effDrain := c.GoroutineDrainTimeout; if effDrain <= 0 { effDrain = defaultGoroutineDrainTimeout }; if effDrain >= c.ShutdownTimeout { return fmt.Errorf(...) }`.
+
+### HIGH: apps/platform-domain/bay-session/cmd/bay-session/shutdown_drain.go:175
+Description: `recoverBootGoroutine` catches and swallows panics from boot workers, allowing the goroutine to exit cleanly. The comment claims this prevents a drain deadlock, but standard `defer` statements (like `wg.Done()`) execute during panic unwinding regardless, so the `WaitGroup` would not leak. By swallowing the panic without signaling the application to shut down, the pod becomes a "zombie" — it continues to pass HTTP liveness probes indefinitely while critical background loops (like `frs_idle_sweeper`) are permanently dead.
+Fix: Do not silently swallow panics. Either re-panic at the end of `recoverBootGoroutine` (e.g., `panic(r)`) to crash the process, or trigger a graceful process shutdown by invoking a global context cancellation when a critical boot worker crashes.
+
+## Notes
+The shutdown join mechanism and its testing strategy are otherwise very clean and well-structured. Correcting the Config validation inversion and addressing the zombie-pod panic behavior will bring this to reference quality.

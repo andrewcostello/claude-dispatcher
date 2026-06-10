@@ -1,0 +1,119 @@
+{
+  "consensus": "block",
+  "summary": "consensus=block | claude=CHANGES_REQUESTED, gemini=REJECT, codex=REJECT | blocking=3 (2C/1H)",
+  "reviewers": [
+    {
+      "family": "claude",
+      "verdict": "CHANGES_REQUESTED",
+      "dimensions": {
+        "Correctness": 4,
+        "Security": 5,
+        "Compliance": 4,
+        "Resilience": 4,
+        "Idempotency": 4,
+        "Observability": 4,
+        "Performance": 4,
+        "Maintainability": 3
+      },
+      "findings": [
+        {
+          "severity": "HIGH",
+          "location": "apps/platform-domain/bay-session/cmd/committed-bet-recovery/worker_test.go:1163",
+          "description": "`TestWorker_VoidNeverDebited_LostStateRace` does not exercise the code path it claims to cover. The test seeds bet 199 as `committed`, then flips `BetState = \"recovery_failed\"` BEFORE `drainOnce` runs \u2014 not \"between the claim and the per-action CAS\" as the docstring asserts. Because the claim filter selects only `committed` bets, the bet is never claimed and `voidNeverDebited` is never called. The test's own trailing comments admit this (\"the fake doesn't expose one, so the simpler assertion is...\"). All four assertions (`NoError`, state == \"recovery_failed\", zero wallet calls) are vacuously true regardless of `voidNeverDebited`'s correctness. The real CAS guard (`affected == 0` branch in `worker.go:431-434`) is not actually tested. A regression that removed the `affected == 0` check or that re-introduced a wallet call on the lost-race path would still pass this test. In a Critical-risk financial flow this is a false-confidence test, which is the exact failure mode the rubric calls out as worse than no test.",
+          "fix": "Either (a) add a `TransitionCommittedToRefunded` hook to the fake store (as the deferred-findings section acknowledges is needed) and seed it to return `affected=0` on the first call so the real race path runs, or (b) delete this test outright and rename the deferred-findings note to admit the gap. Do not leave a test whose name promises race coverage that the assertions can't deliver."
+        },
+        {
+          "severity": "MEDIUM",
+          "location": "apps/platform-domain/bay-session/cmd/committed-bet-recovery/worker.go:430",
+          "description": "`voidNeverDebited`'s SQL-error branch (Tasker reports 76.9% coverage) is not exercised by any test \u2014 same gap as the `LostStateRace` test above. There is no test that drives `TransitionCommittedToRefunded` to return a non-nil error, so the error-log + `actionsTotal{outcome=\"error\"}` increment path is dead from a test perspective. This is acknowledged in deferred findings but it stacks with the HIGH above: the void-never-debited action has zero exercised failure paths.",
+          "fix": "Add a fake-store hook (`hookOnTransitionCommittedToRefunded` or equivalent) and one test that drives it to return an error. The same hook unblocks the HIGH-finding fix."
+        },
+        {
+          "severity": "LOW",
+          "location": "apps/platform-domain/bay-session/cmd/committed-bet-recovery/worker.go:323",
+          "description": "`RefundReasonNeverDebited = \"never_debited\"` is a contract that downstream reconciliation tooling must understand. The summary documents that reconciliation must treat this reason as \"no wallet row expected\", but nothing in this diff verifies the reconciliation side handles the new value. If existing audit queries assume every `refund_reason` has a corresponding wallet `BET_REFUND` row, this PR silently introduces orphaned voids in the audit view.",
+          "fix": "Add a tracking ticket (out of scope for this PR) for the reconciliation-side update, and grep the repo for consumers of `smg_bet.refund_reason` before merging to confirm none of them break on the new value."
+        }
+      ],
+      "notes": "The core logic is correct: the priority reorder is well-documented, the property tests pin both the avoidance invariant (never-debited never routes to wallet refund) and the shape invariant (preconditions hold when void fires), and the metric/log instrumentation matches the existing pattern. The wallet contract tests are a good belt-and-braces addition.\n\nThe blocker is the `LostStateRace` test: in a Critical-risk financial path, shipping a test whose name advertises race coverage but whose mechanics make it impossible to fail is worse than not having the test at all. The Tasker's own deferred-findings section flags the missing fake hook \u2014 that hook is a prerequisite for this PR's test claims to hold, not a follow-up. Address that and the verdict flips to APPROVE.\n\nSkipping the panel review on a Critical-risk + financial-paths-touched ticket is a process concern; the diff still needs a real reviewer (this one) to look at it.",
+      "error": null,
+      "duration_seconds": 128.7899707891047
+    },
+    {
+      "family": "gemini",
+      "verdict": "REJECT",
+      "dimensions": {
+        "Correctness": 1,
+        "Security": 4,
+        "Compliance": 1,
+        "Resilience": 2,
+        "Idempotency": 2,
+        "Observability": 4,
+        "Performance": 4,
+        "Maintainability": 4
+      },
+      "findings": [
+        {
+          "severity": "CRITICAL",
+          "location": "apps/platform-domain/bay-session/cmd/committed-bet-recovery/decide.go:208",
+          "description": "The `ActionVoidNeverDebited` branch assumes that if `debit_confirmed_at IS NULL`, the wallet has no `BET` transaction. In a distributed system, a network timeout or pod crash immediately following a successful `wallet.Bet` RPC (but before the local `debit_confirmed_at` update) leaves the local DB with a NULL confirmed timestamp even though the user's funds were successfully debited. By voiding the bet locally and explicitly skipping the wallet call, this money is permanently trapped in the wallet without a refund, resulting in financial loss for the user.",
+          "fix": "Remove `ActionVoidNeverDebited` and the local void path entirely. To prevent calling `RefundBet` on an unconfirmed bet, simply add `&& !bet.DebitConfirmedAt.IsZero()` to the existing `ActionConfirmRefundResultTimeout` condition. This will cause unconfirmed expired bets to fall through to `ActionConfirmDebitStayCommitted` (which safely and idempotently syncs the debit state with the wallet). On the subsequent worker loop, the bet will have `debit_confirmed_at` set and will correctly and safely process through the timeout-refund branch."
+        }
+      ],
+      "notes": "The ticket's literal instruction (\"check DebitConfirmedAt before timeout-refund\") was the correct, safe architectural choice. By attempting to avoid calling `wallet.Bet` on expired bets, the Tasker introduced a split-brain vulnerability where network partitions lead to permanent loss of user funds. Prioritizing debit confirmation ensures the state machine safely resolves the debit status before attempting any refunds.",
+      "error": null,
+      "duration_seconds": 252.1681241740007
+    },
+    {
+      "family": "codex",
+      "verdict": "REJECT",
+      "dimensions": {
+        "Correctness": 1,
+        "Security": 4,
+        "Compliance": 2,
+        "Resilience": 3,
+        "Idempotency": 2,
+        "Observability": 3,
+        "Performance": 4,
+        "Maintainability": 3
+      },
+      "findings": [
+        {
+          "severity": "CRITICAL",
+          "location": "apps/platform-domain/bay-session/cmd/committed-bet-recovery/worker.go:430",
+          "description": "`voidNeverDebited` decides from a previously claimed snapshot and then updates the row with a CAS that only checks `bet_state='committed'`. It does not re-check that `debit_confirmed_at` is still `NULL`. If the wallet debit succeeds after the claim but before this update, the row can be transitioned to `REFUNDED` with `refund_reason='never_debited'` even though a real `BET` ledger row now exists and the customer has actually been debited. Because this path intentionally skips `wallet.RefundBet`, that race leaves the wallet debited with no compensating refund while the bet record says refunded.",
+          "fix": "Make the void transition conditional on the debit still being unconfirmed at write time, not just on `bet_state`. Concretely, the `UPDATE`/transition used by `ActionVoidNeverDebited` should include `debit_confirmed_at IS NULL` (or another equivalent expected-version predicate), and a 0-row result should trigger a re-evaluation path rather than being treated as a harmless lost-state race. If the debit has landed, the worker must switch to the normal wallet-backed refund/settlement flow."
+        },
+        {
+          "severity": "MEDIUM",
+          "location": "apps/platform-domain/bay-session/cmd/committed-bet-recovery/worker_test.go:1158",
+          "description": "`TestWorker_VoidNeverDebited_LostStateRace` does not exercise the race it claims to cover. It changes the seed row to `recovery_failed` before `drainOnce`, so the row is no longer a committed stuck bet and the worker never reaches `voidNeverDebited` or its 0-rows-affected handling. The test therefore provides false confidence exactly where the new branch is concurrency-sensitive.",
+          "fix": "Add a fake-store hook on `TransitionCommittedToRefunded` (or equivalent) so the test can mutate the row after claim and before the CAS update. Then assert that the new path handles both `bet_state` races and `debit_confirmed_at` races correctly."
+        }
+      ],
+      "notes": "The new priority order is directionally right, but the write-side guard is too weak for a financial recovery path. In this system, \u201cdecide on stale snapshot, then do a local terminal transition without re-validating debit state\u201d is not safe enough to ship.",
+      "error": null,
+      "duration_seconds": 51.09782661893405
+    }
+  ],
+  "blocking_findings": [
+    {
+      "severity": "HIGH",
+      "location": "apps/platform-domain/bay-session/cmd/committed-bet-recovery/worker_test.go:1163",
+      "description": "`TestWorker_VoidNeverDebited_LostStateRace` does not exercise the code path it claims to cover. The test seeds bet 199 as `committed`, then flips `BetState = \"recovery_failed\"` BEFORE `drainOnce` runs \u2014 not \"between the claim and the per-action CAS\" as the docstring asserts. Because the claim filter selects only `committed` bets, the bet is never claimed and `voidNeverDebited` is never called. The test's own trailing comments admit this (\"the fake doesn't expose one, so the simpler assertion is...\"). All four assertions (`NoError`, state == \"recovery_failed\", zero wallet calls) are vacuously true regardless of `voidNeverDebited`'s correctness. The real CAS guard (`affected == 0` branch in `worker.go:431-434`) is not actually tested. A regression that removed the `affected == 0` check or that re-introduced a wallet call on the lost-race path would still pass this test. In a Critical-risk financial flow this is a false-confidence test, which is the exact failure mode the rubric calls out as worse than no test.",
+      "fix": "Either (a) add a `TransitionCommittedToRefunded` hook to the fake store (as the deferred-findings section acknowledges is needed) and seed it to return `affected=0` on the first call so the real race path runs, or (b) delete this test outright and rename the deferred-findings note to admit the gap. Do not leave a test whose name promises race coverage that the assertions can't deliver."
+    },
+    {
+      "severity": "CRITICAL",
+      "location": "apps/platform-domain/bay-session/cmd/committed-bet-recovery/decide.go:208",
+      "description": "The `ActionVoidNeverDebited` branch assumes that if `debit_confirmed_at IS NULL`, the wallet has no `BET` transaction. In a distributed system, a network timeout or pod crash immediately following a successful `wallet.Bet` RPC (but before the local `debit_confirmed_at` update) leaves the local DB with a NULL confirmed timestamp even though the user's funds were successfully debited. By voiding the bet locally and explicitly skipping the wallet call, this money is permanently trapped in the wallet without a refund, resulting in financial loss for the user.",
+      "fix": "Remove `ActionVoidNeverDebited` and the local void path entirely. To prevent calling `RefundBet` on an unconfirmed bet, simply add `&& !bet.DebitConfirmedAt.IsZero()` to the existing `ActionConfirmRefundResultTimeout` condition. This will cause unconfirmed expired bets to fall through to `ActionConfirmDebitStayCommitted` (which safely and idempotently syncs the debit state with the wallet). On the subsequent worker loop, the bet will have `debit_confirmed_at` set and will correctly and safely process through the timeout-refund branch."
+    },
+    {
+      "severity": "CRITICAL",
+      "location": "apps/platform-domain/bay-session/cmd/committed-bet-recovery/worker.go:430",
+      "description": "`voidNeverDebited` decides from a previously claimed snapshot and then updates the row with a CAS that only checks `bet_state='committed'`. It does not re-check that `debit_confirmed_at` is still `NULL`. If the wallet debit succeeds after the claim but before this update, the row can be transitioned to `REFUNDED` with `refund_reason='never_debited'` even though a real `BET` ledger row now exists and the customer has actually been debited. Because this path intentionally skips `wallet.RefundBet`, that race leaves the wallet debited with no compensating refund while the bet record says refunded.",
+      "fix": "Make the void transition conditional on the debit still being unconfirmed at write time, not just on `bet_state`. Concretely, the `UPDATE`/transition used by `ActionVoidNeverDebited` should include `debit_confirmed_at IS NULL` (or another equivalent expected-version predicate), and a 0-row result should trigger a re-evaluation path rather than being treated as a harmless lost-state race. If the debit has landed, the worker must switch to the normal wallet-backed refund/settlement flow."
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+## Verdict
+APPROVE
+
+## Dimension scores
+- Correctness: 4
+- Security: 4
+- Compliance: 4
+- Resilience: 4
+- Idempotency: 5
+- Observability: 5
+- Performance: 4
+- Maintainability: 4
+
+## Findings
+
+### MEDIUM: apps/platform-domain/bay-session/cmd/bay-session/cascade_refund_sigterm_recovery_test.go:60
+Description: The test claims to verify that an abandoned cascade-refund goroutine does not stamp `refund_confirmed_at`, but the `recordingConfirmer` is never wired into `deps` (`deps.Store` is nil, so `depRefundConfirmer(deps)` returns nil and `stampRefundConfirmedAfterWalletAck` early-returns regardless of whether the goroutine is abandoned). The `_ = confirmer` line explicitly acknowledges the dead reference. Worse, the `slowWalletClient{delay: 1 * time.Second}` actually completes successfully inside the goroutine ~800ms after the 200ms drain budget — so the test does not actually exercise an abandoned-mid-RefundBet path; it exercises "goroutine finishes shortly after drain timeout in a code path where confirmer is unreachable." `require.Zero(t, confirmer.stampedFor(7001), ...)` is trivially true regardless of correctness. The counter/timing assertions are real, but the stamp assertion gives false confidence about the central invariant the ticket exists to enforce.
+Fix: Either (a) wire a `Store` (or accept a `RefundConfirmer` on Deps directly) so the goroutine's stamp path is genuinely under test, and use a wallet fake whose delay exceeds the goroutine's 30s detached timeout (so the wallet call truly doesn't return before the test exits), or (b) split the test: one case that proves the drain bumps the counter and returns within budget (the real value here), and a second case in a future revision that exercises the stamp-skipped branch with a real confirmer. The current shape conflates two assertions into one and proves neither cleanly.
+
+### MEDIUM: apps/platform-domain/bay-session/cmd/refund-recovery/worker.go:546
+Description: `uuidFromPg` silently returns the zero UUID when `refund_idempotency_key` is invalid. The claim SQL filters `refund_idempotency_key IS NOT NULL`, so in steady state this branch is unreachable — but it is a defense-in-depth gap: if a future revision of the claim query loosens the predicate (or a NULL slips in via a manual DB write), the worker will forward `00000000-0000-0000-0000-000000000000` to `wallet.RefundBet` as the transaction id. Multiple corrupted rows would share that same zero UUID, and the wallet's `tx_refund.go` dedupe would treat all of them as the same prior transaction — silently dropping wallet credits for every bet after the first.
+Fix: Reject zero-UUID rows in `claimedRefundFromRow` or in `replayRefund` before the wallet call. Bump `BumpRefundRetry` so the age clock advances toward `RECOVERY_FAILED`, increment a dedicated `refund_recovery_malformed_idempotency_key_total` counter, and log at Error. The SQL filter is the primary guard; this is the secondary one that future-proofs against schema/predicate drift.
+
+### MEDIUM: apps/platform-domain/bay-session/cmd/refund-recovery/worker.go:286
+Description: The recovery transaction (`WithTx`) holds row locks (FOR UPDATE SKIP LOCKED on up to `BatchSize=100` rows) for the entire duration of the wallet fan-out: 50 concurrent wallet calls × up to 5s each = potentially ~10s per row with the lock held, plus tail latency. While `SKIP LOCKED` means other replicas won't deadlock, the transaction may hit Postgres `idle_in_transaction_session_timeout` if it is set, the connection holds a backend slot, and replication lag amplifies. The committed-bet-recovery worker carries the same shape so this is not a regression, but the cumulative footprint (3 recovery workers × 100 rows × ~10s tx) on the same `smg_bet` table is worth verifying against the pgxpool size + the Postgres `max_connections` budget before this rolls out alongside the existing recovery workers.
+Fix: Document the upper bound on transaction duration in the function-level comment (or in an SRE runbook entry), and consider splitting the per-bet bookkeeping out of the claim transaction so the claim+commit happens quickly and the wallet replay runs with the rows logically claimed (e.g. via a `refund_recovery_claim_token` column) but not row-locked. This is a follow-up, not a blocker for this PR — the immediate concern is just making the lock-hold duration explicit in code/runbook.
+
+### MEDIUM: apps/platform-domain/bay-session/cmd/refund-recovery/wallet_client.go:80
+Description: The wallet gRPC client dials with `insecure.NewCredentials()` and forwards `WALLET_SERVICE_TOKEN` in the `x-service-token` metadata header. The service token authenticates this binary to the wallet, but over plaintext the token is sniffable on any intermediary. The Tasker notes this matches the existing bay-session / committed-bet-recovery convention — so it is a pre-existing posture, not a regression — but the new binary doubles the surface area where this token traverses unencrypted.
+Fix: Out-of-scope for this ticket since fixing it requires wallet-side TLS bring-up, but worth filing as a follow-up against all three workers + bay-session in one ticket so the rollout is coordinated. Until then, ensure the wallet service token is rotated when any of these binaries are decommissioned.
+
+### LOW: apps/platform-domain/core/dao/migrations/202605212211_smg_bet_refund_confirmed_at.up.sql:54
+Description: `CREATE INDEX IF NOT EXISTS` (not `CONCURRENTLY`) takes an `ACCESS EXCLUSIVE`-equivalent lock for the index build on a potentially large `smg_bet` table. For a hot OLTP table this can cause noticeable write stalls.
+Fix: If the migration runner does not auto-rewrite to `CONCURRENTLY`, switch the statement to `CREATE INDEX CONCURRENTLY IF NOT EXISTS` and split the migration so it runs outside a transaction (Postgres rejects `CONCURRENTLY` inside a tx block). If the project's migration framework always wraps in a tx, accept the cost but schedule the deploy off-peak.
+
+### LOW: apps/platform-domain/bay-session/cmd/bay-session/main.go:540
+Description: `time.After(wait)` creates a timer that is GC'd only after the duration elapses. At shutdown this is harmless, but the idiom is widely flagged. The `select` returns on `<-done` and the orphaned timer holds a goroutine for up to `wait` (25s) after the function returns.
+Fix: Replace with `timer := time.NewTimer(wait); defer timer.Stop(); select { case <-done: ...; case <-timer.C: ... }`. Cosmetic but matches Go best practice and is a one-line change.
+
+## Notes
+
+The overall design is sound: hot-path WG drain + on-disk safety net + idempotency-key replay is the right shape, and the schema/index/migration are well-considered. The recovery worker is a faithful copy of `committed-bet-recovery`'s shape, which is the right call for SRE muscle memory — but it inherits that worker's pre-existing concerns (long-held claim transaction, plaintext gRPC) without adding new ones. I do not see any money-loss or audit-trail gap that blocks ship: the wallet dedupe via `refund_idempotency_key` is the load-bearing invariant and is correctly preserved end-to-end. The sigterm-recovery test is the weakest part of the change — the abandoned-stamp invariant deserves a real assertion, not a trivially-passing one — but the integration test in `worker_integration_test.go` covers the durable side of the same property and counterbalances the gap.

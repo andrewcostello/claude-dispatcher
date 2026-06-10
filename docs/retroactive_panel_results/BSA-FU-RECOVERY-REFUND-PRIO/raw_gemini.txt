@@ -1,0 +1,21 @@
+## Verdict
+REJECT
+
+## Dimension scores
+- Correctness: 1
+- Security: 4
+- Compliance: 1
+- Resilience: 2
+- Idempotency: 2
+- Observability: 4
+- Performance: 4
+- Maintainability: 4
+
+## Findings
+
+### CRITICAL: apps/platform-domain/bay-session/cmd/committed-bet-recovery/decide.go:208
+Description: The `ActionVoidNeverDebited` branch assumes that if `debit_confirmed_at IS NULL`, the wallet has no `BET` transaction. In a distributed system, a network timeout or pod crash immediately following a successful `wallet.Bet` RPC (but before the local `debit_confirmed_at` update) leaves the local DB with a NULL confirmed timestamp even though the user's funds were successfully debited. By voiding the bet locally and explicitly skipping the wallet call, this money is permanently trapped in the wallet without a refund, resulting in financial loss for the user.
+Fix: Remove `ActionVoidNeverDebited` and the local void path entirely. To prevent calling `RefundBet` on an unconfirmed bet, simply add `&& !bet.DebitConfirmedAt.IsZero()` to the existing `ActionConfirmRefundResultTimeout` condition. This will cause unconfirmed expired bets to fall through to `ActionConfirmDebitStayCommitted` (which safely and idempotently syncs the debit state with the wallet). On the subsequent worker loop, the bet will have `debit_confirmed_at` set and will correctly and safely process through the timeout-refund branch.
+
+## Notes
+The ticket's literal instruction ("check DebitConfirmedAt before timeout-refund") was the correct, safe architectural choice. By attempting to avoid calling `wallet.Bet` on expired bets, the Tasker introduced a split-brain vulnerability where network partitions lead to permanent loss of user funds. Prioritizing debit confirmation ensures the state machine safely resolves the debit status before attempting any refunds.

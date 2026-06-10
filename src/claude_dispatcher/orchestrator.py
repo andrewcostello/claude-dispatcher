@@ -31,6 +31,8 @@ from pathlib import Path
 from typing import Any
 
 from . import auto_integrate as ai_mod
+from . import cross_family_reviewer as cfr_mod
+from . import notify as notify_mod
 from . import plan as plan_mod
 from . import pr as pr_mod
 from . import spawn as spawn_mod
@@ -95,6 +97,32 @@ class RunConfig:
     # problem where sibling tasks fork from the same epic SHA and can't see
     # each other's work. See auto_integrate.py for the integration rules.
     auto_integrate: bool = False
+    # Cross-family reviewer panel: after a Tasker reports Done, run three
+    # independent reviewers (one Claude, one Gemini, one Codex) over the
+    # diff + summary. ALL THREE must APPROVE for auto-integrate to fire;
+    # any dissenter or critical/high finding blocks. Values:
+    #   "auto"   — run only for risk-gated tickets (critical/security/
+    #              financial/high labels). Default.
+    #   "always" — run for every Done ticket regardless of labels.
+    #   "never"  — disable. The Tasker's in-cycle panel still runs; only
+    #              the cross-family checkpoint is skipped.
+    # See cross_family_reviewer.panel_required() for the gating rules.
+    cross_family_panel: str = "auto"
+    # Per-reviewer wall-clock budget (seconds). Each reviewer runs in its
+    # own thread; the panel wall-clock is the slowest reviewer.
+    cross_family_panel_timeout: int = cfr_mod.DEFAULT_REVIEWER_TIMEOUT_SECONDS
+    # When the cross-family panel returns block, optionally re-spawn the
+    # Tasker with the panel's blocking findings as a corrective prompt,
+    # then re-run the panel against the new diff. Default 0 = no iterate
+    # (current behavior; panel block → Blocked status). Each iteration is
+    # one extra Tasker spawn + one extra panel run. The panel verdict
+    # stamped on the YAML row is from the FINAL run (which may be approve
+    # if the Tasker successfully addressed the findings).
+    cross_family_panel_iterate: int = 0
+    # Notification channels for human-attention events. Built once at
+    # execute() time from CLI flags + env vars; injected into _run_task
+    # via this slot so tests can substitute a recording stub.
+    notifier: notify_mod.Notifier = field(default_factory=notify_mod.NullNotifier)
 
 
 @dataclass
@@ -180,15 +208,45 @@ def execute(args: argparse.Namespace) -> int:
                     fut.result()  # propagate exceptions
                 except Exception as e:
                     _log(log_path, f"  worker {key} raised: {e}")
+                    # Notify on a dispatcher-internal error before
+                    # stamping Blocked (separate channel from a normal
+                    # task failure — see notify.worker_exception_*).
+                    try:
+                        cfg.notifier.send(notify_mod.worker_exception_notification(
+                            task_key=key,
+                            run_id=cfg.run_id,
+                            exception_repr=repr(e),
+                            tasks_yaml=str(cfg.tasks_path),
+                        ))
+                    except Exception:
+                        pass
                     try:
                         _mark_blocked(cfg, key, reason=f"worker_exception: {e}")
                     except Exception as mark_err:
                         _log(log_path, f"  worker {key} _mark_blocked itself raised: {mark_err}")
 
     tasks = _load_tasks_snapshot(cfg)
+    done_tasks = [t for t in tasks if t.status == plan_mod.DONE]
     blocked = [t for t in tasks if t.status == plan_mod.BLOCKED]
     escalated = [t for t in tasks if t.status == plan_mod.ESCALATED]
     _log(log_path, f"end run blocked={len(blocked)} escalated={len(escalated)}")
+    # Run-complete rollup notification. Always fires (including on clean
+    # runs — knowing the run finished is signal). Best-effort.
+    try:
+        blocked_rollup = [
+            (t.key, str(t.raw.get("blocked_reason") or "unknown"))
+            for t in blocked + escalated
+        ]
+        cfg.notifier.send(notify_mod.run_complete_notification(
+            run_id=cfg.run_id,
+            done=len(done_tasks),
+            blocked=len(blocked),
+            escalated=len(escalated),
+            blocked_rollup=blocked_rollup,
+            tasks_yaml=str(cfg.tasks_path),
+        ))
+    except Exception:
+        pass
     return 1 if (blocked or escalated) else 0
 
 
@@ -254,6 +312,16 @@ def _run_task(
     spawn_extra = list(cfg.claude_extra_args)
     if snap.model:
         spawn_extra.extend(["--model", snap.model])
+
+    # Snapshot base_branch's tip SHA BEFORE the spawn. This is the
+    # discriminator for the direct-to-base workflow: a Tasker that
+    # fast-forwards feat/X into base_branch leaves feat/X equal to
+    # base_branch, so the standard "rev-list base..feat" check returns 0
+    # even though the work landed. Comparing base_branch's tip before vs
+    # after the spawn detects the FF advance. See
+    # _has_commits_on_branch() for the two-condition success check.
+    base_sha_before = _branch_sha(repo_root, cfg.base_branch, log_path, snap.key)
+
     try:
         result = spawn_mod.spawn_claude(
             claude_bin=cfg.claude_bin,
@@ -288,10 +356,12 @@ def _run_task(
     # corrective spawn). Max 1 commit-retry; if commits still missing
     # after, only then is this a real failure.
     if (s.status == "Done"
-            and not _has_commits_on_branch(wt, cfg.base_branch, log_path, snap.key)):
+            and not _has_commits_on_branch(
+                wt, cfg.base_branch, repo_root,
+                base_sha_before, log_path, snap.key)):
         _log(log_path, f"  {snap.key} reported Done but no commits on branch — retrying with commit-only prompt")
         retry_status = _retry_for_commit(
-            cfg, snap, wt, summary_path, env, log_path,
+            cfg, snap, wt, repo_root, summary_path, env, log_path,
         )
         if retry_status is None:
             # Retry failed — really no work. Mark Blocked with clear reason.
@@ -309,6 +379,73 @@ def _run_task(
     final_status, final_url, final_blocked_reason = _resolve_summary(
         cfg, snap, s, wt, log_path
     )
+
+    # Cross-family reviewer panel. Runs ONLY for Done tasks that match
+    # the configured gating mode (always | auto via labels | never).
+    # Diff bounds: prefer base_sha_before..feat-tip so the direct-to-base
+    # workflow is covered (where feat == base_branch by the time we get
+    # here). Falls back to base_branch..feat for plain feat-branch work.
+    #
+    # When `cross_family_panel_iterate > 0` and the panel blocks, the
+    # dispatcher re-spawns the Tasker with the blocking findings as a
+    # corrective prompt and re-runs the panel up to N times before giving
+    # up. Each iteration is one extra Tasker spawn + one extra panel run.
+    panel_verdict: cfr_mod.PanelVerdict | None = None
+    panel_iterations_used = 0
+    if final_status == plan_mod.DONE and _panel_should_run(cfg, snap):
+        iterations_remaining = max(0, cfg.cross_family_panel_iterate)
+        while True:
+            try:
+                panel_verdict = _run_cross_family_panel(
+                    cfg=cfg, snap=snap, wt=wt,
+                    summary_path=result.summary_path,
+                    repo_root=repo_root,
+                    base_sha_before=base_sha_before,
+                    log_path=log_path,
+                )
+            except Exception as e:
+                _log(log_path, f"  {snap.key} cross-family panel raised: {e}")
+                panel_verdict = None
+                final_status = plan_mod.BLOCKED
+                final_blocked_reason = f"cross_family_panel_error: {e}"
+                break
+
+            if panel_verdict.is_approve or iterations_remaining <= 0:
+                break
+
+            _log(log_path,
+                 f"  {snap.key} cross-family panel block — iterating "
+                 f"({iterations_remaining} attempt(s) left)")
+            corrective_ok = _spawn_panel_iterate(
+                cfg=cfg, snap=snap, wt=wt, repo_root=repo_root,
+                summary_path=result.summary_path,
+                env=env, log_path=log_path,
+                panel=panel_verdict,
+                iterations_left=iterations_remaining,
+            )
+            panel_iterations_used += 1
+            iterations_remaining -= 1
+            if not corrective_ok:
+                _log(log_path,
+                     f"  {snap.key} panel-iterate spawn failed — leaving "
+                     f"last panel verdict in place")
+                break
+            # Loop: re-run the panel against the now-updated diff.
+
+        if panel_verdict is not None and not panel_verdict.is_approve:
+            final_status = plan_mod.BLOCKED
+            final_blocked_reason = (
+                f"cross_family_panel: {panel_verdict.summary}"
+                + (f" (after {panel_iterations_used} iterate attempt(s))"
+                   if panel_iterations_used else "")
+            )
+            _append_panel_findings_to_summary(
+                result.summary_path, panel_verdict, log_path, snap.key,
+            )
+        elif panel_verdict is not None:
+            _append_panel_findings_to_summary(
+                result.summary_path, panel_verdict, log_path, snap.key,
+            )
 
     # Auto-integrate: if the Tasker landed work and the run config asks for
     # auto-integration, merge feat → base_branch BEFORE we flip the YAML
@@ -372,6 +509,19 @@ def _run_task(
             row["prepared_pr_title"] = s.prepared_pr_title
         if s.prepared_pr_branch:
             row["prepared_pr_branch"] = s.prepared_pr_branch
+        # Stamp the cross-family panel outcome for forensics + later
+        # sweep. Per-reviewer verdicts let an auditor see whether the
+        # block was 2/3 or 1/3, and what each family flagged.
+        if panel_verdict is not None:
+            row["panel_consensus"] = panel_verdict.consensus
+            row["panel_summary"] = panel_verdict.summary
+            row["panel_blocking_findings"] = len(panel_verdict.blocking_findings)
+            if panel_iterations_used:
+                row["panel_iterations_used"] = panel_iterations_used
+            for r in panel_verdict.reviewers:
+                row[f"panel_verdict_{r.family}"] = r.verdict.value
+                if r.error:
+                    row[f"panel_error_{r.family}"] = r.error[:300]
         # Stamp the auto-integrate outcome for forensic + later sweep.
         if integrate_result is not None:
             row["auto_integrate_status"] = integrate_result.status
@@ -408,19 +558,330 @@ def _run_task(
             row["model"] = u.model
 
     _mutate_row(cfg, snap.key, _apply)
+
+    # If the final status is Blocked (panel block, auto-integrate fail,
+    # awaiting-PR-in-unattended-mode), fire the task-blocked notification
+    # here. Early-return Blocked paths (spawn failures, summary missing)
+    # notify via _mark_blocked instead — the two paths are disjoint, so
+    # exactly one notification fires per Blocked outcome.
+    if final_status == plan_mod.BLOCKED:
+        try:
+            cfg.notifier.send(notify_mod.task_blocked_notification(
+                task_key=snap.key,
+                summary=snap.summary,
+                reason=final_blocked_reason or "blocked",
+                run_id=cfg.run_id,
+                summary_path=str(result.summary_path)
+                    if result.summary_path.exists() else None,
+                tasks_yaml=str(cfg.tasks_path),
+            ))
+        except Exception:
+            pass
+
     return final_status
 
 
-def _has_commits_on_branch(wt: wt_mod.Worktree, base_branch: str,
-                            log_path: Path, task_key: str) -> bool:
-    """True iff the worktree's branch has any commit beyond `base_branch`.
+def _panel_should_run(cfg: RunConfig, snap: TaskSnapshot) -> bool:
+    """Decide whether to fire the cross-family panel for this Done task.
 
-    Used to detect the "Tasker reported Done but forgot to commit" failure
-    mode. We don't care HOW many commits — just that at least one exists,
-    which proves the Tasker actually did `git commit` instead of leaving
-    work uncommitted in the worktree.
+    Reads `cfg.cross_family_panel`:
+      - "never"  → no
+      - "always" → yes (regardless of labels)
+      - "auto"   → yes iff the labels indicate critical/security/financial/high
+
+    "auto" is the default. docs/test-type tickets always skip the panel,
+    even with high-risk labels, because they don't ship code paths that
+    need the safety net.
+    """
+    mode = (cfg.cross_family_panel or "auto").lower()
+    if mode == "never":
+        return False
+    if mode == "always":
+        # docs/tests still skip — same rule as auto.
+        if snap.type and snap.type.lower() in cfr_mod._PANEL_SKIP_TYPES:
+            return False
+        return True
+    # "auto" — risk-tier gating
+    return cfr_mod.panel_required(snap.labels, task_type=snap.type)
+
+
+def _run_cross_family_panel(
+    *,
+    cfg: RunConfig,
+    snap: TaskSnapshot,
+    wt: wt_mod.Worktree,
+    summary_path: Path,
+    repo_root: Path,
+    base_sha_before: str | None,
+    log_path: Path,
+) -> cfr_mod.PanelVerdict:
+    """Invoke the three-family panel against the Tasker's committed work.
+
+    Computes the diff using `base_sha_before..HEAD` when available — this
+    covers the direct-to-base workflow where feat == base_branch by the
+    time the panel runs. Falls back to `base_branch..feat_branch` for
+    standard feat-branch work.
+    """
+    # Resolve the diff bounds.
+    feat_tip = _branch_sha(repo_root, wt.branch, log_path, snap.key)
+    if base_sha_before and feat_tip and base_sha_before != feat_tip:
+        diff_base = base_sha_before
+        diff_branch = feat_tip
+    else:
+        diff_base = cfg.base_branch
+        diff_branch = wt.branch
+
+    _log(log_path,
+         f"  {snap.key} cross-family panel: diff {diff_base[:8] if len(diff_base) >= 8 else diff_base}"
+         f"...{diff_branch[:8] if len(diff_branch) >= 8 else diff_branch}")
+
+    diff = cfr_mod.collect_diff(
+        repo_root=repo_root,
+        base_branch=diff_base,
+        branch=diff_branch,
+    )
+
+    summary_md = ""
+    try:
+        summary_md = summary_path.read_text(encoding="utf-8")
+    except (OSError, FileNotFoundError) as e:
+        _log(log_path, f"  {snap.key} panel: summary.md read failed: {e}")
+
+    return cfr_mod.run_panel(
+        ticket_key=snap.key,
+        ticket_summary=snap.summary,
+        summary_md=summary_md,
+        diff=diff,
+        branch=diff_branch,
+        base_branch=diff_base,
+        reviewers=_panel_reviewer_factory(cfg),
+        log=lambda m: _log(log_path, m),
+    )
+
+
+def _spawn_panel_iterate(
+    *,
+    cfg: RunConfig,
+    snap: TaskSnapshot,
+    wt: wt_mod.Worktree,
+    repo_root: Path,
+    summary_path: Path,
+    env: dict,
+    log_path: Path,
+    panel: cfr_mod.PanelVerdict,
+    iterations_left: int,
+) -> bool:
+    """Re-spawn the Tasker with the panel's blocking findings as a
+    corrective prompt. Returns True iff the spawn exited cleanly with at
+    least one new commit (or new direct-to-base advance) — i.e., the
+    Tasker actually addressed something.
+
+    Errors are logged and propagated as False (the caller decides what to
+    do with a failed iterate; today: stop iterating and keep the last
+    panel verdict).
+    """
+    if not panel.blocking_findings:
+        # Defensive: caller should only invoke when panel.is_approve is
+        # False, but a panel can block on PARSE_FAILED / CHANGES_REQUESTED
+        # without blocking_findings. In that case there's nothing concrete
+        # to ask the Tasker to fix; skip iterating.
+        _log(log_path,
+             f"  {snap.key} panel block without blocking findings — "
+             f"skipping iterate (no concrete fixes to propose)")
+        return False
+
+    findings_block = _render_findings_for_iterate_prompt(panel)
+    iter_prompt = _PANEL_ITERATE_PROMPT_PREFIX.format(
+        n_findings=len(panel.blocking_findings),
+        panel_summary=panel.summary,
+        findings_block=findings_block,
+        task_key=snap.key,
+        iteration_n=cfg.cross_family_panel_iterate - iterations_left + 1,
+        iterations_left=iterations_left - 1,
+    )
+    iter_prompt += spawn_mod.build_prompt(
+        task_key=snap.key,
+        task_summary=snap.summary,
+        task_type=snap.type,
+        task_labels=snap.labels,
+        task_description=snap.description,
+        branch=wt.branch,
+        summary_path=summary_path,
+        run_id=cfg.run_id,
+        max_iterations=cfg.max_iterations,
+        financial_paths=cfg.financial_paths,
+        skip_design=cfg.skip_design,
+        skip_security_linter=cfg.skip_security_linter,
+        reviewer_count=cfg.reviewer_count,
+    )
+    extra = list(cfg.claude_extra_args)
+    if snap.model:
+        extra.extend(["--model", snap.model])
+
+    # Snapshot feat HEAD AND base_branch tip BEFORE the iterate spawn.
+    # The "did the iterate actually produce a commit?" check needs to
+    # compare against feat-before-iterate, NOT base — the initial spawn
+    # already produced commits on feat, so `base..HEAD > 0` is true
+    # regardless of whether this iteration added anything.
+    feat_sha_before_iter = _branch_sha(repo_root, wt.branch, log_path, snap.key)
+    base_sha_before_iter = _branch_sha(repo_root, cfg.base_branch, log_path, snap.key)
+
+    try:
+        result = spawn_mod.spawn_claude(
+            claude_bin=cfg.claude_bin, cwd=wt.path, env=env, prompt=iter_prompt,
+            extra_args=extra,
+        )
+    except Exception as e:
+        _log(log_path, f"  {snap.key} panel-iterate spawn failed: {e}")
+        return False
+
+    _log(log_path,
+         f"  {snap.key} panel-iterate spawn exit={result.exit_code}")
+    if result.exit_code != 0:
+        return False
+
+    # Did this iterate produce a new commit on feat OR advance base
+    # (direct-to-base workflow)? Either counts as "Tasker did something".
+    # If neither — no-op iterate; re-running the panel on the same diff
+    # will produce the same verdict, so short-circuit.
+    feat_sha_after = _branch_sha(repo_root, wt.branch, log_path, snap.key)
+    base_sha_after = _branch_sha(repo_root, cfg.base_branch, log_path, snap.key)
+    feat_advanced = (
+        feat_sha_before_iter and feat_sha_after
+        and feat_sha_before_iter != feat_sha_after
+    )
+    base_advanced = (
+        base_sha_before_iter and base_sha_after
+        and base_sha_before_iter != base_sha_after
+    )
+    if not (feat_advanced or base_advanced):
+        _log(log_path,
+             f"  {snap.key} panel-iterate produced no new commits; "
+             f"treating as no-op iteration")
+        return False
+    return True
+
+
+def _render_findings_for_iterate_prompt(panel: cfr_mod.PanelVerdict) -> str:
+    """Format blocking findings as a numbered, scannable block for the
+    Tasker's corrective prompt. Distinct from
+    `cfr_mod.render_findings_markdown` (which is human-readable for
+    summary.md); this format is instruction-shaped for an LLM.
+    """
+    lines: list[str] = []
+    for i, f in enumerate(panel.blocking_findings, 1):
+        lines.append(
+            f"{i}. **{f.severity.value}** at `{f.location}`"
+        )
+        if f.description:
+            # Indent description so the Tasker reads it as part of the
+            # bullet, not a new section.
+            for ln in f.description.splitlines():
+                lines.append(f"   {ln}")
+        if f.fix:
+            lines.append(f"   *Fix:* {f.fix}")
+        lines.append("")  # blank line between findings
+    return "\n".join(lines).rstrip()
+
+
+# Hook for tests to inject stub reviewers without subclassing or
+# monkeypatching subprocess.run. Production code never sets this.
+_panel_reviewers_override: list[cfr_mod.Reviewer] | None = None
+
+
+def set_panel_reviewers(reviewers: list[cfr_mod.Reviewer] | None) -> None:
+    """Test-only: override the reviewer set the panel uses. None restores defaults."""
+    global _panel_reviewers_override
+    _panel_reviewers_override = reviewers
+
+
+def _panel_reviewer_factory(cfg: RunConfig) -> list[cfr_mod.Reviewer]:
+    if _panel_reviewers_override is not None:
+        return _panel_reviewers_override
+    return cfr_mod.default_reviewers(timeout_seconds=cfg.cross_family_panel_timeout)
+
+
+def _append_panel_findings_to_summary(
+    summary_path: Path, panel: cfr_mod.PanelVerdict,
+    log_path: Path, task_key: str,
+) -> None:
+    """Append the rendered panel verdict to the Tasker's summary.md.
+
+    The summary.md is the artefact the human reads when triaging a Blocked
+    task. Appending the panel findings here means the auditor sees the
+    three families' verdicts inline, not buried in the YAML row.
+
+    Best-effort — a write failure is logged but not fatal.
+    """
+    try:
+        existing = summary_path.read_text(encoding="utf-8") if summary_path.exists() else ""
+        block = cfr_mod.render_findings_markdown(panel)
+        # Avoid double-appending on re-run.
+        if "## Cross-family panel" in existing:
+            _log(log_path,
+                 f"  {task_key} panel findings already in summary.md; not re-appending")
+            return
+        sep = "\n\n" if existing and not existing.endswith("\n\n") else ""
+        summary_path.write_text(existing + sep + block, encoding="utf-8")
+    except OSError as e:
+        _log(log_path, f"  {task_key} append-panel-to-summary failed: {e}")
+
+
+def _branch_sha(repo_root: Path, branch: str,
+                log_path: Path, task_key: str) -> str | None:
+    """Return the tip SHA of `branch` in `repo_root`, or None on error.
+
+    Used to snapshot base_branch's tip before a spawn so we can later
+    detect a fast-forward advance into base (the direct-to-base workflow
+    pattern). On any git failure returns None — callers treat that as
+    "no snapshot available, fall back to the feat-branch check only."
     """
     import subprocess
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", branch],
+            cwd=str(repo_root), capture_output=True, text=True,
+            check=False, timeout=30,
+        )
+    except Exception as e:
+        _log(log_path, f"  {task_key} base-sha snapshot failed: {e}")
+        return None
+    if proc.returncode != 0:
+        _log(log_path,
+             f"  {task_key} `git rev-parse {branch}` exit={proc.returncode}: "
+             f"{proc.stderr.strip()}")
+        return None
+    sha = (proc.stdout or "").strip()
+    return sha or None
+
+
+def _has_commits_on_branch(wt: wt_mod.Worktree, base_branch: str,
+                            repo_root: Path,
+                            base_sha_before: str | None,
+                            log_path: Path, task_key: str) -> bool:
+    """True iff the spawn produced new commits, on the feat branch OR on
+    `base_branch` directly (the direct-to-base workflow).
+
+    Two success modes:
+    1. **Feature-branch mode (standard)**: the worktree's feat branch has
+       at least one commit beyond `base_branch`. This is the original
+       check — Tasker ran `git commit` on feat/X without merging.
+    2. **Direct-to-base mode (BSA-style)**: `base_branch`'s tip has
+       advanced past `base_sha_before` (the SHA snapshot taken before
+       the spawn). This catches the Tasker that fast-forwarded feat/X
+       into `base_branch`, leaving the feat-branch check returning 0 —
+       which mis-fires as "no commits" when in fact the work landed
+       directly on base.
+
+    Either condition is sufficient. If `base_sha_before` is None (the
+    pre-spawn snapshot failed for any reason), only mode 1 is checked.
+
+    Used to detect the "Tasker reported Done but forgot to commit"
+    failure mode while NOT false-firing on a successful direct-to-base
+    merge.
+    """
+    import subprocess
+    # Mode 1: feat branch has commits past base_branch.
     try:
         proc = subprocess.run(
             ["git", "rev-list", "--count", f"{base_branch}..HEAD"],
@@ -434,9 +895,89 @@ def _has_commits_on_branch(wt: wt_mod.Worktree, base_branch: str,
         return False
     count = (proc.stdout or "").strip()
     try:
-        return int(count) > 0
+        feat_count = int(count)
     except ValueError:
+        feat_count = 0
+    if feat_count > 0:
+        return True
+
+    # Mode 2: base_branch tip advanced since the spawn started. Detects
+    # the direct-to-base workflow where the Tasker FF-merged feat/X into
+    # base_branch, leaving feat/X == base_branch (so mode 1 returns 0
+    # despite the work landing).
+    if base_sha_before is None:
         return False
+    base_sha_after = _branch_sha(repo_root, base_branch, log_path, task_key)
+    if base_sha_after is None:
+        return False
+    if base_sha_after == base_sha_before:
+        return False
+    # Confirm base actually moved FORWARD (not a force-reset or rewind).
+    try:
+        proc = subprocess.run(
+            ["git", "rev-list", "--count",
+             f"{base_sha_before}..{base_sha_after}"],
+            cwd=str(repo_root), capture_output=True, text=True,
+            check=False, timeout=30,
+        )
+    except Exception as e:
+        _log(log_path,
+             f"  {task_key} direct-to-base check failed: {e}")
+        return False
+    if proc.returncode != 0:
+        _log(log_path,
+             f"  {task_key} `git rev-list {base_sha_before}..{base_sha_after}` "
+             f"exit={proc.returncode}: {proc.stderr.strip()}")
+        return False
+    try:
+        advance_count = int((proc.stdout or "").strip())
+    except ValueError:
+        advance_count = 0
+    if advance_count > 0:
+        _log(log_path,
+             f"  {task_key} direct-to-base advance detected: "
+             f"{base_branch} moved {base_sha_before[:8]}..{base_sha_after[:8]} "
+             f"({advance_count} commit(s))")
+        return True
+    return False
+
+
+_PANEL_ITERATE_PROMPT_PREFIX = """\
+A cross-family review panel (three independent reviewers, one each from
+Claude, Gemini, and Codex) found {n_findings} blocking finding(s) on the
+work you already committed on this branch. Your job is to address ONLY
+the findings below. DO NOT redo the implementation. DO NOT re-investigate
+the requirements.
+
+Panel verdict: {panel_summary}
+
+Blocking findings (CRITICAL and HIGH only — MEDIUM/LOW are informational):
+
+{findings_block}
+
+Steps:
+1. For each finding, locate the cited `file:line` and apply the suggested
+   Fix. If you disagree with the Fix, apply the spirit of the finding
+   (the underlying defect the reviewer identified) and add a short
+   "Panel iteration note" subsection to $SUMMARY_PATH explaining your
+   decision. DO NOT silently skip a finding.
+2. Run / update tests for any code path you change. If a finding is
+   specifically about test quality (a vacuous test, a tautology, a
+   missing edge case), the fix is the test itself — write a test that
+   would fail under the defect the reviewer described.
+3. `git add` the modified files. Commit:
+   `git commit -m "fix(<scope>): [{task_key}] address cross-family panel findings"`.
+   (Conventional-commit format per CLAUDE.md. No author attribution.)
+4. Append a "Panel iteration {iteration_n}" section to $SUMMARY_PATH
+   summarising what changed for each finding. Status stays Done.
+
+The dispatcher will re-run the panel against your updated diff. If the
+panel still raises blocking findings, this corrective cycle may repeat
+up to {iterations_left} more time(s) before the task is marked Blocked
+for human triage.
+
+Task context for reference (DO NOT redo):
+"""
 
 
 _COMMIT_RETRY_PROMPT_PREFIX = """\
@@ -470,10 +1011,15 @@ Task context (for reference, do NOT redo):
 
 
 def _retry_for_commit(cfg: RunConfig, snap: TaskSnapshot, wt: wt_mod.Worktree,
-                      summary_path: Path, env: dict, log_path: Path) -> str | None:
+                      repo_root: Path, summary_path: Path, env: dict,
+                      log_path: Path) -> str | None:
     """Re-spawn the Tasker with a corrective prompt asking only for the
     missing commit. Returns the spawn result's exit-code-based outcome
     or None if the retry left no commits.
+
+    `repo_root` is needed so the post-spawn commit check can also detect
+    a direct-to-base fast-forward (the retry Tasker may FF into
+    base_branch instead of leaving commits on the feat branch).
     """
     prompt = _COMMIT_RETRY_PROMPT_PREFIX.format(base_branch=cfg.base_branch)
     prompt += spawn_mod.build_prompt(
@@ -494,6 +1040,11 @@ def _retry_for_commit(cfg: RunConfig, snap: TaskSnapshot, wt: wt_mod.Worktree,
     retry_extra = list(cfg.claude_extra_args)
     if snap.model:
         retry_extra.extend(["--model", snap.model])
+    # Snapshot base_branch tip BEFORE the retry spawn so we can detect a
+    # direct-to-base advance the retry may produce (parallel to the
+    # check performed on the first-spawn path).
+    retry_base_sha_before = _branch_sha(
+        repo_root, cfg.base_branch, log_path, snap.key)
     try:
         result = spawn_mod.spawn_claude(
             claude_bin=cfg.claude_bin, cwd=wt.path, env=env, prompt=prompt,
@@ -503,7 +1054,9 @@ def _retry_for_commit(cfg: RunConfig, snap: TaskSnapshot, wt: wt_mod.Worktree,
         _log(log_path, f"  {snap.key} commit-retry spawn failed: {e}")
         return None
     _log(log_path, f"  {snap.key} commit-retry exited code={result.exit_code}")
-    if not _has_commits_on_branch(wt, cfg.base_branch, log_path, snap.key):
+    if not _has_commits_on_branch(
+            wt, cfg.base_branch, repo_root,
+            retry_base_sha_before, log_path, snap.key):
         return None
     return "retried_ok"
 
@@ -521,6 +1074,21 @@ def _resolve_summary(
     """
     if not s.awaiting_human_approval:
         return s.status or plan_mod.BLOCKED, None, None
+
+    # PR-gate event: notify here so the human sees the gate trip on
+    # their phone whether the dispatcher proceeds to stdin (supervised)
+    # or parks the task Blocked (unattended). Best-effort.
+    try:
+        cfg.notifier.send(notify_mod.awaiting_pr_approval_notification(
+            task_key=snap.key,
+            summary=snap.summary,
+            pr_title=s.prepared_pr_title,
+            pr_branch=s.prepared_pr_branch,
+            run_id=cfg.run_id,
+            summary_path=None,  # _resolve_summary doesn't have summary_path
+        ))
+    except Exception:
+        pass
 
     # Awaiting human PR approval.
     if cfg.mode == "unattended":
@@ -592,12 +1160,35 @@ def _mark_in_progress(cfg: RunConfig, snap: TaskSnapshot, run_dir: Path) -> None
 
 
 def _mark_blocked(cfg: RunConfig, task_key: str, *, reason: str) -> None:
+    summary_for_notify = {"summary": "", "summary_path": None}
+
     def _apply(row):
         row["status"] = plan_mod.BLOCKED
         row["completed_at"] = _now_iso()
         row["blocked_reason"] = reason
+        # Capture for the post-write notification.
+        summary_for_notify["summary"] = str(row.get("summary") or "")
+        sp = row.get("summary_path")
+        if sp:
+            summary_for_notify["summary_path"] = str(sp)
 
     _mutate_row(cfg, task_key, _apply)
+    # Best-effort notification. Failures are swallowed inside the
+    # Notifier — never let a flaky webhook break the dispatch loop.
+    try:
+        cfg.notifier.send(notify_mod.task_blocked_notification(
+            task_key=task_key,
+            summary=summary_for_notify["summary"],
+            reason=reason,
+            run_id=cfg.run_id,
+            summary_path=summary_for_notify["summary_path"],
+            tasks_yaml=str(cfg.tasks_path),
+        ))
+    except Exception:
+        # Last-resort guard against a notifier that bypassed its own
+        # try/except. We do NOT want to convert a Blocked-state stamp
+        # into a dispatcher crash on a notification bug.
+        pass
 
 
 # --- misc helpers -----------------------------------------------------------
@@ -627,6 +1218,19 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
         claude_extra_args=extra.split() if extra else [],
         base_branch=cli_base if cli_base else "main",
         auto_integrate=getattr(args, "auto_integrate", False),
+        cross_family_panel=getattr(args, "cross_family_panel", "auto"),
+        cross_family_panel_timeout=getattr(
+            args, "cross_family_panel_timeout",
+            cfr_mod.DEFAULT_REVIEWER_TIMEOUT_SECONDS,
+        ),
+        cross_family_panel_iterate=getattr(
+            args, "cross_family_panel_iterate", 0,
+        ),
+        notifier=notify_mod.build_notifier_from_env(
+            cli_ntfy_topic=getattr(args, "ntfy_topic", None),
+            cli_ntfy_server=getattr(args, "ntfy_server", None),
+            cli_slack_webhook=getattr(args, "slack_webhook_url", None),
+        ),
     )
 
 

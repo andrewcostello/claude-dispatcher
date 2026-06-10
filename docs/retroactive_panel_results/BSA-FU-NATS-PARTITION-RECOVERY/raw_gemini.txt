@@ -1,0 +1,29 @@
+## Verdict
+REJECT
+
+## Dimension scores
+- Correctness: 2
+- Security: 5
+- Compliance: 5
+- Resilience: 2
+- Idempotency: 5
+- Observability: 4
+- Performance: 2
+- Maintainability: 4
+
+## Findings
+
+### CRITICAL: apps/platform-domain/bay-session/cmd/publish-recovery/worker.go:133
+Description: The `RunWithReadyHook` loop uses immediate-redrain semantics (`if n < w.cfg.BatchSize { break }`) to rapidly clear backlogs. However, if a row permanently fails to publish (e.g., due to a malformed `SnapshotStation` read or a NATS payload rejection), it is never stamped and remains in the stale set indefinitely. If the number of such poisoned rows reaches `BatchSize` (100), `ListStalePublishStations` will continually return these same failing rows. `drainOnce` will repeatedly return `100, nil` (as individual `resync` errors do not bubble up to abort the drain), causing the loop to immediately re-drain without waiting for the `PollInterval` ticker. This creates a tight, unthrottled infinite loop that will DoS the database, peg the CPU, and completely starve the recovery of any newer stale stations (head-of-line blocking).
+Fix: Remove the immediate-redrain bypass so the loop always honors the `PollInterval` backoff, or implement a bounded retry mechanism (such as updating the row to a terminal DLQ state after N failures) so permanently poisoned rows are evicted from the scan.
+
+### HIGH: apps/platform-domain/bay-session/cmd/publish-recovery/worker.go:152
+Description: Database operations (`ListStalePublishStations`, `SnapshotStation`, and `StampSessionLastPublishedAt`) are executed using the background context, which is only cancelled upon pod shutdown. If a Postgres connection hangs—such as from a network partition without a TCP RST, or severe lock contention—the queries will block indefinitely. This will stall the recovery pipeline forever. Because the liveness probe at `/healthz` does not verify loop progress, Kubernetes will not detect the stall and the pod will not be restarted.
+Fix: Wrap the context passed to database operations with explicit timeouts. For example, use `context.WithTimeout(ctx, w.cfg.PollInterval)` for the batch claim, and apply targeted timeouts for the per-row snapshot and stamp operations.
+
+### MEDIUM: apps/platform-domain/bay-session/cmd/publish-recovery/main.go:118
+Description: The deploy manifest comment asserts that "the in-flight drainOnce completes its current batch before the pod exits" upon SIGTERM. However, `runServers` passes the `parent` context (which cancels immediately on SIGTERM) directly to the worker. When cancelled, `runServers` exits, and `bootstrap`'s deferred `cleanup()` function eagerly closes the Postgres pool and NATS publisher while the worker goroutines are still trying to execute their batch. This leads to aborted queries and dropped publishes rather than a graceful batch completion.
+Fix: Decouple the worker's shutdown context from the immediate SIGTERM context and implement a `sync.WaitGroup` to wait for the worker to return gracefully before invoking `cleanup()` and exiting the process.
+
+## Notes
+The extraction of the session state builder into `internal/sessionsnap` is an excellent architectural choice that ensures the recovery payload matches the hot-path perfectly. The deduplication mechanism via deterministic JetStream `Nats-Msg-Id` and consumer-side `db_version` is also extremely robust. However, the lack of defensive bounding on the failure paths (missing DB timeouts and the unbounded tight retry loop on poisoned rows) fundamentally undermines the reliability of the worker and requires remediation before shipping.

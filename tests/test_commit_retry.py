@@ -120,3 +120,47 @@ def test_done_commit_retry_succeeds(repo: Path, monkeypatch) -> None:
         cwd=str(wt), capture_output=True, text=True, check=True,
     )
     assert int(out.stdout.strip()) >= 1
+
+
+def test_done_direct_to_base_lands_normally(repo: Path, monkeypatch) -> None:
+    """When the Tasker uses the BSA direct-to-base workflow — committing
+    on feat/X AND fast-forwarding base_branch to match — the dispatcher
+    must recognize the work landed even though feat/X == base_branch
+    (which makes the standard 'rev-list base..HEAD' check return 0).
+
+    Regression test for the 2026-05-21 wedge where FOUND-1 ran for ~2h45m
+    in commit-retry loops because the dispatcher only looked at the
+    feature branch and missed that the work had already landed on base.
+    """
+    monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "done-direct-to-base")
+    _patch_spawn(monkeypatch)
+    rc = orchestrator.execute(_args(repo))
+    assert rc == 0, "dispatcher should recognize FF-into-base as success"
+    doc = yaml_io.load(repo / "tasks.yaml")
+    row = next(t for t in doc["tasks"] if t["key"] == "SMOKE-A")
+    assert row["status"] == "Done", (
+        f"expected Done, got {row['status']!r} "
+        f"(blocked_reason={row.get('blocked_reason')!r})"
+    )
+
+    # Verify base_branch advanced in the main repo (the FF target).
+    base_commits = subprocess.run(
+        ["git", "rev-list", "--count", "main"],
+        cwd=str(repo), capture_output=True, text=True, check=True,
+    )
+    # init commit + the FF'd marker commit = 2.
+    assert int(base_commits.stdout.strip()) >= 2
+
+    # Verify feat/X tip equals base_branch tip (the FF property).
+    wt = repo.parent / "wt" / "worktree-SMOKE-A"
+    feat_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=str(wt), capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    base_sha = subprocess.run(
+        ["git", "rev-parse", "main"],
+        cwd=str(repo), capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert feat_sha == base_sha, (
+        f"FF should leave feat == base; feat={feat_sha[:8]} base={base_sha[:8]}"
+    )

@@ -1,0 +1,28 @@
+## Verdict
+CHANGES_REQUESTED
+
+## Dimension scores
+- Correctness: 3
+- Security: 4
+- Compliance: 3
+- Resilience: 3
+- Idempotency: 4
+- Observability: 3
+- Performance: 4
+- Maintainability: 3
+
+## Findings
+### HIGH: apps/platform-domain/bay-session/store/queries/bet_recovery.sql:248
+Description: `ClaimStuckRefundedBets` excludes every refunded bet where `refund_idempotency_key IS NULL`. That means the new recovery worker will never repair shutdown-stranded refunds for legacy bets, even though the hot path already has a deterministic fallback transaction ID (`fallbackRefundTransactionID(betID)`) for exactly that case. In a financial system, leaving a known class of `bet_state='refunded'` rows permanently outside automated repair means some users can still end up with a refunded bet on disk and no wallet credit until manual operator intervention.
+Fix: Recover legacy refunded bets too. Either include `refund_idempotency_key IS NULL` rows in the claim query and derive the same fallback transaction ID the hot path uses, or explicitly migrate/backfill a stable refund idempotency key for legacy rows before enabling the worker. The worker’s replay path must be able to produce the identical wallet transaction ID for both new and legacy bets.
+
+### MEDIUM: apps/platform-domain/bay-session/cmd/bay-session/cascade_refund_sigterm_recovery_test.go:47
+Description: The SIGTERM regression test claims to verify that abandoned goroutines “stamp nothing,” but it never actually wires the `recordingConfirmer` into `launchDetachedCascadeRefund`; `deps.Store` is unset, so `depRefundConfirmer(deps)` returns `nil` and stamping is impossible regardless of behavior. This test would still pass even if the production confirmer path were broken, so it gives false confidence around the most important new hot-path bookkeeping change.
+Fix: Wire a real `RefundConfirmer` into the exercised path, either by letting `Deps` carry an explicit confirmer dependency or by supplying a store stub that implements `StampRefundConfirmedAt`. Then assert that successful detached refunds do stamp and timeout-abandoned ones do not.
+
+### MEDIUM: apps/platform-domain/bay-session/cmd/bay-session/main.go:530
+Description: `waitForCascadeRefundDrain` increments `bay_session_cascade_refund_shutdown_abandoned_total{phase="wait_timeout"}` only once per timeout event, even though the metric help text and surrounding comments describe it as counting abandoned refund goroutines. During a shutdown that abandons multiple in-flight refunds, operators will see `1` instead of the actual number of missed refunds, which undermines alert accuracy and reconciliation during an incident.
+Fix: Either change the metric semantics/documentation to say it counts timeout events, or track and increment by the number of goroutines still outstanding when the wait budget expires. The metric name/help/comments and implementation need to agree.
+
+## Notes
+The overall design is directionally sound: durable post-ACK stamping plus a replay worker is the right repair mechanism. The blocking issue is that the worker deliberately omits legacy refunded rows, so the system still has a known unrecovered refund class after this change.

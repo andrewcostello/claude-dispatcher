@@ -1,0 +1,24 @@
+## Verdict
+REJECT
+
+## Dimension scores
+- Correctness: 1
+- Security: 4
+- Compliance: 2
+- Resilience: 3
+- Idempotency: 2
+- Observability: 3
+- Performance: 4
+- Maintainability: 3
+
+## Findings
+### CRITICAL: apps/platform-domain/bay-session/cmd/committed-bet-recovery/worker.go:430
+Description: `voidNeverDebited` decides from a previously claimed snapshot and then updates the row with a CAS that only checks `bet_state='committed'`. It does not re-check that `debit_confirmed_at` is still `NULL`. If the wallet debit succeeds after the claim but before this update, the row can be transitioned to `REFUNDED` with `refund_reason='never_debited'` even though a real `BET` ledger row now exists and the customer has actually been debited. Because this path intentionally skips `wallet.RefundBet`, that race leaves the wallet debited with no compensating refund while the bet record says refunded.
+Fix: Make the void transition conditional on the debit still being unconfirmed at write time, not just on `bet_state`. Concretely, the `UPDATE`/transition used by `ActionVoidNeverDebited` should include `debit_confirmed_at IS NULL` (or another equivalent expected-version predicate), and a 0-row result should trigger a re-evaluation path rather than being treated as a harmless lost-state race. If the debit has landed, the worker must switch to the normal wallet-backed refund/settlement flow.
+
+### MEDIUM: apps/platform-domain/bay-session/cmd/committed-bet-recovery/worker_test.go:1158
+Description: `TestWorker_VoidNeverDebited_LostStateRace` does not exercise the race it claims to cover. It changes the seed row to `recovery_failed` before `drainOnce`, so the row is no longer a committed stuck bet and the worker never reaches `voidNeverDebited` or its 0-rows-affected handling. The test therefore provides false confidence exactly where the new branch is concurrency-sensitive.
+Fix: Add a fake-store hook on `TransitionCommittedToRefunded` (or equivalent) so the test can mutate the row after claim and before the CAS update. Then assert that the new path handles both `bet_state` races and `debit_confirmed_at` races correctly.
+
+## Notes
+The new priority order is directionally right, but the write-side guard is too weak for a financial recovery path. In this system, “decide on stale snapshot, then do a local terminal transition without re-validating debit state” is not safe enough to ship.

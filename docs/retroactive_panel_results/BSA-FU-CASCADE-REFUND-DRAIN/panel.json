@@ -1,0 +1,124 @@
+{
+  "consensus": "block",
+  "summary": "consensus=block | claude=APPROVE, gemini=APPROVE, codex=CHANGES_REQUESTED | blocking=1 (0C/1H)",
+  "reviewers": [
+    {
+      "family": "claude",
+      "verdict": "APPROVE",
+      "dimensions": {
+        "Correctness": 4,
+        "Security": 4,
+        "Compliance": 4,
+        "Resilience": 4,
+        "Idempotency": 5,
+        "Observability": 5,
+        "Performance": 4,
+        "Maintainability": 4
+      },
+      "findings": [
+        {
+          "severity": "MEDIUM",
+          "location": "apps/platform-domain/bay-session/cmd/bay-session/cascade_refund_sigterm_recovery_test.go:60",
+          "description": "The test claims to verify that an abandoned cascade-refund goroutine does not stamp `refund_confirmed_at`, but the `recordingConfirmer` is never wired into `deps` (`deps.Store` is nil, so `depRefundConfirmer(deps)` returns nil and `stampRefundConfirmedAfterWalletAck` early-returns regardless of whether the goroutine is abandoned). The `_ = confirmer` line explicitly acknowledges the dead reference. Worse, the `slowWalletClient{delay: 1 * time.Second}` actually completes successfully inside the goroutine ~800ms after the 200ms drain budget \u2014 so the test does not actually exercise an abandoned-mid-RefundBet path; it exercises \"goroutine finishes shortly after drain timeout in a code path where confirmer is unreachable.\" `require.Zero(t, confirmer.stampedFor(7001), ...)` is trivially true regardless of correctness. The counter/timing assertions are real, but the stamp assertion gives false confidence about the central invariant the ticket exists to enforce.",
+          "fix": "Either (a) wire a `Store` (or accept a `RefundConfirmer` on Deps directly) so the goroutine's stamp path is genuinely under test, and use a wallet fake whose delay exceeds the goroutine's 30s detached timeout (so the wallet call truly doesn't return before the test exits), or (b) split the test: one case that proves the drain bumps the counter and returns within budget (the real value here), and a second case in a future revision that exercises the stamp-skipped branch with a real confirmer. The current shape conflates two assertions into one and proves neither cleanly."
+        },
+        {
+          "severity": "MEDIUM",
+          "location": "apps/platform-domain/bay-session/cmd/refund-recovery/worker.go:546",
+          "description": "`uuidFromPg` silently returns the zero UUID when `refund_idempotency_key` is invalid. The claim SQL filters `refund_idempotency_key IS NOT NULL`, so in steady state this branch is unreachable \u2014 but it is a defense-in-depth gap: if a future revision of the claim query loosens the predicate (or a NULL slips in via a manual DB write), the worker will forward `00000000-0000-0000-0000-000000000000` to `wallet.RefundBet` as the transaction id. Multiple corrupted rows would share that same zero UUID, and the wallet's `tx_refund.go` dedupe would treat all of them as the same prior transaction \u2014 silently dropping wallet credits for every bet after the first.",
+          "fix": "Reject zero-UUID rows in `claimedRefundFromRow` or in `replayRefund` before the wallet call. Bump `BumpRefundRetry` so the age clock advances toward `RECOVERY_FAILED`, increment a dedicated `refund_recovery_malformed_idempotency_key_total` counter, and log at Error. The SQL filter is the primary guard; this is the secondary one that future-proofs against schema/predicate drift."
+        },
+        {
+          "severity": "MEDIUM",
+          "location": "apps/platform-domain/bay-session/cmd/refund-recovery/worker.go:286",
+          "description": "The recovery transaction (`WithTx`) holds row locks (FOR UPDATE SKIP LOCKED on up to `BatchSize=100` rows) for the entire duration of the wallet fan-out: 50 concurrent wallet calls \u00d7 up to 5s each = potentially ~10s per row with the lock held, plus tail latency. While `SKIP LOCKED` means other replicas won't deadlock, the transaction may hit Postgres `idle_in_transaction_session_timeout` if it is set, the connection holds a backend slot, and replication lag amplifies. The committed-bet-recovery worker carries the same shape so this is not a regression, but the cumulative footprint (3 recovery workers \u00d7 100 rows \u00d7 ~10s tx) on the same `smg_bet` table is worth verifying against the pgxpool size + the Postgres `max_connections` budget before this rolls out alongside the existing recovery workers.",
+          "fix": "Document the upper bound on transaction duration in the function-level comment (or in an SRE runbook entry), and consider splitting the per-bet bookkeeping out of the claim transaction so the claim+commit happens quickly and the wallet replay runs with the rows logically claimed (e.g. via a `refund_recovery_claim_token` column) but not row-locked. This is a follow-up, not a blocker for this PR \u2014 the immediate concern is just making the lock-hold duration explicit in code/runbook."
+        },
+        {
+          "severity": "MEDIUM",
+          "location": "apps/platform-domain/bay-session/cmd/refund-recovery/wallet_client.go:80",
+          "description": "The wallet gRPC client dials with `insecure.NewCredentials()` and forwards `WALLET_SERVICE_TOKEN` in the `x-service-token` metadata header. The service token authenticates this binary to the wallet, but over plaintext the token is sniffable on any intermediary. The Tasker notes this matches the existing bay-session / committed-bet-recovery convention \u2014 so it is a pre-existing posture, not a regression \u2014 but the new binary doubles the surface area where this token traverses unencrypted.",
+          "fix": "Out-of-scope for this ticket since fixing it requires wallet-side TLS bring-up, but worth filing as a follow-up against all three workers + bay-session in one ticket so the rollout is coordinated. Until then, ensure the wallet service token is rotated when any of these binaries are decommissioned."
+        },
+        {
+          "severity": "LOW",
+          "location": "apps/platform-domain/core/dao/migrations/202605212211_smg_bet_refund_confirmed_at.up.sql:54",
+          "description": "`CREATE INDEX IF NOT EXISTS` (not `CONCURRENTLY`) takes an `ACCESS EXCLUSIVE`-equivalent lock for the index build on a potentially large `smg_bet` table. For a hot OLTP table this can cause noticeable write stalls.",
+          "fix": "If the migration runner does not auto-rewrite to `CONCURRENTLY`, switch the statement to `CREATE INDEX CONCURRENTLY IF NOT EXISTS` and split the migration so it runs outside a transaction (Postgres rejects `CONCURRENTLY` inside a tx block). If the project's migration framework always wraps in a tx, accept the cost but schedule the deploy off-peak."
+        },
+        {
+          "severity": "LOW",
+          "location": "apps/platform-domain/bay-session/cmd/bay-session/main.go:540",
+          "description": "`time.After(wait)` creates a timer that is GC'd only after the duration elapses. At shutdown this is harmless, but the idiom is widely flagged. The `select` returns on `<-done` and the orphaned timer holds a goroutine for up to `wait` (25s) after the function returns.",
+          "fix": "Replace with `timer := time.NewTimer(wait); defer timer.Stop(); select { case <-done: ...; case <-timer.C: ... }`. Cosmetic but matches Go best practice and is a one-line change."
+        }
+      ],
+      "notes": "The overall design is sound: hot-path WG drain + on-disk safety net + idempotency-key replay is the right shape, and the schema/index/migration are well-considered. The recovery worker is a faithful copy of `committed-bet-recovery`'s shape, which is the right call for SRE muscle memory \u2014 but it inherits that worker's pre-existing concerns (long-held claim transaction, plaintext gRPC) without adding new ones. I do not see any money-loss or audit-trail gap that blocks ship: the wallet dedupe via `refund_idempotency_key` is the load-bearing invariant and is correctly preserved end-to-end. The sigterm-recovery test is the weakest part of the change \u2014 the abandoned-stamp invariant deserves a real assertion, not a trivially-passing one \u2014 but the integration test in `worker_integration_test.go` covers the durable side of the same property and counterbalances the gap.",
+      "error": null,
+      "duration_seconds": 169.0115397030022
+    },
+    {
+      "family": "gemini",
+      "verdict": "APPROVE",
+      "dimensions": {
+        "Correctness": 5,
+        "Security": 5,
+        "Compliance": 5,
+        "Resilience": 5,
+        "Idempotency": 5,
+        "Observability": 5,
+        "Performance": 5,
+        "Maintainability": 5
+      },
+      "findings": [],
+      "notes": "Exceptional engineering quality. The typed-nil avoidance in `depRefundConfirmer`, the safe context bounds during `main.go` teardown, the idempotent re-entrant logic, the use of `FOR UPDATE SKIP LOCKED` combined with the partial Postgres index, and the clean architectural isolation of the worker are all masterfully implemented. Robust handling of edge cases throughout. Ship it.",
+      "error": null,
+      "duration_seconds": 255.77188345696777
+    },
+    {
+      "family": "codex",
+      "verdict": "CHANGES_REQUESTED",
+      "dimensions": {
+        "Correctness": 3,
+        "Security": 4,
+        "Compliance": 3,
+        "Resilience": 3,
+        "Idempotency": 4,
+        "Observability": 3,
+        "Performance": 4,
+        "Maintainability": 3
+      },
+      "findings": [
+        {
+          "severity": "HIGH",
+          "location": "apps/platform-domain/bay-session/store/queries/bet_recovery.sql:248",
+          "description": "`ClaimStuckRefundedBets` excludes every refunded bet where `refund_idempotency_key IS NULL`. That means the new recovery worker will never repair shutdown-stranded refunds for legacy bets, even though the hot path already has a deterministic fallback transaction ID (`fallbackRefundTransactionID(betID)`) for exactly that case. In a financial system, leaving a known class of `bet_state='refunded'` rows permanently outside automated repair means some users can still end up with a refunded bet on disk and no wallet credit until manual operator intervention.",
+          "fix": "Recover legacy refunded bets too. Either include `refund_idempotency_key IS NULL` rows in the claim query and derive the same fallback transaction ID the hot path uses, or explicitly migrate/backfill a stable refund idempotency key for legacy rows before enabling the worker. The worker\u2019s replay path must be able to produce the identical wallet transaction ID for both new and legacy bets."
+        },
+        {
+          "severity": "MEDIUM",
+          "location": "apps/platform-domain/bay-session/cmd/bay-session/cascade_refund_sigterm_recovery_test.go:47",
+          "description": "The SIGTERM regression test claims to verify that abandoned goroutines \u201cstamp nothing,\u201d but it never actually wires the `recordingConfirmer` into `launchDetachedCascadeRefund`; `deps.Store` is unset, so `depRefundConfirmer(deps)` returns `nil` and stamping is impossible regardless of behavior. This test would still pass even if the production confirmer path were broken, so it gives false confidence around the most important new hot-path bookkeeping change.",
+          "fix": "Wire a real `RefundConfirmer` into the exercised path, either by letting `Deps` carry an explicit confirmer dependency or by supplying a store stub that implements `StampRefundConfirmedAt`. Then assert that successful detached refunds do stamp and timeout-abandoned ones do not."
+        },
+        {
+          "severity": "MEDIUM",
+          "location": "apps/platform-domain/bay-session/cmd/bay-session/main.go:530",
+          "description": "`waitForCascadeRefundDrain` increments `bay_session_cascade_refund_shutdown_abandoned_total{phase=\"wait_timeout\"}` only once per timeout event, even though the metric help text and surrounding comments describe it as counting abandoned refund goroutines. During a shutdown that abandons multiple in-flight refunds, operators will see `1` instead of the actual number of missed refunds, which undermines alert accuracy and reconciliation during an incident.",
+          "fix": "Either change the metric semantics/documentation to say it counts timeout events, or track and increment by the number of goroutines still outstanding when the wait budget expires. The metric name/help/comments and implementation need to agree."
+        }
+      ],
+      "notes": "The overall design is directionally sound: durable post-ACK stamping plus a replay worker is the right repair mechanism. The blocking issue is that the worker deliberately omits legacy refunded rows, so the system still has a known unrecovered refund class after this change.",
+      "error": null,
+      "duration_seconds": 53.7669513868168
+    }
+  ],
+  "blocking_findings": [
+    {
+      "severity": "HIGH",
+      "location": "apps/platform-domain/bay-session/store/queries/bet_recovery.sql:248",
+      "description": "`ClaimStuckRefundedBets` excludes every refunded bet where `refund_idempotency_key IS NULL`. That means the new recovery worker will never repair shutdown-stranded refunds for legacy bets, even though the hot path already has a deterministic fallback transaction ID (`fallbackRefundTransactionID(betID)`) for exactly that case. In a financial system, leaving a known class of `bet_state='refunded'` rows permanently outside automated repair means some users can still end up with a refunded bet on disk and no wallet credit until manual operator intervention.",
+      "fix": "Recover legacy refunded bets too. Either include `refund_idempotency_key IS NULL` rows in the claim query and derive the same fallback transaction ID the hot path uses, or explicitly migrate/backfill a stable refund idempotency key for legacy rows before enabling the worker. The worker\u2019s replay path must be able to produce the identical wallet transaction ID for both new and legacy bets."
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+## Verdict
+CHANGES_REQUESTED
+
+## Dimension scores
+- Correctness: 3
+- Security: 4
+- Compliance: 4
+- Resilience: 3
+- Idempotency: 4
+- Observability: 4
+- Performance: 4
+- Maintainability: 3
+
+## Findings
+### HIGH: apps/platform-domain/bay-session/cmd/bay-session/shutdown_drain.go:117
+Description: `launchBootGoroutine` now wraps every boot worker in `recoverBootGoroutine`, and `recoverBootGoroutine` swallows the panic after logging it. In Go, an unhandled panic in any goroutine normally crashes the process; this change silently converts fatal worker crashes into permanent background-feature loss. If `runFrsIdleSweeper`, `runWelcomeEmailConsumer`, or the stream-stats scraper panic once, the pod stays up but that worker is dead forever until an external restart. In this system that can mean idle-session cleanup stops, welcome-email messages stop draining, or observability quietly degrades without the self-healing restart behavior the service previously had.
+Fix: Do not swallow boot-worker panics just to preserve `WaitGroup` bookkeeping. Either remove the recovery entirely, or recover only long enough to emit the log and then terminate the process explicitly so the orchestrator restarts the pod. If you need both clean `wg.Done()` behavior and crash semantics, recover in the wrapper, log, call `wg.Done()`/`registry.done()`, then re-panic or `os.Exit(1)` from a fatal path.
+
+### MEDIUM: apps/platform-domain/bay-session/cmd/bay-session/frs_sweep_shutdown_test.go:14
+Description: The new “integration” coverage does not exercise the actual FRS sweeper, actual `cleanup()`, or an actual publisher close path; it only proves that a synthetic goroutine blocked behind a channel can hold a `WaitGroup` open. That is useful unit coverage for the drain helper, but it does not verify the ticket’s highest-risk production path: a real `runFrsIdleSweeper` iteration performing store mutation followed by publish while shutdown is in progress. A regression in the real sweeper call graph could still ship with this test green.
+Fix: Add a true integration-style test around the real shutdown path: start the actual sweeper with controllable store/publisher doubles or a real test fixture, trigger cancellation mid-iteration, invoke the real cleanup closure, and assert the publish completes before the publisher/client is closed. Keep the current mechanism test if desired, but it should not be the only acceptance coverage for this ticket.

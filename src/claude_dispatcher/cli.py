@@ -138,6 +138,82 @@ def build_parser() -> argparse.ArgumentParser:
             "see each other's work. Off by default; opt-in per run."
         ),
     )
+    run.add_argument(
+        "--cross-family-panel",
+        choices=["auto", "always", "never"],
+        default="auto",
+        help=(
+            "Cross-family reviewer panel: after each Tasker reports Done, "
+            "fire three independent reviewers (Claude, Gemini, Codex) over "
+            "the diff + summary. ALL THREE must APPROVE for auto-integrate "
+            "to proceed; any dissenter or CRITICAL/HIGH finding blocks. "
+            "Values: 'auto' (default) runs the panel only for risk-gated "
+            "tickets (labels: critical/security/financial/high); 'always' "
+            "runs for every Done ticket; 'never' disables the cross-family "
+            "checkpoint. The Tasker's in-cycle panel still runs in all "
+            "modes — this is an additional safety net for cross-family "
+            "blind spots."
+        ),
+    )
+    run.add_argument(
+        "--cross-family-panel-timeout",
+        type=int,
+        default=600,
+        help=(
+            "Per-reviewer wall-clock budget for the cross-family panel "
+            "(seconds; default: 600). Reviewers run in parallel, so the "
+            "panel wall-clock is bounded by the slowest one. UNAVAILABLE "
+            "on timeout (treated as 'incomplete' panel — does not approve)."
+        ),
+    )
+    run.add_argument(
+        "--cross-family-panel-iterate",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "When the cross-family panel returns block, re-spawn the Tasker "
+            "with the blocking findings as a corrective prompt and re-run "
+            "the panel against the new diff. Up to N iterations before "
+            "giving up and marking Blocked for human triage. Default: 0 "
+            "(no iterate — block goes straight to Blocked status). Each "
+            "iteration is one extra Tasker spawn + one extra panel run. "
+            "Always fires on any block regardless of severity or vote "
+            "split; no CRITICAL or single-dissenter gating."
+        ),
+    )
+    run.add_argument(
+        "--ntfy-topic",
+        default=None,
+        metavar="TOPIC",
+        help=(
+            "ntfy.sh topic to push notifications to. Install the ntfy "
+            "phone app and subscribe to the same topic to get pushed "
+            "events: per-task Blocked, awaiting-human-approval gate, "
+            "run-complete rollup, dispatcher worker exception. The topic "
+            "IS the secret — pick something unguessable. Env var "
+            "fallback: DISPATCHER_NTFY_TOPIC."
+        ),
+    )
+    run.add_argument(
+        "--ntfy-server",
+        default=None,
+        metavar="URL",
+        help=(
+            "Self-hosted ntfy server base URL. Defaults to "
+            "https://ntfy.sh. Env var fallback: DISPATCHER_NTFY_SERVER."
+        ),
+    )
+    run.add_argument(
+        "--slack-webhook-url",
+        default=None,
+        metavar="URL",
+        help=(
+            "Slack incoming-webhook URL. The URL IS the secret — prefer "
+            "the env-var form to keep it out of argv / shell history. "
+            "Env var fallback: DISPATCHER_SLACK_WEBHOOK."
+        ),
+    )
     run.set_defaults(func=run_cmd.execute)
 
     # --- status ------------------------------------------------------------
