@@ -2,13 +2,16 @@
 
 When a dependent task's worktree is created, each blockedBy dependency whose
 commits are NOT yet reachable from base is merged into the new task branch
-(in blockedBy order) BEFORE the Tasker is spawned. On a merge conflict the
-task is Blocked with reason ``dependency_merge_conflict`` and no Tasker is
-dispatched into the conflicted tree. The merged dependency SHAs ride along in
-the ``task_started`` journal payload.
+(in blockedBy order) BEFORE the Tasker is spawned. On a merge failure the
+task is Blocked and no Tasker is dispatched into the tree: a genuine content
+conflict (unmerged paths present) is labelled ``dependency_merge_conflict``,
+any other merge failure (e.g. committer identity unknown) is labelled
+``dependency_merge_failure``. The merged dependency SHAs ride along in the
+``task_started`` journal payload.
 
 These tests cover:
-  - the worktree-level merge mechanics (merge / no-op / unresolved / conflict),
+  - the worktree-level merge mechanics (merge / no-op / unresolved / conflict
+    / non-conflict failure),
   - the orchestrator wiring end to end via the fake-claude harness:
       * acceptance 1: A done-on-branch, B blockedBy A → B's worktree contains
         A's commits before spawn; merged SHAs in the task_started payload;
@@ -177,6 +180,7 @@ def test_merge_conflict_aborts_and_reports(repo: Path, tmp_path: Path) -> None:
     assert result.conflict is not None
     assert result.conflict.key == "DEP-B"
     assert result.conflict.branch == "feat/DEP-B"
+    assert result.conflict.reason == "dependency_merge_conflict"
     assert "shared.txt" in result.conflict.detail
     # DEP-A merged cleanly before the DEP-B conflict.
     assert [m.key for m in result.merged] == ["DEP-A"]
@@ -186,6 +190,102 @@ def test_merge_conflict_aborts_and_reports(repo: Path, tmp_path: Path) -> None:
         cwd=str(wt.path), capture_output=True, text=True,
     )
     assert merge_head.returncode != 0, "MERGE_HEAD must be gone after abort"
+
+
+def _break_committer_identity(repo: Path, monkeypatch) -> None:
+    """Make merge-commit creation fail in `repo` (and its worktrees), exit 128.
+
+    `user.useConfigOnly` plus an unset `user.email` makes git refuse to invent
+    a committer identity; pointing the global/system config files at /dev/null
+    defeats the developer's real identity on the host. Worktrees share the
+    parent repo's `.git/config`, so the breakage reaches the task worktree.
+    A content-clean merge then fails only at commit creation — a non-conflict
+    failure (no unmerged paths, no MERGE_HEAD).
+    """
+    _git(repo, "config", "user.useConfigOnly", "true")
+    _git(repo, "config", "--unset", "user.email")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+    for var in ("GIT_COMMITTER_EMAIL", "GIT_AUTHOR_EMAIL", "EMAIL"):
+        monkeypatch.delenv(var, raising=False)
+
+
+def _make_orphan_branch(repo: Path, branch: str, fname: str, content: str) -> None:
+    """Create `branch` with NO common history with main (one orphan commit).
+
+    Merging such a branch fails without any content conflict — git refuses to
+    merge unrelated histories (exit 128) before producing unmerged paths.
+    """
+    _git(repo, "checkout", "-q", "--orphan", branch)
+    _git(repo, "rm", "-r", "-f", "-q", ".")
+    _commit_file(repo, fname, content, f"orphan work on {branch}")
+    _git(repo, "checkout", "-q", "main")
+
+
+def test_merge_failure_without_conflict_reports_failure_reason(
+    repo: Path, tmp_path: Path, monkeypatch,
+) -> None:
+    """A merge that fails for a non-conflict reason (committer identity
+    unknown) is classified ``dependency_merge_failure`` — not a conflict —
+    with git's own diagnosis in the detail, and the worktree is left without
+    an in-progress merge."""
+    # The dependency touches a DIFFERENT file from base: the merge itself is
+    # content-clean and fails only when git tries to create the merge commit.
+    _make_dep_branch(repo, "feat/DEP-A", "a.txt", "from A\n")
+    base = tmp_path / "wtbase"
+    wt = wt_mod.create(repo, "DEP-C", "feat/DEP-C", base_path=base)
+    _break_committer_identity(repo, monkeypatch)
+
+    result = wt_mod.merge_dependencies(
+        repo, wt, "main", [("DEP-A", "feat/DEP-A")],
+    )
+
+    assert result.conflict is not None
+    assert result.conflict.key == "DEP-A"
+    assert result.conflict.branch == "feat/DEP-A"
+    assert result.conflict.reason == "dependency_merge_failure"
+    # Detail carries git's identity complaint, not a conflicting-file list.
+    detail = result.conflict.detail.lower()
+    assert "email" in detail or "identity" in detail
+    assert "conflicting files" not in detail
+    assert result.merged == []
+    # No in-progress merge left behind (mirrors the conflict test).
+    merge_head = subprocess.run(
+        ["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+        cwd=str(wt.path), capture_output=True, text=True,
+    )
+    assert merge_head.returncode != 0, "MERGE_HEAD must be gone after a failure"
+
+
+def test_merge_stops_at_non_conflict_failure_after_clean_merge(
+    repo: Path, tmp_path: Path,
+) -> None:
+    """Multi-dependency: the first dep merges clean, the second hits a
+    non-conflict failure (unrelated history) → `merged` retains the first dep,
+    merging stops, and the failure carries reason ``dependency_merge_failure``."""
+    sha_a = _make_dep_branch(repo, "feat/DEP-A", "a.txt", "from A\n")
+    _make_orphan_branch(repo, "feat/DEP-B", "b.txt", "from B\n")
+
+    base = tmp_path / "wtbase"
+    wt = wt_mod.create(repo, "DEP-C", "feat/DEP-C", base_path=base)
+    result = wt_mod.merge_dependencies(
+        repo, wt, "main",
+        [("DEP-A", "feat/DEP-A"), ("DEP-B", "feat/DEP-B")],
+    )
+
+    # DEP-A merged cleanly before the DEP-B failure stopped the loop.
+    assert [m.key for m in result.merged] == ["DEP-A"]
+    assert result.merged[0].sha == sha_a
+    assert result.conflict is not None
+    assert result.conflict.key == "DEP-B"
+    assert result.conflict.reason == "dependency_merge_failure"
+    assert "unrelated histories" in result.conflict.detail
+    # No in-progress merge left behind.
+    merge_head = subprocess.run(
+        ["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+        cwd=str(wt.path), capture_output=True, text=True,
+    )
+    assert merge_head.returncode != 0, "MERGE_HEAD must be gone after a failure"
 
 
 # --- orchestrator wiring (fake-claude harness) ------------------------------
@@ -453,6 +553,56 @@ def test_uncommitted_own_work_blocks_despite_merged_dependency(
     row = next(t for t in doc["tasks"] if t["key"] == "INT-B")
     assert row["status"] == "Blocked"
     assert "no commits produced after commit-retry" in row.get("blocked_reason", "")
+
+
+def test_dependency_merge_failure_blocks_without_spawn(repo: Path, monkeypatch) -> None:
+    """A dependency merge that fails for a non-conflict reason (committer
+    identity unknown) Blocks the dependent under ``dependency_merge_failure``
+    — NOT ``dependency_merge_conflict`` — with no Tasker spawned: the YAML
+    blocked_reason starts with the label, the task_started payload is keyed
+    by it, and task_blocked carries it."""
+    # A real dependency branch touching a file absent from base, so the merge
+    # is content-clean and fails only at merge-commit creation.
+    _make_dep_branch(repo, "feat/INT-A", "a.txt", "from A\n")
+    _seed_repo_with_yaml(repo, _DEPENDENT_ONLY_YAML)
+    # Break identity only AFTER seeding (the seed itself commits).
+    _break_committer_identity(repo, monkeypatch)
+
+    # Record spawn calls; assert the Tasker is never dispatched.
+    spawn_calls: list[str] = []
+
+    def no_spawn(claude_bin, cwd, env, prompt, extra_args=None, timeout_seconds=3600):
+        spawn_calls.append(env.get("TASK_KEY", "?"))
+        raise AssertionError("spawn_claude must not run after a failed dependency merge")
+
+    monkeypatch.setattr(spawn_mod, "spawn_claude", no_spawn)
+
+    rc = orchestrator.execute(_args(repo, only="INT-B"))
+    assert rc == 1, "the dependent task must be Blocked"
+    assert spawn_calls == [], "no Tasker may be spawned after a failed merge"
+
+    doc = yaml_io.load(repo / "tasks.yaml")
+    row = next(t for t in doc["tasks"] if t["key"] == "INT-B")
+    assert row["status"] == "Blocked"
+    assert row.get("blocked_reason", "").startswith("dependency_merge_failure")
+
+    # Journal: task_started keyed by the failure label (and NOT the conflict
+    # label — existing dependency_merge_conflict readers stay unaffected);
+    # task_blocked records the label in its reason.
+    events = _events(repo)
+    started = next(
+        e for e in events
+        if e.event_type == "task_started" and e.task_key == "INT-B"
+    )
+    failure = started.payload.get("dependency_merge_failure")
+    assert failure and failure["key"] == "INT-A"
+    assert failure["branch"] == "feat/INT-A"
+    assert "dependency_merge_conflict" not in started.payload
+    blocked = next(
+        e for e in events
+        if e.event_type == "task_blocked" and e.task_key == "INT-B"
+    )
+    assert "dependency_merge_failure" in blocked.payload["reason"]
 
 
 # --- direct-to-base (Mode 2) commit check vs. merged dependencies -----------

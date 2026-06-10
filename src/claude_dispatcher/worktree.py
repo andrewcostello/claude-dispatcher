@@ -220,6 +220,14 @@ def remove(repo_root: Path, wt: Worktree, force: bool = False) -> None:
 # merge mechanically: bring each unintegrated dependency branch into the new
 # task branch before the Tasker is spawned.
 
+# Failure labels for a dependency merge that did not complete. A genuine
+# content conflict (unmerged paths present after the failed merge) is labelled
+# distinctly from every other merge failure (e.g. committer identity unknown,
+# unrelated histories) so triage isn't misled into hunting for conflicting
+# edits that don't exist.
+DEPENDENCY_MERGE_CONFLICT = "dependency_merge_conflict"
+DEPENDENCY_MERGE_FAILURE = "dependency_merge_failure"
+
 
 @dataclass
 class MergedDependency:
@@ -239,15 +247,20 @@ class MergedDependency:
 class DependencyMergeConflict:
     """A blockedBy dependency branch that could not be merged cleanly.
 
-    ``key`` / ``branch`` identify the dependency whose merge hit a conflict;
-    ``detail`` carries the conflicting-file list (or git's stderr) for the
-    Blocked reason and journal payload. The failed merge is aborted before
-    this is returned, so the worktree is left without an in-progress merge.
+    ``key`` / ``branch`` identify the dependency whose merge failed; ``reason``
+    classifies the failure — ``dependency_merge_conflict`` for a genuine
+    content conflict (unmerged paths present), ``dependency_merge_failure``
+    for every other merge failure (e.g. committer identity unknown).
+    ``detail`` carries the conflicting-file list for a conflict, else git's
+    stderr/stdout, for the Blocked reason and journal payload. The failed
+    merge is aborted before this is returned, so the worktree is left without
+    an in-progress merge.
     """
 
     key: str
     branch: str
     detail: str
+    reason: str = DEPENDENCY_MERGE_CONFLICT
 
 
 @dataclass
@@ -258,8 +271,10 @@ class DependencyMergeResult:
     ``already_on_base`` lists dependency keys whose commits were already
     reachable from base (no merge needed — the no-op case); ``unresolved``
     lists dependency keys whose branch ref could not be found. ``conflict``
-    is set iff a merge hit a conflict, in which case merging stopped at that
-    dependency and the caller must NOT dispatch a Tasker into the tree.
+    is set iff a merge failed — its ``reason`` distinguishes a genuine
+    content conflict (``dependency_merge_conflict``) from any other merge
+    failure (``dependency_merge_failure``) — in which case merging stopped at
+    that dependency and the caller must NOT dispatch a Tasker into the tree.
     """
 
     merged: list[MergedDependency] = field(default_factory=list)
@@ -293,20 +308,26 @@ def _is_ancestor(repo_root: Path, commitish: str, ref: str) -> bool:
     return result.returncode == 0
 
 
-def _merge_branch(wt_path: Path, dep_branch: str) -> tuple[bool, str]:
+def _merge_branch(wt_path: Path, dep_branch: str) -> tuple[bool, str, str]:
     """``git merge --no-ff --no-edit dep_branch`` in ``wt_path``.
 
-    Returns ``(True, "")`` on a clean merge. On conflict (or any merge
-    failure) the merge is aborted — leaving the worktree without an
-    in-progress merge — and ``(False, detail)`` is returned, where ``detail``
-    is the conflicting-file list when available, else git's stderr/stdout.
+    Returns ``(ok, reason, detail)``. ``(True, "", "")`` on a clean merge.
+    Any failure is aborted — leaving the worktree without an in-progress
+    merge — and classified by ``reason``: a non-empty unmerged-paths list
+    means a genuine content conflict (``dependency_merge_conflict``, detail =
+    conflicting-file list); an empty one means the merge failed for some
+    other reason, e.g. committer identity unknown
+    (``dependency_merge_failure``, detail = git's stderr/stdout).
     """
     proc = subprocess.run(
         ["git", "merge", "--no-ff", "--no-edit", dep_branch],
         cwd=wt_path, capture_output=True, text=True, check=False,
     )
     if proc.returncode == 0:
-        return True, ""
+        return True, "", ""
+    # Unmerged paths are the conflict discriminator: present after a genuine
+    # content conflict, empty for every other failure mode (which never gets
+    # as far as leaving conflicted index entries).
     conflicts = subprocess.run(
         ["git", "diff", "--name-only", "--diff-filter=U"],
         cwd=wt_path, capture_output=True, text=True, check=False,
@@ -318,9 +339,9 @@ def _merge_branch(wt_path: Path, dep_branch: str) -> tuple[bool, str]:
                    cwd=wt_path, capture_output=True, text=True, check=False)
     if conflicts:
         detail = "conflicting files: " + ", ".join(conflicts.splitlines()[:5])
-    else:
-        detail = ((proc.stderr or proc.stdout) or "merge failed").strip()[:300]
-    return False, detail
+        return False, DEPENDENCY_MERGE_CONFLICT, detail
+    detail = ((proc.stderr or proc.stdout) or "merge failed").strip()[:300]
+    return False, DEPENDENCY_MERGE_FAILURE, detail
 
 
 def merge_dependencies(
@@ -338,10 +359,12 @@ def merge_dependencies(
       - if the tip is already reachable from ``base_branch``, skip it — the
         dependency's work is already on base, so the worktree branch (forked
         from base) already contains it. This is the no-op case;
-      - otherwise ``git merge --no-ff`` the branch into the worktree. On a
-        conflict the merge is aborted (leaving the tree clean) and merging
-        stops — the conflict is returned so the caller can Block the task
-        rather than dispatch a Tasker into a half-merged tree.
+      - otherwise ``git merge --no-ff`` the branch into the worktree. On any
+        merge failure — a genuine content conflict or a non-conflict failure
+        such as a missing committer identity — the merge is aborted (leaving
+        the tree clean) and merging stops: the failure is returned with its
+        classifying reason so the caller can Block the task rather than
+        dispatch a Tasker into a half-merged tree.
 
     Merges run in the worktree (``wt.path``) so they land on the checked-out
     task branch. This function never touches ``base_branch``. An empty
@@ -359,11 +382,13 @@ def merge_dependencies(
             result.already_on_base.append(key)
             continue
         emit(f"  {key} merging dependency branch {dep_branch} ({tip[:8]}) into {wt.branch}")
-        ok, detail = _merge_branch(wt.path, dep_branch)
+        ok, reason, detail = _merge_branch(wt.path, dep_branch)
         if not ok:
-            emit(f"  {key} dependency merge conflict from {dep_branch}: {detail}")
+            kind = ("conflict" if reason == DEPENDENCY_MERGE_CONFLICT
+                    else "failure")
+            emit(f"  {key} dependency merge {kind} from {dep_branch}: {detail}")
             result.conflict = DependencyMergeConflict(
-                key=key, branch=dep_branch, detail=detail,
+                key=key, branch=dep_branch, detail=detail, reason=reason,
             )
             return result
         result.merged.append(MergedDependency(key=key, branch=dep_branch, sha=tip))

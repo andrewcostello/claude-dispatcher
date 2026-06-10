@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from . import __version__
 from . import auto_integrate as ai_mod
 from . import cross_family_reviewer as cfr_mod
 from . import journal as journal_mod
@@ -141,6 +142,10 @@ class RunConfig:
     # execute() time from CLI flags + env vars; injected into _run_task
     # via this slot so tests can substitute a recording stub.
     notifier: notify_mod.Notifier = field(default_factory=notify_mod.NullNotifier)
+    # The agent CLI's `--version` line, captured exactly once per run at run
+    # setup (execute()/resume_run()), never per task. None when capture
+    # failed — _agent_meta() then omits the field entirely (OPS-4).
+    agent_version: str | None = None
     # Append-only event journal for this run (one JSONL file under run_dir).
     # Created in execute() once run_dir exists; left None if creation fails
     # (an unwritable runs dir must NOT abort the run — journaling is
@@ -177,6 +182,10 @@ def execute(args: argparse.Namespace) -> int:
     completion (some Blocked/Escalated), 2 on validation error.
     """
     cfg = _build_config(args)
+    # Capture the agent CLI version exactly once per run (OPS-4). Failure
+    # degrades to None (capture_agent_version never raises) and the
+    # provenance field is simply omitted from terminal rows/events.
+    cfg.agent_version = spawn_mod.capture_agent_version(cfg.claude_bin)
     doc = yaml_io.load(cfg.tasks_path)
     try:
         plan_mod.load_tasks(doc)  # validate
@@ -268,6 +277,8 @@ def resume_run(args: argparse.Namespace, journal: journal_mod.Journal) -> int:
     refuse to finish work that is already half-landed.
     """
     cfg = _build_config(args)
+    # Same once-per-run agent version capture as execute() (OPS-4).
+    cfg.agent_version = spawn_mod.capture_agent_version(cfg.claude_bin)
     cfg.journal = journal
     run_dir = cfg.runs_dir / cfg.run_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -458,13 +469,15 @@ def _run_task(
     _emit_event(cfg, journal_mod.EventType.task_started,
                 _task_started_payload(snap, merge_result), task_key=snap.key)
     if merge_result.conflict is not None:
-        # Conflicting dependency branches: do NOT dispatch a Tasker into a
-        # conflicted tree. Block with a dependency_merge_conflict reason; the
-        # task_started event above already journaled the conflict detail.
+        # Failed dependency merge: do NOT dispatch a Tasker into the tree.
+        # Block with the precise label — dependency_merge_conflict for a
+        # genuine content conflict, dependency_merge_failure for any other
+        # merge failure (e.g. missing committer identity); the task_started
+        # event above already journaled the detail.
         c = merge_result.conflict
         _mark_blocked(
             cfg, snap.key,
-            reason=f"dependency_merge_conflict: {c.key} ({c.branch}): {c.detail}",
+            reason=f"{c.reason}: {c.key} ({c.branch}): {c.detail}",
         )
         return plan_mod.BLOCKED
 
@@ -828,6 +841,9 @@ def _run_task(
             row["num_turns"] = u.num_turns
         if u.model is not None:
             row["model"] = u.model
+        # Agent/version provenance (OPS-4): agent, dispatcher_version, and —
+        # when the once-per-run capture succeeded — agent_version.
+        row.update(_agent_meta(cfg))
 
     _mutate_row(cfg, snap.key, _apply)
 
@@ -846,10 +862,12 @@ def _run_task(
             "auto_integrate_status": integrate_result.status
                 if integrate_result else None,
             "needs_push": needs_push,
+            **_agent_meta(cfg),
         }, task_key=snap.key)
     else:
         _emit_event(cfg, journal_mod.EventType.task_blocked, {
             "reason": final_blocked_reason or "blocked",
+            **_agent_meta(cfg),
         }, task_key=snap.key)
 
     # If the final status is Blocked (panel block, auto-integrate fail,
@@ -1687,6 +1705,9 @@ def _mark_blocked(cfg: RunConfig, task_key: str, *, reason: str) -> None:
         row["status"] = plan_mod.BLOCKED
         row["completed_at"] = _now_iso()
         row["blocked_reason"] = reason
+        # Agent/version provenance (OPS-4) — same stamp as _run_task's
+        # terminal row, so every terminal row carries it.
+        row.update(_agent_meta(cfg))
         # Capture for the post-write notification.
         summary_for_notify["summary"] = str(row.get("summary") or "")
         sp = row.get("summary_path")
@@ -1699,7 +1720,7 @@ def _mark_blocked(cfg: RunConfig, task_key: str, *, reason: str) -> None:
     # worker exception). Disjoint from the in-worker Blocked task_blocked
     # in _run_task, so exactly one terminal event fires per task.
     _emit_event(cfg, journal_mod.EventType.task_blocked,
-                {"reason": reason}, task_key=task_key)
+                {"reason": reason, **_agent_meta(cfg)}, task_key=task_key)
     # Best-effort notification + notify_sent journal event. Failures are
     # swallowed — never let a flaky webhook (or a journal write) break the
     # dispatch loop.
@@ -1714,6 +1735,19 @@ def _mark_blocked(cfg: RunConfig, task_key: str, *, reason: str) -> None:
 
 
 # --- misc helpers -----------------------------------------------------------
+
+
+def _agent_meta(cfg: RunConfig) -> dict[str, Any]:
+    """Agent/version provenance stamped on every terminal row + terminal
+    journal event (OPS-4). `agent_version` is OMITTED (not None) when the
+    once-per-run capture failed — degrade-to-absent, never write null."""
+    meta: dict[str, Any] = {
+        "agent": spawn_mod.AGENT_NAME,
+        "dispatcher_version": __version__,
+    }
+    if cfg.agent_version:
+        meta["agent_version"] = cfg.agent_version
+    return meta
 
 
 def _build_config(args: argparse.Namespace) -> RunConfig:
@@ -1931,10 +1965,13 @@ def _task_started_payload(
     ``merged_dependencies`` carries each merged dependency's branch + tip SHA
     so an auditor can reconstruct exactly which dependency commits this task
     was built on. ``dependencies_already_on_base`` / ``dependencies_unresolved``
-    record the no-op and unresolved deps. On a conflict,
-    ``dependency_merge_conflict`` carries the offending dependency + detail.
-    Fields beyond the base metadata are omitted when empty/absent (e.g. a
-    worktree-create failure passes ``merge_result=None``).
+    record the no-op and unresolved deps. On a failed merge, a key named
+    after the failure label — ``dependency_merge_conflict`` for a genuine
+    content conflict (so existing journal readers are unaffected),
+    ``dependency_merge_failure`` for any other merge failure — carries the
+    offending dependency + detail. Fields beyond the base metadata are
+    omitted when empty/absent (e.g. a worktree-create failure passes
+    ``merge_result=None``).
     """
     payload: dict[str, Any] = {
         "summary": snap.summary,
@@ -1953,7 +1990,7 @@ def _task_started_payload(
             payload["dependencies_unresolved"] = list(merge_result.unresolved)
         if merge_result.conflict is not None:
             c = merge_result.conflict
-            payload["dependency_merge_conflict"] = {
+            payload[c.reason] = {
                 "key": c.key, "branch": c.branch, "detail": c.detail[:300],
             }
     return payload
