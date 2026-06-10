@@ -303,7 +303,9 @@ def test_parse_checklist_verified_echoes_with_suffixed_incomplete():
     # Reviewer repro 1: a per-item checklist emits `- Verdict: VERIFIED`
     # bullets for passing items, then the REAL verdict arrives with a
     # natural-language suffix. The old strict-only parser saw only the
-    # VERIFIED bullets and auto-verified. Must be INCOMPLETE.
+    # VERIFIED bullets and auto-verified. Must be INCOMPLETE — and since
+    # bulleted VERIFIED lines are no longer strict verdicts at all, the
+    # checklist echoes register no conflict: this is a CLEAN incomplete.
     raw = textwrap.dedent("""\
         Acceptance walk, item by item:
         - frobnicate the spline: present in the diff.
@@ -315,7 +317,7 @@ def test_parse_checklist_verified_echoes_with_suffixed_incomplete():
     """)
     v = vf.parse_verdict(raw)
     assert v.verdict == vf.VerdictKind.INCOMPLETE
-    assert v.reason == vf.REASON_CONFLICTING
+    assert v.reason is None
     # The verdict-line suffix is surfaced as a single location-less gap.
     assert len(v.gaps) == 1
     assert v.gaps[0].location is None
@@ -421,6 +423,151 @@ def test_parse_fenced_block_without_verdict_falls_back_to_prose():
     v = vf.parse_verdict(raw)
     assert v.verdict == vf.VerdictKind.VERIFIED
     assert v.reason is None
+
+
+# --- parse_verdict: round-2 false-VERIFY regressions (prefix/case tolerance) ---
+
+# Per-item checklist echoes that precede every probe below. Bulleted
+# `- Verdict: VERIFIED` lines are instruction echoes, never real verdicts —
+# they must neither verify nor register a conflict against the probe.
+_CHECKLIST_ECHOES = textwrap.dedent("""\
+    Acceptance walk, item by item:
+    - frobnicate the spline: present in the diff.
+    - Verdict: VERIFIED
+    - add tests: summary claims tests, the diff contains none.
+    - Verdict: VERIFIED
+
+""")
+
+
+def test_parse_probe_qualifier_word_before_verdict():
+    # Probe 1: qualifier word before "Verdict".
+    v = vf.parse_verdict(
+        _CHECKLIST_ECHOES + "Final Verdict: INCOMPLETE — claimed tests absent"
+    )
+    assert v.verdict == vf.VerdictKind.INCOMPLETE
+    # Bulleted VERIFIED echoes are not strict verdicts → clean INCOMPLETE.
+    assert v.reason is None
+    assert len(v.gaps) == 1
+    assert v.gaps[0].location is None
+    assert v.gaps[0].description == "claimed tests absent"
+
+
+def test_parse_probe_heading_prefix_with_numbered_gaps():
+    # Probe 2: markdown heading marker prefix + contract-shaped gap list.
+    raw = _CHECKLIST_ECHOES + textwrap.dedent("""\
+        ## Verdict: INCOMPLETE
+        Gaps:
+        1. tests/test_frob.py:? — claimed tests absent from diff
+        2. The summary claims coverage the diff cannot demonstrate
+    """)
+    v = vf.parse_verdict(raw)
+    assert v.verdict == vf.VerdictKind.INCOMPLETE
+    assert v.reason is None
+    assert len(v.gaps) == 2
+    assert v.gaps[0].location == "tests/test_frob.py:?"
+    assert v.gaps[1].location is None
+
+
+def test_parse_probe_pipe_separator_with_real_reason():
+    # Probe 3: pipe used as a separator before a NON-verdict-token reason.
+    # Only the two-token instruction echo is excluded; this must match.
+    v = vf.parse_verdict(_CHECKLIST_ECHOES + "Verdict: INCOMPLETE | tests missing")
+    assert v.verdict == vf.VerdictKind.INCOMPLETE
+    assert v.reason is None
+    assert len(v.gaps) == 1
+    assert v.gaps[0].location is None
+    assert v.gaps[0].description == "tests missing"
+
+
+def test_parse_probe_lowercase_verdict():
+    # Probe 4: all-lowercase verdict line.
+    v = vf.parse_verdict(
+        _CHECKLIST_ECHOES + "verdict: incomplete — claimed tests absent from the diff"
+    )
+    assert v.verdict == vf.VerdictKind.INCOMPLETE
+    assert v.reason is None
+    assert len(v.gaps) == 1
+    assert v.gaps[0].description == "claimed tests absent from the diff"
+
+
+def test_parse_probe_numbered_list_prefix():
+    # Probe 5: numbered-list prefix before the verdict.
+    v = vf.parse_verdict(
+        _CHECKLIST_ECHOES + "1. Verdict: INCOMPLETE — claimed tests absent"
+    )
+    assert v.verdict == vf.VerdictKind.INCOMPLETE
+    assert v.reason is None
+    assert len(v.gaps) == 1
+    assert v.gaps[0].description == "claimed tests absent"
+
+
+def test_parse_probe_space_before_colon():
+    # Probe 6: whitespace before the colon, bare verdict (no suffix, no
+    # numbered gaps) → INCOMPLETE with gaps unparsed, never VERIFIED.
+    v = vf.parse_verdict(_CHECKLIST_ECHOES + "Verdict : INCOMPLETE")
+    assert v.verdict == vf.VerdictKind.INCOMPLETE
+    assert v.reason == vf.REASON_GAPS_UNPARSED
+    assert v.gaps == []
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "Verdict: VERIFIED | INCOMPLETE",
+        "Verdict: INCOMPLETE | VERIFIED",
+        "- Verdict: VERIFIED | INCOMPLETE",
+        "- Verdict: INCOMPLETE | VERIFIED",
+        "- Emit exactly ONE verdict line. Never emit both verdicts.",
+        "the allowed verdicts are VERIFIED | INCOMPLETE",
+    ],
+    ids=[
+        "echo-verified-first",
+        "echo-incomplete-first",
+        "bulleted-echo-verified-first",
+        "bulleted-echo-incomplete-first",
+        "contract-rule-prose",
+        "allowed-verdicts-prose",
+    ],
+)
+def test_parse_contract_echoes_alone_are_malformed(raw):
+    # The widened INCOMPLETE tolerance must NOT pick up the prompt's own
+    # instruction echo (either token order, bulleted or not) or contract
+    # prose — alone, these carry no verdict at all.
+    v = vf.parse_verdict(raw)
+    assert v.verdict == vf.VerdictKind.INCOMPLETE
+    assert v.reason == vf.REASON_MALFORMED
+    assert v.gaps == []
+
+
+def test_parse_bulleted_verified_alone_is_malformed():
+    # Strict VERIFIED no longer tolerates a bullet prefix: a checklist echo
+    # with no real verdict anywhere is malformed output, not VERIFIED.
+    v = vf.parse_verdict("- Verdict: VERIFIED")
+    assert v.verdict == vf.VerdictKind.INCOMPLETE
+    assert v.reason == vf.REASON_MALFORMED
+
+
+def test_parse_lowercase_heading_incomplete_in_fence_selects_scope():
+    # The widened evidence regex must still drive fence scoping: a fenced
+    # lowercase/heading INCOMPLETE selects that fence as the scope, so the
+    # strict VERIFIED line in the prose outside registers no conflict.
+    raw = textwrap.dedent("""\
+        If every item were present my answer would be
+        Verdict: VERIFIED
+        but it is not:
+
+        ```
+        ## verdict: incomplete
+        Gaps:
+        1. tests/test_frob.py:? — claimed tests absent from diff
+        ```
+    """)
+    v = vf.parse_verdict(raw)
+    assert v.verdict == vf.VerdictKind.INCOMPLETE
+    assert v.reason is None
+    assert len(v.gaps) == 1
+    assert v.gaps[0].location == "tests/test_frob.py:?"
 
 
 # --- run_verifier: CLI adapter -------------------------------------------------

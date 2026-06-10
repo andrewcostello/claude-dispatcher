@@ -199,15 +199,19 @@ def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
 
 
-# A STRICT verdict line: a line that is ONLY the verdict, tolerating leading
-# bullet/whitespace and optional surrounding backticks or ** bold. The `$`
-# (end-of-line under MULTILINE) anchor is load-bearing: the prompt's
-# instruction echo `Verdict: VERIFIED | INCOMPLETE` must NOT match, and a
-# response truncated mid-token (`Verdict: VERIF`) must NOT match either.
-# VERIFIED is accepted ONLY from this strict shape.
+# A STRICT VERIFIED line: a line that is ONLY the verdict, tolerating
+# optional surrounding backticks or ** bold and nothing else. No bullet,
+# blockquote, heading, or numbered-list prefix is tolerated: the output
+# contract never produces a prefixed verdict, and prefixed `Verdict:
+# VERIFIED` lines are how per-item checklist echoes appear in practice.
+# The `$` (end-of-line under MULTILINE) anchor is load-bearing: the
+# prompt's instruction echo `Verdict: VERIFIED | INCOMPLETE` must NOT
+# match, and a response truncated mid-token (`Verdict: VERIF`) must NOT
+# match either. VERIFIED is accepted ONLY from this strict shape; ALL
+# INCOMPLETE detection goes through _INCOMPLETE_EVIDENCE_RE below.
 _VERDICT_LINE_RE = re.compile(
-    r"^[ \t]*(?:[-*>]\s+)?(?:\*\*|`+)?\s*"
-    r"Verdict:\s*(VERIFIED|INCOMPLETE)"
+    r"^[ \t]*(?:\*\*|`+)?\s*"
+    r"Verdict:\s*VERIFIED"
     r"\s*(?:\*\*|`+)?[ \t]*$",
     re.MULTILINE,
 )
@@ -217,14 +221,22 @@ _VERDICT_LINE_RE = re.compile(
 # claimed tests absent` is natural model output). Detection is deliberately
 # asymmetric: a suffixed VERIFIED never verifies, but suffixed INCOMPLETE
 # evidence always blocks verification — ambiguity must only ever push the
-# verdict in the conservative direction. The `(?!\s*\|)` lookahead keeps
-# the instruction echo `Verdict: VERIFIED | INCOMPLETE` (in either token
-# order) matching neither verdict.
+# verdict in the conservative direction. Accordingly this side tolerates
+# the shapes models actually emit: any case (`verdict: incomplete`),
+# bullet/blockquote/heading/numbered-list prefixes (`- `, `> `, `##`,
+# `1.`), up to two qualifier words before `Verdict` (`Final`, `My final`),
+# and whitespace before the colon (`Verdict :`). The negative lookahead
+# excludes ONLY the two-token instruction echo `Verdict: INCOMPLETE |
+# VERIFIED`; a pipe followed by anything else (`Verdict: INCOMPLETE |
+# tests missing`) is a real verdict with a separator. The echo in the
+# other token order (`Verdict: VERIFIED | INCOMPLETE`) never matches
+# because INCOMPLETE must follow the colon directly.
 _INCOMPLETE_EVIDENCE_RE = re.compile(
-    r"^[ \t]*(?:[-*>]\s+)?(?:\*\*|`+)?\s*"
-    r"Verdict:\s*(?:\*\*|`+)?\s*INCOMPLETE\b(?!\s*\|)"
+    r"^[ \t]*(?:(?:[-*>]|#{1,6}|\d+[.)])\s+)?(?:\*\*|`+)?\s*"
+    r"(?:\w+(?:\s+\w+)?\s+)?Verdict\s*:\s*(?:\*\*|`+)?\s*INCOMPLETE\b"
+    r"(?!\s*\|\s*(?:VERIFIED|INCOMPLETE)\b)"
     r"(?P<suffix>[^\n]*)$",
-    re.MULTILINE,
+    re.MULTILINE | re.IGNORECASE,
 )
 
 # A numbered gap item: "1. text" or "1) text".
@@ -300,7 +312,7 @@ def _suffix_gap(suffix: str) -> list[Gap]:
     Pure formatting/punctuation (e.g. the `**` closing a bold verdict
     line) is not a reason — no gap is fabricated from it.
     """
-    text = re.sub(r"^(?:\s|[—–:-]|\*\*|`)+", "", suffix.strip())
+    text = re.sub(r"^(?:\s|[—–:|-]|\*\*|`)+", "", suffix.strip())
     text = re.sub(r"(?:\s|\*\*|`)+$", "", text)
     if not re.search(r"\w", text):
         return []
@@ -317,12 +329,15 @@ def parse_verdict(raw: str) -> VerifierVerdict:
     conservative direction — ambiguity never auto-verifies:
 
       * VERIFIED requires a STRICT full verdict line inside the parsed
-        scope; an echoed/suffixed VERIFIED elsewhere never verifies.
-      * any loose `Verdict: INCOMPLETE ...` line (suffix tolerated)
-        ANYWHERE in the response counts as INCOMPLETE evidence — it can
-        only make the verdict more conservative, never less.
-      * the instruction echo `Verdict: VERIFIED | INCOMPLETE` matches
-        neither.
+        scope; an echoed/suffixed/bulleted VERIFIED elsewhere never
+        verifies.
+      * any loose `Verdict: INCOMPLETE ...` line (case-insensitive;
+        bullet/heading/numbered prefix, qualifier words, and suffix
+        tolerated) ANYWHERE in the response counts as INCOMPLETE
+        evidence — it can only make the verdict more conservative,
+        never less.
+      * the instruction echo `Verdict: VERIFIED | INCOMPLETE` (either
+        token order, bulleted or not) matches neither.
 
     Decision table:
 
@@ -341,11 +356,7 @@ def parse_verdict(raw: str) -> VerifierVerdict:
     cleaned = _strip_ansi(raw)
     scope = _verdict_scope(cleaned)
 
-    verified = [
-        m
-        for m in _VERDICT_LINE_RE.finditer(scope)
-        if m.group(1) == "VERIFIED"
-    ]
+    verified = list(_VERDICT_LINE_RE.finditer(scope))
     incomplete_in_scope = list(_INCOMPLETE_EVIDENCE_RE.finditer(scope))
     incomplete_anywhere = list(_INCOMPLETE_EVIDENCE_RE.finditer(cleaned))
 
