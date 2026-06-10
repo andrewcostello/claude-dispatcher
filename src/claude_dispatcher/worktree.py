@@ -21,9 +21,10 @@ from __future__ import annotations
 
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from typing import Callable
 
 
 class WorktreeError(RuntimeError):
@@ -206,3 +207,164 @@ def remove(repo_root: Path, wt: Worktree, force: bool = False) -> None:
             f"git worktree remove failed for {wt.path}",
             stderr=(exc.stderr or "").strip(),
         ) from exc
+
+
+# --- dispatch-time dependency merge (INT-4) --------------------------------
+#
+# When a dependent task's worktree is created, its branch is forked from
+# base_branch. If a blockedBy dependency has NOT been integrated into base
+# (e.g. auto-integrate is off, or the dependency landed only on its own feat
+# branch), the fresh worktree can't see that dependency's work. Run #2's
+# DISP-9/10/11/12 natural experiment showed Taskers handle this inconsistently
+# (merge / narrow scope / fork / read-via-object-store). This provides the
+# merge mechanically: bring each unintegrated dependency branch into the new
+# task branch before the Tasker is spawned.
+
+
+@dataclass
+class MergedDependency:
+    """One blockedBy dependency whose branch was merged into the task branch.
+
+    ``sha`` is the full commit SHA of the dependency branch tip at merge time
+    — journaled so an auditor can reconstruct exactly which dependency commits
+    the dependent task was built on top of.
+    """
+
+    key: str
+    branch: str
+    sha: str
+
+
+@dataclass
+class DependencyMergeConflict:
+    """A blockedBy dependency branch that could not be merged cleanly.
+
+    ``key`` / ``branch`` identify the dependency whose merge hit a conflict;
+    ``detail`` carries the conflicting-file list (or git's stderr) for the
+    Blocked reason and journal payload. The failed merge is aborted before
+    this is returned, so the worktree is left without an in-progress merge.
+    """
+
+    key: str
+    branch: str
+    detail: str
+
+
+@dataclass
+class DependencyMergeResult:
+    """Outcome of merging a dependent task's blockedBy branches.
+
+    ``merged`` lists the dependencies actually merged (in blockedBy order);
+    ``already_on_base`` lists dependency keys whose commits were already
+    reachable from base (no merge needed — the no-op case); ``unresolved``
+    lists dependency keys whose branch ref could not be found. ``conflict``
+    is set iff a merge hit a conflict, in which case merging stopped at that
+    dependency and the caller must NOT dispatch a Tasker into the tree.
+    """
+
+    merged: list[MergedDependency] = field(default_factory=list)
+    already_on_base: list[str] = field(default_factory=list)
+    unresolved: list[str] = field(default_factory=list)
+    conflict: DependencyMergeConflict | None = None
+
+
+def _rev_parse(repo_root: Path, ref: str) -> str | None:
+    """Full commit SHA for ``ref`` in ``repo_root``, or None if it can't resolve."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+            cwd=repo_root, capture_output=True, text=True, check=False,
+        )
+    except OSError:
+        return None
+    sha = (result.stdout or "").strip()
+    return sha if (result.returncode == 0 and sha) else None
+
+
+def _is_ancestor(repo_root: Path, commitish: str, ref: str) -> bool:
+    """True iff ``commitish`` is an ancestor of (reachable from) ``ref``."""
+    try:
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", commitish, ref],
+            cwd=repo_root, capture_output=True, text=True, check=False,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0
+
+
+def _merge_branch(wt_path: Path, dep_branch: str) -> tuple[bool, str]:
+    """``git merge --no-ff --no-edit dep_branch`` in ``wt_path``.
+
+    Returns ``(True, "")`` on a clean merge. On conflict (or any merge
+    failure) the merge is aborted — leaving the worktree without an
+    in-progress merge — and ``(False, detail)`` is returned, where ``detail``
+    is the conflicting-file list when available, else git's stderr/stdout.
+    """
+    proc = subprocess.run(
+        ["git", "merge", "--no-ff", "--no-edit", dep_branch],
+        cwd=wt_path, capture_output=True, text=True, check=False,
+    )
+    if proc.returncode == 0:
+        return True, ""
+    conflicts = subprocess.run(
+        ["git", "diff", "--name-only", "--diff-filter=U"],
+        cwd=wt_path, capture_output=True, text=True, check=False,
+    ).stdout.strip()
+    # Abort so the worktree is never left mid-merge — a Tasker must never be
+    # dispatched into a conflicted tree, and a preserved-for-inspection
+    # Blocked worktree should be in a clean state.
+    subprocess.run(["git", "merge", "--abort"],
+                   cwd=wt_path, capture_output=True, text=True, check=False)
+    if conflicts:
+        detail = "conflicting files: " + ", ".join(conflicts.splitlines()[:5])
+    else:
+        detail = ((proc.stderr or proc.stdout) or "merge failed").strip()[:300]
+    return False, detail
+
+
+def merge_dependencies(
+    repo_root: Path,
+    wt: Worktree,
+    base_branch: str,
+    dependencies: list[tuple[str, str]],
+    log: Callable[[str], None] | None = None,
+) -> DependencyMergeResult:
+    """Merge each blockedBy dependency branch into the task's worktree branch.
+
+    For every ``(key, branch)`` in ``dependencies`` (blockedBy order):
+      - resolve the branch tip; an unresolvable ref is recorded in
+        ``unresolved`` and skipped (we can't merge what we can't find);
+      - if the tip is already reachable from ``base_branch``, skip it — the
+        dependency's work is already on base, so the worktree branch (forked
+        from base) already contains it. This is the no-op case;
+      - otherwise ``git merge --no-ff`` the branch into the worktree. On a
+        conflict the merge is aborted (leaving the tree clean) and merging
+        stops — the conflict is returned so the caller can Block the task
+        rather than dispatch a Tasker into a half-merged tree.
+
+    Merges run in the worktree (``wt.path``) so they land on the checked-out
+    task branch. This function never touches ``base_branch``. An empty
+    ``dependencies`` list is a no-op returning an empty result.
+    """
+    result = DependencyMergeResult()
+    emit = log or (lambda _m: None)
+    for key, dep_branch in dependencies:
+        tip = _rev_parse(repo_root, dep_branch)
+        if tip is None:
+            emit(f"  {key} dependency branch {dep_branch!r} unresolved — skipping merge")
+            result.unresolved.append(key)
+            continue
+        if _is_ancestor(repo_root, tip, base_branch):
+            result.already_on_base.append(key)
+            continue
+        emit(f"  {key} merging dependency branch {dep_branch} ({tip[:8]}) into {wt.branch}")
+        ok, detail = _merge_branch(wt.path, dep_branch)
+        if not ok:
+            emit(f"  {key} dependency merge conflict from {dep_branch}: {detail}")
+            result.conflict = DependencyMergeConflict(
+                key=key, branch=dep_branch, detail=detail,
+            )
+            return result
+        result.merged.append(MergedDependency(key=key, branch=dep_branch, sha=tip))
+    return result
