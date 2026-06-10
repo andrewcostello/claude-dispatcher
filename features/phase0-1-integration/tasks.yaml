@@ -1,0 +1,117 @@
+project: DISP
+epic: PHASE-0-1-INT
+# ============================================================================
+# Run #3: integration debt from run #2 + the dispatch-time dependency rule.
+# Source: docs/improvement-plan.md Dogfood log (run #2 + integration entries).
+#
+# Context for all tasks: run #2's journal/status/resume chain exposed that
+# dependent tasks dispatch from bare main without their dependencies' code.
+# DISP-11 (resume) forked journal.py as a result and its PR (#10) is held.
+# The canonical journal.py + orchestrator wiring are now ON MAIN, so tasks
+# here do not face that gap.
+# ============================================================================
+
+tasks:
+
+  - key: INT-1
+    summary: "Reconcile `dispatcher resume` onto the canonical journal (supersede PR #10)"
+    description: |
+      Branch feat/DISP-11-implement-dispatcher-resume (held PR #10, see its
+      hold comment) implements `dispatcher resume` against a FORKED copy of
+      journal.py written before the canonical module landed. The canonical
+      journal.py + orchestrator event wiring are now on main.
+
+      Port the resume implementation onto main's journal.py: keep its good
+      behaviors (liveness guard refusing live runs, exit codes, --force,
+      no-op on completed runs, resume_started event linking prior genesis),
+      drop the forked journal entirely, adapt reader calls to the canonical
+      API, and reuse/adapt its tests. Cherry-pick or reimplement — your
+      judgment; cite what you took in the summary.
+
+      Acceptance:
+        - No second journal implementation anywhere in the tree
+        - resume_started event written via the canonical module, chain-valid
+        - kill -9 mid-run fixture resumes to a YAML identical to an
+          uninterrupted run; no-op + --force paths tested
+        - README "pending PR #10" notes removed (CLI section + module tree)
+        - Summary states what was ported vs rewritten from PR #10
+    type: Task
+    estimate: 3h
+    labels: [size:M, area:cli, area:journal, phase:1]
+
+  - key: INT-2
+    summary: "Wire `dispatcher status` to the journal (liveness + event data)"
+    description: |
+      `dispatcher status` (DISP-10) shipped reading run.log + tasks.yaml only
+      — its summary documented this as deliberate scope-narrowing because its
+      tree predated the journal. The journal is now on main and the
+      orchestrator emits all 14 event types (run #2's own journal exists at
+      docs/runs/2026-06-10T18-24-47Z-tasks/ as a non-chain-era fixture
+      reference; new runs have journal.jsonl).
+
+      Re-point status: liveness from the journal's last event (run.log scan
+      kept only as fallback for pre-journal runs, noted in output), and
+      enrich per-task state from journal events (spawn usage, panel verdicts)
+      where present.
+
+      Acceptance:
+        - Liveness sourced from journal.jsonl when present; fallback labeled
+        - --json schema documents the new fields; snapshot test updated
+        - Works mid-run (partial last line) and on pre-journal runs
+    type: Task
+    estimate: 2h
+    labels: [size:S, area:cli, area:journal, phase:1]
+
+  - key: INT-3
+    summary: "Post-Done push/PR verification (DISP-9 forgot to push)"
+    description: |
+      Run #2's DISP-9 committed locally, reported Done, but never pushed its
+      branch — no PR was raised and integration found it by accident. The
+      commit-retry path already covers "Done with no commits"; extend the
+      same pattern to "Done with unpushed branch / missing PR".
+
+      After a task reports Done (and commits exist), verify: branch pushed to
+      origin (git ls-remote) and, when the run config expects PRs, a PR
+      exists. If not, retry once with a push/PR-only prompt (mirroring
+      commit-retry); if still unpushed, mark the YAML row with a
+      needs_push: true field and emit a journal event (pr_gate payload or a
+      new event type — your judgment, document it) so the supervisor sees it.
+
+      Acceptance:
+        - Unpushed-Done fixture: retry path fires, then needs_push surfaces
+          in YAML + journal if the retry fails
+        - No behavior change for tasks that pushed and raised PRs
+        - Works when no remote is configured (skip with journaled reason)
+    type: Task
+    estimate: 3h
+    labels: [size:M, area:orchestrator, phase:0]
+
+  - key: INT-4
+    summary: "Dispatch-time dependency rule: dependents branch from base + blockedBy branches"
+    description: |
+      Proven mandatory by run #2's DISP-9/10/11/12 natural experiment (see
+      docs/improvement-plan.md Dogfood log): when a dependent task dispatches
+      before its dependencies' branches are integrated into base, the four
+      observed Tasker behaviors were merge-the-branches (correct), narrow
+      scope, fork the dependency, and read-via-object-store. Variance is too
+      high to rely on; provide the code mechanically.
+
+      Implement in the worktree/orchestrator path: when creating a dependent
+      task's worktree, if any blockedBy task's final commits are not reachable
+      from base, merge those branches into the new task branch immediately
+      after creation (sequentially, in blockedBy order). On merge conflict
+      between dependency branches: mark the dependent Blocked with reason
+      dependency_merge_conflict and journal it — do not dispatch a Tasker
+      into a conflicted tree. Journal the merged branch SHAs (extend
+      task_started payload).
+
+      Acceptance:
+        - Fixture: A done-on-branch, B blockedBy A → B's worktree contains
+          A's commits before spawn; merged SHAs in task_started payload
+        - Conflicting dependency branches → Blocked(dependency_merge_conflict),
+          no spawn, journal event present
+        - No-op when dependencies are already on base (current behavior)
+    type: Task
+    estimate: 4h
+    labels: [size:M, area:orchestrator, area:worktree, phase:3]
+    blockedBy: [INT-3]

@@ -78,10 +78,22 @@ soft-skip). Replace with an explicit per-machine profile.
   - Tools: `git`, `gh`, `docker`, `sqlc`, `buf` — path + version via
     `shutil.which()`.
   - Capabilities: can this machine run the e2e gate (docker present, etc.).
+  - **Dispatcher install mode + staleness** (lesson from dogfood run #2):
+    the running `dispatcher` may be a pipx snapshot while fixes land in the
+    repo. `doctor` records install method and version; preflight warns when
+    the installed version is older than the repo HEAD it's dispatching.
 - **Run-start preflight**: at plan time, intersect the run's requirements
   (every preferred agent + fallback across tasks, panel reviewer families,
   e2e tooling) with the profile. Missing pinned agent → fail before anything
   spawns. Missing fallback → warning with affected task count.
+- **Preflight checks proven necessary by dogfood run #1 (2026-06-10)**, where
+  both failures burned a full silent wave: (a) unattended/supervised live
+  runs without permission-bypass args in the spawn command → fail fast
+  (Taskers stall at the first tool-use prompt and exit with nothing);
+  (b) the Tasker role file must resolve *in a freshly created worktree*, not
+  just the main checkout (machine-local symlink conventions don't reach
+  worktrees unless git-tracked) → verify by creating a probe worktree or
+  checking the file is tracked.
 - **Single consumer**: the provider registry (Phase 6) reads invocation
   details from the profile; Phase 2 agent-version metadata comes from the
   probe; `auto_integrate` tool paths come from the profile (supersedes the
@@ -113,6 +125,13 @@ New integration mode alongside direct merge: `integration: pr`.
 - **Mechanical merge ordering**: the dispatcher merges a PR only when it is
   approved AND all `blockedBy` dependencies are merged. Topological constraint,
   enforced in code, never eyeballed.
+- **Dispatch-time dependency code** (lesson from dogfood run #2, DISP-9):
+  when a dependent task dispatches before its dependencies' branches are
+  integrated, its worktree must start from a merge of those branches — not
+  bare base. Today this only works if the Tasker improvises the merge itself
+  (DISP-9's did; relying on that is luck). The dispatcher should create the
+  dependent's branch from base + merged `blockedBy` branches and record the
+  merged SHAs in the journal.
 - **Approval ladder** (deterministic risk classifier in the dispatcher):
   1. Supervising agent may approve **low-risk** PRs.
   2. pr-reviewer bot approves per its rule set.
@@ -160,6 +179,13 @@ New integration mode alongside direct merge: `integration: pr`.
 Distinct from code review: the panel asks *is this code good*; the verifier
 asks *does this diff actually do what the task said*.
 
+- **Mechanical checks first, agent second** (lesson from dogfood run #2,
+  where the supervisor verified by hand): before spending an agent, run the
+  deterministic checks — commits exist on the branch, repo test suite green
+  *inside the task worktree* (repo config gains a `test:` command, sibling
+  of the Phase 7a `e2e:` block; worktrees have no venv of their own, so the
+  command must be self-contained). Only a mechanically-clean task earns an
+  LLM verifier pass.
 - After Tasker reports Done, before the panel: spawn an independent verifier
   with task description + acceptance criteria + diff + summary.
 - Looks for: TODO/stub implementations, "deferred to follow-up" language,
@@ -475,6 +501,80 @@ Phase 12 (ops/knowledge)   — heartbeat with 1; drills after 3/6; doc anytime
 Phase 13 (roles/workflow)  — SHA pinning with 1/11; Planner with 5; audit anytime
 ```
 
+## Dogfood log
+
+Lessons from running the dispatcher on itself; each entry either changed a
+phase above (cross-referenced) or records an operational fact.
+
+**Run #1 (2026-06-10T18-16-11Z, failed — full wave silently produced
+nothing):**
+- Missing `--claude-extra-args` permission flags → Taskers stalled at first
+  tool-use prompt, exited 0 with no work. → Phase 1a preflight check (a).
+- Tasker role file absent in fresh worktrees (machine-local symlink, never
+  git-tracked) → fixed by committing a relative symlink (`6923d0a`).
+  → Phase 1a preflight check (b).
+- Diagnosis required manual archaeology (worktree status, YAML greps,
+  reading spawn.py) — exactly the gap Phase 1's journal + `status --json`
+  closes.
+
+**Run #2 final: 12/12 Done, blocked=0, escalated=0, ~70 min wall clock,
+$52.27 total (~$4.36/task), 11 PRs auto-raised (DISP-9's missing — investigate
+why at integration). All Phase 0 hygiene + Phase 1 control surface delivered;
+integration debt: DISP-11 journal fork, DISP-10 journal wiring, DISP-12 docs
+written without sight of the final implementation.**
+
+**Run #2 integration (2026-06-10, supervisor-executed):**
+- 11 of 12 branches merged to main, full suite green throughout; PR #10
+  (resume) held with disposition recorded on the PR per no-deferral policy.
+- One trivial conflict (PR #2 vs PR #1: parameter-list union) and one README
+  conflict (DISP-12's accurate docs vs DISP-10's, resolved by marking resume
+  "pending PR #10").
+- DISP-9 never *pushed* its branch — Done-detection checks local commits but
+  not push/PR state. → run #3 task: post-Done push/PR verification.
+- **Fourth dependency-gap behavior (DISP-12)**: its Tasker read the unmerged
+  journal implementation from the shared git object store (`git show` across
+  worktree branches) and produced docs that matched the real module exactly.
+  Cleverest of the four — and still luck, not mechanism.
+- `pipx reinstall` deployed; the new `dispatcher status` command's first real
+  invocation reported on the run that built it.
+
+**Run #2 (2026-06-10T18-24-47Z, in progress):**
+- Wave 1 (DISP-1..4): 4/4 Done, all suites green in-worktree, ~6-9 min/task,
+  single iteration each. Permission flags + role file were the only thing
+  wrong with run #1's setup.
+- Supervisor verification was manual (run tests in each worktree) →
+  Phase 4 gains mechanical-checks-first; repo config gains a `test:`
+  command.
+- Running dispatcher is a pipx snapshot, distinct from the repo it's
+  improving — merged fixes don't take effect until reinstall. → Phase 1a
+  doctor records install mode; remember `pipx reinstall` before run #3.
+- DISP-1's Tasker improved on spec (lazy discovery, merge-revert on missing
+  binary) — evidence that task descriptions stating *intent and acceptance*
+  rather than implementation detail get better-than-specced results.
+- DISP-5: panel-iterate loop passed all four end-to-end scenarios with **no
+  production bug found** — retires the top untested-code risk from the
+  original code review.
+- DISP-7: live agy 1.0.7 smoke PASS — the June-18 migration risk is verified
+  closed (see open question 2). A dispatched task *performed the
+  verification itself*, including running the CLI from its worktree —
+  dispatchable ops checks work.
+- DISP-9: dependent task's worktree branched from bare main without its
+  dependencies' code; the Tasker noticed and merged feat/DISP-8 + feat/DISP-3
+  into its branch unprompted. Right outcome, wrong mechanism — dependency
+  branches must be provided mechanically at dispatch time. → Phase 3
+  dispatch-time dependency rule.
+- **DISP-9/10/11 controlled experiment**: the identical dependency gap
+  produced three behaviors — merge the dependency branches (DISP-9, correct),
+  narrow scope and document it (DISP-10: shipped `status` with no journal
+  integration despite acceptance naming it — exactly what the Phase 4
+  verifier catches), and **fork the dependency** (DISP-11: divergent copy of
+  journal.py, guaranteeing merge conflict + writer/reader format mismatch).
+  All locally rational, collectively an integration mess. Empirical close on
+  the design question: Tasker improvisation has high variance; the
+  dispatch-time dependency rule is mandatory, not nice-to-have. Integration
+  debt from this run: reconcile DISP-11's journal fork onto DISP-8/9's
+  module; wire DISP-10's status to the real journal.
+
 ## Open questions — resolutions (2026-06-10)
 
 1. **Per-repo e2e provisioning** — RESOLVED: per repo. Each repo owns its
@@ -490,11 +590,12 @@ Phase 13 (roles/workflow)  — SHA pinning with 1/11; Planner with 5; audit anyt
    (openai/codex#20919); (c) version-gate the usage parser
    (`reasoning_output_tokens` added somewhere in 0.122–0.139; local install
    is 0.121.0 and lacks it — `doctor` records the version).
-   - **URGENT**: Gemini CLI shuts off for individual plans **2026-06-18**;
-     replacement is Antigravity CLI (`agy`, already in use here). Open bug
-     [antigravity-cli#76]: `--print` can silently drop stdout when piped to
-     a non-TTY — exactly the orchestrator's consumption path. Verify the
-     Gemini adapter end-to-end before the 18th.
+   - ~~URGENT~~ **Verified 2026-06-10 (DISP-7)**: Gemini CLI shuts off for
+     individual plans 2026-06-18; `agy` (already in use) is the replacement.
+     antigravity-cli#76 (silent stdout drop on non-TTY pipes) does **not**
+     reproduce on agy 1.0.7 — live smoke PASS via `tools/verify_agy_pipe.sh`
+     (re-run after any agy update). Adapter additionally hardened: empty
+     stdout + exit 0 → reviewer UNAVAILABLE, never a parse attempt.
    - **Fleet additions recommended**: Qwen Code (Gemini-CLI fork — near
      drop-in adapter; JSON output with token usage; new Qwen family; API
      pay-per-token since the free tier ended 2026-04), OpenCode (one adapter

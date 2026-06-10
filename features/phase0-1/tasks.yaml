@@ -34,7 +34,26 @@ tasks:
     type: Task
     estimate: 1h
     labels: [size:XS, area:integrate, phase:0]
+    status: Done
+    started_at: '2026-06-10T11:24:47-07:00'
+    dispatcher_run_id: 2026-06-10T18-24-47Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-10T18-24-47Z-tasks/DISP-1/summary.md
 
+    branch: feat/DISP-1-auto-integrate-discover-sqlc-buf
+    completed_at: '2026-06-10T11:30:45-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 1
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/1
+    cost_usd: 2.2894807499999996
+    input_tokens: 13596
+    output_tokens: 26173
+    cache_read_input_tokens: 2256464
+    cache_creation_input_tokens: 70231
+    duration_ms: 356382
+    num_turns: 35
+    model: claude-opus-4-8[1m]
   - key: DISP-2
     summary: "worktree: robust path layout check + graceful creation failures"
     description: |
@@ -53,7 +72,27 @@ tasks:
     type: Task
     estimate: 2h
     labels: [size:S, area:worktree, phase:0]
+    status: Done
+    started_at: '2026-06-10T11:24:47-07:00'
+    dispatcher_run_id: 2026-06-10T18-24-47Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-10T18-24-47Z-tasks/DISP-2/summary.md
 
+    branch: feat/DISP-2-worktree-robust-path-layout-check
+    completed_at: '2026-06-10T11:33:12-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    final_quality_score: 21
+    human_gate_fired: false
+    deferred_findings_count: 2
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/4
+    cost_usd: 2.991248750000001
+    input_tokens: 13739
+    output_tokens: 29264
+    cache_read_input_tokens: 2575539
+    cache_creation_input_tokens: 72167
+    duration_ms: 503392
+    num_turns: 42
+    model: claude-opus-4-8[1m]
   - key: DISP-3
     summary: "summary parser: log parse-failure reasons instead of silent malformed flag"
     description: |
@@ -72,7 +111,27 @@ tasks:
     type: Task
     estimate: 2h
     labels: [size:S, area:summary, phase:0]
+    status: Done
+    started_at: '2026-06-10T11:24:47-07:00'
+    dispatcher_run_id: 2026-06-10T18-24-47Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-10T18-24-47Z-tasks/DISP-3/summary.md
 
+    branch: feat/DISP-3-summary-parser-log-parse-failure
+    completed_at: '2026-06-10T11:31:03-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    final_quality_score: 23
+    human_gate_fired: false
+    deferred_findings_count: 2
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/3
+    cost_usd: 2.474734250000001
+    input_tokens: 13598
+    output_tokens: 20494
+    cache_read_input_tokens: 2111246
+    cache_creation_input_tokens: 64127
+    duration_ms: 374810
+    num_turns: 36
+    model: claude-opus-4-8[1m]
   - key: DISP-4
     summary: "Configurable YAML lock timeout and spawn timeout"
     description: |
@@ -89,7 +148,26 @@ tasks:
     type: Task
     estimate: 2h
     labels: [size:S, area:cli, phase:0]
+    status: Done
+    started_at: '2026-06-10T11:24:47-07:00'
+    dispatcher_run_id: 2026-06-10T18-24-47Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-10T18-24-47Z-tasks/DISP-4/summary.md
 
+    branch: feat/DISP-4-configurable-yaml-lock-timeout-and
+    completed_at: '2026-06-10T11:30:57-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 1
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/2
+    cost_usd: 3.2711864999999998
+    input_tokens: 14027
+    output_tokens: 22576
+    cache_read_input_tokens: 4185653
+    cache_creation_input_tokens: 87012
+    duration_ms: 368789
+    num_turns: 57
+    model: claude-opus-4-8[1m]
   - key: DISP-5
     summary: "End-to-end tests for the panel-iterate loop"
     description: |
@@ -107,11 +185,30 @@ tasks:
     type: Task
     estimate: 3h
     labels: [size:M, area:panel, area:tests, phase:0]
+    status: Done
+    started_at: '2026-06-10T11:30:45-07:00'
+    dispatcher_run_id: 2026-06-10T18-24-47Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-10T18-24-47Z-tasks/DISP-5/summary.md
 
   # ============================================================
   # GROUP 1: adapter fixes (from 2026-06-10 research) — parallel-safe
   # ============================================================
 
+    branch: feat/DISP-5-end-to-end-tests-for
+    completed_at: '2026-06-10T11:36:55-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 1
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/5
+    cost_usd: 2.7081172500000004
+    input_tokens: 13499
+    output_tokens: 26274
+    cache_read_input_tokens: 2698257
+    cache_creation_input_tokens: 101543
+    duration_ms: 369271
+    num_turns: 30
+    model: claude-opus-4-8[1m]
   - key: DISP-6
     summary: "Codex adapter: replace deprecated --full-auto, harden stdin, version-gate usage parser"
     description: |
@@ -132,7 +229,27 @@ tasks:
     type: Task
     estimate: 2h
     labels: [size:S, area:cfr, area:spawn, phase:0]
+    status: Done
+    started_at: '2026-06-10T11:30:57-07:00'
+    dispatcher_run_id: 2026-06-10T18-24-47Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-10T18-24-47Z-tasks/DISP-6/summary.md
 
+    branch: feat/DISP-6-codex-adapter-replace-deprecated-full
+    completed_at: '2026-06-10T11:39:10-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    final_quality_score: 22
+    human_gate_fired: false
+    deferred_findings_count: 2
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/7
+    cost_usd: 3.2458030000000004
+    input_tokens: 13598
+    output_tokens: 28562
+    cache_read_input_tokens: 2800593
+    cache_creation_input_tokens: 89063
+    duration_ms: 491667
+    num_turns: 36
+    model: claude-opus-4-8[1m]
   - key: DISP-7
     summary: "agy adapter: guard against non-TTY stdout drop (antigravity-cli#76)"
     description: |
@@ -159,11 +276,31 @@ tasks:
     type: Task
     estimate: 2h
     labels: [size:S, area:cfr, phase:0]
+    status: Done
+    started_at: '2026-06-10T11:31:03-07:00'
+    dispatcher_run_id: 2026-06-10T18-24-47Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-10T18-24-47Z-tasks/DISP-7/summary.md
 
   # ============================================================
   # GROUP 2: Phase 1 control surface — the journal chain
   # ============================================================
 
+    branch: feat/DISP-7-agy-adapter-guard-against-non
+    completed_at: '2026-06-10T11:37:39-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    final_quality_score: 36
+    human_gate_fired: false
+    deferred_findings_count: 1
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/6
+    cost_usd: 2.7051227499999992
+    input_tokens: 13735
+    output_tokens: 22669
+    cache_read_input_tokens: 2816453
+    cache_creation_input_tokens: 78944
+    duration_ms: 394694
+    num_turns: 40
+    model: claude-opus-4-8[1m]
   - key: DISP-8
     summary: "Event journal module: hash-chained append-only JSONL per run"
     description: |
@@ -192,7 +329,27 @@ tasks:
     type: Task
     estimate: 4h
     labels: [size:M, area:journal, phase:1]
+    status: Done
+    started_at: '2026-06-10T11:33:12-07:00'
+    dispatcher_run_id: 2026-06-10T18-24-47Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-10T18-24-47Z-tasks/DISP-8/summary.md
 
+    branch: feat/DISP-8-event-journal-module-hash-chained
+    completed_at: '2026-06-10T11:54:27-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    final_quality_score: 24
+    human_gate_fired: false
+    deferred_findings_count: 4
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/8
+    cost_usd: 9.23510025
+    input_tokens: 15495
+    output_tokens: 66787
+    cache_read_input_tokens: 6580032
+    cache_creation_input_tokens: 279227
+    duration_ms: 1274320
+    num_turns: 69
+    model: claude-opus-4-8[1m]
   - key: DISP-9
     summary: "Orchestrator emits journal events at every lifecycle point"
     description: |
@@ -215,7 +372,26 @@ tasks:
     estimate: 4h
     labels: [size:M, area:journal, area:orchestrator, phase:1]
     blockedBy: [DISP-8]
+    status: Done
+    started_at: '2026-06-10T11:54:27-07:00'
+    dispatcher_run_id: 2026-06-10T18-24-47Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-10T18-24-47Z-tasks/DISP-9/summary.md
 
+    branch: feat/DISP-9-orchestrator-emits-journal-events-at
+    completed_at: '2026-06-10T12:10:05-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 1
+    pr_not_raised_reason: this is a dispatcher run that auto-integrates committed feat
+    cost_usd: 7.749294999999998
+    input_tokens: 14724
+    output_tokens: 65210
+    cache_read_input_tokens: 10042850
+    cache_creation_input_tokens: 163840
+    duration_ms: 936283
+    num_turns: 83
+    model: claude-opus-4-8[1m]
   - key: DISP-10
     summary: "Implement `dispatcher status --json`"
     description: |
@@ -235,7 +411,26 @@ tasks:
     estimate: 3h
     labels: [size:M, area:cli, phase:1]
     blockedBy: [DISP-9]
+    status: Done
+    started_at: '2026-06-10T12:10:05-07:00'
+    dispatcher_run_id: 2026-06-10T18-24-47Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-10T18-24-47Z-tasks/DISP-10/summary.md
 
+    branch: feat/DISP-10-implement-dispatcher-status-json
+    completed_at: '2026-06-10T12:21:25-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 2
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/9
+    cost_usd: 5.300759750000002
+    input_tokens: 13890
+    output_tokens: 40297
+    cache_read_input_tokens: 5423428
+    cache_creation_input_tokens: 122499
+    duration_ms: 679060
+    num_turns: 53
+    model: claude-opus-4-8[1m]
   - key: DISP-11
     summary: "Implement `dispatcher resume`"
     description: |
@@ -257,7 +452,26 @@ tasks:
     estimate: 4h
     labels: [size:M, area:cli, area:orchestrator, phase:1]
     blockedBy: [DISP-9]
+    status: Done
+    started_at: '2026-06-10T12:10:05-07:00'
+    dispatcher_run_id: 2026-06-10T18-24-47Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-10T18-24-47Z-tasks/DISP-11/summary.md
 
+    branch: feat/DISP-11-implement-dispatcher-resume
+    completed_at: '2026-06-10T12:24:53-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 1
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/10
+    cost_usd: 6.579529
+    input_tokens: 14389
+    output_tokens: 63984
+    cache_read_input_tokens: 7834493
+    cache_creation_input_tokens: 158518
+    duration_ms: 886855
+    num_turns: 69
+    model: claude-opus-4-8[1m]
   - key: DISP-12
     summary: "Docs: journal format spec + control-surface README updates"
     description: |
@@ -277,3 +491,22 @@ tasks:
     estimate: 2h
     labels: [size:S, area:docs, phase:1]
     blockedBy: [DISP-10, DISP-11]
+    status: Done
+    started_at: '2026-06-10T12:24:53-07:00'
+    dispatcher_run_id: 2026-06-10T18-24-47Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-10T18-24-47Z-tasks/DISP-12/summary.md
+    branch: feat/DISP-12-docs-journal-format-spec-control
+    completed_at: '2026-06-10T12:35:20-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 2
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/11
+    cost_usd: 3.7235099999999997
+    input_tokens: 13727
+    output_tokens: 44970
+    cache_read_input_tokens: 3426075
+    cache_creation_input_tokens: 130814
+    duration_ms: 626645
+    num_turns: 36
+    model: claude-opus-4-8[1m]
