@@ -209,6 +209,7 @@ def execute(args: argparse.Namespace) -> int:
             mode=cfg.mode,
             repo_root=repo_root,
             base_branch=cfg.base_branch,
+            worktree_base=cfg.worktree_base,
         )
         pf_skipped = False
         if not pf.ok:

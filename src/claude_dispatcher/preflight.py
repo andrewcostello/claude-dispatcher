@@ -39,12 +39,17 @@ regular file passes immediately; otherwise a throwaway detached worktree is
 created and ``Path.exists()`` — which follows symlinks — answers the actual
 question ("does this path resolve where a task worktree will live?").
 
-The probe worktree is deliberately created as a SIBLING of the repo root
-(``repo_root.parent``), not under a system temp dir: a relative symlink's
-target resolves relative to the worktree's own location, and real task
-worktrees default to ``repo_root.parent`` (see ``worktree.worktree_base``).
-Probing from ``/tmp`` would falsely fail the exact layout this check exists
-to validate.
+The probe worktree is deliberately created at the SAME location real task
+worktrees will use — the *configured* worktree base from
+``worktree.worktree_base(repo_root, override)`` (``--worktree-base`` when
+set, ``/worktrees`` in the container convention, ``repo_root.parent`` only
+as the default) — not under a system temp dir and not hardcoded to
+``repo_root.parent``: a relative symlink's target resolves relative to the
+worktree's own location, so a probe at any other directory depth/location
+can diverge from reality in both directions (false pass → the silent burn
+this check exists to prevent; false fail → refusing a healthy run). Probing
+from ``/tmp`` would falsely fail the exact layout this check exists to
+validate.
 
 Journal contract (design judgment calls)
 ----------------------------------------
@@ -82,6 +87,7 @@ from pathlib import Path
 from typing import Any
 
 from . import doctor
+from . import worktree as wt_mod
 
 
 DEFAULT_ROLE_FILE = ".claude/workflow/roles/tasker.md"
@@ -130,8 +136,14 @@ def run_preflight(
     repo_root: Path,
     base_branch: str,
     role_file: str = DEFAULT_ROLE_FILE,
+    worktree_base: Path | None = None,
 ) -> PreflightResult:
     """Run all four checks and aggregate their verdicts.
+
+    ``worktree_base`` is the same ``--worktree-base`` override the run will
+    hand to task-worktree creation (None → the conventional default); the
+    role-file probe must live at that exact base or its verdict can diverge
+    from reality (see module docstring).
 
     Pure apart from the subprocess reads (and the throwaway probe worktree,
     removed before returning); creates nothing under the repo or runs dir.
@@ -143,7 +155,10 @@ def run_preflight(
     _check_claude_binary(claude_bin, failures, warnings, checks)
     _check_dispatcher_staleness(repo_root, warnings, checks)
     _check_permission_flags(claude_extra_args, mode, failures, checks)
-    _check_role_file(repo_root, base_branch, role_file, failures, warnings, checks)
+    _check_role_file(
+        repo_root, base_branch, role_file, failures, warnings, checks,
+        worktree_base=worktree_base,
+    )
 
     return PreflightResult(
         ok=not failures, failures=failures, warnings=warnings, checks=checks,
@@ -378,20 +393,31 @@ def _probe_ref(repo_root: Path, base_branch: str) -> str:
 
 
 def _probe_worktree_check(
-    repo_root: Path, ref: str, role_file: str,
+    repo_root: Path, ref: str, role_file: str, worktree_base: Path | None,
 ) -> tuple[bool | None, str]:
     """Create a throwaway detached worktree of `ref` and report whether
     `role_file` resolves inside it.
 
     Returns ``(resolves, detail)``: True/False when the probe ran, or
     ``(None, stderr)`` when the probe infrastructure itself failed. The
-    probe lives directly under ``repo_root.parent`` — the same directory
-    depth as real task worktrees — because a relative symlink's target
-    resolves relative to the worktree's location (see module docstring).
-    Cleanup is best-effort in a ``finally``: remove the worktree, prune
-    git's bookkeeping, and sweep any leftover directory.
+    probe lives directly under the run's *configured* worktree base —
+    ``worktree.worktree_base(repo_root, override)``, the same directory
+    depth/location as ``worktree.worktree_path(base, key)`` — because a
+    relative symlink's target resolves relative to the worktree's location
+    (see module docstring). The base is created if missing, mirroring real
+    task-worktree creation; failure to compute or create it is a probe-
+    infrastructure failure (→ warning), not a verdict. Cleanup is
+    best-effort in a ``finally``: remove the worktree, prune git's
+    bookkeeping, and sweep any leftover directory.
     """
-    probe = repo_root.parent / f"preflight-probe-{uuid.uuid4().hex[:12]}"
+    try:
+        base = wt_mod.worktree_base(
+            repo_root, str(worktree_base) if worktree_base else None,
+        )
+        base.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        return None, str(e)
+    probe = base / f"preflight-probe-{uuid.uuid4().hex[:12]}"
     try:
         try:
             proc = subprocess.run(
@@ -430,10 +456,13 @@ def _check_role_file(
     failures: list[str],
     warnings: list[str],
     checks: dict[str, Any],
+    *,
+    worktree_base: Path | None = None,
 ) -> None:
     """Tracked regular file → pass without a probe; otherwise probe a fresh
-    worktree. Missing in the probe → failure; probe infrastructure failing →
-    warning (the run surfaces the real problem at the first task worktree)."""
+    worktree at the configured worktree base. Missing in the probe → failure;
+    probe infrastructure failing → warning (the run surfaces the real problem
+    at the first task worktree)."""
     entry: dict[str, Any] = {"ok": True, "role_file": role_file, "method": None}
     checks["tasker_role_file"] = entry
 
@@ -443,7 +472,7 @@ def _check_role_file(
 
     ref = _probe_ref(repo_root, base_branch)
     entry["probe_ref"] = ref
-    resolves, detail = _probe_worktree_check(repo_root, ref, role_file)
+    resolves, detail = _probe_worktree_check(repo_root, ref, role_file, worktree_base)
     if resolves is None:
         entry["method"] = "probe-failed"
         entry["detail"] = detail

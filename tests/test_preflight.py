@@ -91,6 +91,30 @@ def bare_repo(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def deep_symlink_repo(tmp_path: Path) -> Path:
+    """Like ``symlink_repo``, but the relative symlink target only resolves
+    from worktrees at the NON-default base ``tmp_path/wt`` (one level below
+    ``repo.parent``): the real workflow dir lives at
+    ``tmp_path/wt/claude-workflow``, so from a worktree at ``tmp_path/wt/X``
+    the committed ``../../claude-workflow`` target resolves, while from the
+    default base (``tmp_path``) — including the repo itself — it dangles."""
+    workflow = tmp_path / "wt" / "claude-workflow" / "roles"
+    workflow.mkdir(parents=True)
+    (workflow / "tasker.md").write_text("real role file", encoding="utf-8")
+
+    repo_dir = _init_repo(tmp_path / "repo")
+    dot_claude = repo_dir / ".claude"
+    dot_claude.mkdir()
+    (dot_claude / "workflow").symlink_to(Path("..") / ".." / "claude-workflow")
+    (repo_dir / "README.md").write_text("init\n", encoding="utf-8")
+    _git(repo_dir, "add", ".")
+    _git(repo_dir, "commit", "-q", "-m", "init")
+    # Sanity: dangling at the repo's own depth, valid one level deeper.
+    assert not (repo_dir / ".claude" / "workflow" / "roles" / "tasker.md").exists()
+    return repo_dir
+
+
+@pytest.fixture
 def symlink_repo(tmp_path: Path) -> Path:
     """Mirror this repo's dogfood layout: `.claude/workflow` is a COMMITTED
     relative symlink to ../../claude-workflow (a directory OUTSIDE the repo,
@@ -418,6 +442,52 @@ def test_probe_worktree_cleaned_up(fixture_name: str, request) -> None:
     leftovers = [p for p in repo.parent.iterdir() if "preflight-probe" in p.name]
     assert leftovers == [], f"probe worktree leaked: {leftovers}"
     out = _git(repo, "worktree", "list", "--porcelain").stdout
+    assert "preflight-probe" not in out
+
+
+def test_probe_at_configured_deeper_base_fails_not_false_passes(
+    symlink_repo: Path,
+) -> None:
+    """Regression (round-2 HIGH): the symlink target ../../claude-workflow is
+    valid at the DEFAULT base depth (repo.parent) but NOT one level deeper.
+    With --worktree-base one level deeper, real task worktrees would not
+    resolve the role file, so preflight must FAIL — a probe hardcoded to
+    repo.parent would falsely pass and recreate the dogfood-run-#1 burn."""
+    res = _pf(symlink_repo, worktree_base=symlink_repo.parent / "wt")
+    assert not res.ok, "false pass: probe ignored the configured worktree base"
+    entry = res.checks["tasker_role_file"]
+    assert entry["ok"] is False
+    assert entry["method"] == "probe-worktree"
+    assert any("won't resolve in fresh worktrees" in f for f in res.failures)
+
+
+def test_probe_at_configured_base_passes_when_symlink_valid_there(
+    deep_symlink_repo: Path,
+) -> None:
+    """Inverse layout: the symlink target resolves ONLY at the configured
+    non-default base — preflight must PASS there (no false block), while the
+    same repo probed at the default base must fail."""
+    base = deep_symlink_repo.parent / "wt"
+    res = _pf(deep_symlink_repo, worktree_base=base)
+    assert res.ok, res.failures
+    assert res.checks["tasker_role_file"]["method"] == "probe-worktree"
+
+    res_default = _pf(deep_symlink_repo)  # worktree_base=None → repo.parent
+    assert not res_default.ok, "false pass at the default base"
+
+
+def test_probe_with_configured_base_cleans_up_and_creates_base(
+    symlink_repo: Path,
+) -> None:
+    """A configured-base probe creates the base dir (mirroring real worktree
+    creation) but leaves no probe worktree behind, on disk or in git."""
+    base = symlink_repo.parent / "wt"
+    assert not base.exists()
+    _pf(symlink_repo, worktree_base=base)
+    assert base.is_dir(), "probe must create the configured base like a real run"
+    leftovers = [p for p in base.iterdir() if "preflight-probe" in p.name]
+    assert leftovers == [], f"probe worktree leaked: {leftovers}"
+    out = _git(symlink_repo, "worktree", "list", "--porcelain").stdout
     assert "preflight-probe" not in out
 
 
