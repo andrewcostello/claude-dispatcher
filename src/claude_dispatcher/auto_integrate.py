@@ -85,6 +85,7 @@ def integrate(
     task_key: str,
     log: Callable[[str], None],
     enabled: bool = True,
+    lock_timeout_seconds: float = 30.0,
     sqlc_bin: str = DEFAULT_SQLC_BIN,
     buf_bin: str = DEFAULT_BUF_BIN,
 ) -> IntegrateResult:
@@ -151,7 +152,7 @@ def integrate(
         )
 
     # 3-10. Do the real merge under the YAML FileLock.
-    with yaml_io.FileLock(yaml_path):
+    with yaml_io.FileLock(yaml_path, timeout_seconds=lock_timeout_seconds):
         # Stash the dispatcher's transient YAML edits so they don't
         # conflict with the merge.
         stashed = False

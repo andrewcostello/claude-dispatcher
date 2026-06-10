@@ -91,6 +91,12 @@ class RunConfig:
     gh_bin: str = "gh"
     claude_extra_args: list[str] = field(default_factory=list)
     base_branch: str = "main"
+    # How long to wait for the tasks-YAML FileLock before raising LockTimeout
+    # (seconds). Threaded into every FileLock acquisition in the run path.
+    lock_timeout_seconds: float = 30.0
+    # Per-task wall-clock budget for each spawned Claude session (seconds).
+    # Threaded into every spawn_claude() call.
+    task_timeout_seconds: int = 60 * 60 * 4
     # If True, after each Tasker reports Done with commits on its feat
     # branch, the dispatcher attempts to merge that branch into base_branch
     # before marking the row Done. Prevents the "fork-from-stale-base"
@@ -329,6 +335,7 @@ def _run_task(
             env=env,
             prompt=prompt,
             extra_args=spawn_extra,
+            timeout_seconds=cfg.task_timeout_seconds,
         )
     except Exception as e:
         _log(log_path, f"  {snap.key} spawn failed: {e}")
@@ -465,6 +472,7 @@ def _run_task(
                 task_key=snap.key,
                 log=lambda m: _log(log_path, m),
                 enabled=True,
+                lock_timeout_seconds=cfg.lock_timeout_seconds,
             )
         except Exception as e:
             _log(log_path, f"  {snap.key} auto-integrate raised: {e}")
@@ -730,6 +738,7 @@ def _spawn_panel_iterate(
         result = spawn_mod.spawn_claude(
             claude_bin=cfg.claude_bin, cwd=wt.path, env=env, prompt=iter_prompt,
             extra_args=extra,
+            timeout_seconds=cfg.task_timeout_seconds,
         )
     except Exception as e:
         _log(log_path, f"  {snap.key} panel-iterate spawn failed: {e}")
@@ -1049,6 +1058,7 @@ def _retry_for_commit(cfg: RunConfig, snap: TaskSnapshot, wt: wt_mod.Worktree,
         result = spawn_mod.spawn_claude(
             claude_bin=cfg.claude_bin, cwd=wt.path, env=env, prompt=prompt,
             extra_args=retry_extra,
+            timeout_seconds=cfg.task_timeout_seconds,
         )
     except Exception as e:
         _log(log_path, f"  {snap.key} commit-retry spawn failed: {e}")
@@ -1133,7 +1143,7 @@ def _mutate_row(cfg: RunConfig, task_key: str, mutator) -> bool:
     crashing the dispatcher because a status flip can't land is a worse
     outcome than letting the run continue.
     """
-    with yaml_io.FileLock(cfg.tasks_path):
+    with yaml_io.FileLock(cfg.tasks_path, timeout_seconds=cfg.lock_timeout_seconds):
         doc = yaml_io.load(cfg.tasks_path)
         for row in doc.get("tasks", []):
             if str(row.get("key")) == task_key:
@@ -1217,6 +1227,8 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
         gh_bin=getattr(args, "gh_bin", "gh"),
         claude_extra_args=extra.split() if extra else [],
         base_branch=cli_base if cli_base else "main",
+        lock_timeout_seconds=getattr(args, "lock_timeout_seconds", 30.0),
+        task_timeout_seconds=getattr(args, "task_timeout_seconds", 60 * 60 * 4),
         auto_integrate=getattr(args, "auto_integrate", False),
         cross_family_panel=getattr(args, "cross_family_panel", "auto"),
         cross_family_panel_timeout=getattr(
@@ -1265,7 +1277,7 @@ def _load_tasks_snapshot(cfg: RunConfig) -> list[plan_mod.Task]:
     snapshot is taken, the previous doc is garbage-collected. No mutation
     of .raw happens from main-thread code paths.
     """
-    with yaml_io.FileLock(cfg.tasks_path):
+    with yaml_io.FileLock(cfg.tasks_path, timeout_seconds=cfg.lock_timeout_seconds):
         doc = yaml_io.load(cfg.tasks_path)
     return plan_mod.load_tasks(doc)
 
