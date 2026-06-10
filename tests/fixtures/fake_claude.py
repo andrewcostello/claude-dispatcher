@@ -42,6 +42,17 @@ SCENARIOS = {
 
 
 def main() -> int:
+    # --version MUST be handled first, before any env reads or side effects.
+    # The dispatcher's run-start preflight (and `dispatcher doctor`) probe the
+    # claude binary by executing `<bin> --version`. A real `claude --version`
+    # is side-effect-free, so the stub must be too: without this guard a
+    # probe invocation would run the full Tasker simulation below — reading
+    # any SUMMARY_PATH/TASK_KEY inherited from an outer dispatcher session
+    # and `git commit`ing in its cwd (i.e. the developer's real repo).
+    if "--version" in sys.argv[1:]:
+        print("fake-claude 0.0.0 (test stub)")
+        return 0
+
     # Consume stdin so the parent doesn't block on a closed pipe.
     _ = sys.stdin.read()
 
