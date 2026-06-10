@@ -540,6 +540,19 @@ def collect_diff(
     return diff
 
 
+class ReviewerUnavailable(Exception):
+    """Raised by a `Reviewer._invoke_cli` when the CLI ran but produced no
+    usable output.
+
+    Unlike a generic exception (which `review()` wraps as "cli invocation
+    raised: ..."), the message of this exception becomes the verdict's
+    `error` reason verbatim. Use it when the adapter has positively
+    determined the reviewer is unavailable — e.g. agy exiting 0 with empty
+    stdout (antigravity-cli#76) — and must NOT fall through to a parse
+    attempt or a retry.
+    """
+
+
 class Reviewer:
     """Abstract base for one reviewer in the cross-family panel.
 
@@ -568,6 +581,19 @@ class Reviewer:
         start = time.monotonic()
         try:
             stdout = self._invoke_cli(prompt)
+        except ReviewerUnavailable as e:
+            # MUST precede `except Exception`: ReviewerUnavailable is a
+            # subclass of Exception and carries a verbatim error string. If
+            # the generic handler caught it first, the reason would be
+            # mangled into "cli invocation raised: ...".
+            # The adapter positively determined the reviewer is unavailable
+            # (e.g. agy empty-stdout, antigravity-cli#76). The message is the
+            # reason verbatim — no parse attempt, no retry.
+            return ReviewerVerdict(
+                family=self.family, verdict=Verdict.UNAVAILABLE,
+                error=str(e),
+                duration_seconds=time.monotonic() - start,
+            )
         except FileNotFoundError as e:
             return ReviewerVerdict(
                 family=self.family, verdict=Verdict.UNAVAILABLE,
@@ -696,17 +722,33 @@ class GeminiReviewer(Reviewer):
             raise RuntimeError(
                 f"agy exit={proc.returncode}: {proc.stderr.strip()[-400:]}"
             )
+        # antigravity-cli#76: agy can exit 0 yet emit nothing on stdout when
+        # stdout is a non-TTY pipe — which is exactly how the panel consumes
+        # it (subprocess.run with capture_output). An empty string must NOT
+        # reach the parser: there it becomes PARSE_FAILED (a blocker that
+        # also burns a full retry invocation) and could, if the parser ever
+        # changed, be mistaken for a real verdict. Treat exit-0-empty-stdout
+        # as a positive UNAVAILABLE signal instead.
+        if not proc.stdout.strip():
+            raise ReviewerUnavailable(
+                "empty stdout (suspected antigravity-cli#76)"
+            )
         return proc.stdout
 
 
 class CodexReviewer(Reviewer):
-    """Reviewer that shells out to `codex exec --full-auto`.
+    """Reviewer that shells out to `codex exec --sandbox workspace-write`.
 
-    `exec --full-auto` runs Codex non-interactively with workspace-write
-    sandboxing and no approval gates. Codex's stdout interleaves agent
-    progress (commands run, files read) with the final response, so we use
-    `--output-last-message <tmpfile>` to capture ONLY the final assistant
-    message — same role as Claude's `--output-format json` envelope.
+    `exec` runs Codex non-interactively; `--sandbox workspace-write` grants
+    it write access to the workspace without approval gates. This replaces
+    the old `--full-auto` shortcut, which codex deprecated (it expanded to
+    `--sandbox workspace-write --ask-for-approval on-failure`; `exec` never
+    prompts for approval, so only the sandbox half is meaningful here).
+
+    Codex's stdout interleaves agent progress (commands run, files read)
+    with the final response, so we use `--output-last-message <tmpfile>` to
+    capture ONLY the final assistant message — same role as Claude's
+    `--output-format json` envelope.
 
     `--color never` disables ANSI so the parser doesn't have to strip it.
     `--skip-git-repo-check` lets us run outside a repo (review doesn't need
@@ -731,10 +773,18 @@ class CodexReviewer(Reviewer):
             # if `-` is used), instructions are read from stdin." This
             # avoids E2BIG when the prompt exceeds Linux's per-arg limit
             # (~128KB), which happens on diffs >~2000 lines.
+            #
+            # Passing `input=` makes subprocess.run allocate a stdin PIPE,
+            # write the prompt, then CLOSE it — codex receives EOF and exits
+            # its read loop. A non-TTY stdin left OPEN (inherited from the
+            # parent) makes `codex exec` block forever waiting for EOF
+            # (openai/codex#20919); `input=` provably avoids that here. Any
+            # future codex invocation that does NOT feed the prompt on stdin
+            # MUST pass `stdin=subprocess.DEVNULL` for the same reason.
             proc = subprocess.run(
                 [
                     self.cli_bin, "exec",
-                    "--full-auto",
+                    "--sandbox", "workspace-write",
                     "--color", "never",
                     "--skip-git-repo-check",
                     "--output-last-message", str(out_path),
@@ -761,6 +811,140 @@ class CodexReviewer(Reviewer):
                 out_path.unlink()
             except OSError:
                 pass
+
+
+# --- codex usage parsing ----------------------------------------------------
+
+
+@dataclass
+class CodexUsage:
+    """Per-turn token usage extracted from `codex exec --json` stdout.
+
+    All fields default to None so the dispatcher operates fine when codex is
+    invoked without `--json`, when the stream carries no usage event, or when
+    the JSON schema drifts. Mirrors `spawn.SpawnUsage`'s resilient-by-design
+    contract.
+
+    `reasoning_output_tokens` is the version-gated field: codex added it to
+    the usage event somewhere between 0.122 and 0.139. Builds older than that
+    (e.g. 0.121.0) omit it entirely, so we keep it `None` (= "not reported")
+    rather than coercing a missing key to 0 (= "reported zero"). Downstream
+    quota math must treat None and 0 differently.
+    """
+
+    input_tokens: int | None = None
+    cached_input_tokens: int | None = None
+    output_tokens: int | None = None
+    reasoning_output_tokens: int | None = None
+    total_tokens: int | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "input_tokens": self.input_tokens,
+            "cached_input_tokens": self.cached_input_tokens,
+            "output_tokens": self.output_tokens,
+            "reasoning_output_tokens": self.reasoning_output_tokens,
+            "total_tokens": self.total_tokens,
+        }
+
+
+# Keys that mark a dict as a codex usage object. Across 0.122–0.139 the usage
+# payload always carries at least input + output token counts.
+_USAGE_MARKER_KEYS = ("input_tokens", "output_tokens", "total_tokens")
+
+
+def _coerce_usage_dict(obj: object) -> dict | None:
+    """Return the usage dict reachable from one parsed JSON value, or None.
+
+    Tolerates the shapes codex has shipped:
+      * the usage object itself: ``{"input_tokens": ...}``
+      * a ``token_count`` event:  ``{"type": "token_count", "usage": {...}}``
+      * a nested ``info`` block:   ``{"info": {"total_token_usage": {...}}}``
+        (and the ``{"msg": {"info": {...}}}`` wrapper some builds emit).
+    """
+    if not isinstance(obj, dict):
+        return None
+
+    def _has_markers(d: object) -> bool:
+        return isinstance(d, dict) and any(k in d for k in _USAGE_MARKER_KEYS)
+
+    # Direct usage object.
+    if _has_markers(obj):
+        return obj
+    # token_count / generic events nest under "usage".
+    if _has_markers(obj.get("usage")):
+        return obj["usage"]
+    # info.total_token_usage (optionally wrapped in "msg").
+    for container in (obj, obj.get("msg")):
+        if isinstance(container, dict):
+            info = container.get("info")
+            if isinstance(info, dict) and _has_markers(info.get("total_token_usage")):
+                return info["total_token_usage"]
+    return None
+
+
+def parse_codex_usage(stdout: str) -> CodexUsage:
+    """Pull token usage out of `codex exec --json` stdout.
+
+    The `--json` stream is line-delimited JSON; usage is reported per turn and
+    accumulates, so we scan every line and keep the LAST usage object found
+    (the cumulative total for the run). A single non-streamed JSON object is
+    also accepted. Returns an empty CodexUsage on any error — callers that
+    don't request usage (or run an older codex) get all-None, never a raise.
+    """
+    if not stdout or not stdout.strip():
+        return CodexUsage()
+
+    import json
+
+    def _int(v):
+        try:
+            return int(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    usage_dict: dict | None = None
+    stripped = stdout.strip()
+
+    # Fast path: the whole blob is one JSON value (non-streamed).
+    try:
+        whole = json.loads(stripped)
+    except (json.JSONDecodeError, ValueError):
+        whole = None
+    if whole is not None:
+        usage_dict = _coerce_usage_dict(whole)
+
+    # Streamed path: scan each line, keep the last usage object seen.
+    if usage_dict is None:
+        for line in stripped.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            found = _coerce_usage_dict(obj)
+            if found is not None:
+                usage_dict = found  # keep last (cumulative) wins
+
+    if usage_dict is None:
+        return CodexUsage()
+
+    # reasoning_output_tokens: only set when the key is actually present, so
+    # absence (older codex) stays None rather than collapsing to 0.
+    reasoning = (
+        _int(usage_dict.get("reasoning_output_tokens"))
+        if "reasoning_output_tokens" in usage_dict
+        else None
+    )
+    return CodexUsage(
+        input_tokens=_int(usage_dict.get("input_tokens")),
+        cached_input_tokens=_int(usage_dict.get("cached_input_tokens")),
+        output_tokens=_int(usage_dict.get("output_tokens")),
+        reasoning_output_tokens=reasoning,
+        total_tokens=_int(usage_dict.get("total_tokens")),
+    )
 
 
 def _extract_claude_message(stdout: str) -> str | None:

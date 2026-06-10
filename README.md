@@ -77,6 +77,8 @@ dispatcher resume <run-id> [--strategy {continue,mark-blocked}] [--force] [--run
                                             Pick up an interrupted run from its journal —
                                             re-dispatch in-flight tasks, leave terminal
                                             rows untouched. See "Resume".
+                                            (Reconciliation pending — held in PR #10,
+                                            lands via run #3.)
 dispatcher report <run-id>                  Quality dashboard for a run: counts, per-task
                                             gate fields, concerning-tasks highlights, and
                                             the per-reviewer/per-dimension breakdown.
@@ -96,6 +98,39 @@ dispatcher forecast-sync <tasks-yaml> [--dry-run]
                                             to bring Jira into sync. Soft-skips when forecast
                                             missing or `jira_key` not yet populated.
 ```
+
+### Run status
+
+`dispatcher status <run-id>` reconstructs the live (or finished) state of a run
+from two artifacts the orchestrator already maintains — there is no separate
+event-journal subsystem yet:
+
+- the **tasks YAML**, the authoritative per-task state (status, `started_at`/
+  `completed_at`, `model`, `cost_usd`, `iteration_count`, `blocked_reason`,
+  `pr_url`, …), and
+- the run's **`run.log`**, the append-only event log, used for *liveness*: the
+  age of the last logged event tells you whether the run is still moving.
+
+It is read-only and mid-run-safe — it never touches the YAML or worktrees, and
+tolerates a partially-written final `run.log` line (a live run may be appending
+as you read).
+
+```bash
+# Human-readable table
+dispatcher status 2026-06-10T18-24-47Z-tasks
+
+# Machine-readable JSON (full schema in src/claude_dispatcher/status.py)
+dispatcher status 2026-06-10T18-24-47Z-tasks --json
+```
+
+The YAML is normally auto-discovered from the run's summary files. For a fresh
+run that has no summaries yet, pass `--tasks-yaml PATH` explicitly.
+
+The `--json` document carries `run_id`, `current_wave` / `wave_count`,
+`run_complete`, a `liveness` block (`last_event_at`, `last_event_age_seconds`,
+`last_event`), a `totals` block (`by_status` counts, `run_cost_usd`,
+`tasks_billed`), and a key-sorted `tasks` array with each task's per-run state
+and dependency `wave`.
 
 ### Forecast bridge (optional)
 
@@ -170,8 +205,9 @@ treats consensus as `incomplete`, which blocks auto-integrate the same as
 a `block` verdict). The Claude invocation reuses the Tasker spawn pattern
 (`--print --output-format json --permission-mode bypassPermissions`);
 the gemini-family reviewer uses `agy --print "" --print-timeout {N}s`
-with the prompt on stdin; Codex uses `exec --full-auto
---output-last-message`. The family identifier stays `gemini` for column
+with the prompt on stdin; Codex uses `exec --sandbox workspace-write
+--output-last-message` with the prompt on stdin (closed after the write
+so `codex exec` can't hang waiting for EOF). The family identifier stays `gemini` for column
 compatibility with historical panel records even though the CLI binary
 is `agy`. Per-reviewer timeout defaults to 10 min
 (`--cross-family-panel-timeout`).
@@ -615,7 +651,7 @@ src/claude_dispatcher/
 ├── dispatch_plan.py             # dry-run report renderer
 ├── journal.py                   # append-only hash-chained event journal (one JSONL/run)
 ├── status.py                    # `dispatcher status` — run state, table or --json
-├── resume.py                    # `dispatcher resume` — recover an interrupted run
+├── resume.py                    # `dispatcher resume` — recover an interrupted run (PR #10, pending)
 └── report.py                    # `dispatcher report` — quality dashboard
 
 tools/

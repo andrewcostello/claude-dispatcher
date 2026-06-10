@@ -188,3 +188,68 @@ def test_smoke_malformed_summary_marks_blocked(repo: Path, monkeypatch) -> None:
         row = next(t for t in doc["tasks"] if t["key"] == key)
         assert row["status"] == "Blocked"
         assert "summary_malformed" in row.get("blocked_reason", "")
+
+
+# --- configurable timeouts (DISP-4) ----------------------------------------
+
+
+def test_config_timeout_defaults_unchanged() -> None:
+    """Without the flags, defaults stay 30s lock / 4h spawn."""
+    parser = build_parser()
+    args = parser.parse_args(["run", "tasks.yaml"])
+    assert args.lock_timeout_seconds == 30.0
+    assert args.task_timeout_seconds == 60 * 60 * 4
+
+    cfg = orchestrator._build_config(args)
+    assert cfg.lock_timeout_seconds == 30.0
+    assert cfg.task_timeout_seconds == 60 * 60 * 4
+
+
+def test_task_timeout_flows_to_spawn(repo: Path, monkeypatch) -> None:
+    """--task-timeout-seconds reaches the spawn_claude call site."""
+    from claude_dispatcher import spawn as spawn_mod
+
+    captured: dict[str, int] = {}
+
+    def recording_spawn(claude_bin: str, cwd: Path, env: dict, prompt: str,
+                        extra_args=None, timeout_seconds: int = 3600):
+        captured["timeout_seconds"] = timeout_seconds
+        proc = subprocess.run(
+            [sys.executable, str(FAKE_CLAUDE)],
+            input=prompt, capture_output=True, text=True,
+            cwd=str(cwd), env=env, timeout=timeout_seconds,
+        )
+        return spawn_mod.SpawnResult(
+            exit_code=proc.returncode,
+            summary_path=Path(env["SUMMARY_PATH"]),
+            stdout=proc.stdout, stderr=proc.stderr,
+        )
+
+    monkeypatch.setattr(spawn_mod, "spawn_claude", recording_spawn)
+    args = _build_args(repo, only="SMOKE-A", task_timeout_seconds=123)
+    orchestrator.execute(args)
+    assert captured["timeout_seconds"] == 123
+
+
+def test_lock_timeout_flows_to_filelock(repo: Path) -> None:
+    """--lock-timeout-seconds reaches the FileLock and fails fast when held."""
+    import time
+
+    from claude_dispatcher import yaml_io
+
+    args = _build_args(repo, only="SMOKE-A", lock_timeout_seconds=0.3)
+    cfg = orchestrator._build_config(args)
+    assert cfg.lock_timeout_seconds == 0.3
+
+    # Hold the lock so the snapshot load must wait, then time out.
+    lock_path = Path(str(cfg.tasks_path) + ".lock")
+    lock_path.write_text("99999\n", encoding="utf-8")
+    try:
+        start = time.monotonic()
+        with pytest.raises(yaml_io.LockTimeout):
+            orchestrator._load_tasks_snapshot(cfg)
+        elapsed = time.monotonic() - start
+    finally:
+        lock_path.unlink()
+    # Proves the 0.3s budget was honored, not the 30s default.
+    assert elapsed < 5.0

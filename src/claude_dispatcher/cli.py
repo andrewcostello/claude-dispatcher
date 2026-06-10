@@ -71,6 +71,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--max-iterations", type=int, default=2)
     run.add_argument(
+        "--lock-timeout-seconds",
+        type=float,
+        default=30.0,
+        metavar="SECONDS",
+        help=(
+            "How long to wait for the tasks-YAML FileLock before giving up "
+            "(default: 30). Raise it if many parallel workers contend on the "
+            "lock; lower it to fail fast in tests."
+        ),
+    )
+    run.add_argument(
+        "--task-timeout-seconds",
+        type=int,
+        default=60 * 60 * 4,
+        metavar="SECONDS",
+        help=(
+            "Per-task wall-clock budget for each spawned Claude session "
+            "(default: 14400, i.e. 4h). The session is killed if it exceeds "
+            "this and the task is marked Blocked."
+        ),
+    )
+    run.add_argument(
         "--run-id",
         default=None,
         help="Default: ISO 8601 timestamp",
@@ -217,9 +239,27 @@ def build_parser() -> argparse.ArgumentParser:
     run.set_defaults(func=run_cmd.execute)
 
     # --- status ------------------------------------------------------------
-    st = sub.add_parser("status", help="Show current state of a run")
+    st = sub.add_parser(
+        "status",
+        help=("Current state of a run: per-task state, current wave, totals, "
+              "cost so far, and run liveness. Mid-run-safe; --json for "
+              "machine-readable output."),
+    )
     st.add_argument("run_id")
     st.add_argument("--runs-dir", default="docs/runs")
+    st.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the structured JSON document (schema in status.py docstring)",
+    )
+    st.add_argument(
+        "--tasks-yaml",
+        dest="tasks_yaml",
+        default=None,
+        help=("Path to the tasks YAML this run is for. Optional — by default "
+              "it is discovered from the run's summary files; pass it "
+              "explicitly for a fresh run that has no summaries yet."),
+    )
     st.set_defaults(func=status_cmd.execute)
 
     # --- resume ------------------------------------------------------------

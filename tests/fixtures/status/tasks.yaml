@@ -1,0 +1,52 @@
+project: TEST
+epic: STATUS
+# Fixture for the `dispatcher status` snapshot test. Represents a run
+# captured mid-flight: A is Done (with cost/model/PR), B is In Progress,
+# C is still waiting on A, D failed to spawn and is Blocked.
+
+tasks:
+
+  - key: SMOKE-A
+    summary: "Done task with full run metadata"
+    description: |
+      Landed cleanly with a PR.
+    type: Task
+    labels: [size:XS, area:smoke]
+    status: Done
+    dispatcher_run_id: fixture-run
+    started_at: "2026-06-10T18:24:48+00:00"
+    completed_at: "2026-06-10T18:25:05+00:00"
+    model: claude-opus-4-8
+    cost_usd: 0.05
+    iteration_count: 0
+    pr_url: "https://example.test/pr/1"
+
+  - key: SMOKE-B
+    summary: "In-flight task, no terminal metadata yet"
+    description: |
+      Currently running.
+    type: Task
+    labels: [size:XS, area:smoke]
+    status: In Progress
+    dispatcher_run_id: fixture-run
+    started_at: "2026-06-10T18:25:10+00:00"
+
+  - key: SMOKE-C
+    summary: "Blocked-by-A task, not yet runnable"
+    description: |
+      Waits on SMOKE-A; in wave 2.
+    type: Task
+    labels: [size:XS, area:smoke]
+    blockedBy: [SMOKE-A]
+
+  - key: SMOKE-D
+    summary: "Task that failed to spawn"
+    description: |
+      Spawn failed; Blocked with a reason.
+    type: Task
+    labels: [size:XS, area:smoke]
+    status: Blocked
+    dispatcher_run_id: fixture-run
+    started_at: "2026-06-10T18:24:49+00:00"
+    completed_at: "2026-06-10T18:24:50+00:00"
+    blocked_reason: "spawn_failed: boom"

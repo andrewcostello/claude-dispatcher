@@ -1,0 +1,83 @@
+{
+  "run_id": "fixture-run",
+  "generated_at": "2026-06-10T18:25:40+00:00",
+  "run_complete": false,
+  "current_wave": 1,
+  "wave_count": 2,
+  "liveness": {
+    "run_log_present": true,
+    "last_event_at": "2026-06-10T18:25:10+00:00",
+    "last_event_age_seconds": 30.0,
+    "last_event": "dispatch SMOKE-B submitted"
+  },
+  "totals": {
+    "task_count": 4,
+    "by_status": {
+      "To Do": 1,
+      "In Progress": 1,
+      "Done": 1,
+      "Blocked": 1,
+      "Escalated": 0
+    },
+    "run_cost_usd": 0.05,
+    "tasks_billed": 1
+  },
+  "tasks": [
+    {
+      "key": "SMOKE-A",
+      "summary": "Done task with full run metadata",
+      "status": "Done",
+      "wave": 1,
+      "started_at": "2026-06-10T18:24:48+00:00",
+      "completed_at": "2026-06-10T18:25:05+00:00",
+      "model": "claude-opus-4-8",
+      "cost_usd": 0.05,
+      "iteration_count": 0,
+      "blocked_reason": null,
+      "pr_url": "https://example.test/pr/1",
+      "dispatcher_run_id": "fixture-run"
+    },
+    {
+      "key": "SMOKE-B",
+      "summary": "In-flight task, no terminal metadata yet",
+      "status": "In Progress",
+      "wave": 1,
+      "started_at": "2026-06-10T18:25:10+00:00",
+      "completed_at": null,
+      "model": null,
+      "cost_usd": null,
+      "iteration_count": null,
+      "blocked_reason": null,
+      "pr_url": null,
+      "dispatcher_run_id": "fixture-run"
+    },
+    {
+      "key": "SMOKE-C",
+      "summary": "Blocked-by-A task, not yet runnable",
+      "status": "To Do",
+      "wave": 2,
+      "started_at": null,
+      "completed_at": null,
+      "model": null,
+      "cost_usd": null,
+      "iteration_count": null,
+      "blocked_reason": null,
+      "pr_url": null,
+      "dispatcher_run_id": null
+    },
+    {
+      "key": "SMOKE-D",
+      "summary": "Task that failed to spawn",
+      "status": "Blocked",
+      "wave": 1,
+      "started_at": "2026-06-10T18:24:49+00:00",
+      "completed_at": "2026-06-10T18:24:50+00:00",
+      "model": null,
+      "cost_usd": null,
+      "iteration_count": null,
+      "blocked_reason": "spawn_failed: boom",
+      "pr_url": null,
+      "dispatcher_run_id": "fixture-run"
+    }
+  ]
+}

@@ -657,6 +657,33 @@ def test_gemini_reviewer_invokes_agy_with_stdin(monkeypatch):
     assert not any(len(a) > 1024 for a in cmd), "no argv element should carry the prompt"
 
 
+@pytest.mark.parametrize("empty_stdout", ["", "   \n\t  \n"])
+def test_gemini_reviewer_empty_stdout_exit0_is_unavailable(monkeypatch, empty_stdout):
+    """antigravity-cli#76: agy can exit 0 with empty (or whitespace-only)
+    stdout when stdout is a non-TTY pipe — exactly how the panel consumes
+    it. The adapter must treat this as UNAVAILABLE with the suspected-bug
+    reason, NOT let an empty string reach the parser (where it becomes
+    PARSE_FAILED, a blocker, plus a wasted retry invocation).
+    """
+    calls = {"n": 0}
+
+    def fake_run(cmd, **kwargs):
+        calls["n"] += 1
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout=empty_stdout, stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    rv = cfr.GeminiReviewer().review("review this")
+
+    assert rv.verdict == cfr.Verdict.UNAVAILABLE
+    assert rv.error == "empty stdout (suspected antigravity-cli#76)"
+    # Must NOT have been parsed into PARSE_FAILED, and must NOT have retried.
+    assert calls["n"] == 1, "empty stdout must not trigger the parse-failure retry"
+    assert not rv.findings
+    assert rv.duration_seconds is not None and rv.duration_seconds >= 0
+
+
 def test_codex_reviewer_uses_output_last_message(monkeypatch, tmp_path: Path):
     """Codex's stdout interleaves agent progress with the final answer.
     The adapter must use --output-last-message so we get a clean response,
@@ -668,6 +695,7 @@ def test_codex_reviewer_uses_output_last_message(monkeypatch, tmp_path: Path):
     def fake_run(cmd, **kwargs):
         captured["cmd"] = list(cmd)
         captured["input"] = kwargs.get("input")
+        captured["stdin"] = kwargs.get("stdin")
         # Find the --output-last-message tmpfile arg and write a synthetic
         # response there.
         for i, a in enumerate(cmd):
@@ -689,7 +717,11 @@ def test_codex_reviewer_uses_output_last_message(monkeypatch, tmp_path: Path):
     cmd = captured["cmd"]
     assert "codex" in cmd[0]
     assert "exec" in cmd
-    assert "--full-auto" in cmd
+    # `--full-auto` is deprecated; the adapter must use the explicit sandbox
+    # mode instead. `workspace-write` must immediately follow `--sandbox`.
+    assert "--full-auto" not in cmd
+    assert "--sandbox" in cmd
+    assert cmd[cmd.index("--sandbox") + 1] == "workspace-write"
     assert "--color" in cmd and "never" in cmd
     assert "--skip-git-repo-check" in cmd
     assert "--output-last-message" in cmd
@@ -698,6 +730,17 @@ def test_codex_reviewer_uses_output_last_message(monkeypatch, tmp_path: Path):
     # Prompt MUST be on stdin, NOT in argv.
     assert captured["input"].startswith("hello codex")
     assert not any(len(a) > 1024 for a in cmd), "no argv element should carry the prompt"
+    # stdin MUST be a managed/closed handle, never the parent's (inherited)
+    # stdin. Passing `input=` makes subprocess allocate a PIPE and close it
+    # after the write, sending EOF — without that, `codex exec` blocks
+    # forever on a non-TTY stdin (openai/codex#20919). Assert we never let
+    # subprocess inherit stdin (stdin=None with no input=).
+    assert captured["input"] is not None
+    assert captured.get("stdin") is None, (
+        "must not set an explicit stdin handle alongside input= "
+        "(subprocess raises if both are given); the prompt+EOF via input= "
+        "is what closes the handle"
+    )
     # The output should be the clean response from the tmpfile, NOT the noisy stdout.
     assert "## Verdict" in out
     assert "APPROVE" in out
@@ -721,6 +764,89 @@ def test_codex_reviewer_falls_back_to_stdout_when_tmpfile_missing(monkeypatch):
     r = cfr.CodexReviewer()
     out = r._invoke_cli("p")
     assert "APPROVE" in out
+
+
+def test_parse_codex_usage_with_reasoning_tokens():
+    """Codex 0.122–0.139 includes reasoning_output_tokens in the usage event."""
+    line = (
+        '{"type":"token_count","usage":{"input_tokens":1200,'
+        '"cached_input_tokens":800,"output_tokens":340,'
+        '"reasoning_output_tokens":210,"total_tokens":1540}}'
+    )
+    u = cfr.parse_codex_usage(line)
+    assert u.input_tokens == 1200
+    assert u.cached_input_tokens == 800
+    assert u.output_tokens == 340
+    assert u.reasoning_output_tokens == 210
+    assert u.total_tokens == 1540
+
+
+def test_parse_codex_usage_without_reasoning_tokens():
+    """Codex 0.121.0 (the field's predecessor) omits reasoning_output_tokens.
+
+    The parser MUST leave it None — "not reported" — not coerce it to 0,
+    which would mean "reported zero reasoning" and corrupt quota math.
+    """
+    line = (
+        '{"type":"token_count","usage":{"input_tokens":900,'
+        '"output_tokens":120,"total_tokens":1020}}'
+    )
+    u = cfr.parse_codex_usage(line)
+    assert u.input_tokens == 900
+    assert u.output_tokens == 120
+    assert u.total_tokens == 1020
+    assert u.reasoning_output_tokens is None
+    # cached_input_tokens also absent here → None, not 0.
+    assert u.cached_input_tokens is None
+
+
+def test_parse_codex_usage_picks_last_event_in_stream():
+    """The --json stream reports usage per turn; the parser keeps the last
+    (cumulative) usage object and ignores non-usage events."""
+    stream = "\n".join([
+        '{"type":"task_started"}',
+        '{"type":"token_count","usage":{"input_tokens":100,"output_tokens":10,"total_tokens":110}}',
+        '{"type":"agent_message","text":"working"}',
+        '{"type":"token_count","usage":{"input_tokens":500,"output_tokens":80,'
+        '"reasoning_output_tokens":40,"total_tokens":620}}',
+    ])
+    u = cfr.parse_codex_usage(stream)
+    assert u.input_tokens == 500
+    assert u.output_tokens == 80
+    assert u.reasoning_output_tokens == 40
+    assert u.total_tokens == 620
+
+
+def test_parse_codex_usage_tolerates_info_total_token_usage_shape():
+    """Some builds nest the cumulative total under info.total_token_usage."""
+    line = (
+        '{"msg":{"info":{"total_token_usage":'
+        '{"input_tokens":7,"output_tokens":3,"total_tokens":10}}}}'
+    )
+    u = cfr.parse_codex_usage(line)
+    assert u.input_tokens == 7
+    assert u.output_tokens == 3
+    assert u.total_tokens == 10
+
+
+def test_parse_codex_usage_empty_and_garbage_return_empty():
+    for bad in ("", "   ", "not json at all", "[1,2,3]", '{"type":"task_started"}'):
+        u = cfr.parse_codex_usage(bad)
+        assert u.input_tokens is None
+        assert u.output_tokens is None
+        assert u.reasoning_output_tokens is None
+        assert u.total_tokens is None
+
+
+def test_codex_usage_to_dict_roundtrip():
+    u = cfr.CodexUsage(
+        input_tokens=10, cached_input_tokens=4, output_tokens=5,
+        reasoning_output_tokens=2, total_tokens=15,
+    )
+    assert u.to_dict() == {
+        "input_tokens": 10, "cached_input_tokens": 4, "output_tokens": 5,
+        "reasoning_output_tokens": 2, "total_tokens": 15,
+    }
 
 
 def test_reviewer_unavailable_on_filenotfounderror():
