@@ -1,0 +1,61 @@
+project: TEST
+epic: REPORT
+# Fixture for the `dispatcher report` rollup tests. Represents a finished
+# run: A is Done after a panel iterate (two spawns in the journal, but the
+# YAML row records only the LAST spawn's usage), B is Blocked with an
+# unmeasured spawn, C is still In Progress, and Z belongs to a different
+# run entirely (must be excluded from the rollup).
+
+tasks:
+
+  - key: REP-A
+    summary: "Done task with two spawns"
+    description: |
+      Landed after one panel iterate.
+    type: Task
+    labels: [size:XS, area:smoke]
+    status: Done
+    dispatcher_run_id: fixture-run
+    started_at: "2026-06-10T18:00:05+00:00"
+    completed_at: "2026-06-10T18:20:00+00:00"
+    model: claude-opus-4-8
+    agent: claude
+    cost_usd: 0.03
+    input_tokens: 600
+    output_tokens: 300
+    cache_read_input_tokens: 40
+    cache_creation_input_tokens: 20
+    duration_ms: 20000
+    iteration_count: 1
+    final_quality_score: 23
+    pr_url: "https://example.test/pr/7"
+    panel_consensus: approve
+
+  - key: REP-B
+    summary: "Blocked task with unmeasured spawn"
+    description: |
+      Spawn produced no usage block.
+    type: Task
+    labels: [size:XS, area:smoke]
+    status: Blocked
+    dispatcher_run_id: fixture-run
+    blocked_reason: "panel block: 2 blocking findings"
+
+  - key: REP-C
+    summary: "Mid-flight task"
+    description: |
+      Started, not yet terminal.
+    type: Task
+    labels: [size:XS, area:smoke]
+    status: In Progress
+    dispatcher_run_id: fixture-run
+
+  - key: REP-Z
+    summary: "Task from another run"
+    description: |
+      Not part of fixture-run; its cost must never leak into the rollup.
+    type: Task
+    labels: [size:XS, area:smoke]
+    status: Done
+    dispatcher_run_id: other-run
+    cost_usd: 9.99

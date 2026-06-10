@@ -77,7 +77,8 @@ dispatcher resume <run-id> [--strategy {continue,mark-blocked}] [--force] [--run
                                             Pick up an interrupted run from its journal —
                                             re-dispatch in-flight tasks, leave terminal
                                             rows untouched. See "Resume".
-dispatcher report <run-id>                  Quality dashboard for a run: counts, per-task
+dispatcher report <run-id> [--json] [--tasks-yaml PATH] [--runs-dir PATH]
+                                            Quality dashboard for a run: counts, per-task
                                             gate fields, concerning-tasks highlights, and
                                             the per-reviewer/per-dimension breakdown.
 
