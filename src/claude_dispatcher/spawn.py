@@ -16,8 +16,60 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+
+
+# Agent identity stamped onto every terminal task row + terminal journal
+# event (OPS-4). The dispatcher only spawns the Claude CLI today; if other
+# agents are ever supported this becomes per-config.
+AGENT_NAME = "claude"
+
+
+def capture_agent_version(claude_bin: str, timeout_seconds: int = 30) -> str | None:
+    """Run `<claude_bin> --version` once and return its version line.
+
+    Returns the first non-empty line of stdout, stripped, when the binary
+    exits 0 with non-empty output. On ANY failure — missing binary, timeout,
+    non-zero exit, empty output, unexpected exception — emits a single
+    stderr warning and returns None. Contractually non-raising: version
+    provenance is nice-to-have metadata and must never block a run.
+    """
+    try:
+        proc = subprocess.run(
+            [claude_bin, "--version"],
+            # CRITICAL: the claude CLI (and the fake_claude fixture) reads
+            # stdin; without DEVNULL this call would hang on an open pipe.
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except Exception as e:  # noqa: BLE001 — degrade-to-absent by contract
+        print(
+            f"warning: agent version capture failed for {claude_bin!r}: {e}",
+            file=sys.stderr,
+        )
+        return None
+    if proc.returncode != 0:
+        print(
+            f"warning: agent version capture failed for {claude_bin!r}: "
+            f"exit code {proc.returncode}",
+            file=sys.stderr,
+        )
+        return None
+    for line in (proc.stdout or "").splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    print(
+        f"warning: agent version capture failed for {claude_bin!r}: "
+        "empty --version output",
+        file=sys.stderr,
+    )
+    return None
 
 
 # Default prompt template handed to the Tasker. The Tasker reads .claude/workflow/roles/tasker.md

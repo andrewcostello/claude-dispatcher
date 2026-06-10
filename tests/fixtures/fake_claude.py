@@ -42,6 +42,13 @@ SCENARIOS = {
 
 
 def main() -> int:
+    # `--version` must be handled BEFORE the stdin read: the dispatcher's
+    # capture_agent_version() invokes `<bin> --version` with stdin=DEVNULL
+    # and a real claude prints its version without touching stdin.
+    if "--version" in sys.argv:
+        print("1.0.0 (fake-claude)")
+        return 0
+
     # Consume stdin so the parent doesn't block on a closed pipe.
     _ = sys.stdin.read()
 
