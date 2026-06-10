@@ -1,0 +1,10 @@
+# Per-repo dispatcher config (schema introduced in VG-1).
+# test: shell command run inside a task worktree; exit 0 = green.
+#
+# Interpreter choice (verified 2026-06-10): the system python3 has ruamel but
+# NO pytest — `PYTHONPATH=src python3 -m pytest` fails in a fresh worktree.
+# The only interpreter with pytest on this machine is the main checkout's
+# .venv. PYTHONPATH=src makes the *worktree's* code shadow that venv's
+# editable install (PYTHONPATH precedes .pth-injected site-packages paths),
+# so the command tests the worktree under change, not the main checkout.
+test: "PYTHONPATH=src /home/andrew/Project/claude-dispatcher/.venv/bin/python -m pytest tests/ -q"
