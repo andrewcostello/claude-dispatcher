@@ -310,6 +310,16 @@ def build_parser() -> argparse.ArgumentParser:
         help=("Emit the structured JSON document instead of the table "
               "(schema in docs/report-json.md)"),
     )
+    rp.add_argument(
+        "--tasks-yaml",
+        dest="tasks_yaml",
+        default=None,
+        help=("Path to the tasks YAML this run is for. Optional — by default "
+              "it is resolved from the journal's run_started event, falling "
+              "back to discovery from the run's summary files; pass it "
+              "explicitly to override, or for a pre-journal run whose YAML "
+              "is not an ancestor of --runs-dir."),
+    )
     rp.set_defaults(func=report_cmd.execute)
 
     # --- forecast-create ---------------------------------------------------

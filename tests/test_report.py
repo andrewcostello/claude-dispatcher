@@ -62,7 +62,8 @@ https://example.test/pr/7
 """
 
 
-def _make_journal(run_dir: Path, tmp_path: Path, timestamps: list[str]):
+def _make_journal(run_dir: Path, tmp_path: Path, timestamps: list[str],
+                  tasks_yaml_path: Path | None = None):
     """Build a real hash-chained journal under run_dir with a deterministic
     clock (one timestamp consumed per appended event, genesis first)."""
     reviewer_dir = tmp_path / "reviewer_prompts"
@@ -71,7 +72,7 @@ def _make_journal(run_dir: Path, tmp_path: Path, timestamps: list[str]):
     it = iter(timestamps)
     j = journal_mod.Journal.create(
         run_dir / journal_mod.JOURNAL_FILENAME,
-        tasks_yaml_path=FIXTURE_DIR / "tasks.yaml",
+        tasks_yaml_path=tasks_yaml_path or FIXTURE_DIR / "tasks.yaml",
         reviewer_prompts_dir=reviewer_dir,
         run_id="fixture-run",
         run_nonce="0" * 32,
@@ -542,3 +543,84 @@ def test_cli_missing_run_dir_exit_code_unchanged(tmp_path: Path, capsys) -> None
     )
     assert rc == 2
     assert "error" in err
+
+
+# --- tasks YAML resolution (flag > journal genesis > walk-up) -------------------
+
+
+def test_journal_genesis_resolves_yaml_unreachable_by_walkup(
+    tmp_path: Path, capsys
+) -> None:
+    """Journal mode: the run_started payload's tasks_yaml_path resolves the
+    YAML even when walk-up discovery cannot (no *.yaml in any ancestor of
+    --runs-dir) — the real-run layout, where the YAML lives in a sibling
+    subtree (features/<phase>/tasks.yaml)."""
+    run_dir = _setup_run(tmp_path)
+    _full_journal(run_dir, tmp_path)
+    # Deliberately NO tasks.yaml copied under tmp_path: walk-up finds nothing.
+
+    rc, out, err = _invoke(
+        ["report", "fixture-run", "--runs-dir", str(tmp_path / "runs"), "--json"],
+        capsys,
+    )
+    assert rc == 0, err
+    doc = json.loads(out)
+    assert Path(doc["tasks_yaml"]) == (FIXTURE_DIR / "tasks.yaml").resolve()
+    assert doc["source"] == "journal"
+    assert doc["rollup"]["totals"]["spawn_count"] == 4
+
+
+def test_tasks_yaml_flag_overrides_journal_genesis(tmp_path: Path, capsys) -> None:
+    """--tasks-yaml is the highest-precedence resolution: it wins even when
+    the journal genesis carries a valid, existing tasks_yaml_path."""
+    import shutil
+    run_dir = _setup_run(tmp_path)
+    _full_journal(run_dir, tmp_path)  # genesis points at FIXTURE_DIR yaml
+    override = tmp_path / "override.yaml"
+    shutil.copy2(FIXTURE_DIR / "tasks.yaml", override)
+
+    rc, out, err = _invoke(
+        ["report", "fixture-run", "--runs-dir", str(tmp_path / "runs"),
+         "--json", "--tasks-yaml", str(override)],
+        capsys,
+    )
+    assert rc == 0, err
+    doc = json.loads(out)
+    assert Path(doc["tasks_yaml"]) == override.resolve()
+
+
+def test_stale_genesis_path_falls_back_to_walkup(tmp_path: Path, capsys) -> None:
+    """A genesis tasks_yaml_path that no longer exists on disk (repo moved
+    since the run) falls back to walk-up discovery — no traceback."""
+    import shutil
+    run_dir = _setup_run(tmp_path)
+    moved = tmp_path / "moved" / "tasks.yaml"
+    moved.parent.mkdir()
+    shutil.copy2(FIXTURE_DIR / "tasks.yaml", moved)
+    _make_journal(run_dir, tmp_path, ["2026-06-10T18:00:00+00:00"],
+                  tasks_yaml_path=moved)
+    moved.unlink()
+    moved.parent.rmdir()
+    # Walk-up target: the YAML sits in an ancestor of --runs-dir.
+    shutil.copy2(FIXTURE_DIR / "tasks.yaml", tmp_path / "tasks.yaml")
+
+    rc, out, err = _invoke(
+        ["report", "fixture-run", "--runs-dir", str(tmp_path / "runs"), "--json"],
+        capsys,
+    )
+    assert rc == 0, err
+    doc = json.loads(out)
+    assert Path(doc["tasks_yaml"]) == (tmp_path / "tasks.yaml").resolve()
+
+
+def test_tasks_yaml_flag_missing_file_clean_error(tmp_path: Path, capsys) -> None:
+    """--tasks-yaml pointing at a nonexistent file errors cleanly (rc 2)."""
+    _setup_run(tmp_path)
+
+    rc, out, err = _invoke(
+        ["report", "fixture-run", "--runs-dir", str(tmp_path / "runs"),
+         "--tasks-yaml", str(tmp_path / "nope.yaml")],
+        capsys,
+    )
+    assert rc == 2
+    assert "tasks YAML not found" in err

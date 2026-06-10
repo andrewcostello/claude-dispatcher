@@ -73,11 +73,22 @@ def execute(args: argparse.Namespace) -> int:
         print(f"error: run directory not found: {run_dir}", file=sys.stderr)
         return 2
 
-    yaml_path = _find_yaml_for_run(run_dir, runs_dir)
-    if yaml_path is None:
-        print(f"error: could not determine which YAML this run is for. "
-              f"Pass --tasks-yaml.", file=sys.stderr)
-        return 2
+    # Resolve the tasks YAML, highest precedence first: explicit --tasks-yaml
+    # flag, then the journal genesis (run_started) payload's tasks_yaml_path,
+    # then walk-up discovery (the only option for pre-journal runs).
+    yaml_arg = getattr(args, "tasks_yaml", None)
+    if yaml_arg:
+        yaml_path = Path(yaml_arg).resolve()
+        if not yaml_path.is_file():
+            print(f"error: tasks YAML not found: {yaml_path}", file=sys.stderr)
+            return 2
+    else:
+        yaml_path = (_yaml_from_journal_genesis(run_dir)
+                     or _find_yaml_for_run(run_dir, runs_dir))
+        if yaml_path is None:
+            print("error: could not determine which YAML this run is for. "
+                  "Pass --tasks-yaml <path>.", file=sys.stderr)
+            return 2
 
     data = build_report(run_dir=run_dir, run_id=run_id, yaml_path=yaml_path)
     if getattr(args, "json", False):
@@ -97,6 +108,35 @@ def _resolve_run_id(runs_dir: Path, requested: str | None) -> str | None:
     if not candidates:
         return None
     return max(candidates, key=lambda p: p.stat().st_mtime).name
+
+
+def _yaml_from_journal_genesis(run_dir: Path) -> Path | None:
+    """Resolve the tasks YAML from the journal's genesis (``run_started``)
+    event, whose payload records the authoritative absolute ``tasks_yaml_path``
+    at dispatch time.
+
+    Real tasks YAMLs typically live in a sibling subtree of the runs dir
+    (``features/<phase>/tasks.yaml``), which walk-up discovery can never find —
+    the genesis path is the reliable source for journal-era runs. Returns None
+    (so callers fall back to walk-up discovery) when there is no journal, no
+    genesis event, or the recorded path no longer exists on disk (the repo may
+    have moved since the run).
+    """
+    journal_path = run_dir / journal_mod.JOURNAL_FILENAME
+    if not journal_path.is_file():
+        return None
+    for ev in journal_read.read_journal_events(journal_path):
+        if ev.get("event_type") != "run_started":
+            continue
+        payload = ev.get("payload")
+        raw = payload.get("tasks_yaml_path") if isinstance(payload, dict) else None
+        if isinstance(raw, str) and raw.strip():
+            candidate = Path(raw.strip())
+            if candidate.is_file():
+                return candidate.resolve()
+        # Genesis found but its path is stale/unusable — fall back to walk-up.
+        return None
+    return None
 
 
 def _find_yaml_for_run(run_dir: Path, runs_dir: Path) -> Path | None:
