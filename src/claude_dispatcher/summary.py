@@ -48,7 +48,18 @@ class Summary:
     prepared_pr_body: str | None = None
     escalation_reason: str = ""
     malformed: bool = False
+    # Every reason the parser flagged this summary as malformed, in the order
+    # they were discovered. Empty iff malformed is False. `malformed_reason`
+    # is kept as the "; "-joined view for back-compat with callers that want a
+    # single string.
+    problems: list[str] = field(default_factory=list)
     malformed_reason: str = ""
+
+    def add_problem(self, reason: str) -> None:
+        """Record a parse problem: append it, flag malformed, refresh the joined reason."""
+        self.problems.append(reason)
+        self.malformed = True
+        self.malformed_reason = "; ".join(self.problems)
 
     @property
     def awaiting_human_approval(self) -> bool:
@@ -103,8 +114,7 @@ def parse(path: str | Path) -> Summary:
         text = p.read_text(encoding="utf-8")
     except FileNotFoundError:
         s = Summary()
-        s.malformed = True
-        s.malformed_reason = f"summary file not found: {p}"
+        s.add_problem(f"summary file not found: {p}")
         return s
     return parse_text(text)
 
@@ -131,10 +141,22 @@ def parse_text(text: str) -> Summary:
         if m:
             setattr(s, attr, conv(m.group(1)))
 
-    if s.status not in VALID_STATUSES:
-        s.malformed = True
-        s.malformed_reason = (
-            f"Status must be one of {sorted(VALID_STATUSES)}; got {s.status!r}"
+    if s.status is None:
+        s.add_problem("missing Status line (no `**Status:** <value>` found)")
+    elif s.status not in VALID_STATUSES:
+        s.add_problem(
+            f"invalid status value: Status must be one of "
+            f"{sorted(VALID_STATUSES)}; got {s.status!r}"
+        )
+
+    # An odd number of code-fence markers means a fence was opened and never
+    # closed. That confuses _extract_section (every heading after the dangling
+    # fence is swallowed as fence content) and usually signals a truncated
+    # file — the Tasker's session was cut off mid-write.
+    if len(re.findall(r"^```[\w-]*\s*$", text, re.MULTILINE)) % 2 != 0:
+        s.add_problem(
+            "unterminated code fence (fence-state confusion; "
+            "likely a truncated summary file)"
         )
 
     s.what_landed = _extract_section(text, "What landed").strip()
@@ -250,3 +272,29 @@ def _parse_pr_section(s: Summary, body: str) -> None:
         m = re.search(r"\*\*Body:\*\*\s*\n```(?:markdown)?\s*\n(.*?)\n```", body, re.DOTALL)
         if m:
             s.prepared_pr_body = m.group(1).strip()
+        # An "awaiting approval" PR section must carry the prepared-PR metadata
+        # so the dispatcher/human can actually raise it. Missing fields mean
+        # the regexes failed to match the expected layout.
+        missing = [
+            name
+            for name, val in (
+                ("Title", s.prepared_pr_title),
+                ("Branch", s.prepared_pr_branch),
+                ("Body", s.prepared_pr_body),
+            )
+            if val is None
+        ]
+        if missing:
+            s.add_problem(
+                "PR section claims 'awaiting human approval' but the prepared-PR "
+                f"{', '.join(missing)} field(s) could not be parsed"
+            )
+    else:
+        # The PR section has content but its first line is none of the three
+        # recognised forms (URL / "Not raised: ..." / "Prepared, awaiting
+        # human approval"), so the PR-section regexes have nothing to bind to.
+        s.add_problem(
+            "unparseable PR section: first line "
+            f"{head_line!r} is not a URL, 'Not raised: <reason>', or "
+            "'Prepared, awaiting human approval'"
+        )

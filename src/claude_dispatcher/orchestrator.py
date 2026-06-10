@@ -346,7 +346,9 @@ def _run_task(
 
     s = summary_mod.parse(result.summary_path)
     if s.malformed:
-        _mark_blocked(cfg, snap.key, reason=f"summary_malformed: {s.malformed_reason}")
+        _log_summary_problems(log_path, snap.key, s)
+        _mark_blocked(cfg, snap.key,
+                      reason=f"summary_malformed: {_summary_problem_detail(s)}")
         return plan_mod.BLOCKED
 
     # If the Tasker reported Done (or any terminal-success status) but the
@@ -371,8 +373,10 @@ def _run_task(
         # Retry succeeded — re-parse summary and continue with Done flow.
         s = summary_mod.parse(result.summary_path)
         if s.malformed:
-            _mark_blocked(cfg, snap.key,
-                          reason=f"summary_malformed after commit retry: {s.malformed_reason}")
+            _log_summary_problems(log_path, snap.key, s)
+            _mark_blocked(
+                cfg, snap.key,
+                reason=f"summary_malformed after commit retry: {_summary_problem_detail(s)}")
             return plan_mod.BLOCKED
 
     # Awaiting-human-approval handling — supervised may raise the PR.
@@ -1256,6 +1260,23 @@ def _log(log_path: Path, message: str) -> None:
     with _log_lock:
         with log_path.open("a", encoding="utf-8") as fh:
             fh.write(f"{ts}  {message}\n")
+
+
+def _log_summary_problems(log_path: Path, task_key: str, s: summary_mod.Summary) -> None:
+    """Write each parse problem the summary recorded to the run log, one per line."""
+    for problem in s.problems:
+        _log(log_path, f"  {task_key} summary problem: {problem}")
+
+
+def _summary_problem_detail(s: summary_mod.Summary) -> str:
+    """The human-readable detail appended to a summary_malformed Blocked reason.
+
+    Prefers the explicit per-problem list; falls back to malformed_reason for
+    any legacy path that flagged malformed without recording a problem.
+    """
+    if s.problems:
+        return "; ".join(s.problems)
+    return s.malformed_reason or "no reason recorded"
 
 
 def _load_tasks_snapshot(cfg: RunConfig) -> list[plan_mod.Task]:
