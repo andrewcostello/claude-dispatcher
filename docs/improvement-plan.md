@@ -590,11 +590,16 @@ verified (ok=True, 19 events) using the module the run was built to deploy.**
   (worker-side task_started into the refactored loop; `blocked_by` snapshot
   field initially lost in resolution — caught by INT-4's own test, the
   fixture suite doing exactly its job).
-- **Open dispositions (no-deferral) — INT-4's review LOWs, for Andrew:**
-  (1) non-conflict merge failures report reason `dependency_merge_conflict`
-  with git stderr attached — imprecise label, proposed: fix task in next
-  run; (2) `--no-ff` dependency merges create merge commits the Tasker
-  didn't author — proposed: accept (auditability rationale, per reviewer).
+- **Dispositions — INT-4's review LOWs:**
+  (1) non-conflict merge failures mislabeled `dependency_merge_conflict` —
+  **DISPOSED 2026-06-10: fix task in next run (Andrew)**. Carry into run #4's
+  tasks.yaml.
+  (2) `--no-ff` dependency merges create merge commits the Tasker didn't
+  author — rationale: the merge commit is the in-graph boundary between
+  dispatcher-injected dependency code and Tasker-authored work (provenance
+  in the git graph itself, not just the journal; clean anchor for
+  feat_baseline_sha). **DISPOSED 2026-06-10: accepted with rationale
+  (Andrew).**
 - `resume` declines pre-run_config runs by design (genesis lacks
   `run_config` before INT-1); all future runs are resumable.
 

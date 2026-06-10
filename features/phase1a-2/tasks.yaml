@@ -1,0 +1,162 @@
+project: DISP
+epic: PHASE-1A-2
+# ============================================================================
+# Run #4: Phase 1a (machine profile + doctor + preflight) and Phase 2
+# (Done-metadata completeness + report rollup), plus one disposed LOW from
+# run #3's review. Source: docs/improvement-plan.md.
+#
+# Context: the journal (with run_config genesis), journal-backed status,
+# resume, push verification, and the dispatch-time dependency rule are all on
+# main. Dependent tasks in this file get their dependencies' code merged into
+# their worktrees mechanically at dispatch (INT-4) — the first run to benefit.
+# ============================================================================
+
+tasks:
+
+  - key: OPS-1
+    summary: "Split dependency_merge_conflict from non-conflict merge failures"
+    description: |
+      Disposed LOW from run #3 (INT-4's adversarial review, disposition: fix):
+      worktree._merge_branch reports ANY merge failure as
+      dependency_merge_conflict with git stderr attached — including
+      non-conflict failures like missing committer identity. Split the reason:
+      keep dependency_merge_conflict for genuine content conflicts (detect via
+      git's conflict markers/exit semantics), introduce
+      dependency_merge_failure for everything else, both carrying stderr.
+      Thread the distinction through the Blocked reason and the task_started
+      journal payload.
+
+      Acceptance:
+        - Genuine conflict fixture -> dependency_merge_conflict (unchanged)
+        - Non-conflict failure fixture (e.g. unset user.email in the test
+          repo) -> dependency_merge_failure with stderr
+        - Journal payload + YAML blocked reason carry the precise label
+    type: Task
+    estimate: 1h
+    labels: [size:XS, area:worktree, phase:3]
+
+  - key: OPS-2
+    summary: "dispatcher doctor: probe machine profile (agents, tools, install mode)"
+    description: |
+      Implement the Phase 1a machine profile (docs/improvement-plan.md). New
+      subcommand `dispatcher doctor`: probes the machine and writes
+      ~/.config/claude-dispatcher/machine.yaml (XDG_CONFIG_HOME respected).
+
+      Probe and record:
+        - Agent CLIs: claude, agy, codex, grok, opencode, qwen — for each:
+          present (shutil.which), path, --version output (parsed), and
+          whether a stats/usage probe is known for it (static capability
+          table is fine for now).
+        - Tools: git, gh, docker, sqlc, buf — path + version.
+        - Dispatcher itself: version (package metadata), install mode
+          (pipx venv path vs editable/venv — detect from sys.prefix /
+          __file__ heuristics, document the heuristic), python version.
+        - Host: hostname, platform.
+      Behavior: re-running doctor refreshes probed fields but preserves any
+      keys under a `manual:` section untouched. `dispatcher doctor --check`
+      exits non-zero with a human-readable list when required entries are
+      missing (required = claude + git; everything else reported but soft).
+      Round-trip the file with ruamel (comments preserved) like tasks.yaml.
+
+      Acceptance:
+        - doctor on this machine produces a profile listing at least claude,
+          agy, codex, grok, opencode with real versions
+        - manual: section survives a re-probe
+        - --check semantics tested (required-missing fixture via PATH stub)
+        - Unit tests use stub binaries on PATH, no network
+    type: Task
+    estimate: 4h
+    labels: [size:M, area:cli, phase:1a]
+
+  - key: OPS-3
+    summary: "Run-start preflight: machine profile + run-#1-proven checks"
+    description: |
+      Wire preflight into `dispatcher run` (live modes only, not dry-run),
+      using the machine profile from OPS-2 plus the two checks proven
+      necessary by dogfood run #1 (see docs/improvement-plan.md Phase 1a):
+
+      1. Profile checks: claude binary present + version readable; warn (not
+         fail) when the installed dispatcher version differs from the repo
+         HEAD being dispatched (staleness warning, lesson: pipx snapshot).
+      2. Permission flags: unattended/supervised runs whose effective claude
+         args lack a permission-bypass mechanism (--permission-mode
+         bypassPermissions or --dangerously-skip-permissions) -> fail fast
+         with the exact flag suggestion, before any worktree is created.
+      3. Tasker role file: resolvable from a FRESH worktree, not the main
+         checkout — verify .claude/workflow/roles/tasker.md is git-tracked
+         (ls-files) OR probe by creating+removing a temporary worktree.
+      Emit a preflight journal event (new event type or run_started payload
+      extension — your judgment, document it) recording what was checked and
+      any warnings. --skip-preflight escape hatch, journaled when used.
+
+      Acceptance:
+        - Missing permission flags in unattended mode -> exit before dispatch
+          with actionable message; dry-run unaffected
+        - Untracked role file fixture -> fail fast with the symlink fix hint
+        - Staleness warning fires on version mismatch (fixture), run proceeds
+        - Preflight results visible in the journal; --skip-preflight works
+          and is journaled
+    type: Task
+    estimate: 3h
+    labels: [size:M, area:orchestrator, area:cli, phase:1a]
+    blockedBy: [OPS-2]
+
+  - key: OPS-4
+    summary: "Done-metadata completeness: agent + CLI version + dispatcher version per row"
+    description: |
+      Phase 2 (docs/improvement-plan.md): terminal YAML rows currently carry
+      model, cost_usd, tokens. Add: agent (e.g. claude), agent_version (the
+      CLI version, captured once per run at spawn setup — not per task),
+      dispatcher_version. Write the same fields into the task_done /
+      task_blocked journal payloads. Version capture must not slow dispatch
+      (cache one `claude --version` per run).
+
+      Acceptance:
+        - Fake-claude orchestrator run: every terminal row carries agent,
+          agent_version, dispatcher_version
+        - Journal terminal events carry the same fields
+        - Version capture failure degrades to field absent + stderr warning,
+          never blocks a task
+    type: Task
+    estimate: 2h
+    labels: [size:S, area:orchestrator, phase:2]
+
+  - key: OPS-5
+    summary: "Report rollup: per-run cost/usage/verdict dashboard from journal + YAML"
+    description: |
+      Phase 2 (docs/improvement-plan.md): extend `dispatcher report` with a
+      per-run rollup sourced from the journal (fall back to YAML-only for
+      pre-journal runs, labeled): totals (tasks by status, wall-clock from
+      genesis to end, total cost, total tokens in/out/cached), per-task rows
+      (model, agent, cost, tokens, iterations, panel verdict if any,
+      needs_push), and a per-model aggregate. --json mirrors the table.
+      Reuse status.py's journal-reading helpers rather than duplicating
+      (refactor shared parts into a small module if needed — cite it).
+
+      Acceptance:
+        - Report over run #2/#3 journals in docs/runs/ produces correct
+          totals (spot-checked in tests against fixture journals)
+        - --json schema documented; snapshot test
+        - Pre-journal runs degrade gracefully, labeled
+    type: Task
+    estimate: 3h
+    labels: [size:M, area:cli, phase:2]
+    blockedBy: [OPS-4]
+
+  - key: OPS-6
+    summary: "Docs: doctor/preflight/report sections + machine-profile format"
+    description: |
+      Document run #4's surface: README sections for `dispatcher doctor`
+      (+ --check), preflight behavior and --skip-preflight, the extended
+      report; docs/machine-profile.md describing the profile format, probe
+      vs manual: sections, and the staleness warning. Update the Done-row
+      field list wherever README documents YAML fields.
+
+      Acceptance:
+        - Every new flag/subcommand appears in README with an example
+        - docs/machine-profile.md complete enough to hand-write a profile
+        - No stale references to the pre-rollup report
+    type: Task
+    estimate: 2h
+    labels: [size:S, area:docs, phase:1a, phase:2]
+    blockedBy: [OPS-3, OPS-5]
