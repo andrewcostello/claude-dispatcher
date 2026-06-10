@@ -1,0 +1,454 @@
+"""Unit tests for the independent verifier module.
+
+No real CLI is invoked — `subprocess.run` is monkeypatched on the module
+under test so the tests are hermetic, mirroring test_cross_family_reviewer.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import textwrap
+
+import pytest
+
+from claude_dispatcher import verifier as vf
+
+
+TASK = {
+    "key": "VG-99",
+    "summary": "Build the frobnicator",
+    "type": "Task",
+    "labels": ["risk:medium", "verifier"],
+    "description": "Acceptance:\n- frobnicate the spline\n- add tests",
+}
+
+DIFF = "--- a/x.py\n+++ b/x.py\n@@ -1,3 +1,3 @@\n-old\n+new frob logic\n"
+
+SUMMARY = "## Status\nDone — frobnicator implemented and tested."
+
+
+# --- prompt building ---------------------------------------------------------
+
+
+def test_build_verifier_prompt_includes_all_inputs():
+    p = vf.build_verifier_prompt(TASK, DIFF, SUMMARY)
+    assert "VG-99" in p
+    assert "Build the frobnicator" in p
+    assert "Task" in p
+    assert "risk:medium, verifier" in p
+    assert "frobnicate the spline" in p
+    assert "## Status\nDone — frobnicator implemented and tested." in p
+    assert "+new frob logic" in p
+    # Comes from the packaged verifier.md template.
+    assert "independent verifier" in p
+    assert "Verdict: VERIFIED" in p
+
+
+def test_build_verifier_prompt_missing_fields_fall_back():
+    p = vf.build_verifier_prompt({}, "d", "s")
+    assert "unknown" in p  # key and type degrade to "unknown"
+
+
+def test_build_verifier_prompt_truncates_oversized_diff():
+    big_diff = "\n".join(f"+line {i}" for i in range(100))
+    p = vf.build_verifier_prompt(TASK, big_diff, SUMMARY, max_diff_lines=10)
+    assert "... [diff truncated at 10 lines of 100 total] ..." in p
+    assert "+line 9" in p
+    assert "+line 99" not in p
+
+
+def test_build_verifier_prompt_small_diff_not_truncated():
+    small_diff = "\n".join(f"+line {i}" for i in range(5))
+    p = vf.build_verifier_prompt(TASK, small_diff, SUMMARY, max_diff_lines=10)
+    assert "diff truncated" not in p
+    assert "+line 4" in p
+
+
+# --- parse_verdict: VERIFIED paths -------------------------------------------
+
+
+def test_parse_clean_fenced_verified():
+    raw = textwrap.dedent("""\
+        ```
+        Verdict: VERIFIED
+        ```
+    """)
+    v = vf.parse_verdict(raw)
+    assert v.verdict == vf.VerdictKind.VERIFIED
+    assert v.reason is None
+    assert v.gaps == []
+
+
+def test_parse_verified_with_surrounding_prose():
+    raw = textwrap.dedent("""\
+        I walked the acceptance list against the diff. All three deliverables
+        are present, the tests exist, and nothing is stubbed or deferred.
+
+        ```
+        Verdict: VERIFIED
+        ```
+    """)
+    v = vf.parse_verdict(raw)
+    assert v.verdict == vf.VerdictKind.VERIFIED
+    assert v.reason is None
+    assert v.gaps == []
+
+
+# --- parse_verdict: INCOMPLETE with gaps --------------------------------------
+
+
+def test_parse_incomplete_with_gaps_header_and_locations():
+    raw = textwrap.dedent("""\
+        The summary claims tests were added, but the diff contains none.
+
+        ```
+        Verdict: INCOMPLETE
+        Gaps:
+        1. src/pkg/frob.py:42 — frobnicate() raises NotImplementedError
+        2. tests/test_frob.py:? — summary claims tests; none in the diff
+        ```
+    """)
+    v = vf.parse_verdict(raw)
+    assert v.verdict == vf.VerdictKind.INCOMPLETE
+    assert v.reason is None
+    assert len(v.gaps) == 2
+    assert v.gaps[0].index == 1
+    assert v.gaps[0].location == "src/pkg/frob.py:42"
+    assert v.gaps[0].description == "frobnicate() raises NotImplementedError"
+    assert v.gaps[1].index == 2
+    assert v.gaps[1].location == "tests/test_frob.py:?"
+    assert "none in the diff" in v.gaps[1].description
+
+
+def test_parse_incomplete_gap_without_location():
+    raw = textwrap.dedent("""\
+        ```
+        Verdict: INCOMPLETE
+        Gaps:
+        1. a.py:3 — stubbed handler
+        2. The summary claims coverage that the diff cannot demonstrate
+        ```
+    """)
+    v = vf.parse_verdict(raw)
+    assert v.verdict == vf.VerdictKind.INCOMPLETE
+    assert v.reason is None
+    assert len(v.gaps) == 2
+    assert v.gaps[1].location is None
+    assert (
+        v.gaps[1].description
+        == "The summary claims coverage that the diff cannot demonstrate"
+    )
+
+
+def test_parse_instruction_echo_never_matches():
+    # The prompt's own contract line uses `|` between the two tokens — the
+    # EOL-anchored regex must not read it as a verdict.
+    raw = textwrap.dedent("""\
+        The contract requires me to end with `Verdict: VERIFIED | INCOMPLETE`
+        as a fenced block. My analysis found a stub, so:
+
+        ```
+        Verdict: INCOMPLETE
+        Gaps:
+        1. x.py:1 — stub where real logic was required
+        ```
+    """)
+    v = vf.parse_verdict(raw)
+    assert v.verdict == vf.VerdictKind.INCOMPLETE
+    # The echo must not register as a VERIFIED line → not CONFLICTING.
+    assert v.reason is None
+    assert len(v.gaps) == 1
+
+
+def test_parse_instruction_echo_alone_is_malformed():
+    # Only the echo, no real verdict line — nothing must match.
+    v = vf.parse_verdict("Verdict: VERIFIED | INCOMPLETE")
+    assert v.verdict == vf.VerdictKind.INCOMPLETE
+    assert v.reason == vf.REASON_MALFORMED
+
+
+# --- parse_verdict: malformed / truncated / conflicting -----------------------
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "",
+        "   \n\t  \n",
+        "lorem ipsum dolor sit amet, no verdict anywhere",
+    ],
+    ids=["empty", "whitespace", "garbage"],
+)
+def test_parse_malformed_output(raw):
+    v = vf.parse_verdict(raw)
+    assert v.verdict == vf.VerdictKind.INCOMPLETE
+    assert v.reason == vf.REASON_MALFORMED
+    assert v.gaps == []
+
+
+def test_parse_truncated_mid_token_is_malformed():
+    raw = "Analysis complete, my verdict follows:\n```\nVerdict: VERIF"
+    v = vf.parse_verdict(raw)
+    assert v.verdict == vf.VerdictKind.INCOMPLETE
+    assert v.reason == vf.REASON_MALFORMED
+
+
+def test_parse_truncated_gap_list_keeps_parsed_gaps():
+    # Stream cut off mid-second-item: item 2 has its number but no text.
+    raw = "```\nVerdict: INCOMPLETE\nGaps:\n1. a.py:7 — first gap parsed fully\n2."
+    v = vf.parse_verdict(raw)
+    assert v.verdict == vf.VerdictKind.INCOMPLETE
+    assert v.reason is None
+    assert len(v.gaps) == 1
+    assert v.gaps[0].location == "a.py:7"
+    assert v.gaps[0].description == "first gap parsed fully"
+
+
+def test_parse_conflicting_verdict_lines():
+    raw = textwrap.dedent("""\
+        ```
+        Verdict: VERIFIED
+        ```
+
+        Wait — on reflection, the tests are missing:
+
+        ```
+        Verdict: INCOMPLETE
+        Gaps:
+        1. tests/test_frob.py:? — claimed tests absent from diff
+        ```
+    """)
+    v = vf.parse_verdict(raw)
+    assert v.verdict == vf.VerdictKind.INCOMPLETE
+    assert v.reason == vf.REASON_CONFLICTING
+    # Gaps after the last INCOMPLETE line are still surfaced.
+    assert len(v.gaps) == 1
+    assert v.gaps[0].location == "tests/test_frob.py:?"
+
+
+def test_parse_incomplete_without_parseable_gaps():
+    raw = textwrap.dedent("""\
+        ```
+        Verdict: INCOMPLETE
+        ```
+    """)
+    v = vf.parse_verdict(raw)
+    assert v.verdict == vf.VerdictKind.INCOMPLETE
+    assert v.reason == vf.REASON_GAPS_UNPARSED
+    assert v.gaps == []
+
+
+def test_parse_tolerates_ansi_escapes():
+    raw = "\x1b[32m```\x1b[0m\n\x1b[1mVerdict: VERIFIED\x1b[0m\n```\n"
+    v = vf.parse_verdict(raw)
+    assert v.verdict == vf.VerdictKind.VERIFIED
+    assert v.reason is None
+
+
+def test_parse_tolerates_bold_and_bullet_verdict_line():
+    v = vf.parse_verdict("- **Verdict: INCOMPLETE**\nGaps:\n1. x.py:1 — gap")
+    assert v.verdict == vf.VerdictKind.INCOMPLETE
+    assert v.reason is None
+    assert len(v.gaps) == 1
+
+
+# --- run_verifier: CLI adapter -------------------------------------------------
+
+
+_VERIFIED_MESSAGE = "All acceptance items present.\n\n```\nVerdict: VERIFIED\n```\n"
+
+
+def _claude_envelope(message: str) -> str:
+    """A realistic `claude --print --output-format json` envelope."""
+    return json.dumps(
+        {
+            "type": "result",
+            "subtype": "success",
+            "result": message,
+            "total_cost_usd": 0.42,
+            "duration_ms": 61234,
+            "duration_api_ms": 59000,
+            "num_turns": 3,
+            "session_id": "sess-1",
+            "usage": {
+                "input_tokens": 1200,
+                "output_tokens": 80,
+                "cache_read_input_tokens": 500,
+                "cache_creation_input_tokens": 100,
+            },
+            "modelUsage": {"claude-opus-4-6": {"inputTokens": 1200}},
+        }
+    )
+
+
+def test_run_verifier_invokes_cli_and_parses_envelope(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = list(cmd)
+        captured["input"] = kwargs.get("input")
+        captured["timeout"] = kwargs.get("timeout")
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout=_claude_envelope(_VERIFIED_MESSAGE),
+            stderr="",
+        )
+
+    monkeypatch.setattr(vf.subprocess, "run", fake_run)
+    res = vf.run_verifier(task=TASK, diff=DIFF, summary_text=SUMMARY)
+
+    # Exact flag set, same as the Tasker spawn / ClaudeReviewer.
+    assert captured["cmd"] == [
+        "claude", "--print",
+        "--output-format", "json",
+        "--permission-mode", "bypassPermissions",
+        "--allow-dangerously-skip-permissions",
+    ]
+    # Prompt arrives on stdin, not argv.
+    assert "VG-99" in captured["input"]
+    assert "+new frob logic" in captured["input"]
+    assert not any("VG-99" in a for a in captured["cmd"])
+    assert captured["timeout"] == vf.DEFAULT_VERIFIER_TIMEOUT_SECONDS
+
+    # JSON envelope unwrapped → verdict parsed from the embedded message.
+    assert res.verdict.verdict == vf.VerdictKind.VERIFIED
+    assert res.verdict.reason is None
+    assert res.error is None
+    assert res.duration_seconds is not None and res.duration_seconds >= 0
+    # Usage fields land on result.usage.
+    assert res.usage.cost_usd == 0.42
+    assert res.usage.input_tokens == 1200
+    assert res.usage.output_tokens == 80
+    assert res.usage.cache_read_input_tokens == 500
+    assert res.usage.cache_creation_input_tokens == 100
+    assert res.usage.duration_ms == 61234
+    assert res.usage.num_turns == 3
+    assert res.usage.model == "claude-opus-4-6"
+
+
+def test_run_verifier_non_json_stdout_falls_back_to_raw(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout=_VERIFIED_MESSAGE, stderr="",
+        )
+
+    monkeypatch.setattr(vf.subprocess, "run", fake_run)
+    res = vf.run_verifier(task=TASK, diff=DIFF, summary_text=SUMMARY)
+    assert res.verdict.verdict == vf.VerdictKind.VERIFIED
+    assert res.error is None
+    # No envelope → usage all-None.
+    assert res.usage.cost_usd is None
+    assert res.usage.input_tokens is None
+    assert res.usage.output_tokens is None
+    assert res.usage.model is None
+
+
+def test_run_verifier_cli_missing_is_spawn_failed(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        raise FileNotFoundError("no such binary: claude")
+
+    monkeypatch.setattr(vf.subprocess, "run", fake_run)
+    res = vf.run_verifier(task=TASK, diff=DIFF, summary_text=SUMMARY)
+    assert res.verdict.verdict == vf.VerdictKind.INCOMPLETE
+    assert res.verdict.reason == vf.REASON_SPAWN_FAILED
+    assert "not found" in (res.error or "")
+    assert res.duration_seconds is not None and res.duration_seconds >= 0
+
+
+def test_run_verifier_timeout_is_spawn_failed(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="claude", timeout=5)
+
+    monkeypatch.setattr(vf.subprocess, "run", fake_run)
+    res = vf.run_verifier(
+        task=TASK, diff=DIFF, summary_text=SUMMARY, timeout_seconds=5,
+    )
+    assert res.verdict.verdict == vf.VerdictKind.INCOMPLETE
+    assert res.verdict.reason == vf.REASON_SPAWN_FAILED
+    assert "timed out after 5s" in (res.error or "")
+
+
+def test_run_verifier_nonzero_exit_is_spawn_failed(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=1, stdout="", stderr="boom: quota exceeded",
+        )
+
+    monkeypatch.setattr(vf.subprocess, "run", fake_run)
+    res = vf.run_verifier(task=TASK, diff=DIFF, summary_text=SUMMARY)
+    assert res.verdict.verdict == vf.VerdictKind.INCOMPLETE
+    assert res.verdict.reason == vf.REASON_SPAWN_FAILED
+    assert "exit=1" in (res.error or "")
+    assert "quota exceeded" in (res.error or "")
+
+
+def test_run_verifier_unexpected_exception_is_spawn_failed(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        raise RuntimeError("kernel weirdness")
+
+    monkeypatch.setattr(vf.subprocess, "run", fake_run)
+    res = vf.run_verifier(task=TASK, diff=DIFF, summary_text=SUMMARY)
+    assert res.verdict.verdict == vf.VerdictKind.INCOMPLETE
+    assert res.verdict.reason == vf.REASON_SPAWN_FAILED
+    assert "kernel weirdness" in (res.error or "")
+
+
+def test_run_verifier_respects_claude_bin_override(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = list(cmd)
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout=_VERIFIED_MESSAGE, stderr="",
+        )
+
+    monkeypatch.setattr(vf.subprocess, "run", fake_run)
+    vf.run_verifier(
+        task=TASK, diff=DIFF, summary_text=SUMMARY, claude_bin="/opt/claude",
+    )
+    assert captured["cmd"][0] == "/opt/claude"
+
+
+# --- serialization -------------------------------------------------------------
+
+
+def test_gap_to_dict_roundtrip():
+    g = vf.Gap(index=2, location="x.py:9", description="d")
+    assert g.to_dict() == {"index": 2, "location": "x.py:9", "description": "d"}
+    # Location-less gap keeps None on the wire.
+    assert vf.Gap(index=1, location=None, description="d").to_dict() == {
+        "index": 1, "location": None, "description": "d",
+    }
+
+
+def test_verifier_verdict_to_dict_roundtrip():
+    v = vf.VerifierVerdict(
+        verdict=vf.VerdictKind.INCOMPLETE,
+        gaps=[vf.Gap(index=1, location="a.py:1", description="d")],
+        reason=None,
+        raw_output="huge blob that must stay off the wire",
+    )
+    d = v.to_dict()
+    assert d == {
+        "verdict": "INCOMPLETE",
+        "gaps": [{"index": 1, "location": "a.py:1", "description": "d"}],
+        "reason": None,
+    }
+
+
+def test_verifier_result_to_dict_roundtrip():
+    res = vf.VerifierResult(
+        verdict=vf.VerifierVerdict(
+            verdict=vf.VerdictKind.INCOMPLETE, reason=vf.REASON_SPAWN_FAILED,
+        ),
+        duration_seconds=1.5,
+        error="cli not found: claude",
+    )
+    d = res.to_dict()
+    assert d["verdict"]["verdict"] == "INCOMPLETE"
+    assert d["verdict"]["reason"] == vf.REASON_SPAWN_FAILED
+    assert d["duration_seconds"] == 1.5
+    assert d["error"] == "cli not found: claude"
+    # Default usage serializes as all-None fields.
+    assert d["usage"]["cost_usd"] is None
+    assert d["usage"]["input_tokens"] is None
