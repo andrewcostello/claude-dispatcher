@@ -583,6 +583,159 @@ def test_panel_iterate_short_circuits_when_tasker_produces_no_commits(
     assert codex.call_count == 1
 
 
+class _BlockThenUnavailableReviewer(cfr.Reviewer):
+    """Blocks (CHANGES_REQUESTED) on the first panel run — so the
+    orchestrator iterates — then its CLI vanishes on the re-run, modelling a
+    reviewer that becomes unavailable *partway through* the iterate loop.
+    """
+
+    def __init__(self, family: str, block_output: str) -> None:
+        super().__init__()
+        self.family = family
+        self._block_output = block_output
+        self.call_count = 0
+
+    def _invoke_cli(self, prompt: str) -> str:
+        self.call_count += 1
+        if self.call_count == 1:
+            return self._block_output
+        raise FileNotFoundError("codex vanished mid-iteration")
+
+
+def test_panel_iterate_exhaustion_attaches_findings_to_summary(
+    repo: Path, monkeypatch,
+) -> None:
+    """Scenario 2: the iterate budget is exhausted while the panel keeps
+    blocking → task Blocked AND the blocking findings are appended to
+    summary.md, so the human triaging the Blocked row sees exactly what the
+    panel flagged (not just an opaque blocked_reason in the YAML).
+    """
+    _seed_yaml(repo, _CRITICAL_TASK_YAML)
+    _patch_spawn(monkeypatch)
+    revs = [
+        _StubReviewer("claude", _APPROVE_OUTPUT),
+        _StubReviewer("gemini", _APPROVE_OUTPUT),
+        # Codex blocks on every round, so iterating never clears it.
+        _StubReviewer("codex", _CHANGES_REQUESTED_OUTPUT),
+    ]
+    orchestrator.set_panel_reviewers(revs)
+
+    rc = orchestrator.execute(_args(
+        repo, key="PANEL-A", panel_mode="auto",
+        cross_family_panel_iterate=1,
+    ))
+    assert rc == 1
+    doc = yaml_io.load(repo / "tasks.yaml")
+    row = next(t for t in doc["tasks"] if t["key"] == "PANEL-A")
+
+    assert row["status"] == "Blocked"
+    assert row["panel_consensus"] == "block"
+    assert row.get("panel_iterations_used") == 1
+    assert "after 1 iterate attempt(s)" in row.get("blocked_reason", "")
+
+    # The crux of this scenario: findings reach summary.md after exhaustion.
+    summary_text = Path(row["summary_path"]).read_text(encoding="utf-8")
+    assert "## Cross-family panel" in summary_text
+    assert "HIGH" in summary_text
+    assert "service.go:42" in summary_text
+
+
+def test_panel_iterate_reviewer_unavailable_mid_iteration_blocks(
+    repo: Path, monkeypatch,
+) -> None:
+    """Scenario 3: a reviewer blocks on round 1 (triggering the iterate),
+    then goes UNAVAILABLE on the post-iterate re-run. The panel can no
+    longer prove 3/3 agreement → consensus "incomplete" → task Blocked.
+    The Tasker's committed work is preserved (never lost to a missing CLI).
+    """
+    _seed_yaml(repo, _CRITICAL_TASK_YAML)
+    _patch_spawn(monkeypatch)
+    codex = _BlockThenUnavailableReviewer("codex", _CHANGES_REQUESTED_OUTPUT)
+    revs = [
+        _StubReviewer("claude", _APPROVE_OUTPUT),
+        _StubReviewer("gemini", _APPROVE_OUTPUT),
+        codex,
+    ]
+    orchestrator.set_panel_reviewers(revs)
+
+    rc = orchestrator.execute(_args(
+        repo, key="PANEL-A", panel_mode="auto",
+        cross_family_panel_iterate=1,
+    ))
+    assert rc == 1
+    doc = yaml_io.load(repo / "tasks.yaml")
+    row = next(t for t in doc["tasks"] if t["key"] == "PANEL-A")
+
+    assert row["status"] == "Blocked"
+    # Round 1 blocked → one iterate fired → round 2 found codex unavailable.
+    assert row.get("panel_iterations_used") == 1
+    # The FINAL panel verdict (stamped on the row) is from the re-run, where
+    # a reviewer was UNAVAILABLE → incomplete, not a plain block.
+    assert row["panel_consensus"] == "incomplete"
+    assert row["panel_verdict_codex"] == "UNAVAILABLE"
+    assert "vanished" in (row.get("panel_error_codex") or "")
+    # Codex ran exactly twice: the initial block + the re-run where it died.
+    assert codex.call_count == 2
+
+
+def test_panel_iterate_findings_text_reaches_respawn_prompt(
+    repo: Path, monkeypatch,
+) -> None:
+    """Scenario 4: the blocking findings must be rendered into the
+    corrective prompt handed to the re-spawned Tasker — otherwise the
+    Tasker has no idea what to fix. Capture every spawn prompt and assert
+    the second one (the iterate spawn) carries the finding's location,
+    problem, and suggested fix.
+    """
+    _seed_yaml(repo, _CRITICAL_TASK_YAML)
+    prompts: list[str] = []
+
+    def fake(claude_bin, cwd, env, prompt, extra_args=None, timeout_seconds=3600):
+        prompts.append(prompt)
+        proc = subprocess.run(
+            [sys.executable, str(FAKE_CLAUDE)],
+            input=prompt, capture_output=True, text=True,
+            cwd=str(cwd), env=env, timeout=timeout_seconds,
+        )
+        return spawn_mod.SpawnResult(
+            exit_code=proc.returncode,
+            summary_path=Path(env["SUMMARY_PATH"]),
+            stdout=proc.stdout, stderr=proc.stderr,
+        )
+
+    monkeypatch.setattr(spawn_mod, "spawn_claude", fake)
+
+    revs = [
+        _SequencedStubReviewer("claude", [_APPROVE_OUTPUT, _APPROVE_OUTPUT]),
+        _SequencedStubReviewer("gemini", [_APPROVE_OUTPUT, _APPROVE_OUTPUT]),
+        # Block on round 1, approve on round 2 so the run lands Done and we
+        # get exactly one iterate spawn to inspect.
+        _SequencedStubReviewer("codex", [_CHANGES_REQUESTED_OUTPUT, _APPROVE_OUTPUT]),
+    ]
+    orchestrator.set_panel_reviewers(revs)
+
+    rc = orchestrator.execute(_args(
+        repo, key="PANEL-A", panel_mode="auto",
+        cross_family_panel_iterate=1,
+    ))
+    assert rc == 0, "block → iterate → approve should land Done"
+
+    # Two spawns: the initial Tasker run + the corrective iterate spawn.
+    assert len(prompts) == 2
+    initial_prompt, iterate_prompt = prompts[0], prompts[1]
+
+    # The corrective prompt frames the panel verdict...
+    assert "cross-family review panel" in iterate_prompt
+    assert "blocking finding" in iterate_prompt.lower()
+    # ...and carries the ACTUAL finding location, problem, and fix text.
+    assert "apps/wallet/service.go:42" in iterate_prompt
+    assert "SELECT FOR UPDATE" in iterate_prompt
+    assert "row-level lock" in iterate_prompt
+    # Sanity: the initial spawn could not have carried the findings — they
+    # didn't exist until the first panel ran.
+    assert "apps/wallet/service.go:42" not in initial_prompt
+
+
 def test_panel_runner_exception_marks_blocked_not_crash(repo: Path, monkeypatch) -> None:
     """If the panel framework itself raises (not a reviewer dissent), the
     Tasker's work must be preserved and the task Blocked with a clear
