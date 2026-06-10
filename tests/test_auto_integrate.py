@@ -201,3 +201,112 @@ def test_integrate_result_records_merge_sha(repo: Path):
     assert result.status == "integrated"
     head = _git(["rev-parse", "HEAD"], cwd=repo).strip()
     assert head.startswith(result.merge_sha)
+
+
+# --- codegen-binary discovery (_discover_bin) ------------------------------
+
+
+def test_discover_bin_env_override_wins(monkeypatch, tmp_path: Path):
+    """When the env var is set, it wins outright — PATH is never consulted."""
+    monkeypatch.setenv("DISPATCHER_SQLC_BIN", "/custom/path/to/sqlc")
+    # Even if a `sqlc` happens to be on PATH, the override takes precedence.
+    monkeypatch.setattr(ai.shutil, "which",
+                        lambda name: "/usr/bin/sqlc")
+    assert ai._discover_bin("sqlc", "DISPATCHER_SQLC_BIN") == "/custom/path/to/sqlc"
+
+
+def test_discover_bin_falls_back_to_which(monkeypatch):
+    """With no env override, discovery falls back to shutil.which()."""
+    monkeypatch.delenv("DISPATCHER_BUF_BIN", raising=False)
+    monkeypatch.setattr(ai.shutil, "which",
+                        lambda name: "/usr/local/bin/buf" if name == "buf" else None)
+    assert ai._discover_bin("buf", "DISPATCHER_BUF_BIN") == "/usr/local/bin/buf"
+
+
+def test_discover_bin_empty_env_is_ignored(monkeypatch):
+    """An empty env var is treated as unset — fall through to which()."""
+    monkeypatch.setenv("DISPATCHER_SQLC_BIN", "")
+    monkeypatch.setattr(ai.shutil, "which", lambda name: "/usr/bin/sqlc")
+    assert ai._discover_bin("sqlc", "DISPATCHER_SQLC_BIN") == "/usr/bin/sqlc"
+
+
+def test_discover_bin_clear_error_when_absent(monkeypatch):
+    """Neither env nor PATH → RuntimeError naming the binary AND both
+    discovery mechanisms. No silent fallback."""
+    monkeypatch.delenv("DISPATCHER_SQLC_BIN", raising=False)
+    monkeypatch.setattr(ai.shutil, "which", lambda name: None)
+    with pytest.raises(RuntimeError) as exc:
+        ai._discover_bin("sqlc", "DISPATCHER_SQLC_BIN")
+    msg = str(exc.value)
+    assert "sqlc" in msg                      # names the missing binary
+    assert "DISPATCHER_SQLC_BIN" in msg       # names the env mechanism
+    assert "which" in msg or "PATH" in msg    # names the PATH mechanism
+
+
+def test_regen_skipped_when_no_sql_files_does_not_discover(monkeypatch, repo: Path):
+    """A clean merge that touches no store/queries/*.sql files must never
+    trigger binary discovery — so a missing sqlc binary is irrelevant."""
+    # which() returns None — if discovery were attempted it would raise.
+    monkeypatch.delenv("DISPATCHER_SQLC_BIN", raising=False)
+    monkeypatch.delenv("DISPATCHER_BUF_BIN", raising=False)
+    monkeypatch.setattr(ai.shutil, "which", lambda name: None)
+    _make_feat_branch(repo, "feat/no-codegen", {"plain.txt": "hi\n"}, "plain")
+    _, log = _logs()
+    result = ai.integrate(
+        repo_root=repo, yaml_path=repo / "bay-session-tasks.yaml",
+        base_branch="main", feat_branch="feat/no-codegen",
+        task_key="TEST-8", log=log,
+    )
+    assert result.status == "integrated", result.detail
+    assert result.sqlc_regen == []
+    assert result.buf_regen == []
+
+
+def test_missing_binary_during_required_regen_reverts_merge(monkeypatch, repo: Path):
+    """If the merge brings a new .sql query but no sqlc binary can be found,
+    the merge is reverted (base does not advance) and a clear codegen-fail
+    reason is returned — no silent skip, no half-applied merge."""
+    monkeypatch.delenv("DISPATCHER_SQLC_BIN", raising=False)
+    monkeypatch.setattr(ai.shutil, "which", lambda name: None)
+    _make_feat_branch(repo, "feat/needs-sqlc", {
+        "svc/sqlc.yaml": "version: '2'\n",
+        "svc/store/queries/users.sql": "-- name: GetUser :one\nSELECT 1;\n",
+    }, "add sqlc query")
+    head_before = _git(["rev-parse", "main"], cwd=repo).strip()
+    _, log = _logs()
+    result = ai.integrate(
+        repo_root=repo, yaml_path=repo / "bay-session-tasks.yaml",
+        base_branch="main", feat_branch="feat/needs-sqlc",
+        task_key="TEST-9", log=log,
+    )
+    assert result.status == "skipped-codegen-fail"
+    assert "sqlc" in result.detail
+    assert "DISPATCHER_SQLC_BIN" in result.detail
+    # The merge was reverted — main did not advance.
+    head_after = _git(["rev-parse", "main"], cwd=repo).strip()
+    assert head_after == head_before
+
+
+def test_explicit_bin_arg_bypasses_discovery(monkeypatch, repo: Path):
+    """An explicit sqlc_bin argument is used verbatim — discovery (env/PATH)
+    is never consulted. Here a fake `true`-like binary lets regen 'succeed'."""
+    monkeypatch.setattr(ai.shutil, "which",
+                        lambda name: (_ for _ in ()).throw(
+                            AssertionError("discovery must not run")))
+    # A no-op binary that exits 0 regardless of args. Kept OUTSIDE the repo
+    # so `git add -A` on the feat branch doesn't track it.
+    fake_bin = repo.parent / "fake-sqlc"
+    fake_bin.write_text("#!/bin/sh\nexit 0\n")
+    fake_bin.chmod(0o755)
+    _make_feat_branch(repo, "feat/explicit-bin", {
+        "svc/sqlc.yaml": "version: '2'\n",
+        "svc/store/queries/users.sql": "-- name: GetUser :one\nSELECT 1;\n",
+    }, "add sqlc query")
+    _, log = _logs()
+    result = ai.integrate(
+        repo_root=repo, yaml_path=repo / "bay-session-tasks.yaml",
+        base_branch="main", feat_branch="feat/explicit-bin",
+        task_key="TEST-10", log=log, sqlc_bin=str(fake_bin),
+    )
+    assert result.status == "integrated", result.detail
+    assert result.sqlc_regen == ["svc"]
