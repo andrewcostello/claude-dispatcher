@@ -36,6 +36,7 @@ from . import journal as journal_mod
 from . import notify as notify_mod
 from . import plan as plan_mod
 from . import pr as pr_mod
+from . import push_verify as pv_mod
 from . import spawn as spawn_mod
 from . import summary as summary_mod
 from . import worktree as wt_mod
@@ -564,6 +565,32 @@ def _run_task(
                 f"{integrate_result.detail[:300]}"
             )
 
+    # Post-Done push/PR verification (INT-3). The standard PR-raising workflow
+    # expects the Tasker to push its feat branch and (when PRs are configured)
+    # open a PR BEFORE reporting Done. DISP-9 reported Done with commits but
+    # never pushed — no PR was raised and integration found it by accident.
+    # Mirror the commit-retry safety net: verify push/PR state, retry once with
+    # a push/PR-only prompt, and if the branch is STILL unpushed (or the PR
+    # still missing) flag needs_push on the row + journal it so the supervisor
+    # sees it rather than discovering it by accident. Out of scope:
+    #   - auto-integrate runs merge direct-to-base and intentionally never push
+    #     (auto_integrate.py), so expect_pr == not auto_integrate.
+    #   - supervised mode that just raised the PR this session (final_url set):
+    #     we already hold the URL, so there is nothing to verify.
+    # The branch push is always verified; the PR half is required only when the
+    # Tasker did NOT honestly declare "Not raised: <reason>" — a deliberately
+    # PR-less Done (e.g. docs landed direct) must still push, but must not be
+    # flagged for a missing PR. A SILENT omission (no PR, no reason) is exactly
+    # the DISP-9 failure mode and still trips the PR check.
+    needs_push = False
+    if (final_status == plan_mod.DONE
+            and not cfg.auto_integrate
+            and final_url is None):
+        expect_pr = not s.pr_not_raised_reason
+        needs_push = _verify_push_and_maybe_retry(
+            cfg, snap, wt, summary_path, env, log_path, expect_pr=expect_pr,
+        )
+
     def _apply(row):
         row["status"] = final_status
         row["completed_at"] = _now_iso()
@@ -581,6 +608,11 @@ def _run_task(
             row["pr_not_raised_reason"] = s.pr_not_raised_reason
         if final_blocked_reason:
             row["blocked_reason"] = final_blocked_reason
+        # Advisory flag: Done landed but the branch is still unpushed (or its PR
+        # is missing) after one corrective re-spawn. Status stays Done — this is
+        # a surfacing signal for the supervisor/integrator, not a block.
+        if needs_push:
+            row["needs_push"] = True
         if s.prepared_pr_title:
             row["prepared_pr_title"] = s.prepared_pr_title
         if s.prepared_pr_branch:
@@ -649,6 +681,7 @@ def _run_task(
             "panel_consensus": panel_verdict.consensus if panel_verdict else None,
             "auto_integrate_status": integrate_result.status
                 if integrate_result else None,
+            "needs_push": needs_push,
         }, task_key=snap.key)
     else:
         _emit_event(cfg, journal_mod.EventType.task_blocked, {
@@ -1104,6 +1137,42 @@ Task context (for reference, do NOT redo):
 """
 
 
+_PUSH_RETRY_PROMPT_PREFIX = """\
+Your previous run on this task reported `Status: Done` and committed work on
+this branch, but the dispatcher could not confirm the work reached the remote:
+
+  {detail}
+
+This is a recoverable mistake — the commits are right there, they just need to
+be pushed (and a PR opened, if this run raises PRs). Do ONLY these steps. Do
+NOT redo the implementation, the review, or the analysis:
+
+1. Confirm your commits are present:
+   `git log --oneline {base_branch}..HEAD`.
+2. Push the branch to the remote, setting upstream:
+   `git push -u origin {branch}`.
+   (If the push is rejected because the remote moved, rebase onto the latest
+   `origin/{base_branch}` first, then push — do NOT force-push over others' work.)
+{pr_step}{final_step}. Update the `## PR` section of the summary file at $SUMMARY_PATH so it
+   reflects reality (the PR URL if one exists, otherwise an honest
+   `Not raised: <reason>`). Status stays `Done`.
+
+The dispatcher will re-check the push/PR state after this run. If the branch is
+still unpushed, the task stays Done but its row is flagged `needs_push: true`
+for a human to finish the push.
+
+Task context (for reference, do NOT redo):
+"""
+
+
+_PUSH_RETRY_PR_STEP = """\
+3. Ensure a pull request exists for this branch. Check first with
+   `gh pr list --head {branch} --state open`; if none exists, open one with
+   `gh pr create --base {base_branch} --head {branch}` (fill in a title/body
+   consistent with the summary file).
+"""
+
+
 def _retry_for_commit(cfg: RunConfig, snap: TaskSnapshot, wt: wt_mod.Worktree,
                       repo_root: Path, summary_path: Path, env: dict,
                       log_path: Path) -> str | None:
@@ -1154,6 +1223,164 @@ def _retry_for_commit(cfg: RunConfig, snap: TaskSnapshot, wt: wt_mod.Worktree,
             retry_base_sha_before, log_path, snap.key):
         return None
     return "retried_ok"
+
+
+def _verify_push_and_maybe_retry(
+    cfg: RunConfig,
+    snap: TaskSnapshot,
+    wt: wt_mod.Worktree,
+    summary_path: Path,
+    env: dict,
+    log_path: Path,
+    *,
+    expect_pr: bool,
+) -> bool:
+    """Verify the Done task's branch is pushed (and a PR exists when expected).
+
+    Mirrors the commit-retry safety net: a clean push (and PR) is a no-op; a
+    missing push/PR triggers ONE corrective push/PR-only re-spawn, after which
+    the state is re-checked. Returns True iff the work is STILL unpushed (or the
+    PR still missing) after the retry — the caller flags ``needs_push`` on the
+    row. Returns False for a clean/recovered push, for a skipped check (no
+    remote), and for an inconclusive check (a git read error): an inability to
+    confirm must never be reported as a confirmed-unpushed branch.
+
+    ``expect_pr`` controls only the PR half — the branch push is always
+    verified. The caller passes False for a Done that honestly declared its PR
+    was not raised, so a deliberately PR-less Done isn't flagged for a missing
+    PR (it must still push, though).
+
+    Every outcome emits one ``push_verify`` journal event so the decision is
+    reconstructable from the journal alone — including the no-remote skip.
+    """
+    res = pv_mod.verify(
+        repo_root=wt.path,
+        branch=wt.branch,
+        expect_pr=expect_pr,
+        gh_bin=cfg.gh_bin,
+        log=lambda m: _log(log_path, m),
+    )
+
+    if res.status == "skipped-no-remote":
+        _log(log_path, f"  {snap.key} push-verify skipped: {res.detail}")
+        _emit_event(cfg, journal_mod.EventType.push_verify, {
+            "expect_pr": expect_pr, "outcome": "skipped-no-remote",
+            "reason": res.detail, "retry_attempted": False,
+        }, task_key=snap.key)
+        return False
+    if res.status == "error":
+        _log(log_path, f"  {snap.key} push-verify inconclusive: {res.detail}")
+        _emit_event(cfg, journal_mod.EventType.push_verify, {
+            "expect_pr": expect_pr, "outcome": "error",
+            "reason": res.detail, "retry_attempted": False,
+        }, task_key=snap.key)
+        return False
+    if not res.needs_attention:
+        _emit_event(cfg, journal_mod.EventType.push_verify, {
+            "expect_pr": expect_pr, "outcome": "pushed",
+            "reason": res.detail, "pr_checked": res.pr_checked,
+            "retry_attempted": False,
+        }, task_key=snap.key)
+        return False
+
+    # not-pushed / no-pr → one corrective push/PR-only re-spawn, then re-check.
+    _log(log_path,
+         f"  {snap.key} reported Done but {res.status} ({res.detail}) — "
+         f"retrying with push/PR-only prompt")
+    _retry_for_push(cfg, snap, wt, summary_path, env, log_path,
+                    initial=res, expect_pr=expect_pr)
+    res2 = pv_mod.verify(
+        repo_root=wt.path,
+        branch=wt.branch,
+        expect_pr=expect_pr,
+        gh_bin=cfg.gh_bin,
+        log=lambda m: _log(log_path, m),
+    )
+    if not res2.needs_attention:
+        # Recovered (status "ok") or a now-inconclusive read — either way we do
+        # not flag. "recovered" is the common, intended outcome.
+        outcome = "recovered" if res2.status == "ok" else res2.status
+        _log(log_path, f"  {snap.key} push-verify after retry: {outcome}")
+        _emit_event(cfg, journal_mod.EventType.push_verify, {
+            "expect_pr": expect_pr, "outcome": outcome,
+            "reason": res2.detail, "pr_checked": res2.pr_checked,
+            "retry_attempted": True, "pre_retry_status": res.status,
+        }, task_key=snap.key)
+        return False
+
+    _log(log_path,
+         f"  {snap.key} push-verify still {res2.status} after retry — "
+         f"flagging needs_push")
+    _emit_event(cfg, journal_mod.EventType.push_verify, {
+        "expect_pr": expect_pr, "outcome": "needs_push",
+        "reason": res2.detail, "pr_checked": res2.pr_checked,
+        "retry_attempted": True, "pre_retry_status": res.status,
+        "post_retry_status": res2.status,
+    }, task_key=snap.key)
+    return True
+
+
+def _retry_for_push(
+    cfg: RunConfig,
+    snap: TaskSnapshot,
+    wt: wt_mod.Worktree,
+    summary_path: Path,
+    env: dict,
+    log_path: Path,
+    *,
+    initial: pv_mod.PushVerifyResult,
+    expect_pr: bool,
+) -> bool:
+    """Re-spawn the Tasker with a push/PR-only corrective prompt.
+
+    Returns whether the spawn exited cleanly (exit code 0). The caller re-checks
+    the push state regardless of this return — a clean exit does not guarantee
+    the Tasker actually pushed, and a non-zero exit does not guarantee it
+    didn't.
+    """
+    pr_step = ""
+    final_step = 3
+    if expect_pr:
+        pr_step = _PUSH_RETRY_PR_STEP.format(
+            branch=wt.branch, base_branch=cfg.base_branch,
+        )
+        final_step = 4
+    prompt = _PUSH_RETRY_PROMPT_PREFIX.format(
+        detail=initial.detail,
+        branch=wt.branch,
+        base_branch=cfg.base_branch,
+        pr_step=pr_step,
+        final_step=final_step,
+    )
+    prompt += spawn_mod.build_prompt(
+        task_key=snap.key,
+        task_summary=snap.summary,
+        task_type=snap.type,
+        task_labels=snap.labels,
+        task_description=snap.description,
+        branch=wt.branch,
+        summary_path=summary_path,
+        run_id=cfg.run_id,
+        max_iterations=cfg.max_iterations,
+        financial_paths=cfg.financial_paths,
+        skip_design=cfg.skip_design,
+        skip_security_linter=cfg.skip_security_linter,
+        reviewer_count=cfg.reviewer_count,
+    )
+    retry_extra = list(cfg.claude_extra_args)
+    if snap.model:
+        retry_extra.extend(["--model", snap.model])
+    try:
+        result = spawn_mod.spawn_claude(
+            claude_bin=cfg.claude_bin, cwd=wt.path, env=env, prompt=prompt,
+            extra_args=retry_extra,
+            timeout_seconds=cfg.task_timeout_seconds,
+        )
+    except Exception as e:
+        _log(log_path, f"  {snap.key} push-retry spawn failed: {e}")
+        return False
+    _log(log_path, f"  {snap.key} push-retry exited code={result.exit_code}")
+    return result.exit_code == 0
 
 
 def _resolve_summary(
