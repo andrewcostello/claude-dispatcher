@@ -161,8 +161,9 @@ treats consensus as `incomplete`, which blocks auto-integrate the same as
 a `block` verdict). The Claude invocation reuses the Tasker spawn pattern
 (`--print --output-format json --permission-mode bypassPermissions`);
 the gemini-family reviewer uses `agy --print "" --print-timeout {N}s`
-with the prompt on stdin; Codex uses `exec --full-auto
---output-last-message`. The family identifier stays `gemini` for column
+with the prompt on stdin; Codex uses `exec --sandbox workspace-write
+--output-last-message` with the prompt on stdin (closed after the write
+so `codex exec` can't hang waiting for EOF). The family identifier stays `gemini` for column
 compatibility with historical panel records even though the CLI binary
 is `agy`. Per-reviewer timeout defaults to 10 min
 (`--cross-family-panel-timeout`).
