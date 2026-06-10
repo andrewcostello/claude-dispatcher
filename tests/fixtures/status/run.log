@@ -1,0 +1,4 @@
+2026-06-10T18:24:47+00:00  start run fixture-run mode=supervised max_parallel=1
+2026-06-10T18:24:48+00:00  dispatch SMOKE-A submitted
+2026-06-10T18:25:10+00:00  dispatch SMOKE-B submitted
+2026-06-10T18:25:1
