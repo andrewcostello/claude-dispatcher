@@ -89,6 +89,10 @@ dispatcher --help
 dispatcher --version 2>&1 || dispatcher run --help | head -5
 which dispatcher
 # Expect: /Users/<you>/.local/bin/dispatcher
+
+# Probe the machine and gate on the required tools (claude + git).
+# Writes ~/.config/claude-dispatcher/machine.yaml — see docs/machine-profile.md.
+dispatcher doctor --check
 ```
 
 If `pipx install` fails with "externally-managed-environment", install pipx itself via `brew install pipx` rather than `pip install pipx`.
@@ -250,7 +254,7 @@ Expect:
 When done:
 
 ```bash
-dispatcher report   # quality dashboard for the latest run
+dispatcher report   # quality dashboard + cost rollup for the latest run
 ```
 
 ---
