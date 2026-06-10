@@ -54,13 +54,18 @@ dispatcher run <tasks-yaml> [options]
   --skip-security-linter                    short-circuit Security Linter for Critical
   --reviewer-count {1,2,3}                  override per-tier reviewer count
   --max-iterations N                        default: 2
+  --lock-timeout-seconds SECONDS            default: 30 — tasks-YAML FileLock wait
+  --task-timeout-seconds SECONDS            default: 14400 (4h) — per-task wall-clock budget
   --run-id NAME                             default: ISO 8601 timestamp
   --financial-paths "glob1,glob2"            override default financial-paths list
   --runs-dir PATH                           default: docs/runs
   --worktree-base PATH                      default: /worktrees in containers, else ../worktree-<key>
+  --base-branch NAME                        fork worktrees from this branch (flag > YAML `base_branch` > main)
   --claude-bin NAME                         default: claude
   --claude-extra-args "..."                  extra args passed to `claude` after --print
+  --skip-preflight                          skip the run-start preflight checks — see Run-start preflight
   --gh-bin NAME                             default: gh
+  --auto-integrate                          merge each Done task's branch into --base-branch atomically
   --cross-family-panel {auto,always,never}   default: auto — see Cross-family panel below
   --cross-family-panel-timeout SECONDS      default: 600 — per-reviewer wall-clock budget
   --cross-family-panel-iterate N            default: 0 — on block, re-spawn Tasker with findings up to N times
@@ -77,10 +82,21 @@ dispatcher resume <run-id> [--strategy {continue,mark-blocked}] [--force] [--run
                                             Pick up an interrupted run from its journal —
                                             re-dispatch in-flight tasks, leave terminal
                                             rows untouched. See "Resume".
-dispatcher report <run-id> [--json] [--tasks-yaml PATH] [--runs-dir PATH]
-                                            Quality dashboard for a run: counts, per-task
-                                            gate fields, concerning-tasks highlights, and
-                                            the per-reviewer/per-dimension breakdown.
+dispatcher report [<run-id>] [--json] [--tasks-yaml PATH] [--runs-dir PATH]
+                                            Quality dashboard + per-run cost rollup:
+                                            wall clock, cost/token totals summed over
+                                            every spawn (journal-sourced), per-task and
+                                            per-model usage tables, plus the quality data
+                                            (gate fields, concerning-tasks highlights,
+                                            per-reviewer breakdown). <run-id> defaults to
+                                            the latest run. See "dispatcher report".
+
+dispatcher doctor [--check] [--config-dir PATH]
+                                            Probe the machine (agent CLIs, tools, dispatcher
+                                            install) and write the profile to
+                                            ~/.config/claude-dispatcher/machine.yaml.
+                                            --check exits 1 if claude or git is missing.
+                                            See "Machine profile (dispatcher doctor)".
 
 dispatcher forecast-create <tasks-yaml> [--dry-run]
                                             For each row with no `jira_key`, run `forecast jira
@@ -332,6 +348,84 @@ dispatcher run tasks.yaml --mode unattended \
 
 Or — preferred for a shared dev machine — configure `~/.claude/settings.json` once with an allowed-tools list scoped to your project, and leave `--claude-extra-args` empty. The dispatcher does not pick a default for you because the right answer is project-specific.
 
+### Run-start preflight
+
+Both live modes (`unattended` and `supervised`) run four checks **before the
+run directory, journal, or any worktree exists** — `dry-run` never reaches
+them. Each check encodes a failure mode that silently burned a real dogfood
+run. A failed preflight prints every failure and exits 2, leaving **no
+half-created artifacts**; warnings print to stderr, are replayed into
+`run.log`, and the run proceeds.
+
+| Check | Severity | What it catches |
+|-------|----------|-----------------|
+| `claude` binary on `$PATH` | **Failure** when missing (nothing can spawn). Present-but-version-unreadable is only a warning. | Typo'd `--claude-bin`, bare machine. |
+| Permission-bypass flag in `--claude-extra-args` | **Failure** for both live modes. Accepted mechanisms: `--dangerously-skip-permissions`, or `--permission-mode bypassPermissions` (adjacent pair or `=` form). `--allow-dangerously-skip-permissions` alone does NOT count — it permits a bypass without enabling one. | Every Tasker stalling at its first tool-use prompt and exiting 0 with nothing committed (dogfood run #1). |
+| Tasker role file resolvable from a fresh worktree | **Failure** when the file is neither git-tracked nor resolvable in a throwaway probe worktree cut at the configured `--worktree-base`. Probe *infrastructure* failing is only a warning. | A machine-local symlink convention that doesn't reach fresh worktrees (dogfood run #1). |
+| Dispatcher staleness | **Warning only**, and only when the repo being dispatched IS claude-dispatcher itself: warns when the installed version differs from the repo HEAD's `pyproject.toml` version. | A stale pipx snapshot silently dispatching with old code (dogfood run #2). See [docs/machine-profile.md](docs/machine-profile.md). |
+
+The outcome is journaled as a run-level `preflight` event (checks, warnings)
+right after the journal opens. Because a *failed* preflight exits before the
+journal exists, only passing or skipped preflights ever appear on the chain.
+`dispatcher resume` deliberately does **not** re-run preflight — the original
+verdict (or skip) is already on the chain, and re-checking mid-run could
+refuse to finish half-landed work.
+
+To bypass the checks when one is wrong for your setup:
+
+```bash
+dispatcher run tasks.yaml --mode unattended --skip-preflight
+```
+
+The skip itself is journaled (the `preflight` event carries `skipped: true`,
+and the genesis `run_config.skip_preflight` records the flag), so an auditor
+can always see that the checks were waived rather than passed.
+
+### Machine profile (`dispatcher doctor`)
+
+`dispatcher doctor` probes the machine — agent CLIs (`claude`, `agy`,
+`codex`, `grok`, `opencode`, `qwen`), tools (`git`, `gh`, `docker`, `sqlc`,
+`buf`), and how the dispatcher itself is installed — and writes the profile
+to `$XDG_CONFIG_HOME/claude-dispatcher/machine.yaml` (default
+`~/.config/claude-dispatcher/machine.yaml`):
+
+```
+$ dispatcher doctor
+agents:
+  claude     ✓ 2.1.34
+  agy        ✓ 0.121.0
+  codex      ✗ not found
+  grok       ✗ not found
+  opencode   ✗ not found
+  qwen       ✗ not found
+tools:
+  git        ✓ 2.43.0
+  gh         ✓ 2.45.0
+  docker     ✗ not found
+  sqlc       ✗ not found
+  buf        ✗ not found
+wrote /home/you/.config/claude-dispatcher/machine.yaml
+```
+
+`--check` makes it a setup gate: exit 1 if a **required** entry (`claude`,
+`git`) is missing — every other entry is soft, reported but never affecting
+the exit code:
+
+```bash
+dispatcher doctor --check && dispatcher run tasks.yaml --mode unattended ...
+```
+
+`--config-dir PATH` overrides where `machine.yaml` is written. The file is
+shared with you: everything under the top-level `manual:` key is user-owned
+and never touched by re-probes, and file comments survive (the same
+comment-preserving contract the tasks YAML gets). Re-run `doctor` after
+installing anything it covers.
+
+The full profile format — every field, the probe semantics, exit codes, and
+the staleness warning — is specified in
+**[docs/machine-profile.md](docs/machine-profile.md)**, complete enough to
+hand-write a profile.
+
 ---
 
 ## The Tasker contract
@@ -381,11 +475,38 @@ Existing task rows continue to validate. The dispatcher adds these fields as it 
   branch: "feat/BSA-0-2-schema"                    # branch chosen for the worktree
   summary_path: "docs/runs/.../BSA-0-2/summary.md"
 
+  # Usage/cost from the agent CLI's JSON output (last spawn only — the
+  # journal records every spawn; see `dispatcher report`). Each field is
+  # written only when the CLI actually reported it — never null-filled:
+  model: "claude-opus-4-8[1m]"
+  cost_usd: 2.2894807
+  input_tokens: 81000
+  output_tokens: 12400
+  cache_read_input_tokens: 600000
+  cache_creation_input_tokens: 9000
+  duration_ms: 358000
+  num_turns: 24
+
+  # Agent/version provenance, stamped on every terminal row:
+  agent: claude                                    # which agent CLI ran the task
+  dispatcher_version: "0.1.0"
+  agent_version: "2.1.34"                          # omitted if the once-per-run capture failed
+
+  # Set only when the Done summary shows commits that did not reach the
+  # remote (signal for the supervisor/integrator, not a block):
+  needs_push: true
+
   # Set only on Blocked tasks awaiting human PR approval (Critical/financial):
   prepared_pr_title: "feat(platform): [BSA-0-2] schema ..."
   prepared_pr_branch: "feat/BSA-0-2-schema"
   blocked_reason: "awaiting human PR approval"
 ```
+
+Runs with the cross-family panel enabled stamp additional `panel_*` fields,
+documented in the [Cross-family panel](#cross-family-panel) section. Runs
+with `--auto-integrate` stamp the merge outcome: `auto_integrate_status`
+(e.g. `integrated`, or a failure label), plus `auto_integrate_merge_sha` /
+`auto_integrate_services` / `auto_integrate_detail` when applicable.
 
 Tasks with `status: To Do` (or no status) AND all `blockedBy` keys at `status: Done` are dispatched in the next wave.
 
@@ -480,8 +601,9 @@ Worktrees on `Done` are left for `git worktree remove` (or housekeeping cron) to
 
 ## Observing a run
 
-A run is observable two ways: **`dispatcher status`** for point-in-time state,
-and the per-run **event journal** for the append-only event stream. Both are
+A run is observable three ways: **`dispatcher status`** for point-in-time
+state, **`dispatcher report`** for the quality dashboard + cost rollup, and
+the per-run **event journal** for the append-only event stream. All three are
 read-only and mid-run-safe — they never touch the YAML or the worktrees, and
 tolerate a partially-written file on a live run.
 
@@ -573,12 +695,86 @@ The full JSON schema is documented in `src/claude_dispatcher/status.py`. The
 tasks YAML is auto-discovered from the run's `summary.md` files; pass
 `--tasks-yaml PATH` for a fresh run that has no summaries to trace from yet.
 
+### `dispatcher report`
+
+`report [<run-id>]` is the post-run (but mid-run-safe) dashboard: the per-run
+**cost/usage rollup** plus the original **quality data**. `<run-id>` defaults
+to the most recent run under `--runs-dir`:
+
+```
+$ dispatcher report
+========================================================================================
+Dispatcher report — 2026-06-10T18-24-47Z-tasks
+  Tasks YAML:    /home/you/project/features/phase0-1/tasks.yaml
+  Run dir:       /home/you/project/docs/runs/2026-06-10T18-24-47Z-tasks
+  Summary files: 12
+  Source:        journal
+========================================================================================
+
+Status counts:
+  Done           12
+  In Progress    0
+  To Do          0
+
+Run rollup [source: journal]:
+  Tasks by status          Done: 12
+  Wall clock               2026-06-10T11:24:47-07:00 → 2026-06-10T14:02:10-07:00  (9443.0 s)
+  Total cost (USD)         $48.5504
+  Tasks billed             12
+  Avg cost per task        $  4.0459
+  Total input tokens         972,000
+  Total output tokens        148,800
+  Cache-read tokens        7,200,000
+  Cache-creation tokens      108,000
+  Sum of spawn durations     4296.0 s
+  Spawns                   14  (1 with unmeasured usage)
+
+Per-task usage:
+  KEY            STATUS       MODEL                AGENT         COST        IN ...
+  ...
+
+Per-model usage [source: journal]:
+  MODEL                SPAWNS TASKS      COST        IN       OUT   CACHE-R   CACHE-C
+  ...
+
+Tasks in this run (12):
+  KEY            JIRA       STATUS       SCORE    ITERS LINT DEFRRD GATE
+  ...
+```
+
+**Where the numbers come from.** The rollup prefers the run's
+[journal](#event-journal) over the YAML rows: a task can spawn multiple times
+(commit retry, push retry, panel iterate) and the YAML row records only the
+*last* spawn's usage, so real spend is the **sum over all of the task's
+`task_spawn_finished` events** — journal-sourced totals can legitimately
+exceed the YAML totals. Pre-journal runs (and a journal that yields no
+parseable events) fall back to a YAML-only rollup, clearly labeled in the
+`Source:` line. Wall clock and spawn counts are journal-only and shown as `—`
+in YAML mode.
+
+**Null is never zero.** A spawn whose usage fields are missing (the agent CLI
+emitted no usage block) is excluded from the sums and surfaced as an
+*unmeasured* count instead of being silently treated as $0.
+
+The quality sections below the rollup are unchanged: per-task gate fields
+(score, iterations, linter cycles, deferred findings, human gate), the
+concerning-tasks highlights, the per-reviewer/per-dimension breakdown parsed
+from each task's `summary.md`, PRs raised, and the parked/blocked lists.
+
+`--json` emits one machine-readable document mirroring the dashboard — the
+schema is specified field-by-field in
+**[docs/report-json.md](docs/report-json.md)**. The tasks YAML is resolved
+with this precedence: explicit `--tasks-yaml` flag → the journal genesis
+event's `tasks_yaml_path` → walk-up discovery from the run's summary files
+(the only option for pre-journal runs).
+
 ### Event journal
 
 Every run also writes an append-only, hash-chained **event journal** at
 `<runs-dir>/<run-id>/journal.jsonl` — one JSON object per line, fsync'd per
-event, covering all 14 lifecycle event types (`run_started` through
-`run_complete`). It is the run's tamper-evident audit trail and the supported
+event, covering the full lifecycle from `run_started` (genesis) through
+`run_complete` — including the run-start `preflight` outcome, per-task spawn
+usage, panel verdicts, and resume markers. It is the run's tamper-evident audit trail and the supported
 event feed for external tools. The full specification — event types, field
 semantics, the hash-chain construction and verification algorithm, the genesis
 provenance fields, the single-writer rule, and the location convention — is in
@@ -593,9 +789,10 @@ tail -F docs/runs/<run-id>/journal.jsonl | jq -c '{seq, event_type, task_key}'
 
 ### Note for monitoring agents
 
-`dispatcher status --json` (point-in-time state) and tailing
-`journal.jsonl` (the event stream) are the **supported integration surface**
-for an external monitoring agent. Build against those two — not against the
+`dispatcher status --json` (point-in-time state), `dispatcher report --json`
+(post-run rollup + quality, schema in [docs/report-json.md](docs/report-json.md)),
+and tailing `journal.jsonl` (the event stream) are the **supported integration
+surface** for an external monitoring agent. Build against those — not against the
 tasks YAML, `run.log`, or internal module APIs, which are implementation
 details that may change. Both observation paths are read-only, so a monitor
 can never perturb a run.
@@ -658,20 +855,26 @@ src/claude_dispatcher/
 ├── cli.py                       # argparse, subcommand dispatch
 ├── run.py                       # `dispatcher run` glue
 ├── orchestrator.py              # the parallel dispatch loop
+├── preflight.py                 # run-start preflight checks (live modes only)
 ├── yaml_io.py                   # round-trip load/dump + FileLock
 ├── plan.py                      # runnable-set, label filter, wave planner
 ├── summary.py                   # parser for the Tasker's summary.md
-├── spawn.py                     # claude subprocess + env + prompt
+├── spawn.py                     # claude subprocess + env + prompt + usage parsing
 ├── worktree.py                  # git worktree create/remove, branch naming
 ├── pr.py                        # gh pr create wrapper
+├── push_verify.py               # post-Done push/PR verification
 ├── auto_integrate.py            # post-Done merge feat → base_branch
 ├── cross_family_reviewer.py     # three-family review panel
 ├── reviewer_prompts/            # _shared.md + claude.md / gemini.md / codex.md
 ├── dispatch_plan.py             # dry-run report renderer
 ├── journal.py                   # append-only hash-chained event journal (one JSONL/run)
+├── journal_read.py              # lenient journal reader shared by status/report
+├── notify.py                    # ntfy.sh / Slack push notifications
 ├── status.py                    # `dispatcher status` — run state, table or --json
 ├── resume.py                    # `dispatcher resume` — recover an interrupted run
-└── report.py                    # `dispatcher report` — quality dashboard
+├── report.py                    # `dispatcher report` — quality dashboard + cost rollup
+├── doctor.py                    # `dispatcher doctor` — machine profile (machine.yaml)
+└── forecast_bridge.py           # optional forecast-create / forecast-sync Jira bridge
 
 tools/
 └── cross_family_panel.py        # standalone runner for the review panel
@@ -692,9 +895,20 @@ tests/
 ├── test_journal.py             # journal: append / read / genesis / hash-chain verify
 ├── test_orchestrator_journal.py # orchestrator emits every lifecycle event
 ├── test_status.py              # status: table + --json, waves, liveness
-└── test_resume.py              # resume: no-op, liveness guard + --force, kill-9 recovery
+├── test_resume.py              # resume: no-op, liveness guard + --force, kill-9 recovery
+├── test_preflight.py           # the four run-start checks + orchestrator wiring
+├── test_doctor.py              # probe, machine.yaml write/refresh, --check
+├── test_report.py              # rollup: journal vs YAML source, null-vs-zero, render
+├── test_agent_metadata.py      # agent/version provenance on rows + events
+├── test_spawn_usage.py         # usage/cost parsing from the CLI JSON output
+├── test_per_task_model.py      # per-task `model:` override stacking
+├── test_commit_retry.py        # Done-with-no-commits corrective respawn
+├── test_push_verify.py         # post-Done push verification + needs_push
+├── test_dependency_merge.py    # dispatch-time dependency branch merging
+├── test_auto_integrate.py      # post-Done merge into base branch
+├── test_notify.py              # ntfy/Slack channels + event fan-out
+├── test_worktree.py            # worktree base resolution + creation
+└── test_forecast_bridge.py     # forecast-create / forecast-sync soft-skip + mapping
 ```
 
-Run the suite: `.venv/bin/pytest -q`. The control-surface work (event journal,
-`status`, `resume`) added the dedicated suites above on top of the cross-family
-panel build.
+Run the suite: `.venv/bin/pytest -q`.

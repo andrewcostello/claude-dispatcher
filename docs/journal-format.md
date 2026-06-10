@@ -191,9 +191,9 @@ digest.)
 
 ## Event types
 
-The current vocabulary is 14 event types. They are listed below with their
-payload fields. `task_key` is non-null for per-task events and `null` for the
-two run-scoped events.
+The current vocabulary is listed below with each type's payload fields.
+`task_key` is non-null for per-task events and `null` for the run-scoped
+events.
 
 > **Readers: treat `event_type` as an open string.** The parser does not reject
 > unknown types (only the genesis-shape and chain-integrity rules are enforced).
@@ -205,6 +205,21 @@ two run-scoped events.
 
 **`run_started`** *(genesis, seq 0, `task_key: null`)* — payload is the
 [provenance block](#provenance-fields-genesis-payload).
+
+**`preflight`** *(`task_key: null`)* — the run-start preflight outcome,
+emitted once, right after the journal opens. A separate event type rather
+than a genesis-payload extension so the genesis schema and `verify()` stay
+untouched. Because a *failed* preflight exits before the run directory — and
+therefore the journal — exists, only passing or skipped preflights are ever
+journaled, so `failures` is always `[]` (the key is kept for payload-shape
+stability).
+
+| Payload key | Type        | Notes |
+|-------------|-------------|-------|
+| `skipped`   | bool        | `true` iff the run was started with `--skip-preflight` (then `checks`/`warnings` are empty). |
+| `checks`    | object      | Per-check outcome blocks (`claude_binary`, `dispatcher_staleness`, `permission_flags`, `tasker_role_file`), embedded verbatim from the preflight. |
+| `warnings`  | array\<str> | Human-readable warning lines, if any. |
+| `failures`  | array       | Always `[]` — see above. |
 
 **`run_complete`** *(terminal, `task_key: null`)* — the last event of a
 completed run; an observer that reads it knows the chain is closed.
