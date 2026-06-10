@@ -68,7 +68,11 @@ dispatcher run <tasks-yaml> [options]
   --ntfy-server URL                         self-hosted ntfy server                 (env: DISPATCHER_NTFY_SERVER)
   --slack-webhook-url URL                   Slack incoming webhook URL              (env: DISPATCHER_SLACK_WEBHOOK)
 
-dispatcher status <run-id>                  current state of a run            (not yet implemented)
+dispatcher status <run-id> [--json] [--tasks-yaml PATH]
+                                            current state of a run: per-task state, current
+                                            wave, totals (by status + run cost), and run
+                                            liveness (age of the last run.log event). Table by
+                                            default; --json for machine-readable output.
 dispatcher resume <run-id>                  pick up an interrupted run        (not yet implemented)
 dispatcher report <run-id>                  summary of completed tasks         (not yet implemented)
 
@@ -87,6 +91,39 @@ dispatcher forecast-sync <tasks-yaml> [--dry-run]
                                             to bring Jira into sync. Soft-skips when forecast
                                             missing or `jira_key` not yet populated.
 ```
+
+### Run status
+
+`dispatcher status <run-id>` reconstructs the live (or finished) state of a run
+from two artifacts the orchestrator already maintains — there is no separate
+event-journal subsystem yet:
+
+- the **tasks YAML**, the authoritative per-task state (status, `started_at`/
+  `completed_at`, `model`, `cost_usd`, `iteration_count`, `blocked_reason`,
+  `pr_url`, …), and
+- the run's **`run.log`**, the append-only event log, used for *liveness*: the
+  age of the last logged event tells you whether the run is still moving.
+
+It is read-only and mid-run-safe — it never touches the YAML or worktrees, and
+tolerates a partially-written final `run.log` line (a live run may be appending
+as you read).
+
+```bash
+# Human-readable table
+dispatcher status 2026-06-10T18-24-47Z-tasks
+
+# Machine-readable JSON (full schema in src/claude_dispatcher/status.py)
+dispatcher status 2026-06-10T18-24-47Z-tasks --json
+```
+
+The YAML is normally auto-discovered from the run's summary files. For a fresh
+run that has no summaries yet, pass `--tasks-yaml PATH` explicitly.
+
+The `--json` document carries `run_id`, `current_wave` / `wave_count`,
+`run_complete`, a `liveness` block (`last_event_at`, `last_event_age_seconds`,
+`last_event`), a `totals` block (`by_status` counts, `run_cost_usd`,
+`tasks_billed`), and a key-sorted `tasks` array with each task's per-run state
+and dependency `wave`.
 
 ### Forecast bridge (optional)
 
@@ -443,7 +480,7 @@ src/claude_dispatcher/
 ├── cross_family_reviewer.py     # three-family review panel
 ├── reviewer_prompts/            # _shared.md + claude.md / gemini.md / codex.md
 ├── dispatch_plan.py             # dry-run report renderer
-├── status.py                    # `dispatcher status` (stubbed)
+├── status.py                    # `dispatcher status [--json]`
 ├── resume.py                    # `dispatcher resume` (stubbed)
 └── report.py                    # `dispatcher report` (stubbed)
 

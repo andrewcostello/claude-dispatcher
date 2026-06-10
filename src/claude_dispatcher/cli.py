@@ -239,9 +239,27 @@ def build_parser() -> argparse.ArgumentParser:
     run.set_defaults(func=run_cmd.execute)
 
     # --- status ------------------------------------------------------------
-    st = sub.add_parser("status", help="Show current state of a run")
+    st = sub.add_parser(
+        "status",
+        help=("Current state of a run: per-task state, current wave, totals, "
+              "cost so far, and run liveness. Mid-run-safe; --json for "
+              "machine-readable output."),
+    )
     st.add_argument("run_id")
     st.add_argument("--runs-dir", default="docs/runs")
+    st.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the structured JSON document (schema in status.py docstring)",
+    )
+    st.add_argument(
+        "--tasks-yaml",
+        dest="tasks_yaml",
+        default=None,
+        help=("Path to the tasks YAML this run is for. Optional — by default "
+              "it is discovered from the run's summary files; pass it "
+              "explicitly for a fresh run that has no summaries yet."),
+    )
     st.set_defaults(func=status_cmd.execute)
 
     # --- resume ------------------------------------------------------------
