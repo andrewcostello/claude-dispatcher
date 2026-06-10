@@ -5,10 +5,14 @@
   "current_wave": 1,
   "wave_count": 2,
   "liveness": {
+    "source": "run.log",
+    "journal_present": false,
     "run_log_present": true,
     "last_event_at": "2026-06-10T18:25:10+00:00",
     "last_event_age_seconds": 30.0,
-    "last_event": "dispatch SMOKE-B submitted"
+    "last_event": "dispatch SMOKE-B submitted",
+    "last_event_type": null,
+    "last_event_seq": null
   },
   "totals": {
     "task_count": 4,
@@ -36,7 +40,8 @@
       "blocked_reason": null,
       "pr_url": "https://example.test/pr/1",
       "needs_push": false,
-      "dispatcher_run_id": "fixture-run"
+      "dispatcher_run_id": "fixture-run",
+      "journal": null
     },
     {
       "key": "SMOKE-B",
@@ -51,7 +56,8 @@
       "blocked_reason": null,
       "pr_url": null,
       "needs_push": false,
-      "dispatcher_run_id": "fixture-run"
+      "dispatcher_run_id": "fixture-run",
+      "journal": null
     },
     {
       "key": "SMOKE-C",
@@ -66,7 +72,8 @@
       "blocked_reason": null,
       "pr_url": null,
       "needs_push": false,
-      "dispatcher_run_id": null
+      "dispatcher_run_id": null,
+      "journal": null
     },
     {
       "key": "SMOKE-D",
@@ -81,7 +88,8 @@
       "blocked_reason": "spawn_failed: boom",
       "pr_url": null,
       "needs_push": false,
-      "dispatcher_run_id": "fixture-run"
+      "dispatcher_run_id": "fixture-run",
+      "journal": null
     }
   ]
 }

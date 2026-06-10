@@ -46,6 +46,21 @@ def main() -> int:
     _ = sys.stdin.read()
 
     task_key = os.environ.get("TASK_KEY", "UNKNOWN")
+
+    # Simulated kill -9 mid-run: if this task is the designated kill target,
+    # SIGKILL the parent (the dispatcher process) and exit immediately —
+    # before committing or writing a summary. This leaves the task stamped
+    # "In Progress" in the YAML (the dispatcher marks that before spawning),
+    # exactly as a real crash would, so `dispatcher resume` has something to
+    # recover. Only meaningful when fake_claude runs as a direct child of a
+    # real dispatcher subprocess (never under the in-process orchestrator,
+    # where getppid() would be the test runner).
+    kill_key = os.environ.get("FAKE_CLAUDE_KILL_KEY")
+    if kill_key and task_key == kill_key:
+        import signal
+        os.kill(os.getppid(), signal.SIGKILL)
+        return 0
+
     summary_path_raw = os.environ.get("SUMMARY_PATH")
     if not summary_path_raw:
         print("fake_claude: SUMMARY_PATH not set", file=sys.stderr)
