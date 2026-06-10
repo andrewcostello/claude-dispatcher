@@ -259,6 +259,51 @@ the same verdict.
 YAML row gains `panel_iterations_used: N` so an auditor can see how many
 corrective cycles ran before the final verdict landed.
 
+**Advisory (probationary) reviewers**
+
+A repo can seat additional *advisory* reviewers next to the authoritative
+three by adding a `panel:` section to its `.dispatcher.yaml`:
+
+```yaml
+panel:
+  advisory: [grok]
+```
+
+Advisory semantics:
+
+- Advisory reviewers run **in parallel** with the authoritative three (same
+  executor pass, same prompt shape with a family-specific preamble).
+- They **never count toward consensus**: an advisory `CHANGES_REQUESTED` or
+  `CRITICAL` finding cannot block the task or trigger
+  `--cross-family-panel-iterate`, and an advisory `APPROVE` cannot rescue a
+  panel that is `incomplete` because an authoritative seat was
+  `UNAVAILABLE`.
+- An advisory failure (CLI missing, timeout, empty output) is journaled as
+  `UNAVAILABLE` with zero effect on the panel outcome.
+- Unknown names in `advisory:` are skipped and logged; a malformed
+  `.dispatcher.yaml` is logged and the authoritative panel runs without
+  advisory seats.
+
+What gets recorded: every `panel_verdict` journal event carries an
+`advisory_verdicts` map (`{}` when no advisory reviewer ran), and each
+advisory finding is journaled as its own `panel_advisory_finding` event
+(family, severity, location, description, fix, advisory verdict). The
+rendered `summary.md` block gains a clearly-labelled
+"Advisory reviewers (non-blocking, probationary)" appendix in both the
+approve and block render paths. Advisory verdicts are NOT stamped as
+`panel_verdict_<family>` YAML columns — those stay authoritative-only.
+
+The first advisory occupant is **Grok Build** (xAI's `grok` CLI,
+contract verified against 0.2.39): the panel invokes
+`grok --prompt-file <tempfile> --output-format plain --always-approve`
+with stdin closed (`DEVNULL`), reads the verdict from stdout, and ignores
+grok's noisy stderr. Nonzero exit or empty stdout → `UNAVAILABLE`.
+
+The advisory tier exists to build a scorecard: once enough journaled
+verdicts exist to compare an advisory family against the authoritative
+three, promoting it to a voting seat is a future **explicit human
+decision** — never automatic.
+
 **Retroactive validation**
 
 The `tools/cross_family_panel.py` script runs the panel against an
