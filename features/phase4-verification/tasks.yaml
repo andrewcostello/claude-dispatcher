@@ -1,0 +1,200 @@
+project: DISP
+epic: PHASE-4-VG
+# ============================================================================
+# Run #5: Phase 4 — the verification gate ("no false Done"), plus the Grok
+# Build probationary advisory reviewer seat (Phase 6 mechanism, first user).
+# Source: docs/improvement-plan.md Phase 4 + "Probationary (advisory)
+# reviewer tier".
+#
+# Design principle (plan): mechanical checks first, agent second. The
+# supervisor performed this gate by hand ~20 times during runs #2-#4; this
+# run automates it.
+# ============================================================================
+
+tasks:
+
+  - key: VG-1
+    summary: "Repo config file (.dispatcher.yaml) with a test: command"
+    description: |
+      Introduce a per-repo dispatcher config file, .dispatcher.yaml at the
+      repo root (ruamel round-trip, comments preserved). Initial schema:
+
+        test: <shell command run inside a task worktree; exit 0 = green>
+        # future sections (e2e:, risk:) land in later phases — design the
+        # loader so unknown top-level keys are preserved and ignored with a
+        # logged note, not rejected.
+
+      Loader: claude_dispatcher/repo_config.py with load(repo_root) ->
+      RepoConfig dataclass; absent file -> RepoConfig(test=None) (gate will
+      skip mechanical tests with a journaled reason). Validate that test: is
+      a non-empty string when present.
+
+      Also write this repo's own .dispatcher.yaml:
+        test: "PYTHONPATH=src python3 -m pytest tests/ -q"
+      using the venv-independent form that works in a fresh worktree (check
+      what interpreter/path actually works from a worktree of THIS repo —
+      tests currently run with the main checkout's .venv python; pick
+      something self-contained and document the choice).
+
+      Acceptance:
+        - Loader round-trips unknown keys; absent file -> test=None
+        - This repo's .dispatcher.yaml committed and its command exits 0 in
+          a fresh worktree (prove it in a test or cite a manual run)
+    type: Task
+    estimate: 2h
+    labels: [size:S, area:config, phase:4]
+
+  - key: VG-2
+    summary: "Mechanical verification step: repo tests green in the task worktree post-Done"
+    description: |
+      After a Tasker reports Done and the existing commit/push checks pass,
+      run the repo config test: command (VG-1) inside the task worktree
+      (subprocess, cwd=worktree, generous timeout, configurable
+      --verify-test-timeout default 600s). Outcomes:
+        - exit 0: proceed (to the LLM verifier once VG-4 wires it; until
+          then, to Done as today)
+        - non-zero: ONE retry spawn with a fix-the-tests prompt (mirroring
+          commit-retry: include the tail of the test output), then re-run;
+          still failing -> Blocked with reason mechanical_verification_failed
+          and the failing output tail in the YAML detail
+        - test: absent in repo config -> skip, journaled reason
+      Journal events: verification_mechanical (payload: command, exit code,
+      duration, retried) — extend EventType. Stamp YAML row
+      mechanical_verification: passed|failed|skipped.
+
+      Acceptance:
+        - Fake-claude fixtures for: green path; red->fix->green retry path;
+          red->red Blocked path; no-config skip path — all four journaled
+        - Test output tail (not full output) lands in YAML detail on Blocked
+        - No behavior change for runs in repos without .dispatcher.yaml
+    type: Task
+    estimate: 3h
+    labels: [size:M, area:orchestrator, phase:4]
+    blockedBy: [VG-1]
+
+  - key: VG-3
+    summary: "LLM verifier: prompt contract + spawn adapter + verdict parser"
+    description: |
+      The independent verifier role (plan Phase 4): given the task
+      description + acceptance criteria, the diff (git diff base...HEAD in
+      the worktree), and the Tasker's summary.md, answer: does this diff
+      actually do what the task said — nothing stubbed, deferred, or quietly
+      narrowed?
+
+      Deliverables:
+        - verifier_prompts/verifier.md in the package (same pattern as
+          reviewer_prompts/): instructs scrutiny of TODO/stub
+          implementations, "deferred"/"follow-up" language, scope narrowing
+          vs the acceptance list, untested claims. Output contract: a
+          fenced block with Verdict: VERIFIED | INCOMPLETE and, when
+          INCOMPLETE, a numbered list of specific gaps (file:line where
+          possible).
+        - verifier.py: build_verifier_prompt(task, diff, summary_text),
+          spawn via the existing claude spawn path (stdin pipe, JSON output,
+          usage captured), parse_verdict() tolerant of surrounding prose;
+          unparseable -> treated as INCOMPLETE with reason
+          verifier_output_malformed (conservative: never auto-VERIFY on a
+          parse failure).
+        - Unit tests with canned outputs: clean VERIFIED, INCOMPLETE with
+          gaps, malformed, truncated.
+
+      Do NOT wire into the orchestrator in this task (VG-4 does that) —
+      keep this module independently testable.
+    type: Task
+    estimate: 3h
+    labels: [size:M, area:verifier, phase:4]
+
+  - key: VG-4
+    summary: "Wire the verification gate into the task lifecycle with iterate-on-incomplete"
+    description: |
+      Orchestrator wiring, after mechanical verification (VG-2) passes and
+      before the cross-family panel / Done:
+        1. Spawn the verifier (VG-3). VERIFIED -> continue as today.
+        2. INCOMPLETE -> re-spawn the Tasker with the verifier's gap list
+           (reuse the panel-iterate prompt-shape: findings injected, same
+           worktree), then mechanical-verify and verify again. Up to
+           --max-verify-iterations (default 2, distinct from panel
+           iterations).
+        3. Exhausted -> Blocked, reason verification_incomplete, gaps in the
+           YAML detail.
+      Journal: verification_started / verification_verdict events (payload:
+      verdict, gaps count, iteration, verifier usage/cost). YAML row:
+      verified: true|false, verification_iterations, verifier cost folded
+      into cost_usd.
+      Ordering rule: mechanical gate ALWAYS precedes the LLM verifier (never
+      spend verifier tokens on a red suite). Panel (when label-triggered)
+      runs after verification passes.
+      Flag: --skip-verification escape hatch, journaled, for emergencies.
+
+      Acceptance:
+        - Fake-claude e2e: VERIFIED path; INCOMPLETE->iterate->VERIFIED;
+          INCOMPLETE->exhausted->Blocked with gaps — all journaled with
+          correct event ordering relative to panel events
+        - Verifier cost visible in the report rollup (field already summed
+          from task_spawn_finished events — confirm verifier spawns emit
+          them or add equivalent)
+        - --skip-verification journaled
+    type: Task
+    estimate: 4h
+    labels: [size:M, area:orchestrator, area:verifier, phase:4]
+    blockedBy: [VG-2, VG-3]
+
+  - key: VG-5
+    summary: "Grok Build advisory reviewer: probationary panel seat + scorecard events"
+    description: |
+      Implement the probationary (advisory) reviewer tier from the plan
+      (Phase 6 section) with Grok Build as its first occupant.
+
+      - Adapter: grok CLI, headless single-shot (`grok -p/--single`,
+        --always-approve, --output-format for headless mode — verify the
+        real contract against grok 0.2.39 on this machine; if auth is not
+        completed (browser OAuth pending), all live paths must degrade to
+        UNAVAILABLE cleanly and unit tests use stubs).
+      - Advisory semantics in the panel runner: advisory reviewers run in
+        parallel with the authoritative three but their verdict NEVER enters
+        consensus, and their findings are journaled
+        (panel_advisory_finding events) — appended to the summary as a
+        clearly-labeled advisory appendix, NOT into the blocking findings
+        list, and never trigger iterate.
+      - Advisory adapter failure/timeout = journaled UNAVAILABLE, zero
+        effect on the panel outcome (test this explicitly).
+      - Scorecard groundwork: panel_verdict events gain
+        advisory_verdicts: {grok: APPROVE|BLOCK|UNAVAILABLE} so future
+        tooling can compute agreement rates; no promotion logic yet.
+      - Config: advisory reviewers listed in .dispatcher.yaml under
+        panel: { advisory: [grok] } (extends VG-1's config; coordinate via
+        blockedBy).
+
+      Acceptance:
+        - Stubbed grok: advisory verdict + findings journaled, consensus
+          math provably unchanged in all three outcomes (approve/block/
+          unavailable)
+        - Live smoke (if grok is authed on this machine): one real advisory
+          review against a trivial diff, result cited in the summary;
+          if unauthed, state that and show the UNAVAILABLE degradation live
+        - Panel docs section updated (advisory tier semantics)
+    type: Task
+    estimate: 3h
+    labels: [size:M, area:cfr, phase:6]
+    blockedBy: [VG-1]
+
+  - key: VG-6
+    summary: "Docs: verification gate + advisory tier + .dispatcher.yaml reference"
+    description: |
+      README: "Verification gate" section (mechanical-first ordering, the
+      iterate loop, --max-verify-iterations, --skip-verification, Blocked
+      reasons), advisory reviewer subsection in the panel docs, and a
+      .dispatcher.yaml reference (test:, panel.advisory:, forward-compat
+      note about unknown keys). Update the YAML field list (verified,
+      verification_iterations, mechanical_verification) and the journal
+      event-type list in docs/journal-format.md (verification_* and
+      panel_advisory_finding events).
+
+      Acceptance:
+        - Every new flag, config key, YAML field, and event type documented
+        - docs/journal-format.md stays complete enough to write an
+          independent reader from
+    type: Task
+    estimate: 2h
+    labels: [size:S, area:docs, phase:4, phase:6]
+    blockedBy: [VG-4, VG-5]
