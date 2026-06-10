@@ -71,6 +71,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--max-iterations", type=int, default=2)
     run.add_argument(
+        "--lock-timeout-seconds",
+        type=float,
+        default=30.0,
+        metavar="SECONDS",
+        help=(
+            "How long to wait for the tasks-YAML FileLock before giving up "
+            "(default: 30). Raise it if many parallel workers contend on the "
+            "lock; lower it to fail fast in tests."
+        ),
+    )
+    run.add_argument(
+        "--task-timeout-seconds",
+        type=int,
+        default=60 * 60 * 4,
+        metavar="SECONDS",
+        help=(
+            "Per-task wall-clock budget for each spawned Claude session "
+            "(default: 14400, i.e. 4h). The session is killed if it exceeds "
+            "this and the task is marked Blocked."
+        ),
+    )
+    run.add_argument(
         "--run-id",
         default=None,
         help="Default: ISO 8601 timestamp",
