@@ -34,7 +34,27 @@ tasks:
     type: Task
     estimate: 1h
     labels: [size:XS, area:worktree, phase:3]
+    status: Done
+    started_at: '2026-06-10T14:21:27-07:00'
+    dispatcher_run_id: 2026-06-10T21-21-27Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-10T21-21-27Z-tasks/OPS-1/summary.md
 
+    branch: feat/OPS-1-split-dependency-merge-conflict-from
+    completed_at: '2026-06-10T14:38:02-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    final_quality_score: 22
+    human_gate_fired: false
+    deferred_findings_count: 4
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/18
+    cost_usd: 10.289905000000003
+    input_tokens: 13314
+    output_tokens: 20561
+    cache_read_input_tokens: 1391639
+    cache_creation_input_tokens: 127915
+    duration_ms: 993478
+    num_turns: 28
+    model: claude-fable-5[1m]
   - key: OPS-2
     summary: "dispatcher doctor: probe machine profile (agents, tools, install mode)"
     description: |
@@ -67,7 +87,27 @@ tasks:
     type: Task
     estimate: 4h
     labels: [size:M, area:cli, phase:1a]
+    status: Done
+    started_at: '2026-06-10T14:21:27-07:00'
+    dispatcher_run_id: 2026-06-10T21-21-27Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-10T21-21-27Z-tasks/OPS-2/summary.md
 
+    branch: feat/OPS-2-dispatcher-doctor-probe-machine-profile
+    completed_at: '2026-06-10T14:37:28-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    final_quality_score: 21
+    human_gate_fired: false
+    deferred_findings_count: 6
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/17
+    cost_usd: 9.2821745
+    input_tokens: 13183
+    output_tokens: 18779
+    cache_read_input_tokens: 1442012
+    cache_creation_input_tokens: 130793
+    duration_ms: 959316
+    num_turns: 29
+    model: claude-fable-5[1m]
   - key: OPS-3
     summary: "Run-start preflight: machine profile + run-#1-proven checks"
     description: |
@@ -100,7 +140,30 @@ tasks:
     estimate: 3h
     labels: [size:M, area:orchestrator, area:cli, phase:1a]
     blockedBy: [OPS-2]
+    status: Done
+    started_at: '2026-06-10T14:37:28-07:00'
+    dispatcher_run_id: 2026-06-10T21-21-27Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-10T21-21-27Z-tasks/OPS-3/summary.md
 
+    branch: feat/OPS-3-run-start-preflight-machine-profile
+    completed_at: '2026-06-10T15:18:58-07:00'
+    iteration_count: 2
+    linter_cycles: 0
+    final_quality_score: 20
+    human_gate_fired: false
+    deferred_findings_count: 7
+    prepared_pr_title: 'feat(orchestrator): [OPS-3] add run-start preflight with journaled outcome'
+    prepared_pr_branch: feat/OPS-3-run-start-preflight-machine-profile (pushed to origin)
+    cost_usd: 31.254565500000012
+    input_tokens: 20170
+    output_tokens: 52671
+    cache_read_input_tokens: 4663228
+    cache_creation_input_tokens: 352390
+    duration_ms: 2488901
+    num_turns: 51
+    model: claude-fable-5[1m]
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/19
+    pr_approved_by: andrew (human, size-gate approval 2026-06-10)
   - key: OPS-4
     summary: "Done-metadata completeness: agent + CLI version + dispatcher version per row"
     description: |
@@ -120,7 +183,27 @@ tasks:
     type: Task
     estimate: 2h
     labels: [size:S, area:orchestrator, phase:2]
+    status: Done
+    started_at: '2026-06-10T14:21:27-07:00'
+    dispatcher_run_id: 2026-06-10T21-21-27Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-10T21-21-27Z-tasks/OPS-4/summary.md
 
+    branch: feat/OPS-4-done-metadata-completeness-agent-cli
+    completed_at: '2026-06-10T14:37:03-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    final_quality_score: 21
+    human_gate_fired: false
+    deferred_findings_count: 5
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/16
+    cost_usd: 11.034381399999996
+    input_tokens: 13310
+    output_tokens: 19600
+    cache_read_input_tokens: 2143098
+    cache_creation_input_tokens: 227153
+    duration_ms: 933695
+    num_turns: 26
+    model: claude-fable-5[1m]
   - key: OPS-5
     summary: "Report rollup: per-run cost/usage/verdict dashboard from journal + YAML"
     description: |
@@ -142,7 +225,30 @@ tasks:
     estimate: 3h
     labels: [size:M, area:cli, phase:2]
     blockedBy: [OPS-4]
+    status: Done
+    started_at: '2026-06-10T14:37:03-07:00'
+    dispatcher_run_id: 2026-06-10T21-21-27Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-10T21-21-27Z-tasks/OPS-5/summary.md
 
+    branch: feat/OPS-5-report-rollup-per-run-cost
+    completed_at: '2026-06-10T15:14:42-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    final_quality_score: 21
+    human_gate_fired: false
+    deferred_findings_count: 7
+    prepared_pr_title: 'feat(report): [OPS-5] add per-run cost/usage rollup from journal'
+    prepared_pr_branch: feat/OPS-5-report-rollup-per-run-cost
+    cost_usd: 25.645630399999998
+    input_tokens: 13316
+    output_tokens: 30436
+    cache_read_input_tokens: 1575272
+    cache_creation_input_tokens: 303435
+    duration_ms: 2257890
+    num_turns: 31
+    model: claude-fable-5[1m]
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/20
+    pr_approved_by: andrew (human, size-gate approval 2026-06-10)
   - key: OPS-6
     summary: "Docs: doctor/preflight/report sections + machine-profile format"
     description: |
@@ -160,3 +266,25 @@ tasks:
     estimate: 2h
     labels: [size:S, area:docs, phase:1a, phase:2]
     blockedBy: [OPS-3, OPS-5]
+    status: Done
+    completed_at: '2026-06-10T15:55:09-07:00'
+    started_at: '2026-06-10T15:42:46-07:00'
+    dispatcher_run_id: 2026-06-10T22-42-46Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-10T22-42-46Z-tasks/OPS-6/summary.md
+    branch: feat/OPS-6-docs-doctor-preflight-report-sections
+    iteration_count: 1
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 1
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/21
+    cost_usd: 10.752235
+    input_tokens: 13755
+    output_tokens: 39884
+    cache_read_input_tokens: 5821125
+    cache_creation_input_tokens: 139968
+    duration_ms: 741097
+    num_turns: 53
+    model: claude-fable-5[1m]
+    agent: claude
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.172 (Claude Code)

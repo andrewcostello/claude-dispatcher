@@ -603,6 +603,33 @@ verified (ok=True, 19 events) using the module the run was built to deploy.**
 - `resume` declines pre-run_config runs by design (genesis lacks
   `run_config` before INT-1); all future runs are resumable.
 
+**Run #4 (2026-06-10T21-21-27Z) + integration: 6/6 Done, ~$98 total.
+Phases 1a and 2 complete — doctor, machine profile, preflight, Done-metadata,
+journal-sourced report rollup, docs.**
+- **Dependency rule proved live both ways**: OPS-3/OPS-5 got dependency code
+  mechanically (merged SHAs journaled in task_started), and OPS-6's first
+  dispatch was correctly REFUSED with dependency_merge_conflict when its two
+  dependency branches conflicted (fake_claude.py) — no tokens wasted on a
+  conflicted tree. Repair: integrate deps to main, re-dispatch clean.
+- **Human size-gate fired twice** (OPS-3, OPS-5, both >500-line role
+  threshold): unattended mode parked them Blocked; Andrew approved both;
+  supervisor raised the prepared PRs and recorded pr_approved_by. The
+  approval ladder worked end-to-end manually — Phase 3 automates it.
+- Integration conflicts were semantic this run: both tasks independently
+  invented the same fake_claude --version guard (union trivial), and two
+  pre-preflight tests collided with preflight's new refusals — one aligned
+  to run WITH preflight, one (whose premise preflight outlaws) uses the
+  journaled --skip-preflight escape hatch. Lesson: parallel siblings touching
+  shared test harnesses is the main conflict source; harness changes might
+  deserve their own task.
+- Metadata + report verified on themselves: OPS-6's row carries
+  agent_version/dispatcher_version; `dispatcher report` rolled up its own
+  birth run from the journal ($87.51 in-run + $10.75 OPS-6 redispatch).
+- Claude CLI silently moved 2.1.170→2.1.172 mid-day and switched the spawn
+  default model (Opus 4.8 → Fable 5 for OPS-5) — caught only because per-row
+  model metadata exists. Doctor's profile now records agent versions; drift
+  is visible.
+
 ## Open questions — resolutions (2026-06-10)
 
 1. **Per-repo e2e provisioning** — RESOLVED: per repo. Each repo owns its
