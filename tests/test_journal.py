@@ -137,6 +137,52 @@ def test_genesis_contains_all_four_provenance_fields(tmp_path: Path):
     assert len(p["run_nonce"]) == 32  # secrets.token_hex(16)
 
 
+def test_genesis_embeds_run_config_and_still_verifies(tmp_path: Path):
+    """run_config rides in the genesis payload as an extra key; the chain still
+    verifies (it is not a provenance key, so verify() ignores it)."""
+    cfg = {"mode": "unattended", "max_parallel": 2, "tasks_yaml": "/x/tasks.yaml",
+           "run_id": "R1", "base_branch": "main"}
+    # _make_journal seeds tasks.yaml + reviewer_prompts in tmp_path as a side
+    # effect; reuse those, then create a genesis WITH run_config in a subdir.
+    _make_journal(tmp_path, run_id="R1")
+    tasks_yaml = tmp_path / "tasks.yaml"
+    prompts = tmp_path / "reviewer_prompts"
+    jc = Journal.create(
+        tmp_path / "withcfg" / J.JOURNAL_FILENAME,
+        tasks_yaml_path=tasks_yaml,
+        reviewer_prompts_dir=prompts,
+        run_id="R1",
+        run_config=cfg,
+    )
+    events = list(J.read_events(jc.path))
+    assert events[0].payload["run_config"] == cfg
+    # All provenance keys still present, chain still valid.
+    for key in J.GENESIS_PROVENANCE_KEYS:
+        assert key in events[0].payload
+    assert J.verify(jc.path).ok is True
+
+
+def test_genesis_omits_run_config_key_when_not_given(tmp_path: Path):
+    """Backward compatible: no run_config arg → no run_config key in genesis."""
+    jr = _make_journal(tmp_path)
+    events = list(J.read_events(jr.path))
+    assert "run_config" not in events[0].payload
+
+
+def test_resume_event_types_append_and_chain(tmp_path: Path):
+    """The resume lifecycle event types append and keep the chain valid."""
+    jr = _make_journal(tmp_path, run_id="R1")
+    jr.append(EventType.resume_started,
+              {"genesis_run_id": "R1", "genesis_hash": jr.last_hash})
+    jr.append(EventType.task_reset, task_key="T-1")
+    jr.append(EventType.task_marked_blocked, task_key="T-2")
+    jr.append(EventType.heartbeat)
+    events = list(J.read_events(jr.path))
+    assert [e.event_type for e in events[1:]] == [
+        "resume_started", "task_reset", "task_marked_blocked", "heartbeat"]
+    assert J.verify(jr.path).ok is True
+
+
 def test_genesis_records_run_id_when_provided(tmp_path: Path):
     jr = _make_journal(tmp_path, run_id="2026-06-10T18-24-47Z-tasks")
     genesis = next(iter(J.read_events(jr.path)))

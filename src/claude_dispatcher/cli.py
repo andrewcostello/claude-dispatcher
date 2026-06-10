@@ -271,8 +271,21 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["continue", "mark-blocked"],
         default="continue",
         help=(
-            "continue: try to resume in-flight worktrees; "
-            "mark-blocked: write Status: Blocked for in-flight tasks and re-run"
+            "continue (default): reset interrupted In Progress tasks to To Do "
+            "and re-dispatch them (worktree reused if present); "
+            "mark-blocked: write Status: Blocked for In Progress tasks instead "
+            "of re-dispatching, then run any remaining runnable tasks."
+        ),
+    )
+    rs.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help=(
+            "Resume even if the journal's last event is recent (which normally "
+            "signals the original run may still be live, and resuming could "
+            "double-dispatch). Use only when you are sure the original run is "
+            "dead — e.g. after a kill -9 or a crashed host."
         ),
     )
     rs.set_defaults(func=resume_cmd.execute)

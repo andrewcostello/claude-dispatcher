@@ -36,6 +36,7 @@ from . import journal as journal_mod
 from . import notify as notify_mod
 from . import plan as plan_mod
 from . import pr as pr_mod
+from . import push_verify as pv_mod
 from . import spawn as spawn_mod
 from . import summary as summary_mod
 from . import worktree as wt_mod
@@ -71,6 +72,15 @@ def _ask_human(prompt_text: str, choices: list[str]) -> str:
 
 
 _log_lock = threading.Lock()
+
+
+# How often the dispatch loop appends a `heartbeat` event to the journal while
+# running. The journal's most-recent-event age is the liveness signal
+# `dispatcher resume` reads to decide whether a run is still active; a periodic
+# heartbeat keeps that signal fresh even during a long single-task spawn that
+# emits no other events for hours. Must stay comfortably below
+# resume.RUN_ACTIVE_THRESHOLD_SECONDS so a live run always trips the guard.
+HEARTBEAT_INTERVAL_SECONDS = 30
 
 
 @dataclass
@@ -188,67 +198,125 @@ def execute(args: argparse.Namespace) -> int:
 
     # Open the event journal. Its genesis (run_started, seq 0) event records
     # the run's provenance — dispatcher version, tasks.yaml + reviewer-prompts
-    # content hashes, host. If creation fails (e.g. an unwritable runs dir),
-    # we warn and run journal-less: a control-surface convenience must never
-    # be load-bearing for the run completing.
-    cfg.journal = _open_journal(cfg, run_dir, repo_root, log_path)
+    # content hashes, host — plus the resolved run config under `run_config`
+    # so `dispatcher resume` can replay this run from the journal alone. If
+    # creation fails (e.g. an unwritable runs dir), we warn and run
+    # journal-less: a control-surface convenience must never be load-bearing
+    # for the run completing.
+    cfg.journal = _open_journal(
+        cfg, run_dir, repo_root, log_path, run_config=_genesis_config(args, cfg),
+    )
 
-    in_flight: dict[Future[str], str] = {}
-    with ThreadPoolExecutor(max_workers=max(cfg.max_parallel, 1)) as exe:
-        while True:
-            tasks = _load_tasks_snapshot(cfg)
-            runnable = plan_mod.runnable_now(tasks)
-            runnable = plan_mod.filter_tasks(runnable, cfg.label_filter, cfg.only_keys)
-            # Don't re-dispatch tasks already mid-flight.
-            in_flight_keys = set(in_flight.values())
-            runnable = [t for t in runnable if t.key not in in_flight_keys]
+    return _run_loop(cfg, run_dir, log_path, repo_root)
 
-            # Dispatch up to remaining capacity.
-            while runnable and len(in_flight) < cfg.max_parallel:
-                t = runnable.pop(0)
-                snap = TaskSnapshot(
-                    key=t.key,
-                    summary=t.summary,
-                    description=t.description,
-                    type=t.type,
-                    labels=list(t.labels),
-                    model=t.model,
-                    blocked_by=list(t.blocked_by),
-                )
-                # Mark In Progress on the YAML BEFORE submit. If we submit
-                # first, the main thread could re-load and re-dispatch the
-                # same key before the worker has stamped In Progress.
-                _mark_in_progress(cfg, snap, run_dir)
-                # The task_started event is emitted by the worker (_run_task),
-                # AFTER worktree creation + the dispatch-time dependency merge,
-                # so its payload can carry the merged dependency SHAs (INT-4).
-                fut = exe.submit(_run_task, snap, cfg, run_dir, log_path, repo_root)
-                in_flight[fut] = snap.key
-                _log(log_path, f"dispatch {snap.key} submitted")
 
-            if not in_flight:
-                break  # nothing running, nothing to start
+def resume_run(args: argparse.Namespace, journal: journal_mod.Journal) -> int:
+    """Re-enter the dispatch loop for an already-genesis'd run.
 
-            done, _pending = wait(list(in_flight), return_when=FIRST_COMPLETED)
-            for fut in done:
-                key = in_flight.pop(fut)
-                try:
-                    fut.result()  # propagate exceptions
-                except Exception as e:
-                    _log(log_path, f"  worker {key} raised: {e}")
-                    # Notify on a dispatcher-internal error before
-                    # stamping Blocked (separate channel from a normal
-                    # task failure — see notify.worker_exception_*).
-                    _send_notification(cfg, notify_mod.worker_exception_notification(
-                        task_key=key,
-                        run_id=cfg.run_id,
-                        exception_repr=repr(e),
-                        tasks_yaml=str(cfg.tasks_path),
-                    ), task_key=key)
+    Called by :func:`claude_dispatcher.resume.execute` after it has appended a
+    ``resume_started`` event and reset (or blocked) the interrupted In Progress
+    rows. ``args`` is reconstructed from the genesis ``run_config``, so its
+    ``base_branch`` / ``run_id`` are already resolved (no YAML re-resolution).
+    ``journal`` is the EXISTING run's journal, opened for append via
+    :meth:`Journal.resume` — this continues the original chain rather than
+    starting a new genesis.
+    """
+    cfg = _build_config(args)
+    cfg.journal = journal
+    run_dir = cfg.runs_dir / cfg.run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    log_path = run_dir / "run.log"
+    _log(log_path, f"resume run {cfg.run_id} mode={cfg.mode} max_parallel={cfg.max_parallel}")
+    repo_root = wt_mod.detect_repo_root(cfg.tasks_path.parent)
+    return _run_loop(cfg, run_dir, log_path, repo_root)
+
+
+def _run_loop(
+    cfg: RunConfig, run_dir: Path, log_path: Path, repo_root: Path,
+) -> int:
+    """The core dispatch loop, shared by :func:`execute` and :func:`resume_run`.
+
+    Picks runnable tasks, marks them In Progress, spawns workers, collects
+    results, and recomputes the runnable set until nothing is left. A daemon
+    heartbeat thread appends periodic ``heartbeat`` events so the journal's
+    liveness signal — which `dispatcher resume` reads to decide whether a run
+    is still active — stays fresh even during a long single-task spawn that
+    emits no other events for hours. The heartbeat is stopped (and joined)
+    before the terminal ``run_complete`` event so that event stays the last
+    record in the chain.
+    """
+    stop_heartbeat = threading.Event()
+    heartbeat = threading.Thread(
+        target=_heartbeat_loop, args=(cfg, stop_heartbeat), daemon=True,
+    )
+    heartbeat.start()
+
+    try:
+        in_flight: dict[Future[str], str] = {}
+        with ThreadPoolExecutor(max_workers=max(cfg.max_parallel, 1)) as exe:
+            while True:
+                tasks = _load_tasks_snapshot(cfg)
+                runnable = plan_mod.runnable_now(tasks)
+                runnable = plan_mod.filter_tasks(runnable, cfg.label_filter, cfg.only_keys)
+                # Don't re-dispatch tasks already mid-flight.
+                in_flight_keys = set(in_flight.values())
+                runnable = [t for t in runnable if t.key not in in_flight_keys]
+
+                # Dispatch up to remaining capacity.
+                while runnable and len(in_flight) < cfg.max_parallel:
+                    t = runnable.pop(0)
+                    snap = TaskSnapshot(
+                        key=t.key,
+                        summary=t.summary,
+                        description=t.description,
+                        type=t.type,
+                        labels=list(t.labels),
+                        model=t.model,
+                        blocked_by=list(t.blocked_by),
+                    )
+                    # Mark In Progress on the YAML BEFORE submit. If we submit
+                    # first, the main thread could re-load and re-dispatch the
+                    # same key before the worker has stamped In Progress.
+                    _mark_in_progress(cfg, snap, run_dir)
+                    # The task_started event is emitted by the worker (_run_task),
+                    # AFTER worktree creation + the dispatch-time dependency merge,
+                    # so its payload can carry the merged dependency SHAs (INT-4).
+                    fut = exe.submit(_run_task, snap, cfg, run_dir, log_path, repo_root)
+                    in_flight[fut] = snap.key
+                    _log(log_path, f"dispatch {snap.key} submitted")
+
+                if not in_flight:
+                    break  # nothing running, nothing to start
+
+                done, _pending = wait(list(in_flight), return_when=FIRST_COMPLETED)
+                for fut in done:
+                    key = in_flight.pop(fut)
                     try:
-                        _mark_blocked(cfg, key, reason=f"worker_exception: {e}")
-                    except Exception as mark_err:
-                        _log(log_path, f"  worker {key} _mark_blocked itself raised: {mark_err}")
+                        fut.result()  # propagate exceptions
+                    except Exception as e:
+                        _log(log_path, f"  worker {key} raised: {e}")
+                        # Notify on a dispatcher-internal error before
+                        # stamping Blocked (separate channel from a normal
+                        # task failure — see notify.worker_exception_*).
+                        _send_notification(cfg, notify_mod.worker_exception_notification(
+                            task_key=key,
+                            run_id=cfg.run_id,
+                            exception_repr=repr(e),
+                            tasks_yaml=str(cfg.tasks_path),
+                        ), task_key=key)
+                        try:
+                            _mark_blocked(cfg, key, reason=f"worker_exception: {e}")
+                        except Exception as mark_err:
+                            _log(log_path, f"  worker {key} _mark_blocked itself raised: {mark_err}")
+    finally:
+        # Stop the heartbeat and wait for it to fully exit before emitting
+        # run_complete, so that event is guaranteed to be the terminal record
+        # of the chain. The join is untimed deliberately: once `stop` is set the
+        # thread returns from `stop.wait()` immediately and can only be inside at
+        # most one bounded `append` (a single fsync), so this cannot hang any
+        # longer than the orchestrator's own appends already can.
+        stop_heartbeat.set()
+        heartbeat.join()
 
     tasks = _load_tasks_snapshot(cfg)
     done_tasks = [t for t in tasks if t.status == plan_mod.DONE]
@@ -615,6 +683,32 @@ def _run_task(
                 f"{integrate_result.detail[:300]}"
             )
 
+    # Post-Done push/PR verification (INT-3). The standard PR-raising workflow
+    # expects the Tasker to push its feat branch and (when PRs are configured)
+    # open a PR BEFORE reporting Done. DISP-9 reported Done with commits but
+    # never pushed — no PR was raised and integration found it by accident.
+    # Mirror the commit-retry safety net: verify push/PR state, retry once with
+    # a push/PR-only prompt, and if the branch is STILL unpushed (or the PR
+    # still missing) flag needs_push on the row + journal it so the supervisor
+    # sees it rather than discovering it by accident. Out of scope:
+    #   - auto-integrate runs merge direct-to-base and intentionally never push
+    #     (auto_integrate.py), so expect_pr == not auto_integrate.
+    #   - supervised mode that just raised the PR this session (final_url set):
+    #     we already hold the URL, so there is nothing to verify.
+    # The branch push is always verified; the PR half is required only when the
+    # Tasker did NOT honestly declare "Not raised: <reason>" — a deliberately
+    # PR-less Done (e.g. docs landed direct) must still push, but must not be
+    # flagged for a missing PR. A SILENT omission (no PR, no reason) is exactly
+    # the DISP-9 failure mode and still trips the PR check.
+    needs_push = False
+    if (final_status == plan_mod.DONE
+            and not cfg.auto_integrate
+            and final_url is None):
+        expect_pr = not s.pr_not_raised_reason
+        needs_push = _verify_push_and_maybe_retry(
+            cfg, snap, wt, summary_path, env, log_path, expect_pr=expect_pr,
+        )
+
     def _apply(row):
         row["status"] = final_status
         row["completed_at"] = _now_iso()
@@ -632,6 +726,11 @@ def _run_task(
             row["pr_not_raised_reason"] = s.pr_not_raised_reason
         if final_blocked_reason:
             row["blocked_reason"] = final_blocked_reason
+        # Advisory flag: Done landed but the branch is still unpushed (or its PR
+        # is missing) after one corrective re-spawn. Status stays Done — this is
+        # a surfacing signal for the supervisor/integrator, not a block.
+        if needs_push:
+            row["needs_push"] = True
         if s.prepared_pr_title:
             row["prepared_pr_title"] = s.prepared_pr_title
         if s.prepared_pr_branch:
@@ -700,6 +799,7 @@ def _run_task(
             "panel_consensus": panel_verdict.consensus if panel_verdict else None,
             "auto_integrate_status": integrate_result.status
                 if integrate_result else None,
+            "needs_push": needs_push,
         }, task_key=snap.key)
     else:
         _emit_event(cfg, journal_mod.EventType.task_blocked, {
@@ -1171,6 +1271,42 @@ Task context (for reference, do NOT redo):
 """
 
 
+_PUSH_RETRY_PROMPT_PREFIX = """\
+Your previous run on this task reported `Status: Done` and committed work on
+this branch, but the dispatcher could not confirm the work reached the remote:
+
+  {detail}
+
+This is a recoverable mistake — the commits are right there, they just need to
+be pushed (and a PR opened, if this run raises PRs). Do ONLY these steps. Do
+NOT redo the implementation, the review, or the analysis:
+
+1. Confirm your commits are present:
+   `git log --oneline {base_branch}..HEAD`.
+2. Push the branch to the remote, setting upstream:
+   `git push -u origin {branch}`.
+   (If the push is rejected because the remote moved, rebase onto the latest
+   `origin/{base_branch}` first, then push — do NOT force-push over others' work.)
+{pr_step}{final_step}. Update the `## PR` section of the summary file at $SUMMARY_PATH so it
+   reflects reality (the PR URL if one exists, otherwise an honest
+   `Not raised: <reason>`). Status stays `Done`.
+
+The dispatcher will re-check the push/PR state after this run. If the branch is
+still unpushed, the task stays Done but its row is flagged `needs_push: true`
+for a human to finish the push.
+
+Task context (for reference, do NOT redo):
+"""
+
+
+_PUSH_RETRY_PR_STEP = """\
+3. Ensure a pull request exists for this branch. Check first with
+   `gh pr list --head {branch} --state open`; if none exists, open one with
+   `gh pr create --base {base_branch} --head {branch}` (fill in a title/body
+   consistent with the summary file).
+"""
+
+
 def _retry_for_commit(cfg: RunConfig, snap: TaskSnapshot, wt: wt_mod.Worktree,
                       repo_root: Path, summary_path: Path, env: dict,
                       log_path: Path,
@@ -1227,6 +1363,164 @@ def _retry_for_commit(cfg: RunConfig, snap: TaskSnapshot, wt: wt_mod.Worktree,
             feat_baseline_sha=feat_baseline_sha):
         return None
     return "retried_ok"
+
+
+def _verify_push_and_maybe_retry(
+    cfg: RunConfig,
+    snap: TaskSnapshot,
+    wt: wt_mod.Worktree,
+    summary_path: Path,
+    env: dict,
+    log_path: Path,
+    *,
+    expect_pr: bool,
+) -> bool:
+    """Verify the Done task's branch is pushed (and a PR exists when expected).
+
+    Mirrors the commit-retry safety net: a clean push (and PR) is a no-op; a
+    missing push/PR triggers ONE corrective push/PR-only re-spawn, after which
+    the state is re-checked. Returns True iff the work is STILL unpushed (or the
+    PR still missing) after the retry — the caller flags ``needs_push`` on the
+    row. Returns False for a clean/recovered push, for a skipped check (no
+    remote), and for an inconclusive check (a git read error): an inability to
+    confirm must never be reported as a confirmed-unpushed branch.
+
+    ``expect_pr`` controls only the PR half — the branch push is always
+    verified. The caller passes False for a Done that honestly declared its PR
+    was not raised, so a deliberately PR-less Done isn't flagged for a missing
+    PR (it must still push, though).
+
+    Every outcome emits one ``push_verify`` journal event so the decision is
+    reconstructable from the journal alone — including the no-remote skip.
+    """
+    res = pv_mod.verify(
+        repo_root=wt.path,
+        branch=wt.branch,
+        expect_pr=expect_pr,
+        gh_bin=cfg.gh_bin,
+        log=lambda m: _log(log_path, m),
+    )
+
+    if res.status == "skipped-no-remote":
+        _log(log_path, f"  {snap.key} push-verify skipped: {res.detail}")
+        _emit_event(cfg, journal_mod.EventType.push_verify, {
+            "expect_pr": expect_pr, "outcome": "skipped-no-remote",
+            "reason": res.detail, "retry_attempted": False,
+        }, task_key=snap.key)
+        return False
+    if res.status == "error":
+        _log(log_path, f"  {snap.key} push-verify inconclusive: {res.detail}")
+        _emit_event(cfg, journal_mod.EventType.push_verify, {
+            "expect_pr": expect_pr, "outcome": "error",
+            "reason": res.detail, "retry_attempted": False,
+        }, task_key=snap.key)
+        return False
+    if not res.needs_attention:
+        _emit_event(cfg, journal_mod.EventType.push_verify, {
+            "expect_pr": expect_pr, "outcome": "pushed",
+            "reason": res.detail, "pr_checked": res.pr_checked,
+            "retry_attempted": False,
+        }, task_key=snap.key)
+        return False
+
+    # not-pushed / no-pr → one corrective push/PR-only re-spawn, then re-check.
+    _log(log_path,
+         f"  {snap.key} reported Done but {res.status} ({res.detail}) — "
+         f"retrying with push/PR-only prompt")
+    _retry_for_push(cfg, snap, wt, summary_path, env, log_path,
+                    initial=res, expect_pr=expect_pr)
+    res2 = pv_mod.verify(
+        repo_root=wt.path,
+        branch=wt.branch,
+        expect_pr=expect_pr,
+        gh_bin=cfg.gh_bin,
+        log=lambda m: _log(log_path, m),
+    )
+    if not res2.needs_attention:
+        # Recovered (status "ok") or a now-inconclusive read — either way we do
+        # not flag. "recovered" is the common, intended outcome.
+        outcome = "recovered" if res2.status == "ok" else res2.status
+        _log(log_path, f"  {snap.key} push-verify after retry: {outcome}")
+        _emit_event(cfg, journal_mod.EventType.push_verify, {
+            "expect_pr": expect_pr, "outcome": outcome,
+            "reason": res2.detail, "pr_checked": res2.pr_checked,
+            "retry_attempted": True, "pre_retry_status": res.status,
+        }, task_key=snap.key)
+        return False
+
+    _log(log_path,
+         f"  {snap.key} push-verify still {res2.status} after retry — "
+         f"flagging needs_push")
+    _emit_event(cfg, journal_mod.EventType.push_verify, {
+        "expect_pr": expect_pr, "outcome": "needs_push",
+        "reason": res2.detail, "pr_checked": res2.pr_checked,
+        "retry_attempted": True, "pre_retry_status": res.status,
+        "post_retry_status": res2.status,
+    }, task_key=snap.key)
+    return True
+
+
+def _retry_for_push(
+    cfg: RunConfig,
+    snap: TaskSnapshot,
+    wt: wt_mod.Worktree,
+    summary_path: Path,
+    env: dict,
+    log_path: Path,
+    *,
+    initial: pv_mod.PushVerifyResult,
+    expect_pr: bool,
+) -> bool:
+    """Re-spawn the Tasker with a push/PR-only corrective prompt.
+
+    Returns whether the spawn exited cleanly (exit code 0). The caller re-checks
+    the push state regardless of this return — a clean exit does not guarantee
+    the Tasker actually pushed, and a non-zero exit does not guarantee it
+    didn't.
+    """
+    pr_step = ""
+    final_step = 3
+    if expect_pr:
+        pr_step = _PUSH_RETRY_PR_STEP.format(
+            branch=wt.branch, base_branch=cfg.base_branch,
+        )
+        final_step = 4
+    prompt = _PUSH_RETRY_PROMPT_PREFIX.format(
+        detail=initial.detail,
+        branch=wt.branch,
+        base_branch=cfg.base_branch,
+        pr_step=pr_step,
+        final_step=final_step,
+    )
+    prompt += spawn_mod.build_prompt(
+        task_key=snap.key,
+        task_summary=snap.summary,
+        task_type=snap.type,
+        task_labels=snap.labels,
+        task_description=snap.description,
+        branch=wt.branch,
+        summary_path=summary_path,
+        run_id=cfg.run_id,
+        max_iterations=cfg.max_iterations,
+        financial_paths=cfg.financial_paths,
+        skip_design=cfg.skip_design,
+        skip_security_linter=cfg.skip_security_linter,
+        reviewer_count=cfg.reviewer_count,
+    )
+    retry_extra = list(cfg.claude_extra_args)
+    if snap.model:
+        retry_extra.extend(["--model", snap.model])
+    try:
+        result = spawn_mod.spawn_claude(
+            claude_bin=cfg.claude_bin, cwd=wt.path, env=env, prompt=prompt,
+            extra_args=retry_extra,
+            timeout_seconds=cfg.task_timeout_seconds,
+        )
+    except Exception as e:
+        _log(log_path, f"  {snap.key} push-retry spawn failed: {e}")
+        return False
+    _log(log_path, f"  {snap.key} push-retry exited code={result.exit_code}")
+    return result.exit_code == 0
 
 
 def _resolve_summary(
@@ -1447,6 +1741,7 @@ def _log(log_path: Path, message: str) -> None:
 
 def _open_journal(
     cfg: RunConfig, run_dir: Path, repo_root: Path, log_path: Path,
+    *, run_config: dict[str, Any] | None = None,
 ) -> journal_mod.Journal | None:
     """Create this run's event journal, or return None on failure.
 
@@ -1455,6 +1750,9 @@ def _open_journal(
     hashing error, …) we warn to stderr + run.log and return None so the
     dispatch loop proceeds journal-less. Every later emit is a no-op when
     the journal is None. Mirrors the notifier's best-effort policy.
+
+    ``run_config`` is the resolved run arguments embedded in the genesis so
+    `dispatcher resume` can replay this run from the journal alone.
     """
     journal_path = run_dir / journal_mod.JOURNAL_FILENAME
     reviewer_prompts_dir = getattr(
@@ -1467,6 +1765,7 @@ def _open_journal(
             tasks_yaml_path=cfg.tasks_path,
             reviewer_prompts_dir=reviewer_prompts_dir,
             run_id=cfg.run_id,
+            run_config=run_config,
         )
         _log(log_path, f"event journal at {journal_path}")
         return j
@@ -1475,6 +1774,51 @@ def _open_journal(
         _log(log_path, msg)
         sys.stderr.write(f"warning: {msg}\n")
         return None
+
+
+def _heartbeat_loop(cfg: RunConfig, stop: threading.Event) -> None:
+    """Append a ``heartbeat`` event every HEARTBEAT_INTERVAL_SECONDS until
+    ``stop`` is set. Runs on a daemon thread; goes through ``_emit_event`` so
+    a journal-less run (cfg.journal is None) is a no-op and an append failure
+    is swallowed — a flaky filesystem must never take down the run."""
+    while not stop.wait(HEARTBEAT_INTERVAL_SECONDS):
+        _emit_event(cfg, journal_mod.EventType.heartbeat)
+
+
+# Run arguments that must NOT be persisted into the genesis. The journal is a
+# long-lived, hash-covered on-disk artifact; once an event is chained its bytes
+# cannot be redacted without breaking verification. The notifier credentials are
+# secrets (the webhook URL / ntfy topic IS the secret — see the CLI help), so
+# embedding them in run_config would leak them at rest. They are intentionally
+# omitted: a resumed run rebuilds its notifier from the environment via
+# build_notifier_from_env(), so the only behavioral difference is that a secret
+# passed on argv (which the CLI help already discourages) is not replayed.
+_GENESIS_CONFIG_SECRET_KEYS = frozenset(
+    {"slack_webhook_url", "ntfy_topic", "ntfy_server"}
+)
+
+
+def _genesis_config(args: argparse.Namespace, cfg: RunConfig) -> dict[str, Any]:
+    """Serialize the run's arguments for the genesis ``run_config`` payload.
+
+    Captures every ``dispatcher run`` argument verbatim (all JSON-safe:
+    str/int/bool/None) minus the non-serializable ``func`` callable and the
+    notifier secrets in :data:`_GENESIS_CONFIG_SECRET_KEYS` (never persist a
+    secret into the hash-covered journal), then overrides ``base_branch`` /
+    ``run_id`` with the values resolved at run time (the YAML's top-level
+    base_branch and the default run-id are resolved after argument parsing) so
+    a resume forks from the same branch and reuses the same run directory.
+    ``tasks_yaml`` is normalised to the resolved absolute path so resume
+    locates it regardless of its own working directory.
+    """
+    d = {
+        k: v for k, v in vars(args).items()
+        if k != "func" and k not in _GENESIS_CONFIG_SECRET_KEYS
+    }
+    d["base_branch"] = cfg.base_branch
+    d["run_id"] = cfg.run_id
+    d["tasks_yaml"] = str(cfg.tasks_path)
+    return d
 
 
 def _emit_event(

@@ -108,10 +108,12 @@ class EventType(str, Enum):
     """
 
     run_started = "run_started"
+    heartbeat = "heartbeat"
     task_started = "task_started"
     task_spawn_finished = "task_spawn_finished"
     summary_parsed = "summary_parsed"
     commit_retry = "commit_retry"
+    push_verify = "push_verify"
     panel_started = "panel_started"
     panel_verdict = "panel_verdict"
     panel_iterate = "panel_iterate"
@@ -121,6 +123,11 @@ class EventType(str, Enum):
     integrate_result = "integrate_result"
     notify_sent = "notify_sent"
     run_complete = "run_complete"
+    # Resume lifecycle (DISP-11 / INT-1). These appear only in a journal that
+    # `dispatcher resume` has continued; a normal run never emits them.
+    resume_started = "resume_started"        # links this resume to the prior genesis
+    task_reset = "task_reset"                # In Progress → To Do, will re-dispatch
+    task_marked_blocked = "task_marked_blocked"  # In Progress → Blocked (--strategy)
 
 
 # --- hashing helpers --------------------------------------------------------
@@ -324,6 +331,7 @@ class Journal:
         hostname: str | None = None,
         run_id: str | None = None,
         run_nonce: str | None = None,
+        run_config: dict[str, Any] | None = None,
         clock=_now_iso,
     ) -> "Journal":
         """Create a new journal and write its genesis (``run_started``) event.
@@ -334,6 +342,14 @@ class Journal:
         parent directory is created (and ``fsync``ed) if missing. Fails if the
         file already exists and is non-empty (use :meth:`resume` to continue an
         existing journal).
+
+        ``run_config``, when given, is stored verbatim under the genesis
+        payload's ``run_config`` key. It is the resolved ``dispatcher run``
+        configuration that :func:`claude_dispatcher.resume.execute` reads to
+        reconstruct an interrupted run without being told the tasks-YAML path
+        again. It is an *extra* payload key — :func:`verify` only requires the
+        provenance keys, so its presence or absence never affects chain
+        validity.
         """
         p = Path(path)
         if p.exists() and p.stat().st_size > 0:
@@ -349,6 +365,7 @@ class Journal:
             hostname=hostname,
             run_id=run_id,
             run_nonce=run_nonce,
+            run_config=run_config,
         )
         journal = cls(p, last_seq=-1, last_hash=GENESIS_PREV_HASH, clock=clock)
         journal.append(EventType.run_started, genesis_payload, task_key=None)
@@ -461,6 +478,7 @@ def build_genesis_payload(
     hostname: str | None = None,
     run_id: str | None = None,
     run_nonce: str | None = None,
+    run_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the genesis event payload: provenance fields + a uniqueness nonce.
 
@@ -468,8 +486,13 @@ def build_genesis_payload(
     two runs with otherwise-identical provenance produce distinct chains, so an
     event cannot be spliced from one run into another. Pass an explicit value
     only in tests that need determinism.
+
+    ``run_config``, when given, is attached under the ``run_config`` key — the
+    resolved run arguments ``dispatcher resume`` replays. It is an extra,
+    non-provenance key (:data:`GENESIS_PROVENANCE_KEYS` is unchanged), so it
+    never affects what :func:`verify` accepts.
     """
-    return {
+    payload: dict[str, Any] = {
         "dispatcher_version": dispatcher_version,
         "tasks_yaml_path": str(tasks_yaml_path),
         "tasks_yaml_hash": hash_file(tasks_yaml_path),
@@ -478,6 +501,9 @@ def build_genesis_payload(
         "run_id": run_id,
         "run_nonce": run_nonce if run_nonce is not None else secrets.token_hex(16),
     }
+    if run_config is not None:
+        payload["run_config"] = run_config
+    return payload
 
 
 def _fsync_dir(directory: Path) -> None:
