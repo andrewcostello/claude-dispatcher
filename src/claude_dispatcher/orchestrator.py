@@ -162,6 +162,10 @@ class TaskSnapshot:
     type: str
     labels: list[str]
     model: str | None = None
+    # blockedBy dependency keys, in declaration order. Used at worker start to
+    # merge each dependency's branch into this task's fresh worktree branch
+    # when the dependency's commits are not yet on base (INT-4).
+    blocked_by: list[str] = field(default_factory=list)
 
 
 # --- entry point -----------------------------------------------------------
@@ -268,17 +272,15 @@ def _run_loop(
                         type=t.type,
                         labels=list(t.labels),
                         model=t.model,
+                        blocked_by=list(t.blocked_by),
                     )
                     # Mark In Progress on the YAML BEFORE submit. If we submit
                     # first, the main thread could re-load and re-dispatch the
                     # same key before the worker has stamped In Progress.
                     _mark_in_progress(cfg, snap, run_dir)
-                    _emit_event(cfg, journal_mod.EventType.task_started, {
-                        "summary": snap.summary,
-                        "type": snap.type,
-                        "labels": list(snap.labels),
-                        "model": snap.model,
-                    }, task_key=snap.key)
+                    # The task_started event is emitted by the worker (_run_task),
+                    # AFTER worktree creation + the dispatch-time dependency merge,
+                    # so its payload can carry the merged dependency SHAs (INT-4).
                     fut = exe.submit(_run_task, snap, cfg, run_dir, log_path, repo_root)
                     in_flight[fut] = snap.key
                     _log(log_path, f"dispatch {snap.key} submitted")
@@ -370,8 +372,19 @@ def _run_task(
     _log(log_path, f"  {snap.key} starting")
 
     branch = wt_mod.branch_name(snap.type, snap.key, snap.summary)
-    wt = wt_mod.create(repo_root, snap.key, branch,
-                       base_branch=cfg.base_branch, base_path=cfg.worktree_base)
+    try:
+        wt = wt_mod.create(repo_root, snap.key, branch,
+                           base_branch=cfg.base_branch, base_path=cfg.worktree_base)
+    except wt_mod.WorktreeError as e:
+        # Worktree creation failed before we could attempt the dependency
+        # merge. Emit task_started so the lifecycle still has a start record,
+        # then Block (_mark_blocked emits the terminal task_blocked event +
+        # notification). This keeps task_started the first per-task event.
+        _emit_event(cfg, journal_mod.EventType.task_started,
+                    _task_started_payload(snap), task_key=snap.key)
+        _log(log_path, f"  {snap.key} worktree creation failed: {e}")
+        _mark_blocked(cfg, snap.key, reason=f"worktree_create_failed: {e}")
+        return plan_mod.BLOCKED
     _log(log_path, f"  {snap.key} worktree at {wt.path} branch {wt.branch}")
 
     summary_path = run_dir / snap.key / "summary.md"
@@ -382,6 +395,42 @@ def _run_task(
         "branch": branch,
         "summary_path": str(summary_path),
     }))
+
+    # Dispatch-time dependency rule (INT-4): merge each blockedBy dependency's
+    # branch into this task's fresh worktree branch when the dependency's
+    # commits are not yet reachable from base_branch. This gives the Tasker a
+    # tree that already contains its dependencies' work, mechanically —
+    # instead of relying on the Tasker to discover and merge them (run #2
+    # showed that behavior varies too much to trust). A no-op when the task
+    # has no dependencies, or when they are already on base (auto-integrate).
+    dep_branches = _resolve_dependency_branches(cfg, snap.blocked_by)
+    merge_result = wt_mod.merge_dependencies(
+        repo_root, wt, cfg.base_branch, dep_branches,
+        log=lambda m: _log(log_path, m),
+    )
+    # task_started carries the merge outcome (merged dependency SHAs).
+    _emit_event(cfg, journal_mod.EventType.task_started,
+                _task_started_payload(snap, merge_result), task_key=snap.key)
+    if merge_result.conflict is not None:
+        # Conflicting dependency branches: do NOT dispatch a Tasker into a
+        # conflicted tree. Block with a dependency_merge_conflict reason; the
+        # task_started event above already journaled the conflict detail.
+        c = merge_result.conflict
+        _mark_blocked(
+            cfg, snap.key,
+            reason=f"dependency_merge_conflict: {c.key} ({c.branch}): {c.detail}",
+        )
+        return plan_mod.BLOCKED
+
+    # When dependency branches were merged, the task branch already has commits
+    # beyond base before the Tasker runs — so "did the Tasker commit its own
+    # work?" must be measured against the post-merge tip, not base. Capture it
+    # here; None when nothing was merged (preserving the base-relative check
+    # exactly for the common no-dependency path).
+    feat_baseline_sha = (
+        _branch_sha(repo_root, wt.branch, log_path, snap.key)
+        if merge_result.merged else None
+    )
 
     env = spawn_mod.build_env(
         task_key=snap.key,
@@ -471,10 +520,12 @@ def _run_task(
     if (s.status == "Done"
             and not _has_commits_on_branch(
                 wt, cfg.base_branch, repo_root,
-                base_sha_before, log_path, snap.key)):
+                base_sha_before, log_path, snap.key,
+                feat_baseline_sha=feat_baseline_sha)):
         _log(log_path, f"  {snap.key} reported Done but no commits on branch — retrying with commit-only prompt")
         retry_status = _retry_for_commit(
             cfg, snap, wt, repo_root, summary_path, env, log_path,
+            feat_baseline_sha=feat_baseline_sha,
         )
         _emit_event(cfg, journal_mod.EventType.commit_retry, {
             "trigger": "reported Done with no commits on branch",
@@ -1052,14 +1103,19 @@ def _branch_sha(repo_root: Path, branch: str,
 def _has_commits_on_branch(wt: wt_mod.Worktree, base_branch: str,
                             repo_root: Path,
                             base_sha_before: str | None,
-                            log_path: Path, task_key: str) -> bool:
+                            log_path: Path, task_key: str,
+                            feat_baseline_sha: str | None = None) -> bool:
     """True iff the spawn produced new commits, on the feat branch OR on
     `base_branch` directly (the direct-to-base workflow).
 
     Two success modes:
     1. **Feature-branch mode (standard)**: the worktree's feat branch has
-       at least one commit beyond `base_branch`. This is the original
-       check — Tasker ran `git commit` on feat/X without merging.
+       at least one commit beyond its baseline. The baseline is
+       `base_branch` normally; but when dispatch-time dependency merges
+       (INT-4) put dependency commits on the feat branch BEFORE the spawn,
+       `feat_baseline_sha` (the post-merge tip) is the baseline instead — so
+       the merged dependency commits don't get miscounted as the Tasker's own
+       work. This is the original check — Tasker ran `git commit` on feat/X.
     2. **Direct-to-base mode (BSA-style)**: `base_branch`'s tip has
        advanced past `base_sha_before` (the SHA snapshot taken before
        the spawn). This catches the Tasker that fast-forwarded feat/X
@@ -1075,10 +1131,12 @@ def _has_commits_on_branch(wt: wt_mod.Worktree, base_branch: str,
     merge.
     """
     import subprocess
-    # Mode 1: feat branch has commits past base_branch.
+    # Mode 1: feat branch has commits past its baseline (post-dependency-merge
+    # tip when deps were merged in, else base_branch).
+    feat_baseline = feat_baseline_sha or base_branch
     try:
         proc = subprocess.run(
-            ["git", "rev-list", "--count", f"{base_branch}..HEAD"],
+            ["git", "rev-list", "--count", f"{feat_baseline}..HEAD"],
             cwd=str(wt.path), capture_output=True, text=True, check=False, timeout=30,
         )
     except Exception as e:
@@ -1106,11 +1164,20 @@ def _has_commits_on_branch(wt: wt_mod.Worktree, base_branch: str,
         return False
     if base_sha_after == base_sha_before:
         return False
-    # Confirm base actually moved FORWARD (not a force-reset or rewind).
+    # Confirm base actually moved FORWARD (not a force-reset or rewind) — and,
+    # when dependency branches were merged into the feat branch (INT-4), that
+    # base advanced by the Tasker's OWN commits and not merely by the merged
+    # dependency commits. Excluding `^feat_baseline_sha` drops everything
+    # reachable from the post-merge tip (the deps + their merge commits), so a
+    # dependent that only fast-forwarded its dep-containing branch into base
+    # without committing its own work is correctly seen as no-commits.
+    rev_list_args = ["git", "rev-list", "--count",
+                     f"{base_sha_before}..{base_sha_after}"]
+    if feat_baseline_sha:
+        rev_list_args.append(f"^{feat_baseline_sha}")
     try:
         proc = subprocess.run(
-            ["git", "rev-list", "--count",
-             f"{base_sha_before}..{base_sha_after}"],
+            rev_list_args,
             cwd=str(repo_root), capture_output=True, text=True,
             check=False, timeout=30,
         )
@@ -1242,7 +1309,8 @@ _PUSH_RETRY_PR_STEP = """\
 
 def _retry_for_commit(cfg: RunConfig, snap: TaskSnapshot, wt: wt_mod.Worktree,
                       repo_root: Path, summary_path: Path, env: dict,
-                      log_path: Path) -> str | None:
+                      log_path: Path,
+                      feat_baseline_sha: str | None = None) -> str | None:
     """Re-spawn the Tasker with a corrective prompt asking only for the
     missing commit. Returns the spawn result's exit-code-based outcome
     or None if the retry left no commits.
@@ -1250,6 +1318,10 @@ def _retry_for_commit(cfg: RunConfig, snap: TaskSnapshot, wt: wt_mod.Worktree,
     `repo_root` is needed so the post-spawn commit check can also detect
     a direct-to-base fast-forward (the retry Tasker may FF into
     base_branch instead of leaving commits on the feat branch).
+
+    `feat_baseline_sha` (INT-4) is the post-dependency-merge tip, so the
+    retry's commit check measures the Tasker's own work, not the merged
+    dependency commits. None for tasks with no merged dependencies.
     """
     prompt = _COMMIT_RETRY_PROMPT_PREFIX.format(base_branch=cfg.base_branch)
     prompt += spawn_mod.build_prompt(
@@ -1287,7 +1359,8 @@ def _retry_for_commit(cfg: RunConfig, snap: TaskSnapshot, wt: wt_mod.Worktree,
     _log(log_path, f"  {snap.key} commit-retry exited code={result.exit_code}")
     if not _has_commits_on_branch(
             wt, cfg.base_branch, repo_root,
-            retry_base_sha_before, log_path, snap.key):
+            retry_base_sha_before, log_path, snap.key,
+            feat_baseline_sha=feat_baseline_sha):
         return None
     return "retried_ok"
 
@@ -1802,6 +1875,44 @@ def _send_notification(
     return delivered
 
 
+def _task_started_payload(
+    snap: TaskSnapshot,
+    merge_result: "wt_mod.DependencyMergeResult | None" = None,
+) -> dict[str, Any]:
+    """Build the task_started payload: task metadata + the dispatch-time
+    dependency-merge outcome (INT-4).
+
+    ``merged_dependencies`` carries each merged dependency's branch + tip SHA
+    so an auditor can reconstruct exactly which dependency commits this task
+    was built on. ``dependencies_already_on_base`` / ``dependencies_unresolved``
+    record the no-op and unresolved deps. On a conflict,
+    ``dependency_merge_conflict`` carries the offending dependency + detail.
+    Fields beyond the base metadata are omitted when empty/absent (e.g. a
+    worktree-create failure passes ``merge_result=None``).
+    """
+    payload: dict[str, Any] = {
+        "summary": snap.summary,
+        "type": snap.type,
+        "labels": list(snap.labels),
+        "model": snap.model,
+    }
+    if merge_result is not None:
+        payload["merged_dependencies"] = [
+            {"key": m.key, "branch": m.branch, "sha": m.sha}
+            for m in merge_result.merged
+        ]
+        if merge_result.already_on_base:
+            payload["dependencies_already_on_base"] = list(merge_result.already_on_base)
+        if merge_result.unresolved:
+            payload["dependencies_unresolved"] = list(merge_result.unresolved)
+        if merge_result.conflict is not None:
+            c = merge_result.conflict
+            payload["dependency_merge_conflict"] = {
+                "key": c.key, "branch": c.branch, "detail": c.detail[:300],
+            }
+    return payload
+
+
 def _spawn_usage_payload(result: spawn_mod.SpawnResult) -> dict[str, Any]:
     """Build the task_spawn_finished payload: exit code + per-task usage/cost.
 
@@ -1879,6 +1990,40 @@ def _load_tasks_snapshot(cfg: RunConfig) -> list[plan_mod.Task]:
     with yaml_io.FileLock(cfg.tasks_path, timeout_seconds=cfg.lock_timeout_seconds):
         doc = yaml_io.load(cfg.tasks_path)
     return plan_mod.load_tasks(doc)
+
+
+def _resolve_dependency_branches(
+    cfg: RunConfig, blocked_by: list[str],
+) -> list[tuple[str, str]]:
+    """Resolve each blockedBy key to a ``(key, branch)`` pair, in blockedBy
+    order (INT-4).
+
+    The branch is read from the dependency's YAML row ``branch`` field
+    (stamped when that task was dispatched); if absent, it is recomputed
+    deterministically from the dependency's type + summary via
+    ``branch_name()`` — the same function that produced it. Keys with no
+    matching row are dropped (a validated YAML can't reference unknown keys,
+    but the snapshot is taken under lock and may differ from validation time).
+    """
+    if not blocked_by:
+        return []
+    tasks = _load_tasks_snapshot(cfg)
+    by_key = {t.key: t for t in tasks}
+    out: list[tuple[str, str]] = []
+    for dep_key in blocked_by:
+        dep = by_key.get(dep_key)
+        if dep is None:
+            continue
+        branch = None
+        raw = getattr(dep, "raw", None)
+        if isinstance(raw, dict):
+            raw_branch = raw.get("branch")
+            if raw_branch:
+                branch = str(raw_branch)
+        if not branch:
+            branch = wt_mod.branch_name(dep.type, dep.key, dep.summary)
+        out.append((dep_key, branch))
+    return out
 
 
 def _format_pr_gate_prompt(snap: TaskSnapshot, s: summary_mod.Summary) -> str:
