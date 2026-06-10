@@ -47,7 +47,9 @@ def repo(tmp_path: Path) -> Path:
     subprocess.run(["git", "config", "user.name", "Test"],
                    cwd=tmp_path, check=True, capture_output=True)
 
-    roles = tmp_path / ".claude" / "roles"
+    # Tracked at the canonical path so the run-start preflight's role-file
+    # check passes without needing a probe worktree.
+    roles = tmp_path / ".claude" / "workflow" / "roles"
     roles.mkdir(parents=True)
     (roles / "tasker.md").write_text("# Tasker stub for testing", encoding="utf-8")
 
@@ -73,6 +75,9 @@ def _build_args(repo: Path, **overrides) -> Any:
         "--runs-dir", runs_dir,
         "--worktree-base", str(repo.parent / "worktrees-test"),
         "--claude-bin", f"{sys.executable}",
+        # Permission-bypass flag so the run-start preflight passes; the smoke
+        # harness runs WITH preflight enabled (more realistic than skipping).
+        "--claude-extra-args=--permission-mode bypassPermissions",
     ]
     for k, v in overrides.items():
         if v is None:

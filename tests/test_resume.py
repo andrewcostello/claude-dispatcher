@@ -84,6 +84,7 @@ def _run_args(repo: Path, run_id: str, **overrides):
         "--worktree-base", str(repo.parent / "wt"),
         "--claude-bin", sys.executable,
         "--cross-family-panel", "never",
+        "--claude-extra-args=--permission-mode bypassPermissions",
     ]
     for k, v in overrides.items():
         argv += [f"--{k.replace('_', '-')}", str(v)]
@@ -351,7 +352,8 @@ def test_kill9_midrun_then_resume_matches_uninterrupted(tmp_path: Path, monkeypa
          "--run-id", "KILLED", "--runs-dir", str(repo / "_runs"),
          "--worktree-base", str(repo.parent / "wt"),
          "--claude-bin", str(fake_bin),
-         "--cross-family-panel", "never"],
+         "--cross-family-panel", "never",
+         "--claude-extra-args=--permission-mode bypassPermissions"],
         env=env, capture_output=True, text=True, timeout=120,
     )
     # The dispatcher was killed by SIGKILL → negative returncode.

@@ -143,6 +143,20 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument(
+        "--skip-preflight",
+        action="store_true",
+        default=False,
+        help=(
+            "Skip the run-start preflight checks (claude binary present, "
+            "permission-bypass flag in --claude-extra-args, Tasker role file "
+            "resolvable from a fresh worktree, dispatcher-staleness warning). "
+            "The skip itself is journaled (a `preflight` event with "
+            "skipped=true, plus run_config.skip_preflight in the genesis). "
+            "Use only when a check is wrong for your setup — these checks "
+            "exist because each failure mode silently burned a real run."
+        ),
+    )
+    run.add_argument(
         "--gh-bin",
         default="gh",
         help="gh CLI binary name (default: gh, used for `gh pr create` in supervised mode)",

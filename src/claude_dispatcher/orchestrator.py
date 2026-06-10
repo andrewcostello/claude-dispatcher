@@ -36,6 +36,7 @@ from . import journal as journal_mod
 from . import notify as notify_mod
 from . import plan as plan_mod
 from . import pr as pr_mod
+from . import preflight as preflight_mod
 from . import push_verify as pv_mod
 from . import spawn as spawn_mod
 from . import summary as summary_mod
@@ -189,12 +190,40 @@ def execute(args: argparse.Namespace) -> int:
         if yaml_base:
             cfg.base_branch = str(yaml_base).strip()
 
+    # Pure read; needed by the preflight before any run artifact exists.
+    repo_root = wt_mod.detect_repo_root(cfg.tasks_path.parent)
+
+    # Run-start preflight (live modes only — dry-run returns in run.py and
+    # never reaches this function). Failures exit 2 HERE, before the run
+    # directory, journal, or any worktree exists, so a doomed run leaves no
+    # half-created artifacts behind. Warnings print now (no run.log yet) and
+    # are replayed into run.log once it exists. The outcome — including an
+    # explicit --skip-preflight — is journaled right after the journal opens.
+    if getattr(args, "skip_preflight", False):
+        pf = preflight_mod.skipped_result()
+        pf_skipped = True
+    else:
+        pf = preflight_mod.run_preflight(
+            claude_bin=cfg.claude_bin,
+            claude_extra_args=cfg.claude_extra_args,
+            mode=cfg.mode,
+            repo_root=repo_root,
+            base_branch=cfg.base_branch,
+        )
+        pf_skipped = False
+        if not pf.ok:
+            for failure in pf.failures:
+                print(f"error: preflight: {failure}", file=sys.stderr)
+            return 2
+        for warning in pf.warnings:
+            print(f"warning: preflight: {warning}", file=sys.stderr)
+
     run_dir = cfg.runs_dir / cfg.run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     log_path = run_dir / "run.log"
     _log(log_path, f"start run {cfg.run_id} mode={cfg.mode} max_parallel={cfg.max_parallel}")
-
-    repo_root = wt_mod.detect_repo_root(cfg.tasks_path.parent)
+    for warning in pf.warnings:
+        _log(log_path, f"preflight warning: {warning}")
 
     # Open the event journal. Its genesis (run_started, seq 0) event records
     # the run's provenance — dispatcher version, tasks.yaml + reviewer-prompts
@@ -206,6 +235,17 @@ def execute(args: argparse.Namespace) -> int:
     cfg.journal = _open_journal(
         cfg, run_dir, repo_root, log_path, run_config=_genesis_config(args, cfg),
     )
+
+    # Journal the preflight outcome (or the explicit skip). `failures` is
+    # always empty on this path — a failed preflight returned 2 above, before
+    # the journal existed (see preflight.py's module docstring). Run-level
+    # event: task_key stays None, like run_started/run_complete.
+    _emit_event(cfg, journal_mod.EventType.preflight, {
+        "skipped": pf_skipped,
+        "checks": pf.checks,
+        "warnings": list(pf.warnings),
+        "failures": [],
+    })
 
     return _run_loop(cfg, run_dir, log_path, repo_root)
 
@@ -220,6 +260,11 @@ def resume_run(args: argparse.Namespace, journal: journal_mod.Journal) -> int:
     ``journal`` is the EXISTING run's journal, opened for append via
     :meth:`Journal.resume` — this continues the original chain rather than
     starting a new genesis.
+
+    Deliberately does NOT re-run the run-start preflight: the original run's
+    preflight verdict (or its explicit ``--skip-preflight``) is already on
+    the chain as the ``preflight`` event, and re-checking mid-run could
+    refuse to finish work that is already half-landed.
     """
     cfg = _build_config(args)
     cfg.journal = journal

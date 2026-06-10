@@ -28,7 +28,8 @@ def repo(tmp_path: Path) -> Path:
                    cwd=tmp_path, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.name", "Test"],
                    cwd=tmp_path, check=True, capture_output=True)
-    roles = tmp_path / ".claude" / "roles"
+    # Tracked at the canonical path so the run-start preflight passes.
+    roles = tmp_path / ".claude" / "workflow" / "roles"
     roles.mkdir(parents=True)
     (roles / "tasker.md").write_text("stub", encoding="utf-8")
     src = Path(__file__).parent / "fixtures" / "three_task.yaml"
@@ -49,6 +50,7 @@ def _args(repo: Path, max_parallel: int):
         "--worktree-base", str(repo.parent / f"worktrees-conc-{max_parallel}"),
         "--claude-bin", sys.executable,
         "--max-parallel", str(max_parallel),
+        "--claude-extra-args=--permission-mode bypassPermissions",
     ]
     return parser.parse_args(argv)
 
