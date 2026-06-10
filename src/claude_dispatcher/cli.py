@@ -304,6 +304,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run ID to report on. Defaults to the latest run in --runs-dir.",
     )
     rp.add_argument("--runs-dir", default="docs/runs")
+    rp.add_argument(
+        "--json",
+        action="store_true",
+        help=("Emit the structured JSON document instead of the table "
+              "(schema in docs/report-json.md)"),
+    )
     rp.set_defaults(func=report_cmd.execute)
 
     # --- forecast-create ---------------------------------------------------

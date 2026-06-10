@@ -1,0 +1,222 @@
+{
+  "run_id": "fixture-run",
+  "source": "journal",
+  "source_label": "journal",
+  "summary_file_count": 1,
+  "status_counts": {
+    "To Do": 0,
+    "In Progress": 1,
+    "Done": 2,
+    "Blocked": 1,
+    "Escalated": 0
+  },
+  "rollup": {
+    "wall_clock": {
+      "started_at": "2026-06-10T18:00:00+00:00",
+      "ended_at": "2026-06-10T18:30:00+00:00",
+      "seconds": 1800.0,
+      "in_flight": false
+    },
+    "totals": {
+      "tasks_by_status": {
+        "In Progress": 2,
+        "Done": 1,
+        "Blocked": 1
+      },
+      "cost_usd": 0.09,
+      "input_tokens": 1610,
+      "output_tokens": 805,
+      "cache_read_input_tokens": 141,
+      "cache_creation_input_tokens": 72,
+      "duration_ms": 51000,
+      "tasks_billed": 2,
+      "spawn_count": 4,
+      "unmeasured_spawns": 1
+    },
+    "tasks": [
+      {
+        "key": "GHOST-1",
+        "status": "In Progress",
+        "model": "claude-haiku-4-5",
+        "agent": null,
+        "cost_usd": 0.01,
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "cache_read_input_tokens": 1,
+        "cache_creation_input_tokens": 2,
+        "duration_ms": 1000,
+        "spawn_count": 1,
+        "unmeasured_spawns": 0,
+        "iterations": null,
+        "panel_verdict": null,
+        "needs_push": null,
+        "in_yaml": false
+      },
+      {
+        "key": "REP-A",
+        "status": "Done",
+        "model": "claude-opus-4-8",
+        "agent": "claude",
+        "cost_usd": 0.08,
+        "input_tokens": 1600,
+        "output_tokens": 800,
+        "cache_read_input_tokens": 140,
+        "cache_creation_input_tokens": 70,
+        "duration_ms": 50000,
+        "spawn_count": 2,
+        "unmeasured_spawns": 0,
+        "iterations": 1,
+        "panel_verdict": "approve",
+        "needs_push": false,
+        "in_yaml": true
+      },
+      {
+        "key": "REP-B",
+        "status": "Blocked",
+        "model": null,
+        "agent": null,
+        "cost_usd": null,
+        "input_tokens": null,
+        "output_tokens": null,
+        "cache_read_input_tokens": null,
+        "cache_creation_input_tokens": null,
+        "duration_ms": null,
+        "spawn_count": 1,
+        "unmeasured_spawns": 1,
+        "iterations": null,
+        "panel_verdict": null,
+        "needs_push": null,
+        "in_yaml": true
+      },
+      {
+        "key": "REP-C",
+        "status": "In Progress",
+        "model": null,
+        "agent": null,
+        "cost_usd": null,
+        "input_tokens": null,
+        "output_tokens": null,
+        "cache_read_input_tokens": null,
+        "cache_creation_input_tokens": null,
+        "duration_ms": null,
+        "spawn_count": 0,
+        "unmeasured_spawns": 0,
+        "iterations": null,
+        "panel_verdict": null,
+        "needs_push": null,
+        "in_yaml": true
+      }
+    ],
+    "by_model": [
+      {
+        "model": "claude-haiku-4-5",
+        "spawns": 1,
+        "tasks": 1,
+        "cost_usd": 0.01,
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "cache_read_input_tokens": 1,
+        "cache_creation_input_tokens": 2,
+        "unmeasured_spawns": 0
+      },
+      {
+        "model": "claude-opus-4-8",
+        "spawns": 2,
+        "tasks": 1,
+        "cost_usd": 0.08,
+        "input_tokens": 1600,
+        "output_tokens": 800,
+        "cache_read_input_tokens": 140,
+        "cache_creation_input_tokens": 70,
+        "unmeasured_spawns": 0
+      },
+      {
+        "model": "unknown",
+        "spawns": 1,
+        "tasks": 1,
+        "cost_usd": null,
+        "input_tokens": null,
+        "output_tokens": null,
+        "cache_read_input_tokens": null,
+        "cache_creation_input_tokens": null,
+        "unmeasured_spawns": 1
+      }
+    ]
+  },
+  "quality": {
+    "tasks": [
+      {
+        "key": "REP-A",
+        "jira_key": null,
+        "status": "Done",
+        "final_quality_score": 23,
+        "iteration_count": 1,
+        "linter_cycles": null,
+        "deferred_findings_count": null,
+        "human_gate_fired": false,
+        "pr_url": "https://example.test/pr/7"
+      },
+      {
+        "key": "REP-B",
+        "jira_key": null,
+        "status": "Blocked",
+        "final_quality_score": null,
+        "iteration_count": null,
+        "linter_cycles": null,
+        "deferred_findings_count": null,
+        "human_gate_fired": false,
+        "pr_url": null
+      },
+      {
+        "key": "REP-C",
+        "jira_key": null,
+        "status": "In Progress",
+        "final_quality_score": null,
+        "iteration_count": null,
+        "linter_cycles": null,
+        "deferred_findings_count": null,
+        "human_gate_fired": false,
+        "pr_url": null
+      }
+    ],
+    "concerning": [
+      {
+        "key": "REP-A",
+        "reasons": [
+          "iterated 1x before APPROVE"
+        ]
+      }
+    ],
+    "reviews": [
+      {
+        "key": "REP-A",
+        "status": "Done",
+        "consensus": [
+          {
+            "reviewer": "A",
+            "score": "23/25",
+            "verdict": "APPROVE"
+          }
+        ],
+        "per_dimension": {},
+        "deferred_findings": [
+          "minor: rename helper"
+        ]
+      }
+    ],
+    "prs": [
+      {
+        "key": "REP-A",
+        "jira_key": null,
+        "pr_url": "https://example.test/pr/7"
+      }
+    ],
+    "parked": [],
+    "blocked": [
+      {
+        "key": "REP-B",
+        "reason": "panel block: 2 blocking findings"
+      }
+    ]
+  }
+}
