@@ -69,7 +69,8 @@ dispatcher run <tasks-yaml> [options]
   --slack-webhook-url URL                   Slack incoming webhook URL              (env: DISPATCHER_SLACK_WEBHOOK)
 
 dispatcher status <run-id>                  current state of a run            (not yet implemented)
-dispatcher resume <run-id>                  pick up an interrupted run        (not yet implemented)
+dispatcher resume <run-id> [--strategy {continue,mark-blocked}] [--force]
+                                            pick up an interrupted run from its journal — see Resume below
 dispatcher report <run-id>                  summary of completed tasks         (not yet implemented)
 
 dispatcher forecast-create <tasks-yaml> [--dry-run]
@@ -417,11 +418,45 @@ Tasks with `blockedBy` only enter the runnable set after every dependency reache
 | `--max-parallel 4` with only 2 runnable tasks | Workers idle; no error. The next dispatch wave fills as dependencies unblock. |
 | Network failure mid-PR-raise | Tasker reports `pr_url: null`; dispatcher marks `Blocked` with reason `pr_raise_failed`. |
 | Worker thread exception | Task `Blocked`, `blocked_reason: worker_exception: <repr>`. |
+| Dispatcher killed mid-run (`kill -9`, crash) | Interrupted tasks stay `In Progress`. Recover with `dispatcher resume <run-id>` (see Resume) — the journal supplies the config and the in-flight rows are re-dispatched. |
 | Cross-family panel dissent (any reviewer non-APPROVE) | Task `Blocked`, `blocked_reason: cross_family_panel: <summary>`. Findings appended to `summary.md`. Auto-integrate short-circuited. |
 | Cross-family reviewer CLI missing | That family records `UNAVAILABLE`. Panel `consensus=incomplete`. Treated as block. |
 | Cross-family panel framework error (not a reviewer dissent) | Task `Blocked`, `blocked_reason: cross_family_panel_error: <repr>`. Tasker's work preserved. |
 
 Worktrees on `Done` are left for `git worktree remove` (or housekeeping cron) to clean up later — the dispatcher does not auto-remove. Worktrees on `Blocked`/`Escalated` are explicitly preserved for inspection.
+
+---
+
+## Resume
+
+Every run writes an append-only JSONL **journal** at `<runs-dir>/<run-id>/journal.jsonl`. The first line is the `run_started` (genesis) event, which captures the run's full configuration; the loop then appends `task_dispatched` / `task_finished` events, a periodic `heartbeat`, and a final `run_complete`. If a run is interrupted — `kill -9`, a crashed host, a closed laptop — `dispatcher resume <run-id>` reconstructs it from that journal plus the current tasks YAML. You don't re-supply the YAML path: it's read from the genesis config.
+
+```bash
+# Resume a run by id (looks under --runs-dir, default docs/runs)
+dispatcher resume 2026-06-10T18-24-47Z-tasks
+
+# After a hard kill, the journal may still look "fresh" — force past the guard
+dispatcher resume 2026-06-10T18-24-47Z-tasks --force
+```
+
+**Recovery rules:**
+
+| Row state at resume | Action |
+|---------------------|--------|
+| `In Progress` (interrupted spawn) | **Re-dispatched.** Reset to `To Do` so the dispatch loop spawns it fresh. The worktree is reused if it still exists (`git worktree add` is idempotent); a missing one is recreated. |
+| `Done` / `Blocked` / `Escalated` | **Untouched.** Terminal rows are never re-run. |
+| `To Do` not yet reached | Dispatched normally once its `blockedBy` deps are `Done`. |
+
+A `resume_started` event is appended, linking back to the prior genesis (by run-id and timestamp), so the journal records that the run was picked up.
+
+**Liveness guard (`--force`).** Resuming a run that is *still running* would double-dispatch in-flight tasks. Before resuming, the dispatcher checks the age of the journal's most recent event: if it's younger than 90 s (a live run heartbeats every 30 s), resume refuses with exit code 4 and points you at `--force`. A genuinely dead run stops emitting events, so its journal ages past the threshold and resumes without `--force`. Use `--force` only when you are certain the original process is gone (e.g. right after a `kill -9`, where the journal is fresh but the dispatcher is dead).
+
+**Completed runs are a no-op.** If no rows are `In Progress` and nothing is left runnable, resume prints `Run <id> is already complete — nothing to resume (...)` and exits 0 without touching the YAML.
+
+**`--strategy`:**
+
+- `continue` *(default)* — reset interrupted `In Progress` rows to `To Do` and re-dispatch them.
+- `mark-blocked` — write `Status: Blocked` for interrupted rows (with `blocked_reason: resume: marked blocked per --strategy mark-blocked`) instead of re-running them, then dispatch any remaining runnable tasks. Use this when you want a human to inspect what the interrupted task was doing before it's retried.
 
 ---
 
@@ -442,8 +477,9 @@ src/claude_dispatcher/
 ├── cross_family_reviewer.py     # three-family review panel
 ├── reviewer_prompts/            # _shared.md + claude.md / gemini.md / codex.md
 ├── dispatch_plan.py             # dry-run report renderer
+├── journal.py                   # append-only JSONL run journal (genesis + events)
 ├── status.py                    # `dispatcher status` (stubbed)
-├── resume.py                    # `dispatcher resume` (stubbed)
+├── resume.py                    # `dispatcher resume` — recover an interrupted run
 └── report.py                    # `dispatcher report` (stubbed)
 
 tools/
@@ -461,7 +497,9 @@ tests/
 ├── test_orchestrator_panel.py  # cross-family panel integration
 ├── test_cross_family_reviewer.py  # panel parser + adapters + aggregation
 ├── test_supervised.py          # supervised approve / reject / skip
-└── test_concurrency.py         # --max-parallel overlap + YAML serialization
+├── test_concurrency.py         # --max-parallel overlap + YAML serialization
+├── test_journal.py             # append-only JSONL journal: append/read/genesis/age
+└── test_resume.py              # resume: no-op, liveness guard + --force, kill -9 recovery
 ```
 
-Run the suite: `.venv/bin/pytest -q`. As of the cross-family panel build: 182 tests, all green. Coverage on `cross_family_reviewer.py`: 93%.
+Run the suite: `.venv/bin/pytest -q`. As of the resume build: 231 tests, all green.

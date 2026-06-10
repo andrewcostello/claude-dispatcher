@@ -32,6 +32,7 @@ from typing import Any
 
 from . import auto_integrate as ai_mod
 from . import cross_family_reviewer as cfr_mod
+from . import journal as journal_mod
 from . import notify as notify_mod
 from . import plan as plan_mod
 from . import pr as pr_mod
@@ -70,6 +71,14 @@ def _ask_human(prompt_text: str, choices: list[str]) -> str:
 
 
 _log_lock = threading.Lock()
+
+
+# How often the dispatch loop appends a `heartbeat` event to the journal
+# while running. The journal's most-recent-event age is the liveness signal
+# `dispatcher resume` reads to decide whether a run is still active; a periodic
+# heartbeat keeps that signal fresh even during a long single-task spawn that
+# emits no other events for hours.
+HEARTBEAT_INTERVAL_SECONDS = 30
 
 
 @dataclass
@@ -147,6 +156,10 @@ class TaskSnapshot:
 def execute(args: argparse.Namespace) -> int:
     """Live-spawn entry point. Returns 0 on clean exit (all done), 1 on partial
     completion (some Blocked/Escalated), 2 on validation error.
+
+    Writes the `run_started` (genesis) journal event capturing the run's
+    config, then runs the shared dispatch loop. `dispatcher resume` reuses the
+    same loop via `resume_run()` against an existing journal.
     """
     cfg = _build_config(args)
     doc = yaml_io.load(cfg.tasks_path)
@@ -164,72 +177,132 @@ def execute(args: argparse.Namespace) -> int:
 
     run_dir = cfg.runs_dir / cfg.run_id
     run_dir.mkdir(parents=True, exist_ok=True)
+    journal = journal_mod.Journal(run_dir / "journal.jsonl")
+    # Genesis event. Embeds the resolved run config so `dispatcher resume`
+    # can reconstruct the run without being told the tasks-YAML path again.
+    journal.append(
+        journal_mod.RUN_STARTED,
+        run_id=cfg.run_id,
+        mode=cfg.mode,
+        tasks_yaml=str(cfg.tasks_path),
+        base_branch=cfg.base_branch,
+        config=_genesis_config(args, cfg),
+    )
+    return _run_loop(cfg, journal)
+
+
+def resume_run(args: argparse.Namespace, journal: journal_mod.Journal) -> int:
+    """Re-enter the dispatch loop for an already-genesis'd run.
+
+    Called by `dispatcher resume` after it has reset interrupted rows and
+    appended a `resume_started` event. `args` is reconstructed from the
+    genesis config, so its `base_branch`/`run_id` are already resolved (no
+    YAML re-resolution needed). Does NOT write a new genesis — the journal
+    is a continuation of the original run.
+    """
+    cfg = _build_config(args)
+    return _run_loop(cfg, journal)
+
+
+def _run_loop(cfg: RunConfig, journal: journal_mod.Journal) -> int:
+    """The core dispatch loop, shared by `execute()` and `resume_run()`.
+
+    Picks runnable tasks, marks them In Progress, spawns workers, collects
+    results, and recomputes the runnable set until nothing is left. A daemon
+    heartbeat thread appends periodic `heartbeat` events so the journal's
+    liveness signal stays fresh during long spawns.
+    """
+    run_dir = cfg.runs_dir / cfg.run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
     log_path = run_dir / "run.log"
     _log(log_path, f"start run {cfg.run_id} mode={cfg.mode} max_parallel={cfg.max_parallel}")
 
     repo_root = wt_mod.detect_repo_root(cfg.tasks_path.parent)
 
-    in_flight: dict[Future[str], str] = {}
-    with ThreadPoolExecutor(max_workers=max(cfg.max_parallel, 1)) as exe:
-        while True:
-            tasks = _load_tasks_snapshot(cfg)
-            runnable = plan_mod.runnable_now(tasks)
-            runnable = plan_mod.filter_tasks(runnable, cfg.label_filter, cfg.only_keys)
-            # Don't re-dispatch tasks already mid-flight.
-            in_flight_keys = set(in_flight.values())
-            runnable = [t for t in runnable if t.key not in in_flight_keys]
+    stop_heartbeat = threading.Event()
+    heartbeat = threading.Thread(
+        target=_heartbeat_loop, args=(journal, stop_heartbeat), daemon=True,
+    )
+    heartbeat.start()
 
-            # Dispatch up to remaining capacity.
-            while runnable and len(in_flight) < cfg.max_parallel:
-                t = runnable.pop(0)
-                snap = TaskSnapshot(
-                    key=t.key,
-                    summary=t.summary,
-                    description=t.description,
-                    type=t.type,
-                    labels=list(t.labels),
-                    model=t.model,
-                )
-                # Mark In Progress on the YAML BEFORE submit. If we submit
-                # first, the main thread could re-load and re-dispatch the
-                # same key before the worker has stamped In Progress.
-                _mark_in_progress(cfg, snap, run_dir)
-                fut = exe.submit(_run_task, snap, cfg, run_dir, log_path, repo_root)
-                in_flight[fut] = snap.key
-                _log(log_path, f"dispatch {snap.key} submitted")
+    try:
+        in_flight: dict[Future[str], str] = {}
+        with ThreadPoolExecutor(max_workers=max(cfg.max_parallel, 1)) as exe:
+            while True:
+                tasks = _load_tasks_snapshot(cfg)
+                runnable = plan_mod.runnable_now(tasks)
+                runnable = plan_mod.filter_tasks(runnable, cfg.label_filter, cfg.only_keys)
+                # Don't re-dispatch tasks already mid-flight.
+                in_flight_keys = set(in_flight.values())
+                runnable = [t for t in runnable if t.key not in in_flight_keys]
 
-            if not in_flight:
-                break  # nothing running, nothing to start
+                # Dispatch up to remaining capacity.
+                while runnable and len(in_flight) < cfg.max_parallel:
+                    t = runnable.pop(0)
+                    snap = TaskSnapshot(
+                        key=t.key,
+                        summary=t.summary,
+                        description=t.description,
+                        type=t.type,
+                        labels=list(t.labels),
+                        model=t.model,
+                    )
+                    # Mark In Progress on the YAML BEFORE submit. If we submit
+                    # first, the main thread could re-load and re-dispatch the
+                    # same key before the worker has stamped In Progress.
+                    _mark_in_progress(cfg, snap, run_dir)
+                    fut = exe.submit(_run_task, snap, cfg, run_dir, log_path, repo_root)
+                    in_flight[fut] = snap.key
+                    journal.append(journal_mod.TASK_DISPATCHED, key=snap.key)
+                    _log(log_path, f"dispatch {snap.key} submitted")
 
-            done, _pending = wait(list(in_flight), return_when=FIRST_COMPLETED)
-            for fut in done:
-                key = in_flight.pop(fut)
-                try:
-                    fut.result()  # propagate exceptions
-                except Exception as e:
-                    _log(log_path, f"  worker {key} raised: {e}")
-                    # Notify on a dispatcher-internal error before
-                    # stamping Blocked (separate channel from a normal
-                    # task failure — see notify.worker_exception_*).
+                if not in_flight:
+                    break  # nothing running, nothing to start
+
+                done, _pending = wait(list(in_flight), return_when=FIRST_COMPLETED)
+                for fut in done:
+                    key = in_flight.pop(fut)
                     try:
-                        cfg.notifier.send(notify_mod.worker_exception_notification(
-                            task_key=key,
-                            run_id=cfg.run_id,
-                            exception_repr=repr(e),
-                            tasks_yaml=str(cfg.tasks_path),
-                        ))
-                    except Exception:
-                        pass
-                    try:
-                        _mark_blocked(cfg, key, reason=f"worker_exception: {e}")
-                    except Exception as mark_err:
-                        _log(log_path, f"  worker {key} _mark_blocked itself raised: {mark_err}")
+                        status = fut.result()  # propagate exceptions
+                        journal.append(
+                            journal_mod.TASK_FINISHED, key=key, status=status,
+                        )
+                    except Exception as e:
+                        _log(log_path, f"  worker {key} raised: {e}")
+                        journal.append(
+                            journal_mod.TASK_FINISHED, key=key,
+                            status="worker_exception", error=repr(e),
+                        )
+                        # Notify on a dispatcher-internal error before
+                        # stamping Blocked (separate channel from a normal
+                        # task failure — see notify.worker_exception_*).
+                        try:
+                            cfg.notifier.send(notify_mod.worker_exception_notification(
+                                task_key=key,
+                                run_id=cfg.run_id,
+                                exception_repr=repr(e),
+                                tasks_yaml=str(cfg.tasks_path),
+                            ))
+                        except Exception:
+                            pass
+                        try:
+                            _mark_blocked(cfg, key, reason=f"worker_exception: {e}")
+                        except Exception as mark_err:
+                            _log(log_path, f"  worker {key} _mark_blocked itself raised: {mark_err}")
+    finally:
+        stop_heartbeat.set()
 
     tasks = _load_tasks_snapshot(cfg)
     done_tasks = [t for t in tasks if t.status == plan_mod.DONE]
     blocked = [t for t in tasks if t.status == plan_mod.BLOCKED]
     escalated = [t for t in tasks if t.status == plan_mod.ESCALATED]
     _log(log_path, f"end run blocked={len(blocked)} escalated={len(escalated)}")
+    journal.append(
+        journal_mod.RUN_COMPLETE,
+        done=len(done_tasks),
+        blocked=len(blocked),
+        escalated=len(escalated),
+    )
     # Run-complete rollup notification. Always fires (including on clean
     # runs — knowing the run finished is signal). Best-effort.
     try:
@@ -248,6 +321,31 @@ def execute(args: argparse.Namespace) -> int:
     except Exception:
         pass
     return 1 if (blocked or escalated) else 0
+
+
+def _heartbeat_loop(journal: journal_mod.Journal, stop: threading.Event) -> None:
+    """Append a `heartbeat` event every HEARTBEAT_INTERVAL_SECONDS until
+    `stop` is set. Runs on a daemon thread; append failures are swallowed so
+    a flaky filesystem never takes down the run."""
+    while not stop.wait(HEARTBEAT_INTERVAL_SECONDS):
+        try:
+            journal.append(journal_mod.HEARTBEAT)
+        except Exception:
+            pass
+
+
+def _genesis_config(args: argparse.Namespace, cfg: RunConfig) -> dict:
+    """Serialize the run's arguments for the genesis event.
+
+    Captures every `dispatcher run` argument verbatim (all JSON-safe:
+    str/int/bool/None) minus the non-serializable `func` callable, then
+    overrides `base_branch`/`run_id` with the values resolved at run time so
+    a resume forks from the same branch and reuses the same run directory.
+    """
+    d = {k: v for k, v in vars(args).items() if k != "func"}
+    d["base_branch"] = cfg.base_branch
+    d["run_id"] = cfg.run_id
+    return d
 
 
 # --- per-worker -------------------------------------------------------------
