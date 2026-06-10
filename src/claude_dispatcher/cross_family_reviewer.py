@@ -540,6 +540,19 @@ def collect_diff(
     return diff
 
 
+class ReviewerUnavailable(Exception):
+    """Raised by a `Reviewer._invoke_cli` when the CLI ran but produced no
+    usable output.
+
+    Unlike a generic exception (which `review()` wraps as "cli invocation
+    raised: ..."), the message of this exception becomes the verdict's
+    `error` reason verbatim. Use it when the adapter has positively
+    determined the reviewer is unavailable — e.g. agy exiting 0 with empty
+    stdout (antigravity-cli#76) — and must NOT fall through to a parse
+    attempt or a retry.
+    """
+
+
 class Reviewer:
     """Abstract base for one reviewer in the cross-family panel.
 
@@ -568,6 +581,19 @@ class Reviewer:
         start = time.monotonic()
         try:
             stdout = self._invoke_cli(prompt)
+        except ReviewerUnavailable as e:
+            # MUST precede `except Exception`: ReviewerUnavailable is a
+            # subclass of Exception and carries a verbatim error string. If
+            # the generic handler caught it first, the reason would be
+            # mangled into "cli invocation raised: ...".
+            # The adapter positively determined the reviewer is unavailable
+            # (e.g. agy empty-stdout, antigravity-cli#76). The message is the
+            # reason verbatim — no parse attempt, no retry.
+            return ReviewerVerdict(
+                family=self.family, verdict=Verdict.UNAVAILABLE,
+                error=str(e),
+                duration_seconds=time.monotonic() - start,
+            )
         except FileNotFoundError as e:
             return ReviewerVerdict(
                 family=self.family, verdict=Verdict.UNAVAILABLE,
@@ -695,6 +721,17 @@ class GeminiReviewer(Reviewer):
         if proc.returncode != 0:
             raise RuntimeError(
                 f"agy exit={proc.returncode}: {proc.stderr.strip()[-400:]}"
+            )
+        # antigravity-cli#76: agy can exit 0 yet emit nothing on stdout when
+        # stdout is a non-TTY pipe — which is exactly how the panel consumes
+        # it (subprocess.run with capture_output). An empty string must NOT
+        # reach the parser: there it becomes PARSE_FAILED (a blocker that
+        # also burns a full retry invocation) and could, if the parser ever
+        # changed, be mistaken for a real verdict. Treat exit-0-empty-stdout
+        # as a positive UNAVAILABLE signal instead.
+        if not proc.stdout.strip():
+            raise ReviewerUnavailable(
+                "empty stdout (suspected antigravity-cli#76)"
             )
         return proc.stdout
 

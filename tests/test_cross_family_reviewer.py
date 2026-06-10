@@ -657,6 +657,33 @@ def test_gemini_reviewer_invokes_agy_with_stdin(monkeypatch):
     assert not any(len(a) > 1024 for a in cmd), "no argv element should carry the prompt"
 
 
+@pytest.mark.parametrize("empty_stdout", ["", "   \n\t  \n"])
+def test_gemini_reviewer_empty_stdout_exit0_is_unavailable(monkeypatch, empty_stdout):
+    """antigravity-cli#76: agy can exit 0 with empty (or whitespace-only)
+    stdout when stdout is a non-TTY pipe — exactly how the panel consumes
+    it. The adapter must treat this as UNAVAILABLE with the suspected-bug
+    reason, NOT let an empty string reach the parser (where it becomes
+    PARSE_FAILED, a blocker, plus a wasted retry invocation).
+    """
+    calls = {"n": 0}
+
+    def fake_run(cmd, **kwargs):
+        calls["n"] += 1
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout=empty_stdout, stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    rv = cfr.GeminiReviewer().review("review this")
+
+    assert rv.verdict == cfr.Verdict.UNAVAILABLE
+    assert rv.error == "empty stdout (suspected antigravity-cli#76)"
+    # Must NOT have been parsed into PARSE_FAILED, and must NOT have retried.
+    assert calls["n"] == 1, "empty stdout must not trigger the parse-failure retry"
+    assert not rv.findings
+    assert rv.duration_seconds is not None and rv.duration_seconds >= 0
+
+
 def test_codex_reviewer_uses_output_last_message(monkeypatch, tmp_path: Path):
     """Codex's stdout interleaves agent progress with the final answer.
     The adapter must use --output-last-message so we get a clean response,
