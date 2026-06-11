@@ -415,6 +415,65 @@ findings) → no events.
 Additional decision-specific keys may ride along (e.g. the resulting PR URL on
 `approve`).
 
+### PR-flow (`integration: pr` only)
+
+These four event types appear only in a run dispatched in **PR-flow mode**
+(`integration: pr` — see the README's *PR-flow mode* section). A branch-mode run
+never emits them. `pr_opened` fires inside the dispatch loop the moment a task
+clears every gate; the three merge events fire during a *merge pass* — either
+the in-loop pass the orchestrator runs after each task reaches Awaiting Review,
+or a standalone `dispatcher merge-prs <run-id>` catch-up (whose events extend the
+same chain, legitimately *past* `run_complete`).
+
+**`pr_opened`** *(PRF-2)* — the dispatcher pushed a verified task's branch and
+opened its PR against the run's feature branch. Raising is automatic and
+unconditional (the size/risk gate moves to the *merge* step, never the raise) —
+so a `pr_opened` event carries no approval information. The row moves
+`Done` → `Awaiting Review`.
+
+| Key           | Type           | Notes |
+|---------------|----------------|-------|
+| `number`      | int            | The opened PR's number. |
+| `url`         | string         | The PR URL. |
+| `target`      | string         | The PR base — the run's feature branch. |
+| `base_sha`    | string \| null | The feature-branch tip the PR targets at open time. |
+| `body_source` | string         | `prepared` (Tasker-authored body) or `generated` (dispatcher fallback). |
+
+**`pr_approved`** *(PRF-4)* — the approval ladder cleared a PR for merge. For a
+`low`-risk PR the dispatcher self-approves (no human/bot involved); for an
+`elevated` PR this event fires only once an external GitHub approval is present.
+Emitted just before the merge is attempted.
+
+| Key          | Type        | Notes |
+|--------------|-------------|-------|
+| `number`     | int         | The PR number. |
+| `approver`   | string      | `dispatcher-agent` (self-approved low-risk), or `external:<login>` / `external` (a GitHub approval). |
+| `risk_level` | string      | The classifier verdict: `low` or `elevated`. |
+| `reasons`    | array\<str> | The classifier's reasons (empty for a clean `low`; the violated rules for `elevated`). |
+
+**`pr_merged`** *(PRF-4)* — the PR landed via `gh pr merge --merge`. The row
+moves `Awaiting Review` → `Merged` (the terminal success state in PR mode).
+
+| Key                  | Type           | Notes |
+|----------------------|----------------|-------|
+| `number`             | int            | The merged PR number. |
+| `merger`             | string         | Always `dispatcher-agent` (the dispatcher owns merging). |
+| `approver`           | string         | Who approved it (mirrors the `pr_approved` `approver`). |
+| `target`             | string         | The feature branch the PR merged into. |
+| `feature_branch_sha` | string \| null | The feature-branch tip after the merge. |
+
+**`pr_merge_failed`** *(PRF-4)* — the merge did not land. The row stays
+`Awaiting Review`; the engine does **not** auto-rebase (a deliberate non-goal —
+the supervising agent handles rebases) and continues with the other eligible
+PRs. A `conflict` additionally stamps `needs_rebase: true` on the row.
+
+| Key            | Type   | Notes |
+|----------------|--------|-------|
+| `number`       | int    | The PR number (absent only on the unactionable no-number/no-branch case). |
+| `kind`         | string | `conflict` (unmergeable PR — a rebase may fix it) or `error` (auth/usage/other — a rebase would not). |
+| `needs_rebase` | bool   | `true` only for a `conflict`. |
+| `detail`       | string | Failure detail (capped at 300 chars). |
+
 **`integrate_result`** — auto-integration (merge feat → base) ran.
 
 | Key               | Type           | Notes |
