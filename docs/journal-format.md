@@ -226,10 +226,13 @@ completed run; an observer that reads it knows the chain is closed.
 
 | Payload key      | Type   | Notes |
 |------------------|--------|-------|
-| `done`           | int    | Count of `Done` tasks. |
+| `done`           | int    | Count of terminal-success tasks. In pr mode this umbrella count includes `Awaiting Review` and `Merged` (PRF-2), so a run that auto-raised every PR is not reported as `0 done`. |
 | `blocked`        | int    | Count of `Blocked` tasks. |
 | `escalated`      | int    | Count of `Escalated` tasks. |
 | `blocked_rollup` | array  | `[{ "key": str, "reason": str }, …]` for each blocked/escalated task. |
+| `merged`         | int    | **pr mode only** — tasks whose PR landed (`Merged`). Absent in branch mode. (PRF-5) |
+| `awaiting_review`| int    | **pr mode only** — tasks left `Awaiting Review` (PR raised, merge pending). Absent in branch mode. (PRF-5) |
+| `needs_rebase`   | int    | **pr mode only** — tasks whose PR is held back by a merge conflict (`needs_rebase: true`). Absent in branch mode. (PRF-5) |
 
 ### Per-task lifecycle
 

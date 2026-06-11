@@ -70,6 +70,43 @@ def test_run_complete_notification_default_urgency_when_clean():
     assert "5" in n.body  # done count
 
 
+def test_run_complete_notification_pr_mode_pending_merge_summary():
+    """pr mode (PRF-5): the merge tallies add a pending-merge line, and pending
+    merges/rebases bump urgency to high even on an otherwise clean run."""
+    n = notify.run_complete_notification(
+        run_id="r", done=4, blocked=0, escalated=0,
+        merged=2, awaiting_review=2, needs_rebase=1,
+    )
+    assert "*Merged:* 2" in n.body
+    assert "*Awaiting merge:* 2" in n.body
+    assert "*Needs rebase:* 1" in n.body
+    assert "2 PR(s) awaiting merge, 1 need rebase" in n.body
+    # Clean (no blocked/escalated) but merges pending → still a loud ping.
+    assert n.urgency == "high"
+
+
+def test_run_complete_notification_pr_mode_all_merged_is_calm():
+    """All PRs landed (nothing awaiting, none needing rebase) → default urgency
+    and no pending line, just the merge tally."""
+    n = notify.run_complete_notification(
+        run_id="r", done=3, blocked=0, escalated=0,
+        merged=3, awaiting_review=0, needs_rebase=0,
+    )
+    assert "*Merged:* 3" in n.body
+    assert "awaiting merge" not in n.body
+    assert n.urgency == "default"
+
+
+def test_run_complete_notification_branch_mode_omits_merge_line():
+    """Acceptance: branch-mode message unchanged — no merge tallies passed → no
+    Merged/Awaiting line at all."""
+    n = notify.run_complete_notification(
+        run_id="r", done=5, blocked=0, escalated=0,
+    )
+    assert "Merged" not in n.body
+    assert "Awaiting merge" not in n.body
+
+
 def test_run_complete_notification_truncates_long_rollup():
     rollup = [(f"T-{i}", f"reason {i}") for i in range(50)]
     n = notify.run_complete_notification(

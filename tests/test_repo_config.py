@@ -264,3 +264,37 @@ def test_config_to_factory_path_produces_grok_reviewer(tmp_path: Path) -> None:
     assert len(reviewers) == 1
     assert isinstance(reviewers[0], cfr.GrokReviewer)
     assert reviewers[0].timeout_seconds == 123
+
+
+# --- integration mode (PRF-1) -----------------------------------------------
+
+def test_integration_absent_is_none(tmp_path: Path) -> None:
+    """No `integration:` key → None, so the orchestrator uses its 'branch' default."""
+    _write(tmp_path, 'test: "pytest -q"\n')
+    assert repo_config.load(tmp_path).integration is None
+
+
+def test_integration_pr(tmp_path: Path) -> None:
+    _write(tmp_path, "integration: pr\n")
+    cfg = repo_config.load(tmp_path)
+    assert cfg.integration == "pr"
+    assert cfg.unknown_keys == ()
+
+
+def test_integration_branch(tmp_path: Path) -> None:
+    _write(tmp_path, "integration: branch\n")
+    assert repo_config.load(tmp_path).integration == "branch"
+
+
+def test_integration_invalid_value_raises(tmp_path: Path) -> None:
+    _write(tmp_path, "integration: gitflow\n")
+    with pytest.raises(RepoConfigError) as ei:
+        repo_config.load(tmp_path)
+    assert "integration" in str(ei.value)
+
+
+def test_integration_bool_rejected(tmp_path: Path) -> None:
+    """A bare `true` is not 'branch'/'pr' → rejected (bool is not str)."""
+    _write(tmp_path, "integration: true\n")
+    with pytest.raises(RepoConfigError):
+        repo_config.load(tmp_path)

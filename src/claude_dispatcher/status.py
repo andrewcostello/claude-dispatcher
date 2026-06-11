@@ -32,8 +32,17 @@ A single object::
       "run_id":       str,         # the run being reported on
       "tasks_yaml":   str,         # absolute path to the resolved tasks YAML
       "generated_at": str,         # ISO-8601, when this snapshot was taken
-      "run_complete": bool,        # True iff every task is terminal
-                                   #   (Done | Blocked | Escalated)
+      "run_complete": bool,        # True iff every task is terminal. In branch
+                                   #   mode terminal = Done | Blocked | Escalated.
+                                   #   In pr mode Done/Awaiting Review are NOT
+                                   #   terminal — only Merged | Blocked |
+                                   #   Escalated are — so a run whose PRs are all
+                                   #   open-but-unmerged reads run_complete:false
+                                   #   with merges_pending > 0.
+      "merges_pending": int,       # pr mode ONLY (key absent in branch mode):
+                                   #   count of tasks in Awaiting Review — work is
+                                   #   dispatched + the PR raised, but the merge
+                                   #   has not landed ("tasks done, merges pending")
       "current_wave": int | null,  # 1-based index of the lowest dependency
                                    #   wave with a non-Done task still pending
                                    #   (To Do / In Progress); null when complete
@@ -73,6 +82,19 @@ A single object::
           "pr_url":          str | null,
           "needs_push":      bool,         # Done but branch unpushed / PR missing
           "dispatcher_run_id": str | null, # which run last touched this row
+          "pr": {                          # pr mode ONLY (key absent in branch
+                                           #   mode); the pr-flow surface for this
+                                           #   row. PRF-5.
+            "pr_number":    int | null,    # the open/merged PR number
+            "risk_level":   str | null,    # classifier level from the pr_approved
+                                           #   event ("low"/"elevated"); null until
+                                           #   the merge engine has classified it
+            "approver":     str | null,    # "dispatcher-agent" (self-approved
+                                           #   low-risk) or "external:<login>" /
+                                           #   "external"; null until approved
+            "needs_rebase": bool           # PR hit a conflict on merge — held at
+                                           #   Awaiting Review for a manual rebase
+          } | null,
           "journal": {                     # enrichment from journal events for
                                            #   this task; null on pre-journal runs
                                            #   or tasks with no events yet
@@ -121,6 +143,15 @@ _STATUS_ORDER = (
     plan_mod.DONE,
     plan_mod.BLOCKED,
     plan_mod.ESCALATED,
+)
+
+# The pr-mode lifecycle statuses (PRF-2 / PRF-4). They are appended to
+# _STATUS_ORDER only when the run is in pr mode (PRF-5) — adding them
+# unconditionally would inject 0-filled rows into every branch-mode render,
+# which must stay byte-for-byte unchanged.
+_PR_STATUS_ORDER = (
+    plan_mod.AWAITING_REVIEW,
+    plan_mod.MERGED,
 )
 
 
@@ -190,8 +221,16 @@ def build_status(
     events = _read_journal_events(journal_path) if journal_path.is_file() else []
     journal_index = _journal_task_index(events)
 
+    # pr mode (PRF-5) surfaces the pr-flow lifecycle; branch mode (and any
+    # pre-journal / legacy run) renders exactly as before. The mode comes from
+    # the genesis run_config, so it is conclusive even mid-run.
+    pr_mode = journal_read.integration_mode(events) == "pr"
+    pr_index = _journal_pr_index(events) if pr_mode else {}
+
+    status_order = _STATUS_ORDER + (_PR_STATUS_ORDER if pr_mode else ())
+
     task_entries: list[dict[str, Any]] = []
-    by_status: dict[str, int] = {s: 0 for s in _STATUS_ORDER}
+    by_status: dict[str, int] = {s: 0 for s in status_order}
     cost_total = 0.0
     tasks_billed = 0
 
@@ -205,7 +244,7 @@ def build_status(
             cost_total += cost
             tasks_billed += 1
 
-        task_entries.append({
+        entry = {
             "key": t.key,
             "summary": t.summary,
             "status": status,
@@ -219,23 +258,49 @@ def build_status(
             "pr_url": _str_or_none(row.get("pr_url")),
             "needs_push": bool(row.get("needs_push")),
             "dispatcher_run_id": _str_or_none(row.get("dispatcher_run_id")),
-            "journal": journal_index.get(t.key),
-        })
+        }
+        # The pr-flow block is added only in pr mode, so a branch-mode entry is
+        # byte-for-byte unchanged. risk_level / approver come from the journal
+        # (the merge engine records them on pr_approved/pr_merged, not the row);
+        # pr_number / needs_rebase are on the row. The row's own pr_approved_by
+        # (stamped at merge) wins over the journal approver when both exist.
+        if pr_mode:
+            pr_ev = pr_index.get(t.key, {})
+            entry["pr"] = {
+                "pr_number": _int_or_none(row.get("pr_number")),
+                "risk_level": pr_ev.get("risk_level"),
+                "approver": (_str_or_none(row.get("pr_approved_by"))
+                             or pr_ev.get("approver")),
+                "needs_rebase": bool(row.get("needs_rebase")),
+            }
+        entry["journal"] = journal_index.get(t.key)
+        task_entries.append(entry)
 
     pending_waves = [
         waves[t.key] for t in tasks
         if (t.status or plan_mod.TODO) in (plan_mod.TODO, plan_mod.IN_PROGRESS)
     ]
     current_wave = min(pending_waves) if pending_waves else None
-    run_complete = not pending_waves and bool(tasks)
+    # "tasks done, merges pending": in pr mode an Awaiting Review row has had its
+    # PR raised but not merged, so the run isn't complete until those land.
+    # merges_pending is 0 in branch mode (the status never occurs there), so the
+    # branch-mode run_complete semantics are unchanged.
+    merges_pending = sum(
+        1 for t in tasks if t.status == plan_mod.AWAITING_REVIEW
+    )
+    run_complete = not pending_waves and bool(tasks) and merges_pending == 0
 
     liveness = _liveness(run_dir, events, now)
 
-    return {
+    result: dict[str, Any] = {
         "run_id": run_id,
         "tasks_yaml": str(yaml_path),
         "generated_at": now.isoformat(timespec="seconds"),
         "run_complete": run_complete,
+    }
+    if pr_mode:
+        result["merges_pending"] = merges_pending
+    result.update({
         "current_wave": current_wave,
         "wave_count": max(waves.values(), default=0),
         "liveness": liveness,
@@ -246,7 +311,8 @@ def build_status(
             "tasks_billed": tasks_billed,
         },
         "tasks": task_entries,
-    }
+    })
+    return result
 
 
 def _wave_index(
@@ -363,6 +429,7 @@ def _run_log_last_event(
 # private names working for existing callers and tests.
 _read_journal_events = journal_read.read_journal_events
 _journal_task_index = journal_read.journal_task_index
+_journal_pr_index = journal_read.pr_flow_index
 
 
 def _journal_event_label(event_type: Any, task_key: Any) -> str | None:
@@ -408,6 +475,13 @@ def render_table(status: dict[str, Any]) -> str:
         f"  Run complete: {complete}    "
         f"Current wave: {cw if cw is not None else '—'} / {status['wave_count']}"
     )
+    # pr mode (key absent in branch mode): distinguish "tasks done, merges
+    # pending" — dispatch may be finished while PRs still await their merge.
+    mp = status.get("merges_pending")
+    if mp:
+        dispatch_done = cw is None
+        lead = "tasks done — " if dispatch_done else ""
+        lines.append(f"  Merges:       {lead}{mp} PR(s) awaiting merge")
 
     live = status["liveness"]
     if live["source"] is None:
@@ -429,8 +503,15 @@ def render_table(status: dict[str, Any]) -> str:
     lines.append("")
 
     totals = status["totals"]
+    # Render the known statuses in a fixed order, skipping any not present.
+    # Branch mode holds exactly _STATUS_ORDER → the line is byte-identical to
+    # before (and a stray hand-authored status stays dropped, as it always was);
+    # pr mode adds Awaiting Review / Merged at the end.
+    by_status = totals["by_status"]
     counts = "  ".join(
-        f"{s}: {totals['by_status'].get(s, 0)}" for s in _STATUS_ORDER
+        f"{s}: {by_status[s]}"
+        for s in (_STATUS_ORDER + _PR_STATUS_ORDER)
+        if s in by_status
     )
     lines.append(f"Tasks ({totals['task_count']}):  {counts}")
     cost = totals["run_cost_usd"]
@@ -453,9 +534,12 @@ def render_table(status: dict[str, Any]) -> str:
         iters_str = str(iters) if iters is not None else "—"
         model = t["model"] or "—"
         # A Done task flagged needs_push committed but never pushed (or its PR
-        # is missing); surface it ahead of the journal note.
+        # is missing); surface it ahead of the journal note. In pr mode the
+        # compact pr-flow note (number/risk/approver/rebase) replaces the bare
+        # pr_url; _pr_note is "" for a branch-mode row, so that path is unchanged.
         note = (
             t["blocked_reason"]
+            or _pr_note(t.get("pr"))
             or t["pr_url"]
             or ("⚠ needs_push (branch unpushed / PR missing)" if t.get("needs_push") else "")
             or _journal_note(t.get("journal"))
@@ -465,6 +549,25 @@ def render_table(status: dict[str, Any]) -> str:
             f"{iters_str:5} {model:18} {note[:40]}"
         )
     return "\n".join(lines)
+
+
+def _pr_note(pr: dict[str, Any] | None) -> str:
+    """Compact NOTE-column pr-flow hint (pr mode): PR number, risk level,
+    self/ext approver, and a rebase warning. Empty when there's no pr block
+    (branch mode) or the row has no PR yet (a still-To-Do pr-mode task)."""
+    if not pr:
+        return ""
+    parts: list[str] = []
+    if pr.get("pr_number") is not None:
+        parts.append(f"PR#{pr['pr_number']}")
+    if pr.get("risk_level"):
+        parts.append(str(pr["risk_level"]))
+    approver = pr.get("approver")
+    if approver:
+        parts.append("self" if approver == "dispatcher-agent" else "ext")
+    if pr.get("needs_rebase"):
+        parts.append("⚠rebase")
+    return " ".join(parts)
 
 
 def _journal_note(journal: dict[str, Any] | None) -> str:

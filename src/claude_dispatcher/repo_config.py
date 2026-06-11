@@ -58,6 +58,11 @@ class RepoConfig:
     test: str | None
     unknown_keys: tuple[str, ...] = field(default=())
     panel_advisory: tuple[str, ...] = ()
+    # Repo-default integration mode (PRF-1): "branch" (today's behavior) or
+    # "pr" (run-level feature branch + auto PRs). None when the key is absent
+    # — the orchestrator then falls back to the built-in "branch" default. The
+    # `dispatcher run --integration` CLI flag always wins over this.
+    integration: str | None = None
 
 
 def load(repo_root: str | Path) -> RepoConfig:
@@ -128,7 +133,20 @@ def load(repo_root: str | Path) -> RepoConfig:
             f"panel.{key}" for key in panel if key != "advisory"
         ]
 
-    known_top_level = ("test", "panel")
+    integration: str | None = None
+    if "integration" in doc:
+        integration = doc.get("integration")
+        # Strict, same rationale as `test:`: an unrecognized value here means
+        # the repo asked for a mode the dispatcher doesn't have, and silently
+        # falling back to "branch" would hide that. bool is not a str subclass,
+        # so bare `true` is rejected by the membership check.
+        if integration not in ("branch", "pr"):
+            raise RepoConfigError(
+                f"'integration' in {path} must be 'branch' or 'pr', "
+                f"got {integration!r}"
+            )
+
+    known_top_level = ("test", "panel", "integration")
     unknown = tuple(sorted(
         [str(key) for key in doc if key not in known_top_level]
         + panel_unknown
@@ -137,4 +155,5 @@ def load(repo_root: str | Path) -> RepoConfig:
         test=test,
         unknown_keys=unknown,
         panel_advisory=panel_advisory,
+        integration=integration,
     )

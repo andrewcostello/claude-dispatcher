@@ -350,6 +350,74 @@ def awaiting_pr_approval_notification(
     )
 
 
+def pr_awaiting_external_approval_notification(
+    *,
+    task_key: str,
+    summary: str,
+    pr_url: str | None,
+    pr_number: int | None,
+    reasons: list[str] | None,
+    run_id: str,
+    tasks_yaml: str | None = None,
+) -> Notification:
+    """An elevated-risk PR is mergeable (all deps merged) but lacks the external
+    GitHub approval the ladder requires. Fired once per task (the merge engine
+    dedupes across passes), so a human/bot knows their review is the only thing
+    holding the merge.
+    """
+    body_lines = [
+        f"*Task:* `{task_key}` — {summary}",
+        f"*Run:* `{run_id}`",
+    ]
+    if pr_number is not None:
+        body_lines.append(f"*PR:* #{pr_number}")
+    if reasons:
+        body_lines.append("*Elevated because:* " + "; ".join(reasons[:4]))
+    body_lines.append("Merge is blocked pending an external GitHub approval "
+                      "(`gh pr review --approve`, or a reviewer bot).")
+    return Notification(
+        title=f"[dispatcher] {task_key} PR awaiting approval to merge",
+        body="\n".join(body_lines),
+        urgency="high",
+        click_url=pr_url or _path_to_url(tasks_yaml),
+        tags=["rotating_light", "approval"],
+    )
+
+
+def pr_needs_rebase_notification(
+    *,
+    task_key: str,
+    summary: str,
+    pr_url: str | None,
+    pr_number: int | None,
+    detail: str | None,
+    run_id: str,
+    tasks_yaml: str | None = None,
+) -> Notification:
+    """A PR could not be merged into the feature branch — a conflict or other
+    unmergeable state. The merge engine does NOT auto-rebase (a deliberate
+    non-goal); the supervising agent resolves it. Fired once per task.
+    """
+    body_lines = [
+        f"*Task:* `{task_key}` — {summary}",
+        f"*Run:* `{run_id}`",
+    ]
+    if pr_number is not None:
+        body_lines.append(f"*PR:* #{pr_number}")
+    if detail:
+        body_lines.append(f"*Detail:* {detail[:200]}")
+    body_lines.append("Left Awaiting Review with `needs_rebase: true`. The "
+                      "dispatcher does not auto-rebase — resolve and re-run "
+                      "the merge pass (`dispatcher merge-prs <run-id>`).")
+    return Notification(
+        title=f"[dispatcher] {task_key} PR needs rebase",
+        body="\n".join(body_lines),
+        urgency="high",
+        click_url=pr_url or _path_to_url(tasks_yaml),
+        tags=["warning", "rebase"],
+    )
+
+
 def run_complete_notification(
     *,
     run_id: str,
@@ -358,9 +426,31 @@ def run_complete_notification(
     escalated: int,
     blocked_rollup: list[tuple[str, str]] | None = None,
     tasks_yaml: str | None = None,
+    merged: int | None = None,
+    awaiting_review: int | None = None,
+    needs_rebase: int | None = None,
 ) -> Notification:
+    """The end-of-run rollup. In pr mode the orchestrator passes the merge
+    tallies (``merged`` / ``awaiting_review`` / ``needs_rebase``) so the morning
+    starts with one glanceable message that distinguishes landed PRs from those
+    still pending a merge. All three default to None — in branch mode the
+    message is exactly as before."""
     parts = [f"*Run:* `{run_id}`",
              f"*Done:* {done}  |  *Blocked:* {blocked}  |  *Escalated:* {escalated}"]
+    # pr-mode pending-merge summary (PRF-5). Present iff the caller passed the
+    # merge tallies; awaiting_review is the "still needs a merge" signal.
+    pr_mode = merged is not None or awaiting_review is not None
+    if pr_mode:
+        m, a, nr = merged or 0, awaiting_review or 0, needs_rebase or 0
+        line = f"*Merged:* {m}  |  *Awaiting merge:* {a}"
+        if nr:
+            line += f"  |  *Needs rebase:* {nr}"
+        parts.append(line)
+        if a or nr:
+            tail = f"{a} PR(s) awaiting merge"
+            if nr:
+                tail += f", {nr} need rebase"
+            parts.append(f"⏳ {tail} — review/approve to land.")
     if blocked_rollup:
         parts.append("")
         parts.append("*Blocked reasons:*")
@@ -368,7 +458,10 @@ def run_complete_notification(
             parts.append(f"• `{key}` — {reason[:160]}")
         if len(blocked_rollup) > 10:
             parts.append(f"…and {len(blocked_rollup) - 10} more")
-    urgency = "high" if (blocked or escalated) else "default"
+    # Pending merges (or rebases) make a clean-but-incomplete run worth a louder
+    # ping: the run "finished" yet PRs still need a human to land them.
+    pending = bool((awaiting_review or 0) or (needs_rebase or 0))
+    urgency = "high" if (blocked or escalated or pending) else "default"
     return Notification(
         title=f"[dispatcher] run complete: {done} done / {blocked} blocked",
         body="\n".join(parts),

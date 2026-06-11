@@ -181,3 +181,70 @@ def test_concurrent_same_key_branch_collision_raises(repo: Path,
     with pytest.raises(wt.WorktreeError) as ei:
         wt.create(repo, "DISP-2", "feat/DISP-2-x", base_path=base)
     assert ei.value.stderr
+
+
+# --- PR-flow feature branch (PRF-1) -----------------------------------------
+
+def test_sanitize_branch_segment_basic() -> None:
+    assert wt.sanitize_branch_segment("PHASE-3-PRF") == "phase-3-prf"
+    assert wt.sanitize_branch_segment("My Epic Name") == "my-epic-name"
+    assert wt.sanitize_branch_segment("SMOKE") == "smoke"
+    # Leading/trailing separators and slashes are stripped; punctuation runs
+    # collapse to a single dash.
+    assert wt.sanitize_branch_segment("  //weird__name!! ") == "weird__name"
+    assert wt.sanitize_branch_segment("***") == ""
+
+
+def test_default_feature_branch() -> None:
+    assert wt.default_feature_branch("PHASE-3-PRF") == "feature/phase-3-prf"
+    assert wt.default_feature_branch("SMOKE") == "feature/smoke"
+    # No epic, or an epic that sanitizes to nothing → None (caller must then
+    # require an explicit --feature-branch).
+    assert wt.default_feature_branch(None) is None
+    assert wt.default_feature_branch("") is None
+    assert wt.default_feature_branch("***") is None
+
+
+def test_ensure_feature_branch_creates_from_base(repo: Path) -> None:
+    """Absent feature branch → forked from base, status 'created', tip == base tip."""
+    base_sha = subprocess.run(
+        ["git", "rev-parse", "main"], cwd=repo, check=True,
+        capture_output=True, text=True,
+    ).stdout.strip()
+    result = wt.ensure_feature_branch(repo, "feature/smoke", "main")
+    assert result.status == "created"
+    assert result.branch == "feature/smoke"
+    assert result.sha == base_sha
+    # The ref now exists in the repo.
+    assert subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", "feature/smoke"],
+        cwd=repo, capture_output=True,
+    ).returncode == 0
+
+
+def test_ensure_feature_branch_reuses_existing(repo: Path) -> None:
+    """Existing feature branch → reused untouched, status 'existing', its own tip."""
+    # Put a distinct commit on feature/smoke so its tip diverges from main.
+    subprocess.run(["git", "branch", "feature/smoke", "main"],
+                   cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "worktree", "add", str(repo.parent / "fwt"),
+                    "feature/smoke"], cwd=repo, check=True, capture_output=True)
+    (repo.parent / "fwt" / "extra.txt").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo.parent / "fwt",
+                   check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-q", "-m", "feature work"],
+                   cwd=repo.parent / "fwt", check=True, capture_output=True)
+    feat_sha = subprocess.run(
+        ["git", "rev-parse", "feature/smoke"], cwd=repo, check=True,
+        capture_output=True, text=True,
+    ).stdout.strip()
+
+    result = wt.ensure_feature_branch(repo, "feature/smoke", "main")
+    assert result.status == "existing"
+    assert result.sha == feat_sha  # reused, not reset to main
+
+
+def test_ensure_feature_branch_bad_base_raises(repo: Path) -> None:
+    """A base branch that doesn't resolve → WorktreeError (can't fork)."""
+    with pytest.raises(wt.WorktreeError):
+        wt.ensure_feature_branch(repo, "feature/smoke", "no-such-branch")
