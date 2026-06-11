@@ -35,6 +35,7 @@ from . import auto_integrate as ai_mod
 from . import cross_family_reviewer as cfr_mod
 from . import journal as journal_mod
 from . import mechanical_verify as mv_mod
+from . import merge_engine as merge_mod
 from . import notify as notify_mod
 from . import plan as plan_mod
 from . import pr as pr_mod
@@ -357,6 +358,13 @@ def _run_loop(
     )
     heartbeat.start()
 
+    # Mechanical merge engine (PRF-4): in pr mode the dispatcher merges
+    # Awaiting Review PRs into the feature branch as they become eligible. One
+    # MergePassState lives for the whole run so the once-per-task notifications
+    # (elevated PR awaiting external approval, conflict needing rebase) fire
+    # exactly once across the many passes a run triggers.
+    merge_state = merge_mod.MergePassState()
+
     try:
         in_flight: dict[Future[str], str] = {}
         with ThreadPoolExecutor(max_workers=max(cfg.max_parallel, 1)) as exe:
@@ -414,6 +422,13 @@ def _run_loop(
                             _mark_blocked(cfg, key, reason=f"worker_exception: {e}")
                         except Exception as mark_err:
                             _log(log_path, f"  worker {key} _mark_blocked itself raised: {mark_err}")
+
+                # PRF-4: after each batch of completions, merge any PR now
+                # eligible (approved per the ladder + dependencies all Merged).
+                # Running it here — not only at run end — lets a dependency's
+                # merge advance the feature branch before its dependents
+                # dispatch, and surfaces stalled (awaiting-approval) PRs early.
+                _maybe_merge_pass(cfg, repo_root, log_path, merge_state)
     finally:
         # Stop the heartbeat and wait for it to fully exit before emitting
         # run_complete, so that event is guaranteed to be the terminal record
@@ -423,6 +438,13 @@ def _run_loop(
         # longer than the orchestrator's own appends already can.
         stop_heartbeat.set()
         heartbeat.join()
+
+    # Final merge pass (PRF-4): the dispatch loop breaks as soon as nothing is
+    # in-flight, so the last task(s) to reach Awaiting Review — and any PR that
+    # only became eligible once the final dependency merged — get one more
+    # merge attempt here. Runs after the heartbeat is stopped but before the
+    # terminal run_complete event, so run_complete stays the chain's last record.
+    _maybe_merge_pass(cfg, repo_root, log_path, merge_state)
 
     tasks = _load_tasks_snapshot(cfg)
     # "Done" for the rollup counts every terminal-success status: plain Done
@@ -466,6 +488,45 @@ def _run_loop(
         "blocked_rollup": [{"key": k, "reason": r} for k, r in blocked_rollup],
     })
     return 1 if (blocked or escalated) else 0
+
+
+def _maybe_merge_pass(
+    cfg: RunConfig,
+    repo_root: Path,
+    log_path: Path,
+    state: merge_mod.MergePassState,
+) -> None:
+    """Run one mechanical merge pass in pr mode (PRF-4); a no-op otherwise.
+
+    A thin adapter from the orchestrator's RunConfig to the merge engine's
+    own config, reusing the run's journal + notifier + log so merge events and
+    notifications land on the same audit trail / channels as everything else.
+    Never raises — the merge engine contains every git/gh/journal failure, and
+    a guard here means even an unexpected one can't abort the dispatch loop.
+    """
+    if cfg.integration != "pr":
+        return
+    feature_branch = cfg.feature_branch or cfg.base_branch
+    if not feature_branch:
+        return
+    me_cfg = merge_mod.MergeEngineConfig(
+        tasks_path=cfg.tasks_path,
+        repo_root=repo_root,
+        feature_branch=feature_branch,
+        gh_bin=cfg.gh_bin,
+        lock_timeout_seconds=cfg.lock_timeout_seconds,
+        run_id=cfg.run_id,
+    )
+    try:
+        merge_mod.merge_pass(
+            me_cfg,
+            journal=cfg.journal,
+            notifier=cfg.notifier,
+            log=lambda m: _log(log_path, m),
+            state=state,
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        _log(log_path, f"  merge pass raised (continuing): {e}")
 
 
 # --- per-worker -------------------------------------------------------------

@@ -411,7 +411,12 @@ def test_pr_mode_auto_raises_pr_against_feature_branch_generated_body(
     assert rc == 0
 
     row = _row_of(repo, "SMOKE-B")
-    assert row["status"] == "Awaiting Review"
+    # PRF-4: the low-risk PR (size:XS, area:smoke, verified first-pass) is
+    # auto-approved and merged in the same run by the mechanical merge engine,
+    # so the row lands Merged. The raise-step facts asserted below (pr_url,
+    # pr_number, pr_opened event, --base) are stamped at raise time and survive
+    # the merge.
+    assert row["status"] == "Merged"
     assert row["pr_url"] == "https://github.com/test/repo/pull/101"
     assert row["pr_number"] == 101
 
@@ -451,7 +456,9 @@ def test_pr_mode_auto_raise_uses_prepared_pr_body(
     assert rc == 0
 
     row = _row_of(repo, "SMOKE-B")
-    assert row["status"] == "Awaiting Review"
+    # PRF-4: low-risk → auto-approved + merged in-run (see the generated-body
+    # test). The prepared-body raise still happened (pr_opened below).
+    assert row["status"] == "Merged"
     assert row["pr_url"] == "https://github.com/test/repo/pull/101"
 
     events = _journal_events(repo, "pr_opened")
@@ -472,8 +479,11 @@ def test_pr_mode_dependent_dispatches_once_dependency_awaiting_review(
     rc = orchestrator.execute(_build_args(repo, integration="pr"))
     assert rc == 0
 
+    # PRF-4: all three are low-risk → raised, approved, and merged in-run. (The
+    # dispatch-ordering point still holds: SMOKE-C only ran because its
+    # dependency SMOKE-A had already advanced to Awaiting-Review-or-later.)
     for key in ("SMOKE-A", "SMOKE-B", "SMOKE-C"):
-        assert _row_of(repo, key)["status"] == "Awaiting Review"
+        assert _row_of(repo, key)["status"] == "Merged"
     # Every task got its own PR.
     assert len(_journal_events(repo, "pr_opened")) == 3
 

@@ -149,6 +149,24 @@ class EventType(str, Enum):
     # feature branch. Payload: number, url, target (the PR base branch), and
     # base_sha (the feature branch tip the PR targets).
     pr_opened = "pr_opened"
+    # Mechanical merge engine (PRF-4). The merge pass records each step of the
+    # ladder-gated, topologically-ordered merge of Awaiting Review PRs into the
+    # feature branch:
+    #   pr_approved — the approval ladder cleared a PR for merge. Payload:
+    #     number, approver (dispatcher-agent for self-approved low-risk, or
+    #     external:<login>/external for a GitHub approval), risk_level, and the
+    #     classifier reasons.
+    #   pr_merged — the PR landed via `gh pr merge --merge`. Payload: number,
+    #     merger (dispatcher-agent), approver, target (the feature branch), and
+    #     feature_branch_sha (the feature-branch tip after the merge).
+    #   pr_merge_failed — the merge did not land. Payload: number, kind
+    #     ("conflict" for an unmergeable/conflicting PR, else "error"),
+    #     needs_rebase (True only for a conflict), and detail. The row stays
+    #     Awaiting Review; the merge is NOT auto-rebased (a deliberate non-goal
+    #     — the supervising agent handles rebases).
+    pr_approved = "pr_approved"
+    pr_merged = "pr_merged"
+    pr_merge_failed = "pr_merge_failed"
     integrate_result = "integrate_result"
     notify_sent = "notify_sent"
     run_complete = "run_complete"
