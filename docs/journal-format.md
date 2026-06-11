@@ -279,6 +279,65 @@ re-spawn was issued.
 | `trigger` | string | Why the retry fired. |
 | `outcome` | string | `committed` or `still_no_commits`. |
 
+**`verification_mechanical`** *(VG-2)* — the mechanical gate (the repo's
+`.dispatcher.yaml` `test:` command) ran or was decided. One event per test
+*execution* (the first run AND the post-fix re-run, distinguished by `retried`),
+plus one event each for the skip and malformed-config outcomes — so the gate's
+decision is reconstructable from the journal alone.
+
+| Key               | Type            | Notes |
+|-------------------|-----------------|-------|
+| `outcome`         | string          | `passed`, `failed`, or `skipped`. |
+| `command`         | string          | The `test:` command (present on an execution). |
+| `exit_code`       | int \| null     | Process exit code (`null` on the malformed-config failure). |
+| `duration_seconds`| number          | Execution wall-clock (present on an execution). |
+| `retried`         | bool            | `true` on the post-fix re-run; `false` on the first run / malformed-config. |
+| `output_tail`     | string          | Captured output tail (present on an execution; capped). |
+| `reason`          | string          | On `skipped`: `no test command` or `no .dispatcher.yaml`. |
+| `error`           | string          | On the malformed-config `failed`: the parse error (capped). |
+| `unknown_keys`    | array\<str>     | Present (non-empty) when `.dispatcher.yaml` carried forward-compat keys the loader didn't recognise (top-level, or `panel.<key>`). |
+
+**`verification_started`** *(VG-4)* — the independent LLM verifier was spawned
+(after the mechanical gate passed, before the cross-family panel). One per
+verifier spawn.
+
+| Key         | Type | Notes |
+|-------------|------|-------|
+| `iteration` | int  | 0-based verifier pass (0 on the first verification, incremented per iterate cycle). |
+
+**`verification_verdict`** *(VG-4)* — the verifier returned. On a framework/
+spawn error `error` is non-null and the verdict defaults conservatively.
+
+| Key                | Type           | Notes |
+|--------------------|----------------|-------|
+| `verdict`          | string         | `VERIFIED` or `INCOMPLETE`. |
+| `gaps`             | int            | Count of gaps the verifier reported. |
+| `iteration`        | int            | Which verifier pass produced this verdict (0-based, matches `verification_started`). |
+| `reason`           | string \| null | The verifier's one-line rationale. |
+| `error`            | string \| null | Non-null on a spawn/parse failure. |
+| `cost_usd`         | number \| null | Verifier spawn cost (also folded into the per-task rollup via a `task_spawn_finished` event). |
+| `input_tokens`     | int \| null    | |
+| `output_tokens`    | int \| null    | |
+| `duration_seconds` | number \| null | |
+
+**`verification_iterate`** *(VG-4)* — an `INCOMPLETE` verdict triggered a
+corrective Tasker re-spawn (then a mechanical re-run + re-verify).
+
+| Key                    | Type | Notes |
+|------------------------|------|-------|
+| `iteration`            | int  | Count of iterate cycles performed so far (1 after the first iterate). |
+| `iterations_remaining` | int  | Budget left (`--max-verify-iterations` − `iteration`). |
+| `corrective_spawn_ok`  | bool | Whether the re-spawn exited cleanly AND produced a new commit. |
+| `gaps`                 | int  | Gaps fed back to the Tasker. |
+
+**`verification_skipped`** *(VG-4)* — the LLM verifier was skipped via
+`--skip-verification` (the mechanical gate still ran). Emitted once per affected
+Done task.
+
+| Key      | Type   | Notes |
+|----------|--------|-------|
+| `reason` | string | Always `--skip-verification`. |
+
 **`push_verify`** — post-Done push/PR verification ran. Emitted once per Done
 task on the PR-raising workflow (skipped for auto-integrate runs, which merge
 direct-to-base and never push). One event is emitted for *every* outcome,
@@ -315,6 +374,7 @@ is instead `{ "error": str }` (truncated).
 | `blocking_findings`  | int         | Count of blocking findings. |
 | `verdicts`           | object      | `{ "<family>": "<verdict>", … }` (e.g. `claude`, `gemini`, `codex`). |
 | `blocking_locations` | array\<str> | `file:line` for blocking findings that carry a location. |
+| `advisory_verdicts`  | object      | `{ "<family>": "<verdict>", … }` for advisory (probationary) reviewers; always present, `{}` when none ran. Never feeds consensus. |
 
 **`panel_iterate`** — a corrective Tasker spawn was issued after a panel block.
 
@@ -324,6 +384,21 @@ is instead `{ "error": str }` (truncated).
 | `iterations_remaining` | int  | |
 | `corrective_spawn_ok`  | bool | Whether the corrective spawn succeeded. |
 | `blocking_findings`    | int  | Findings fed back to the Tasker. |
+
+**`panel_advisory_finding`** *(VG-5)* — one event per finding raised by an
+advisory (probationary, non-blocking) reviewer. These never affect consensus or
+the task outcome; they are the scorecard raw material for a future decision to
+promote an advisory family to a voting seat. No advisory reviewers (or none with
+findings) → no events.
+
+| Key                | Type   | Notes |
+|--------------------|--------|-------|
+| `family`           | string | Advisory reviewer family (e.g. `grok`). |
+| `severity`         | string | Finding severity (e.g. `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`). |
+| `location`         | string \| null | `file:line`, if the finding carries one. |
+| `description`      | string | Finding text (capped at 500 chars). |
+| `fix`              | string | Suggested fix (capped at 500 chars). |
+| `advisory_verdict` | string | The advisory reviewer's overall verdict (e.g. `APPROVE`, `CHANGES_REQUESTED`). |
 
 **`pr_gate`** — a PR-approval gate decision was recorded.
 
