@@ -975,3 +975,391 @@ def test_collect_diff_truncation(tmp_path: Path):
 
     diff = cfr.collect_diff(repo_root=repo, base_branch="main", branch="feat", max_lines=50)
     assert "diff truncated" in diff
+
+
+# --- advisory tier (VG-5) -----------------------------------------------------
+
+
+_GROK_APPROVE_STDOUT = (
+    "## Verdict\nAPPROVE\n## Dimension scores\n- Correctness: 5\n## Findings\n"
+)
+
+
+def test_grok_reviewer_invokes_prompt_file_with_devnull_stdin(monkeypatch):
+    """GrokReviewer must pass the prompt via a --prompt-file tempfile (never
+    argv — E2BIG on big diffs), keep stdin at DEVNULL (the codex#20919 hang
+    class), use the verified flag set, and unlink the tempfile afterward.
+    """
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = list(cmd)
+        captured["stdin"] = kwargs.get("stdin")
+        captured["input"] = kwargs.get("input")
+        captured["timeout"] = kwargs.get("timeout")
+        path = Path(cmd[cmd.index("--prompt-file") + 1])
+        captured["prompt_file"] = path
+        captured["prompt_contents"] = path.read_text(encoding="utf-8")
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0,
+            stdout=_GROK_APPROVE_STDOUT,
+            # grok 0.2.39 spams ANSI ERROR lines on stderr even on success;
+            # the adapter must never parse stderr.
+            stderr="\x1b[31mERROR noisy log line\x1b[0m",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    r = cfr.GrokReviewer()
+    big_prompt = "hello grok" + "x" * 200000  # way past ARG_MAX per-arg limit
+    out = r._invoke_cli(big_prompt)
+    assert "## Verdict" in out
+
+    # Full argv shape per the live-verified 0.2.39 contract.
+    assert captured["cmd"] == [
+        "grok",
+        "--prompt-file", str(captured["prompt_file"]),
+        "--output-format", "plain",
+        "--always-approve",
+    ]
+    # The prompt landed in the file — verbatim — not on argv or stdin.
+    assert captured["prompt_contents"] == big_prompt
+    assert captured["input"] is None
+    assert not any(len(a) > 1024 for a in captured["cmd"])
+    assert captured["stdin"] == subprocess.DEVNULL
+    # No internal grok timeout flag exists; the subprocess timeout is the budget.
+    assert captured["timeout"] == r.timeout_seconds
+    # Tempfile unlinked after the invocation.
+    assert not captured["prompt_file"].exists()
+
+
+@pytest.mark.parametrize("empty_stdout", ["", "   \n\t  \n"])
+def test_grok_reviewer_empty_stdout_exit0_is_unavailable(monkeypatch, empty_stdout):
+    """Edge 7a: exit 0 with empty/whitespace stdout (e.g. auth expired and
+    grok only wrote to stderr) must become UNAVAILABLE with the verbatim
+    ReviewerUnavailable reason — no parse attempt, no retry — and the
+    prompt tempfile must still be unlinked.
+    """
+    calls = {"n": 0}
+    paths = []
+
+    def fake_run(cmd, **kwargs):
+        calls["n"] += 1
+        paths.append(Path(cmd[cmd.index("--prompt-file") + 1]))
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout=empty_stdout,
+            stderr="ERROR credentials expired",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    rv = cfr.GrokReviewer().review("review this")
+
+    assert rv.verdict == cfr.Verdict.UNAVAILABLE
+    assert rv.error == "empty stdout"
+    assert calls["n"] == 1, "empty stdout must not trigger the parse-failure retry"
+    assert not rv.findings
+    assert all(not p.exists() for p in paths)
+
+
+def test_grok_reviewer_nonzero_exit_is_unavailable(monkeypatch):
+    """Edge 7b: nonzero exit raises RuntimeError with exit code + stderr
+    tail; the base class maps it to UNAVAILABLE. Tempfile still unlinked.
+    """
+    paths = []
+
+    def fake_run(cmd, **kwargs):
+        paths.append(Path(cmd[cmd.index("--prompt-file") + 1]))
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=2, stdout="",
+            stderr="ERROR: credentials expired",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    rv = cfr.GrokReviewer().review("p")
+    assert rv.verdict == cfr.Verdict.UNAVAILABLE
+    assert "grok exit=2" in (rv.error or "")
+    assert "credentials expired" in (rv.error or "")
+    assert all(not p.exists() for p in paths)
+
+
+def test_grok_reviewer_timeout_is_unavailable(monkeypatch):
+    """Edge 7c: a subprocess timeout becomes UNAVAILABLE with the standard
+    'cli timed out after Ns' reason. Tempfile still unlinked (finally).
+    """
+    paths = []
+
+    def fake_run(cmd, **kwargs):
+        paths.append(Path(cmd[cmd.index("--prompt-file") + 1]))
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    rv = cfr.GrokReviewer(timeout_seconds=7).review("p")
+    assert rv.verdict == cfr.Verdict.UNAVAILABLE
+    assert rv.error == "cli timed out after 7s"
+    assert all(not p.exists() for p in paths)
+
+
+def test_advisory_reviewers_from_names_builds_grok_and_reports_unknown():
+    """Edge 5 (factory half): known names instantiate real adapters with the
+    requested timeout; unknown names are RETURNED, never raised, so the
+    caller can journal them without crashing the panel.
+    """
+    reviewers, unknown = cfr.advisory_reviewers_from_names(
+        ["grok", "foo"], timeout_seconds=42,
+    )
+    assert len(reviewers) == 1
+    assert isinstance(reviewers[0], cfr.GrokReviewer)
+    assert reviewers[0].family == "grok"
+    assert reviewers[0].cli_bin == "grok"
+    assert reviewers[0].timeout_seconds == 42
+    assert unknown == ["foo"]
+
+
+def test_advisory_reviewers_from_names_is_case_insensitive_and_empty_safe():
+    reviewers, unknown = cfr.advisory_reviewers_from_names(["  Grok "])
+    assert len(reviewers) == 1 and isinstance(reviewers[0], cfr.GrokReviewer)
+    assert unknown == []
+    reviewers, unknown = cfr.advisory_reviewers_from_names([])
+    assert reviewers == [] and unknown == []
+
+
+def test_advisory_families_registry_contains_grok_only():
+    assert cfr.ADVISORY_FAMILIES == {"grok": cfr.GrokReviewer}
+
+
+def _advisory_changes_verdict(family: str = "grok") -> cfr.ReviewerVerdict:
+    return cfr.ReviewerVerdict(
+        family=family, verdict=cfr.Verdict.CHANGES_REQUESTED,
+        findings=[cfr.Finding(
+            severity=cfr.Severity.CRITICAL, location="adv.go:7",
+            description="advisory-only defect", fix="advisory fix",
+        )],
+    )
+
+
+def test_aggregate_advisory_critical_never_blocks():
+    """Edge 2 (unit): an advisory CHANGES_REQUESTED with a CRITICAL finding
+    has zero effect on a 3/3-APPROVE panel — and the finding stays out of
+    blocking_findings.
+    """
+    panel = cfr.aggregate(
+        [_approve_verdict("claude"), _approve_verdict("gemini"), _approve_verdict("codex")],
+        advisory=[_advisory_changes_verdict()],
+    )
+    assert panel.consensus == "approve"
+    assert panel.is_approve
+    assert panel.blocking_findings == []
+    assert [r.family for r in panel.advisory] == ["grok"]
+    assert panel.advisory[0].findings[0].severity == cfr.Severity.CRITICAL
+    # The summary line is authoritative-only.
+    assert "grok" not in panel.summary
+
+
+def test_aggregate_advisory_unavailable_does_not_make_incomplete():
+    """Edge 1 (unit): advisory UNAVAILABLE while authoritative 3/3 APPROVE
+    → consensus stays "approve", never "incomplete".
+    """
+    panel = cfr.aggregate(
+        [_approve_verdict("claude"), _approve_verdict("gemini"), _approve_verdict("codex")],
+        advisory=[_unavailable_verdict("grok")],
+    )
+    assert panel.consensus == "approve"
+    assert panel.advisory[0].verdict == cfr.Verdict.UNAVAILABLE
+
+
+def test_aggregate_advisory_approve_does_not_rescue_block():
+    """Edge 3 (unit): authoritative dissent blocks regardless of advisory
+    APPROVE, and blocking_findings carries only authoritative findings.
+    """
+    panel = cfr.aggregate(
+        [_approve_verdict("claude"), _approve_verdict("gemini"), _changes_verdict("codex")],
+        advisory=[_approve_verdict("grok")],
+    )
+    assert panel.consensus == "block"
+    assert [f.location for f in panel.blocking_findings] == ["x.go:1"]
+
+
+def test_aggregate_advisory_parse_failed_is_non_blocking():
+    """Edge 6 (unit): PARSE_FAILED blocks for authoritative reviewers (via
+    is_blocker); an advisory PARSE_FAILED must bypass that path entirely.
+    """
+    adv = cfr.ReviewerVerdict(family="grok", verdict=cfr.Verdict.PARSE_FAILED)
+    assert adv.is_blocker()  # would block if it were authoritative...
+    panel = cfr.aggregate(
+        [_approve_verdict("claude"), _approve_verdict("gemini"), _approve_verdict("codex")],
+        advisory=[adv],
+    )
+    assert panel.consensus == "approve"  # ...but advisory never enters the math
+
+
+def test_aggregate_authoritative_unavailable_stays_incomplete_despite_advisory_approve():
+    """Edge 8 (unit): advisory APPROVE cannot rescue a missing authoritative
+    seat — consensus stays "incomplete".
+    """
+    panel = cfr.aggregate(
+        [_approve_verdict("claude"), _approve_verdict("gemini"), _unavailable_verdict("codex")],
+        advisory=[_approve_verdict("grok")],
+    )
+    assert panel.consensus == "incomplete"
+    assert not panel.is_approve
+
+
+def test_aggregate_without_advisory_has_empty_advisory_list():
+    panel = cfr.aggregate(
+        [_approve_verdict("claude"), _approve_verdict("gemini"), _approve_verdict("codex")],
+    )
+    assert panel.advisory == []
+    assert panel.to_dict()["advisory"] == []
+
+
+def test_run_panel_advisory_runs_alongside_and_attaches():
+    """run_panel executes advisory reviewers in the same parallel pass and
+    attaches their verdicts to PanelVerdict.advisory without touching the
+    consensus.
+    """
+    approve = textwrap.dedent("""\
+        ## Verdict
+        APPROVE
+        ## Dimension scores
+        - Correctness: 5
+        ## Findings
+    """)
+    block = textwrap.dedent("""\
+        ## Verdict
+        CHANGES_REQUESTED
+        ## Dimension scores
+        - Correctness: 2
+        ## Findings
+        ### CRITICAL: adv.go:7
+        Description: advisory-only defect.
+        Fix: advisory fix.
+    """)
+    revs = [_StubReviewer(f, approve) for f in ("claude", "gemini", "codex")]
+    adv = _StubReviewer("grok", block)
+    panel = cfr.run_panel(
+        ticket_key="T6", ticket_summary="s", summary_md="sm", diff="d",
+        branch="feat/t6", base_branch="main",
+        reviewers=revs, advisory_reviewers=[adv],
+    )
+    assert panel.consensus == "approve"
+    assert adv.call_count == 1
+    assert [r.family for r in panel.reviewers] == ["claude", "gemini", "codex"]
+    assert [r.family for r in panel.advisory] == ["grok"]
+    assert panel.advisory[0].verdict == cfr.Verdict.CHANGES_REQUESTED
+    assert panel.blocking_findings == []
+
+
+def test_run_panel_advisory_leaked_exception_recorded_as_unavailable():
+    """An advisory worker that leaks an exception OUTSIDE Reviewer.review()
+    (here: build_review_prompt raising for a family with no prompt file)
+    must not crash the panel — it is recorded as UNAVAILABLE for that family.
+    """
+    approve = textwrap.dedent("""\
+        ## Verdict
+        APPROVE
+        ## Dimension scores
+        - Correctness: 5
+        ## Findings
+    """)
+    revs = [_StubReviewer(f, approve) for f in ("claude", "gemini", "codex")]
+    adv = _StubReviewer("no-such-family", approve)  # no prompt preamble exists
+    panel = cfr.run_panel(
+        ticket_key="T7", ticket_summary="s", summary_md="sm", diff="d",
+        branch="feat/t7", base_branch="main",
+        reviewers=revs, advisory_reviewers=[adv],
+    )
+    assert panel.consensus == "approve"
+    assert panel.advisory[0].family == "no-such-family"
+    assert panel.advisory[0].verdict == cfr.Verdict.UNAVAILABLE
+    assert "advisory worker raised" in (panel.advisory[0].error or "")
+
+
+def test_run_panel_no_advisory_unchanged():
+    """Edge 4 (unit): omitting advisory_reviewers leaves run_panel's output
+    shape exactly as before — empty advisory list.
+    """
+    approve = textwrap.dedent("""\
+        ## Verdict
+        APPROVE
+        ## Dimension scores
+        - Correctness: 5
+        ## Findings
+    """)
+    revs = [_StubReviewer(f, approve) for f in ("claude", "gemini", "codex")]
+    panel = cfr.run_panel(
+        ticket_key="T8", ticket_summary="s", summary_md="sm", diff="d",
+        branch="feat/t8", base_branch="main", reviewers=revs,
+    )
+    assert panel.consensus == "approve"
+    assert panel.advisory == []
+
+
+def test_build_review_prompt_grok_family():
+    """The grok preamble must exist, identify the reviewer as Grok (xAI),
+    survive .format() over the whole concatenation (no literal braces), and
+    must NOT reveal that the verdict is advisory (full-diligence reviews
+    keep scorecards comparable).
+    """
+    p = cfr.build_review_prompt(
+        family="grok", ticket_key="T-9", ticket_summary="sum",
+        summary_md="md", diff="+x", branch="feat/g", base_branch="main",
+    )
+    assert "Grok (xAI) reviewer" in p
+    assert "T-9" in p and "+x" in p
+    assert "advisory" not in p.lower()
+    assert "probation" not in p.lower()
+
+
+def test_render_markdown_approve_includes_advisory_appendix():
+    """Edge 2 (render, approve path): the advisory appendix appears, clearly
+    labelled non-blocking, and no 'Blocking findings' section exists.
+    """
+    panel = cfr.aggregate(
+        [_approve_verdict("claude"), _approve_verdict("gemini"), _approve_verdict("codex")],
+        advisory=[_advisory_changes_verdict()],
+    )
+    md = cfr.render_findings_markdown(panel)
+    assert "Verdict: APPROVE" in md
+    assert "### Advisory reviewers (non-blocking, probationary)" in md
+    assert "advisory-only defect" in md
+    assert "adv.go:7" in md
+    assert "*Fix:* advisory fix" in md
+    assert "### Blocking findings" not in md
+
+
+def test_render_markdown_block_keeps_advisory_separate_from_blocking():
+    """Edge 2/3 (render, block path): advisory findings render ONLY under
+    the advisory appendix, never inside 'Blocking findings'.
+    """
+    panel = cfr.aggregate(
+        [_approve_verdict("claude"), _approve_verdict("gemini"), _changes_verdict("codex")],
+        advisory=[_advisory_changes_verdict()],
+    )
+    md = cfr.render_findings_markdown(panel)
+    assert "### Blocking findings" in md
+    assert "### Advisory reviewers (non-blocking, probationary)" in md
+    blocking_section = md.split("### Blocking findings")[1].split(
+        "### Advisory reviewers")[0]
+    assert "x.go:1" in blocking_section
+    assert "adv.go:7" not in blocking_section
+    advisory_section = md.split("### Advisory reviewers")[1]
+    assert "adv.go:7" in advisory_section
+    assert "[advisory:grok]" in advisory_section
+
+
+def test_render_markdown_approve_without_advisory_unchanged():
+    """Zero-advisory approve render stays byte-identical to the legacy form."""
+    panel = cfr.aggregate(
+        [_approve_verdict("claude"), _approve_verdict("gemini"), _approve_verdict("codex")],
+    )
+    md = cfr.render_findings_markdown(panel)
+    assert md == f"## Cross-family panel\n\nVerdict: APPROVE ({panel.summary})\n"
+
+
+def test_panel_verdict_to_dict_includes_advisory():
+    panel = cfr.aggregate(
+        [_approve_verdict("claude"), _approve_verdict("gemini"), _approve_verdict("codex")],
+        advisory=[_unavailable_verdict("grok")],
+    )
+    d = panel.to_dict()
+    assert d["advisory"][0]["family"] == "grok"
+    assert d["advisory"][0]["verdict"] == "UNAVAILABLE"

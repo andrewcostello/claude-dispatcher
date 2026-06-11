@@ -23,6 +23,14 @@ Three layers:
 The output of one reviewer is a `ReviewerVerdict`. The output of the panel
 is a `PanelVerdict` whose `consensus` field is what the orchestrator gates
 on.
+
+A probationary ADVISORY tier (first occupant: Grok Build via the `grok`
+CLI) can run alongside the authoritative three: advisory reviewers execute
+in the same parallel pass but their verdicts/findings attach to
+`PanelVerdict.advisory` only — they never affect `consensus`,
+`blocking_findings`, or `is_approve`. Repos opt in via `.dispatcher.yaml`
+(`panel: {advisory: [grok]}`); promotion to an authoritative seat is a
+future explicit human decision based on the journaled scorecard events.
 """
 
 from __future__ import annotations
@@ -161,13 +169,21 @@ class PanelVerdict:
                     config treats that as a hard requirement. Defaults to
                     "block" semantically; the orchestrator should NOT
                     auto-integrate on "incomplete" either.
+
+    `advisory` carries verdicts from probationary (advisory-tier) reviewers.
+    They are journaled and rendered for scorecard comparison but have ZERO
+    effect on `consensus`, `blocking_findings`, or `is_approve` — only the
+    authoritative `reviewers` list feeds the consensus math.
     """
 
     consensus: str  # "approve" | "block" | "incomplete"
     reviewers: list[ReviewerVerdict]
     summary: str
-    # All CRITICAL/HIGH findings across all reviewers, in input order.
+    # All CRITICAL/HIGH findings across all AUTHORITATIVE reviewers, in
+    # input order. Advisory findings never appear here.
     blocking_findings: list[Finding] = field(default_factory=list)
+    # Advisory (probationary, non-blocking) reviewer verdicts.
+    advisory: list[ReviewerVerdict] = field(default_factory=list)
 
     @property
     def is_approve(self) -> bool:
@@ -179,6 +195,7 @@ class PanelVerdict:
             "summary": self.summary,
             "reviewers": [r.to_dict() for r in self.reviewers],
             "blocking_findings": [f.to_dict() for f in self.blocking_findings],
+            "advisory": [r.to_dict() for r in self.advisory],
         }
 
 
@@ -813,6 +830,80 @@ class CodexReviewer(Reviewer):
                 pass
 
 
+class GrokReviewer(Reviewer):
+    """Advisory-tier reviewer that shells out to `grok` (xAI's Grok CLI).
+
+    First occupant of the panel's probationary seat: it runs in parallel
+    with the authoritative three but NEVER affects consensus — its verdicts
+    and findings are journaled for scorecard comparison only.
+
+    Contract live-verified against grok 0.2.39 (2026-06-10):
+
+      * Headless single-shot: `grok --prompt-file <path> --output-format
+        plain --always-approve` writes the final response text to stdout
+        and exits 0.
+      * stderr is noisy (ANSI ERROR log lines) even on success — never
+        parse stderr; it is only quoted in error messages.
+      * `-p/--single <PROMPT>` also works but carries the prompt as one
+        argv element → E2BIG risk on large diffs (Linux ARG_MAX ~128KB per
+        arg). The prompt therefore goes through a tempfile via
+        `--prompt-file`, mirroring CodexReviewer's tempfile pattern
+        (NamedTemporaryFile delete=False, unlink in finally).
+      * stdin is explicitly DEVNULL: the prompt comes from the file, and a
+        non-TTY stdin left open is exactly the hang class CodexReviewer
+        documents (openai/codex#20919) — don't risk grok sharing it.
+      * grok has no internal print-timeout flag; the subprocess timeout
+        (self.timeout_seconds) is the only budget.
+      * Failure mapping: nonzero exit → RuntimeError with exit code +
+        stderr tail (base class maps it to UNAVAILABLE); exit 0 with
+        empty/whitespace-only stdout → ReviewerUnavailable("empty stdout"),
+        like GeminiReviewer's agy#76 handling. Missing/expired grok auth
+        emits only stderr errors, so it lands in one of those two paths
+        and degrades cleanly to UNAVAILABLE.
+    """
+
+    family = "grok"
+    cli_bin = "grok"
+
+    def _invoke_cli(self, prompt: str) -> str:
+        import tempfile
+
+        # delete=False so the file survives the `with` for grok to read;
+        # we unlink ourselves in the finally.
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".md", prefix="grok-review-", delete=False,
+            encoding="utf-8",
+        ) as tf:
+            tf.write(prompt)
+            prompt_path = Path(tf.name)
+        try:
+            proc = subprocess.run(
+                [
+                    self.cli_bin,
+                    "--prompt-file", str(prompt_path),
+                    "--output-format", "plain",
+                    "--always-approve",
+                ],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=self.timeout_seconds,
+            )
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    f"grok exit={proc.returncode}: {proc.stderr.strip()[-400:]}"
+                )
+            if not proc.stdout.strip():
+                raise ReviewerUnavailable("empty stdout")
+            return proc.stdout
+        finally:
+            try:
+                prompt_path.unlink()
+            except OSError:
+                pass
+
+
 # --- codex usage parsing ----------------------------------------------------
 
 
@@ -983,6 +1074,36 @@ def default_reviewers(timeout_seconds: int = DEFAULT_REVIEWER_TIMEOUT_SECONDS) -
     ]
 
 
+# Registry of advisory (probationary, non-blocking) reviewer families a repo
+# may opt into via `.dispatcher.yaml` `panel.advisory`. Promotion of an
+# advisory family into the authoritative panel is a future explicit human
+# decision — never automatic.
+ADVISORY_FAMILIES: dict[str, type[Reviewer]] = {"grok": GrokReviewer}
+
+
+def advisory_reviewers_from_names(
+    names: Iterable[str],
+    *,
+    timeout_seconds: int = DEFAULT_REVIEWER_TIMEOUT_SECONDS,
+) -> tuple[list[Reviewer], list[str]]:
+    """Instantiate advisory reviewers from config names.
+
+    Returns ``(reviewers, unknown_names)`` — unknown names are returned
+    (never raised) so the caller can journal/log them without an unknown
+    config entry crashing the authoritative panel. Matching is
+    case-insensitive on the trimmed name.
+    """
+    reviewers: list[Reviewer] = []
+    unknown: list[str] = []
+    for raw in names:
+        cls = ADVISORY_FAMILIES.get(str(raw).strip().lower())
+        if cls is None:
+            unknown.append(str(raw))
+        else:
+            reviewers.append(cls(timeout_seconds=timeout_seconds))
+    return reviewers, unknown
+
+
 def run_panel(
     *,
     ticket_key: str,
@@ -992,6 +1113,7 @@ def run_panel(
     branch: str,
     base_branch: str,
     reviewers: list[Reviewer] | None = None,
+    advisory_reviewers: list[Reviewer] | None = None,
     log: Callable[[str], None] = lambda _m: None,
 ) -> PanelVerdict:
     """Invoke all reviewers in parallel and aggregate.
@@ -1005,10 +1127,18 @@ def run_panel(
     we cannot prove 3/3 agreement). The orchestrator treats "incomplete"
     the same as "block" for auto-integration gating.
 
+    `advisory_reviewers` (probationary tier) run in the SAME executor pass,
+    in parallel with the authoritative set, but their verdicts attach to
+    ``PanelVerdict.advisory`` and never feed the consensus. An advisory
+    worker that leaks an exception is recorded as UNAVAILABLE for that
+    family instead of crashing the panel; authoritative worker exceptions
+    still re-raise (framework bugs must stay loud).
+
     `log` is an optional one-arg sink for progress messages — the
     orchestrator wires this to its run.log.
     """
     revs = reviewers if reviewers is not None else default_reviewers()
+    advs = list(advisory_reviewers) if advisory_reviewers else []
     if not revs:
         return PanelVerdict(
             consensus="incomplete", reviewers=[],
@@ -1016,14 +1146,14 @@ def run_panel(
         )
 
     results: list[ReviewerVerdict | None] = [None] * len(revs)
+    adv_results: list[ReviewerVerdict | None] = [None] * len(advs)
     log_lock = threading.Lock()
 
     def _safe_log(msg: str) -> None:
         with log_lock:
             log(msg)
 
-    def _run_one(idx: int, r: Reviewer) -> None:
-        _safe_log(f"  panel[{ticket_key}] {r.family}: starting")
+    def _review_one(r: Reviewer) -> ReviewerVerdict:
         prompt = build_review_prompt(
             family=r.family,
             ticket_key=ticket_key,
@@ -1033,40 +1163,87 @@ def run_panel(
             branch=branch,
             base_branch=base_branch,
         )
-        rv = r.review(prompt)
-        results[idx] = rv
+        return r.review(prompt)
+
+    def _log_verdict(r: Reviewer, rv: ReviewerVerdict, *, advisory: bool) -> None:
+        tag = f"{r.family} (advisory)" if advisory else r.family
         _safe_log(
-            f"  panel[{ticket_key}] {r.family}: verdict={rv.verdict.value} "
+            f"  panel[{ticket_key}] {tag}: verdict={rv.verdict.value} "
             f"findings={len(rv.findings)} "
             f"blocking={len(rv.blocking_findings())} "
             f"dur={rv.duration_seconds:.1f}s" if rv.duration_seconds is not None
-            else f"  panel[{ticket_key}] {r.family}: verdict={rv.verdict.value}"
+            else f"  panel[{ticket_key}] {tag}: verdict={rv.verdict.value}"
         )
 
-    with ThreadPoolExecutor(max_workers=len(revs)) as exe:
+    def _run_one(idx: int, r: Reviewer) -> None:
+        _safe_log(f"  panel[{ticket_key}] {r.family}: starting")
+        rv = _review_one(r)
+        results[idx] = rv
+        _log_verdict(r, rv, advisory=False)
+
+    def _run_one_advisory(idx: int, r: Reviewer) -> None:
+        _safe_log(f"  panel[{ticket_key}] {r.family} (advisory): starting")
+        try:
+            rv = _review_one(r)
+        except Exception as e:
+            # An advisory seat must never take the authoritative panel
+            # down — a leaked exception (e.g. missing prompt file for the
+            # family) is recorded as UNAVAILABLE and the panel proceeds.
+            rv = ReviewerVerdict(
+                family=r.family, verdict=Verdict.UNAVAILABLE,
+                error=f"advisory worker raised: {e}",
+            )
+        adv_results[idx] = rv
+        _log_verdict(r, rv, advisory=True)
+
+    with ThreadPoolExecutor(max_workers=len(revs) + len(advs)) as exe:
         futures = [exe.submit(_run_one, i, r) for i, r in enumerate(revs)]
+        adv_futures = [
+            exe.submit(_run_one_advisory, i, r) for i, r in enumerate(advs)
+        ]
         for f in as_completed(futures):
-            # Re-raise any unexpected worker exceptions (Reviewer.review()
-            # is supposed to capture all internal errors; an exception here
-            # means our framework leaked).
+            # Re-raise any unexpected AUTHORITATIVE worker exceptions
+            # (Reviewer.review() is supposed to capture all internal
+            # errors; an exception here means our framework leaked).
+            f.result()
+        for f in as_completed(adv_futures):
+            # Advisory workers swallow their own exceptions; waiting here
+            # only ensures the pass is complete before aggregation.
             f.result()
 
     completed = [r for r in results if r is not None]
-    return aggregate(completed)
+    advisory_verdicts = [
+        rv if rv is not None else ReviewerVerdict(
+            family=r.family, verdict=Verdict.UNAVAILABLE,
+            error="advisory worker produced no result",
+        )
+        for r, rv in zip(advs, adv_results)
+    ]
+    return aggregate(completed, advisory=advisory_verdicts)
 
 
-def aggregate(reviews: list[ReviewerVerdict]) -> PanelVerdict:
+def aggregate(
+    reviews: list[ReviewerVerdict],
+    advisory: list[ReviewerVerdict] | None = None,
+) -> PanelVerdict:
     """Compose a PanelVerdict from a set of reviewer outputs.
 
     Rules (locked design — see brief):
       * ALL THREE must be APPROVE with no blocking findings → "approve"
       * Any UNAVAILABLE → "incomplete" (treated as block by callers)
       * Anything else → "block"
+
+    `advisory` verdicts are attached verbatim to ``PanelVerdict.advisory``
+    and have ZERO effect on the consensus math above — an advisory
+    CRITICAL never blocks, and an advisory APPROVE never rescues a missing
+    authoritative seat.
     """
+    advisory_list = list(advisory) if advisory else []
     if not reviews:
         return PanelVerdict(
             consensus="incomplete", reviewers=[],
             summary="no reviewer results", blocking_findings=[],
+            advisory=advisory_list,
         )
 
     blocking_findings: list[Finding] = []
@@ -1090,6 +1267,7 @@ def aggregate(reviews: list[ReviewerVerdict]) -> PanelVerdict:
         reviewers=list(reviews),
         summary=summary,
         blocking_findings=blocking_findings,
+        advisory=advisory_list,
     )
 
 
@@ -1114,9 +1292,16 @@ def _summarize(
 def render_findings_markdown(panel: PanelVerdict) -> str:
     """Render the panel's blocking findings as a markdown block suitable
     for appending to the Tasker's summary.md so humans see them at triage.
+
+    When advisory reviewers ran, a clearly-labelled non-blocking appendix
+    follows the authoritative content — in BOTH the approve and block
+    render paths. Advisory findings never appear under "Blocking findings".
     """
     if panel.consensus == "approve":
-        return f"## Cross-family panel\n\nVerdict: APPROVE ({panel.summary})\n"
+        md = f"## Cross-family panel\n\nVerdict: APPROVE ({panel.summary})\n"
+        if panel.advisory:
+            md += "\n" + _render_advisory_appendix(panel)
+        return md
 
     lines = [
         "## Cross-family panel",
@@ -1144,4 +1329,39 @@ def render_findings_markdown(panel: PanelVerdict) -> str:
             lines.append(f"- **{f.severity.value}** at `{f.location}` — {f.description}")
             if f.fix:
                 lines.append(f"  - *Fix:* {f.fix}")
+    out = "\n".join(lines) + "\n"
+    if panel.advisory:
+        out += "\n" + _render_advisory_appendix(panel)
+    return out
+
+
+def _render_advisory_appendix(panel: PanelVerdict) -> str:
+    """Render the advisory (probationary) seats as a non-blocking appendix.
+
+    Visually separate from the authoritative sections: its heading states
+    the tier and every finding line is prefixed with `[advisory:family]` so
+    nothing in it can be mistaken for a blocking finding.
+    """
+    lines = [
+        "### Advisory reviewers (non-blocking, probationary)",
+        "",
+        "Recorded for scorecard comparison only — these verdicts and",
+        "findings do NOT count toward consensus and can never block.",
+        "",
+        "| Family | Verdict | Findings |",
+        "|--------|---------|----------|",
+    ]
+    for r in panel.advisory:
+        lines.append(f"| {r.family} | {r.verdict.value} | {len(r.findings)} |")
+    any_findings = any(r.findings for r in panel.advisory)
+    if any_findings:
+        lines += ["", "#### Advisory findings (non-blocking)", ""]
+        for r in panel.advisory:
+            for f in r.findings:
+                lines.append(
+                    f"- [advisory:{r.family}] **{f.severity.value}** at "
+                    f"`{f.location}` — {f.description}"
+                )
+                if f.fix:
+                    lines.append(f"  - *Fix:* {f.fix}")
     return "\n".join(lines) + "\n"
