@@ -95,6 +95,47 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument(
+        "--verify-test-timeout",
+        type=int,
+        default=600,
+        metavar="SECONDS",
+        help=(
+            "Wall-clock bound for the repo's .dispatcher.yaml `test:` "
+            "command in the post-Done mechanical verification gate "
+            "(default: 600). Bounds EACH execution independently — the "
+            "first run and the post-fix re-run. A timed-out execution is "
+            "treated as a failure, like any non-zero exit."
+        ),
+    )
+    run.add_argument(
+        "--max-verify-iterations",
+        type=int,
+        default=2,
+        metavar="N",
+        help=(
+            "When the post-Done LLM verifier returns INCOMPLETE, re-spawn the "
+            "Tasker with the verifier's gap list, re-run the mechanical gate, "
+            "and re-verify — up to N times before marking the task Blocked "
+            "with reason verification_incomplete (default: 2). Distinct from "
+            "--cross-family-panel-iterate; the verifier runs first. Each "
+            "iteration is one Tasker re-spawn + one mechanical re-run + one "
+            "verifier re-spawn."
+        ),
+    )
+    run.add_argument(
+        "--skip-verification",
+        action="store_true",
+        default=False,
+        help=(
+            "Escape hatch: skip the post-Done LLM verifier entirely (the "
+            "mechanical gate still runs). The skip is journaled (a "
+            "verification_skipped event, plus run_config.skip_verification in "
+            "the genesis). For emergencies only — the verifier exists to catch "
+            "stubbed/deferred/quietly-narrowed work that the mechanical suite "
+            "can pass."
+        ),
+    )
+    run.add_argument(
         "--run-id",
         default=None,
         help="Default: ISO 8601 timestamp",
