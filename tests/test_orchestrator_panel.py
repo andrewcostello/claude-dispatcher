@@ -1106,6 +1106,13 @@ def test_unknown_advisory_name_in_config_skipped_and_logged(repo: Path, monkeypa
 def test_malformed_dispatcher_yaml_does_not_break_panel(repo: Path, monkeypatch) -> None:
     """A malformed `.dispatcher.yaml` (panel not a mapping) must be logged
     and the authoritative panel must still run — with no advisory seats.
+
+    Since VG-2, the same malformed config (correctly) fails the mechanical
+    verification gate FIRST — executable config rots loudly — so the task
+    blocks before any panel fires and the run exits 1. The malformed-config-
+    reaches-the-panel scenario is unreachable through the orchestrator now;
+    the advisory loader's own graceful handling stays covered by its direct
+    unit tests. This test asserts the gate-blocks-first ordering.
     """
     (repo / ".dispatcher.yaml").write_text(
         "panel: [not, a, mapping]\n", encoding="utf-8",
@@ -1119,15 +1126,14 @@ def test_malformed_dispatcher_yaml_does_not_break_panel(repo: Path, monkeypatch)
     ])
 
     rc = orchestrator.execute(_args(repo, key="PANEL-A", panel_mode="auto"))
-    assert rc == 0
+    assert rc == 1  # mechanical gate blocks on malformed config (VG-2)
     doc = yaml_io.load(repo / "tasks.yaml")
     row = next(t for t in doc["tasks"] if t["key"] == "PANEL-A")
-    assert row["status"] == "Done"
-    assert row["panel_consensus"] == "approve"
-
-    pv = next(e for e in _journal_events(repo)
-              if e.event_type == "panel_verdict")
-    assert pv.payload["advisory_verdicts"] == {}
+    assert row["status"] == "Blocked"
+    assert row["mechanical_verification"] == "failed"
+    # Gate blocks BEFORE the panel: no panel events were emitted at all.
+    assert not [e for e in _journal_events(repo)
+                if e.event_type.startswith("panel_")]
     log_text = (repo / "_runs" / "panel-test" / "run.log").read_text(encoding="utf-8")
     assert "invalid .dispatcher.yaml" in log_text
 
