@@ -18,6 +18,7 @@ from . import run as run_cmd
 from . import status as status_cmd
 from . import resume as resume_cmd
 from . import report as report_cmd
+from . import merge_prs as merge_prs_cmd
 from . import forecast_bridge
 from . import doctor as doctor_cmd
 
@@ -166,6 +167,30 @@ def build_parser() -> argparse.ArgumentParser:
             "the YAML's top-level `base_branch` > `main` (default). Use this when "
             "your work lives on an epic branch (e.g., epic/bay-session-architecture) "
             "and forking from main would produce empty/stale worktrees."
+        ),
+    )
+    run.add_argument(
+        "--integration",
+        choices=["branch", "pr"],
+        default=None,
+        help=(
+            "Integration mode. 'branch' (the default behavior) forks each "
+            "task worktree directly from --base-branch, as today. 'pr' runs "
+            "the whole run off a shared run-level FEATURE branch: it is "
+            "created from --base-branch at run start (if absent), task "
+            "worktrees fork from IT, and the genesis records the mode + "
+            "feature branch + its SHA. Precedence: this flag > .dispatcher.yaml "
+            "`integration:` > 'branch'."
+        ),
+    )
+    run.add_argument(
+        "--feature-branch",
+        default=None,
+        metavar="NAME",
+        help=(
+            "PR-flow mode only: the run-level feature branch name. Default: "
+            "feature/<epic from the tasks YAML>, sanitized. Ignored in branch "
+            "mode."
         ),
     )
     run.add_argument(
@@ -346,6 +371,38 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     rs.set_defaults(func=resume_cmd.execute)
+
+    # --- merge-prs ---------------------------------------------------------
+    mp = sub.add_parser(
+        "merge-prs",
+        help=("PR-flow mode: run the mechanical merge pass over a run's "
+              "Awaiting Review PRs — merge each (in blockedBy order) whose "
+              "approval ladder is satisfied AND whose dependencies are all "
+              "Merged. Use for a post-run / next-morning catch-up; the "
+              "dispatch loop runs the same pass live."),
+    )
+    mp.add_argument("run_id")
+    mp.add_argument("--runs-dir", default="docs/runs")
+    mp.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help=(
+            "Merge even if the journal's last event is recent (which normally "
+            "signals the original run may still be merging, risking a "
+            "double-merge). Use only when you are sure the run is done."
+        ),
+    )
+    mp.add_argument("--ntfy-topic", default=None, metavar="TOPIC",
+                    help="ntfy.sh topic for merge notifications (env fallback: "
+                         "DISPATCHER_NTFY_TOPIC).")
+    mp.add_argument("--ntfy-server", default=None, metavar="URL",
+                    help="Self-hosted ntfy server (env fallback: "
+                         "DISPATCHER_NTFY_SERVER).")
+    mp.add_argument("--slack-webhook-url", default=None, metavar="URL",
+                    help="Slack incoming-webhook URL (env fallback: "
+                         "DISPATCHER_SLACK_WEBHOOK).")
+    mp.set_defaults(func=merge_prs_cmd.execute)
 
     # --- report ------------------------------------------------------------
     rp = sub.add_parser(

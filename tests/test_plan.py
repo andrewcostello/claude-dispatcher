@@ -124,6 +124,69 @@ def test_runnable_now_skips_in_progress() -> None:
     assert plan.runnable_now(tasks) == []
 
 
+# --- PR-flow ordering (PRF-2) -----------------------------------------------
+
+def _dep_pair(dep_status: str) -> list:
+    """A two-task doc: A (the dependency) in `dep_status`, B blockedBy A."""
+    doc = _yaml(
+        f"  - key: A\n    summary: x\n    description: y\n    type: Task\n"
+        f"    labels: [size:S]\n    status: {dep_status}\n"
+        "  - key: B\n    summary: x\n    description: y\n    type: Task\n"
+        "    labels: [size:S]\n    blockedBy: [A]\n"
+    )
+    return plan.load_tasks(doc)
+
+
+def test_runnable_now_branch_mode_requires_done() -> None:
+    """branch mode (default): an Awaiting Review dependency does NOT unblock —
+    only Done satisfies DISPATCH ordering, exactly as before PRF-2."""
+    assert plan.runnable_now(_dep_pair("Awaiting Review")) == []
+    assert {t.key for t in plan.runnable_now(_dep_pair("Done"))} == {"B"}
+
+
+@pytest.mark.parametrize("dep_status", ["Done", "Awaiting Review", "Merged"])
+def test_runnable_now_pr_mode_treats_done_or_later_as_satisfied(dep_status: str) -> None:
+    """pr mode DISPATCH ordering: Done/Awaiting Review/Merged all unblock the
+    dependent (the dependency's commits reach it via the dispatch-time merge)."""
+    tasks = _dep_pair(dep_status)
+    assert {t.key for t in plan.runnable_now(tasks, integration="pr")} == {"B"}
+
+
+def test_runnable_now_pr_mode_still_holds_on_unfinished_dependency() -> None:
+    """pr mode: a To Do / In Progress dependency does NOT unblock."""
+    assert plan.runnable_now(_dep_pair("In Progress"), integration="pr") == []
+
+
+def test_mergeable_now_requires_awaiting_review_and_merged_deps() -> None:
+    """MERGE ordering (PRF-4 building block): a task is mergeable iff it is
+    Awaiting Review and every dependency is Merged — a dependency merely
+    Awaiting Review satisfies dispatch but NOT merge."""
+    doc = _yaml(
+        "  - key: A\n    summary: x\n    description: y\n    type: Task\n"
+        "    labels: [size:S]\n    status: Awaiting Review\n"
+        "  - key: B\n    summary: x\n    description: y\n    type: Task\n"
+        "    labels: [size:S]\n    status: Awaiting Review\n    blockedBy: [A]\n"
+    )
+    tasks = plan.load_tasks(doc)
+    # A has no deps and is Awaiting Review → mergeable. B's dep A is only
+    # Awaiting Review (not Merged) → NOT mergeable yet.
+    assert {t.key for t in plan.mergeable_now(tasks)} == {"A"}
+
+    # Once A is Merged, B (still Awaiting Review) becomes mergeable.
+    doc2 = _yaml(
+        "  - key: A\n    summary: x\n    description: y\n    type: Task\n"
+        "    labels: [size:S]\n    status: Merged\n"
+        "  - key: B\n    summary: x\n    description: y\n    type: Task\n"
+        "    labels: [size:S]\n    status: Awaiting Review\n    blockedBy: [A]\n"
+    )
+    assert {t.key for t in plan.mergeable_now(plan.load_tasks(doc2))} == {"B"}
+
+
+def test_mergeable_now_ignores_non_awaiting_review() -> None:
+    """A Done or To Do task is never mergeable (only Awaiting Review is)."""
+    assert plan.mergeable_now(_dep_pair("Done")) == []
+
+
 # --- wave planning ----------------------------------------------------------
 
 def test_plan_waves_orders_by_dependency() -> None:
