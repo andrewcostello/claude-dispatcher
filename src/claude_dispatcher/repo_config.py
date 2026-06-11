@@ -1,12 +1,20 @@
 """Per-repo dispatcher config: load and validate `.dispatcher.yaml`.
 
 A repo opts into dispatcher verification gates by placing a `.dispatcher.yaml`
-at its root. Current schema is a single key — `test:`, the shell command run
-inside a task worktree (exit 0 = green). Future sections (`e2e:`, `risk:`)
-will arrive in later phases, so this loader tolerates unknown top-level keys
-rather than rejecting them: a repo configured for a newer dispatcher must
-still load under an older one. Unknown keys are reported via
-`RepoConfig.unknown_keys` so callers can journal a note.
+at its root. Current schema:
+
+  * `test:` — the shell command run inside a task worktree (exit 0 = green).
+  * `panel:` — cross-family panel options. Its only known key today is
+    `advisory:`, a list of advisory (probationary, non-blocking) reviewer
+    family names — e.g. ``panel: {advisory: [grok]}`` — consumed by the
+    orchestrator's cross-family panel.
+
+Future sections (`e2e:`, `risk:`) will arrive in later phases, so this
+loader tolerates unknown top-level keys rather than rejecting them: a repo
+configured for a newer dispatcher must still load under an older one.
+Unknown keys are reported via `RepoConfig.unknown_keys` so callers can
+journal a note; unknown keys nested inside `panel:` are reported there as
+``panel.<key>``.
 
 The loader is read-only and goes through yaml_io's round-trip mode, so any
 future writer inherits comment/ordering preservation for free. An absent
@@ -39,12 +47,17 @@ class RepoConfig:
     """Parsed per-repo dispatcher configuration.
 
     `test` is the verification command verbatim (never stripped), or None
-    when the file or key is absent. `unknown_keys` lists top-level keys this
-    loader doesn't understand, sorted, for the caller to journal.
+    when the file or key is absent. `panel_advisory` is the tuple of
+    advisory reviewer family names from `panel.advisory` (empty when the
+    file, the `panel` key, or the `advisory` key is absent). `unknown_keys`
+    lists keys this loader doesn't understand — top-level keys verbatim,
+    keys nested under `panel` as ``panel.<key>`` — sorted, for the caller
+    to journal.
     """
 
     test: str | None
     unknown_keys: tuple[str, ...] = field(default=())
+    panel_advisory: tuple[str, ...] = ()
 
 
 def load(repo_root: str | Path) -> RepoConfig:
@@ -52,8 +65,9 @@ def load(repo_root: str | Path) -> RepoConfig:
 
     Absent file → RepoConfig(test=None). Empty or comments-only file →
     test=None. Anything structurally wrong — non-mapping root, unparseable
-    YAML, a `test:` value that is not a non-blank string — raises
-    RepoConfigError.
+    YAML, a `test:` value that is not a non-blank string, a `panel:` value
+    that is not a mapping, a `panel.advisory` that is not a list of
+    non-empty strings — raises RepoConfigError.
     """
     path = Path(repo_root) / CONFIG_FILENAME
     if not path.exists():
@@ -83,5 +97,44 @@ def load(repo_root: str | Path) -> RepoConfig:
                 f"got {test!r}"
             )
 
-    unknown = tuple(sorted(str(key) for key in doc if key != "test"))
-    return RepoConfig(test=test, unknown_keys=unknown)
+    panel_advisory: tuple[str, ...] = ()
+    panel_unknown: list[str] = []
+    if "panel" in doc:
+        panel = doc.get("panel")
+        if not isinstance(panel, dict):
+            raise RepoConfigError(
+                f"'panel' in {path} must be a mapping, "
+                f"got {type(panel).__name__}"
+            )
+        if "advisory" in panel:
+            advisory = panel.get("advisory")
+            if not isinstance(advisory, list):
+                raise RepoConfigError(
+                    f"'panel.advisory' in {path} must be a list of reviewer "
+                    f"names, got {advisory!r}"
+                )
+            for entry in advisory:
+                # Same strictness rationale as `test:` — and bool is not a
+                # str subclass, so a bare `true` entry is rejected too.
+                if not isinstance(entry, str) or not entry.strip():
+                    raise RepoConfigError(
+                        f"entries of 'panel.advisory' in {path} must be "
+                        f"non-empty strings, got {entry!r}"
+                    )
+            panel_advisory = tuple(advisory)
+        # Unknown keys INSIDE panel are tolerated (same forward-compat
+        # stance as the top level) and reported as "panel.<key>".
+        panel_unknown = [
+            f"panel.{key}" for key in panel if key != "advisory"
+        ]
+
+    known_top_level = ("test", "panel")
+    unknown = tuple(sorted(
+        [str(key) for key in doc if key not in known_top_level]
+        + panel_unknown
+    ))
+    return RepoConfig(
+        test=test,
+        unknown_keys=unknown,
+        panel_advisory=panel_advisory,
+    )

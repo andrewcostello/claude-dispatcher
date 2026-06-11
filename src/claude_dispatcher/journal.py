@@ -127,6 +127,9 @@ class EventType(str, Enum):
     panel_started = "panel_started"
     panel_verdict = "panel_verdict"
     panel_iterate = "panel_iterate"
+    # One event per advisory (probationary, non-blocking) reviewer finding —
+    # the scorecard raw material for a future promotion decision (VG-5).
+    panel_advisory_finding = "panel_advisory_finding"
     task_done = "task_done"
     task_blocked = "task_blocked"
     pr_gate = "pr_gate"

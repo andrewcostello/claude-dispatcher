@@ -8,3 +8,9 @@
 # editable install (PYTHONPATH precedes .pth-injected site-packages paths),
 # so the command tests the worktree under change, not the main checkout.
 test: "PYTHONPATH=src /home/andrew/Project/claude-dispatcher/.venv/bin/python -m pytest tests/ -q"
+
+# Cross-family panel: probationary advisory seats (VG-5). Advisory reviewers
+# run in parallel with the authoritative three but never count toward
+# consensus — verdicts/findings are journaled for scorecard comparison only.
+panel:
+  advisory: [grok]
