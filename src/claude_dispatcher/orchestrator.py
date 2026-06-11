@@ -107,6 +107,23 @@ class RunConfig:
     gh_bin: str = "gh"
     claude_extra_args: list[str] = field(default_factory=list)
     base_branch: str = "main"
+    # Integration mode (PRF-1). "branch" (default) forks each task worktree
+    # directly from base_branch, as today. "pr" runs the whole run off a
+    # shared run-level feature branch: at run start it is created from
+    # base_branch if absent, and base_branch is then REPOINTED to the feature
+    # branch so it becomes the effective base for worktree creation,
+    # dependency-merge reachability checks, and diff baselines (every site
+    # that already reads base_branch). The resolution (CLI > .dispatcher.yaml
+    # > "branch") and the feature-branch creation happen in execute(); resume
+    # rebuilds from the genesis, where base_branch is already the feature
+    # branch, so it forks correctly without re-creating anything.
+    integration: str = "branch"
+    # In pr mode: the resolved feature branch name, its tip SHA at run start,
+    # and whether it was "created" this run or "existing". All None in branch
+    # mode. Recorded in the genesis run_config (PRF-1 acceptance).
+    feature_branch: str | None = None
+    feature_branch_sha: str | None = None
+    feature_branch_status: str | None = None
     # How long to wait for the tasks-YAML FileLock before raising LockTimeout
     # (seconds). Threaded into every FileLock acquisition in the run path.
     lock_timeout_seconds: float = 30.0
@@ -255,6 +272,17 @@ def execute(args: argparse.Namespace) -> int:
     _log(log_path, f"start run {cfg.run_id} mode={cfg.mode} max_parallel={cfg.max_parallel}")
     for warning in pf.warnings:
         _log(log_path, f"preflight warning: {warning}")
+
+    # Resolve the integration mode and, in pr mode, create the run-level
+    # feature branch and repoint base_branch to it (PRF-1). Done AFTER
+    # preflight (so a doomed run isn't given a feature branch) and BEFORE the
+    # journal opens (so the genesis run_config records the resolved mode +
+    # feature branch + SHA). A config error here — pr mode with no derivable
+    # feature branch — exits 2 like a preflight failure.
+    integ_err = _setup_integration(cfg, doc, repo_root, args, log_path)
+    if integ_err is not None:
+        print(f"error: {integ_err}", file=sys.stderr)
+        return 2
 
     # Open the event journal. Its genesis (run_started, seq 0) event records
     # the run's provenance — dispatcher version, tasks.yaml + reviewer-prompts
@@ -2578,6 +2606,16 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
         gh_bin=getattr(args, "gh_bin", "gh"),
         claude_extra_args=extra.split() if extra else [],
         base_branch=cli_base if cli_base else "main",
+        # Integration mode (PRF-1). A fresh CLI run carries the raw --integration
+        # (None when unset); execute() re-resolves it against .dispatcher.yaml
+        # and stamps the final value here. A resumed run's namespace comes from
+        # the genesis, where these are already the resolved values (and
+        # base_branch is already the feature branch), so resume needs no
+        # re-resolution — hence the plain getattr with the production defaults.
+        integration=getattr(args, "integration", None) or "branch",
+        feature_branch=getattr(args, "feature_branch", None),
+        feature_branch_sha=getattr(args, "feature_branch_sha", None),
+        feature_branch_status=getattr(args, "feature_branch_status", None),
         lock_timeout_seconds=getattr(args, "lock_timeout_seconds", 30.0),
         task_timeout_seconds=getattr(args, "task_timeout_seconds", 60 * 60 * 4),
         # getattr default keeps `dispatcher resume` of pre-gate journals
@@ -2710,7 +2748,99 @@ def _genesis_config(args: argparse.Namespace, cfg: RunConfig) -> dict[str, Any]:
     d["base_branch"] = cfg.base_branch
     d["run_id"] = cfg.run_id
     d["tasks_yaml"] = str(cfg.tasks_path)
+    # Integration mode + feature branch (PRF-1). base_branch above is already
+    # the EFFECTIVE base — repointed to the feature branch in pr mode — so a
+    # resume forks from the feature branch with no re-resolution. These extra
+    # keys carry the mode, the feature branch name, its run-start tip SHA, and
+    # whether it was created or reused this run.
+    d["integration"] = cfg.integration
+    d["feature_branch"] = cfg.feature_branch
+    d["feature_branch_sha"] = cfg.feature_branch_sha
+    d["feature_branch_status"] = cfg.feature_branch_status
     return d
+
+
+def _setup_integration(
+    cfg: RunConfig,
+    doc: Any,
+    repo_root: Path,
+    args: argparse.Namespace,
+    log_path: Path,
+) -> str | None:
+    """Resolve the integration mode and, in pr mode, stand up the feature branch.
+
+    Precedence for the mode: the ``--integration`` CLI flag wins; else the
+    repo's ``.dispatcher.yaml`` ``integration:`` key; else ``"branch"``. A
+    malformed ``.dispatcher.yaml`` is NOT fatal here — the mechanical gate
+    surfaces it per-worktree later — so a load error is logged and treated as
+    "no repo default".
+
+    In pr mode the feature branch name is ``--feature-branch`` when given,
+    else ``feature/<epic>`` derived from the tasks YAML's top-level ``epic:``.
+    The branch is created from ``cfg.base_branch`` if absent (else reused), and
+    ``cfg.base_branch`` is then repointed to it so every downstream site that
+    forks worktrees / checks dependency reachability / computes diff baselines
+    uses the feature branch as its base.
+
+    Mutates ``cfg`` in place. Returns None on success, or an error string when
+    pr mode is requested but no feature branch can be derived (no
+    ``--feature-branch`` and no epic) or the branch cannot be created.
+    """
+    cli_mode = getattr(args, "integration", None)
+    repo_mode: str | None = None
+    try:
+        repo_mode = repo_config_mod.load(repo_root).integration
+    except repo_config_mod.RepoConfigError as e:
+        # A malformed .dispatcher.yaml is surfaced per-worktree by the
+        # mechanical gate later, so it is not fatal at run start — but if the
+        # repo was relying on its `integration:` default, suppressing it
+        # silently downgrades the run to branch mode. Warn to stderr (not just
+        # run.log) so an operator notices the downgrade now, and only when no
+        # CLI flag is overriding the repo default anyway.
+        msg = (f"integration: could not read .dispatcher.yaml for the mode "
+               f"default ({e}); proceeding in {cli_mode or 'branch'} mode")
+        _log(log_path, msg)
+        if cli_mode is None:
+            sys.stderr.write(f"warning: {msg}\n")
+        repo_mode = None
+    cfg.integration = cli_mode or repo_mode or "branch"
+
+    if cfg.integration != "pr":
+        cfg.feature_branch = None
+        cfg.feature_branch_sha = None
+        cfg.feature_branch_status = None
+        return None
+
+    feature_branch = (getattr(args, "feature_branch", None) or "").strip()
+    if not feature_branch:
+        epic = doc.get("epic") if isinstance(doc, dict) else None
+        feature_branch = wt_mod.default_feature_branch(epic)
+        if not feature_branch:
+            return (
+                "integration: pr mode needs a feature branch, but the tasks "
+                "YAML has no top-level `epic:` and no --feature-branch was "
+                "given"
+            )
+
+    try:
+        result = wt_mod.ensure_feature_branch(
+            repo_root, feature_branch, cfg.base_branch,
+        )
+    except wt_mod.WorktreeError as e:
+        detail = f"{e}" + (f": {e.stderr}" if e.stderr else "")
+        return f"integration: could not ensure feature branch: {detail}"
+
+    cfg.feature_branch = result.branch
+    cfg.feature_branch_sha = result.sha
+    cfg.feature_branch_status = result.status
+    _log(log_path,
+         f"integration=pr feature_branch={result.branch} ({result.status}) "
+         f"sha={result.sha[:8]} forked_from={cfg.base_branch}")
+    # Repoint the effective base. Every worktree-create, dependency-merge
+    # reachability check, and diff baseline reads cfg.base_branch, so this one
+    # assignment makes the whole run fork from the feature branch.
+    cfg.base_branch = result.branch
+    return None
 
 
 def _emit_event(
