@@ -22,8 +22,23 @@ IN_PROGRESS = "In Progress"
 DONE = "Done"
 BLOCKED = "Blocked"
 ESCALATED = "Escalated"
+# PR-flow lifecycle (PRF-2). In `pr` integration mode Done is no longer
+# terminal: a task that passes every gate has its PR auto-raised against the
+# run's feature branch and moves to `Awaiting Review`; PRF-4 later flips it to
+# `Merged` once the PR lands. Neither status occurs in `branch` mode.
+AWAITING_REVIEW = "Awaiting Review"
+MERGED = "Merged"
 
 TERMINAL = {DONE, BLOCKED, ESCALATED}
+
+# DISPATCH ordering — the statuses of a blockedBy dependency that let its
+# dependents be dispatched ("Done-or-later"). In `branch` mode that is just
+# Done. In `pr` mode Done is no longer terminal, but a dependency in Awaiting
+# Review (or Merged) has already produced its commits, which reach the
+# dependent's worktree via the dispatch-time dependency merge (INT-4) — so any
+# of Done/Awaiting Review/Merged satisfies dispatch ordering.
+_DISPATCH_SATISFIED_BRANCH = frozenset({DONE})
+_DISPATCH_SATISFIED_PR = frozenset({DONE, AWAITING_REVIEW, MERGED})
 
 
 class ValidationError(ValueError):
@@ -64,6 +79,10 @@ class Task:
     @property
     def is_done(self) -> bool:
         return self.status == DONE
+
+    @property
+    def is_merged(self) -> bool:
+        return self.status == MERGED
 
 
 def _as_str_list(value: Any) -> list[str]:
@@ -219,21 +238,53 @@ class Wave:
     tasks: list[Task] = field(default_factory=list)
 
 
-def runnable_now(tasks: list[Task]) -> list[Task]:
-    """Tasks runnable on the dispatcher's current view of the YAML.
+def runnable_now(tasks: list[Task], *, integration: str = "branch") -> list[Task]:
+    """Tasks runnable on the dispatcher's current view of the YAML (DISPATCH
+    ordering).
 
     A task is runnable iff:
       - its own status is To Do (default), AND
-      - every blockedBy key resolves to a task whose status is Done.
+      - every blockedBy key resolves to a dependency whose status satisfies
+        DISPATCH ordering — "Done-or-later".
+
+    In ``branch`` mode (default) "Done-or-later" is just Done, exactly as
+    before. In ``pr`` mode it widens to Done/Awaiting Review/Merged (PRF-2):
+    a dependency whose PR is open-but-unmerged has still produced its commits,
+    which reach this task's worktree via the dispatch-time dependency merge.
     """
+    satisfied = (
+        _DISPATCH_SATISFIED_PR if integration == "pr"
+        else _DISPATCH_SATISFIED_BRANCH
+    )
     by_key = {t.key: t for t in tasks}
     runnable: list[Task] = []
     for t in tasks:
         if not t.is_runnable_status:
             continue
-        if all(by_key[dep].is_done for dep in t.blocked_by):
+        if all(by_key[dep].status in satisfied for dep in t.blocked_by):
             runnable.append(t)
     return runnable
+
+
+def mergeable_now(tasks: list[Task]) -> list[Task]:
+    """Tasks whose PR is ready to MERGE (MERGE ordering, `pr` mode — PRF-4).
+
+    Distinct from :func:`runnable_now`'s DISPATCH ordering: a task is
+    mergeable iff its own status is Awaiting Review (its PR is open) AND every
+    blockedBy dependency is already ``Merged``. A dependency that is merely
+    Awaiting Review satisfies *dispatch* but NOT *merge* — its PR must land
+    first so this task's PR merges on top of merged dependency code, not
+    unmerged code. PRF-2 ships this building block; PRF-4 consumes it to drive
+    the merge step.
+    """
+    by_key = {t.key: t for t in tasks}
+    out: list[Task] = []
+    for t in tasks:
+        if t.status != AWAITING_REVIEW:
+            continue
+        if all(by_key[dep].is_merged for dep in t.blocked_by):
+            out.append(t)
+    return out
 
 
 def plan_waves(tasks: list[Task]) -> list[Wave]:

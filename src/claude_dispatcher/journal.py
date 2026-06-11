@@ -144,6 +144,11 @@ class EventType(str, Enum):
     task_done = "task_done"
     task_blocked = "task_blocked"
     pr_gate = "pr_gate"
+    # PR-flow auto-raise (PRF-2): emitted in `pr` mode when the dispatcher
+    # pushes a verified task's branch and opens its PR against the run's
+    # feature branch. Payload: number, url, target (the PR base branch), and
+    # base_sha (the feature branch tip the PR targets).
+    pr_opened = "pr_opened"
     integrate_result = "integrate_result"
     notify_sent = "notify_sent"
     run_complete = "run_complete"
