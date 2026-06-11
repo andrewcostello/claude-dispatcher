@@ -115,6 +115,10 @@ from . import yaml_io
 
 
 # Ordered for stable rendering; every status is always present in by_status.
+# NOTE: the pr-mode lifecycle statuses (Awaiting Review / Merged, PRF-2) are
+# deliberately NOT listed here yet — adding them would inject 0-filled rows
+# into every branch-mode status render. Rendering them belongs with PRF-4,
+# when the Merged terminal lands and the full lifecycle is displayable.
 _STATUS_ORDER = (
     plan_mod.TODO,
     plan_mod.IN_PROGRESS,

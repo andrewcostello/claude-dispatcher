@@ -106,7 +106,13 @@ def execute(args: argparse.Namespace) -> int:
         return 2
 
     in_progress = [t for t in tasks if t.status == plan_mod.IN_PROGRESS]
-    runnable = plan_mod.runnable_now(tasks)
+    # The genesis run_config carries the resolved integration mode; pass it so
+    # the "already complete?" check uses pr-mode DISPATCH ordering (a To Do
+    # task whose dependency is Awaiting Review IS runnable) — PRF-2. Defaults
+    # to branch for pre-PRF journals.
+    runnable = plan_mod.runnable_now(
+        tasks, integration=str(config.get("integration") or "branch"),
+    )
 
     # Nothing left to do → clean no-op. A completed run has no In Progress
     # rows and no remaining runnable To Do rows. Checked before the liveness

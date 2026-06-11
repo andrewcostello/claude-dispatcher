@@ -330,8 +330,10 @@ def evaluate(
 # --------------------------------------------------------------------------- #
 
 
-def collect_diff(worktree: str | Path, base_ref: str) -> list[FileDiff]:
-    """Per-file line churn of ``base_ref...HEAD`` in ``worktree``.
+def collect_diff(
+    worktree: str | Path, base_ref: str, head_ref: str = "HEAD"
+) -> list[FileDiff]:
+    """Per-file line churn of ``base_ref...head_ref`` run from ``worktree``.
 
     Uses ``git diff --numstat --no-renames``: ``--no-renames`` keeps each line a
     clean ``ins<TAB>del<TAB>path`` (a rename is reported as a delete plus an add
@@ -339,6 +341,11 @@ def collect_diff(worktree: str | Path, base_ref: str) -> list[FileDiff]:
     rename syntax. The three-dot range (changes on the branch since its
     merge-base) falls back to two-dot if the refs share no merge-base, mirroring
     ``cross_family_reviewer``. Binary files (``-`` counts) contribute 0 lines.
+
+    ``head_ref`` defaults to ``HEAD`` (the worktree's checked-out tip — the
+    PRF-3 in-worktree path). The PRF-4 merge engine passes an explicit branch
+    ref so it can classify a task's PR branch from the repo root, where no
+    worktree is checked out on it.
     """
     worktree = Path(worktree)
 
@@ -354,14 +361,14 @@ def collect_diff(worktree: str | Path, base_ref: str) -> list[FileDiff]:
         )
 
     try:
-        proc = _run(f"{base_ref}...HEAD")
+        proc = _run(f"{base_ref}...{head_ref}")
         if proc.returncode != 0:
-            proc = _run(f"{base_ref}..HEAD")
+            proc = _run(f"{base_ref}..{head_ref}")
     except OSError as exc:
         raise RiskDiffError(f"git diff failed to launch in {worktree}: {exc}") from exc
     if proc.returncode != 0:
         raise RiskDiffError(
-            f"git diff against {base_ref!r} in {worktree} failed: "
+            f"git diff {base_ref!r}...{head_ref!r} in {worktree} failed: "
             f"{(proc.stderr or '').strip()}"
         )
 
@@ -385,6 +392,7 @@ def classify(
     worktree: str | Path,
     base_ref: str,
     *,
+    head_ref: str = "HEAD",
     config: RiskConfig | None = None,
 ) -> RiskVerdict:
     """Classify a task's PR as ``low`` or ``elevated`` risk.
@@ -392,7 +400,13 @@ def classify(
     ``task_row`` is the task's YAML mapping (a ruamel CommentedMap or plain
     dict) — the size is read from its ``size:`` label and first-pass
     verification from its ``verified`` / ``verification_iterations`` fields.
-    The effective diff is measured from ``base_ref...HEAD`` in ``worktree``.
+    The effective diff is measured from ``base_ref...head_ref`` run in
+    ``worktree``.
+
+    ``head_ref`` defaults to ``HEAD``. The PRF-4 merge engine passes the task's
+    PR branch and ``worktree=repo_root`` so it can classify from the repo even
+    when no worktree is checked out on the branch (e.g. the standalone
+    ``merge-prs`` command on a finished run).
 
     ``config`` defaults to the repo's ``risk:`` section loaded from
     ``worktree`` (or the built-in defaults when absent). A caller that has
@@ -408,7 +422,7 @@ def classify(
     verification_iterations = _row_get(task_row, "verification_iterations")
 
     try:
-        changed_files = collect_diff(worktree, base_ref)
+        changed_files = collect_diff(worktree, base_ref, head_ref)
     except RiskDiffError as exc:
         return RiskVerdict(ELEVATED, (f"could not compute effective diff: {exc}",))
 
