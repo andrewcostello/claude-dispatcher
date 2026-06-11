@@ -323,13 +323,17 @@ def test_no_config_skips_and_preserves_done_flow(repo: Path, monkeypatch) -> Non
     assert len(evs) == 1
     assert evs[0].payload == {"outcome": "skipped", "reason": "no .dispatcher.yaml"}
 
-    # Lifecycle identical to the pre-gate `done` scenario, plus the one
-    # skip event between summary_parsed and push_verify.
+    # Lifecycle identical to the pre-gate `done` scenario, plus the mechanical
+    # skip event and the VG-4 LLM verifier events (VERIFIED stub) between
+    # summary_parsed and push_verify.
     assert _types_for(_events(repo), "SMOKE-A") == [
         "task_started",
         "task_spawn_finished",
         "summary_parsed",
         "verification_mechanical",
+        "verification_started",
+        "task_spawn_finished",  # verifier spawn
+        "verification_verdict",
         "push_verify",
         "task_done",
     ]

@@ -63,7 +63,28 @@ def main() -> int:
         return 0
 
     # Consume stdin so the parent doesn't block on a closed pipe.
-    _ = sys.stdin.read()
+    prompt = sys.stdin.read()
+
+    # Verifier invocation (VG-4): the independent LLM verifier pipes the
+    # verifier.md prompt and reads a JSON envelope whose `result` carries the
+    # verdict. Every Tasker spawn — including the corrective iterate prompts
+    # that *quote* the verifier — appends the Tasker template ("adopt the
+    # Tasker role"); the verifier prompt never does, so its ABSENCE is the
+    # reliable discriminator (a substring like "independent verifier" also
+    # appears in the verifier-iterate prompt and would misfire). Short-circuit
+    # here BEFORE the Tasker simulation (commit/summary side effects) and emit
+    # a verdict directly. Default VERIFIED; FAKE_CLAUDE_VERIFIER_VERDICT=
+    # INCOMPLETE drives the gap-and-iterate path for subprocess-level e2e tests.
+    if "adopt the Tasker role" not in prompt:
+        import json
+        verdict = os.environ.get("FAKE_CLAUDE_VERIFIER_VERDICT", "VERIFIED").upper()
+        if verdict == "INCOMPLETE":
+            body = ("```\nVerdict: INCOMPLETE\n\n"
+                    "1. main.py:1 — stub left where real logic was required\n```")
+        else:
+            body = "```\nVerdict: VERIFIED\n```"
+        print(json.dumps({"result": body, "total_cost_usd": 0.0}))
+        return 0
 
     task_key = os.environ.get("TASK_KEY", "UNKNOWN")
 

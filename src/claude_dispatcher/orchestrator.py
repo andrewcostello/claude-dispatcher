@@ -43,6 +43,7 @@ from . import push_verify as pv_mod
 from . import repo_config as repo_config_mod
 from . import spawn as spawn_mod
 from . import summary as summary_mod
+from . import verifier as verifier_mod
 from . import worktree as wt_mod
 from . import yaml_io
 
@@ -117,6 +118,19 @@ class RunConfig:
     # the post-fix re-run are bounded independently). A timed-out execution
     # is a failure like any non-zero exit.
     verify_test_timeout_seconds: int = 600
+    # LLM verification gate (VG-4). After the mechanical gate passes and
+    # before the cross-family panel, an independent verifier (verifier.py) is
+    # spawned over the task + summary + committed diff to answer "does this
+    # diff actually do what the task asked — nothing stubbed/deferred/quietly
+    # narrowed?". INCOMPLETE re-spawns the Tasker with the gap list, re-runs
+    # the mechanical gate, and re-verifies up to `max_verify_iterations` times
+    # (distinct from the panel's own iterate budget) before Blocking with
+    # reason verification_incomplete. `skip_verification` is the --skip-
+    # verification escape hatch (journaled). `verifier_timeout_seconds` bounds
+    # EACH verifier spawn.
+    max_verify_iterations: int = 2
+    skip_verification: bool = False
+    verifier_timeout_seconds: int = verifier_mod.DEFAULT_VERIFIER_TIMEOUT_SECONDS
     # If True, after each Tasker reports Done with commits on its feat
     # branch, the dispatcher attempts to merge that branch into base_branch
     # before marking the row Done. Prevents the "fork-from-stale-base"
@@ -642,6 +656,46 @@ def _run_task(
             final_status = plan_mod.BLOCKED
             final_blocked_reason = "mechanical_verification_failed"
 
+    # LLM verification gate (VG-4). Spawned ONLY for a still-Done task, AFTER
+    # the mechanical gate above (ordering rule: never spend verifier tokens on
+    # a red suite) and BEFORE the cross-family panel below. The verifier asks
+    # one question — does the committed diff actually do what the task asked,
+    # nothing stubbed/deferred/quietly narrowed? VERIFIED proceeds as today;
+    # INCOMPLETE re-spawns the Tasker with the gap list, re-runs the mechanical
+    # gate, and re-verifies up to --max-verify-iterations times before Blocking
+    # with reason verification_incomplete (gaps in the YAML detail). The whole
+    # gate is skippable via --skip-verification (journaled). Because a block
+    # flips final_status to BLOCKED here, the panel / auto-integrate / push
+    # blocks below — all gated on final_status == DONE — never run on an
+    # unverified change.
+    verified: bool | None = None
+    verification_iterations = 0
+    verification_detail: str | None = None
+    verifier_cost_total = 0.0
+    if final_status == plan_mod.DONE:
+        if cfg.skip_verification:
+            _emit_event(cfg, journal_mod.EventType.verification_skipped,
+                        {"reason": "--skip-verification"}, task_key=snap.key)
+            _log(log_path,
+                 f"  {snap.key} LLM verification skipped (--skip-verification)")
+        else:
+            vout = _verify_llm_and_maybe_iterate(
+                cfg=cfg, snap=snap, wt=wt, repo_root=repo_root,
+                summary_path=summary_path, env=env, log_path=log_path,
+                base_sha_before=base_sha_before,
+            )
+            verified = vout.verified
+            verification_iterations = vout.iterations
+            verification_detail = vout.detail
+            verifier_cost_total = vout.cost_usd_total
+            # A mechanical re-run during an iterate may have re-decided the
+            # mechanical outcome — carry it through to the row stamp.
+            if vout.mech_outcome is not None:
+                mech_outcome, mech_detail = vout.mech_outcome, vout.mech_detail
+            if vout.blocked_reason is not None:
+                final_status = plan_mod.BLOCKED
+                final_blocked_reason = vout.blocked_reason
+
     # Cross-family reviewer panel. Runs ONLY for Done tasks that match
     # the configured gating mode (always | auto via labels | never).
     # Diff bounds: prefer base_sha_before..feat-tip so the direct-to-base
@@ -830,6 +884,17 @@ def _run_task(
             row["mechanical_verification"] = mech_outcome
             if mech_outcome == "failed" and mech_detail:
                 row["mechanical_verification_detail"] = mech_detail
+        # LLM verification outcome (VG-4). Absent entirely when the gate never
+        # ran (non-Done, or --skip-verification) — absence means "not
+        # evaluated". verification_iterations is the count of INCOMPLETE →
+        # re-spawn cycles performed (0 when VERIFIED first try). On a block the
+        # rendered gaps land in verification_detail so a human can triage from
+        # the YAML alone; blocked_reason stays the short label.
+        if verified is not None:
+            row["verified"] = verified
+            row["verification_iterations"] = verification_iterations
+            if not verified and verification_detail:
+                row["verification_detail"] = verification_detail
         # Advisory flag: Done landed but the branch is still unpushed (or its PR
         # is missing) after one corrective re-spawn. Status stays Done — this is
         # a surfacing signal for the supervisor/integrator, not a block.
@@ -870,8 +935,16 @@ def _run_task(
         # All optional — if --output-format=json wasn't honored or parsing
         # failed, the SpawnUsage fields are None and we skip writing them.
         u = result.usage
-        if u.cost_usd is not None:
-            row["cost_usd"] = u.cost_usd
+        # Fold the verifier spawn(s) cost into the task's cost_usd (VG-4): the
+        # verifier is part of landing this task, so its tokens belong on the
+        # task's bill. The per-spawn journal rollup folds the equivalent
+        # verifier task_spawn_finished events; this keeps the YAML row's
+        # cost_usd consistent with that journal-sourced total.
+        combined_cost = u.cost_usd
+        if verifier_cost_total:
+            combined_cost = (combined_cost or 0.0) + verifier_cost_total
+        if combined_cost is not None:
+            row["cost_usd"] = combined_cost
         if u.input_tokens is not None:
             row["input_tokens"] = u.input_tokens
         if u.output_tokens is not None:
@@ -902,6 +975,8 @@ def _run_task(
         _emit_event(cfg, journal_mod.EventType.task_done, {
             "pr_url": final_url or s.pr_url,
             "iterations": s.iterations,
+            "verified": verified,
+            "verification_iterations": verification_iterations,
             "final_quality_score": s.final_quality_score,
             "panel_consensus": panel_verdict.consensus if panel_verdict else None,
             "auto_integrate_status": integrate_result.status
@@ -975,14 +1050,10 @@ def _run_cross_family_panel(
     time the panel runs. Falls back to `base_branch..feat_branch` for
     standard feat-branch work.
     """
-    # Resolve the diff bounds.
-    feat_tip = _branch_sha(repo_root, wt.branch, log_path, snap.key)
-    if base_sha_before and feat_tip and base_sha_before != feat_tip:
-        diff_base = base_sha_before
-        diff_branch = feat_tip
-    else:
-        diff_base = cfg.base_branch
-        diff_branch = wt.branch
+    # Resolve the diff bounds (shared with the LLM verifier).
+    diff_base, diff_branch = _resolve_diff_bounds(
+        cfg, snap, wt, repo_root, base_sha_before, log_path,
+    )
 
     _log(log_path,
          f"  {snap.key} cross-family panel: diff {diff_base[:8] if len(diff_base) >= 8 else diff_base}"
@@ -1139,6 +1210,377 @@ def _render_findings_for_iterate_prompt(panel: cfr_mod.PanelVerdict) -> str:
             lines.append(f"   *Fix:* {f.fix}")
         lines.append("")  # blank line between findings
     return "\n".join(lines).rstrip()
+
+
+def _resolve_diff_bounds(
+    cfg: RunConfig,
+    snap: TaskSnapshot,
+    wt: wt_mod.Worktree,
+    repo_root: Path,
+    base_sha_before: str | None,
+    log_path: Path,
+) -> tuple[str, str]:
+    """Resolve the ``(base, branch)`` git refs to diff for a Done task.
+
+    Prefers ``base_sha_before..feat-tip`` so the direct-to-base workflow is
+    covered (where feat == base_branch by the time we get here). Falls back to
+    ``base_branch..feat_branch`` for standard feat-branch work. Shared by the
+    cross-family panel and the LLM verifier so both review the same change set.
+    """
+    feat_tip = _branch_sha(repo_root, wt.branch, log_path, snap.key)
+    if base_sha_before and feat_tip and base_sha_before != feat_tip:
+        return base_sha_before, feat_tip
+    return cfg.base_branch, wt.branch
+
+
+# --- LLM verification gate (VG-4) -------------------------------------------
+
+
+@dataclass
+class _LlmVerifyOutcome:
+    """Result of the LLM verification gate for one Done task.
+
+    ``verified`` is True/False once the gate ran (None only when skipped, but
+    the skip path never builds this object — it short-circuits in _run_task).
+    ``iterations`` counts the INCOMPLETE → re-spawn-the-Tasker cycles
+    performed (0 when VERIFIED on the first try). ``detail`` is the rendered
+    gap list (or the verifier's reason/error when no gaps parsed) for the YAML
+    row on a block, else None. ``blocked_reason`` is the short label that
+    flips the task to Blocked (``verification_incomplete``, or
+    ``mechanical_verification_failed`` when an iterate's re-run went red), or
+    None when the gate passed. ``mech_outcome`` / ``mech_detail`` are non-None
+    only when an iterate re-ran the mechanical gate, so the caller can refresh
+    the row's mechanical_verification stamp.
+    """
+
+    verified: bool | None
+    iterations: int
+    cost_usd_total: float
+    detail: str | None = None
+    blocked_reason: str | None = None
+    mech_outcome: str | None = None
+    mech_detail: str | None = None
+
+
+# Diff-detail bound for the rendered gap list stamped on a Blocked row. Keeps
+# the YAML readable; the full verdict (incl. raw output) is never persisted.
+_VERIFICATION_DETAIL_CHARS = 2000
+
+
+# Hook for tests to inject a stub verifier without subclassing or
+# monkeypatching subprocess.run. When set, it is called in place of
+# verifier.run_verifier with the same keyword arguments and must return a
+# verifier.VerifierResult. Production code never sets this.
+_verifier_run_override = None  # type: ignore[var-annotated]
+
+
+def set_verifier(fn) -> None:
+    """Test-only: override how the LLM verifier is invoked. None restores the
+    real verifier.run_verifier. The callable receives the same keyword args
+    (task, diff, summary_text, claude_bin, timeout_seconds) and returns a
+    verifier.VerifierResult."""
+    global _verifier_run_override
+    _verifier_run_override = fn
+
+
+def _verify_llm_and_maybe_iterate(
+    *,
+    cfg: RunConfig,
+    snap: TaskSnapshot,
+    wt: wt_mod.Worktree,
+    repo_root: Path,
+    summary_path: Path,
+    env: dict,
+    log_path: Path,
+    base_sha_before: str | None,
+) -> _LlmVerifyOutcome:
+    """Run the LLM verifier; iterate on INCOMPLETE up to the budget.
+
+    Each iteration: re-spawn the Tasker with the verifier's gap list, re-run
+    the mechanical gate (ordering rule — never re-verify a red suite), then
+    re-verify. Returns once VERIFIED, the iterate budget is exhausted, an
+    iterate produced no new commit, or an iterate's mechanical re-run went red.
+    Never raises — the verifier is conservative (a spawn/parse failure is
+    INCOMPLETE, never VERIFIED).
+    """
+    cost_total = 0.0
+    iterations = 0
+    while True:
+        result = _run_llm_verifier(
+            cfg=cfg, snap=snap, wt=wt, repo_root=repo_root,
+            summary_path=summary_path, base_sha_before=base_sha_before,
+            log_path=log_path, iteration=iterations,
+        )
+        if result.usage.cost_usd is not None:
+            cost_total += result.usage.cost_usd
+
+        if result.verdict.verdict == verifier_mod.VerdictKind.VERIFIED:
+            return _LlmVerifyOutcome(
+                verified=True, iterations=iterations, cost_usd_total=cost_total,
+            )
+
+        # INCOMPLETE. Out of budget → Blocked with the gaps as the detail.
+        detail = _render_gaps_detail(result.verdict)
+        if iterations >= cfg.max_verify_iterations:
+            _log(log_path,
+                 f"  {snap.key} verifier INCOMPLETE and iterate budget "
+                 f"exhausted ({iterations}/{cfg.max_verify_iterations}) — "
+                 f"blocking verification_incomplete")
+            return _LlmVerifyOutcome(
+                verified=False, iterations=iterations, cost_usd_total=cost_total,
+                detail=detail, blocked_reason="verification_incomplete",
+            )
+
+        # Iterate: re-spawn the Tasker with the gap list.
+        _log(log_path,
+             f"  {snap.key} verifier INCOMPLETE — iterating "
+             f"({cfg.max_verify_iterations - iterations} attempt(s) left)")
+        corrective_ok = _spawn_verifier_iterate(
+            cfg=cfg, snap=snap, wt=wt, repo_root=repo_root,
+            summary_path=summary_path, env=env, log_path=log_path,
+            verdict=result.verdict, iteration_n=iterations + 1,
+        )
+        iterations += 1
+        _emit_event(cfg, journal_mod.EventType.verification_iterate, {
+            "iteration": iterations,
+            "iterations_remaining": cfg.max_verify_iterations - iterations,
+            "corrective_spawn_ok": bool(corrective_ok),
+            "gaps": len(result.verdict.gaps),
+        }, task_key=snap.key)
+        if not corrective_ok:
+            _log(log_path,
+                 f"  {snap.key} verifier-iterate spawn produced no new "
+                 f"commit — blocking with the last gaps")
+            return _LlmVerifyOutcome(
+                verified=False, iterations=iterations, cost_usd_total=cost_total,
+                detail=detail, blocked_reason="verification_incomplete",
+            )
+
+        # Ordering rule: re-run the mechanical gate before re-verifying, so the
+        # verifier never burns tokens on a suite the iterate may have reddened.
+        mech_outcome, mech_detail = _verify_mechanical_and_maybe_retry(
+            cfg, snap, wt, summary_path, env, log_path,
+        )
+        if mech_outcome == "failed":
+            _log(log_path,
+                 f"  {snap.key} mechanical gate red after verifier-iterate — "
+                 f"blocking mechanical_verification_failed")
+            return _LlmVerifyOutcome(
+                verified=False, iterations=iterations, cost_usd_total=cost_total,
+                detail=detail, blocked_reason="mechanical_verification_failed",
+                mech_outcome=mech_outcome, mech_detail=mech_detail,
+            )
+        # Loop: re-run the verifier against the updated diff.
+
+
+def _run_llm_verifier(
+    *,
+    cfg: RunConfig,
+    snap: TaskSnapshot,
+    wt: wt_mod.Worktree,
+    repo_root: Path,
+    summary_path: Path,
+    base_sha_before: str | None,
+    log_path: Path,
+    iteration: int,
+) -> verifier_mod.VerifierResult:
+    """Spawn the verifier once over the task + summary + committed diff.
+
+    Emits ``verification_started`` before the spawn, a ``task_spawn_finished``
+    after it (so the report rollup folds the verifier's cost into this task's
+    totals — acceptance: verifier cost visible in the rollup), and
+    ``verification_verdict`` carrying the verdict, gap count, iteration, and
+    usage/cost. The test seam ``_verifier_run_override`` stands in for
+    verifier.run_verifier so e2e tests need no real claude subprocess.
+    """
+    _emit_event(cfg, journal_mod.EventType.verification_started,
+                {"iteration": iteration}, task_key=snap.key)
+
+    diff_base, diff_branch = _resolve_diff_bounds(
+        cfg, snap, wt, repo_root, base_sha_before, log_path,
+    )
+    diff = cfr_mod.collect_diff(
+        repo_root=repo_root, base_branch=diff_base, branch=diff_branch,
+    )
+    summary_text = ""
+    try:
+        summary_text = summary_path.read_text(encoding="utf-8")
+    except (OSError, FileNotFoundError) as e:
+        _log(log_path, f"  {snap.key} verifier: summary.md read failed: {e}")
+
+    task_row = {
+        "key": snap.key,
+        "summary": snap.summary,
+        "type": snap.type,
+        "labels": list(snap.labels),
+        "description": snap.description,
+    }
+    runner = _verifier_run_override or verifier_mod.run_verifier
+    result = runner(
+        task=task_row,
+        diff=diff,
+        summary_text=summary_text,
+        claude_bin=cfg.claude_bin,
+        timeout_seconds=cfg.verifier_timeout_seconds,
+    )
+
+    # Cost folding for the per-spawn journal rollup. The verifier IS a claude
+    # spawn, so it emits the same event the report already sums; spawn_kind
+    # tags it for any consumer that wants to separate verifier from Tasker.
+    _emit_event(cfg, journal_mod.EventType.task_spawn_finished,
+                _verifier_spawn_usage_payload(result), task_key=snap.key)
+    _emit_event(cfg, journal_mod.EventType.verification_verdict, {
+        "verdict": result.verdict.verdict.value,
+        "gaps": len(result.verdict.gaps),
+        "iteration": iteration,
+        "reason": result.verdict.reason,
+        "error": result.error,
+        "cost_usd": result.usage.cost_usd,
+        "input_tokens": result.usage.input_tokens,
+        "output_tokens": result.usage.output_tokens,
+        "duration_seconds": result.duration_seconds,
+    }, task_key=snap.key)
+    _log(log_path,
+         f"  {snap.key} verifier verdict={result.verdict.verdict.value} "
+         f"gaps={len(result.verdict.gaps)} (iteration {iteration})")
+    return result
+
+
+def _spawn_verifier_iterate(
+    *,
+    cfg: RunConfig,
+    snap: TaskSnapshot,
+    wt: wt_mod.Worktree,
+    repo_root: Path,
+    summary_path: Path,
+    env: dict,
+    log_path: Path,
+    verdict: verifier_mod.VerifierVerdict,
+    iteration_n: int,
+) -> bool:
+    """Re-spawn the Tasker with the verifier's gap list as a corrective prompt.
+
+    Returns True iff the spawn exited cleanly AND produced a new commit (on the
+    feat branch or direct-to-base) — i.e., the Tasker actually changed
+    something to re-verify. A gapless INCOMPLETE (malformed/unparsed/spawn-
+    failed verdict) has nothing concrete to fix, so we skip the re-spawn and
+    return False (the caller blocks). Mirrors _spawn_panel_iterate.
+    """
+    if not verdict.gaps:
+        _log(log_path,
+             f"  {snap.key} verifier INCOMPLETE without parsed gaps — "
+             f"skipping iterate (nothing concrete to fix)")
+        return False
+
+    gaps_block = _render_gaps_for_iterate_prompt(verdict)
+    iter_prompt = _VERIFIER_ITERATE_PROMPT_PREFIX.format(
+        n_gaps=len(verdict.gaps),
+        gaps_block=gaps_block,
+        task_key=snap.key,
+        iteration_n=iteration_n,
+        iterations_left=cfg.max_verify_iterations - iteration_n,
+    )
+    iter_prompt += spawn_mod.build_prompt(
+        task_key=snap.key,
+        task_summary=snap.summary,
+        task_type=snap.type,
+        task_labels=snap.labels,
+        task_description=snap.description,
+        branch=wt.branch,
+        summary_path=summary_path,
+        run_id=cfg.run_id,
+        max_iterations=cfg.max_iterations,
+        financial_paths=cfg.financial_paths,
+        skip_design=cfg.skip_design,
+        skip_security_linter=cfg.skip_security_linter,
+        reviewer_count=cfg.reviewer_count,
+    )
+    extra = list(cfg.claude_extra_args)
+    if snap.model:
+        extra.extend(["--model", snap.model])
+
+    feat_sha_before_iter = _branch_sha(repo_root, wt.branch, log_path, snap.key)
+    base_sha_before_iter = _branch_sha(repo_root, cfg.base_branch, log_path, snap.key)
+
+    try:
+        result = spawn_mod.spawn_claude(
+            claude_bin=cfg.claude_bin, cwd=wt.path, env=env, prompt=iter_prompt,
+            extra_args=extra,
+            timeout_seconds=cfg.task_timeout_seconds,
+        )
+    except Exception as e:
+        _log(log_path, f"  {snap.key} verifier-iterate spawn failed: {e}")
+        return False
+    _log(log_path,
+         f"  {snap.key} verifier-iterate spawn exit={result.exit_code}")
+    if result.exit_code != 0:
+        return False
+
+    feat_sha_after = _branch_sha(repo_root, wt.branch, log_path, snap.key)
+    base_sha_after = _branch_sha(repo_root, cfg.base_branch, log_path, snap.key)
+    feat_advanced = (
+        feat_sha_before_iter and feat_sha_after
+        and feat_sha_before_iter != feat_sha_after
+    )
+    base_advanced = (
+        base_sha_before_iter and base_sha_after
+        and base_sha_before_iter != base_sha_after
+    )
+    if not (feat_advanced or base_advanced):
+        _log(log_path,
+             f"  {snap.key} verifier-iterate produced no new commits; "
+             f"treating as no-op iteration")
+        return False
+    return True
+
+
+def _render_gaps_for_iterate_prompt(verdict: verifier_mod.VerifierVerdict) -> str:
+    """Format the verifier's gaps as a numbered, scannable block for the
+    Tasker's corrective prompt (instruction-shaped, like
+    _render_findings_for_iterate_prompt for the panel)."""
+    lines: list[str] = []
+    for g in verdict.gaps:
+        loc = f" at `{g.location}`" if g.location else ""
+        lines.append(f"{g.index}.{loc} {g.description}".rstrip())
+    return "\n".join(lines)
+
+
+def _render_gaps_detail(verdict: verifier_mod.VerifierVerdict) -> str:
+    """Render the verdict's gaps (or its reason/error fallback) as the YAML
+    ``verification_detail`` for a Blocked row — bounded for readability."""
+    if verdict.gaps:
+        lines = []
+        for g in verdict.gaps:
+            loc = f"{g.location}: " if g.location else ""
+            lines.append(f"{g.index}. {loc}{g.description}")
+        text = "\n".join(lines)
+    else:
+        text = (verdict.reason or
+                "verifier returned INCOMPLETE with no parsed gaps")
+    return text[:_VERIFICATION_DETAIL_CHARS]
+
+
+def _verifier_spawn_usage_payload(
+    result: verifier_mod.VerifierResult,
+) -> dict[str, Any]:
+    """Build a task_spawn_finished payload for one verifier spawn so the report
+    rollup folds its cost into the task's totals. exit_code is synthesised
+    (0 = ran, 1 = spawn failure) because the VerifierResult carries usage, not
+    a raw exit code. spawn_kind tags it as a verifier spawn for any consumer
+    that wants to separate it from the Tasker spawn."""
+    u = result.usage
+    return {
+        "exit_code": 0 if result.error is None else 1,
+        "cost_usd": u.cost_usd,
+        "input_tokens": u.input_tokens,
+        "output_tokens": u.output_tokens,
+        "cache_read_input_tokens": u.cache_read_input_tokens,
+        "cache_creation_input_tokens": u.cache_creation_input_tokens,
+        "duration_ms": u.duration_ms,
+        "num_turns": u.num_turns,
+        "model": u.model,
+        "spawn_kind": "verifier",
+    }
 
 
 # Hook for tests to inject stub reviewers without subclassing or
@@ -1417,6 +1859,40 @@ The dispatcher will re-run the panel against your updated diff. If the
 panel still raises blocking findings, this corrective cycle may repeat
 up to {iterations_left} more time(s) before the task is marked Blocked
 for human triage.
+
+Task context for reference (DO NOT redo):
+"""
+
+
+_VERIFIER_ITERATE_PROMPT_PREFIX = """\
+An independent verifier checked whether the work you committed on this branch
+actually does what the task asked — and found {n_gaps} gap(s): things that
+were stubbed, deferred, quietly narrowed, or claimed-but-untested versus the
+task's description and acceptance criteria. Your job is to CLOSE these gaps on
+the existing work. DO NOT redo the implementation from scratch.
+
+Gaps (close ALL of them):
+
+{gaps_block}
+
+Steps:
+1. For each gap, locate the cited code (a `file:line` when given) and make the
+   work genuinely satisfy what the task asked — implement the stubbed/deferred
+   piece, restore the narrowed scope, or add the missing test that proves the
+   claim. If you believe a gap is a false positive, do NOT silently skip it:
+   add a short "Verifier iteration note" subsection to $SUMMARY_PATH explaining
+   why, with the evidence.
+2. Run / update tests for any code path you change.
+3. `git add` the modified files. Commit:
+   `git commit -m "fix(<scope>): [{task_key}] close verifier gaps"`.
+   (Conventional-commit format per CLAUDE.md. No author attribution.)
+4. Update $SUMMARY_PATH so its "Files changed" section reflects reality.
+   Status stays Done.
+
+The dispatcher will re-run the repo test suite and then re-verify your updated
+diff. If gaps remain, this corrective cycle may repeat up to {iterations_left}
+more time(s) before the task is marked Blocked (verification_incomplete) for
+human triage.
 
 Task context for reference (DO NOT redo):
 """
@@ -2107,6 +2583,10 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
         # getattr default keeps `dispatcher resume` of pre-gate journals
         # working — their genesis run_config lacks the key.
         verify_test_timeout_seconds=getattr(args, "verify_test_timeout", 600),
+        # getattr defaults keep `dispatcher resume` of pre-VG-4 journals
+        # working — their genesis run_config lacks these keys.
+        max_verify_iterations=getattr(args, "max_verify_iterations", 2),
+        skip_verification=getattr(args, "skip_verification", False),
         auto_integrate=getattr(args, "auto_integrate", False),
         cross_family_panel=getattr(args, "cross_family_panel", "auto"),
         cross_family_panel_timeout=getattr(

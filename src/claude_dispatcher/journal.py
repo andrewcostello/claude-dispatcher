@@ -124,6 +124,17 @@ class EventType(str, Enum):
     # skip / malformed-config outcomes. See orchestrator's
     # _verify_mechanical_and_maybe_retry.
     verification_mechanical = "verification_mechanical"
+    # LLM verification gate (VG-4): the independent verifier spawned AFTER the
+    # mechanical gate passes and BEFORE the cross-family panel. Each verifier
+    # spawn is bracketed by verification_started / verification_verdict (the
+    # verdict payload carries the verdict, gap count, iteration, and verifier
+    # usage/cost). verification_iterate marks one INCOMPLETE → re-spawn-the-Tasker
+    # cycle; verification_skipped records the --skip-verification escape hatch.
+    # See orchestrator's _verify_llm_and_maybe_iterate.
+    verification_started = "verification_started"
+    verification_verdict = "verification_verdict"
+    verification_iterate = "verification_iterate"
+    verification_skipped = "verification_skipped"
     panel_started = "panel_started"
     panel_verdict = "panel_verdict"
     panel_iterate = "panel_iterate"

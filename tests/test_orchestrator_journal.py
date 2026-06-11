@@ -243,6 +243,9 @@ def test_full_run_journal_chain_and_sequence(repo: Path, monkeypatch) -> None:
             "task_spawn_finished",
             "summary_parsed",
             "verification_mechanical",  # no .dispatcher.yaml → skipped
+            "verification_started",     # VG-4 LLM verifier (VERIFIED stub)
+            "task_spawn_finished",      # verifier spawn (cost folds into rollup)
+            "verification_verdict",
             "push_verify",     # no remote in the fixture → skipped-no-remote
             "task_done",
         ], f"unexpected lifecycle for {key}"
@@ -282,6 +285,9 @@ def test_single_task_exact_sequence(repo: Path, monkeypatch) -> None:
         "task_spawn_finished",
         "summary_parsed",
         "verification_mechanical",  # no .dispatcher.yaml → skipped
+        "verification_started",     # VG-4 LLM verifier (VERIFIED stub)
+        "task_spawn_finished",      # verifier spawn (cost folds into rollup)
+        "verification_verdict",
         "push_verify",     # no remote in the fixture → skipped-no-remote
         "task_done",
         "notify_sent",     # run-complete rollup notification
