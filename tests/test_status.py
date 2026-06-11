@@ -422,6 +422,34 @@ def test_branch_mode_status_has_no_pr_surface(tmp_path: Path) -> None:
     assert all("pr" not in t for t in result["tasks"])
 
 
+def test_branch_mode_stray_status_dropped_from_counts_line(tmp_path: Path) -> None:
+    """A hand-authored non-standard status in a branch-mode YAML must NOT leak
+    into the rendered counts line — the table iterates a fixed status order, so
+    strays stay dropped exactly as before PRF-5 (branch output unchanged)."""
+    yaml_text = (
+        "project: T\nepic: E\ntasks:\n"
+        "  - key: X\n    summary: s\n    description: d\n    type: Task\n"
+        "    labels: [size:S]\n    status: Done\n"
+        "  - key: Y\n    summary: s\n    description: d\n    type: Task\n"
+        "    labels: [size:S]\n    status: Frobnicated\n"
+    )
+    yaml_path = tmp_path / "stray.yaml"
+    yaml_path.write_text(yaml_text)
+    run_dir = tmp_path / "r"
+    run_dir.mkdir()
+    result = status_mod.build_status(
+        run_dir=run_dir, run_id="r", yaml_path=yaml_path, now=NOW,
+    )
+    # The stray status is still counted in the JSON by_status (as in main)...
+    assert result["totals"]["by_status"]["Frobnicated"] == 1
+    # ...but never rendered into the human counts line.
+    counts_line = next(
+        ln for ln in status_mod.render_table(result).splitlines()
+        if ln.startswith("Tasks (")
+    )
+    assert "Frobnicated" not in counts_line
+
+
 def test_cli_json_roundtrip(tmp_path: Path, capsys) -> None:
     """End-to-end through the CLI: --json emits parseable JSON; --tasks-yaml
     bypasses summary-based discovery (no summaries exist here)."""

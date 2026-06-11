@@ -90,6 +90,35 @@ def journal_task_index(
     return index
 
 
+def pr_flow_index(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Per-task pr-flow enrichment: each task's ``risk_level`` and ``approver``
+    from the LAST ``pr_approved`` / ``pr_merged`` journal event.
+
+    The merge engine records these on the journal events, not the YAML row (the
+    row only carries the terminal ``pr_approved_by`` once Merged), so this is the
+    only source for the risk level, and for the approver while a PR is still
+    Awaiting Review. Later events overwrite earlier ones, so a re-classified or
+    re-approved PR shows its most recent values. Used by both ``dispatcher
+    status`` (per-row pr block) and ``dispatcher report`` (the pr_flow rollup).
+    """
+    index: dict[str, dict[str, Any]] = {}
+    for ev in events:
+        if ev.get("event_type") not in ("pr_approved", "pr_merged"):
+            continue
+        tk = ev.get("task_key")
+        payload = ev.get("payload")
+        if not isinstance(tk, str) or not isinstance(payload, dict):
+            continue
+        cur = index.setdefault(tk, {"risk_level": None, "approver": None})
+        risk = payload.get("risk_level")
+        if isinstance(risk, str) and risk.strip():
+            cur["risk_level"] = risk.strip()
+        approver = payload.get("approver")
+        if isinstance(approver, str) and approver.strip():
+            cur["approver"] = approver.strip()
+    return index
+
+
 def genesis_run_config(events: list[dict[str, Any]]) -> dict[str, Any]:
     """The genesis (``run_started``) event's ``run_config`` mapping, or ``{}``.
 

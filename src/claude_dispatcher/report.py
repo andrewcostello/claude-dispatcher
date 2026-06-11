@@ -247,7 +247,7 @@ def _pr_flow(run_rows: list[dict], events: list[dict[str, Any]]) -> dict[str, An
     ``pr_approved_by`` (stamped at merge) and the risk level for the unmerged
     list comes from the journal pr_approved/pr_merged events (the merge engine
     records the level there, not on the row)."""
-    pr_index = _journal_pr_index(events)
+    pr_index = journal_read.pr_flow_index(events)
     merged = [r for r in run_rows if (r.get("status") or "").strip() == "Merged"]
     awaiting = [r for r in run_rows
                 if (r.get("status") or "").strip() == "Awaiting Review"]
@@ -279,27 +279,6 @@ def _pr_flow(run_rows: list[dict], events: list[dict[str, Any]]) -> dict[str, An
         "approver_breakdown": {"self": self_count, "external": external_count},
         "unmerged_prs": unmerged_prs,
     }
-
-
-def _journal_pr_index(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Per-task risk_level / approver from the LAST pr_approved / pr_merged
-    journal event (the merge engine records these there, not on the row)."""
-    index: dict[str, dict[str, Any]] = {}
-    for ev in events:
-        if ev.get("event_type") not in ("pr_approved", "pr_merged"):
-            continue
-        tk = ev.get("task_key")
-        payload = ev.get("payload")
-        if not isinstance(tk, str) or not isinstance(payload, dict):
-            continue
-        cur = index.setdefault(tk, {"risk_level": None, "approver": None})
-        risk = _str_or_none(payload.get("risk_level"))
-        if risk is not None:
-            cur["risk_level"] = risk
-        approver = _str_or_none(payload.get("approver"))
-        if approver is not None:
-            cur["approver"] = approver
-    return index
 
 
 def _journal_rollup(

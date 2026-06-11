@@ -429,33 +429,7 @@ def _run_log_last_event(
 # private names working for existing callers and tests.
 _read_journal_events = journal_read.read_journal_events
 _journal_task_index = journal_read.journal_task_index
-
-
-def _journal_pr_index(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Per-task pr-flow enrichment from the journal: the LAST ``pr_approved`` /
-    ``pr_merged`` event's ``risk_level`` and ``approver``.
-
-    The merge engine records these on the journal events, not the YAML row
-    (the row only carries the terminal ``pr_approved_by`` once Merged), so this
-    is the only source for the risk level and for the approver while a PR is
-    still Awaiting Review. Later events overwrite earlier ones, so a re-classified
-    or re-approved PR shows its most recent values."""
-    index: dict[str, dict[str, Any]] = {}
-    for ev in events:
-        if ev.get("event_type") not in ("pr_approved", "pr_merged"):
-            continue
-        tk = ev.get("task_key")
-        payload = ev.get("payload")
-        if not isinstance(tk, str) or not isinstance(payload, dict):
-            continue
-        cur = index.setdefault(tk, {"risk_level": None, "approver": None})
-        risk = _str_or_none(payload.get("risk_level"))
-        if risk is not None:
-            cur["risk_level"] = risk
-        approver = _str_or_none(payload.get("approver"))
-        if approver is not None:
-            cur["approver"] = approver
-    return index
+_journal_pr_index = journal_read.pr_flow_index
 
 
 def _journal_event_label(event_type: Any, task_key: Any) -> str | None:
@@ -529,10 +503,15 @@ def render_table(status: dict[str, Any]) -> str:
     lines.append("")
 
     totals = status["totals"]
-    # Iterate by_status's own keys: branch mode holds exactly _STATUS_ORDER (so
-    # the line is unchanged), pr mode appends Awaiting Review / Merged.
+    # Render the known statuses in a fixed order, skipping any not present.
+    # Branch mode holds exactly _STATUS_ORDER → the line is byte-identical to
+    # before (and a stray hand-authored status stays dropped, as it always was);
+    # pr mode adds Awaiting Review / Merged at the end.
+    by_status = totals["by_status"]
     counts = "  ".join(
-        f"{s}: {n}" for s, n in totals["by_status"].items()
+        f"{s}: {by_status[s]}"
+        for s in (_STATUS_ORDER + _PR_STATUS_ORDER)
+        if s in by_status
     )
     lines.append(f"Tasks ({totals['task_count']}):  {counts}")
     cost = totals["run_cost_usd"]
