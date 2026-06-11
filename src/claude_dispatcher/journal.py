@@ -119,6 +119,11 @@ class EventType(str, Enum):
     summary_parsed = "summary_parsed"
     commit_retry = "commit_retry"
     push_verify = "push_verify"
+    # Mechanical verification gate (VG-2): one event per test-command
+    # execution (first run AND post-fix re-run), plus single events for the
+    # skip / malformed-config outcomes. See orchestrator's
+    # _verify_mechanical_and_maybe_retry.
+    verification_mechanical = "verification_mechanical"
     panel_started = "panel_started"
     panel_verdict = "panel_verdict"
     panel_iterate = "panel_iterate"
