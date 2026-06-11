@@ -34,6 +34,15 @@ SCENARIOS = {
     "done-pushed-not-raised": "Done",  # Done; commits + pushes, but the PR
                                      # section honestly says "Not raised: ..."
                                      # (a deliberately PR-less Done).
+    "done-tests-green": "Done",      # Done; commits the file the repo's
+                                     # .dispatcher.yaml test command checks
+                                     # (tests-green.txt) → gate passes first try.
+    "done-tests-red-then-fixed": "Done",  # Done; first invocation commits
+                                     # WITHOUT the green file; the second
+                                     # (the fix retry) commits it. Sentinel-
+                                     # file pattern like done-commit-retry.
+    "done-tests-red": "Done",        # Done; commits but NEVER creates the
+                                     # green file → both gate executions red.
     "blocked-malformed": "Garbage",  # invalid status → parser marks malformed
     "escalated": "Escalated",
     "blocked-iteration-cap": "Blocked",
@@ -161,8 +170,37 @@ def main() -> int:
             check=False, capture_output=True,
         )
 
-    if scenario in ("done", "awaiting-human-pr"):
+    def _commit_green_file():
+        """Create + commit the file the mechanical-verification test command
+        checks (`test -f tests-green.txt` in the test fixtures)."""
+        import subprocess
+        green = Path("tests-green.txt")
+        green.write_text(f"green for {task_key}\n", encoding="utf-8")
+        subprocess.run(["git", "add", str(green)], check=False, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m",
+             f"fix(smoke): [{task_key}] make repo test suite green"],
+            check=False, capture_output=True,
+        )
+
+    if scenario in ("done", "awaiting-human-pr", "done-tests-red"):
+        # done-tests-red commits like `done` but never creates the green
+        # file, on the first invocation OR the fix retry — both gate
+        # executions stay red.
         _do_commit()
+    elif scenario == "done-tests-green":
+        _do_commit()
+        _commit_green_file()
+    elif scenario == "done-tests-red-then-fixed":
+        sentinel = Path(f".fake-claude-test-fix-{task_key}")
+        if sentinel.exists():
+            # Second invocation = the fix-the-tests retry: commit the green
+            # file this time so the gate's re-run passes.
+            _commit_green_file()
+        else:
+            sentinel.write_text("first invocation left tests red\n",
+                                encoding="utf-8")
+            _do_commit()  # commits exist (commit gate passes) but suite is red
     elif scenario in ("done-pushed", "done-pushed-not-raised"):
         _do_commit()
         _push_current_branch()

@@ -34,11 +34,13 @@ from . import __version__
 from . import auto_integrate as ai_mod
 from . import cross_family_reviewer as cfr_mod
 from . import journal as journal_mod
+from . import mechanical_verify as mv_mod
 from . import notify as notify_mod
 from . import plan as plan_mod
 from . import pr as pr_mod
 from . import preflight as preflight_mod
 from . import push_verify as pv_mod
+from . import repo_config as repo_config_mod
 from . import spawn as spawn_mod
 from . import summary as summary_mod
 from . import worktree as wt_mod
@@ -110,6 +112,11 @@ class RunConfig:
     # Per-task wall-clock budget for each spawned Claude session (seconds).
     # Threaded into every spawn_claude() call.
     task_timeout_seconds: int = 60 * 60 * 4
+    # Wall-clock bound for EACH execution of the repo's `.dispatcher.yaml`
+    # `test:` command in the mechanical verification gate (the first run and
+    # the post-fix re-run are bounded independently). A timed-out execution
+    # is a failure like any non-zero exit.
+    verify_test_timeout_seconds: int = 600
     # If True, after each Tasker reports Done with commits on its feat
     # branch, the dispatcher attempts to merge that branch into base_branch
     # before marking the row Done. Prevents the "fork-from-stale-base"
@@ -612,6 +619,29 @@ def _run_task(
         cfg, snap, s, wt, log_path
     )
 
+    # Mechanical verification gate (VG-2): run the repo's own test command
+    # (.dispatcher.yaml `test:`, loaded from the WORKTREE so the branch under
+    # test governs its own gate) before any LLM checkpoint spends tokens on
+    # the work. Positioned deliberately BEFORE the cross-family panel and
+    # auto-integrate blocks: a failed gate flips final_status to BLOCKED
+    # here, and the panel / auto-integrate / push-verify blocks below are
+    # all gated on final_status == DONE, so a red suite can never be
+    # panel-reviewed, integrated, or push-flagged. Outcomes:
+    #   passed  — green (possibly after one fix-the-tests re-spawn); proceed.
+    #   skipped — no config / no test command; behavior unchanged from
+    #             pre-gate runs (Done stays Done).
+    #   failed  — still red after the retry, or the config is malformed;
+    #             Blocked with the failing output tail on the row.
+    mech_outcome: str | None = None
+    mech_detail: str | None = None
+    if final_status == plan_mod.DONE:
+        mech_outcome, mech_detail = _verify_mechanical_and_maybe_retry(
+            cfg, snap, wt, summary_path, env, log_path,
+        )
+        if mech_outcome == "failed":
+            final_status = plan_mod.BLOCKED
+            final_blocked_reason = "mechanical_verification_failed"
+
     # Cross-family reviewer panel. Runs ONLY for Done tasks that match
     # the configured gating mode (always | auto via labels | never).
     # Diff bounds: prefer base_sha_before..feat-tip so the direct-to-base
@@ -785,6 +815,16 @@ def _run_task(
             row["pr_not_raised_reason"] = s.pr_not_raised_reason
         if final_blocked_reason:
             row["blocked_reason"] = final_blocked_reason
+        # Mechanical verification outcome. The key is absent entirely when
+        # the gate never ran (non-Done outcomes) — absence means "not
+        # evaluated", never "evaluated and skipped". On failure the output
+        # tail (already capped by mechanical_verify.TAIL_CHARS) lands in the
+        # detail field so a human can triage from the YAML alone;
+        # blocked_reason stays the short label.
+        if mech_outcome is not None:
+            row["mechanical_verification"] = mech_outcome
+            if mech_outcome == "failed" and mech_detail:
+                row["mechanical_verification_detail"] = mech_detail
         # Advisory flag: Done landed but the branch is still unpushed (or its PR
         # is missing) after one corrective re-spawn. Status stays Done — this is
         # a surfacing signal for the supervisor/integrator, not a block.
@@ -1587,6 +1627,218 @@ def _retry_for_push(
     return result.exit_code == 0
 
 
+_TEST_FIX_RETRY_PROMPT_PREFIX = """\
+Your previous run on this task reported `Status: Done` and committed work on
+this branch, but the repo's own test suite is RED in this worktree. The
+dispatcher ran the repo's configured verification command and it failed:
+
+  Command:   {command}
+  Exit code: {exit_code}
+
+Output tail (the last part of the combined output):
+
+```
+{output_tail}
+```
+
+Do ONLY these steps. Do NOT redo the implementation or analysis:
+
+1. Run the command above in this worktree and reproduce the failure.
+2. Fix ONLY what is needed to make it pass. The minimal change wins — a
+   broken test of yours, a missed import, a stale fixture. Do NOT redo or
+   rework the implementation beyond what the failure demands.
+3. Re-run the command and confirm it exits 0.
+4. `git add` the modified files and commit:
+   `git commit -m "fix(<scope>): [{task_key}] make repo test suite green"`.
+   (Conventional-commit format per CLAUDE.md, task key in the subject, no
+   author attribution.)
+5. Update the summary file at $SUMMARY_PATH if its "Files changed" section
+   shifted. Status stays `Done`.
+
+The dispatcher will re-run the command after this session. If the suite is
+still red, the task will be Blocked with reason
+mechanical_verification_failed.
+
+Task context (for reference, do NOT redo):
+"""
+
+
+def _verify_mechanical_and_maybe_retry(
+    cfg: RunConfig,
+    snap: TaskSnapshot,
+    wt: wt_mod.Worktree,
+    summary_path: Path,
+    env: dict,
+    log_path: Path,
+) -> tuple[str, str | None]:
+    """Run the worktree's `.dispatcher.yaml` `test:` command; retry once on red.
+
+    Mirrors the commit/push safety nets: a green run is a no-op; a red run
+    triggers ONE corrective fix-the-tests re-spawn, after which the command is
+    re-run REGARDLESS of the spawn's outcome (a clean exit doesn't guarantee a
+    fix, a dirty exit doesn't guarantee no fix — only the re-run's verdict
+    counts). Returns ``(outcome, detail)``:
+
+      ("passed", None)    — green, first try or after the retry.
+      ("skipped", None)   — no `.dispatcher.yaml` or no `test:` key; the gate
+                            does not apply (preserves pre-gate behavior for
+                            unconfigured repos — Done stays Done).
+      ("failed", detail)  — still red after the retry (detail = the failing
+                            output tail) or the config is malformed (detail =
+                            the parse error; no retry, because a fix-the-tests
+                            prompt can't fix a config the dispatcher can't
+                            parse). The caller flips the task to Blocked.
+
+    Every test execution emits one ``verification_mechanical`` journal event;
+    the skip and malformed-config outcomes emit one each, so the gate's
+    decision is reconstructable from the journal alone. RepoConfigError is
+    consumed here, never propagated; unexpected exceptions propagate to the
+    worker's handler as usual.
+    """
+    try:
+        repo_cfg = repo_config_mod.load(wt.path)
+    except repo_config_mod.RepoConfigError as exc:
+        err = str(exc)[:500]
+        _log(log_path,
+             f"  {snap.key} mechanical-verify: invalid .dispatcher.yaml: {err}")
+        _emit_event(cfg, journal_mod.EventType.verification_mechanical, {
+            "outcome": "failed",
+            "error": err,
+            "exit_code": None,
+            "retried": False,
+        }, task_key=snap.key)
+        return "failed", err
+
+    if repo_cfg.test is None:
+        # Distinguish "the repo never opted in" from "the file exists but
+        # declares no test command" — same skip, different journaled reason.
+        reason = (
+            "no test command"
+            if (wt.path / repo_config_mod.CONFIG_FILENAME).exists()
+            else "no .dispatcher.yaml"
+        )
+        _log(log_path, f"  {snap.key} mechanical-verify skipped: {reason}")
+        _emit_event(cfg, journal_mod.EventType.verification_mechanical, {
+            "outcome": "skipped",
+            "reason": reason,
+        }, task_key=snap.key)
+        return "skipped", None
+
+    first = _run_mechanical_test(cfg, snap, wt, repo_cfg,
+                                 retried=False, log_path=log_path)
+    if first.passed:
+        return "passed", None
+
+    _log(log_path,
+         f"  {snap.key} reported Done but the repo test command is red "
+         f"(exit={first.exit_code}) — retrying with fix-the-tests prompt")
+    _retry_for_test_fix(cfg, snap, wt, summary_path, env, log_path,
+                        command=repo_cfg.test, first=first)
+    second = _run_mechanical_test(cfg, snap, wt, repo_cfg,
+                                  retried=True, log_path=log_path)
+    if second.passed:
+        _log(log_path, f"  {snap.key} mechanical-verify recovered after retry")
+        return "passed", None
+    return "failed", second.output_tail
+
+
+def _run_mechanical_test(
+    cfg: RunConfig,
+    snap: TaskSnapshot,
+    wt: wt_mod.Worktree,
+    repo_cfg: repo_config_mod.RepoConfig,
+    *,
+    retried: bool,
+    log_path: Path,
+) -> mv_mod.MechanicalVerifyResult:
+    """Execute the repo test command once and journal the execution.
+
+    One ``verification_mechanical`` event per execution — the first run and
+    the post-fix re-run each get their own, distinguished by ``retried``.
+    ``unknown_keys`` from the config loader ride along when non-empty (the
+    journaled note the loader's forward-compat contract promises).
+    """
+    res = mv_mod.run_test_command(
+        repo_cfg.test,
+        worktree=wt.path,
+        timeout_seconds=cfg.verify_test_timeout_seconds,
+        log=lambda m: _log(log_path, m),
+    )
+    outcome = "passed" if res.passed else "failed"
+    _log(log_path,
+         f"  {snap.key} mechanical-verify {outcome} "
+         f"(exit={res.exit_code}, {res.duration_seconds:.1f}s"
+         f"{', retried' if retried else ''})")
+    payload: dict[str, Any] = {
+        "command": repo_cfg.test,
+        "exit_code": res.exit_code,
+        "duration_seconds": round(res.duration_seconds, 3),
+        "retried": retried,
+        "outcome": outcome,
+        "output_tail": res.output_tail,
+    }
+    if repo_cfg.unknown_keys:
+        payload["unknown_keys"] = list(repo_cfg.unknown_keys)
+    _emit_event(cfg, journal_mod.EventType.verification_mechanical,
+                payload, task_key=snap.key)
+    return res
+
+
+def _retry_for_test_fix(
+    cfg: RunConfig,
+    snap: TaskSnapshot,
+    wt: wt_mod.Worktree,
+    summary_path: Path,
+    env: dict,
+    log_path: Path,
+    *,
+    command: str,
+    first: mv_mod.MechanicalVerifyResult,
+) -> bool:
+    """Re-spawn the Tasker with a fix-the-tests-only corrective prompt.
+
+    Returns whether the spawn exited cleanly (exit code 0). The caller
+    re-runs the test command regardless of this return — same philosophy as
+    the push retry: the re-run's verdict is the only thing that counts.
+    """
+    prompt = _TEST_FIX_RETRY_PROMPT_PREFIX.format(
+        command=command,
+        exit_code=(first.exit_code if first.exit_code is not None
+                   else "none (timed out / never ran)"),
+        output_tail=first.output_tail,
+        task_key=snap.key,
+    )
+    prompt += spawn_mod.build_prompt(
+        task_key=snap.key,
+        task_summary=snap.summary,
+        task_type=snap.type,
+        task_labels=snap.labels,
+        task_description=snap.description,
+        branch=wt.branch,
+        summary_path=summary_path,
+        run_id=cfg.run_id,
+        max_iterations=cfg.max_iterations,
+        financial_paths=cfg.financial_paths,
+        skip_design=cfg.skip_design,
+        skip_security_linter=cfg.skip_security_linter,
+        reviewer_count=cfg.reviewer_count,
+    )
+    retry_extra = list(cfg.claude_extra_args)
+    if snap.model:
+        retry_extra.extend(["--model", snap.model])
+    try:
+        result = spawn_mod.spawn_claude(
+            claude_bin=cfg.claude_bin, cwd=wt.path, env=env, prompt=prompt,
+            extra_args=retry_extra,
+            timeout_seconds=cfg.task_timeout_seconds,
+        )
+    except Exception as e:
+        _log(log_path, f"  {snap.key} test-fix retry spawn failed: {e}")
+        return False
+    _log(log_path, f"  {snap.key} test-fix retry exited code={result.exit_code}")
+    return result.exit_code == 0
+
+
 def _resolve_summary(
     cfg: RunConfig,
     snap: TaskSnapshot,
@@ -1775,6 +2027,9 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
         base_branch=cli_base if cli_base else "main",
         lock_timeout_seconds=getattr(args, "lock_timeout_seconds", 30.0),
         task_timeout_seconds=getattr(args, "task_timeout_seconds", 60 * 60 * 4),
+        # getattr default keeps `dispatcher resume` of pre-gate journals
+        # working — their genesis run_config lacks the key.
+        verify_test_timeout_seconds=getattr(args, "verify_test_timeout", 600),
         auto_integrate=getattr(args, "auto_integrate", False),
         cross_family_panel=getattr(args, "cross_family_panel", "auto"),
         cross_family_panel_timeout=getattr(

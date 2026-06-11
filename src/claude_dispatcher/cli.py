@@ -95,6 +95,19 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument(
+        "--verify-test-timeout",
+        type=int,
+        default=600,
+        metavar="SECONDS",
+        help=(
+            "Wall-clock bound for the repo's .dispatcher.yaml `test:` "
+            "command in the post-Done mechanical verification gate "
+            "(default: 600). Bounds EACH execution independently — the "
+            "first run and the post-fix re-run. A timed-out execution is "
+            "treated as a failure, like any non-zero exit."
+        ),
+    )
+    run.add_argument(
         "--run-id",
         default=None,
         help="Default: ISO 8601 timestamp",
