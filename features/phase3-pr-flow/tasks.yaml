@@ -38,7 +38,32 @@ tasks:
     type: Task
     estimate: 3h
     labels: [size:M, area:orchestrator, area:cli, phase:3]
+    status: Done
+    started_at: '2026-06-10T19:35:52-07:00'
+    dispatcher_run_id: 2026-06-11T02-35-52Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-11T02-35-52Z-tasks/PRF-1/summary.md
 
+    branch: feat/PRF-1-pr-flow-run-mode-run
+    completed_at: '2026-06-10T19:53:05-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 2
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/28
+    mechanical_verification: passed
+    verified: true
+    verification_iterations: 0
+    cost_usd: 8.04312775
+    input_tokens: 14160
+    output_tokens: 56923
+    cache_read_input_tokens: 8362187
+    cache_creation_input_tokens: 186692
+    duration_ms: 989669
+    num_turns: 59
+    model: claude-opus-4-8[1m]
+    agent: claude
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.172 (Claude Code)
   - key: PRF-2
     summary: "PR-flow states: auto-raise PRs against the feature branch; Awaiting Review"
     description: |
@@ -66,7 +91,32 @@ tasks:
     estimate: 3h
     labels: [size:M, area:orchestrator, phase:3]
     blockedBy: [PRF-1]
+    status: Done
+    started_at: '2026-06-10T19:53:05-07:00'
+    dispatcher_run_id: 2026-06-11T02-35-52Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-11T02-35-52Z-tasks/PRF-2/summary.md
 
+    branch: feat/PRF-2-pr-flow-states-auto-raise
+    completed_at: '2026-06-10T20:12:31-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 2
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/29
+    mechanical_verification: passed
+    verified: true
+    verification_iterations: 0
+    cost_usd: 10.19413325
+    input_tokens: 14595
+    output_tokens: 74555
+    cache_read_input_tokens: 12982014
+    cache_creation_input_tokens: 205100
+    duration_ms: 1110948
+    num_turns: 83
+    model: claude-opus-4-8[1m]
+    agent: claude
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.172 (Claude Code)
   - key: PRF-3
     summary: "Deterministic risk classifier (effective-diff rule) in repo config"
     description: |
@@ -99,7 +149,32 @@ tasks:
     type: Task
     estimate: 3h
     labels: [size:M, area:config, phase:3]
+    status: Done
+    started_at: '2026-06-10T19:35:52-07:00'
+    dispatcher_run_id: 2026-06-11T02-35-52Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-11T02-35-52Z-tasks/PRF-3/summary.md
 
+    branch: feat/PRF-3-deterministic-risk-classifier-effective-diff
+    completed_at: '2026-06-10T19:51:09-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    final_quality_score: 25
+    human_gate_fired: false
+    deferred_findings_count: 3
+    prepared_pr_title: 'feat(dispatcher): [PRF-3] add deterministic risk classifier with effective-diff rule'
+    prepared_pr_branch: feat/PRF-3-deterministic-risk-classifier-effective-diff
+    cost_usd: 4.29441845
+    input_tokens: 15074
+    output_tokens: 55359
+    cache_read_input_tokens: 2266088
+    cache_creation_input_tokens: 155279
+    duration_ms: 916296
+    num_turns: 35
+    model: claude-opus-4-8[1m]
+    agent: claude
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.172 (Claude Code)
+    pr_approved_by: andrew (human, size-gate approval 2026-06-10)
   - key: PRF-4
     summary: "Mechanical merge engine: ordered, ladder-gated PR merges + merge-prs command"
     description: |
@@ -134,7 +209,32 @@ tasks:
     estimate: 4h
     labels: [size:M, area:orchestrator, area:cli, phase:3]
     blockedBy: [PRF-2, PRF-3]
+    status: Done
+    started_at: '2026-06-10T20:57:59-07:00'
+    dispatcher_run_id: 2026-06-11T03-57-59Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-11T03-57-59Z-tasks/PRF-4/summary.md
 
+    branch: feat/PRF-4-mechanical-merge-engine-ordered-ladder
+    completed_at: '2026-06-10T21:27:47-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 2
+    pr_not_raised_reason: direct-branch dogfood workflow — PRF-4 is committed on
+    mechanical_verification: passed
+    verified: true
+    verification_iterations: 0
+    cost_usd: 15.1236986
+    input_tokens: 14731
+    output_tokens: 100076
+    cache_read_input_tokens: 16456446
+    cache_creation_input_tokens: 263615
+    duration_ms: 1684396
+    num_turns: 91
+    model: claude-opus-4-8[1m]
+    agent: claude
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.172 (Claude Code)
   - key: PRF-5
     summary: "Surface PR-flow in status/report + run-complete semantics"
     description: |
@@ -154,7 +254,32 @@ tasks:
     estimate: 2h
     labels: [size:S, area:cli, phase:3]
     blockedBy: [PRF-4]
+    status: Done
+    started_at: '2026-06-10T21:27:48-07:00'
+    dispatcher_run_id: 2026-06-11T03-57-59Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-11T03-57-59Z-tasks/PRF-5/summary.md
 
+    branch: feat/PRF-5-surface-pr-flow-in-status
+    completed_at: '2026-06-10T21:50:56-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 1
+    pr_not_raised_reason: direct-branch integration workflow (repo convention — feature
+    mechanical_verification: passed
+    verified: true
+    verification_iterations: 0
+    cost_usd: 14.601577500000001
+    input_tokens: 14895
+    output_tokens: 72890
+    cache_read_input_tokens: 15312802
+    cache_creation_input_tokens: 313632
+    duration_ms: 1274987
+    num_turns: 104
+    model: claude-opus-4-8[1m]
+    agent: claude
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.172 (Claude Code)
   - key: PRF-6
     summary: "Docs: PR-flow mode, risk classifier reference, ladder semantics"
     description: |
@@ -176,3 +301,28 @@ tasks:
     estimate: 2h
     labels: [size:S, area:docs, phase:3]
     blockedBy: [PRF-5]
+    status: Done
+    started_at: '2026-06-10T21:50:56-07:00'
+    dispatcher_run_id: 2026-06-11T03-57-59Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-11T03-57-59Z-tasks/PRF-6/summary.md
+    branch: feat/PRF-6-docs-pr-flow-mode-risk
+    completed_at: '2026-06-10T22:00:39-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 1
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/30
+    mechanical_verification: passed
+    verified: true
+    verification_iterations: 0
+    cost_usd: 5.960991999999999
+    input_tokens: 14023
+    output_tokens: 27809
+    cache_read_input_tokens: 5423479
+    cache_creation_input_tokens: 127313
+    duration_ms: 524557
+    num_turns: 55
+    model: claude-opus-4-8[1m]
+    agent: claude
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.172 (Claude Code)

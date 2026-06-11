@@ -661,6 +661,29 @@ Taskers' work.**
 - Day-one totals across runs #2-#5: ~$435, phases 0/1/1a/2/4 complete plus
   the Phase 3 dependency rule and Phase 6 advisory tier.
 
+**Run #6 (2026-06-11T02-35-52Z + 6b) + integration: 6/6 Done, $58.22.
+Phase 3 complete — PR-flow mode, deterministic risk classifier, mechanical
+merge engine with ladder gating, merge-prs command, status/report surface.
+First run protected by the Phase 4 verification gate.**
+- **Verification gate, first production campaign: 5/5 VERIFIED, gaps=0,
+  ~$0.31 and ~22s per verdict** (PRF-3 parked pre-verification — see below).
+  Mechanical gate averaged ~20s per task. Zero human verification performed
+  this run; the supervisor's checks from runs #2-#5 are now machinery.
+- **Forgot-to-push tally: 3 of 8 verified tasks today** (PRF-4, PRF-5 +
+  VG-4) — all self-healed by INT-3's retry in <60s. Upstream fix queued:
+  tasker.md should emphasize push-before-summary; retry remains the net.
+- **Ordering nuance (fixed by this run's own design)**: PRF-3 parked at the
+  Tasker's PR gate BEFORE verification could run — parked ≠ Done, so no
+  verdict. In pr mode (PRF-2), raising happens AFTER verification, which
+  retires both this nuance and the push_verify expect_pr gaps observed
+  (PRF-4/5 pushed without PRs).
+- Integration: 2 of 6 PRs showed GitHub conflicts that evaporated on real
+  merges (conservative mergeability on dependency-merge history); PRF-5's
+  remote tip had grown PRF-6's history — reconciled by merging the remote
+  tip back. Suite green at every step.
+- **Phase 3 + 4 are the last manually-integrated phases**: the merge engine
+  shipped tonight does this job from the next pr-mode run onward.
+
 ## Open questions — resolutions (2026-06-10)
 
 1. **Per-repo e2e provisioning** — RESOLVED: per repo. Each repo owns its
