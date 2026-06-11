@@ -426,9 +426,31 @@ def run_complete_notification(
     escalated: int,
     blocked_rollup: list[tuple[str, str]] | None = None,
     tasks_yaml: str | None = None,
+    merged: int | None = None,
+    awaiting_review: int | None = None,
+    needs_rebase: int | None = None,
 ) -> Notification:
+    """The end-of-run rollup. In pr mode the orchestrator passes the merge
+    tallies (``merged`` / ``awaiting_review`` / ``needs_rebase``) so the morning
+    starts with one glanceable message that distinguishes landed PRs from those
+    still pending a merge. All three default to None — in branch mode the
+    message is exactly as before."""
     parts = [f"*Run:* `{run_id}`",
              f"*Done:* {done}  |  *Blocked:* {blocked}  |  *Escalated:* {escalated}"]
+    # pr-mode pending-merge summary (PRF-5). Present iff the caller passed the
+    # merge tallies; awaiting_review is the "still needs a merge" signal.
+    pr_mode = merged is not None or awaiting_review is not None
+    if pr_mode:
+        m, a, nr = merged or 0, awaiting_review or 0, needs_rebase or 0
+        line = f"*Merged:* {m}  |  *Awaiting merge:* {a}"
+        if nr:
+            line += f"  |  *Needs rebase:* {nr}"
+        parts.append(line)
+        if a or nr:
+            tail = f"{a} PR(s) awaiting merge"
+            if nr:
+                tail += f", {nr} need rebase"
+            parts.append(f"⏳ {tail} — review/approve to land.")
     if blocked_rollup:
         parts.append("")
         parts.append("*Blocked reasons:*")
@@ -436,7 +458,10 @@ def run_complete_notification(
             parts.append(f"• `{key}` — {reason[:160]}")
         if len(blocked_rollup) > 10:
             parts.append(f"…and {len(blocked_rollup) - 10} more")
-    urgency = "high" if (blocked or escalated) else "default"
+    # Pending merges (or rebases) make a clean-but-incomplete run worth a louder
+    # ping: the run "finished" yet PRs still need a human to land them.
+    pending = bool((awaiting_review or 0) or (needs_rebase or 0))
+    urgency = "high" if (blocked or escalated or pending) else "default"
     return Notification(
         title=f"[dispatcher] run complete: {done} done / {blocked} blocked",
         body="\n".join(parts),

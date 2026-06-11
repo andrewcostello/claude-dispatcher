@@ -90,6 +90,67 @@ def journal_task_index(
     return index
 
 
+def pr_flow_index(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Per-task pr-flow enrichment: each task's ``risk_level`` and ``approver``
+    from the LAST ``pr_approved`` / ``pr_merged`` journal event.
+
+    The merge engine records these on the journal events, not the YAML row (the
+    row only carries the terminal ``pr_approved_by`` once Merged), so this is the
+    only source for the risk level, and for the approver while a PR is still
+    Awaiting Review. Later events overwrite earlier ones, so a re-classified or
+    re-approved PR shows its most recent values. Used by both ``dispatcher
+    status`` (per-row pr block) and ``dispatcher report`` (the pr_flow rollup).
+    """
+    index: dict[str, dict[str, Any]] = {}
+    for ev in events:
+        if ev.get("event_type") not in ("pr_approved", "pr_merged"):
+            continue
+        tk = ev.get("task_key")
+        payload = ev.get("payload")
+        if not isinstance(tk, str) or not isinstance(payload, dict):
+            continue
+        cur = index.setdefault(tk, {"risk_level": None, "approver": None})
+        risk = payload.get("risk_level")
+        if isinstance(risk, str) and risk.strip():
+            cur["risk_level"] = risk.strip()
+        approver = payload.get("approver")
+        if isinstance(approver, str) and approver.strip():
+            cur["approver"] = approver.strip()
+    return index
+
+
+def genesis_run_config(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """The genesis (``run_started``) event's ``run_config`` mapping, or ``{}``.
+
+    The genesis payload stores the resolved ``dispatcher run`` arguments under
+    ``run_config`` (see orchestrator._genesis_config). Returns ``{}`` when there
+    is no genesis event, it carries no ``run_config``, or the journal is empty —
+    so a caller can read a key with a plain ``.get`` and a safe default.
+    """
+    for ev in events:
+        if ev.get("event_type") == "run_started":
+            payload = ev.get("payload")
+            if isinstance(payload, dict):
+                rc = payload.get("run_config")
+                return rc if isinstance(rc, dict) else {}
+            return {}
+    return {}
+
+
+def integration_mode(events: list[dict[str, Any]]) -> str:
+    """The run's integration mode (``"pr"`` | ``"branch"``) from the genesis
+    ``run_config``.
+
+    Defaults to ``"branch"`` when unknown — a pre-journal run, no genesis event,
+    or a genesis that predates the PRF-1 ``integration`` key. This is the gate
+    the observability commands use to decide whether to surface the pr-flow
+    fields (statuses, pr_number, risk level, approver, needs_rebase): a
+    branch-mode or legacy run never trips it, so its output is unchanged.
+    """
+    mode = genesis_run_config(events).get("integration")
+    return mode if mode in ("pr", "branch") else "branch"
+
+
 def parse_iso(value: Any) -> dt.datetime | None:
     """Parse an ISO-8601 string to a datetime, or None if it isn't one."""
     if not isinstance(value, str):

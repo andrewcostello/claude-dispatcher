@@ -46,9 +46,24 @@ it.
 | `source` | string | `"journal"` or `"yaml"` (see Source selection). |
 | `source_label` | string | The full human-facing label, including the fallback annotation. |
 | `summary_file_count` | int | Number of `summary.md` files found under the run dir. |
-| `status_counts` | object | `{<status>: int}` over **every** task in the YAML (not just this run), 0-filled for all five statuses (`To Do`, `In Progress`, `Done`, `Blocked`, `Escalated`). |
+| `status_counts` | object | `{<status>: int}` over **every** task in the YAML (not just this run), 0-filled for all five base statuses (`To Do`, `In Progress`, `Done`, `Blocked`, `Escalated`). In **pr mode** (PRF-5) the pr-flow lifecycle statuses `Awaiting Review` and `Merged` are appended. |
 | `rollup` | object | The per-run cost/usage rollup (below). |
 | `quality` | object | The original quality-dashboard data (below). |
+| `pr_flow` | object | **pr mode ONLY** — absent in branch mode (and pre-journal/legacy runs), so the branch-mode document is unchanged. The merge rollup (below). |
+
+## `pr_flow` (pr mode only)
+
+Present only when the run's genesis `run_config.integration == "pr"`. The
+merge picture at run end: which PRs landed, who approved them, and which are
+still pending.
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `merged` | int | Tasks in this run with status `Merged`. |
+| `awaiting_review` | int | Tasks still `Awaiting Review` — PR raised but not yet merged. |
+| `needs_rebase` | int | Tasks whose row carries `needs_rebase: true` (a merge conflict held the PR back). |
+| `approver_breakdown` | object | `{self: int, external: int}` over **merged** tasks — `self` = the dispatcher self-approved a low-risk PR (`pr_approved_by == "dispatcher-agent"`); `external` = a GitHub reviewer approved (`external:<login>` / `external`). |
+| `unmerged_prs` | array | Key-sorted `Awaiting Review` rows: `{key, jira_key, status, pr_number, pr_url, risk_level, needs_rebase}`. `risk_level` comes from the journal `pr_approved` / `pr_merged` event (the merge engine records the level there, not on the row), so it is `null` for a PR never classified (e.g. still awaiting its first approval). |
 
 ## `rollup`
 

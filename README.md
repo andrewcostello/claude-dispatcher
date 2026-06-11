@@ -68,6 +68,8 @@ dispatcher run <tasks-yaml> [options]
   --claude-extra-args "..."                  extra args passed to `claude` after --print
   --skip-preflight                          skip the run-start preflight checks — see Run-start preflight
   --gh-bin NAME                             default: gh
+  --integration {branch,pr}                 default: branch — PR-flow mode opens a PR per task against a shared feature branch (flag > .dispatcher.yaml `integration:` > branch). See "PR-flow mode"
+  --feature-branch NAME                     PR-flow only: the run-level feature branch (default: feature/<epic>, sanitized). Ignored in branch mode
   --auto-integrate                          merge each Done task's branch into --base-branch atomically
   --cross-family-panel {auto,always,never}   default: auto — see Cross-family panel below
   --cross-family-panel-timeout SECONDS      default: 600 — per-reviewer wall-clock budget
@@ -85,6 +87,16 @@ dispatcher resume <run-id> [--strategy {continue,mark-blocked}] [--force] [--run
                                             Pick up an interrupted run from its journal —
                                             re-dispatch in-flight tasks, leave terminal
                                             rows untouched. See "Resume".
+dispatcher merge-prs <run-id> [--force] [--runs-dir PATH] [--ntfy-topic T] [--slack-webhook-url URL]
+                                            PR-flow mode: run the mechanical merge pass over a
+                                            finished run's Awaiting Review PRs — merge each (in
+                                            blockedBy order) whose approval ladder is satisfied AND
+                                            whose dependencies are all Merged. For a post-run /
+                                            next-morning catch-up; the dispatch loop runs the same
+                                            pass live. Reconstructs the run from its journal genesis
+                                            (like resume). --force overrides the still-active guard.
+                                            See "PR-flow mode".
+
 dispatcher report [<run-id>] [--json] [--tasks-yaml PATH] [--runs-dir PATH]
                                             Quality dashboard + per-run cost rollup:
                                             wall clock, cost/token totals summed over
@@ -247,28 +259,89 @@ and is not an error.
 # Exit 0 = green. Run verbatim (never stripped). Absent → mechanical gate skipped.
 test: "pytest -q"
 
+# Repo-default integration mode (PRF-1). "branch" (today's behavior) forks each
+# task worktree directly from the base branch; "pr" runs the whole run off a
+# shared feature branch and opens a PR per task. The `dispatcher run
+# --integration` flag always wins over this. Absent → "branch".
+integration: pr
+
 # Cross-family panel options. Today the only known key is `advisory:`.
 panel:
   # Probationary, non-blocking reviewer families seated next to the
   # authoritative three. See "Advisory (probationary) reviewers" below.
   advisory: [grok]
+
+# Low-risk classifier thresholds for the PR-flow approval ladder (PRF-3). Used
+# ONLY in `integration: pr` mode, to decide which PRs the dispatcher may
+# self-approve. The whole section is optional; an absent `risk:` uses the
+# built-in defaults wholesale, and a partial section merges over them. The
+# values shown ARE the defaults — see "PR-flow mode" for the rule semantics.
+risk:
+  max_size: S                       # XS or S only; larger → elevated
+  forbidden_labels: [security, critical, financial]
+  forbidden_paths:                  # any touched path → elevated
+    - "**/migrations/**"
+    - "**/*.proto"
+    - "**/auth/**"
+    - ".github/**"
+    - "go.mod"
+    - "go.sum"
+    - "pyproject.toml"
+    - "Dockerfile*"
+    - "compose*.y*ml"
+  max_effective_diff_lines: 200     # EFFECTIVE lines — see counting rule below
+  test_globs:                       # excluded from the effective-diff count
+    - "*_test.go"
+    - "**/testdata/**"
+    - "tests/**"
+    - "*.spec.*"
+  generated_globs:                  # also excluded from the count
+    - "*.pb.go"
+    - "**/sqlc/**"
+    - "*_pb2.py"
+  docs_only_low_risk: true          # *.md-only diffs are low-risk at any size
 ```
 
 | Key | Type | Meaning |
 |-----|------|---------|
 | `test` | string | Mechanical-gate command, run verbatim in the worktree (exit 0 = green). Must be a non-blank string; absent → gate skipped. |
+| `integration` | string | Repo-default integration mode: `branch` or `pr`. The `--integration` CLI flag overrides it. Absent → `branch`. |
 | `panel.advisory` | list\<string> | Advisory reviewer family names. Empty/absent → no advisory seats. |
+| `risk.max_size` | string | Largest size label still eligible for low-risk self-approval (one of `XS`/`S`/`M`/`L`/`XL`). Default `S`. |
+| `risk.forbidden_labels` | list\<string> | Any task label here forces `elevated`. Default `[security, critical, financial]`. |
+| `risk.forbidden_paths` | list\<string> | Gitignore-style globs (`**` crosses directories); any touched path forces `elevated`. The test/generated exclusion does **not** apply here. |
+| `risk.max_effective_diff_lines` | int (≥ 0) | Max *effective* diff lines (see counting rule) for low-risk. Default `200`. |
+| `risk.test_globs` | list\<string> | Globs whose churn is excluded from the effective-diff count. |
+| `risk.generated_globs` | list\<string> | Globs for generated output, also excluded from the count. |
+| `risk.docs_only_low_risk` | bool | When `true`, a diff touching only `*.md` files is low-risk at any size. Default `true`. |
+
+**Effective-diff counting rule.** The `max_effective_diff_lines` threshold (and
+the Phase 7b mutation escalation) counts insertions+deletions over **only** the
+files that are neither test (`test_globs`) nor generated (`generated_globs`) —
+so thorough tests or regenerated protobuf/sqlc output on an otherwise small
+change cannot push it out of low-risk. The exclusion is for *counting only*:
+excluded files still ship through the PR and every gate like any other file. A
+binary file (git reports `-` for its line counts) contributes 0. Test-only
+diffs are deliberately **not** auto-low-risk — a test change can silently weaken
+assertions, so it runs the full rule set like any other diff. Note: a PR's risk
+diff is measured against the **feature branch** (`base...head`), not main.
 
 **Forward-compatibility.** The loader does **not** reject keys it doesn't
 recognise. Unknown top-level keys, and unknown keys nested under `panel:`
 (reported as `panel.<key>`), are collected into `RepoConfig.unknown_keys` and
 journaled as a `unknown_keys` note on the `verification_mechanical` event rather
 than failing the run. This lets a newer config schema be dropped into a repo an
-older dispatcher reads without breaking it. What *is* rejected (raising
+older dispatcher reads without breaking it. (Unknown keys *inside* `risk:` are
+tolerated and ignored the same way.) What *is* rejected (raising
 `RepoConfigError`, which Blocks the task with `mechanical_verification_failed`):
-a non-mapping root, unparseable YAML, a `test:` that isn't a non-blank string, a
-`panel:` that isn't a mapping, or a `panel.advisory` that isn't a list of
-strings.
+a non-mapping root, unparseable YAML, a `test:` that isn't a non-blank string, an
+`integration:` that isn't `branch`/`pr`, a `panel:` that isn't a mapping, a
+`panel.advisory` that isn't a list of strings, a `risk:` that isn't a mapping, a
+`risk.max_size` outside the size vocabulary, a `risk.max_effective_diff_lines`
+that isn't a non-negative integer, a `risk.docs_only_low_risk` that isn't a
+boolean, or any `risk.*_globs` / `risk.forbidden_*` that isn't a list of
+non-empty strings — a malformed safety threshold fails loud rather than silently
+widening what counts as low-risk.
 
 ### Cross-family panel
 
@@ -708,6 +781,163 @@ Human PR gate fired for SMG-1657: add escrow state to prevent silent payout loss
 - `skip` → marks `Blocked`, reason `human skipped PR approval`.
 
 Prompts are serialized across workers — if two tasks gate-fire at once, the human sees them one at a time.
+
+---
+
+## PR-flow mode (`integration: pr`)
+
+By default the dispatcher integrates in **branch mode**: each task worktree
+forks directly from `--base-branch`, and a `Done` task's branch is either left
+for a human or merged by `--auto-integrate`. **PR-flow mode** is the alternative,
+selected by `--integration pr` (or `integration: pr` in `.dispatcher.yaml`; the
+flag wins). In PR-flow mode the *dispatcher itself* owns the whole feature-branch
+lifecycle — raising a PR per task, then mechanically merging the PRs in
+dependency order behind a deterministic approval ladder.
+
+### Feature branch lifecycle
+
+The whole run lands on a shared **feature branch**, not directly on the base:
+
+1. **At run start** the dispatcher creates the feature branch from `--base-branch`
+   if it doesn't already exist (name: `--feature-branch`, default
+   `feature/<epic from the tasks YAML>`, sanitized). The genesis journal event
+   records the mode, the feature branch, and its SHA.
+2. **Each task worktree forks from the feature branch** (not bare base), so a
+   dependent task sees its already-merged dependencies' code.
+3. **When a task clears every gate** (mechanical verify → LLM verifier →
+   cross-family panel), the dispatcher pushes its branch and **automatically
+   opens a PR against the feature branch** (`pr_opened` journal event). The task
+   moves `Done` → `Awaiting Review`.
+4. **A merge pass** merges eligible PRs into the feature branch (below). A merged
+   PR moves `Awaiting Review` → `Merged`.
+
+### Task states
+
+```
+  (gates pass)        (PR auto-raised)        (merge pass: approved
+                                               AND every dep Merged)
+  Done ──────────────► Awaiting Review ──────────────────────────► Merged
+                            ▲    │
+                            └────┘
+                       merge conflict → needs_rebase: true
+                       (held at Awaiting Review; no auto-rebase —
+                        supervisor rebases, next pass picks it up)
+```
+
+(`Done` is the transient state a task occupies once its gates pass; in PR-flow
+mode the dispatcher immediately raises the PR and advances it to
+`Awaiting Review`, so a PR-flow row rarely *rests* at `Done`. A gate failure at
+any point lands the task in `Blocked` / `Escalated` instead.)
+
+In branch mode the terminal states are `Done | Blocked | Escalated`. In PR-flow
+mode **`Done` and `Awaiting Review` are NOT terminal** — only `Merged | Blocked |
+Escalated` are. A run whose PRs are all open-but-unmerged reads
+`run_complete: false` with `merges_pending > 0` in `dispatcher status`. (Run-rollup
+counts widen accordingly: the `run_complete` journal event's umbrella `done`
+count includes `Awaiting Review` and `Merged`, and pr-mode adds `merged` /
+`awaiting_review` / `needs_rebase` counts — see [journal-format.md](docs/journal-format.md).)
+
+### Raise vs. merge: where the gate sits
+
+PR-flow deliberately splits raising from merging:
+
+- **Raising is automatic and unconditional.** Every task that passes its gates
+  has its PR opened, regardless of size or risk. There is no size-based parking
+  at the *raise* step — opening a PR commits nothing to the feature branch.
+- **Merging is gated** by the approval ladder below. This is where risk
+  classification, external approval, and dependency ordering apply.
+
+The rationale: an open PR is a reviewable, low-cost artifact; the irreversible
+act is the *merge*, so that is the only place worth gating. Splitting the two
+also lets every PR exist concurrently for review while merges proceed in a safe
+order.
+
+### Mechanical merge ordering
+
+A merge pass walks the `Awaiting Review` rows in **topological (`blockedBy`)
+order** and merges a PR only when **both** hold:
+
+1. **It is approved per the ladder** (below), and
+2. **every `blockedBy` dependency is already `Merged`** — the topological gate,
+   so a PR always lands on top of merged dependency code.
+
+The ordering is enforced in code (`plan.mergeable_now`), never eyeballed. After
+each successful merge the candidate set is recomputed, so a dependency that
+merges *this* pass unblocks its dependent within the same pass — but a dependent
+can never merge ahead of its dependency, even if it was approved first. The merge
+is `gh pr merge --merge`; a success stamps `Merged` plus the audit fields
+(`merged_at`, `pr_approved_by`, `merged_by`, `merged_sha`).
+
+### Approval ladder
+
+The ladder (a deterministic, config-driven judgement — not an LLM's vibe)
+decides who may approve a PR for merge:
+
+| Tier | Who approves | When it applies |
+|------|--------------|-----------------|
+| 1 | **The dispatcher self-approves** (`pr_approved_by: dispatcher-agent`) | The PR classifies **low-risk** per the [risk classifier](#per-repo-config-dispatcheryaml). |
+| 2 | **An external GitHub approval** (`external:<login>`) | The PR is **elevated**: the dispatcher reads `gh pr view --json reviews` and merges only once an approving review is present. Until then the row stays `Awaiting Review` and a notification fires once per task. |
+| 3 | **A human (Andrew)** | Anything an external reviewer doesn't clear — the fallback at the top of the ladder. |
+
+The low/elevated split is the deterministic classifier whose thresholds live in
+the `risk:` section of `.dispatcher.yaml` — the
+[defaults and the effective-diff counting rule are documented above](#per-repo-config-dispatcheryaml).
+A verdict is `low` only when **every** condition holds (size ≤ `max_size`, no
+forbidden label, no forbidden path, effective diff ≤ `max_effective_diff_lines`,
+and first-pass verification: `verified` with zero iterations); any single
+violation flips it to `elevated` and names the violated rule. If the diff can't
+even be computed the classifier **fails closed** to `elevated`. The journal
+records who approved every merge (`pr_approved` event), and the dispatcher never
+approves work it authored or iterated on.
+
+### `needs_rebase`: a supervisor responsibility
+
+If a PR can't merge cleanly because an earlier merge moved the feature branch out
+from under it, the merge pass records a `pr_merge_failed` event with
+`kind: conflict`, stamps **`needs_rebase: true`** on the row, fires a one-shot
+notification, leaves the row at `Awaiting Review`, and **continues with the other
+eligible PRs**. The dispatcher does **not** auto-rebase — resolving the conflict
+(rebasing the branch onto the updated feature branch and re-pushing) is a
+**supervising-agent / human responsibility**. Once the branch is rebased, a fresh
+merge pass picks it up and clears the `needs_rebase` flag on merge. (A
+non-conflict failure — auth, usage, etc. — records `kind: error` and a
+`merge_error`, but never sets `needs_rebase`, since a rebase wouldn't fix it.)
+
+### `dispatcher merge-prs` — standalone catch-up
+
+The orchestrator runs a merge pass inside the dispatch loop (after each task
+reaches `Awaiting Review`). But a run often *finishes* with PRs still
+`Awaiting Review` — elevated PRs waiting on a human/bot approval, or low-risk PRs
+whose dependencies hadn't merged when the loop ended. `dispatcher merge-prs
+<run-id>` runs the **same** merge pass standalone, for a post-run /
+next-morning catch-up:
+
+```bash
+# After approvals have landed overnight, merge everything now eligible
+dispatcher merge-prs 2026-06-11T03-57-59Z-tasks
+```
+
+It reconstructs the run from its journal genesis (exactly like `dispatcher
+resume` — you supply only the run-id and `--runs-dir`), so no YAML path is
+needed. Its merge events extend the **same** journal chain, legitimately past
+`run_complete`. A `branch`-mode run is a clean no-op. A **liveness guard**
+refuses with exit 4 if the journal's last event is recent (the original run may
+still be merging, and a second merger could double-merge) — pass `--force` when
+you're sure the run is done. Exit codes: `0` (pass ran, including a clean no-op),
+`2` (no journal / no genesis / unusable config / not pr mode), `4` (run looks
+still active).
+
+### Deliberate non-goals
+
+Two things are **intentionally out of dispatcher scope** in PR-flow mode:
+
+- **Auto-rebase.** The dispatcher never rebases a conflicted branch — it flags
+  `needs_rebase` and moves on (above). Resolving conflicts is judgment work left
+  to the supervising agent / human.
+- **The external pr-reviewer bot.** A reviewer bot is not part of the dispatcher.
+  From the dispatcher's side it is invisible machinery: it simply shows up as a
+  **GitHub approval** on the PR, which the elevated tier of the ladder reads via
+  `gh`. The dispatcher neither invokes nor manages it.
 
 ---
 

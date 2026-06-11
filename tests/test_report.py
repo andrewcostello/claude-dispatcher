@@ -21,6 +21,7 @@ from claude_dispatcher.cli import build_parser
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "report"
+PR_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "status_pr"
 
 YAML_FALLBACK_LABEL = (
     "yaml (pre-journal run — per-task usage reflects last spawn only)"
@@ -200,6 +201,52 @@ def _invoke(argv, capsys):
     return rc, captured.out, captured.err
 
 
+def _pr_journal(run_dir: Path, tmp_path: Path):
+    """A pr-mode journal (genesis run_config integration=pr) over the PRF-5
+    fixture: PR-A merged (self-approved low risk), PR-B external-approved then
+    conflict → needs_rebase, PR-C still awaiting approval (no pr events)."""
+    reviewer_dir = tmp_path / "reviewer_prompts"
+    reviewer_dir.mkdir(exist_ok=True)
+    (reviewer_dir / "r.md").write_text("review prompt\n")
+    it = iter([
+        "2026-06-10T18:24:47+00:00",  # genesis
+        "2026-06-10T18:25:25+00:00",  # pr_approved PR-A
+        "2026-06-10T18:25:30+00:00",  # pr_merged PR-A
+        "2026-06-10T18:25:35+00:00",  # pr_approved PR-B
+        "2026-06-10T18:25:40+00:00",  # pr_merge_failed PR-B
+    ])
+    j = journal_mod.Journal.create(
+        run_dir / journal_mod.JOURNAL_FILENAME,
+        tasks_yaml_path=PR_FIXTURE_DIR / "tasks.yaml",
+        reviewer_prompts_dir=reviewer_dir,
+        run_id="fixture-run", run_nonce="0" * 32,
+        clock=lambda: next(it),
+        run_config={"integration": "pr", "feature_branch": "feature/prflow"},
+    )
+    j.append(journal_mod.EventType.pr_approved,
+             {"number": 201, "approver": "dispatcher-agent",
+              "risk_level": "low", "reasons": []}, task_key="PR-A")
+    j.append(journal_mod.EventType.pr_merged,
+             {"number": 201, "merger": "dispatcher-agent",
+              "approver": "dispatcher-agent", "target": "feature/prflow",
+              "feature_branch_sha": "abc"}, task_key="PR-A")
+    j.append(journal_mod.EventType.pr_approved,
+             {"number": 202, "approver": "external:alice",
+              "risk_level": "elevated", "reasons": ["touches finance"]},
+             task_key="PR-B")
+    j.append(journal_mod.EventType.pr_merge_failed,
+             {"number": 202, "kind": "conflict", "needs_rebase": True,
+              "detail": "merge conflict"}, task_key="PR-B")
+    return j
+
+
+def _build_pr(run_dir: Path):
+    return report_mod.build_report(
+        run_dir=run_dir, run_id="fixture-run",
+        yaml_path=PR_FIXTURE_DIR / "tasks.yaml",
+    )
+
+
 def _task_row(data: dict, key: str) -> dict:
     return {t["key"]: t for t in data["rollup"]["tasks"]}[key]
 
@@ -221,6 +268,58 @@ def test_journal_snapshot(tmp_path: Path) -> None:
     data.pop("tasks_yaml")
     data.pop("run_dir")
     assert data == expected
+
+
+def test_pr_mode_rollup_has_pr_flow_section(tmp_path: Path) -> None:
+    """pr mode (PRF-5): the report gains a pr_flow rollup — merged / awaiting /
+    needs-rebase tallies, a self-vs-external approver breakdown, and the list of
+    PRs unmerged at run end — and status_counts gains the lifecycle statuses."""
+    run_dir = tmp_path / "runs" / "fixture-run"
+    run_dir.mkdir(parents=True)
+    _pr_journal(run_dir, tmp_path)
+
+    data = _build_pr(run_dir)
+
+    # Lifecycle statuses surface in the counts (absent in branch mode).
+    assert data["status_counts"]["Merged"] == 1
+    assert data["status_counts"]["Awaiting Review"] == 2
+
+    pf = data["pr_flow"]
+    assert pf["merged"] == 1
+    assert pf["awaiting_review"] == 2
+    assert pf["needs_rebase"] == 1
+    # Only PR-A merged, self-approved by the dispatcher.
+    assert pf["approver_breakdown"] == {"self": 1, "external": 0}
+    # Both Awaiting Review rows are unmerged; risk_level comes from the journal
+    # pr_approved event (elevated for PR-B, never classified for PR-C).
+    assert [p["key"] for p in pf["unmerged_prs"]] == ["PR-B", "PR-C"]
+    pr_b = pf["unmerged_prs"][0]
+    assert pr_b["pr_number"] == 202
+    assert pr_b["risk_level"] == "elevated"
+    assert pr_b["needs_rebase"] is True
+    assert pf["unmerged_prs"][1]["risk_level"] is None
+
+    # And it renders.
+    rendered = report_mod.render_report(data)
+    assert "Merged         1" in rendered  # top status-counts section
+    assert "Awaiting Review  2" in rendered
+    assert "PR flow:" in rendered
+    assert "self-approved 1, external 0" in rendered
+    assert "Unmerged PRs at run end (2):" in rendered
+    assert "needs rebase" in rendered
+
+
+def test_branch_mode_report_has_no_pr_flow(tmp_path: Path) -> None:
+    """Acceptance: branch-mode output unchanged — no pr_flow key, status_counts
+    holds exactly the five base statuses, and 'PR flow:' is not rendered."""
+    run_dir = _setup_run(tmp_path)
+    _full_journal(run_dir, tmp_path)
+
+    data = _build(run_dir)
+    assert "pr_flow" not in data
+    assert set(data["status_counts"]) == {
+        "To Do", "In Progress", "Done", "Blocked", "Escalated"}
+    assert "PR flow:" not in report_mod.render_report(data)
 
 
 def test_multi_spawn_task_sums_cost_and_tokens_model_is_last(tmp_path: Path) -> None:

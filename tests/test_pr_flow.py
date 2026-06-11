@@ -488,6 +488,43 @@ def test_pr_mode_dependent_dispatches_once_dependency_awaiting_review(
     assert len(_journal_events(repo, "pr_opened")) == 3
 
 
+def test_pr_mode_run_complete_payload_carries_merge_tallies(
+    repo: Path, monkeypatch,
+) -> None:
+    """PRF-5 acceptance: the terminal run_complete event in pr mode records the
+    merged / awaiting_review / needs_rebase tallies. All three fixture tasks are
+    low-risk → auto-merged in-run, so merged=3 and the pending counts are 0."""
+    _patched_spawn(monkeypatch)
+    monkeypatch.setenv("FAKE_GH_PR_NUMBER", "101")
+
+    rc = orchestrator.execute(_build_args(repo, integration="pr"))
+    assert rc == 0
+
+    events = _journal_events(repo, "run_complete")
+    assert len(events) == 1
+    payload = events[0].payload
+    assert payload["merged"] == 3
+    assert payload["awaiting_review"] == 0
+    assert payload["needs_rebase"] == 0
+    # `done` keeps its umbrella meaning (Done/Awaiting Review/Merged all count).
+    assert payload["done"] == 3
+
+
+def test_branch_mode_run_complete_payload_has_no_merge_tallies(
+    repo: Path, monkeypatch,
+) -> None:
+    """Acceptance: branch-mode run_complete payload is unchanged — no merged /
+    awaiting_review / needs_rebase keys."""
+    _patched_spawn(monkeypatch)
+    rc = orchestrator.execute(_build_args(repo))
+    assert rc == 0
+
+    payload = _journal_events(repo, "run_complete")[0].payload
+    assert "merged" not in payload
+    assert "awaiting_review" not in payload
+    assert "needs_rebase" not in payload
+
+
 def test_branch_mode_does_not_auto_raise(repo: Path, monkeypatch) -> None:
     """branch mode is unaffected: no pr_opened event, tasks land Done (not
     Awaiting Review), no pr_number stamped."""

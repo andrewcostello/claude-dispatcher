@@ -1,0 +1,61 @@
+project: TEST
+epic: PRFLOW
+# Fixture for the pr-mode `dispatcher status` / `dispatcher report` snapshots
+# (PRF-5). Captured at run end: PR-A merged (low-risk, self-approved), PR-B
+# left Awaiting Review with needs_rebase after an external-approved PR hit a
+# conflict, PR-C Awaiting Review with no approval yet. No To Do tasks remain,
+# so dispatch is done but two merges are still pending.
+
+tasks:
+
+  - key: PR-A
+    summary: "Merged, low-risk, self-approved"
+    description: |
+      Landed via the mechanical merge engine.
+    type: Task
+    labels: [size:XS, area:smoke]
+    status: Merged
+    dispatcher_run_id: fixture-run
+    started_at: "2026-06-10T18:24:48+00:00"
+    completed_at: "2026-06-10T18:25:05+00:00"
+    model: claude-opus-4-8
+    cost_usd: 0.05
+    iteration_count: 0
+    pr_url: "https://example.test/pr/201"
+    pr_number: 201
+    pr_approved_by: dispatcher-agent
+    merged_by: dispatcher-agent
+    merged_at: "2026-06-10T18:25:30+00:00"
+
+  - key: PR-B
+    summary: "Awaiting Review, external-approved, needs rebase"
+    description: |
+      Approved by an external reviewer but the merge hit a conflict.
+    type: Task
+    labels: [size:S, area:smoke]
+    status: Awaiting Review
+    dispatcher_run_id: fixture-run
+    started_at: "2026-06-10T18:24:50+00:00"
+    completed_at: "2026-06-10T18:25:10+00:00"
+    model: claude-opus-4-8
+    cost_usd: 0.08
+    iteration_count: 1
+    pr_url: "https://example.test/pr/202"
+    pr_number: 202
+    needs_rebase: true
+
+  - key: PR-C
+    summary: "Awaiting Review, no approval yet"
+    description: |
+      PR raised, elevated risk, still waiting on a reviewer.
+    type: Task
+    labels: [size:S, area:smoke]
+    status: Awaiting Review
+    dispatcher_run_id: fixture-run
+    started_at: "2026-06-10T18:24:52+00:00"
+    completed_at: "2026-06-10T18:25:12+00:00"
+    model: claude-opus-4-8
+    cost_usd: 0.06
+    iteration_count: 0
+    pr_url: "https://example.test/pr/203"
+    pr_number: 203
