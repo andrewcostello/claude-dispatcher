@@ -169,6 +169,30 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument(
+        "--integration",
+        choices=["branch", "pr"],
+        default=None,
+        help=(
+            "Integration mode. 'branch' (the default behavior) forks each "
+            "task worktree directly from --base-branch, as today. 'pr' runs "
+            "the whole run off a shared run-level FEATURE branch: it is "
+            "created from --base-branch at run start (if absent), task "
+            "worktrees fork from IT, and the genesis records the mode + "
+            "feature branch + its SHA. Precedence: this flag > .dispatcher.yaml "
+            "`integration:` > 'branch'."
+        ),
+    )
+    run.add_argument(
+        "--feature-branch",
+        default=None,
+        metavar="NAME",
+        help=(
+            "PR-flow mode only: the run-level feature branch name. Default: "
+            "feature/<epic from the tasks YAML>, sanitized. Ignored in branch "
+            "mode."
+        ),
+    )
+    run.add_argument(
         "--claude-bin",
         default="claude",
         help="claude CLI binary name (default: claude)",

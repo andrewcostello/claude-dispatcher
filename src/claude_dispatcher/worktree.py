@@ -112,6 +112,88 @@ def _slugify(summary: str) -> str:
     return "-".join(words[:5])
 
 
+def sanitize_branch_segment(text: str) -> str:
+    """Sanitize an arbitrary string into a single git-branch-safe segment.
+
+    Lowercases, replaces every run of characters outside ``[a-z0-9._-]`` with a
+    single ``-``, then strips leading/trailing separators. Unlike
+    :func:`_slugify` this keeps the full text (no 5-word cap) and preserves
+    ``.``/``_`` — it's for deriving a stable feature-branch name from an epic
+    key like ``PHASE-3-PRF`` → ``phase-3-prf``. Returns ``""`` when nothing
+    branch-safe survives (caller decides how to handle that).
+    """
+    cleaned = re.sub(r"[^a-z0-9._-]+", "-", text.strip().lower())
+    return cleaned.strip("-._/")
+
+
+def default_feature_branch(epic: str | None) -> str | None:
+    """The default run-level feature branch for an epic: ``feature/<epic>``.
+
+    The epic is sanitized into a branch-safe segment (see
+    :func:`sanitize_branch_segment`). Returns None when ``epic`` is absent or
+    sanitizes to nothing — the caller then knows it must require an explicit
+    ``--feature-branch`` instead of inventing a name.
+    """
+    if not epic:
+        return None
+    seg = sanitize_branch_segment(str(epic))
+    return f"feature/{seg}" if seg else None
+
+
+@dataclass
+class FeatureBranchResult:
+    """Outcome of :func:`ensure_feature_branch`.
+
+    ``status`` is ``"created"`` when the branch was freshly forked from the
+    base branch this call, or ``"existing"`` when it was already present (and
+    left untouched). ``sha`` is the branch tip's full commit SHA either way —
+    recorded in the genesis so an auditor can pin the exact fork point.
+    """
+
+    branch: str
+    sha: str
+    status: str  # "created" | "existing"
+
+
+def ensure_feature_branch(
+    repo_root: Path, feature_branch: str, base_branch: str,
+) -> FeatureBranchResult:
+    """Ensure the run-level feature branch exists, creating it from base if not.
+
+    PR-flow mode (PRF-1) runs all task worktrees off a shared feature branch.
+    At run start the dispatcher calls this once: if ``feature_branch`` already
+    resolves it is reused as-is (``status="existing"``); otherwise it is forked
+    from ``base_branch`` via ``git branch`` (``status="created"``). This never
+    checks out or modifies the branch's content — it only ensures the ref
+    exists and reports its tip SHA. Idempotent: a second call on an existing
+    branch is a no-op returning ``status="existing"``.
+
+    Raises :class:`WorktreeError` if ``base_branch`` does not resolve (cannot
+    fork from a non-existent ref) or ``git branch`` fails.
+    """
+    existing = _rev_parse(repo_root, feature_branch)
+    if existing is not None:
+        return FeatureBranchResult(branch=feature_branch, sha=existing, status="existing")
+    base_sha = _rev_parse(repo_root, base_branch)
+    if base_sha is None:
+        raise WorktreeError(
+            f"cannot create feature branch {feature_branch!r}: "
+            f"base branch {base_branch!r} does not resolve"
+        )
+    try:
+        subprocess.run(
+            ["git", "branch", feature_branch, base_branch],
+            cwd=repo_root, check=True, capture_output=True, text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise WorktreeError(
+            f"git branch failed creating {feature_branch!r} from {base_branch!r}",
+            stderr=(exc.stderr or "").strip(),
+        ) from exc
+    sha = _rev_parse(repo_root, feature_branch) or base_sha
+    return FeatureBranchResult(branch=feature_branch, sha=sha, status="created")
+
+
 def layout_for(base: Path) -> WorktreeLayout:
     """Classify the worktree layout from the base path.
 
