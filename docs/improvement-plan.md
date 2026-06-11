@@ -658,8 +658,9 @@ Taskers' work.**
   disposition — the threshold is arbitrary and that's fine; variance is an
   observation, not an offense. Phase 3's deterministic classifier still
   makes it consistent; consistency, not the number, is the point.
-- Day-one totals across runs #2-#5: ~$435, phases 0/1/1a/2/4 complete plus
-  the Phase 3 dependency rule and Phase 6 advisory tier.
+- Day-one totals across runs #2-#6: $342.07 measured
+  (52.27 + 37.77 + 87.51 + 10.75 + 95.55 + 58.22), phases 0/1/1a/2/3/4
+  complete plus the Phase 6 advisory tier.
 
 **Run #6 (2026-06-11T02-35-52Z + 6b) + integration: 6/6 Done, $58.22.
 Phase 3 complete — PR-flow mode, deterministic risk classifier, mechanical
