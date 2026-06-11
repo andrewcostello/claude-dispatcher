@@ -22,6 +22,21 @@ from pathlib import Path
 class PRResult:
     url: str | None
     error: str | None
+    # The PR number, parsed from the trailing path segment of the URL (e.g.
+    # ``.../pull/42`` → 42). None when the URL has no numeric trailing segment
+    # or no URL was returned. The PR-flow lifecycle (PRF-2) stamps this on the
+    # YAML row and into the ``pr_opened`` journal event.
+    number: int | None = None
+
+
+def _pr_number_from_url(url: str) -> int | None:
+    """Extract the PR number from a ``gh`` PR URL's trailing path segment.
+
+    ``https://github.com/o/r/pull/42`` → 42. Returns None when the last
+    segment is not a plain integer (so a non-GitHub or unexpected URL shape
+    simply yields no number rather than a wrong one)."""
+    tail = url.rstrip("/").rsplit("/", 1)[-1]
+    return int(tail) if tail.isdigit() else None
 
 
 def raise_pr(
@@ -73,4 +88,4 @@ def raise_pr(
             break
     if not url:
         return PRResult(url=None, error="gh returned no URL on stdout")
-    return PRResult(url=url, error=None)
+    return PRResult(url=url, error=None, number=_pr_number_from_url(url))

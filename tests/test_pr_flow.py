@@ -32,11 +32,48 @@ from claude_dispatcher.cli import build_parser
 
 FAKE_CLAUDE = Path(__file__).parent / "fixtures" / "fake_claude.py"
 
+# A stand-in for the `gh` CLI. `pr create` prints a PR URL with a numeric id
+# (so pr.py can parse the number); `pr list` prints an empty JSON array (so the
+# branch-mode push-verify PR check stays conclusive). Every invocation is
+# appended to $FAKE_GH_LOG so tests can assert the PR was opened against the
+# feature branch (`--base feature/...`).
+_FAKE_GH = '''\
+#!/usr/bin/env python3
+import os, sys
+args = sys.argv[1:]
+try:
+    sys.stdin.read()  # drain the --body-file - payload, if any
+except Exception:
+    pass
+log = os.environ.get("FAKE_GH_LOG")
+if log:
+    with open(log, "a", encoding="utf-8") as fh:
+        fh.write(" ".join(args) + "\\n")
+if "create" in args:
+    num = os.environ.get("FAKE_GH_PR_NUMBER", "101")
+    print(f"https://github.com/test/repo/pull/{num}")
+elif "list" in args:
+    print("[]")
+sys.exit(0)
+'''
+
+
+def _write_gh_stub(repo: Path) -> Path:
+    """Write the executable `gh` stub into the repo dir and return its path."""
+    gh = repo / "fake_gh.py"
+    gh.write_text(_FAKE_GH, encoding="utf-8")
+    gh.chmod(0o755)
+    return gh
+
 
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
     """A git repo with the three-task fixture (epic: SMOKE) and a tracked
-    Tasker role file, so the run-start preflight passes."""
+    Tasker role file, so the run-start preflight passes.
+
+    An `origin` bare remote is configured (main pushed) so the pr-mode
+    auto-raise (PRF-2) can push task branches; a `gh` stub is written so the
+    PR open is exercised without a real forge."""
     subprocess.run(["git", "init", "-q", "-b", "main", str(tmp_path)],
                    check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "test@test"],
@@ -52,6 +89,15 @@ def repo(tmp_path: Path) -> Path:
     subprocess.run(["git", "add", "."], cwd=tmp_path, check=True, capture_output=True)
     subprocess.run(["git", "commit", "-q", "-m", "init"],
                    cwd=tmp_path, check=True, capture_output=True)
+    # Bare remote so pushes from task worktrees succeed.
+    bare = tmp_path.parent / f"origin-{tmp_path.name}.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(bare)],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "remote", "add", "origin", str(bare)],
+                   cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"],
+                   cwd=tmp_path, check=True, capture_output=True)
+    _write_gh_stub(tmp_path)
     return tmp_path
 
 
@@ -68,6 +114,7 @@ def _build_args(repo: Path, **overrides) -> Any:
         # earlier tests. repo.name is the unique per-test dir name.
         "--worktree-base", str(repo.parent / f"wt-{repo.name}"),
         "--claude-bin", sys.executable,
+        "--gh-bin", str(repo / "fake_gh.py"),
         "--claude-extra-args=--permission-mode bypassPermissions",
     ]
     for k, v in overrides.items():
@@ -323,3 +370,139 @@ def test_pr_mode_no_epic_no_flag_errors(repo: Path, monkeypatch) -> None:
     rc = orchestrator.execute(_build_args(repo, integration="pr"))
     assert rc == 2
     assert _git(repo, "branch", "--list", "feature/*") == ""
+
+
+# --- pr mode: auto-raise (PRF-2) --------------------------------------------
+
+def _row_of(repo: Path, key: str) -> dict:
+    doc = yaml_io.load(repo / "tasks.yaml")
+    return next(t for t in doc["tasks"] if t["key"] == key)
+
+
+def _journal_events(repo: Path, event_type: str) -> list:
+    journal_path = repo / "_runs" / "pr-flow-run" / journal_mod.JOURNAL_FILENAME
+    return [
+        e for e in journal_mod.read_events(journal_path)
+        if e.event_type == event_type
+    ]
+
+
+def _branch_on_remote(repo: Path, branch: str) -> bool:
+    out = subprocess.run(
+        ["git", "ls-remote", "--heads", "origin", branch],
+        cwd=repo, capture_output=True, text=True,
+    ).stdout.strip()
+    return bool(out)
+
+
+def test_pr_mode_auto_raises_pr_against_feature_branch_generated_body(
+    repo: Path, monkeypatch,
+) -> None:
+    """A verified pr-mode task: branch pushed, PR opened against the feature
+    branch, row → Awaiting Review with pr_url + pr_number, pr_opened journaled
+    with target == feature branch and body_source == generated."""
+    _patched_spawn(monkeypatch)
+    gh_log = repo / "gh.log"
+    monkeypatch.setenv("FAKE_GH_LOG", str(gh_log))
+    monkeypatch.setenv("FAKE_GH_PR_NUMBER", "101")
+
+    # SMOKE-B is independent → one clean task to assert on.
+    rc = orchestrator.execute(_build_args(repo, integration="pr", only="SMOKE-B"))
+    assert rc == 0
+
+    row = _row_of(repo, "SMOKE-B")
+    assert row["status"] == "Awaiting Review"
+    assert row["pr_url"] == "https://github.com/test/repo/pull/101"
+    assert row["pr_number"] == 101
+
+    # The branch was actually pushed to origin.
+    assert _branch_on_remote(repo, row["branch"])
+
+    # gh was invoked with --base feature/smoke (the PR targets the feature
+    # branch, never main).
+    gh_invocations = gh_log.read_text(encoding="utf-8")
+    assert "create" in gh_invocations
+    assert "--base feature/smoke" in gh_invocations
+    assert f"--head {row['branch']}" in gh_invocations
+
+    events = _journal_events(repo, "pr_opened")
+    assert len(events) == 1
+    payload = events[0].payload
+    assert payload["target"] == "feature/smoke"
+    assert payload["number"] == 101
+    assert payload["url"] == "https://github.com/test/repo/pull/101"
+    assert payload["body_source"] == "generated"
+    assert payload["base_sha"]  # the feature-branch tip the PR targets
+
+    # The new pr_opened event chains correctly — the journal still verifies.
+    journal_path = repo / "_runs" / "pr-flow-run" / journal_mod.JOURNAL_FILENAME
+    assert journal_mod.verify(journal_path).ok
+
+
+def test_pr_mode_auto_raise_uses_prepared_pr_body(
+    repo: Path, monkeypatch,
+) -> None:
+    """When the Tasker parked at its own gate with a prepared PR section, pr
+    mode auto-raises it (no human gate) using the prepared body."""
+    _patched_spawn(monkeypatch)
+    monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "awaiting-human-pr")
+
+    rc = orchestrator.execute(_build_args(repo, integration="pr", only="SMOKE-B"))
+    assert rc == 0
+
+    row = _row_of(repo, "SMOKE-B")
+    assert row["status"] == "Awaiting Review"
+    assert row["pr_url"] == "https://github.com/test/repo/pull/101"
+
+    events = _journal_events(repo, "pr_opened")
+    assert len(events) == 1
+    assert events[0].payload["body_source"] == "prepared"
+
+    # The raise-time human gate was auto-approved, not prompted.
+    gate = _journal_events(repo, "pr_gate")
+    assert any(e.payload.get("decision") == "auto-pr-mode" for e in gate)
+
+
+def test_pr_mode_dependent_dispatches_once_dependency_awaiting_review(
+    repo: Path, monkeypatch,
+) -> None:
+    """SMOKE-C (blockedBy SMOKE-A) becomes runnable once A reaches Awaiting
+    Review — pr-mode DISPATCH ordering treats Done-or-later as satisfied."""
+    _patched_spawn(monkeypatch)
+    rc = orchestrator.execute(_build_args(repo, integration="pr"))
+    assert rc == 0
+
+    for key in ("SMOKE-A", "SMOKE-B", "SMOKE-C"):
+        assert _row_of(repo, key)["status"] == "Awaiting Review"
+    # Every task got its own PR.
+    assert len(_journal_events(repo, "pr_opened")) == 3
+
+
+def test_branch_mode_does_not_auto_raise(repo: Path, monkeypatch) -> None:
+    """branch mode is unaffected: no pr_opened event, tasks land Done (not
+    Awaiting Review), no pr_number stamped."""
+    _patched_spawn(monkeypatch)
+    rc = orchestrator.execute(_build_args(repo, only="SMOKE-B"))
+    assert rc == 0
+
+    row = _row_of(repo, "SMOKE-B")
+    assert row["status"] == "Done"
+    assert "pr_number" not in row
+    assert _journal_events(repo, "pr_opened") == []
+
+
+def test_pr_mode_blocks_when_push_fails(repo: Path, monkeypatch) -> None:
+    """A push failure (no `origin` remote) blocks the task rather than
+    silently advancing to Awaiting Review without a PR."""
+    _patched_spawn(monkeypatch)
+    # Remove the remote so the auto-raise push fails.
+    subprocess.run(["git", "remote", "remove", "origin"],
+                   cwd=repo, check=True, capture_output=True)
+
+    rc = orchestrator.execute(_build_args(repo, integration="pr", only="SMOKE-B"))
+    assert rc == 1
+
+    row = _row_of(repo, "SMOKE-B")
+    assert row["status"] == "Blocked"
+    assert "pr_push_failed" in row["blocked_reason"]
+    assert _journal_events(repo, "pr_opened") == []

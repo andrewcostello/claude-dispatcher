@@ -362,7 +362,7 @@ def _run_loop(
         with ThreadPoolExecutor(max_workers=max(cfg.max_parallel, 1)) as exe:
             while True:
                 tasks = _load_tasks_snapshot(cfg)
-                runnable = plan_mod.runnable_now(tasks)
+                runnable = plan_mod.runnable_now(tasks, integration=cfg.integration)
                 runnable = plan_mod.filter_tasks(runnable, cfg.label_filter, cfg.only_keys)
                 # Don't re-dispatch tasks already mid-flight.
                 in_flight_keys = set(in_flight.values())
@@ -425,7 +425,15 @@ def _run_loop(
         heartbeat.join()
 
     tasks = _load_tasks_snapshot(cfg)
-    done_tasks = [t for t in tasks if t.status == plan_mod.DONE]
+    # "Done" for the rollup counts every terminal-success status: plain Done
+    # (branch mode) plus the pr-mode lifecycle states Awaiting Review / Merged
+    # (PRF-2), so a pr-mode run that auto-raised every PR isn't reported as
+    # "0 done". Neither pr status occurs in branch mode, so the count is
+    # unchanged there.
+    done_tasks = [
+        t for t in tasks
+        if t.status in (plan_mod.DONE, plan_mod.AWAITING_REVIEW, plan_mod.MERGED)
+    ]
     blocked = [t for t in tasks if t.status == plan_mod.BLOCKED]
     escalated = [t for t in tasks if t.status == plan_mod.ESCALATED]
     _log(log_path, f"end run blocked={len(blocked)} escalated={len(escalated)}")
@@ -877,7 +885,24 @@ def _run_task(
     # flagged for a missing PR. A SILENT omission (no PR, no reason) is exactly
     # the DISP-9 failure mode and still trips the PR check.
     needs_push = False
-    if (final_status == plan_mod.DONE
+    final_pr_number: int | None = None
+    if cfg.integration == "pr" and final_status == plan_mod.DONE:
+        # PR-flow auto-raise (PRF-2). The task passed every gate above; the
+        # dispatcher now pushes its branch and opens the PR against the run's
+        # feature branch — automatically, no size-based parking for *raising*
+        # (gating moves to the merge step, PRF-4). On success the row moves to
+        # Awaiting Review with pr_url + pr_number; a push or gh failure Blocks.
+        # This is the pr-mode counterpart to the branch-mode push-verify net
+        # below — mutually exclusive, so a pr-mode Done never push-verifies.
+        outcome = _pr_mode_open_pr(cfg, snap, s, wt, repo_root, log_path)
+        if outcome.url is not None:
+            final_status = plan_mod.AWAITING_REVIEW
+            final_url = outcome.url
+            final_pr_number = outcome.number
+        else:
+            final_status = plan_mod.BLOCKED
+            final_blocked_reason = outcome.blocked_reason
+    elif (final_status == plan_mod.DONE
             and not cfg.auto_integrate
             and final_url is None):
         expect_pr = not s.pr_not_raised_reason
@@ -900,6 +925,9 @@ def _run_task(
             row["pr_url"] = s.pr_url
         elif s.pr_not_raised_reason:
             row["pr_not_raised_reason"] = s.pr_not_raised_reason
+        # pr-mode auto-raise stamps the PR number alongside pr_url (PRF-2).
+        if final_pr_number is not None:
+            row["pr_number"] = final_pr_number
         if final_blocked_reason:
             row["blocked_reason"] = final_blocked_reason
         # Mechanical verification outcome. The key is absent entirely when
@@ -993,15 +1021,19 @@ def _run_task(
 
     _mutate_row(cfg, snap.key, _apply)
 
-    # Terminal per-task journal event. Done → task_done; anything else (the
-    # in-worker Blocked paths: panel block, auto-integrate fail,
-    # awaiting-PR-in-unattended-mode) → task_blocked. Early-return paths
-    # (spawn failure, summary missing/malformed, commit-retry exhaustion)
-    # journal their own task_blocked via _mark_blocked — disjoint from this
-    # one, so exactly one terminal event fires per task.
-    if final_status == plan_mod.DONE:
+    # Terminal per-task journal event. A terminal-success status (Done, or the
+    # pr-mode Awaiting Review after a successful auto-raise) → task_done;
+    # anything else (the in-worker Blocked paths: panel block, auto-integrate
+    # fail, pr-mode push/raise failure, awaiting-PR-in-unattended-mode) →
+    # task_blocked. Early-return paths (spawn failure, summary
+    # missing/malformed, commit-retry exhaustion) journal their own task_blocked
+    # via _mark_blocked — disjoint from this one, so exactly one terminal event
+    # fires per task.
+    if final_status in (plan_mod.DONE, plan_mod.AWAITING_REVIEW):
         _emit_event(cfg, journal_mod.EventType.task_done, {
+            "status": final_status,
             "pr_url": final_url or s.pr_url,
+            "pr_number": final_pr_number,
             "iterations": s.iterations,
             "verified": verified,
             "verification_iterations": verification_iterations,
@@ -2050,6 +2082,137 @@ def _retry_for_commit(cfg: RunConfig, snap: TaskSnapshot, wt: wt_mod.Worktree,
     return "retried_ok"
 
 
+@dataclass
+class _PrOpenOutcome:
+    """Result of the pr-mode auto-raise (PRF-2).
+
+    On success ``url`` (and usually ``number`` + ``base_sha``) are set and
+    ``blocked_reason`` is None. On failure ``url`` is None and
+    ``blocked_reason`` carries the short label the caller stamps as
+    ``blocked_reason`` on the row.
+    """
+
+    url: str | None = None
+    number: int | None = None
+    base_sha: str | None = None
+    blocked_reason: str | None = None
+
+
+def _push_branch(
+    cwd: Path, branch: str, log_path: Path, task_key: str,
+) -> tuple[bool, str]:
+    """Push ``branch`` to ``origin`` from ``cwd`` (the task's worktree).
+
+    Returns ``(ok, detail)``. ``GIT_TERMINAL_PROMPT=0`` makes an
+    auth-requiring remote fail fast rather than hang the worker thread. A
+    git worktree shares its parent repo's remotes, so ``origin`` resolves
+    from inside the worktree.
+    """
+    import subprocess
+    try:
+        proc = subprocess.run(
+            ["git", "push", "-u", "origin", branch],
+            cwd=str(cwd), capture_output=True, text=True, check=False,
+            timeout=120, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+    except FileNotFoundError as e:
+        return False, f"git not found: {e}"
+    except subprocess.TimeoutExpired:
+        return False, "git push timed out after 120s"
+    except Exception as e:  # pragma: no cover - defensive
+        return False, f"git push raised: {e}"
+    if proc.returncode != 0:
+        detail = (proc.stderr.strip() or proc.stdout.strip()
+                  or f"git push exit {proc.returncode}")
+        _log(log_path, f"  {task_key} git push failed: {detail[:200]}")
+        return False, detail[:300]
+    return True, "pushed"
+
+
+def _generated_pr_title(snap: TaskSnapshot) -> str:
+    """Generate a PR title from task metadata when no prepared title exists.
+
+    ``<type-prefix>: [KEY] <summary>`` — the scope is omitted because the
+    dispatcher can't infer it; the conventional-commit type comes from the
+    task type via the same map :func:`worktree.branch_name` uses.
+    """
+    prefix = wt_mod.BRANCH_PREFIX_BY_TYPE.get((snap.type or "").lower(), "feat")
+    return f"{prefix}: [{snap.key}] {snap.summary}"
+
+
+def _generated_pr_body(snap: TaskSnapshot, s: summary_mod.Summary) -> str:
+    """Generate a PR body from the parsed summary when no prepared body exists.
+
+    Self-contained per the PR-body rules: What (from the summary's "What
+    landed", falling back to the task summary), optional Key decisions, and
+    the ticket key. No attribution.
+    """
+    parts = ["## What", (s.what_landed.strip() or snap.summary), ""]
+    if s.key_decisions.strip():
+        parts += ["## Key decisions", s.key_decisions.strip(), ""]
+    parts += ["## Ticket", snap.key]
+    return "\n".join(parts)
+
+
+def _pr_mode_open_pr(
+    cfg: RunConfig,
+    snap: TaskSnapshot,
+    s: summary_mod.Summary,
+    wt: wt_mod.Worktree,
+    repo_root: Path,
+    log_path: Path,
+) -> _PrOpenOutcome:
+    """pr-mode auto-raise (PRF-2): push the branch + open the PR against the
+    run's feature branch.
+
+    The PR base is the run's feature branch (``cfg.feature_branch``, which is
+    also the repointed ``cfg.base_branch`` in pr mode). The body comes from the
+    Tasker's prepared PR section when present, else is generated from the
+    summary; same for the title. On success emits a ``pr_opened`` journal event
+    (number, url, target, base sha) and returns the URL/number. A push failure
+    or a ``gh pr create`` failure returns a blocked_reason instead — no PR was
+    opened, so the task Blocks rather than silently advancing.
+    """
+    base = cfg.feature_branch or cfg.base_branch
+
+    pushed, push_detail = _push_branch(wt.path, wt.branch, log_path, snap.key)
+    if not pushed:
+        return _PrOpenOutcome(blocked_reason=f"pr_push_failed: {push_detail}")
+
+    title = s.prepared_pr_title or _generated_pr_title(snap)
+    body = s.prepared_pr_body or _generated_pr_body(snap, s)
+    body_source = "prepared" if s.prepared_pr_body else "generated"
+
+    result = pr_mod.raise_pr(
+        cwd=wt.path,
+        title=title,
+        body=body,
+        branch=wt.branch,
+        base=base,
+        gh_bin=cfg.gh_bin,
+    )
+    if result.url is None:
+        _log(log_path, f"  {snap.key} pr-mode gh pr create failed: {result.error}")
+        return _PrOpenOutcome(
+            blocked_reason=f"pr_open_failed: {result.error}"[:300],
+        )
+
+    base_sha = _branch_sha(repo_root, base, log_path, snap.key)
+    _log(log_path,
+         f"  {snap.key} pr-mode PR opened against {base}: {result.url} "
+         f"(#{result.number}, body={body_source})")
+    _emit_event(cfg, journal_mod.EventType.pr_opened, {
+        "number": result.number,
+        "url": result.url,
+        "target": base,
+        "base_sha": base_sha,
+        "body_source": body_source,
+    }, task_key=snap.key)
+    return _PrOpenOutcome(
+        url=result.url, number=result.number, base_sha=base_sha,
+    )
+
+
 def _verify_push_and_maybe_retry(
     cfg: RunConfig,
     snap: TaskSnapshot,
@@ -2433,6 +2596,25 @@ def _resolve_summary(
     """
     if not s.awaiting_human_approval:
         return s.status or plan_mod.BLOCKED, None, None
+
+    # PR-flow mode (PRF-2): the raise-time human gate is removed — gating moves
+    # to the merge step (PRF-4). A Tasker that parked at its own
+    # Critical/financial gate with a prepared PR is treated as ready-to-raise:
+    # the dispatcher pushes + opens the PR against the feature branch downstream
+    # (after the verification gate + panel), reusing the prepared body. Return
+    # DONE so those gates run; the auto-raise block consumes the prepared
+    # metadata. No human prompt, no awaiting-approval notification.
+    if cfg.integration == "pr":
+        _log(log_path,
+             f"  {snap.key} pr mode — raise-time human gate skipped "
+             f"(gating moves to merge, PRF-4)")
+        _emit_event(cfg, journal_mod.EventType.pr_gate, {
+            "decision": "auto-pr-mode",
+            "mode": cfg.mode,
+            "pr_title": s.prepared_pr_title,
+            "pr_branch": s.prepared_pr_branch,
+        }, task_key=snap.key)
+        return plan_mod.DONE, None, None
 
     # PR-gate event: notify here so the human sees the gate trip on
     # their phone whether the dispatcher proceeds to stdin (supervised)
