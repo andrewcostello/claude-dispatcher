@@ -24,8 +24,50 @@ from claude_dispatcher.cli import build_parser
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "status"
+PR_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "status_pr"
 # Fixed reference clock: 30s after the last parseable run.log event.
 NOW = dt.datetime(2026, 6, 10, 18, 25, 40, tzinfo=dt.timezone.utc)
+# pr-mode fixture clock: 30s after the last journal event.
+PR_NOW = dt.datetime(2026, 6, 10, 18, 26, 10, tzinfo=dt.timezone.utc)
+
+
+def _make_pr_journal(run_dir: Path, tmp_path: Path):
+    """A pr-mode journal for the PRF-5 fixture: genesis run_config records
+    integration=pr, then the merge-engine events for PR-A (merged) and PR-B
+    (external-approved, conflict → needs_rebase)."""
+    reviewer_dir = tmp_path / "reviewer_prompts"
+    reviewer_dir.mkdir(exist_ok=True)
+    (reviewer_dir / "r.md").write_text("review prompt\n")
+    it = iter([
+        "2026-06-10T18:24:47+00:00",  # genesis
+        "2026-06-10T18:25:25+00:00",  # pr_approved PR-A
+        "2026-06-10T18:25:30+00:00",  # pr_merged PR-A
+        "2026-06-10T18:25:35+00:00",  # pr_approved PR-B
+        "2026-06-10T18:25:40+00:00",  # pr_merge_failed PR-B
+    ])
+    j = journal_mod.Journal.create(
+        run_dir / journal_mod.JOURNAL_FILENAME,
+        tasks_yaml_path=PR_FIXTURE_DIR / "tasks.yaml",
+        reviewer_prompts_dir=reviewer_dir,
+        run_id="fixture-run", run_nonce="0" * 32,
+        clock=lambda: next(it),
+        run_config={"integration": "pr", "feature_branch": "feature/prflow"},
+    )
+    j.append(journal_mod.EventType.pr_approved,
+             {"number": 201, "approver": "dispatcher-agent",
+              "risk_level": "low", "reasons": []}, task_key="PR-A")
+    j.append(journal_mod.EventType.pr_merged,
+             {"number": 201, "merger": "dispatcher-agent",
+              "approver": "dispatcher-agent", "target": "feature/prflow",
+              "feature_branch_sha": "abc"}, task_key="PR-A")
+    j.append(journal_mod.EventType.pr_approved,
+             {"number": 202, "approver": "external:alice",
+              "risk_level": "elevated", "reasons": ["touches finance"]},
+             task_key="PR-B")
+    j.append(journal_mod.EventType.pr_merge_failed,
+             {"number": 202, "kind": "conflict", "needs_rebase": True,
+              "detail": "merge conflict"}, task_key="PR-B")
+    return j
 
 
 def _make_journal(run_dir: Path, tmp_path: Path, timestamps: list[str]):
@@ -305,6 +347,79 @@ def test_run_complete_when_all_terminal(tmp_path: Path) -> None:
     assert result["current_wave"] is None
     assert result["totals"]["run_cost_usd"] is None
     assert result["totals"]["tasks_billed"] == 0
+
+
+# --- pr mode (PRF-5) ---------------------------------------------------------
+
+
+def test_pr_mode_build_status_matches_snapshot(tmp_path: Path) -> None:
+    """A pr-mode run (genesis run_config integration=pr) surfaces the full
+    pr-flow: by_status gains Awaiting Review / Merged, each row gets a `pr`
+    block (number / risk / approver / needs_rebase), merges_pending is set, and
+    run_complete is False while PRs are unmerged. Snapshot-pinned."""
+    run_dir = tmp_path / "fixture-run"
+    run_dir.mkdir()
+    _make_pr_journal(run_dir, tmp_path)
+
+    result = status_mod.build_status(
+        run_dir=run_dir, run_id="fixture-run",
+        yaml_path=PR_FIXTURE_DIR / "tasks.yaml", now=PR_NOW,
+    )
+    expected = json.loads((PR_FIXTURE_DIR / "expected_status.json").read_text())
+    assert result["tasks_yaml"].endswith("fixtures/status_pr/tasks.yaml")
+    result.pop("tasks_yaml")
+    assert result == expected
+
+
+def test_pr_mode_distinguishes_tasks_done_merges_pending(tmp_path: Path) -> None:
+    """No To Do/In Progress tasks remain (current_wave None) yet two PRs are
+    Awaiting Review → run NOT complete, merges_pending == 2, and the table says
+    'tasks done — N PR(s) awaiting merge'."""
+    run_dir = tmp_path / "fixture-run"
+    run_dir.mkdir()
+    _make_pr_journal(run_dir, tmp_path)
+
+    result = status_mod.build_status(
+        run_dir=run_dir, run_id="fixture-run",
+        yaml_path=PR_FIXTURE_DIR / "tasks.yaml", now=PR_NOW,
+    )
+    assert result["run_complete"] is False
+    assert result["current_wave"] is None
+    assert result["merges_pending"] == 2
+
+    table = status_mod.render_table(result)
+    assert "tasks done — 2 PR(s) awaiting merge" in table
+    # The new lifecycle statuses appear in the counts line.
+    assert "Awaiting Review: 2" in table
+    assert "Merged: 1" in table
+    # Compact pr notes render per row.
+    assert "PR#201 low self" in table
+    assert "PR#202 elevated ext ⚠rebase" in table
+
+
+def test_branch_mode_status_has_no_pr_surface(tmp_path: Path) -> None:
+    """Acceptance: branch-mode output is unchanged — no `pr` block on rows, no
+    merges_pending key, no Awaiting Review/Merged in by_status. Uses a journal
+    whose genesis omits integration (defaults to branch)."""
+    run_dir = tmp_path / "fixture-run"
+    run_dir.mkdir()
+    # A journal with NO run_config → integration_mode defaults to branch.
+    _make_journal(run_dir, tmp_path, [
+        "2026-06-10T18:24:47+00:00",
+        "2026-06-10T18:25:30+00:00",
+    ]).append(
+        journal_mod.EventType.task_started,
+        {"summary": "s", "type": "Task", "labels": [], "model": None},
+        task_key="SMOKE-A",
+    )
+    result = status_mod.build_status(
+        run_dir=run_dir, run_id="fixture-run",
+        yaml_path=FIXTURE_DIR / "tasks.yaml", now=NOW,
+    )
+    assert "merges_pending" not in result
+    assert set(result["totals"]["by_status"]) == {
+        "To Do", "In Progress", "Done", "Blocked", "Escalated"}
+    assert all("pr" not in t for t in result["tasks"])
 
 
 def test_cli_json_roundtrip(tmp_path: Path, capsys) -> None:

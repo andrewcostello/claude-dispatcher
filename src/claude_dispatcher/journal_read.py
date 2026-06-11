@@ -90,6 +90,38 @@ def journal_task_index(
     return index
 
 
+def genesis_run_config(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """The genesis (``run_started``) event's ``run_config`` mapping, or ``{}``.
+
+    The genesis payload stores the resolved ``dispatcher run`` arguments under
+    ``run_config`` (see orchestrator._genesis_config). Returns ``{}`` when there
+    is no genesis event, it carries no ``run_config``, or the journal is empty —
+    so a caller can read a key with a plain ``.get`` and a safe default.
+    """
+    for ev in events:
+        if ev.get("event_type") == "run_started":
+            payload = ev.get("payload")
+            if isinstance(payload, dict):
+                rc = payload.get("run_config")
+                return rc if isinstance(rc, dict) else {}
+            return {}
+    return {}
+
+
+def integration_mode(events: list[dict[str, Any]]) -> str:
+    """The run's integration mode (``"pr"`` | ``"branch"``) from the genesis
+    ``run_config``.
+
+    Defaults to ``"branch"`` when unknown — a pre-journal run, no genesis event,
+    or a genesis that predates the PRF-1 ``integration`` key. This is the gate
+    the observability commands use to decide whether to surface the pr-flow
+    fields (statuses, pr_number, risk level, approver, needs_rebase): a
+    branch-mode or legacy run never trips it, so its output is unchanged.
+    """
+    mode = genesis_run_config(events).get("integration")
+    return mode if mode in ("pr", "branch") else "branch"
+
+
 def parse_iso(value: Any) -> dt.datetime | None:
     """Parse an ISO-8601 string to a datetime, or None if it isn't one."""
     if not isinstance(value, str):

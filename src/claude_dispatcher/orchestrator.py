@@ -458,7 +458,18 @@ def _run_loop(
     ]
     blocked = [t for t in tasks if t.status == plan_mod.BLOCKED]
     escalated = [t for t in tasks if t.status == plan_mod.ESCALATED]
-    _log(log_path, f"end run blocked={len(blocked)} escalated={len(escalated)}")
+    # pr-mode merge tallies (PRF-5). Merged is terminal; Awaiting Review means
+    # the PR was raised but hasn't landed (run finished with merges pending);
+    # needs_rebase flags a PR held back by a merge conflict. These feed both the
+    # run_complete event payload and the rollup notification — but only in pr
+    # mode, so the branch-mode payload/notification are unchanged.
+    pr_mode = cfg.integration == "pr"
+    merged = [t for t in tasks if t.status == plan_mod.MERGED]
+    awaiting = [t for t in tasks if t.status == plan_mod.AWAITING_REVIEW]
+    needs_rebase = [t for t in tasks if t.raw.get("needs_rebase")]
+    _log(log_path, f"end run blocked={len(blocked)} escalated={len(escalated)}"
+         + (f" merged={len(merged)} awaiting={len(awaiting)} "
+            f"needs_rebase={len(needs_rebase)}" if pr_mode else ""))
     # Run-complete rollup notification. Always fires (including on clean
     # runs — knowing the run finished is signal). Best-effort. Sent BEFORE
     # the run_complete journal event so that event stays the terminal record
@@ -476,17 +487,30 @@ def _run_loop(
             escalated=len(escalated),
             blocked_rollup=blocked_rollup,
             tasks_yaml=str(cfg.tasks_path),
+            # pr mode: surface the pending-merge picture in the same glanceable
+            # message. None in branch mode → message unchanged.
+            merged=len(merged) if pr_mode else None,
+            awaiting_review=len(awaiting) if pr_mode else None,
+            needs_rebase=len(needs_rebase) if pr_mode else None,
         ))
     except Exception:
         pass
     # Terminal journal event: closes the chain with the run's tallies. An
     # external observer that reads run_complete knows no more events follow.
-    _emit_event(cfg, journal_mod.EventType.run_complete, {
+    run_complete_payload: dict[str, Any] = {
         "done": len(done_tasks),
         "blocked": len(blocked),
         "escalated": len(escalated),
         "blocked_rollup": [{"key": k, "reason": r} for k, r in blocked_rollup],
-    })
+    }
+    # pr-mode merge tallies (PRF-5): added only in pr mode so the branch-mode
+    # payload shape is unchanged. `done` already counts Merged/Awaiting Review
+    # (its umbrella meaning is preserved); these break that down.
+    if pr_mode:
+        run_complete_payload["merged"] = len(merged)
+        run_complete_payload["awaiting_review"] = len(awaiting)
+        run_complete_payload["needs_rebase"] = len(needs_rebase)
+    _emit_event(cfg, journal_mod.EventType.run_complete, run_complete_payload)
     return 1 if (blocked or escalated) else 0
 
 

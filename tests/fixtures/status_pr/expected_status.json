@@ -1,0 +1,100 @@
+{
+  "run_id": "fixture-run",
+  "generated_at": "2026-06-10T18:26:10+00:00",
+  "run_complete": false,
+  "merges_pending": 2,
+  "current_wave": null,
+  "wave_count": 1,
+  "liveness": {
+    "source": "journal",
+    "journal_present": true,
+    "run_log_present": false,
+    "last_event_at": "2026-06-10T18:25:40+00:00",
+    "last_event_age_seconds": 30.0,
+    "last_event": "pr_merge_failed (PR-B)",
+    "last_event_type": "pr_merge_failed",
+    "last_event_seq": 4
+  },
+  "totals": {
+    "task_count": 3,
+    "by_status": {
+      "To Do": 0,
+      "In Progress": 0,
+      "Done": 0,
+      "Blocked": 0,
+      "Escalated": 0,
+      "Awaiting Review": 2,
+      "Merged": 1
+    },
+    "run_cost_usd": 0.19,
+    "tasks_billed": 3
+  },
+  "tasks": [
+    {
+      "key": "PR-A",
+      "summary": "Merged, low-risk, self-approved",
+      "status": "Merged",
+      "wave": 1,
+      "started_at": "2026-06-10T18:24:48+00:00",
+      "completed_at": "2026-06-10T18:25:05+00:00",
+      "model": "claude-opus-4-8",
+      "cost_usd": 0.05,
+      "iteration_count": 0,
+      "blocked_reason": null,
+      "pr_url": "https://example.test/pr/201",
+      "needs_push": false,
+      "dispatcher_run_id": "fixture-run",
+      "pr": {
+        "pr_number": 201,
+        "risk_level": "low",
+        "approver": "dispatcher-agent",
+        "needs_rebase": false
+      },
+      "journal": null
+    },
+    {
+      "key": "PR-B",
+      "summary": "Awaiting Review, external-approved, needs rebase",
+      "status": "Awaiting Review",
+      "wave": 1,
+      "started_at": "2026-06-10T18:24:50+00:00",
+      "completed_at": "2026-06-10T18:25:10+00:00",
+      "model": "claude-opus-4-8",
+      "cost_usd": 0.08,
+      "iteration_count": 1,
+      "blocked_reason": null,
+      "pr_url": "https://example.test/pr/202",
+      "needs_push": false,
+      "dispatcher_run_id": "fixture-run",
+      "pr": {
+        "pr_number": 202,
+        "risk_level": "elevated",
+        "approver": "external:alice",
+        "needs_rebase": true
+      },
+      "journal": null
+    },
+    {
+      "key": "PR-C",
+      "summary": "Awaiting Review, no approval yet",
+      "status": "Awaiting Review",
+      "wave": 1,
+      "started_at": "2026-06-10T18:24:52+00:00",
+      "completed_at": "2026-06-10T18:25:12+00:00",
+      "model": "claude-opus-4-8",
+      "cost_usd": 0.06,
+      "iteration_count": 0,
+      "blocked_reason": null,
+      "pr_url": "https://example.test/pr/203",
+      "needs_push": false,
+      "dispatcher_run_id": "fixture-run",
+      "pr": {
+        "pr_number": 203,
+        "risk_level": null,
+        "approver": null,
+        "needs_rebase": false
+      },
+      "journal": null
+    }
+  ]
+}

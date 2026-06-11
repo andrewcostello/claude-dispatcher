@@ -215,18 +215,91 @@ def build_report(
     else:
         rollup = _yaml_rollup(run_rows)
 
+    # pr mode (PRF-5) gets the pr-flow rollup + the two lifecycle statuses in
+    # the status counts; branch mode (and any pre-journal/legacy run) is
+    # unchanged. The mode comes from the genesis run_config.
+    pr_mode = journal_read.integration_mode(events) == "pr"
+    status_order = _STATUS_ORDER + (
+        ("Awaiting Review", "Merged") if pr_mode else ())
     status_counts = Counter((t.get("status") or "To Do").strip() for t in tasks)
-    return {
+    result = {
         "run_id": run_id,
         "run_dir": str(run_dir),
         "tasks_yaml": str(yaml_path),
         "source": source,
         "source_label": source_label,
         "summary_file_count": len(run_summaries),
-        "status_counts": {s: status_counts.get(s, 0) for s in _STATUS_ORDER},
+        "status_counts": {s: status_counts.get(s, 0) for s in status_order},
         "rollup": rollup,
         "quality": _quality(run_rows, run_summaries),
     }
+    if pr_mode:
+        result["pr_flow"] = _pr_flow(run_rows, events)
+    return result
+
+
+def _pr_flow(run_rows: list[dict], events: list[dict[str, Any]]) -> dict[str, Any]:
+    """The pr-mode merge rollup (PRF-5): merged / awaiting / needs-rebase
+    tallies, a self-vs-external approver breakdown, and the list of PRs still
+    unmerged at run end.
+
+    Counts are over this run's rows. The approver split reads the row's
+    ``pr_approved_by`` (stamped at merge) and the risk level for the unmerged
+    list comes from the journal pr_approved/pr_merged events (the merge engine
+    records the level there, not on the row)."""
+    pr_index = _journal_pr_index(events)
+    merged = [r for r in run_rows if (r.get("status") or "").strip() == "Merged"]
+    awaiting = [r for r in run_rows
+                if (r.get("status") or "").strip() == "Awaiting Review"]
+    needs_rebase = [r for r in run_rows if r.get("needs_rebase")]
+
+    self_count = external_count = 0
+    for r in merged:
+        approver = (_str_or_none(r.get("pr_approved_by"))
+                    or pr_index.get(str(r.get("key")), {}).get("approver") or "")
+        if approver == "dispatcher-agent":
+            self_count += 1
+        elif approver.startswith("external"):
+            external_count += 1
+
+    unmerged_prs = [{
+        "key": str(r.get("key")),
+        "jira_key": _str_or_none(r.get("jira_key")),
+        "status": (_str_or_none(r.get("status")) or "—"),
+        "pr_number": _int_or_none(r.get("pr_number")),
+        "pr_url": _str_or_none(r.get("pr_url")),
+        "risk_level": pr_index.get(str(r.get("key")), {}).get("risk_level"),
+        "needs_rebase": bool(r.get("needs_rebase")),
+    } for r in sorted(awaiting, key=lambda r: str(r.get("key")))]
+
+    return {
+        "merged": len(merged),
+        "awaiting_review": len(awaiting),
+        "needs_rebase": len(needs_rebase),
+        "approver_breakdown": {"self": self_count, "external": external_count},
+        "unmerged_prs": unmerged_prs,
+    }
+
+
+def _journal_pr_index(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Per-task risk_level / approver from the LAST pr_approved / pr_merged
+    journal event (the merge engine records these there, not on the row)."""
+    index: dict[str, dict[str, Any]] = {}
+    for ev in events:
+        if ev.get("event_type") not in ("pr_approved", "pr_merged"):
+            continue
+        tk = ev.get("task_key")
+        payload = ev.get("payload")
+        if not isinstance(tk, str) or not isinstance(payload, dict):
+            continue
+        cur = index.setdefault(tk, {"risk_level": None, "approver": None})
+        risk = _str_or_none(payload.get("risk_level"))
+        if risk is not None:
+            cur["risk_level"] = risk
+        approver = _str_or_none(payload.get("approver"))
+        if approver is not None:
+            cur["approver"] = approver
+    return index
 
 
 def _journal_rollup(
@@ -594,9 +667,15 @@ def render_report(data: dict[str, Any]) -> str:
         n = data["status_counts"].get(status, 0)
         if n or status in ("Done", "In Progress", "To Do"):
             lines.append(f"  {status:13}  {n}")
+    # pr mode (PRF-5) adds Awaiting Review / Merged to status_counts; show them
+    # when present. Branch mode has neither key, so this loop is a no-op there.
+    for status in ("Awaiting Review", "Merged"):
+        if status in data["status_counts"]:
+            lines.append(f"  {status:13}  {data['status_counts'][status]}")
     lines.append("")
 
     lines.extend(_render_rollup(data))
+    lines.extend(_render_pr_flow(data.get("pr_flow")))
 
     quality = data["quality"]
     if not quality["tasks"] and not data["rollup"]["tasks"]:
@@ -640,6 +719,34 @@ def _render_rollup(data: dict[str, Any]) -> list[str]:
 
     lines.extend(_render_usage_table(rollup["tasks"]))
     lines.extend(_render_model_table(data, rollup["by_model"]))
+    return lines
+
+
+def _render_pr_flow(pr_flow: dict[str, Any] | None) -> list[str]:
+    """The pr-mode merge section (PRF-5). Empty list in branch mode (pr_flow is
+    absent), so the branch dashboard is unchanged."""
+    if not pr_flow:
+        return []
+    ab = pr_flow["approver_breakdown"]
+    lines = [
+        "PR flow:",
+        f"  Merged                   {pr_flow['merged']}  "
+        f"(self-approved {ab['self']}, external {ab['external']})",
+        f"  Awaiting merge           {pr_flow['awaiting_review']}",
+    ]
+    if pr_flow["needs_rebase"]:
+        lines.append(f"  Needs rebase             {pr_flow['needs_rebase']}")
+    unmerged = pr_flow["unmerged_prs"]
+    if unmerged:
+        lines.append("")
+        lines.append(f"  Unmerged PRs at run end ({len(unmerged)}):")
+        for p in unmerged:
+            num = f"#{p['pr_number']}" if p["pr_number"] is not None else "—"
+            risk = p["risk_level"] or "?"
+            flag = "  ⚠ needs rebase" if p["needs_rebase"] else ""
+            url = p["pr_url"] or "—"
+            lines.append(f"    {p['key']:14} {num:6} risk={risk:9} {url}{flag}")
+    lines.append("")
     return lines
 
 
