@@ -43,7 +43,29 @@ tasks:
     type: Task
     estimate: 2h
     labels: [size:S, area:config, phase:4]
+    status: Done
+    started_at: '2026-06-10T16:06:04-07:00'
+    dispatcher_run_id: 2026-06-10T23-06-04Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-10T23-06-04Z-tasks/VG-1/summary.md
 
+    branch: feat/VG-1-repo-config-file-dispatcher-yaml
+    completed_at: '2026-06-10T16:14:22-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/22
+    cost_usd: 4.952790500000001
+    input_tokens: 13181
+    output_tokens: 17597
+    cache_read_input_tokens: 1143347
+    cache_creation_input_tokens: 58892
+    duration_ms: 495518
+    num_turns: 27
+    model: claude-fable-5[1m]
+    agent: claude
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.172 (Claude Code)
   - key: VG-2
     summary: "Mechanical verification step: repo tests green in the task worktree post-Done"
     description: |
@@ -71,7 +93,33 @@ tasks:
     estimate: 3h
     labels: [size:M, area:orchestrator, phase:4]
     blockedBy: [VG-1]
+    status: Done
+    started_at: '2026-06-10T16:14:22-07:00'
+    dispatcher_run_id: 2026-06-10T23-06-04Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-10T23-06-04Z-tasks/VG-2/summary.md
 
+    branch: feat/VG-2-mechanical-verification-step-repo-tests
+    completed_at: '2026-06-10T16:45:15-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    final_quality_score: 22
+    human_gate_fired: true
+    deferred_findings_count: 3
+    prepared_pr_title: 'feat(orchestrator): [VG-2] add mechanical test gate post-Done'
+    prepared_pr_branch: feat/VG-2-mechanical-verification-step-repo-tests
+    cost_usd: 22.153415599999995
+    input_tokens: 19866
+    output_tokens: 30828
+    cache_read_input_tokens: 2246596
+    cache_creation_input_tokens: 149213
+    duration_ms: 1852689
+    num_turns: 26
+    model: claude-fable-5[1m]
+    agent: claude
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.172 (Claude Code)
+    pr_approved_by: andrew (human, size-gate approval 2026-06-10)
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/24
   - key: VG-3
     summary: "LLM verifier: prompt contract + spawn adapter + verdict parser"
     description: |
@@ -103,7 +151,33 @@ tasks:
     type: Task
     estimate: 3h
     labels: [size:M, area:verifier, phase:4]
+    status: Done
+    started_at: '2026-06-10T16:06:04-07:00'
+    dispatcher_run_id: 2026-06-10T23-06-04Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-10T23-06-04Z-tasks/VG-3/summary.md
 
+    branch: feat/VG-3-llm-verifier-prompt-contract-spawn
+    completed_at: '2026-06-10T16:52:01-07:00'
+    iteration_count: 2
+    linter_cycles: 0
+    final_quality_score: 22
+    human_gate_fired: true
+    deferred_findings_count: 6
+    prepared_pr_title: 'feat(verifier): [VG-3] independent LLM verifier module'
+    prepared_pr_branch: feat/VG-3-llm-verifier-prompt-contract-spawn (pushed to origin)
+    cost_usd: 27.320480000000003
+    input_tokens: 15719
+    output_tokens: 41879
+    cache_read_input_tokens: 3283843
+    cache_creation_input_tokens: 262982
+    duration_ms: 2755522
+    num_turns: 41
+    model: claude-fable-5[1m]
+    agent: claude
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.172 (Claude Code)
+    pr_approved_by: andrew (human, size-gate approval 2026-06-10)
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/25
   - key: VG-4
     summary: "Wire the verification gate into the task lifecycle with iterate-on-incomplete"
     description: |
@@ -138,7 +212,29 @@ tasks:
     estimate: 4h
     labels: [size:M, area:orchestrator, area:verifier, phase:4]
     blockedBy: [VG-2, VG-3]
+    status: Done
+    started_at: '2026-06-10T17:22:42-07:00'
+    dispatcher_run_id: 2026-06-11T00-22-42Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-11T00-22-42Z-tasks/VG-4/summary.md
 
+    branch: feat/VG-4-wire-the-verification-gate-into
+    completed_at: '2026-06-10T17:41:56-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 1
+    pr_not_raised_reason: dispatcher epic-branch integration workflow — work committed to
+    cost_usd: 9.725082499999996
+    input_tokens: 14309
+    output_tokens: 76202
+    cache_read_input_tokens: 12294465
+    cache_creation_input_tokens: 244340
+    duration_ms: 1126994
+    num_turns: 69
+    model: claude-opus-4-8[1m]
+    agent: claude
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.172 (Claude Code)
   - key: VG-5
     summary: "Grok Build advisory reviewer: probationary panel seat + scorecard events"
     description: |
@@ -177,7 +273,30 @@ tasks:
     estimate: 3h
     labels: [size:M, area:cfr, phase:6]
     blockedBy: [VG-1]
+    status: Done
+    started_at: '2026-06-10T16:14:22-07:00'
+    dispatcher_run_id: 2026-06-10T23-06-04Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-10T23-06-04Z-tasks/VG-5/summary.md
 
+    branch: feat/VG-5-grok-build-advisory-reviewer-probationary
+    completed_at: '2026-06-10T16:48:51-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    final_quality_score: 21
+    human_gate_fired: false
+    deferred_findings_count: 6
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/23
+    cost_usd: 28.432281000000007
+    input_tokens: 14988
+    output_tokens: 34074
+    cache_read_input_tokens: 3110789
+    cache_creation_input_tokens: 377999
+    duration_ms: 2067020
+    num_turns: 44
+    model: claude-fable-5[1m]
+    agent: claude
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.172 (Claude Code)
   - key: VG-6
     summary: "Docs: verification gate + advisory tier + .dispatcher.yaml reference"
     description: |
@@ -198,3 +317,26 @@ tasks:
     estimate: 2h
     labels: [size:S, area:docs, phase:4, phase:6]
     blockedBy: [VG-4, VG-5]
+    status: Done
+    started_at: '2026-06-10T17:41:56-07:00'
+    dispatcher_run_id: 2026-06-11T00-22-42Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-11T00-22-42Z-tasks/VG-6/summary.md
+    branch: feat/VG-6-docs-verification-gate-advisory-tier
+    completed_at: '2026-06-10T17:49:12-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    cost_usd: 2.9666307499999998
+    input_tokens: 13878
+    output_tokens: 27990
+    cache_read_input_tokens: 3299479
+    cache_creation_input_tokens: 85791
+    duration_ms: 434856
+    num_turns: 47
+    model: claude-opus-4-8[1m]
+    agent: claude
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.172 (Claude Code)
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/27
+    resolution_note: blocker was a pre-existing cross-branch test conflict, fixed on main at integration

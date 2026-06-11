@@ -630,6 +630,37 @@ journal-sourced report rollup, docs.**
   model metadata exists. Doctor's profile now records agent versions; drift
   is visible.
 
+**Run #5 (2026-06-10T23-06-04Z + 5b) + integration: 6/6 Done, $95.55.
+Phase 4 complete (mechanical gate + LLM verifier + iterate-on-incomplete)
+and the Grok advisory seat is live — the dispatcher now verifies its own
+Taskers' work.**
+- **Grok live smoke: APPROVE in 24.4s**, all 8 dimensions parsed, through the
+  real adapter (--prompt-file to dodge E2BIG; empty-stdout→UNAVAILABLE
+  mirroring agy#76; closed reviewer registry; advisory status not disclosed
+  to the reviewer, keeping the scorecard honest). Consensus proven
+  byte-identical under advisory approve/block/unavailable.
+- **INT-3's push verification fired in production**: VG-4's Tasker forgot to
+  push (the DISP-9 class); detected, push-retry recovered in 26s, run
+  continued. A failure mode discovered by human accident in run #2 is now
+  self-healing.
+- **No-false-Done self-applied before the gate shipped**: VG-6 (docs task)
+  found a pre-existing red test in its tree, proved it pre-existing via git
+  stash, and Blocked itself rather than report Done. The verification gate's
+  culture preceded its code.
+- **First true cross-branch semantic conflict**: VG-5's panel-robustness test
+  asserted rc==0 on malformed .dispatcher.yaml; VG-2's gate (correctly)
+  blocks loudly on the same config. Both productions right per spec; the
+  test's assertion was stale. Fixed at integration: gate-blocks-first
+  ordering is now the encoded truth; the malformed-config-reaches-panel
+  path is unreachable by design.
+- **Size-gate variance, instances #1-#3** (park / auto-raise-with-rationale /
+  skip-citing-future-machinery across VG-2, VG-5, VG-4): Andrew's
+  disposition — the threshold is arbitrary and that's fine; variance is an
+  observation, not an offense. Phase 3's deterministic classifier still
+  makes it consistent; consistency, not the number, is the point.
+- Day-one totals across runs #2-#5: ~$435, phases 0/1/1a/2/4 complete plus
+  the Phase 3 dependency rule and Phase 6 advisory tier.
+
 ## Open questions — resolutions (2026-06-10)
 
 1. **Per-repo e2e provisioning** — RESOLVED: per repo. Each repo owns its
