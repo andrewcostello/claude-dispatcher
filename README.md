@@ -54,6 +54,9 @@ dispatcher run <tasks-yaml> [options]
   --skip-security-linter                    short-circuit Security Linter for Critical
   --reviewer-count {1,2,3}                  override per-tier reviewer count
   --max-iterations N                        default: 2
+  --verify-test-timeout SECONDS             default: 600 — wall-clock bound per execution of the .dispatcher.yaml `test:` command (mechanical gate)
+  --max-verify-iterations N                 default: 2 — on LLM-verifier INCOMPLETE, re-spawn Tasker with the gap list, re-run the mechanical gate, re-verify, up to N times
+  --skip-verification                        escape hatch — skip the post-Done LLM verifier entirely (mechanical gate still runs); the skip is journaled
   --lock-timeout-seconds SECONDS            default: 30 — tasks-YAML FileLock wait
   --task-timeout-seconds SECONDS            default: 14400 (4h) — per-task wall-clock budget
   --run-id NAME                             default: ISO 8601 timestamp
@@ -178,6 +181,94 @@ Both bridge subcommands smart-detect:
 If either is missing, the subcommand prints a soft-skip message and exits 0 — safe to chain in CI pipelines on machines without the forecast tool.
 
 The mappable YAML fields (`priority`, `epic`, `parent`, `story_points`, `due_date`, `assignee`, `fix_versions`, `components`) are documented in `claude-workflow/skills/forecast-fields.md`. The dispatcher passively round-trips fields it doesn't recognize, so populating forecast-only fields costs nothing for projects that don't use the bridge.
+
+### Verification gate
+
+After a Tasker reports `Done` — and *before* the cross-family panel — the
+dispatcher runs a two-stage verification gate that asks a question the Tasker's
+own self-review cannot answer impartially: *does the committed diff actually do
+what the task asked, with the repo still green?* Both stages run only for a
+still-`Done` task; a non-Done outcome (Blocked/Escalated) skips them entirely.
+
+**Mechanical-first ordering.** The two stages run in a fixed order, cheapest
+first:
+
+1. **Mechanical gate (VG-2)** — runs the repo's `.dispatcher.yaml` `test:`
+   command inside the task worktree. Green (exit 0) proceeds; red triggers one
+   "fix-the-tests" re-spawn of the Tasker and a single re-run. Still red →
+   `Blocked` with reason `mechanical_verification_failed` (the failing output
+   tail lands in `mechanical_verification_detail` on the row). No `test:`
+   command (or no `.dispatcher.yaml`) → the gate is **skipped**, behaviour
+   unchanged from pre-gate runs. Each execution is bounded by
+   `--verify-test-timeout` (default 600s) — a timeout counts as a failure.
+2. **LLM verifier (VG-4)** — spawned only after the mechanical gate passes, so
+   verifier tokens are never spent on a red suite. An independent Claude session
+   reads the task, the Tasker's `summary.md`, and the committed diff, and
+   returns `VERIFIED` or `INCOMPLETE` (with a gap list). `VERIFIED` proceeds to
+   the panel.
+
+**The iterate loop.** On `INCOMPLETE`, the dispatcher re-spawns the Tasker with
+the verifier's gap list as a corrective prompt, **re-runs the mechanical gate**
+(an iterate may have reddened the suite), then re-verifies — up to
+`--max-verify-iterations` times (default 2). This is distinct from
+`--cross-family-panel-iterate`; the verifier runs first, and each iteration is
+one Tasker re-spawn + one mechanical re-run + one verifier re-spawn. If an
+iterate spawn produces no new commit (the Tasker changed nothing), the loop
+short-circuits — re-verifying the same diff would return the same verdict.
+
+**Blocked reasons** the gate can stamp on a row:
+
+| `blocked_reason` | Meaning |
+|------------------|---------|
+| `mechanical_verification_failed` | The `test:` command was still red after the fix-the-tests retry, or `.dispatcher.yaml` was malformed (no retry — a prompt can't fix an unparseable config). Can also fire *during* an LLM-verifier iterate, if the re-run reddens the suite. |
+| `verification_incomplete` | The LLM verifier still returned `INCOMPLETE` after exhausting `--max-verify-iterations` (or an iterate produced no new commit). The rendered gaps land in `verification_detail` on the row. |
+
+**Skipping.** `--skip-verification` is an emergency escape hatch that skips the
+LLM verifier entirely (the mechanical gate still runs). The skip is journaled (a
+`verification_skipped` event, plus `run_config.skip_verification` in the genesis
+provenance) so an auditor can see the gate was bypassed. The verifier exists to
+catch stubbed/deferred/quietly-narrowed work that a passing mechanical suite
+can hide, so skip it only when you must.
+
+The gate stamps `verified`, `verification_iterations`, and
+`mechanical_verification` on the YAML row (see [YAML schema
+additions](#yaml-schema-additions)), and emits `verification_*` journal events
+documented in [docs/journal-format.md](docs/journal-format.md).
+
+### Per-repo config: `.dispatcher.yaml`
+
+A repo opts into the verification gate and advisory reviewers through a
+`.dispatcher.yaml` at the repo root (schema introduced in VG-1). All keys are
+optional; an absent file means "no mechanical test command, no advisory seats"
+and is not an error.
+
+```yaml
+# The shell command run inside a task worktree for the mechanical gate.
+# Exit 0 = green. Run verbatim (never stripped). Absent → mechanical gate skipped.
+test: "pytest -q"
+
+# Cross-family panel options. Today the only known key is `advisory:`.
+panel:
+  # Probationary, non-blocking reviewer families seated next to the
+  # authoritative three. See "Advisory (probationary) reviewers" below.
+  advisory: [grok]
+```
+
+| Key | Type | Meaning |
+|-----|------|---------|
+| `test` | string | Mechanical-gate command, run verbatim in the worktree (exit 0 = green). Must be a non-blank string; absent → gate skipped. |
+| `panel.advisory` | list\<string> | Advisory reviewer family names. Empty/absent → no advisory seats. |
+
+**Forward-compatibility.** The loader does **not** reject keys it doesn't
+recognise. Unknown top-level keys, and unknown keys nested under `panel:`
+(reported as `panel.<key>`), are collected into `RepoConfig.unknown_keys` and
+journaled as a `unknown_keys` note on the `verification_mechanical` event rather
+than failing the run. This lets a newer config schema be dropped into a repo an
+older dispatcher reads without breaking it. What *is* rejected (raising
+`RepoConfigError`, which Blocks the task with `mechanical_verification_failed`):
+a non-mapping root, unparseable YAML, a `test:` that isn't a non-blank string, a
+`panel:` that isn't a mapping, or a `panel.advisory` that isn't a list of
+strings.
 
 ### Cross-family panel
 
@@ -536,6 +627,15 @@ Existing task rows continue to validate. The dispatcher adds these fields as it 
   agent: claude                                    # which agent CLI ran the task
   dispatcher_version: "0.1.0"
   agent_version: "2.1.34"                          # omitted if the once-per-run capture failed
+
+  # Verification gate outcome (VG-2 mechanical + VG-4 LLM verifier). All absent
+  # when the gate never ran (non-Done outcome, or --skip-verification for the
+  # LLM half) — absence means "not evaluated", never "evaluated and skipped":
+  mechanical_verification: passed                  # passed | skipped | failed
+  mechanical_verification_detail: "…tail…"         # only on mechanical failure
+  verified: true                                   # LLM verifier: true | false
+  verification_iterations: 0                       # INCOMPLETE → re-spawn cycles run
+  verification_detail: "…rendered gaps…"           # only when verified: false
 
   # Set only when the Done summary shows commits that did not reach the
   # remote (signal for the supervisor/integrator, not a block):
