@@ -3103,6 +3103,32 @@ def _setup_integration(
     _log(log_path,
          f"integration=pr feature_branch={result.branch} ({result.status}) "
          f"sha={result.sha[:8]} forked_from={cfg.base_branch}")
+    # The feature branch is every task PR's `--base`, so it MUST exist on the
+    # remote before the first PR is raised. ensure_feature_branch only creates
+    # the LOCAL ref; without pushing it here `gh pr create --base <feature>`
+    # fails with "Base ref must be a branch" and EVERY task false-blocks with
+    # pr_open_failed even though its work and branch are fine (dogfood
+    # 2026-06-15). Push covers both the freshly-forked ("created") branch and an
+    # "existing" local-only branch; it is a no-op when the branch is already in
+    # sync on origin. A local-only repo (no remote — e.g. tests) skips. A real
+    # push failure aborts setup (return != None → exit 2) rather than letting
+    # the run proceed to false-block every task on an unreachable base.
+    pv = pv_mod.verify(
+        repo_root=repo_root, branch=result.branch, expect_pr=False,
+        gh_bin=cfg.gh_bin, log=lambda m: _log(log_path, m),
+    )
+    if pv.status == "skipped-no-remote":
+        _log(log_path,
+             "integration: no remote configured; skipping feature-branch push")
+    else:
+        pushed, detail = _push_branch(
+            repo_root, result.branch, log_path, "integration")
+        if not pushed:
+            return (
+                f"integration: could not push feature branch {result.branch!r} "
+                f"to origin; PR creation would false-block every task: {detail}"
+            )
+        _log(log_path, f"integration: pushed {result.branch} to origin")
     # Repoint the effective base. Every worktree-create, dependency-merge
     # reachability check, and diff baseline reads cfg.base_branch, so this one
     # assignment makes the whole run fork from the feature branch.

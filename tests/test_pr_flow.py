@@ -187,6 +187,13 @@ def test_pr_mode_creates_feature_branch_and_records_genesis(
     ).returncode == 0
     assert _git(repo, "rev-parse", "feature/smoke") == main_sha
 
+    # The feature branch MUST be pushed to origin at setup: it is every task
+    # PR's `--base`, and `gh pr create` against a base that exists only locally
+    # fails with "Base ref must be a branch", false-blocking every task with
+    # pr_open_failed (dogfood 2026-06-15 regression).
+    assert _branch_on_remote(repo, "feature/smoke"), (
+        "feature branch must be pushed to origin so task PRs can target it")
+
     cfg = _genesis_run_config(repo)
     assert cfg["integration"] == "pr"
     assert cfg["feature_branch"] == "feature/smoke"
