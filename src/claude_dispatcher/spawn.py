@@ -306,3 +306,168 @@ def spawn_claude(
         stderr=proc.stderr,
         usage=parse_usage_from_json(proc.stdout),
     )
+
+
+# ---------------------------------------------------------------------------
+# Cross-family implementer agents (codex / grok / gemini).
+#
+# Each runs its CLI's HEADLESS AGENTIC mode in the task worktree to EDIT files.
+# Three hard-won invariants from the 2026-06-18 feasibility smoke test:
+#   1. stdin MUST be closed (DEVNULL). codex `exec` and `agy --print` both
+#      block forever waiting for stdin EOF when the parent leaves it open.
+#   2. The agent EDITS but the dispatcher COMMITS. codex's
+#      `--sandbox workspace-write` mounts .git read-only, so it cannot commit;
+#      grok self-commits; agy doesn't. A uniform post-run auto-commit of the
+#      dirty worktree covers every agent identically.
+#   3. They will NOT reliably write $SUMMARY_PATH in the parser's format, so
+#      the adapter synthesizes a guaranteed-parseable summary when absent.
+# The "gemini" agent maps to the `agy` CLI (Antigravity) — the authenticated
+# Google coding CLI here; the `gemini` CLI itself fails refreshAuth headless.
+# ---------------------------------------------------------------------------
+
+AGENT_BINS: dict[str, str] = {"codex": "codex", "grok": "grok", "gemini": "agy"}
+
+_CROSS_FAMILY_SUFFIX = """
+
+---
+You are running as a cross-family implementer agent under the dispatcher.
+Make the code changes in the CURRENT WORKING DIRECTORY to satisfy the task
+above. You do NOT need to run `git commit` — the dispatcher commits your
+working-tree changes for you. When done, also write a short summary to the
+file {summary_path} containing at minimum a line `**Status:** Done` (or
+`**Status:** Blocked` if you could not complete it) and a `## What landed`
+section. Do not open a PR.
+"""
+
+
+def _agent_argv(
+    agent: str, bin_: str, prompt_file: Path, cwd: Path,
+    model: str | None, prompt_text: str,
+) -> list[str]:
+    """Build the headless-agentic argv for a cross-family implementer CLI."""
+    if agent == "codex":
+        cmd = [bin_, "exec", "--sandbox", "workspace-write"]
+        if model:
+            cmd += ["--model", model]
+        return cmd + [prompt_text]  # prompt positional; stdin closed by caller
+    if agent == "grok":
+        cmd = [bin_, "--cwd", str(cwd), "--always-approve"]
+        if model:
+            cmd += ["--model", model]
+        return cmd + ["--prompt-file", str(prompt_file)]
+    if agent == "gemini":  # -> agy
+        cmd = [bin_, "--print"]
+        if model:
+            cmd += ["--model", model]
+        return cmd + [prompt_text]
+    raise ValueError(f"no argv builder for agent {agent!r}")
+
+
+def _autocommit_worktree(cwd: Path, task_key: str, agent: str) -> bool:
+    """Stage + commit any dirty changes in the worktree. Returns True if a
+    commit was created (or the agent already committed and the tree is clean
+    with new work, which we can't distinguish here — so: True iff we committed).
+    """
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=str(cwd),
+        capture_output=True, text=True,
+    )
+    if not status.stdout.strip():
+        return False  # nothing to commit (clean tree — agent self-committed or did nothing)
+    subprocess.run(["git", "add", "-A"], cwd=str(cwd),
+                   capture_output=True, text=True)
+    commit = subprocess.run(
+        ["git", "commit", "-m", f"[{task_key}] {agent} implementation"],
+        cwd=str(cwd), capture_output=True, text=True,
+    )
+    return commit.returncode == 0
+
+
+def _write_synthetic_summary(
+    summary_path: Path, task_key: str, agent: str,
+    exit_code: int, stdout: str, committed: bool,
+) -> None:
+    """Write a guaranteed-parseable summary when the agent didn't write one.
+
+    Only three things make summary.parse() flag malformed: a missing Status,
+    an invalid Status, or an unbalanced code fence. So: a valid Status plus a
+    fence-stripped tail of the agent's stdout.
+    """
+    status = "Done" if committed else "Blocked"
+    # Strip code-fence markers so we never emit an unterminated fence.
+    body = "\n".join(
+        ln for ln in (stdout or "").splitlines()
+        if not ln.lstrip().startswith("```")
+    ).strip()[-2000:]
+    if not body:
+        body = f"(no stdout captured; exit={exit_code})"
+    reason = "" if committed else (
+        "\n\n## Escalation reason\n"
+        f"{agent} produced no committed changes (exit={exit_code})."
+    )
+    summary_path.write_text(
+        f"# {task_key}: {agent} implementation\n"
+        f"**Status:** {status}\n\n"
+        f"## What landed\n{body}\n{reason}\n"
+    )
+
+
+def spawn_agent(
+    *,
+    agent: str | None,
+    cwd: Path,
+    env: dict[str, str],
+    prompt: str,
+    model: str | None = None,
+    extra_args: list[str] | None = None,
+    claude_bin: str = "claude",
+    timeout_seconds: int = 60 * 60 * 4,
+) -> SpawnResult:
+    """Spawn the chosen implementer agent for one task.
+
+    agent in (None, "claude") -> the default `claude --print` Tasker (with an
+    optional --model). Otherwise dispatch to the cross-family CLI's headless
+    agentic mode (see module notes), then auto-commit + ensure a summary so the
+    downstream gate/verifier/panel flow is identical regardless of agent.
+    """
+    if not agent or agent == "claude":
+        spawn_extra = list(extra_args or [])
+        if model:
+            spawn_extra += ["--model", model]
+        return spawn_claude(
+            claude_bin=claude_bin, cwd=cwd, env=env, prompt=prompt,
+            extra_args=spawn_extra, timeout_seconds=timeout_seconds,
+        )
+
+    summary_path = Path(env["SUMMARY_PATH"])
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    bin_ = AGENT_BINS[agent]
+    task_key = env.get("TASK_KEY", "task")
+    xprompt = prompt + _CROSS_FAMILY_SUFFIX.format(summary_path=summary_path)
+    prompt_file = summary_path.parent / f"{task_key}-{agent}-prompt.txt"
+    prompt_file.write_text(xprompt)
+    argv = _agent_argv(agent, bin_, prompt_file, cwd, model, xprompt)
+
+    try:
+        proc = subprocess.run(
+            argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            cwd=str(cwd), env=env, timeout=timeout_seconds,
+        )
+        rc, out, err = proc.returncode, proc.stdout, proc.stderr
+    except subprocess.TimeoutExpired as e:
+        rc = 124
+        out = (e.stdout.decode() if isinstance(e.stdout, bytes) else (e.stdout or ""))
+        err = f"timeout after {timeout_seconds}s"
+
+    committed = _autocommit_worktree(cwd, task_key, agent)
+    if not summary_path.exists():
+        _write_synthetic_summary(summary_path, task_key, agent, rc, out, committed)
+
+    # Work landed iff we committed something. Treat that as success even if the
+    # CLI returned non-zero; conversely a clean exit with no commits falls
+    # through to the orchestrator's no-commits handling.
+    exit_code = 0 if (rc == 0 or committed) else rc
+    return SpawnResult(
+        exit_code=exit_code, summary_path=summary_path,
+        stdout=out, stderr=err, usage=SpawnUsage(model=agent),
+    )

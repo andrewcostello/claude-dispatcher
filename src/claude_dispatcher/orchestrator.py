@@ -207,6 +207,8 @@ class TaskSnapshot:
     type: str
     labels: list[str]
     model: str | None = None
+    # Per-task implementer agent (claude/codex/grok/gemini); None -> claude.
+    agent: str | None = None
     # blockedBy dependency keys, in declaration order. Used at worker start to
     # merge each dependency's branch into this task's fresh worktree branch
     # when the dependency's commits are not yet on base (INT-4).
@@ -386,6 +388,7 @@ def _run_loop(
                         type=t.type,
                         labels=list(t.labels),
                         model=t.model,
+                        agent=t.agent,
                         blocked_by=list(t.blocked_by),
                     )
                     # Mark In Progress on the YAML BEFORE submit. If we submit
@@ -658,12 +661,14 @@ def _run_task(
         skip_security_linter=cfg.skip_security_linter,
         reviewer_count=cfg.reviewer_count,
     )
-    # Per-task model override stacks on top of run-level --claude-extra-args.
-    # `claude` processes flags left-to-right; appending --model at the END
-    # means the per-task value wins if the run-level args also set --model.
-    spawn_extra = list(cfg.claude_extra_args)
-    if snap.model:
-        spawn_extra.extend(["--model", snap.model])
+    # Per-task agent + model routing is handled inside spawn_agent: for the
+    # default "claude" agent it appends --model (stacking after run-level
+    # --claude-extra-args so the per-task value wins); for cross-family agents
+    # (codex/grok/gemini) it dispatches to that CLI's headless agentic mode and
+    # normalizes the result (auto-commit + summary). See spawn.spawn_agent.
+    if snap.agent and snap.agent != "claude":
+        _log(log_path, f"  {snap.key} implementer agent = {snap.agent}"
+                       + (f" (model={snap.model})" if snap.model else ""))
 
     # Snapshot base_branch's tip SHA BEFORE the spawn. This is the
     # discriminator for the direct-to-base workflow: a Tasker that
@@ -675,12 +680,14 @@ def _run_task(
     base_sha_before = _branch_sha(repo_root, cfg.base_branch, log_path, snap.key)
 
     try:
-        result = spawn_mod.spawn_claude(
+        result = spawn_mod.spawn_agent(
+            agent=snap.agent,
             claude_bin=cfg.claude_bin,
             cwd=wt.path,
             env=env,
             prompt=prompt,
-            extra_args=spawn_extra,
+            model=snap.model,
+            extra_args=list(cfg.claude_extra_args),
             timeout_seconds=cfg.task_timeout_seconds,
         )
     except Exception as e:
