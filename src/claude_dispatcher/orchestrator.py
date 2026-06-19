@@ -33,6 +33,7 @@ from typing import Any
 from . import __version__
 from . import auto_integrate as ai_mod
 from . import cross_family_reviewer as cfr_mod
+from . import disposition as disposition_mod
 from . import journal as journal_mod
 from . import mechanical_verify as mv_mod
 from . import merge_engine as merge_mod
@@ -1299,6 +1300,64 @@ def run_feature_review(
     _log(log_path, f"feature-review: consensus={verdict.consensus} "
                    f"blocking={len(verdict.blocking_findings)}")
     return verdict
+
+
+_SEV_RANK = {"CRITICAL": 3, "HIGH": 2, "MEDIUM": 1, "LOW": 0}
+
+
+def _distinct_findings(verdict) -> list[dict]:
+    """Dedupe findings across reviewers by `location`, keeping the MAX severity
+    seen and a description. So a finding flagged by 3 reviewers is one record
+    (its corroboration is counted separately by disposition.corroboration)."""
+    by_loc: dict[str, dict] = {}
+    for rv in getattr(verdict, "reviewers", []) or []:
+        for f in getattr(rv, "findings", []) or []:
+            sv = getattr(f.severity, "value", str(f.severity))
+            cur = by_loc.get(f.location)
+            if cur is None:
+                by_loc[f.location] = {"location": f.location, "severity": sv,
+                                      "description": getattr(f, "description", "")}
+            elif _SEV_RANK.get(sv, 0) > _SEV_RANK.get(cur["severity"], 0):
+                cur["severity"] = sv
+    return list(by_loc.values())
+
+
+def apply_dispositions(
+    cfg: RunConfig, verdict, *, mode: str,
+    ledger: disposition_mod.DispositionLedger, log_path: Path,
+) -> tuple[list[dict], list[dict]]:
+    """Step 4a: classify EVERY distinct finding (no silent drops), record it in
+    the ledger, journal a disposition_recorded event, and return
+    (accepted, held). accepted -> become FIX tasks; held -> block + notify.
+    gate_grounded/refutable are False at the feature level (decisions #3/#6)."""
+    corr = disposition_mod.corroboration(verdict)
+    accepted: list[dict] = []
+    held: list[dict] = []
+    for fnd in _distinct_findings(verdict):
+        c = corr.get(fnd["location"], 1)
+        disp, reason = disposition_mod.classify_disposition(
+            severity=fnd["severity"], corroboration=c, gate_grounded=False,
+            refutable=False, mode=mode,
+        )
+        rec = disposition_mod.DispositionRecord(
+            finding_id=f"{fnd['location']}:{fnd['severity']}",
+            severity=fnd["severity"], corroboration=c, gate_grounded=False,
+            disposition=disp, reason=reason,
+        )
+        ledger.record(rec)
+        _emit_event(cfg, journal_mod.EventType.disposition_recorded, {
+            "finding_id": rec.finding_id, "location": fnd["location"],
+            "severity": fnd["severity"], "corroboration": c,
+            "disposition": disp.value, "reason": reason,
+            "description": (fnd["description"] or "")[:300],
+        }, task_key="FEATURE-REVIEW")
+        if disp is disposition_mod.Disposition.ACCEPT:
+            accepted.append({**fnd, "corroboration": c})
+        elif disp is disposition_mod.Disposition.HOLD:
+            held.append({**fnd, "corroboration": c})
+    _log(log_path, f"feature-review dispositions: {ledger.tally()} "
+                   f"(accepted={len(accepted)} held={len(held)})")
+    return accepted, held
 
 
 def _spawn_panel_iterate(

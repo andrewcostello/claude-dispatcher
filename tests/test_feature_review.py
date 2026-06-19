@@ -51,3 +51,20 @@ def test_run_feature_review_runs_panel_against_prd(tmp_path, monkeypatch):
     assert "ACCEPTANCE: the widget foos" in captured["summary_md"]
     # And the cumulative diff is what's reviewed.
     assert "diff --git" in captured["diff"]
+
+
+def test_apply_dispositions_classifies_records_all_no_silent_drops(tmp_path):
+    from claude_dispatcher.disposition import DispositionLedger
+    F = lambda loc, sev: NS(location=loc, severity=sev, description="d")
+    verdict = NS(reviewers=[
+        NS(family="claude", findings=[F("a:1", "CRITICAL"), F("b:2", "CRITICAL"),
+                                      F("c:3", "MEDIUM")]),
+        NS(family="codex", findings=[F("a:1", "CRITICAL")]),  # corroborates a:1
+    ], blocking_findings=[])
+    led = DispositionLedger()
+    accepted, held = orch.apply_dispositions(
+        _cfg(tmp_path), verdict, mode="unattended", ledger=led, log_path=tmp_path / "l")
+    assert {f["location"] for f in accepted} == {"a:1"}   # corroborated CRITICAL
+    assert {f["location"] for f in held} == {"b:2"}        # lone CRITICAL -> hold
+    assert led.tally() == {"accept": 1, "hold": 1, "defer": 1}  # MEDIUM c:3 -> defer
+    assert len(led.records) == 3                            # nothing silently dropped
