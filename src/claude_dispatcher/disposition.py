@@ -62,7 +62,15 @@ def classify_disposition(
     (the human adjudicates); the clear ACCEPT/DEFER/REJECT auto-rules still apply.
     The returned reason explains which rule fired (for the journal + JIRA comment).
     """
-    raise NotImplementedError("step-2 body-fill: classify_disposition")
+    if refutable:
+        return Disposition.REJECT, "refutable"
+
+    if severity in BLOCKING_SEVERITIES:
+        if corroboration >= 2 or gate_grounded:
+            return Disposition.ACCEPT, "blocking corroborated or gate-grounded"
+        return Disposition.HOLD, "blocking lone ungrounded"
+
+    return Disposition.DEFER, "non-blocking"
 
 
 @dataclass
