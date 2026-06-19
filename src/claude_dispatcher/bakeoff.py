@@ -124,7 +124,19 @@ def infer_stack(task: plan_mod.Task) -> str:
     `lang:react`, or apps/skillstrike-mobile / *.tsx), else "unknown". Label
     match takes precedence over path heuristics. Pure function of `task`.
     """
-    raise NotImplementedError("BKO body-fill: infer_stack")
+    labels = task.labels or []
+    if any(l in ("area:bay-session", "area:go", "lang:go") for l in labels):
+        return "go"
+    if any(l in ("area:mobile", "area:react", "lang:react") for l in labels):
+        return "react"
+
+    # Path heuristics (labels win). Search description (and summary for robustness).
+    text = f"{task.description or ''} {task.summary or ''}"
+    if "apps/platform-domain" in text or ".go" in text:
+        return "go"
+    if "apps/skillstrike-mobile" in text or ".tsx" in text:
+        return "react"
+    return "unknown"
 
 
 def compute_relaxed_pass(gate_passed: bool, panel: "cfr.PanelVerdict | None") -> bool:
