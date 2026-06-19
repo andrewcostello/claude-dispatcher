@@ -141,6 +141,15 @@ class EventType(str, Enum):
     # One event per advisory (probationary, non-blocking) reviewer finding —
     # the scorecard raw material for a future promotion decision (VG-5).
     panel_advisory_finding = "panel_advisory_finding"
+    # Feature review loop (docs/feature-review-loop.md). Schema authored now so
+    # the loop (steps 3-4, built with a human) and Forecast's `ingest` projection
+    # share it. feature_review_* = the final whole-feature review; disposition_*
+    # = the no-silent-drop ledger; transcript_logged = the per-task agent log +
+    # haiku summary refs.
+    feature_review_started = "feature_review_started"
+    feature_review_verdict = "feature_review_verdict"
+    disposition_recorded = "disposition_recorded"
+    transcript_logged = "transcript_logged"
     task_done = "task_done"
     task_blocked = "task_blocked"
     pr_gate = "pr_gate"
