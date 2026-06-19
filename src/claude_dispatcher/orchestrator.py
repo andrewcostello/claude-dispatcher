@@ -1221,6 +1221,19 @@ def run_feature_review(
     # feature); for an existing branch it's this run's start (the run's delta).
     base = cfg.feature_branch_sha or cfg.base_branch
     branch = cfg.feature_branch or cfg.base_branch
+    # pr-mode merges land on origin; the LOCAL feature ref lags. Fetch + diff the
+    # origin tip so the review sees the merged feature work (best-effort — falls
+    # back to the local ref if there's no origin / the fetch fails).
+    if cfg.feature_branch:
+        import subprocess
+        try:
+            fetch = subprocess.run(
+                ["git", "fetch", "origin", cfg.feature_branch], cwd=str(repo_root),
+                capture_output=True, text=True, timeout=120)
+            if fetch.returncode == 0:
+                branch = f"origin/{cfg.feature_branch}"
+        except Exception:  # noqa: BLE001 — fall back to the local ref
+            pass
     diff = cfr_mod.collect_diff(repo_root=repo_root, base_branch=base, branch=branch)
     if not diff.strip():
         _log(log_path, "feature-review: no cumulative diff — skipping")
