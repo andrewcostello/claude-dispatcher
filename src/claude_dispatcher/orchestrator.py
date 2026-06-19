@@ -1214,7 +1214,12 @@ def run_feature_review(
     missing/regressed — not just diff-internal quality. pr-mode only. Returns the
     PanelVerdict, or None when there is no diff to review. Emits
     feature_review_started / feature_review_verdict."""
-    base = cfg.base_branch
+    # The cumulative-diff base is the feature branch's RUN-START sha (its fork
+    # point), NOT cfg.base_branch — pr-mode repoints base_branch to the feature
+    # branch, so using it would diff the branch against itself (empty). For a
+    # feature-branch created this run that sha is the true fork point (whole
+    # feature); for an existing branch it's this run's start (the run's delta).
+    base = cfg.feature_branch_sha or cfg.base_branch
     branch = cfg.feature_branch or cfg.base_branch
     diff = cfr_mod.collect_diff(repo_root=repo_root, base_branch=base, branch=branch)
     if not diff.strip():
