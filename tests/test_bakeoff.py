@@ -73,7 +73,6 @@ def _cell(agent, gate, reviewers):
         task_key="T1", agent=agent, gate_passed=gate, reviewers=reviewers)
 
 
-@pytest.mark.skip(reason="BKO body-fill: evaluate_reviewers")
 def test_evaluate_reviewers_counts_gate_failing_approvals():
     # codex approves a solution that FAILED the gate -> objective false-negative
     cells = [
@@ -90,7 +89,6 @@ def test_evaluate_reviewers_counts_gate_failing_approvals():
     assert stats["claude"]["approvals_of_gate_failing"] == 0
 
 
-@pytest.mark.skip(reason="BKO body-fill: evaluate_reviewers")
 def test_evaluate_reviewers_unique_blocking():
     cells = [
         _cell("grok", True, [
