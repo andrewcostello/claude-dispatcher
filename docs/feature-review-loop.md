@@ -94,13 +94,33 @@ Each piece is independently useful; together they make the run self-closing.
   and path/link refs to artifacts (summary_path, transcript_log, haiku_summary,
   review). NOT the audit log — never bloat a mutable file with per-iteration
   decision comments.
-- **JIRA (when configured) — human-facing projection via a pluggable SINK.** The
-  run pushes: haiku summary → comment/description; transcript → attachment/link;
-  final review → comment; one comment per disposition/iteration ("found X →
-  accept → FIX-3"; "final review round 2: clean"). Headless runs skip the sink;
-  the journal + run-dir are unchanged. Implement as a `Sink` interface (journal
-  + run-dir always; JIRA sink when `jira:` config present) so the loop is
-  front-end-agnostic.
+- **Forecast = the human-facing projection (NOT in the dispatcher).** Do NOT
+  build a JIRA sink into the dispatcher — keep it a pure engine. Instead, the
+  Forecast CLI (`~/Project/forecast`, already wraps JIRA for project SMG) gains a
+  `forecast ingest <run>` that PULLS the journal + run-dir artifacts and projects
+  them: haiku summary + final review → ticket comments; transcript → attachment/
+  link; **one comment per disposition/iteration** ("found X → accept → FIX-3";
+  "final review round 2: clean"); status transitions (In Development → In
+  Internal QA → …); deferred findings → backlog tickets. This reuses Forecast's
+  existing SMG workflow/labels/statuses and matches the CLAUDE.md convention
+  ("memorialize decisions as ticket comments as they happen"). The dispatcher's
+  only obligation is a COMPLETE journal (disposition reasons, full findings,
+  artifact paths, task↔ticket key mapping) — no JIRA coupling.
+
+### Unattended auto-disposition (detail)
+Signals: severity, **corroboration** (# reviewers independently flagging it —
+the precision lever), gate-grounding.
+- **auto-accept → FIX task:** CRITICAL/HIGH AND (≥2 reviewers agree OR
+  gate-grounded).
+- **auto-defer** (logged + Forecast backlog ticket, with reason): MEDIUM/LOW, or
+  a lone-reviewer non-corroborated finding.
+- **HOLD for human** (block + notify): a CRITICAL not corroborated (one reviewer,
+  others silent), reviewer conflict, or a cap/alarm trip.
+- **auto-reject** (with reason) only when objectively refutable: duplicate,
+  references code outside the diff, or contradicted by a passing gate.
+- Caps: max fix rounds (~3) + max FIX tasks; high disposition rate or
+  regenerating findings → stop + hold + notify (skeleton/PRD likely wrong).
+Supervised mode: human adjudicates the ambiguous; auto-rules handle the clear.
 
 ## Retrospective / escape analysis (the OUTER feedback loop)
 After QA/prod finds a defect the pipeline shipped, that bug is a labeled *miss*
