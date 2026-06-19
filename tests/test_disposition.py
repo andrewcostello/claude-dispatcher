@@ -15,27 +15,22 @@ def _classify(severity="HIGH", corroboration=2, gate_grounded=False,
 
 
 # --- classify_disposition tiers ---
-@pytest.mark.skip(reason="step-2 body-fill: classify_disposition")
 def test_refutable_rejects_regardless_of_severity():
     assert _classify(severity="CRITICAL", refutable=True) == Disposition.REJECT
 
 
-@pytest.mark.skip(reason="step-2 body-fill: classify_disposition")
 def test_blocking_corroborated_accepts():
     assert _classify(severity="HIGH", corroboration=2, gate_grounded=False) == Disposition.ACCEPT
 
 
-@pytest.mark.skip(reason="step-2 body-fill: classify_disposition")
 def test_blocking_gate_grounded_accepts_even_if_lone():
     assert _classify(severity="CRITICAL", corroboration=1, gate_grounded=True) == Disposition.ACCEPT
 
 
-@pytest.mark.skip(reason="step-2 body-fill: classify_disposition")
 def test_blocking_lone_uncorroborated_holds():
     assert _classify(severity="CRITICAL", corroboration=1, gate_grounded=False) == Disposition.HOLD
 
 
-@pytest.mark.skip(reason="step-2 body-fill: classify_disposition")
 def test_nit_defers():
     assert _classify(severity="MEDIUM", corroboration=3) == Disposition.DEFER
     assert _classify(severity="LOW", corroboration=1) == Disposition.DEFER
