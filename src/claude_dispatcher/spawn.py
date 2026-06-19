@@ -261,6 +261,34 @@ def build_env(
     return env
 
 
+def summarize_transcript_haiku(
+    text: str, *, claude_bin: str = "claude",
+    model: str = "claude-haiku-4-5-20251001", timeout_seconds: int = 120,
+) -> str | None:
+    """Cheap haiku summary of an agent run's captured output for the audit log
+    (step 6). Best-effort: returns the summary text, or None on any failure
+    (empty input, timeout, non-zero exit) — never raises, so it cannot block a
+    task. Uses the cheapest model; only the last ~12k chars are summarized."""
+    if not text or not text.strip():
+        return None
+    prompt = (
+        "Summarize this dispatcher agent run in 3-6 terse bullets: what it "
+        "changed, the key decisions it made, and how it ended (Done/Blocked). "
+        "No preamble, just the bullets.\n\n" + text[-12000:]
+    )
+    try:
+        proc = subprocess.run(
+            [claude_bin, "--print", "--model", model],
+            input=prompt, capture_output=True, text=True, timeout=timeout_seconds,
+        )
+    except Exception:  # noqa: BLE001 — audit nicety must never break a run
+        return None
+    if proc.returncode != 0:
+        return None
+    out = proc.stdout.strip()
+    return out or None
+
+
 def spawn_claude(
     *,
     claude_bin: str,

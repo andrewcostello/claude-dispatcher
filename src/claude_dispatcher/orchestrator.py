@@ -177,6 +177,11 @@ class RunConfig:
     # stamped on the YAML row is from the FINAL run (which may be approve
     # if the Tasker successfully addressed the findings).
     cross_family_panel_iterate: int = 0
+    # Step 6: when True, persist each task's transcript + a cheap haiku summary
+    # and reference them from the YAML row (audit log; Forecast projects them).
+    # Opt-in (off by default) because it shells claude-haiku per task — cost +
+    # latency, and not correctness-critical.
+    haiku_summary: bool = False
     # Notification channels for human-attention events. Built once at
     # execute() time from CLI flags + env vars; injected into _run_task
     # via this slot so tests can substitute a recording stub.
@@ -702,6 +707,12 @@ def _run_task(
     # non-zero exit, so the journal records the cost even of a failed run.
     _emit_event(cfg, journal_mod.EventType.task_spawn_finished,
                 _spawn_usage_payload(result), task_key=snap.key)
+    # Step 6 (opt-in via --haiku-summary): persist the agent's captured output as
+    # the transcript log + a cheap haiku summary, referenced from the YAML row
+    # (review/audit; what Forecast `ingest` later projects). Best-effort — never
+    # blocks the task; runs for every outcome so a blocked run is auditable too.
+    if cfg.haiku_summary:
+        _log_transcript_and_haiku(cfg, snap, result, summary_path.parent, log_path)
     if result.exit_code != 0:
         _mark_blocked(cfg, snap.key, reason=f"session_exit_code_{result.exit_code}")
         return plan_mod.BLOCKED
@@ -2908,6 +2919,7 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
         cross_family_panel_iterate=getattr(
             args, "cross_family_panel_iterate", 0,
         ),
+        haiku_summary=getattr(args, "haiku_summary", False),
         notifier=notify_mod.build_notifier_from_env(
             cli_ntfy_topic=getattr(args, "ntfy_topic", None),
             cli_ntfy_server=getattr(args, "ntfy_server", None),
@@ -3236,6 +3248,37 @@ def _task_started_payload(
                 "key": c.key, "branch": c.branch, "detail": c.detail[:300],
             }
     return payload
+
+
+def _log_transcript_and_haiku(
+    cfg: RunConfig, snap: TaskSnapshot, result: spawn_mod.SpawnResult,
+    out_dir: Path, log_path: Path,
+) -> None:
+    """Step 6: persist the agent's captured output as a transcript log + a cheap
+    haiku summary, reference both from the YAML row, and journal it. Best-effort:
+    any failure is logged and swallowed — this is an audit nicety and must never
+    block or fail a task. (The captured output is the agent's stdout — the JSON
+    envelope for claude, fuller stdout for cross-family agents; a richer
+    turn-by-turn transcript is a future enhancement.)"""
+    try:
+        transcript = out_dir / "transcript.json"
+        transcript.write_text(result.stdout or "", encoding="utf-8")
+        haiku = spawn_mod.summarize_transcript_haiku(
+            result.stdout or "", claude_bin=cfg.claude_bin)
+        haiku_path = out_dir / "summary-haiku.md"
+        if haiku:
+            haiku_path.write_text(haiku, encoding="utf-8")
+        refs = {"transcript_log": str(transcript)}
+        if haiku:
+            refs["haiku_summary"] = str(haiku_path)
+        _mutate_row(cfg, snap.key, lambda r: r.update(refs))
+        _emit_event(cfg, journal_mod.EventType.transcript_logged, {
+            "transcript_log": str(transcript),
+            "haiku_summary": str(haiku_path) if haiku else None,
+            "haiku_chars": len(haiku) if haiku else 0,
+        }, task_key=snap.key)
+    except Exception as e:  # noqa: BLE001 — audit nicety, never fatal
+        _log(log_path, f"  {snap.key} transcript/haiku log failed (non-fatal): {e}")
 
 
 def _spawn_usage_payload(result: spawn_mod.SpawnResult) -> dict[str, Any]:

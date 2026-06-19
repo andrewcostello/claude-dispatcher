@@ -64,6 +64,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated task keys to dispatch (others skipped)",
     )
     run.add_argument("--skip-design", action="store_true")
+    run.add_argument("--haiku-summary", action="store_true",
+                     help="persist each task's transcript + a haiku summary and "
+                          "reference them from the YAML row (audit log; opt-in "
+                          "because it shells claude-haiku per task)")
     run.add_argument("--skip-security-linter", action="store_true")
     run.add_argument(
         "--reviewer-count",
