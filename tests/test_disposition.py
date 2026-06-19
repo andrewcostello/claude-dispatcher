@@ -47,7 +47,6 @@ def _rec(fid="t:loc:HIGH", disp=Disposition.ACCEPT, sev="HIGH"):
                              gate_grounded=False, disposition=disp, reason="r")
 
 
-@pytest.mark.skip(reason="step-2 body-fill: DispositionLedger")
 def test_ledger_records_and_tallies_every_finding():
     led = DispositionLedger()
     led.record(_rec("a", Disposition.ACCEPT))
@@ -58,7 +57,6 @@ def test_ledger_records_and_tallies_every_finding():
     assert len(led.records) == 3  # no silent drops
 
 
-@pytest.mark.skip(reason="step-2 body-fill: DispositionLedger")
 def test_ledger_detects_regenerating_finding():
     led = DispositionLedger()
     led.record(_rec("dup", Disposition.ACCEPT))
@@ -66,14 +64,12 @@ def test_ledger_detects_regenerating_finding():
     assert led.regenerating("never-seen") is False
 
 
-@pytest.mark.skip(reason="step-2 body-fill: DispositionLedger")
 def test_ledger_alarm_on_round_cap():
     led = DispositionLedger(max_fix_rounds=3)
     tripped, reason = led.alarm_tripped(rounds_done=3)
     assert tripped is True and reason
 
 
-@pytest.mark.skip(reason="step-2 body-fill: DispositionLedger")
 def test_ledger_alarm_on_fix_task_cap():
     led = DispositionLedger(max_fix_tasks=2)
     for i in range(3):
@@ -82,7 +78,6 @@ def test_ledger_alarm_on_fix_task_cap():
     assert tripped is True
 
 
-@pytest.mark.skip(reason="step-2 body-fill: DispositionLedger")
 def test_ledger_no_alarm_under_caps():
     led = DispositionLedger(max_fix_rounds=3, max_fix_tasks=20)
     led.record(_rec("a", Disposition.ACCEPT))

@@ -77,23 +77,39 @@ class DispositionLedger:
     def record(self, rec: DispositionRecord) -> None:
         """Append a disposition. (No dedup here — `finding_id` lets callers /
         `regenerating` detect repeats across rounds.)"""
-        raise NotImplementedError("step-2 body-fill: DispositionLedger.record")
+        self.records.append(rec)
 
     def tally(self) -> dict[str, int]:
         """Counts per Disposition value (e.g. {'accept': 3, 'defer': 5, ...})."""
-        raise NotImplementedError("step-2 body-fill: DispositionLedger.tally")
+        counts: dict[str, int] = {}
+        for rec in self.records:
+            key = rec.disposition.value
+            counts[key] = counts.get(key, 0) + 1
+        return counts
 
     def accepted_count(self) -> int:
         """Number of ACCEPT records (= fix tasks spawned)."""
-        raise NotImplementedError("step-2 body-fill: DispositionLedger.accepted_count")
+        return sum(1 for rec in self.records if rec.disposition is Disposition.ACCEPT)
 
     def regenerating(self, finding_id: str) -> bool:
         """True if this finding_id has been ACCEPTed before (a fix didn't
         resolve it and it came back) — a signal the skeleton/PRD is wrong."""
-        raise NotImplementedError("step-2 body-fill: DispositionLedger.regenerating")
+        return any(
+            rec.finding_id == finding_id and rec.disposition is Disposition.ACCEPT
+            for rec in self.records
+        )
 
     def alarm_tripped(self, rounds_done: int) -> tuple[bool, str]:
         """(True, reason) if the loop should STOP and HOLD for a human: fix-task
         cap exceeded, max rounds reached, or a high accept rate / regenerating
         findings (skeleton/PRD likely wrong). (False, "") otherwise. Pure."""
-        raise NotImplementedError("step-2 body-fill: DispositionLedger.alarm_tripped")
+        if rounds_done >= self.max_fix_rounds:
+            return True, (
+                f"max fix rounds reached ({rounds_done} >= {self.max_fix_rounds})"
+            )
+        accepted = self.accepted_count()
+        if accepted > self.max_fix_tasks:
+            return True, (
+                f"fix-task cap exceeded ({accepted} > {self.max_fix_tasks})"
+            )
+        return False, ""
