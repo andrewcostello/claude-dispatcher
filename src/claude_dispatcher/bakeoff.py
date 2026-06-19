@@ -132,6 +132,7 @@ def run_cell(
             task_labels=task.labels, task_description=task.description,
             branch=branch, summary_path=summary_path, run_id=run_id,
             max_iterations=1, financial_paths=financial_paths,
+            skip_design=False, skip_security_linter=False, reviewer_count=None,
         )
         log(f"  [{task.key}/{agent}] spawning…")
         res = spawn_mod.spawn_agent(
@@ -155,7 +156,7 @@ def run_cell(
     if test_command:
         gate = mv.run_test_command(
             test_command, worktree=wt, timeout_seconds=gate_timeout, log=log)
-        cell.gate_passed = gate.outcome == "passed"
+        cell.gate_passed = gate.passed
     else:
         cell.gate_passed = True  # no gate configured → don't penalize
 
@@ -179,6 +180,11 @@ def run_cell(
     log(f"  [{task.key}/{agent}] gate={'P' if cell.gate_passed else 'F'} "
         f"panel={cell.panel_consensus} blocking={cell.blocking_findings} "
         f"cost=${cell.cost_usd:.3f} {cell.duration_s:.0f}s")
+    # Results (diff_lines, panel verdict, cost) are fully captured above; the
+    # worktree is no longer needed. Remove it so a 28-cell run doesn't accumulate
+    # 28 full monorepo checkouts. Best-effort — a leftover worktree is harmless.
+    _git(["worktree", "remove", "--force", str(wt)], repo_root)
+    _git(["branch", "-D", branch], repo_root)
     return cell
 
 
@@ -213,41 +219,61 @@ def render_markdown(cells: list[CellResult], winners: dict[str, str]) -> str:
 
 def run_bakeoff(
     *, tasks_path: Path, base_ref: str, agents: tuple[str, ...] = ALL_AGENTS,
-    only_keys: list[str] | None = None, repo_root: Path | None = None,
+    only_keys: list[str] | None = None,
+    base_overrides: dict[str, str] | None = None,
+    test_command_override: str | None = None,
+    repo_root: Path | None = None,
     worktree_base: Path | None = None, out_dir: Path | None = None,
     claude_extra_args: list[str] | None = None, claude_bin: str = "claude",
-    task_timeout: int = 60 * 60, gate_timeout: int = 600,
+    task_timeout: int = 60 * 60, gate_timeout: int = 900,
     panel_timeout: int = 600, log: Callable[[str], None] = print,
 ) -> dict:
-    """Run the full matrix and write results. Returns the summary dict."""
+    """Run the matrix and write results incrementally. Returns the summary dict.
+
+    base_ref is the default fork point; base_overrides maps task_key -> ref for
+    tasks that need a different base (e.g. the skeleton task forks from main
+    while body-fills fork from the skeleton+gate commit). Results are persisted
+    to matrix.json after EVERY cell so a multi-hour run survives interruption.
+    """
     from . import yaml_io
     tasks_path = Path(tasks_path)
     repo_root = repo_root or tasks_path.parent
     worktree_base = worktree_base or (repo_root.parent)
     out_dir = out_dir or (repo_root / "docs" / "runs" / "bakeoff")
     out_dir.mkdir(parents=True, exist_ok=True)
+    base_overrides = base_overrides or {}
     doc = yaml_io.load(tasks_path)
     tasks = plan_mod.load_tasks(doc)
     if only_keys:
         tasks = [t for t in tasks if t.key in set(only_keys)]
-    test_command = repo_config_mod.load(repo_root).test
+    repo_test = repo_config_mod.load(repo_root).test
     fin = "apps/finance-domain/**"
 
+    def _persist(cells: list[CellResult]) -> dict[str, str]:
+        winners = recommend(cells)
+        (out_dir / "matrix.json").write_text(json.dumps(
+            {"cells": [c.to_dict() for c in cells], "winners": winners}, indent=2))
+        (out_dir / "results.md").write_text(render_markdown(cells, winners))
+        return winners
+
     cells: list[CellResult] = []
+    total = len(tasks) * len(agents)
     for task in tasks:
+        task_base = base_overrides.get(task.key, base_ref)
         for agent in agents:
+            log(f"=== cell {len(cells)+1}/{total}: {task.key}/{agent} "
+                f"(base {task_base[:12]}) ===")
             cells.append(run_cell(
-                task=task, agent=agent, base_ref=base_ref, repo_root=repo_root,
-                worktree_base=worktree_base, test_command=test_command,
+                task=task, agent=agent, base_ref=task_base, repo_root=repo_root,
+                worktree_base=worktree_base,
+                test_command=test_command_override or repo_test,
                 run_id="bakeoff", financial_paths=fin,
                 claude_extra_args=claude_extra_args or [], claude_bin=claude_bin,
                 task_timeout=task_timeout, gate_timeout=gate_timeout,
                 panel_timeout=panel_timeout, log=log))
+            _persist(cells)  # incremental: survive interruption
 
-    winners = recommend(cells)
-    (out_dir / "matrix.json").write_text(json.dumps(
-        {"cells": [c.to_dict() for c in cells], "winners": winners}, indent=2))
-    (out_dir / "results.md").write_text(render_markdown(cells, winners))
+    winners = _persist(cells)
     log(f"bake-off complete: {len(cells)} cells -> {out_dir}/results.md")
     return {"cells": [c.to_dict() for c in cells], "winners": winners,
             "out_dir": str(out_dir)}
