@@ -95,6 +95,12 @@ Task to work on:
 Description:
 {task_description}
 
+Integration is the DISPATCHER's job, not yours: commit your work to the current
+branch, but do NOT push to origin and do NOT run `gh pr create` / open a pull
+request. The dispatcher pushes your branch and raises the PR (against the
+run-level feature branch) for you — if you open one yourself it lands against
+the wrong base (the repo default branch) as a duplicate that has to be closed.
+
 When you finish the session (Done, Blocked, or Escalated) write the summary file
 to $SUMMARY_PATH in the format documented in tasker.md Phase 5. Do not print the
 summary as a separate message — write it to the file only. After writing the
