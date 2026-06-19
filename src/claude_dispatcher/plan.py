@@ -176,6 +176,16 @@ def load_tasks(doc: Any) -> list[Task]:
     return tasks
 
 
+def feature_prd(doc: Any) -> str | None:
+    """Return the top-level ``prd:`` path the Planner emits as the feature's
+    intent oracle (read by the final feature review). None when absent. The
+    value is the repo-relative path to the PRD markdown (e.g.
+    ``features/<feature>/PRD.md``); a present-but-blank value is treated as None.
+    Pure function of the parsed YAML ``doc``.
+    """
+    raise NotImplementedError("PRD-1 body-fill: feature_prd")
+
+
 def _validate_blocked_by(tasks: list[Task]) -> None:
     """Reject blockedBy references that don't resolve to a task in the file."""
     known = {t.key for t in tasks}
