@@ -25,23 +25,19 @@ def _panel(blocking=0):
 
 
 # --- infer_stack (BKO-1) ---------------------------------------------------
-@pytest.mark.skip(reason="BKO body-fill: infer_stack")
 def test_infer_stack_go_from_label():
     assert bakeoff.infer_stack(_task(labels=["size:S", "area:bay-session"])) == "go"
 
 
-@pytest.mark.skip(reason="BKO body-fill: infer_stack")
 def test_infer_stack_react_from_label():
     assert bakeoff.infer_stack(_task(labels=["size:M", "area:mobile"])) == "react"
 
 
-@pytest.mark.skip(reason="BKO body-fill: infer_stack")
 def test_infer_stack_react_from_path_when_no_label():
     t = _task(labels=["size:S"], description="edit apps/skillstrike-mobile/src/x.tsx")
     assert bakeoff.infer_stack(t) == "react"
 
 
-@pytest.mark.skip(reason="BKO body-fill: infer_stack")
 def test_infer_stack_unknown():
     assert bakeoff.infer_stack(_task(labels=["size:S"], description="docs only")) == "unknown"
 
