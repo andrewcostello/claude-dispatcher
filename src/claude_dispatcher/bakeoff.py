@@ -38,6 +38,10 @@ from . import repo_config as repo_config_mod
 from . import spawn as spawn_mod
 
 ALL_AGENTS = ("claude", "codex", "grok", "gemini")
+# Reviewers in the panel (v2: grok promoted from advisory). Author excluded per cell.
+ALL_REVIEWERS = ("claude", "codex", "gemini", "grok")
+EFFORT_LEVELS = ("low", "medium", "high")  # gemini has no effort flag -> "default"
+HARNESS_VERSION = "2"
 
 # Panel consensus -> rank (higher is better). Used in the outcome-first sort.
 _CONSENSUS_RANK = {"approve": 2, "incomplete": 1, "block": 0}
@@ -57,6 +61,20 @@ class CellResult:
     cost_known: bool = False
     duration_s: float = 0.0
     error: str | None = None
+    # --- v2 (eval-harness) fields ---
+    effort: str = "default"        # low|medium|high|default
+    trial: int = 0                 # repeat index for variance
+    stack: str = "unknown"         # react|go|unknown (per-language routing)
+    model_id: str | None = None    # provenance: resolved model
+    cli_version: str | None = None # provenance: agent CLI version
+    input_tokens: int = 0
+    output_tokens: int = 0
+    relaxed_pass: bool = False     # gate_passed AND 0 CRITICAL/HIGH findings
+    findings: list[dict] = field(default_factory=list)   # full persisted findings
+    reviewers: list[dict] = field(default_factory=list)  # per-reviewer verdict+findings
+    repair_attempted: bool = False
+    repair_helped: bool = False    # repair turned a fail into a (relaxed) pass
+    pre_repair: dict | None = None # {gate_passed, blocking_findings, panel_consensus}
 
     @property
     def quality_key(self) -> tuple:
@@ -80,7 +98,74 @@ class CellResult:
             "diff_lines": self.diff_lines,
             "cost_usd": round(self.cost_usd, 4), "cost_known": self.cost_known,
             "duration_s": round(self.duration_s, 1), "error": self.error,
+            "effort": self.effort, "trial": self.trial, "stack": self.stack,
+            "model_id": self.model_id, "cli_version": self.cli_version,
+            "input_tokens": self.input_tokens, "output_tokens": self.output_tokens,
+            "relaxed_pass": self.relaxed_pass, "findings": self.findings,
+            "reviewers": self.reviewers, "repair_attempted": self.repair_attempted,
+            "repair_helped": self.repair_helped, "pre_repair": self.pre_repair,
         }
+
+
+# ===========================================================================
+# Pure-logic body-fills (dogfood: each implemented by a dispatched agent task
+# against the contract below + its skipped contract test in tests/test_bakeoff.py).
+# Stubs raise until filled; the live-integration spine (run_cell/run_bakeoff)
+# wires them in. Keep these PURE (no subprocess / network / fs) so they're
+# unit-testable and the pytest gate gives objective done-criteria.
+# ===========================================================================
+
+def infer_stack(task: plan_mod.Task) -> str:
+    """Classify a task's stack for per-language routing.
+
+    Returns "go" if the task targets Go services (label `area:bay-session`,
+    `area:go`, or `lang:go`, or a description/path under apps/platform-domain or
+    *.go), "react" for mobile/TS/React work (label `area:mobile`, `area:react`,
+    `lang:react`, or apps/skillstrike-mobile / *.tsx), else "unknown". Label
+    match takes precedence over path heuristics. Pure function of `task`.
+    """
+    raise NotImplementedError("BKO body-fill: infer_stack")
+
+
+def compute_relaxed_pass(gate_passed: bool, panel: "cfr.PanelVerdict | None") -> bool:
+    """The relaxed acceptance bar: True iff the gate passed AND the panel has
+    zero CRITICAL/HIGH (blocking) findings. MEDIUM/LOW nits do NOT block. A
+    None panel (not run) counts as no blocking findings. Pure function.
+    """
+    raise NotImplementedError("BKO body-fill: compute_relaxed_pass")
+
+
+def evaluate_reviewers(cells: list["CellResult"]) -> dict:
+    """Objective reviewer meta-evaluation over all cells' persisted per-reviewer
+    data (`cell.reviewers` = [{family, verdict, findings:[{severity,...}]}]).
+
+    For each reviewer family return a dict with:
+      - reviews: int (cells judged)
+      - approvals: int; approvals_of_gate_failing: int (objective false-negatives
+        — approving a solution whose cell.gate_passed is False)
+      - findings_total, blocking_findings_total (CRITICAL/HIGH)
+      - approve_rate (approvals / reviews)
+      - unique_blocking: blocking findings at a (task,agent,effort,trial,location)
+        no OTHER reviewer flagged (candidate signal; needs adjudication for truth)
+    Pure function of `cells`. Precision/recall vs ground truth come later from
+    the planted-bug set + adjudication; this computes the gate-grounded +
+    descriptive stats.
+    """
+    raise NotImplementedError("BKO body-fill: evaluate_reviewers")
+
+
+def render_report(cells: list["CellResult"]) -> str:
+    """Render the full markdown report from the matrix. Sections:
+      1. Per (agent × effort) aggregate over the whole project: total wall-clock
+         (sum duration), total cost_usd, total tokens, cells, relaxed-pass count.
+      2. Per-stack (react / go) routing tables: per-task best agent×effort by
+         (relaxed_pass, fewest blocking, then cost, then duration).
+      3. Reviewer evaluation (from evaluate_reviewers): per-reviewer approve_rate,
+         gate-failing approvals, findings, unique-blocking.
+      4. Provenance footer: harness version + per-agent model_id/cli_version seen.
+    Pure function of `cells` (may call evaluate_reviewers). Returns markdown.
+    """
+    raise NotImplementedError("BKO body-fill: render_report")
 
 
 def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:

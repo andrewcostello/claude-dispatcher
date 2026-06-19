@@ -342,20 +342,29 @@ section. Do not open a PR.
 
 def _agent_argv(
     agent: str, bin_: str, prompt_file: Path, cwd: Path,
-    model: str | None, prompt_text: str,
+    model: str | None, prompt_text: str, effort: str | None = None,
 ) -> list[str]:
-    """Build the headless-agentic argv for a cross-family implementer CLI."""
+    """Build the headless-agentic argv for a cross-family implementer CLI.
+
+    effort (low|medium|high) maps to each CLI's reasoning knob: codex via
+    `-c model_reasoning_effort=`, grok via `--effort`; gemini/agy has no flag
+    (ignored, runs default).
+    """
     if agent == "codex":
         cmd = [bin_, "exec", "--sandbox", "workspace-write"]
         if model:
             cmd += ["--model", model]
+        if effort:
+            cmd += ["-c", f"model_reasoning_effort={effort}"]
         return cmd + [prompt_text]  # prompt positional; stdin closed by caller
     if agent == "grok":
         cmd = [bin_, "--cwd", str(cwd), "--always-approve"]
         if model:
             cmd += ["--model", model]
+        if effort:
+            cmd += ["--effort", effort]
         return cmd + ["--prompt-file", str(prompt_file)]
-    if agent == "gemini":  # -> agy
+    if agent == "gemini":  # -> agy (no effort flag; runs default)
         cmd = [bin_, "--print"]
         if model:
             cmd += ["--model", model]
@@ -419,6 +428,7 @@ def spawn_agent(
     env: dict[str, str],
     prompt: str,
     model: str | None = None,
+    effort: str | None = None,
     extra_args: list[str] | None = None,
     claude_bin: str = "claude",
     timeout_seconds: int = 60 * 60 * 4,
@@ -434,6 +444,8 @@ def spawn_agent(
         spawn_extra = list(extra_args or [])
         if model:
             spawn_extra += ["--model", model]
+        if effort:
+            spawn_extra += ["--effort", effort]
         return spawn_claude(
             claude_bin=claude_bin, cwd=cwd, env=env, prompt=prompt,
             extra_args=spawn_extra, timeout_seconds=timeout_seconds,
@@ -446,7 +458,7 @@ def spawn_agent(
     xprompt = prompt + _CROSS_FAMILY_SUFFIX.format(summary_path=summary_path)
     prompt_file = summary_path.parent / f"{task_key}-{agent}-prompt.txt"
     prompt_file.write_text(xprompt)
-    argv = _agent_argv(agent, bin_, prompt_file, cwd, model, xprompt)
+    argv = _agent_argv(agent, bin_, prompt_file, cwd, model, xprompt, effort)
 
     try:
         proc = subprocess.run(
