@@ -183,7 +183,13 @@ def feature_prd(doc: Any) -> str | None:
     ``features/<feature>/PRD.md``); a present-but-blank value is treated as None.
     Pure function of the parsed YAML ``doc``.
     """
-    raise NotImplementedError("PRD-1 body-fill: feature_prd")
+    if not isinstance(doc, dict):
+        return None
+    value = doc.get("prd")
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _validate_blocked_by(tasks: list[Task]) -> None:
