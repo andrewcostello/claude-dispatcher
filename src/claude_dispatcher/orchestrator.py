@@ -183,6 +183,12 @@ class RunConfig:
     # Opt-in (off by default) because it shells claude-haiku per task — cost +
     # latency, and not correctness-critical.
     haiku_summary: bool = False
+    # Feature review loop (steps 3-4, docs/feature-review-loop.md). When on
+    # (pr-mode only), after the per-task drain the dispatcher reviews the
+    # cumulative feature diff vs the PRD, dispositions findings, and loops fix
+    # tasks until clean / held / alarmed. Opt-in (off = identical prior behavior).
+    feature_review: bool = False
+    feature_review_rounds: int = 3
     # Notification channels for human-attention events. Built once at
     # execute() time from CLI flags + env vars; injected into _run_task
     # via this slot so tests can substitute a recording stub.
@@ -374,70 +380,26 @@ def _run_loop(
     merge_state = merge_mod.MergePassState()
 
     try:
-        in_flight: dict[Future[str], str] = {}
-        with ThreadPoolExecutor(max_workers=max(cfg.max_parallel, 1)) as exe:
-            while True:
-                tasks = _load_tasks_snapshot(cfg)
-                runnable = plan_mod.runnable_now(tasks, integration=cfg.integration)
-                runnable = plan_mod.filter_tasks(runnable, cfg.label_filter, cfg.only_keys)
-                # Don't re-dispatch tasks already mid-flight.
-                in_flight_keys = set(in_flight.values())
-                runnable = [t for t in runnable if t.key not in in_flight_keys]
-
-                # Dispatch up to remaining capacity.
-                while runnable and len(in_flight) < cfg.max_parallel:
-                    t = runnable.pop(0)
-                    snap = TaskSnapshot(
-                        key=t.key,
-                        summary=t.summary,
-                        description=t.description,
-                        type=t.type,
-                        labels=list(t.labels),
-                        model=t.model,
-                        agent=t.agent,
-                        blocked_by=list(t.blocked_by),
-                    )
-                    # Mark In Progress on the YAML BEFORE submit. If we submit
-                    # first, the main thread could re-load and re-dispatch the
-                    # same key before the worker has stamped In Progress.
-                    _mark_in_progress(cfg, snap, run_dir)
-                    # The task_started event is emitted by the worker (_run_task),
-                    # AFTER worktree creation + the dispatch-time dependency merge,
-                    # so its payload can carry the merged dependency SHAs (INT-4).
-                    fut = exe.submit(_run_task, snap, cfg, run_dir, log_path, repo_root)
-                    in_flight[fut] = snap.key
-                    _log(log_path, f"dispatch {snap.key} submitted")
-
-                if not in_flight:
-                    break  # nothing running, nothing to start
-
-                done, _pending = wait(list(in_flight), return_when=FIRST_COMPLETED)
-                for fut in done:
-                    key = in_flight.pop(fut)
-                    try:
-                        fut.result()  # propagate exceptions
-                    except Exception as e:
-                        _log(log_path, f"  worker {key} raised: {e}")
-                        # Notify on a dispatcher-internal error before
-                        # stamping Blocked (separate channel from a normal
-                        # task failure — see notify.worker_exception_*).
-                        _send_notification(cfg, notify_mod.worker_exception_notification(
-                            task_key=key,
-                            run_id=cfg.run_id,
-                            exception_repr=repr(e),
-                            tasks_yaml=str(cfg.tasks_path),
-                        ), task_key=key)
-                        try:
-                            _mark_blocked(cfg, key, reason=f"worker_exception: {e}")
-                        except Exception as mark_err:
-                            _log(log_path, f"  worker {key} _mark_blocked itself raised: {mark_err}")
-
-                # PRF-4: after each batch of completions, merge any PR now
-                # eligible (approved per the ladder + dependencies all Merged).
-                # Running it here — not only at run end — lets a dependency's
-                # merge advance the feature branch before its dependents
-                # dispatch, and surfaces stalled (awaiting-approval) PRs early.
-                _maybe_merge_pass(cfg, repo_root, log_path, merge_state)
+        # OUTER feature-review loop (steps 3-4). With cfg.feature_review off (the
+        # default) it runs the dispatch-drain + merge exactly ONCE then breaks —
+        # behaviorally identical to the prior single-drain code. When on (pr-mode
+        # only), each round runs the final whole-feature review, dispositions the
+        # findings, and appends accepted findings as FIX-* tasks; the next round
+        # re-drains to run them, then re-reviews — until clean, held, or alarmed.
+        ledger = disposition_mod.DispositionLedger(
+            max_fix_rounds=cfg.feature_review_rounds)
+        review_round = 0
+        while True:
+            _dispatch_drain(cfg, run_dir, log_path, repo_root, merge_state)
+            # End-of-round merge: the last task(s) to reach Awaiting Review — and
+            # any PR eligible only once the final dependency merged — get a pass.
+            _maybe_merge_pass(cfg, repo_root, log_path, merge_state)
+            if not (cfg.feature_review and cfg.integration == "pr"):
+                break
+            if not _feature_review_round(
+                cfg, repo_root, log_path, ledger, review_round):
+                break  # clean / held / alarm / no diff -> done
+            review_round += 1
     finally:
         # Stop the heartbeat and wait for it to fully exit before emitting
         # run_complete, so that event is guaranteed to be the terminal record
@@ -447,13 +409,6 @@ def _run_loop(
         # longer than the orchestrator's own appends already can.
         stop_heartbeat.set()
         heartbeat.join()
-
-    # Final merge pass (PRF-4): the dispatch loop breaks as soon as nothing is
-    # in-flight, so the last task(s) to reach Awaiting Review — and any PR that
-    # only became eligible once the final dependency merged — get one more
-    # merge attempt here. Runs after the heartbeat is stopped but before the
-    # terminal run_complete event, so run_complete stays the chain's last record.
-    _maybe_merge_pass(cfg, repo_root, log_path, merge_state)
 
     tasks = _load_tasks_snapshot(cfg)
     # "Done" for the rollup counts every terminal-success status: plain Done
@@ -1358,6 +1313,121 @@ def apply_dispositions(
     _log(log_path, f"feature-review dispositions: {ledger.tally()} "
                    f"(accepted={len(accepted)} held={len(held)})")
     return accepted, held
+
+
+def _dispatch_drain(
+    cfg: RunConfig, run_dir: Path, log_path: Path, repo_root: Path,
+    merge_state: merge_mod.MergePassState,
+) -> None:
+    """One dispatch-drain pass: spawn runnable tasks (up to max_parallel) until
+    nothing is runnable or in-flight, merging eligible PRs after each batch.
+    Extracted verbatim from _run_loop so the feature-review loop re-runs it each
+    round (to run the FIX-* tasks it appends)."""
+    in_flight: dict[Future[str], str] = {}
+    with ThreadPoolExecutor(max_workers=max(cfg.max_parallel, 1)) as exe:
+        while True:
+            tasks = _load_tasks_snapshot(cfg)
+            runnable = plan_mod.runnable_now(tasks, integration=cfg.integration)
+            runnable = plan_mod.filter_tasks(runnable, cfg.label_filter, cfg.only_keys)
+            in_flight_keys = set(in_flight.values())
+            runnable = [t for t in runnable if t.key not in in_flight_keys]
+            while runnable and len(in_flight) < cfg.max_parallel:
+                t = runnable.pop(0)
+                snap = TaskSnapshot(
+                    key=t.key, summary=t.summary, description=t.description,
+                    type=t.type, labels=list(t.labels), model=t.model,
+                    agent=t.agent, blocked_by=list(t.blocked_by),
+                )
+                _mark_in_progress(cfg, snap, run_dir)
+                fut = exe.submit(_run_task, snap, cfg, run_dir, log_path, repo_root)
+                in_flight[fut] = snap.key
+                _log(log_path, f"dispatch {snap.key} submitted")
+            if not in_flight:
+                break
+            done, _pending = wait(list(in_flight), return_when=FIRST_COMPLETED)
+            for fut in done:
+                key = in_flight.pop(fut)
+                try:
+                    fut.result()
+                except Exception as e:
+                    _log(log_path, f"  worker {key} raised: {e}")
+                    _send_notification(cfg, notify_mod.worker_exception_notification(
+                        task_key=key, run_id=cfg.run_id, exception_repr=repr(e),
+                        tasks_yaml=str(cfg.tasks_path),
+                    ), task_key=key)
+                    try:
+                        _mark_blocked(cfg, key, reason=f"worker_exception: {e}")
+                    except Exception as mark_err:
+                        _log(log_path, f"  worker {key} _mark_blocked itself raised: {mark_err}")
+            _maybe_merge_pass(cfg, repo_root, log_path, merge_state)
+
+
+def _feature_review_round(
+    cfg: RunConfig, repo_root: Path, log_path: Path,
+    ledger: disposition_mod.DispositionLedger, review_round: int,
+) -> bool:
+    """One feature-review round: review the cumulative diff vs the PRD ->
+    disposition every finding -> append accepted ones as FIX tasks. Returns True
+    iff another dispatch round should run (FIX tasks were appended); False to
+    stop (no diff / alarm tripped / findings held for a human / clean)."""
+    doc = yaml_io.load(cfg.tasks_path)
+    verdict = run_feature_review(cfg, repo_root, doc, log_path)
+    if verdict is None:
+        return False
+    accepted, held = apply_dispositions(
+        cfg, verdict, mode=cfg.mode, ledger=ledger, log_path=log_path)
+    tripped, why = ledger.alarm_tripped(review_round)
+    if tripped:
+        _log(log_path, f"feature-review: HOLD (alarm) — {why}")
+        return False
+    if held:
+        _log(log_path, f"feature-review: {len(held)} finding(s) need a human "
+                       f"(lone CRITICAL / conflict) — holding the feature")
+        return False
+    if not accepted:
+        _log(log_path, "feature-review: clean — no accept-worthy findings")
+        return False
+    n = _append_fix_tasks(cfg, accepted, review_round)
+    _log(log_path, f"feature-review round {review_round}: appended {n} FIX task(s)")
+    return n > 0
+
+
+def _append_fix_tasks(cfg: RunConfig, accepted: list[dict], review_round: int) -> int:
+    """Append accepted findings as FIX-* task rows to the tasks.yaml so the next
+    dispatch-drain runs them (gated + per-task-paneled like any task). FIX keys
+    are unique across rounds (max existing index + 1). Returns the count added."""
+    with yaml_io.FileLock(cfg.tasks_path, timeout_seconds=cfg.lock_timeout_seconds):
+        doc = yaml_io.load(cfg.tasks_path)
+        rows = doc.get("tasks") or []
+        existing = [int(str(r.get("key"))[4:]) for r in rows
+                    if str(r.get("key", "")).startswith("FIX-")
+                    and str(r.get("key"))[4:].isdigit()]
+        n = max(existing, default=0)
+        added = 0
+        for f in accepted:
+            n += 1
+            loc = f.get("location", "?")
+            rows.append({
+                "key": f"FIX-{n}",
+                "summary": f"fix: {(f.get('description') or loc)[:70]}",
+                "description": (
+                    f"Address this finding from the final feature review "
+                    f"(round {review_round}):\n\n"
+                    f"- location: {loc}\n"
+                    f"- severity: {f.get('severity')}\n"
+                    f"- corroboration: {f.get('corroboration')} reviewer(s)\n\n"
+                    f"{f.get('description', '')}\n\n"
+                    f"Make the change and add/adjust a test proving it. "
+                    f"Commit only — the dispatcher integrates."
+                ),
+                "type": "Task",
+                "labels": ["size:S", "area:fix"],
+                "agent": "claude",
+            })
+            added += 1
+        doc["tasks"] = rows
+        yaml_io.dump(doc, cfg.tasks_path)
+    return added
 
 
 def _spawn_panel_iterate(
@@ -3031,6 +3101,8 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
             args, "cross_family_panel_iterate", 0,
         ),
         haiku_summary=getattr(args, "haiku_summary", False),
+        feature_review=getattr(args, "feature_review", False),
+        feature_review_rounds=getattr(args, "feature_review_rounds", 3),
         notifier=notify_mod.build_notifier_from_env(
             cli_ntfy_topic=getattr(args, "ntfy_topic", None),
             cli_ntfy_server=getattr(args, "ntfy_server", None),

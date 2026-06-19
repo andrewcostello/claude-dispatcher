@@ -68,3 +68,70 @@ def test_apply_dispositions_classifies_records_all_no_silent_drops(tmp_path):
     assert {f["location"] for f in held} == {"b:2"}        # lone CRITICAL -> hold
     assert led.tally() == {"accept": 1, "hold": 1, "defer": 1}  # MEDIUM c:3 -> defer
     assert len(led.records) == 3                            # nothing silently dropped
+
+
+def _tasks_yaml(tmp_path):
+    p = tmp_path / "t.yaml"
+    p.write_text("project: X\nepic: e\ntasks:\n"
+                 "  - key: T1\n    summary: s\n    description: d\n"
+                 "    type: Task\n    labels: [size:S]\n    status: Merged\n",
+                 encoding="utf-8")
+    return p
+
+
+def test_append_fix_tasks_writes_valid_runnable_rows(tmp_path):
+    from claude_dispatcher import plan, yaml_io
+    p = _tasks_yaml(tmp_path)
+    n = orch._append_fix_tasks(_cfg(tmp_path, tasks_path=p), [
+        {"location": "a.py:1", "severity": "HIGH", "description": "bug here",
+         "corroboration": 2}], review_round=0)
+    assert n == 1
+    fix = [t for t in plan.load_tasks(yaml_io.load(p)) if t.key == "FIX-1"]
+    assert fix and fix[0].agent == "claude" and fix[0].size_label == "S"
+    assert fix[0].status == plan.TODO  # runnable
+
+
+def _patch_review(monkeypatch, verdict):
+    monkeypatch.setattr(orch, "run_feature_review", lambda *a, **k: verdict)
+
+
+def test_feature_review_round_appends_fix_on_accept(tmp_path, monkeypatch):
+    from claude_dispatcher.disposition import DispositionLedger
+    from claude_dispatcher import plan, yaml_io
+    p = _tasks_yaml(tmp_path)
+    F = lambda loc, sev: NS(location=loc, severity=sev, description="d")
+    _patch_review(monkeypatch, NS(reviewers=[
+        NS(family="claude", findings=[F("a:1", "CRITICAL")]),
+        NS(family="codex", findings=[F("a:1", "CRITICAL")]),  # corroborated -> accept
+    ], blocking_findings=[]))
+    cont = orch._feature_review_round(_cfg(tmp_path, tasks_path=p), tmp_path,
+                                      tmp_path / "l", DispositionLedger(), 0)
+    assert cont is True
+    assert any(t.key == "FIX-1" for t in plan.load_tasks(yaml_io.load(p)))
+
+
+def test_feature_review_round_stops_when_clean(tmp_path, monkeypatch):
+    from claude_dispatcher.disposition import DispositionLedger
+    _patch_review(monkeypatch, NS(reviewers=[], blocking_findings=[]))
+    assert orch._feature_review_round(_cfg(tmp_path, tasks_path=_tasks_yaml(tmp_path)),
+                                      tmp_path, tmp_path / "l", DispositionLedger(), 0) is False
+
+
+def test_feature_review_round_stops_on_no_diff(tmp_path, monkeypatch):
+    from claude_dispatcher.disposition import DispositionLedger
+    _patch_review(monkeypatch, None)
+    assert orch._feature_review_round(_cfg(tmp_path, tasks_path=_tasks_yaml(tmp_path)),
+                                      tmp_path, tmp_path / "l", DispositionLedger(), 0) is False
+
+
+def test_feature_review_round_holds_on_lone_critical(tmp_path, monkeypatch):
+    from claude_dispatcher.disposition import DispositionLedger
+    from claude_dispatcher import plan, yaml_io
+    p = _tasks_yaml(tmp_path)
+    _patch_review(monkeypatch, NS(reviewers=[
+        NS(family="claude", findings=[NS(location="z:9", severity="CRITICAL",
+                                          description="d")])], blocking_findings=[]))
+    cont = orch._feature_review_round(_cfg(tmp_path, tasks_path=p), tmp_path,
+                                      tmp_path / "l", DispositionLedger(), 0)
+    assert cont is False  # lone CRITICAL -> held, no fix appended
+    assert not any(t.key.startswith("FIX-") for t in plan.load_tasks(yaml_io.load(p)))

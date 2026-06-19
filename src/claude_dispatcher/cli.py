@@ -68,6 +68,12 @@ def build_parser() -> argparse.ArgumentParser:
                      help="persist each task's transcript + a haiku summary and "
                           "reference them from the YAML row (audit log; opt-in "
                           "because it shells claude-haiku per task)")
+    run.add_argument("--feature-review", action="store_true",
+                     help="after the per-task drain (pr mode), review the "
+                          "cumulative feature diff vs the PRD, disposition "
+                          "findings, and loop fix tasks until clean/held/alarmed")
+    run.add_argument("--feature-review-rounds", type=int, default=3,
+                     help="max feature-review fix rounds before holding (default 3)")
     run.add_argument("--skip-security-linter", action="store_true")
     run.add_argument(
         "--reviewer-count",
