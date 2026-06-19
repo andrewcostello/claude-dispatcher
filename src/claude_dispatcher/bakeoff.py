@@ -132,7 +132,12 @@ def compute_relaxed_pass(gate_passed: bool, panel: "cfr.PanelVerdict | None") ->
     zero CRITICAL/HIGH (blocking) findings. MEDIUM/LOW nits do NOT block. A
     None panel (not run) counts as no blocking findings. Pure function.
     """
-    raise NotImplementedError("BKO body-fill: compute_relaxed_pass")
+    if not gate_passed:
+        return False
+    if panel is None:
+        return True
+    findings = getattr(panel, "blocking_findings", None)
+    return len(findings) == 0 if findings is not None else True
 
 
 def evaluate_reviewers(cells: list["CellResult"]) -> dict:
