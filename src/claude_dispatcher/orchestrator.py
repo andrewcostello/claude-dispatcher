@@ -1249,6 +1249,58 @@ def _run_cross_family_panel(
     )
 
 
+def run_feature_review(
+    cfg: RunConfig, repo_root: Path, doc: Any, log_path: Path,
+) -> cfr_mod.PanelVerdict | None:
+    """Step 3 (feature-review loop): the final whole-feature review. Runs the
+    cross-family panel over the CUMULATIVE diff (base...feature) reviewed AGAINST
+    the PRD — does it satisfy intent + acceptance + cross-task coherence, what is
+    missing/regressed — not just diff-internal quality. pr-mode only. Returns the
+    PanelVerdict, or None when there is no diff to review. Emits
+    feature_review_started / feature_review_verdict."""
+    base = cfg.base_branch
+    branch = cfg.feature_branch or cfg.base_branch
+    diff = cfr_mod.collect_diff(repo_root=repo_root, base_branch=base, branch=branch)
+    if not diff.strip():
+        _log(log_path, "feature-review: no cumulative diff — skipping")
+        return None
+    prd_path = plan_mod.feature_prd(doc)
+    prd_md = ""
+    if prd_path:
+        try:
+            prd_md = (repo_root / prd_path).read_text(encoding="utf-8")
+        except OSError:
+            prd_md = f"(PRD at {prd_path} not readable)"
+    summary_md = (
+        "# Final feature review\n\nReview the CUMULATIVE feature diff against the "
+        "PRD below: does it satisfy the intent + acceptance criteria, is it "
+        "coherent across tasks, what is missing or regressed? Judge the feature "
+        "as a whole, not each hunk.\n\n## PRD\n" + (prd_md or "(no PRD provided)")
+    )
+    epic = (str(doc.get("epic") or doc.get("project") or "feature")
+            if isinstance(doc, dict) else "feature")
+    _emit_event(cfg, journal_mod.EventType.feature_review_started, {
+        "base": base, "branch": branch, "prd": prd_path,
+        "diff_lines": diff.count("\n"),
+    })
+    verdict = cfr_mod.run_panel(
+        ticket_key="FEATURE-REVIEW",
+        ticket_summary=f"final review of feature {epic}",
+        summary_md=summary_md, diff=diff, branch=branch, base_branch=base,
+        reviewers=_panel_reviewer_factory(cfg),
+        advisory_reviewers=_panel_advisory_reviewer_factory(
+            cfg, repo_root, log_path, "FEATURE-REVIEW"),
+        log=lambda m: _log(log_path, m),
+    )
+    _emit_event(cfg, journal_mod.EventType.feature_review_verdict, {
+        "consensus": verdict.consensus,
+        "blocking": len(verdict.blocking_findings),
+    })
+    _log(log_path, f"feature-review: consensus={verdict.consensus} "
+                   f"blocking={len(verdict.blocking_findings)}")
+    return verdict
+
+
 def _spawn_panel_iterate(
     *,
     cfg: RunConfig,

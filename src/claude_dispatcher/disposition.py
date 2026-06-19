@@ -73,6 +73,25 @@ def classify_disposition(
     return Disposition.DEFER, "non-blocking"
 
 
+def corroboration(verdict) -> dict[str, int]:
+    """Map each finding `location` -> the number of DISTINCT reviewer families
+    that flagged a finding at that location. This is the precision signal fed to
+    `classify_disposition` (corroboration >= 2 lets a blocking finding auto-accept;
+    a lone-reviewer blocking finding holds).
+
+    Reads `verdict.reviewers` (the per-reviewer verdicts — each with `.family`
+    and `.findings`, each finding having a `.location`), NOT the deduped
+    `blocking_findings`. A reviewer flagging the same location twice counts once.
+    Pure function.
+    """
+    counts: dict[str, int] = {}
+    for rv in getattr(verdict, "reviewers", []) or []:
+        locations = {f.location for f in getattr(rv, "findings", []) or []}
+        for loc in locations:
+            counts[loc] = counts.get(loc, 0) + 1
+    return counts
+
+
 @dataclass
 class DispositionLedger:
     """Append-only record of every finding's disposition for a run, with the

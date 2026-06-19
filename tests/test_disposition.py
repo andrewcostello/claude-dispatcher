@@ -4,6 +4,7 @@ import pytest
 
 from claude_dispatcher.disposition import (
     Disposition, DispositionRecord, DispositionLedger, classify_disposition,
+    corroboration,
 )
 
 
@@ -97,3 +98,23 @@ def test_ledger_alarm_on_high_accept_rate():
     led.record(_rec("d", Disposition.DEFER))
     tripped, reason = led.alarm_tripped(rounds_done=1)
     assert tripped is True and "rate" in reason.lower()
+
+
+def test_corroboration_counts_distinct_reviewers_per_location():
+    from types import SimpleNamespace as NS
+    def f(loc):
+        return NS(location=loc, severity="HIGH", description="d")
+    verdict = NS(reviewers=[
+        NS(family="claude", findings=[f("a.py:1"), f("b.py:2")]),
+        NS(family="codex", findings=[f("a.py:1")]),               # corroborates a.py:1
+        NS(family="gemini", findings=[f("a.py:1"), f("a.py:1")]),  # same reviewer dup -> 1
+    ])
+    c = corroboration(verdict)
+    assert c["a.py:1"] == 3   # claude + codex + gemini
+    assert c["b.py:2"] == 1   # claude only
+
+
+def test_corroboration_empty_verdict():
+    from types import SimpleNamespace as NS
+    assert corroboration(NS(reviewers=[])) == {}
+    assert corroboration(NS()) == {}
