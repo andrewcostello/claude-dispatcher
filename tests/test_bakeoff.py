@@ -47,22 +47,18 @@ def test_infer_stack_unknown():
 
 
 # --- compute_relaxed_pass (BKO-2) ------------------------------------------
-@pytest.mark.skip(reason="BKO body-fill: compute_relaxed_pass")
 def test_relaxed_pass_gate_and_no_blocking():
     assert bakeoff.compute_relaxed_pass(True, _panel(blocking=0)) is True
 
 
-@pytest.mark.skip(reason="BKO body-fill: compute_relaxed_pass")
 def test_relaxed_pass_blocked_by_critical():
     assert bakeoff.compute_relaxed_pass(True, _panel(blocking=2)) is False
 
 
-@pytest.mark.skip(reason="BKO body-fill: compute_relaxed_pass")
 def test_relaxed_pass_requires_gate():
     assert bakeoff.compute_relaxed_pass(False, _panel(blocking=0)) is False
 
 
-@pytest.mark.skip(reason="BKO body-fill: compute_relaxed_pass")
 def test_relaxed_pass_none_panel_counts_as_no_blocking():
     assert bakeoff.compute_relaxed_pass(True, None) is True
 
