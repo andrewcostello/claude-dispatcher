@@ -82,26 +82,59 @@ class DispositionLedger:
     max_fix_rounds: int = 3
     max_fix_tasks: int = 20
 
+    # accept rate above this (with at least HIGH_RATE_MIN records) trips the
+    # alarm — the skeleton/PRD is probably wrong if most findings are real bugs.
+    HIGH_ACCEPT_RATE = 0.6
+    HIGH_RATE_MIN_RECORDS = 4
+
     def record(self, rec: DispositionRecord) -> None:
         """Append a disposition. (No dedup here — `finding_id` lets callers /
         `regenerating` detect repeats across rounds.)"""
-        raise NotImplementedError("step-2 body-fill: DispositionLedger.record")
+        self.records.append(rec)
 
     def tally(self) -> dict[str, int]:
-        """Counts per Disposition value (e.g. {'accept': 3, 'defer': 5, ...})."""
-        raise NotImplementedError("step-2 body-fill: DispositionLedger.tally")
+        """Counts per Disposition value (e.g. {'accept': 3, 'defer': 5, ...}).
+        Zero-count dispositions are omitted."""
+        counts: dict[str, int] = {}
+        for r in self.records:
+            counts[r.disposition.value] = counts.get(r.disposition.value, 0) + 1
+        return counts
 
     def accepted_count(self) -> int:
         """Number of ACCEPT records (= fix tasks spawned)."""
-        raise NotImplementedError("step-2 body-fill: DispositionLedger.accepted_count")
+        return sum(1 for r in self.records if r.disposition is Disposition.ACCEPT)
 
     def regenerating(self, finding_id: str) -> bool:
         """True if this finding_id has been ACCEPTed before (a fix didn't
         resolve it and it came back) — a signal the skeleton/PRD is wrong."""
-        raise NotImplementedError("step-2 body-fill: DispositionLedger.regenerating")
+        return any(
+            r.finding_id == finding_id and r.disposition is Disposition.ACCEPT
+            for r in self.records
+        )
+
+    def _has_regenerating(self) -> bool:
+        seen: set[str] = set()
+        for r in self.records:
+            if r.disposition is Disposition.ACCEPT:
+                if r.finding_id in seen:
+                    return True
+                seen.add(r.finding_id)
+        return False
 
     def alarm_tripped(self, rounds_done: int) -> tuple[bool, str]:
-        """(True, reason) if the loop should STOP and HOLD for a human: fix-task
-        cap exceeded, max rounds reached, or a high accept rate / regenerating
-        findings (skeleton/PRD likely wrong). (False, "") otherwise. Pure."""
-        raise NotImplementedError("step-2 body-fill: DispositionLedger.alarm_tripped")
+        """(True, reason) if the loop should STOP and HOLD for a human; (False,
+        "") otherwise. Trips on ALL four documented conditions: max rounds
+        reached, fix-task cap exceeded, a regenerating finding (accepted twice),
+        or a high accept rate. Pure."""
+        if rounds_done >= self.max_fix_rounds:
+            return True, f"max fix rounds reached ({rounds_done}/{self.max_fix_rounds})"
+        accepted = self.accepted_count()
+        if accepted > self.max_fix_tasks:
+            return True, f"fix-task cap exceeded ({accepted}/{self.max_fix_tasks})"
+        if self._has_regenerating():
+            return True, "a finding regenerated (accepted again after a fix) — skeleton/PRD likely wrong"
+        total = len(self.records)
+        if total >= self.HIGH_RATE_MIN_RECORDS and accepted / total > self.HIGH_ACCEPT_RATE:
+            return True, (f"high accept rate ({accepted}/{total} > "
+                          f"{self.HIGH_ACCEPT_RATE:.0%}) — skeleton/PRD likely wrong")
+        return False, ""
