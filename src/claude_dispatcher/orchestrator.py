@@ -364,8 +364,20 @@ def _cumulative_cost_usd(tasks) -> float:
 
 def _budget_exceeded(tasks, ceiling: float | None) -> bool:
     """True when a positive ceiling is set and cumulative cost has reached it.
-    A None/zero/negative ceiling disables the gate (returns False). Pure."""
+    A None/zero/negative ceiling disables the gate (returns False) — the CLI
+    rejects non-positive ceilings, so this guard is defense-in-depth for a
+    resume whose genesis somehow carried one. Pure."""
     return bool(ceiling and ceiling > 0) and _cumulative_cost_usd(tasks) >= ceiling
+
+
+def _stamp_task_cost(cfg: RunConfig, task_key: str, cost_usd: float) -> None:
+    """Write ``cost_usd`` onto a task's YAML row now, so its spend counts toward
+    the budget ceiling even if the task later blocks before the normal success-
+    path writeback. Idempotent-ish: the success path overwrites with the fuller
+    (implementer + verifier) total."""
+    def _apply(row):
+        row["cost_usd"] = cost_usd
+    _mutate_row(cfg, task_key, _apply)
 
 
 def _run_loop(
@@ -416,23 +428,34 @@ def _run_loop(
                 # drain (killing a task mid-spawn orphans its worktree/PR). The
                 # loop then breaks naturally when nothing is in-flight, holding
                 # the run for a human with its remaining tasks parked To Do.
-                if _budget_exceeded(tasks, cfg.max_cost_usd):
+                #
+                # The gate fires ONLY when there is runnable work to suppress: a
+                # run whose last task pushed cost over the ceiling but left
+                # nothing else to do is COMPLETE, not held — reporting it
+                # "budget-held" (and exiting non-zero) would be a false alarm.
+                # (Dependents that aren't runnable yet are caught on the later
+                # iteration where they become runnable.)
+                if runnable and _budget_exceeded(tasks, cfg.max_cost_usd):
                     if not budget_tripped:
                         budget_tripped = True
                         spent = _cumulative_cost_usd(tasks)
                         in_flight_now = sorted(in_flight.values())
+                        parked = sorted(t.key for t in runnable)
                         _log(log_path,
                              f"BUDGET: cumulative cost ${spent:.2f} >= ceiling "
-                             f"${cfg.max_cost_usd:.2f} — holding; no new tasks "
-                             f"will start (in-flight: {in_flight_now or 'none'})")
+                             f"${cfg.max_cost_usd:.2f} — holding; parking "
+                             f"{len(parked)} task(s), no new ones will start "
+                             f"(in-flight: {in_flight_now or 'none'})")
                         _emit_event(cfg, journal_mod.EventType.budget_exceeded, {
                             "cost_usd": round(spent, 4),
                             "ceiling_usd": cfg.max_cost_usd,
                             "in_flight": in_flight_now,
+                            "parked": parked,
                         })
                         _send_notification(cfg, notify_mod.budget_exceeded_notification(
                             run_id=cfg.run_id, cost_usd=spent,
                             ceiling_usd=cfg.max_cost_usd, in_flight=in_flight_now,
+                            parked_count=len(parked),
                             tasks_yaml=str(cfg.tasks_path),
                         ))
                     runnable = []  # stop starting new work; drain in-flight
@@ -764,6 +787,14 @@ def _run_task(
     # non-zero exit, so the journal records the cost even of a failed run.
     _emit_event(cfg, journal_mod.EventType.task_spawn_finished,
                 _spawn_usage_payload(result), task_key=snap.key)
+    # Stamp the implementer spawn's cost onto the YAML row immediately (BUDGET-1).
+    # The success path later refines this with the folded verifier cost, but a
+    # task that spawns and THEN blocks (non-zero exit, missing/malformed summary,
+    # verification-incomplete, …) never reaches that path — without this stamp
+    # its spend would be invisible to the cost ceiling, letting a run that
+    # repeatedly burns tokens on failing tasks sail past the budget.
+    if result.usage.cost_usd is not None:
+        _stamp_task_cost(cfg, snap.key, result.usage.cost_usd)
     if result.exit_code != 0:
         _mark_blocked(cfg, snap.key, reason=f"session_exit_code_{result.exit_code}")
         return plan_mod.BLOCKED

@@ -38,7 +38,9 @@ def test_budget_none_disables_gate():
     assert orch._budget_exceeded([_task(1000.0)], None) is False
 
 
-def test_budget_zero_or_negative_disables_gate():
+def test_budget_zero_or_negative_disables_gate_defensively():
+    # The CLI rejects non-positive ceilings (see the parse tests below); this
+    # guard is defense-in-depth for a resume whose genesis somehow carried one.
     assert orch._budget_exceeded([_task(1000.0)], 0) is False
     assert orch._budget_exceeded([_task(1000.0)], -5) is False
 
@@ -89,3 +91,30 @@ def test_cli_parses_max_cost_usd_as_float():
 def test_cli_max_cost_usd_optional():
     args = build_parser().parse_args(["run", "t.yaml"])
     assert args.max_cost_usd is None
+
+
+def test_cli_rejects_nonpositive_ceiling():
+    import pytest
+    for bad in ("0", "-1", "-0.5"):
+        with pytest.raises(SystemExit):  # argparse turns the type error into exit 2
+            build_parser().parse_args(["run", "t.yaml", "--max-cost-usd", bad])
+
+
+def test_cli_rejects_nonnumeric_ceiling():
+    import pytest
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["run", "t.yaml", "--max-cost-usd", "lots"])
+
+
+def test_resume_accepts_max_cost_usd_override():
+    # gemini HIGH: a budget-held run must be resumable under a raised ceiling.
+    args = build_parser().parse_args(
+        ["resume", "some-run", "--max-cost-usd", "50"])
+    assert args.max_cost_usd == 50.0
+
+
+def test_resume_max_cost_usd_optional_and_validated():
+    import pytest
+    assert build_parser().parse_args(["resume", "r"]).max_cost_usd is None
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["resume", "r", "--max-cost-usd", "0"])

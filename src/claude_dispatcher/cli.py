@@ -31,6 +31,21 @@ DEFAULT_FINANCIAL_PATHS = ",".join([
 ])
 
 
+def _positive_dollars(s: str) -> float:
+    """argparse type for --max-cost-usd: a budget ceiling must be a positive
+    dollar amount. Rejecting 0/negative here (rather than silently disabling)
+    keeps the spend-control contract unambiguous — omit the flag to disable."""
+    try:
+        v = float(s)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{s!r} is not a number")
+    if v <= 0:
+        raise argparse.ArgumentTypeError(
+            "--max-cost-usd must be a positive dollar amount (omit the flag to "
+            "disable the ceiling)")
+    return v
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dispatcher",
@@ -97,19 +112,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument(
         "--max-cost-usd",
-        type=float,
+        type=_positive_dollars,
         default=None,
         metavar="DOLLARS",
         help=(
-            "Cost ceiling for the run, in US dollars. Once cumulative per-task "
-            "cost (implementer + verifier spawns) reaches this, the dispatcher "
-            "stops STARTING new tasks, lets in-flight tasks finish, then holds "
-            "the run for a human (a budget_exceeded event + high-urgency "
-            "notification fire; the run exits non-zero with remaining tasks "
-            "parked To Do — raise this and `dispatcher resume` to continue). "
-            "Omit to disable (default). Note: panel/reviewer spend from "
-            "non-Claude adapters isn't captured by the CLI usage JSON, so it is "
-            "not counted toward the ceiling."
+            "Cost ceiling for the run, in US dollars (must be > 0; omit to "
+            "disable, the default). Once cumulative per-task cost (implementer "
+            "+ verifier spawns) reaches this AND runnable work remains, the "
+            "dispatcher stops STARTING new tasks, lets in-flight tasks finish, "
+            "then holds the run for a human (a budget_exceeded event + high-"
+            "urgency notification fire; the run exits non-zero with remaining "
+            "tasks parked To Do — raise this and `dispatcher resume` to "
+            "continue). The ceiling is checked BETWEEN dispatches, so with "
+            "--max-parallel > 1 actual spend can overshoot by up to the cost of "
+            "the tasks already in flight. Note: panel/reviewer spend from non-"
+            "Claude adapters isn't captured by the CLI usage JSON, so it is not "
+            "counted toward the ceiling."
         ),
     )
     run.add_argument(
@@ -385,6 +403,19 @@ def build_parser() -> argparse.ArgumentParser:
             "signals the original run may still be live, and resuming could "
             "double-dispatch). Use only when you are sure the original run is "
             "dead — e.g. after a kill -9 or a crashed host."
+        ),
+    )
+    rs.add_argument(
+        "--max-cost-usd",
+        type=_positive_dollars,
+        default=None,
+        metavar="DOLLARS",
+        help=(
+            "Override the cost ceiling for this resume, in US dollars (> 0). "
+            "Without it the resumed run keeps the original ceiling from the "
+            "genesis — which, for a run that was budget-held, would immediately "
+            "re-hold without progress. Raise it here to give the resumed run "
+            "room to continue."
         ),
     )
     rs.set_defaults(func=resume_cmd.execute)

@@ -262,6 +262,66 @@ def test_no_ceiling_runs_all_tasks(repo: Path, monkeypatch) -> None:
     assert all(t.get("status") == "Done" for t in doc["tasks"])
 
 
+def test_budget_no_false_hold_when_all_work_done(repo: Path, monkeypatch) -> None:
+    """A run whose only task pushes cost over the ceiling but leaves no further
+    runnable work is COMPLETE, not held — no false BUDGET-HELD, clean exit.
+    (Panel HIGH: the gate must fire only when there is work to suppress.)"""
+    _patched_spawn_with_cost(monkeypatch, cost_usd=1.0)
+    args = _build_args(repo, only="SMOKE-B", max_cost_usd=0.01)  # one independent task
+    rc = orchestrator.execute(args)
+    assert rc == 0, "all selected work done → clean exit, not a budget hold"
+    from claude_dispatcher import yaml_io
+    doc = yaml_io.load(repo / "tasks.yaml")
+    row = next(t for t in doc["tasks"] if t["key"] == "SMOKE-B")
+    assert row["status"] == "Done"
+    log = (repo / "_runs" / "smoke-test-run" / "run.log").read_text(encoding="utf-8")
+    assert "BUDGET" not in log
+
+
+def test_budget_counts_cost_of_blocked_task(repo: Path, monkeypatch) -> None:
+    """A task that spawns (burning tokens) then blocks still has its cost
+    stamped on the row, so it counts toward the ceiling. (Panel HIGH: blocked-
+    task spend must not be invisible.)"""
+    monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "blocked-malformed")
+    _patched_spawn_with_cost(monkeypatch, cost_usd=1.0)
+    args = _build_args(repo, only="SMOKE-A")
+    orchestrator.execute(args)
+    from claude_dispatcher import yaml_io
+    row = next(t for t in yaml_io.load(repo / "tasks.yaml")["tasks"]
+               if t["key"] == "SMOKE-A")
+    assert row["status"] == "Blocked"
+    assert row.get("cost_usd") == 1.0, "blocked task's spend must be recorded"
+
+
+def test_budget_held_run_resumes_under_raised_ceiling(repo: Path, monkeypatch) -> None:
+    """The documented recovery path works end-to-end: a budget-held run resumes
+    under a raised --max-cost-usd and completes the parked tasks. (Panel HIGH:
+    resume must be able to carry a raised ceiling.)"""
+    from claude_dispatcher import resume as resume_cmd, yaml_io
+
+    _patched_spawn_with_cost(monkeypatch, cost_usd=1.0)
+    # First run: tiny ceiling holds after the first task; the rest park To Do.
+    rc = orchestrator.execute(_build_args(repo, max_cost_usd=0.01))
+    assert rc == 1
+    doc = yaml_io.load(repo / "tasks.yaml")
+    done_first = [t["key"] for t in doc["tasks"] if t.get("status") == "Done"]
+    assert len(done_first) == 1, f"expected a hold after one task; got {done_first}"
+
+    # Resume with a raised ceiling: already-spent cost is now under it, so the
+    # parked tasks dispatch and complete.
+    resume_args = build_parser().parse_args([
+        "resume", "smoke-test-run",
+        "--runs-dir", str(repo / "_runs"),
+        "--max-cost-usd", "9999",
+        "--force",  # the just-written journal looks "active"
+    ])
+    rc2 = resume_cmd.execute(resume_args)
+    assert rc2 == 0, "raised ceiling lets the resumed run finish"
+    doc = yaml_io.load(repo / "tasks.yaml")
+    assert all(t.get("status") == "Done" for t in doc["tasks"]), \
+        "all parked tasks complete after the ceiling is raised"
+
+
 # --- configurable timeouts (DISP-4) ----------------------------------------
 
 

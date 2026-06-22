@@ -477,6 +477,7 @@ def budget_exceeded_notification(
     cost_usd: float,
     ceiling_usd: float,
     in_flight: list[str] | None = None,
+    parked_count: int | None = None,
     tasks_yaml: str | None = None,
 ) -> Notification:
     """The cost ceiling was reached. The run stops STARTING new tasks and drains
@@ -488,6 +489,8 @@ def budget_exceeded_notification(
         "Cost ceiling reached — no new tasks will start. In-flight tasks finish, "
         "then the run holds. Raise --max-cost-usd and `dispatcher resume` to continue.",
     ]
+    if parked_count:
+        body_lines.append(f"*Parked (To Do):* {parked_count} task(s)")
     if in_flight:
         body_lines.append(f"*Still in flight:* {', '.join(f'`{k}`' for k in in_flight)}")
     return Notification(
