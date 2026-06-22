@@ -11,6 +11,7 @@ Sub-commands:
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from pathlib import Path
 
@@ -32,13 +33,19 @@ DEFAULT_FINANCIAL_PATHS = ",".join([
 
 
 def _positive_dollars(s: str) -> float:
-    """argparse type for --max-cost-usd: a budget ceiling must be a positive
-    dollar amount. Rejecting 0/negative here (rather than silently disabling)
-    keeps the spend-control contract unambiguous — omit the flag to disable."""
+    """argparse type for --max-cost-usd: a budget ceiling must be a finite,
+    positive dollar amount. Rejecting 0/negative (rather than silently
+    disabling) keeps the spend-control contract unambiguous — omit the flag to
+    disable. `nan`/`inf` are rejected too: `float()` parses them but they would
+    silently neuter the gate (`cost >= inf` is never true; `nan` comparisons are
+    always false), turning a typo into an uncapped run."""
     try:
         v = float(s)
     except ValueError:
         raise argparse.ArgumentTypeError(f"{s!r} is not a number")
+    if not math.isfinite(v):
+        raise argparse.ArgumentTypeError(
+            "--max-cost-usd must be a finite number (not nan/inf)")
     if v <= 0:
         raise argparse.ArgumentTypeError(
             "--max-cost-usd must be a positive dollar amount (omit the flag to "
@@ -125,9 +132,13 @@ def build_parser() -> argparse.ArgumentParser:
             "tasks parked To Do — raise this and `dispatcher resume` to "
             "continue). The ceiling is checked BETWEEN dispatches, so with "
             "--max-parallel > 1 actual spend can overshoot by up to the cost of "
-            "the tasks already in flight. Note: panel/reviewer spend from non-"
-            "Claude adapters isn't captured by the CLI usage JSON, so it is not "
-            "counted toward the ceiling."
+            "the tasks already in flight. Cost basis is best-effort: it counts "
+            "the implementer spawn (stamped even if the task later blocks) plus "
+            "the verifier on the success path. It does NOT yet count intra-task "
+            "corrective/retry spawns (commit/push/test-fix retries, verifier/"
+            "panel iterations) or cross-family panel/reviewer spend, so true "
+            "spend can exceed the ceiling. Treat it as a guardrail, not an exact "
+            "cap."
         ),
     )
     run.add_argument(

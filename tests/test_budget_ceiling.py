@@ -106,6 +106,14 @@ def test_cli_rejects_nonnumeric_ceiling():
         build_parser().parse_args(["run", "t.yaml", "--max-cost-usd", "lots"])
 
 
+def test_cli_rejects_nonfinite_ceiling():
+    # nan/inf parse as floats but would silently disable the gate — reject them.
+    import pytest
+    for bad in ("inf", "-inf", "nan"):
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(["run", "t.yaml", "--max-cost-usd", bad])
+
+
 def test_resume_accepts_max_cost_usd_override():
     # gemini HIGH: a budget-held run must be resumable under a raised ceiling.
     args = build_parser().parse_args(
