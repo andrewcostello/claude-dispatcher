@@ -177,6 +177,18 @@ class RunConfig:
     # stamped on the YAML row is from the FINAL run (which may be approve
     # if the Tasker successfully addressed the findings).
     cross_family_panel_iterate: int = 0
+    # Budget ceiling (BUDGET-1). When set, the dispatch loop stops STARTING new
+    # tasks once the run's cumulative per-task cost_usd reaches this many US
+    # dollars — it does NOT kill in-flight tasks (that would orphan a worktree /
+    # PR), it lets them drain and then holds the run for a human (a
+    # budget_exceeded journal event + notification fire once; the run exits
+    # non-zero with un-dispatched tasks left To Do, so raising the ceiling and
+    # `dispatcher resume` continues). The cost basis is the same per-task
+    # cost_usd report.py sums (implementer + verifier spawns); panel/reviewer
+    # spend from non-Claude adapters isn't captured in the CLI usage JSON, so it
+    # is not counted. None (default) disables the ceiling — the loop is
+    # byte-identical to before.
+    max_cost_usd: float | None = None
     # Notification channels for human-attention events. Built once at
     # execute() time from CLI flags + env vars; injected into _run_task
     # via this slot so tests can substitute a recording stub.
@@ -338,6 +350,24 @@ def resume_run(args: argparse.Namespace, journal: journal_mod.Journal) -> int:
     return _run_loop(cfg, run_dir, log_path, repo_root)
 
 
+def _cumulative_cost_usd(tasks) -> float:
+    """Sum the per-task ``cost_usd`` across the run (implementer + verifier
+    spawns — the same basis report.py aggregates). A task that hasn't reported
+    cost yet, or whose adapter didn't emit usage JSON, contributes 0. Pure."""
+    total = 0.0
+    for t in tasks:
+        c = t.raw.get("cost_usd")
+        if isinstance(c, (int, float)) and not isinstance(c, bool):
+            total += float(c)
+    return total
+
+
+def _budget_exceeded(tasks, ceiling: float | None) -> bool:
+    """True when a positive ceiling is set and cumulative cost has reached it.
+    A None/zero/negative ceiling disables the gate (returns False). Pure."""
+    return bool(ceiling and ceiling > 0) and _cumulative_cost_usd(tasks) >= ceiling
+
+
 def _run_loop(
     cfg: RunConfig, run_dir: Path, log_path: Path, repo_root: Path,
 ) -> int:
@@ -365,6 +395,11 @@ def _run_loop(
     # exactly once across the many passes a run triggers.
     merge_state = merge_mod.MergePassState()
 
+    # Budget ceiling (BUDGET-1): set once the cost ceiling is reached so the
+    # post-loop rollup can report the hold and exit non-zero. The trip is
+    # idempotent — the event + notification fire only on the transition.
+    budget_tripped = False
+
     try:
         in_flight: dict[Future[str], str] = {}
         with ThreadPoolExecutor(max_workers=max(cfg.max_parallel, 1)) as exe:
@@ -375,6 +410,32 @@ def _run_loop(
                 # Don't re-dispatch tasks already mid-flight.
                 in_flight_keys = set(in_flight.values())
                 runnable = [t for t in runnable if t.key not in in_flight_keys]
+
+                # Budget ceiling (BUDGET-1): once cumulative cost reaches the
+                # ceiling, stop STARTING new tasks — but let in-flight ones
+                # drain (killing a task mid-spawn orphans its worktree/PR). The
+                # loop then breaks naturally when nothing is in-flight, holding
+                # the run for a human with its remaining tasks parked To Do.
+                if _budget_exceeded(tasks, cfg.max_cost_usd):
+                    if not budget_tripped:
+                        budget_tripped = True
+                        spent = _cumulative_cost_usd(tasks)
+                        in_flight_now = sorted(in_flight.values())
+                        _log(log_path,
+                             f"BUDGET: cumulative cost ${spent:.2f} >= ceiling "
+                             f"${cfg.max_cost_usd:.2f} — holding; no new tasks "
+                             f"will start (in-flight: {in_flight_now or 'none'})")
+                        _emit_event(cfg, journal_mod.EventType.budget_exceeded, {
+                            "cost_usd": round(spent, 4),
+                            "ceiling_usd": cfg.max_cost_usd,
+                            "in_flight": in_flight_now,
+                        })
+                        _send_notification(cfg, notify_mod.budget_exceeded_notification(
+                            run_id=cfg.run_id, cost_usd=spent,
+                            ceiling_usd=cfg.max_cost_usd, in_flight=in_flight_now,
+                            tasks_yaml=str(cfg.tasks_path),
+                        ))
+                    runnable = []  # stop starting new work; drain in-flight
 
                 # Dispatch up to remaining capacity.
                 while runnable and len(in_flight) < cfg.max_parallel:
@@ -469,7 +530,8 @@ def _run_loop(
     needs_rebase = [t for t in tasks if t.raw.get("needs_rebase")]
     _log(log_path, f"end run blocked={len(blocked)} escalated={len(escalated)}"
          + (f" merged={len(merged)} awaiting={len(awaiting)} "
-            f"needs_rebase={len(needs_rebase)}" if pr_mode else ""))
+            f"needs_rebase={len(needs_rebase)}" if pr_mode else "")
+         + (" BUDGET-HELD" if budget_tripped else ""))
     # Run-complete rollup notification. Always fires (including on clean
     # runs — knowing the run finished is signal). Best-effort. Sent BEFORE
     # the run_complete journal event so that event stays the terminal record
@@ -510,8 +572,15 @@ def _run_loop(
         run_complete_payload["merged"] = len(merged)
         run_complete_payload["awaiting_review"] = len(awaiting)
         run_complete_payload["needs_rebase"] = len(needs_rebase)
+    # Budget hold (BUDGET-1): added only when the ceiling tripped, so the
+    # default payload shape is unchanged.
+    if budget_tripped:
+        run_complete_payload["budget_held"] = True
+        run_complete_payload["cost_usd"] = round(_cumulative_cost_usd(tasks), 4)
     _emit_event(cfg, journal_mod.EventType.run_complete, run_complete_payload)
-    return 1 if (blocked or escalated) else 0
+    # A budget hold is an incomplete run needing a human — exit non-zero even
+    # when nothing is formally Blocked/Escalated (tasks are parked To Do).
+    return 1 if (blocked or escalated or budget_tripped) else 0
 
 
 def _maybe_merge_pass(
@@ -2901,6 +2970,9 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
         cross_family_panel_iterate=getattr(
             args, "cross_family_panel_iterate", 0,
         ),
+        # getattr default keeps `dispatcher resume` of pre-BUDGET journals
+        # working — their genesis run_config lacks the key.
+        max_cost_usd=getattr(args, "max_cost_usd", None),
         notifier=notify_mod.build_notifier_from_env(
             cli_ntfy_topic=getattr(args, "ntfy_topic", None),
             cli_ntfy_server=getattr(args, "ntfy_server", None),

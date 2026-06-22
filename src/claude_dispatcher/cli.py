@@ -96,6 +96,23 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument(
+        "--max-cost-usd",
+        type=float,
+        default=None,
+        metavar="DOLLARS",
+        help=(
+            "Cost ceiling for the run, in US dollars. Once cumulative per-task "
+            "cost (implementer + verifier spawns) reaches this, the dispatcher "
+            "stops STARTING new tasks, lets in-flight tasks finish, then holds "
+            "the run for a human (a budget_exceeded event + high-urgency "
+            "notification fire; the run exits non-zero with remaining tasks "
+            "parked To Do — raise this and `dispatcher resume` to continue). "
+            "Omit to disable (default). Note: panel/reviewer spend from "
+            "non-Claude adapters isn't captured by the CLI usage JSON, so it is "
+            "not counted toward the ceiling."
+        ),
+    )
+    run.add_argument(
         "--verify-test-timeout",
         type=int,
         default=600,
