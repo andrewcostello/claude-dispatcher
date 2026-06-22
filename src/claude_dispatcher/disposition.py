@@ -28,6 +28,28 @@ class Disposition(str, Enum):
 BLOCKING_SEVERITIES = ("CRITICAL", "HIGH")
 
 
+def _sev_str(severity) -> str:
+    """Normalize a severity (enum or str) to its uppercase string value."""
+    return str(getattr(severity, "value", severity) or "").upper()
+
+
+def finding_key(location: str, severity) -> str:
+    """Clustering key for corroboration + dedup. BLOCKING findings
+    (CRITICAL/HIGH) cluster by FILE, not file:line: reviewers reliably name the
+    same file but cite the same defect at different line numbers, so file-level
+    keying lets their agreement corroborate (3 reviewers flagging one bug at
+    lines 10/15/16 count as corroboration 3, not three lone findings that each
+    HOLD). Nits (MEDIUM/LOW) keep the full file:line so genuinely distinct nits
+    don't falsely merge. Pure. (Granularity decision 2026-06-22, validated by a
+    seeded-violation feature-review run where line-level keying held an
+    all-reviewers-agree CRITICAL instead of accepting it.)"""
+    if not location:
+        return location
+    if _sev_str(severity) in BLOCKING_SEVERITIES:
+        return location.split(":", 1)[0]  # file part only
+    return location
+
+
 @dataclass
 class DispositionRecord:
     """One finding's recorded decision. `finding_id` is a stable key
@@ -74,21 +96,26 @@ def classify_disposition(
 
 
 def corroboration(verdict) -> dict[str, int]:
-    """Map each finding `location` -> the number of DISTINCT reviewer families
-    that flagged a finding at that location. This is the precision signal fed to
+    """Map each finding `finding_key` -> the number of DISTINCT reviewer families
+    that flagged a finding under that key. This is the precision signal fed to
     `classify_disposition` (corroboration >= 2 lets a blocking finding auto-accept;
     a lone-reviewer blocking finding holds).
 
-    Reads `verdict.reviewers` (the per-reviewer verdicts — each with `.family`
-    and `.findings`, each finding having a `.location`), NOT the deduped
-    `blocking_findings`. A reviewer flagging the same location twice counts once.
-    Pure function.
+    Keys are `finding_key(location, severity)` — file-level for blocking
+    severities, file:line for nits — NOT the raw location, so reviewers citing
+    one defect at different lines corroborate (see `finding_key`). Reads
+    `verdict.reviewers` (each with `.family` and `.findings`, each finding having
+    `.location` + `.severity`), NOT the deduped `blocking_findings`. A reviewer
+    flagging the same key twice counts once. Pure function.
     """
     counts: dict[str, int] = {}
     for rv in getattr(verdict, "reviewers", []) or []:
-        locations = {f.location for f in getattr(rv, "findings", []) or []}
-        for loc in locations:
-            counts[loc] = counts.get(loc, 0) + 1
+        keys = {
+            finding_key(f.location, getattr(f, "severity", ""))
+            for f in getattr(rv, "findings", []) or []
+        }
+        for k in keys:
+            counts[k] = counts.get(k, 0) + 1
     return counts
 
 

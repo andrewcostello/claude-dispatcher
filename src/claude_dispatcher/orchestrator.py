@@ -1279,20 +1279,25 @@ _SEV_RANK = {"CRITICAL": 3, "HIGH": 2, "MEDIUM": 1, "LOW": 0}
 
 
 def _distinct_findings(verdict) -> list[dict]:
-    """Dedupe findings across reviewers by `location`, keeping the MAX severity
-    seen and a description. So a finding flagged by 3 reviewers is one record
-    (its corroboration is counted separately by disposition.corroboration)."""
-    by_loc: dict[str, dict] = {}
+    """Dedupe findings across reviewers by `disposition.finding_key` (file-level
+    for blocking severities, file:line for nits), keeping the MAX severity and a
+    representative location/description. So one defect flagged by N reviewers at
+    slightly different lines is a SINGLE record — its corroboration is counted
+    the same way by `disposition.corroboration`, so the count matches the
+    record."""
+    by_key: dict[str, dict] = {}
     for rv in getattr(verdict, "reviewers", []) or []:
         for f in getattr(rv, "findings", []) or []:
             sv = getattr(f.severity, "value", str(f.severity))
-            cur = by_loc.get(f.location)
+            key = disposition_mod.finding_key(f.location, sv)
+            cur = by_key.get(key)
             if cur is None:
-                by_loc[f.location] = {"location": f.location, "severity": sv,
-                                      "description": getattr(f, "description", "")}
+                by_key[key] = {"location": f.location, "severity": sv,
+                               "description": getattr(f, "description", "")}
             elif _SEV_RANK.get(sv, 0) > _SEV_RANK.get(cur["severity"], 0):
                 cur["severity"] = sv
-    return list(by_loc.values())
+                cur["description"] = getattr(f, "description", "") or cur["description"]
+    return list(by_key.values())
 
 
 def apply_dispositions(
@@ -1307,13 +1312,14 @@ def apply_dispositions(
     accepted: list[dict] = []
     held: list[dict] = []
     for fnd in _distinct_findings(verdict):
-        c = corr.get(fnd["location"], 1)
+        key = disposition_mod.finding_key(fnd["location"], fnd["severity"])
+        c = corr.get(key, 1)
         disp, reason = disposition_mod.classify_disposition(
             severity=fnd["severity"], corroboration=c, gate_grounded=False,
             refutable=False, mode=mode,
         )
         rec = disposition_mod.DispositionRecord(
-            finding_id=f"{fnd['location']}:{fnd['severity']}",
+            finding_id=f"{key}:{fnd['severity']}",
             severity=fnd["severity"], corroboration=c, gate_grounded=False,
             disposition=disp, reason=reason,
         )

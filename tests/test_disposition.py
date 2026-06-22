@@ -100,18 +100,35 @@ def test_ledger_alarm_on_high_accept_rate():
     assert tripped is True and "rate" in reason.lower()
 
 
-def test_corroboration_counts_distinct_reviewers_per_location():
+def test_corroboration_counts_distinct_reviewers_by_file_for_blocking():
+    # Blocking findings cluster by FILE: reviewers citing the same defect at
+    # different lines (a.py:10 / a.py:15) still corroborate.
     from types import SimpleNamespace as NS
-    def f(loc):
-        return NS(location=loc, severity="HIGH", description="d")
+    def f(loc, sev="HIGH"):
+        return NS(location=loc, severity=sev, description="d")
     verdict = NS(reviewers=[
-        NS(family="claude", findings=[f("a.py:1"), f("b.py:2")]),
-        NS(family="codex", findings=[f("a.py:1")]),               # corroborates a.py:1
-        NS(family="gemini", findings=[f("a.py:1"), f("a.py:1")]),  # same reviewer dup -> 1
+        NS(family="claude", findings=[f("a.py:10"), f("b.py:2")]),
+        NS(family="codex", findings=[f("a.py:15")]),               # diff line, same file
+        NS(family="gemini", findings=[f("a.py:99"), f("a.py:1")]),  # same reviewer -> 1
     ])
     c = corroboration(verdict)
-    assert c["a.py:1"] == 3   # claude + codex + gemini
-    assert c["b.py:2"] == 1   # claude only
+    assert c["a.py"] == 3   # claude + codex + gemini, despite different lines
+    assert c["b.py"] == 1   # claude only
+
+
+def test_corroboration_nits_stay_line_level():
+    # MEDIUM/LOW nits keep file:line so genuinely distinct nits don't merge.
+    from types import SimpleNamespace as NS
+    def f(loc, sev):
+        return NS(location=loc, severity=sev, description="d")
+    verdict = NS(reviewers=[
+        NS(family="claude", findings=[f("a.py:1", "MEDIUM"), f("a.py:9", "LOW")]),
+        NS(family="codex", findings=[f("a.py:1", "MEDIUM")]),  # corroborates the line
+    ])
+    c = corroboration(verdict)
+    assert c["a.py:1"] == 2   # two reviewers, same line
+    assert c["a.py:9"] == 1   # distinct nit, not merged into a.py:1
+    assert "a.py" not in c    # nits never collapse to file-level
 
 
 def test_corroboration_empty_verdict():

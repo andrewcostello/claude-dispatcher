@@ -70,6 +70,25 @@ def test_apply_dispositions_classifies_records_all_no_silent_drops(tmp_path):
     assert len(led.records) == 3                            # nothing silently dropped
 
 
+def test_apply_dispositions_corroborates_same_defect_across_lines(tmp_path):
+    # Regression: the seeded-violation run had 3 reviewers flag ONE bug at
+    # different lines (safemath.py:10/15/16). With file-level keying they
+    # corroborate -> a single ACCEPT, not three lone-CRITICAL HOLDs.
+    from claude_dispatcher.disposition import DispositionLedger
+    F = lambda loc, sev: NS(location=loc, severity=sev, description="returns 0.0 not raise")
+    verdict = NS(reviewers=[
+        NS(family="claude", findings=[F("safemath.py:10", "CRITICAL")]),
+        NS(family="codex", findings=[F("safemath.py:15", "CRITICAL")]),
+        NS(family="gemini", findings=[F("safemath.py:16", "CRITICAL")]),
+    ], blocking_findings=[])
+    led = DispositionLedger()
+    accepted, held = orch.apply_dispositions(
+        _cfg(tmp_path), verdict, mode="unattended", ledger=led, log_path=tmp_path / "l")
+    assert len(accepted) == 1 and not held       # one corroborated finding, no hold
+    assert accepted[0]["corroboration"] == 3
+    assert led.tally() == {"accept": 1}          # single record, not three
+
+
 def _tasks_yaml(tmp_path):
     p = tmp_path / "t.yaml"
     p.write_text("project: X\nepic: e\ntasks:\n"
