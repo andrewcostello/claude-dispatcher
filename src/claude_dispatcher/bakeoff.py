@@ -168,7 +168,51 @@ def evaluate_reviewers(cells: list["CellResult"]) -> dict:
     the planted-bug set + adjudication; this computes the gate-grounded +
     descriptive stats.
     """
-    raise NotImplementedError("BKO body-fill: evaluate_reviewers")
+    _BLOCKING = {"CRITICAL", "HIGH"}
+    stats: dict[str, dict] = {}
+
+    def _fam(family: str) -> dict:
+        if family not in stats:
+            stats[family] = {
+                "reviews": 0,
+                "approvals": 0,
+                "approvals_of_gate_failing": 0,
+                "findings_total": 0,
+                "blocking_findings_total": 0,
+                "approve_rate": 0.0,
+                "unique_blocking": 0,
+            }
+        return stats[family]
+
+    for cell in cells:
+        reviewers = cell.reviewers or []
+        # Per cell: which families flagged each location (any severity). Used to
+        # decide whether a blocking finding is unique to one reviewer.
+        flagged_by: dict[object, set] = {}
+        for rv in reviewers:
+            fam = rv.get("family")
+            for f in rv.get("findings") or []:
+                flagged_by.setdefault(f.get("location"), set()).add(fam)
+
+        for rv in reviewers:
+            fam = rv.get("family")
+            s = _fam(fam)
+            s["reviews"] += 1
+            if rv.get("verdict") == "approve":
+                s["approvals"] += 1
+                if not cell.gate_passed:
+                    s["approvals_of_gate_failing"] += 1
+            for f in rv.get("findings") or []:
+                s["findings_total"] += 1
+                if (f.get("severity") or "").upper() in _BLOCKING:
+                    s["blocking_findings_total"] += 1
+                    others = flagged_by.get(f.get("location"), set()) - {fam}
+                    if not others:
+                        s["unique_blocking"] += 1
+
+    for s in stats.values():
+        s["approve_rate"] = (s["approvals"] / s["reviews"]) if s["reviews"] else 0.0
+    return stats
 
 
 def render_report(cells: list["CellResult"]) -> str:
