@@ -353,6 +353,30 @@ def test_budget_held_run_resumes_under_raised_ceiling(repo: Path, monkeypatch) -
         "all parked tasks complete after the ceiling is raised"
 
 
+def test_budget_resume_without_enough_ceiling_fails_fast(repo: Path, monkeypatch) -> None:
+    """Resuming a budget-held run without a ceiling above what's already spent
+    refuses fast (exit 2) instead of spinning up the loop to re-hold. (codex
+    HIGH: the hold must not just re-emit and re-hold on resume.)"""
+    from claude_dispatcher import resume as resume_cmd, yaml_io
+
+    _patched_spawn_with_cost(monkeypatch, cost_usd=1.0)
+    assert orchestrator.execute(_build_args(repo, max_cost_usd=0.01)) == 1
+    done_before = [t["key"] for t in yaml_io.load(repo / "tasks.yaml")["tasks"]
+                   if t.get("status") == "Done"]
+
+    # Resume with a ceiling still below the ~1.0 already spent → fail fast.
+    resume_args = build_parser().parse_args([
+        "resume", "smoke-test-run", "--runs-dir", str(repo / "_runs"),
+        "--max-cost-usd", "0.50", "--force",
+    ])
+    rc = resume_cmd.execute(resume_args)
+    assert rc == 2, "insufficient ceiling on resume should refuse, not re-hold"
+    # No further work happened.
+    done_after = [t["key"] for t in yaml_io.load(repo / "tasks.yaml")["tasks"]
+                  if t.get("status") == "Done"]
+    assert done_after == done_before
+
+
 # --- configurable timeouts (DISP-4) ----------------------------------------
 
 
