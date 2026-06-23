@@ -260,6 +260,11 @@ def _consider_one(
         cwd=cfg.repo_root, number=number, gh_bin=cfg.gh_bin, method="merge",
     )
     if merge.merged:
+        # `gh pr merge` landed on origin; fast-forward the LOCAL feature-branch
+        # ref to match before the next task forks its worktree from it (PRF-4 /
+        # sequential-merge fix). Without this, a FIX/task dispatched right after
+        # this merge would fork from the pre-merge tip and its PR would conflict.
+        _sync_local_feature_branch(cfg, log)
         sha = _feature_branch_sha(cfg)
         _mutate_row(cfg, task.key, lambda r: _apply_merged(r, approver, sha))
         log(f"  merge: {task.key} MERGED PR #{number} into "
@@ -334,14 +339,41 @@ def _classify(
     )
 
 
+def _sync_local_feature_branch(cfg: MergeEngineConfig, log) -> None:
+    """Fast-forward the LOCAL feature-branch ref to match origin after a merge.
+
+    ``gh pr merge`` lands the PR on origin; the local ref lags. The next task's
+    worktree forks from the local feature branch (``worktree.create``'s
+    base_branch), so without this a sequentially-merged task would fork from the
+    pre-merge tip and its PR would conflict against the now-advanced origin
+    branch. ``ensure_feature_branch`` only ever creates the ref (never checks it
+    out), so ``git fetch origin <fb>:<fb>`` is a safe fast-forward of the local
+    branch. Best-effort: a fetch failure (offline, non-ff, or the branch somehow
+    checked out) leaves the local ref as-is — the prior behavior, no regression.
+    """
+    import subprocess
+    fb = cfg.feature_branch
+    try:
+        proc = subprocess.run(
+            ["git", "fetch", "origin", f"{fb}:{fb}"],
+            cwd=str(cfg.repo_root), capture_output=True, text=True,
+            check=False, timeout=120,
+        )
+    except OSError as e:  # pragma: no cover - defensive
+        log(f"  merge: local feature-branch sync failed ({fb}): {e}")
+        return
+    if proc.returncode != 0:
+        log(f"  merge: local feature-branch sync skipped ({fb}, "
+            f"rc={proc.returncode}): {(proc.stderr or '').strip()[:200]}")
+
+
 def _feature_branch_sha(cfg: MergeEngineConfig) -> str | None:
     """The local feature-branch tip SHA, recorded in the pr_merged event.
 
-    ``gh pr merge`` merges on the forge (origin); the local ref may lag until a
-    fetch. This records the best-available local tip for the audit trail —
-    keeping the local feature branch in lockstep with the remote is the
-    supervising agent's / next run's job (``ensure_feature_branch``), not this
-    phase's.
+    By the time this runs after a successful merge, ``_sync_local_feature_branch``
+    has fast-forwarded the local ref to origin, so this tip matches the merged
+    remote. (On the standalone merge-prs path with no reachable origin the sync
+    is a no-op and this falls back to the best-available local tip.)
     """
     import subprocess
     try:

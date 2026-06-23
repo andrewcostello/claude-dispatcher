@@ -577,3 +577,82 @@ def test_merge_pr_detects_conflict_vs_error(repo: Path) -> None:
     err_gh.chmod(0o755)
     res2 = pr_mod.merge_pr(cwd=repo, number=1, gh_bin=str(err_gh))
     assert res2.merged is False and res2.conflict is False
+
+
+# --- local feature-branch sync after merge (sequential-merge fix) -----------
+
+def _git_q(cwd, *args):
+    subprocess.run(["git", *args], cwd=str(cwd), check=True, capture_output=True, text=True)
+
+
+def test_sync_local_feature_branch_fast_forwards_from_origin(tmp_path: Path) -> None:
+    """After a merge lands on origin, _sync_local_feature_branch fast-forwards
+    the LOCAL feature-branch ref so the next task's worktree forks from the
+    merged tip (not the stale pre-merge tip). Real bare-origin + two clones:
+    clone2 advances origin's feature branch (simulating the gh merge); the
+    lagging clone must catch up."""
+    from claude_dispatcher import merge_engine as me
+
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)],
+                   check=True, capture_output=True)
+
+    def _clone(name):
+        d = tmp_path / name
+        subprocess.run(["git", "clone", "-q", str(origin), str(d)],
+                       check=True, capture_output=True)
+        _git_q(d, "config", "user.email", "t@t")
+        _git_q(d, "config", "user.name", "T")
+        return d
+
+    # Seed main + a feature branch on the first clone, push both.
+    local = _clone("local")
+    (local / "f.txt").write_text("base\n", encoding="utf-8")
+    _git_q(local, "add", "."); _git_q(local, "commit", "-qm", "init")
+    _git_q(local, "push", "-q", "origin", "main")
+    _git_q(local, "branch", "feature/x")
+    _git_q(local, "push", "-q", "origin", "feature/x")
+
+    # A second clone advances origin's feature/x (the "merged PR" landing).
+    clone2 = _clone("clone2")
+    _git_q(clone2, "checkout", "-q", "feature/x")
+    (clone2 / "g.txt").write_text("merged\n", encoding="utf-8")
+    _git_q(clone2, "add", "."); _git_q(clone2, "commit", "-qm", "merged work")
+    _git_q(clone2, "push", "-q", "origin", "feature/x")
+    origin_tip = subprocess.run(
+        ["git", "rev-parse", "feature/x"], cwd=str(clone2),
+        capture_output=True, text=True, check=True).stdout.strip()
+
+    # The local clone's feature/x still points at the pre-merge tip.
+    local_before = subprocess.run(
+        ["git", "rev-parse", "feature/x"], cwd=str(local),
+        capture_output=True, text=True, check=True).stdout.strip()
+    assert local_before != origin_tip
+
+    cfg = me.MergeEngineConfig(
+        tasks_path=local / "tasks.yaml", repo_root=local,
+        feature_branch="feature/x", run_id="R")
+    me._sync_local_feature_branch(cfg, lambda _m: None)
+
+    local_after = subprocess.run(
+        ["git", "rev-parse", "feature/x"], cwd=str(local),
+        capture_output=True, text=True, check=True).stdout.strip()
+    assert local_after == origin_tip, "local feature/x should fast-forward to origin"
+
+
+def test_sync_local_feature_branch_best_effort_on_failure(tmp_path: Path) -> None:
+    """No reachable origin → the sync logs and returns without raising (the
+    standalone merge-prs path / offline must not break)."""
+    from claude_dispatcher import merge_engine as me
+    repo = tmp_path / "r"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)],
+                   check=True, capture_output=True)
+    _git_q(repo, "config", "user.email", "t@t"); _git_q(repo, "config", "user.name", "T")
+    (repo / "f.txt").write_text("x\n", encoding="utf-8")
+    _git_q(repo, "add", "."); _git_q(repo, "commit", "-qm", "init")
+    _git_q(repo, "branch", "feature/x")
+    msgs = []
+    cfg = me.MergeEngineConfig(tasks_path=repo / "t.yaml", repo_root=repo,
+                               feature_branch="feature/x", run_id="R")
+    me._sync_local_feature_branch(cfg, msgs.append)  # no 'origin' remote
+    assert any("sync skipped" in m or "sync failed" in m for m in msgs)
