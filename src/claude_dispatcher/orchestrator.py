@@ -33,6 +33,7 @@ from typing import Any
 from . import __version__
 from . import auto_integrate as ai_mod
 from . import cross_family_reviewer as cfr_mod
+from . import disposition as disposition_mod
 from . import journal as journal_mod
 from . import mechanical_verify as mv_mod
 from . import merge_engine as merge_mod
@@ -177,6 +178,17 @@ class RunConfig:
     # stamped on the YAML row is from the FINAL run (which may be approve
     # if the Tasker successfully addressed the findings).
     cross_family_panel_iterate: int = 0
+    # Step 6: when True, persist each task's transcript + a cheap haiku summary
+    # and reference them from the YAML row (audit log; Forecast projects them).
+    # Opt-in (off by default) because it shells claude-haiku per task — cost +
+    # latency, and not correctness-critical.
+    haiku_summary: bool = False
+    # Feature review loop (steps 3-4, docs/feature-review-loop.md). When on
+    # (pr-mode only), after the per-task drain the dispatcher reviews the
+    # cumulative feature diff vs the PRD, dispositions findings, and loops fix
+    # tasks until clean / held / alarmed. Opt-in (off = identical prior behavior).
+    feature_review: bool = False
+    feature_review_rounds: int = 3
     # Budget ceiling (BUDGET-1). When set, the dispatch loop stops STARTING new
     # tasks once the run's cumulative per-task cost_usd reaches this many US
     # dollars — it does NOT kill in-flight tasks (that would orphan a worktree /
@@ -229,6 +241,8 @@ class TaskSnapshot:
     type: str
     labels: list[str]
     model: str | None = None
+    # Per-task implementer agent (claude/codex/grok/gemini); None -> claude.
+    agent: str | None = None
     # blockedBy dependency keys, in declaration order. Used at worker start to
     # merge each dependency's branch into this task's fresh worktree branch
     # when the dependency's commits are not yet on base (INT-4).
@@ -459,107 +473,33 @@ def _run_loop(
     budget_tripped = False
 
     try:
-        in_flight: dict[Future[str], str] = {}
-        with ThreadPoolExecutor(max_workers=max(cfg.max_parallel, 1)) as exe:
-            while True:
-                tasks = _load_tasks_snapshot(cfg)
-                runnable = plan_mod.runnable_now(tasks, integration=cfg.integration)
-                runnable = plan_mod.filter_tasks(runnable, cfg.label_filter, cfg.only_keys)
-                # Don't re-dispatch tasks already mid-flight.
-                in_flight_keys = set(in_flight.values())
-                runnable = [t for t in runnable if t.key not in in_flight_keys]
-
-                # Budget ceiling (BUDGET-1): once cumulative cost reaches the
-                # ceiling, stop STARTING new tasks — but let in-flight ones
-                # drain (killing a task mid-spawn orphans its worktree/PR). The
-                # loop then breaks naturally when nothing is in-flight, holding
-                # the run for a human with its remaining tasks parked To Do.
-                #
-                # The gate fires ONLY when there is runnable work to suppress: a
-                # run whose last task pushed cost over the ceiling but left
-                # nothing else to do is COMPLETE, not held — reporting it
-                # "budget-held" (and exiting non-zero) would be a false alarm.
-                # (Dependents that aren't runnable yet are caught on the later
-                # iteration where they become runnable.)
-                if runnable and _budget_exceeded(
-                        tasks, cfg.max_cost_usd, cfg.cost_baseline_usd):
-                    if not budget_tripped:
-                        budget_tripped = True
-                        spent = _run_spend_usd(tasks, cfg.cost_baseline_usd)
-                        in_flight_now = sorted(in_flight.values())
-                        parked = sorted(t.key for t in runnable)
-                        _log(log_path,
-                             f"BUDGET: cumulative cost ${spent:.2f} >= ceiling "
-                             f"${cfg.max_cost_usd:.2f} — holding; parking "
-                             f"{len(parked)} task(s), no new ones will start "
-                             f"(in-flight: {in_flight_now or 'none'})")
-                        _emit_event(cfg, journal_mod.EventType.budget_exceeded, {
-                            "cost_usd": round(spent, 4),
-                            "ceiling_usd": cfg.max_cost_usd,
-                            "in_flight": in_flight_now,
-                            "parked": parked,
-                        })
-                        _send_notification(cfg, notify_mod.budget_exceeded_notification(
-                            run_id=cfg.run_id, cost_usd=spent,
-                            ceiling_usd=cfg.max_cost_usd, in_flight=in_flight_now,
-                            parked_count=len(parked),
-                            tasks_yaml=str(cfg.tasks_path),
-                        ))
-                    runnable = []  # stop starting new work; drain in-flight
-
-                # Dispatch up to remaining capacity.
-                while runnable and len(in_flight) < cfg.max_parallel:
-                    t = runnable.pop(0)
-                    snap = TaskSnapshot(
-                        key=t.key,
-                        summary=t.summary,
-                        description=t.description,
-                        type=t.type,
-                        labels=list(t.labels),
-                        model=t.model,
-                        blocked_by=list(t.blocked_by),
-                    )
-                    # Mark In Progress on the YAML BEFORE submit. If we submit
-                    # first, the main thread could re-load and re-dispatch the
-                    # same key before the worker has stamped In Progress.
-                    _mark_in_progress(cfg, snap, run_dir)
-                    # The task_started event is emitted by the worker (_run_task),
-                    # AFTER worktree creation + the dispatch-time dependency merge,
-                    # so its payload can carry the merged dependency SHAs (INT-4).
-                    fut = exe.submit(_run_task, snap, cfg, run_dir, log_path, repo_root)
-                    in_flight[fut] = snap.key
-                    _log(log_path, f"dispatch {snap.key} submitted")
-
-                if not in_flight:
-                    break  # nothing running, nothing to start
-
-                done, _pending = wait(list(in_flight), return_when=FIRST_COMPLETED)
-                for fut in done:
-                    key = in_flight.pop(fut)
-                    try:
-                        fut.result()  # propagate exceptions
-                    except Exception as e:
-                        _log(log_path, f"  worker {key} raised: {e}")
-                        # Notify on a dispatcher-internal error before
-                        # stamping Blocked (separate channel from a normal
-                        # task failure — see notify.worker_exception_*).
-                        _send_notification(cfg, notify_mod.worker_exception_notification(
-                            task_key=key,
-                            run_id=cfg.run_id,
-                            exception_repr=repr(e),
-                            tasks_yaml=str(cfg.tasks_path),
-                        ), task_key=key)
-                        try:
-                            _mark_blocked(cfg, key, reason=f"worker_exception: {e}")
-                        except Exception as mark_err:
-                            _log(log_path, f"  worker {key} _mark_blocked itself raised: {mark_err}")
-
-                # PRF-4: after each batch of completions, merge any PR now
-                # eligible (approved per the ladder + dependencies all Merged).
-                # Running it here — not only at run end — lets a dependency's
-                # merge advance the feature branch before its dependents
-                # dispatch, and surfaces stalled (awaiting-approval) PRs early.
-                _maybe_merge_pass(cfg, repo_root, log_path, merge_state)
+        # OUTER feature-review loop (steps 3-4). With cfg.feature_review off (the
+        # default) it runs the dispatch-drain + merge exactly ONCE then breaks —
+        # behaviorally identical to the prior single-drain code. When on (pr-mode
+        # only), each round runs the final whole-feature review, dispositions the
+        # findings, and appends accepted findings as FIX-* tasks; the next round
+        # re-drains to run them, then re-reviews — until clean, held, or alarmed.
+        ledger = disposition_mod.DispositionLedger(
+            max_fix_rounds=cfg.feature_review_rounds)
+        review_round = 0
+        while True:
+            # _dispatch_drain runs the inner dispatch loop incl. the budget
+            # ceiling (BUDGET-1); it returns True if the ceiling tripped this
+            # drain. A budget hold stops the outer review loop too — we don't
+            # spend more on review rounds / fix tasks once the human gate fired.
+            if _dispatch_drain(cfg, run_dir, log_path, repo_root, merge_state):
+                budget_tripped = True
+            # End-of-round merge: the last task(s) to reach Awaiting Review — and
+            # any PR eligible only once the final dependency merged — get a pass.
+            _maybe_merge_pass(cfg, repo_root, log_path, merge_state)
+            if budget_tripped:
+                break
+            if not (cfg.feature_review and cfg.integration == "pr"):
+                break
+            if not _feature_review_round(
+                cfg, repo_root, log_path, ledger, review_round):
+                break  # clean / held / alarm / no diff -> done
+            review_round += 1
     finally:
         # Stop the heartbeat and wait for it to fully exit before emitting
         # run_complete, so that event is guaranteed to be the terminal record
@@ -569,13 +509,6 @@ def _run_loop(
         # longer than the orchestrator's own appends already can.
         stop_heartbeat.set()
         heartbeat.join()
-
-    # Final merge pass (PRF-4): the dispatch loop breaks as soon as nothing is
-    # in-flight, so the last task(s) to reach Awaiting Review — and any PR that
-    # only became eligible once the final dependency merged — get one more
-    # merge attempt here. Runs after the heartbeat is stopped but before the
-    # terminal run_complete event, so run_complete stays the chain's last record.
-    _maybe_merge_pass(cfg, repo_root, log_path, merge_state)
 
     tasks = _load_tasks_snapshot(cfg)
     # "Done" for the rollup counts every terminal-success status: plain Done
@@ -798,12 +731,14 @@ def _run_task(
         skip_security_linter=cfg.skip_security_linter,
         reviewer_count=cfg.reviewer_count,
     )
-    # Per-task model override stacks on top of run-level --claude-extra-args.
-    # `claude` processes flags left-to-right; appending --model at the END
-    # means the per-task value wins if the run-level args also set --model.
-    spawn_extra = list(cfg.claude_extra_args)
-    if snap.model:
-        spawn_extra.extend(["--model", snap.model])
+    # Per-task agent + model routing is handled inside spawn_agent: for the
+    # default "claude" agent it appends --model (stacking after run-level
+    # --claude-extra-args so the per-task value wins); for cross-family agents
+    # (codex/grok/gemini) it dispatches to that CLI's headless agentic mode and
+    # normalizes the result (auto-commit + summary). See spawn.spawn_agent.
+    if snap.agent and snap.agent != "claude":
+        _log(log_path, f"  {snap.key} implementer agent = {snap.agent}"
+                       + (f" (model={snap.model})" if snap.model else ""))
 
     # Snapshot base_branch's tip SHA BEFORE the spawn. This is the
     # discriminator for the direct-to-base workflow: a Tasker that
@@ -815,12 +750,14 @@ def _run_task(
     base_sha_before = _branch_sha(repo_root, cfg.base_branch, log_path, snap.key)
 
     try:
-        result = spawn_mod.spawn_claude(
+        result = spawn_mod.spawn_agent(
+            agent=snap.agent,
             claude_bin=cfg.claude_bin,
             cwd=wt.path,
             env=env,
             prompt=prompt,
-            extra_args=spawn_extra,
+            model=snap.model,
+            extra_args=list(cfg.claude_extra_args),
             timeout_seconds=cfg.task_timeout_seconds,
         )
     except Exception as e:
@@ -833,10 +770,17 @@ def _run_task(
     # from the Claude CLI's JSON output (all fields optional — None when the
     # CLI didn't emit usage). Emitted for every spawn outcome, success or
     # non-zero exit, so the journal records the cost even of a failed run.
-    # Account the implementer spawn (event + accumulate its cost onto the row).
-    # Done here, before any block branch, so a task that spawns and THEN blocks
-    # still counts toward the cost ceiling. (BUDGET-1 / spawn-complete cost.)
+    # Account the implementer spawn (emits task_spawn_finished + accumulates its
+    # cost onto the row). Done here, before any block branch, so a task that
+    # spawns and THEN blocks still counts toward the cost ceiling. (BUDGET-1 /
+    # spawn-complete cost.)
     _account_spawn(cfg, snap.key, result, kind="implementer")
+    # Step 6 (opt-in via --haiku-summary): persist the agent's captured output as
+    # the transcript log + a cheap haiku summary, referenced from the YAML row
+    # (review/audit; what Forecast `ingest` later projects). Best-effort — never
+    # blocks the task; runs for every outcome so a blocked run is auditable too.
+    if cfg.haiku_summary:
+        _log_transcript_and_haiku(cfg, snap, result, summary_path.parent, log_path)
     if result.exit_code != 0:
         _mark_blocked(cfg, snap.key, reason=f"session_exit_code_{result.exit_code}")
         return plan_mod.BLOCKED
@@ -1375,6 +1319,288 @@ def _run_cross_family_panel(
         ),
         log=lambda m: _log(log_path, m),
     )
+
+
+def run_feature_review(
+    cfg: RunConfig, repo_root: Path, doc: Any, log_path: Path,
+) -> cfr_mod.PanelVerdict | None:
+    """Step 3 (feature-review loop): the final whole-feature review. Runs the
+    cross-family panel over the CUMULATIVE diff (base...feature) reviewed AGAINST
+    the PRD — does it satisfy intent + acceptance + cross-task coherence, what is
+    missing/regressed — not just diff-internal quality. pr-mode only. Returns the
+    PanelVerdict, or None when there is no diff to review. Emits
+    feature_review_started / feature_review_verdict."""
+    # The cumulative-diff base is the feature branch's RUN-START sha (its fork
+    # point), NOT cfg.base_branch — pr-mode repoints base_branch to the feature
+    # branch, so using it would diff the branch against itself (empty). For a
+    # feature-branch created this run that sha is the true fork point (whole
+    # feature); for an existing branch it's this run's start (the run's delta).
+    base = cfg.feature_branch_sha or cfg.base_branch
+    branch = cfg.feature_branch or cfg.base_branch
+    # pr-mode merges land on origin; the LOCAL feature ref lags. Fetch + diff the
+    # origin tip so the review sees the merged feature work (best-effort — falls
+    # back to the local ref if there's no origin / the fetch fails).
+    if cfg.feature_branch:
+        import subprocess
+        try:
+            fetch = subprocess.run(
+                ["git", "fetch", "origin", cfg.feature_branch], cwd=str(repo_root),
+                capture_output=True, text=True, timeout=120)
+            if fetch.returncode == 0:
+                branch = f"origin/{cfg.feature_branch}"
+        except Exception:  # noqa: BLE001 — fall back to the local ref
+            pass
+    diff = cfr_mod.collect_diff(repo_root=repo_root, base_branch=base, branch=branch)
+    if not diff.strip():
+        _log(log_path, "feature-review: no cumulative diff — skipping")
+        return None
+    prd_path = plan_mod.feature_prd(doc)
+    prd_md = ""
+    if prd_path:
+        try:
+            prd_md = (repo_root / prd_path).read_text(encoding="utf-8")
+        except OSError:
+            prd_md = f"(PRD at {prd_path} not readable)"
+    summary_md = (
+        "# Final feature review\n\nReview the CUMULATIVE feature diff against the "
+        "PRD below: does it satisfy the intent + acceptance criteria, is it "
+        "coherent across tasks, what is missing or regressed? Judge the feature "
+        "as a whole, not each hunk.\n\n## PRD\n" + (prd_md or "(no PRD provided)")
+    )
+    epic = (str(doc.get("epic") or doc.get("project") or "feature")
+            if isinstance(doc, dict) else "feature")
+    _emit_event(cfg, journal_mod.EventType.feature_review_started, {
+        "base": base, "branch": branch, "prd": prd_path,
+        "diff_lines": diff.count("\n"),
+    })
+    verdict = cfr_mod.run_panel(
+        ticket_key="FEATURE-REVIEW",
+        ticket_summary=f"final review of feature {epic}",
+        summary_md=summary_md, diff=diff, branch=branch, base_branch=base,
+        reviewers=_panel_reviewer_factory(cfg),
+        advisory_reviewers=_panel_advisory_reviewer_factory(
+            cfg, repo_root, log_path, "FEATURE-REVIEW"),
+        log=lambda m: _log(log_path, m),
+    )
+    _emit_event(cfg, journal_mod.EventType.feature_review_verdict, {
+        "consensus": verdict.consensus,
+        "blocking": len(verdict.blocking_findings),
+    })
+    _log(log_path, f"feature-review: consensus={verdict.consensus} "
+                   f"blocking={len(verdict.blocking_findings)}")
+    return verdict
+
+
+_SEV_RANK = {"CRITICAL": 3, "HIGH": 2, "MEDIUM": 1, "LOW": 0}
+
+
+def _distinct_findings(verdict) -> list[dict]:
+    """Dedupe findings across reviewers by `disposition.finding_key` (file-level
+    for blocking severities, file:line for nits), keeping the MAX severity and a
+    representative location/description. So one defect flagged by N reviewers at
+    slightly different lines is a SINGLE record — its corroboration is counted
+    the same way by `disposition.corroboration`, so the count matches the
+    record."""
+    by_key: dict[str, dict] = {}
+    for rv in getattr(verdict, "reviewers", []) or []:
+        for f in getattr(rv, "findings", []) or []:
+            sv = getattr(f.severity, "value", str(f.severity))
+            key = disposition_mod.finding_key(f.location, sv)
+            cur = by_key.get(key)
+            if cur is None:
+                by_key[key] = {"location": f.location, "severity": sv,
+                               "description": getattr(f, "description", "")}
+            elif _SEV_RANK.get(sv, 0) > _SEV_RANK.get(cur["severity"], 0):
+                cur["severity"] = sv
+                cur["description"] = getattr(f, "description", "") or cur["description"]
+    return list(by_key.values())
+
+
+def apply_dispositions(
+    cfg: RunConfig, verdict, *, mode: str,
+    ledger: disposition_mod.DispositionLedger, log_path: Path,
+) -> tuple[list[dict], list[dict]]:
+    """Step 4a: classify EVERY distinct finding (no silent drops), record it in
+    the ledger, journal a disposition_recorded event, and return
+    (accepted, held). accepted -> become FIX tasks; held -> block + notify.
+    gate_grounded/refutable are False at the feature level (decisions #3/#6)."""
+    corr = disposition_mod.corroboration(verdict)
+    accepted: list[dict] = []
+    held: list[dict] = []
+    for fnd in _distinct_findings(verdict):
+        key = disposition_mod.finding_key(fnd["location"], fnd["severity"])
+        c = corr.get(key, 1)
+        disp, reason = disposition_mod.classify_disposition(
+            severity=fnd["severity"], corroboration=c, gate_grounded=False,
+            refutable=False, mode=mode,
+        )
+        rec = disposition_mod.DispositionRecord(
+            finding_id=f"{key}:{fnd['severity']}",
+            severity=fnd["severity"], corroboration=c, gate_grounded=False,
+            disposition=disp, reason=reason,
+        )
+        ledger.record(rec)
+        _emit_event(cfg, journal_mod.EventType.disposition_recorded, {
+            "finding_id": rec.finding_id, "location": fnd["location"],
+            "severity": fnd["severity"], "corroboration": c,
+            "disposition": disp.value, "reason": reason,
+            "description": (fnd["description"] or "")[:300],
+        }, task_key="FEATURE-REVIEW")
+        if disp is disposition_mod.Disposition.ACCEPT:
+            accepted.append({**fnd, "corroboration": c})
+        elif disp is disposition_mod.Disposition.HOLD:
+            held.append({**fnd, "corroboration": c})
+    _log(log_path, f"feature-review dispositions: {ledger.tally()} "
+                   f"(accepted={len(accepted)} held={len(held)})")
+    return accepted, held
+
+
+def _dispatch_drain(
+    cfg: RunConfig, run_dir: Path, log_path: Path, repo_root: Path,
+    merge_state: merge_mod.MergePassState,
+) -> bool:
+    """One dispatch-drain pass: spawn runnable tasks (up to max_parallel) until
+    nothing is runnable or in-flight, merging eligible PRs after each batch.
+    Re-run by the feature-review loop each round (to run the FIX-* tasks it
+    appends). Returns True iff the cost ceiling (BUDGET-1) tripped during this
+    drain — the caller then holds the run (and stops further review rounds)."""
+    budget_tripped = False
+    in_flight: dict[Future[str], str] = {}
+    with ThreadPoolExecutor(max_workers=max(cfg.max_parallel, 1)) as exe:
+        while True:
+            tasks = _load_tasks_snapshot(cfg)
+            runnable = plan_mod.runnable_now(tasks, integration=cfg.integration)
+            runnable = plan_mod.filter_tasks(runnable, cfg.label_filter, cfg.only_keys)
+            in_flight_keys = set(in_flight.values())
+            runnable = [t for t in runnable if t.key not in in_flight_keys]
+
+            # Budget ceiling (BUDGET-1): once this run's spend reaches the
+            # ceiling, stop STARTING new tasks — but let in-flight ones drain
+            # (killing a task mid-spawn orphans its worktree/PR). Fires ONLY when
+            # there is runnable work to suppress, so a run that merely finished
+            # its last task over budget is COMPLETE, not falsely held.
+            if runnable and _budget_exceeded(
+                    tasks, cfg.max_cost_usd, cfg.cost_baseline_usd):
+                if not budget_tripped:
+                    budget_tripped = True
+                    spent = _run_spend_usd(tasks, cfg.cost_baseline_usd)
+                    in_flight_now = sorted(in_flight.values())
+                    parked = sorted(t.key for t in runnable)
+                    _log(log_path,
+                         f"BUDGET: run spend ${spent:.2f} >= ceiling "
+                         f"${cfg.max_cost_usd:.2f} — holding; parking "
+                         f"{len(parked)} task(s), no new ones will start "
+                         f"(in-flight: {in_flight_now or 'none'})")
+                    _emit_event(cfg, journal_mod.EventType.budget_exceeded, {
+                        "cost_usd": round(spent, 4),
+                        "ceiling_usd": cfg.max_cost_usd,
+                        "in_flight": in_flight_now,
+                        "parked": parked,
+                    })
+                    _send_notification(cfg, notify_mod.budget_exceeded_notification(
+                        run_id=cfg.run_id, cost_usd=spent,
+                        ceiling_usd=cfg.max_cost_usd, in_flight=in_flight_now,
+                        parked_count=len(parked), tasks_yaml=str(cfg.tasks_path),
+                    ))
+                runnable = []  # stop starting new work; drain in-flight
+            while runnable and len(in_flight) < cfg.max_parallel:
+                t = runnable.pop(0)
+                snap = TaskSnapshot(
+                    key=t.key, summary=t.summary, description=t.description,
+                    type=t.type, labels=list(t.labels), model=t.model,
+                    agent=t.agent, blocked_by=list(t.blocked_by),
+                )
+                _mark_in_progress(cfg, snap, run_dir)
+                fut = exe.submit(_run_task, snap, cfg, run_dir, log_path, repo_root)
+                in_flight[fut] = snap.key
+                _log(log_path, f"dispatch {snap.key} submitted")
+            if not in_flight:
+                break
+            done, _pending = wait(list(in_flight), return_when=FIRST_COMPLETED)
+            for fut in done:
+                key = in_flight.pop(fut)
+                try:
+                    fut.result()
+                except Exception as e:
+                    _log(log_path, f"  worker {key} raised: {e}")
+                    _send_notification(cfg, notify_mod.worker_exception_notification(
+                        task_key=key, run_id=cfg.run_id, exception_repr=repr(e),
+                        tasks_yaml=str(cfg.tasks_path),
+                    ), task_key=key)
+                    try:
+                        _mark_blocked(cfg, key, reason=f"worker_exception: {e}")
+                    except Exception as mark_err:
+                        _log(log_path, f"  worker {key} _mark_blocked itself raised: {mark_err}")
+            _maybe_merge_pass(cfg, repo_root, log_path, merge_state)
+    return budget_tripped
+
+
+def _feature_review_round(
+    cfg: RunConfig, repo_root: Path, log_path: Path,
+    ledger: disposition_mod.DispositionLedger, review_round: int,
+) -> bool:
+    """One feature-review round: review the cumulative diff vs the PRD ->
+    disposition every finding -> append accepted ones as FIX tasks. Returns True
+    iff another dispatch round should run (FIX tasks were appended); False to
+    stop (no diff / alarm tripped / findings held for a human / clean)."""
+    doc = yaml_io.load(cfg.tasks_path)
+    verdict = run_feature_review(cfg, repo_root, doc, log_path)
+    if verdict is None:
+        return False
+    accepted, held = apply_dispositions(
+        cfg, verdict, mode=cfg.mode, ledger=ledger, log_path=log_path)
+    tripped, why = ledger.alarm_tripped(review_round)
+    if tripped:
+        _log(log_path, f"feature-review: HOLD (alarm) — {why}")
+        return False
+    if held:
+        _log(log_path, f"feature-review: {len(held)} finding(s) need a human "
+                       f"(lone CRITICAL / conflict) — holding the feature")
+        return False
+    if not accepted:
+        _log(log_path, "feature-review: clean — no accept-worthy findings")
+        return False
+    n = _append_fix_tasks(cfg, accepted, review_round)
+    _log(log_path, f"feature-review round {review_round}: appended {n} FIX task(s)")
+    return n > 0
+
+
+def _append_fix_tasks(cfg: RunConfig, accepted: list[dict], review_round: int) -> int:
+    """Append accepted findings as FIX-* task rows to the tasks.yaml so the next
+    dispatch-drain runs them (gated + per-task-paneled like any task). FIX keys
+    are unique across rounds (max existing index + 1). Returns the count added."""
+    with yaml_io.FileLock(cfg.tasks_path, timeout_seconds=cfg.lock_timeout_seconds):
+        doc = yaml_io.load(cfg.tasks_path)
+        rows = doc.get("tasks") or []
+        existing = [int(str(r.get("key"))[4:]) for r in rows
+                    if str(r.get("key", "")).startswith("FIX-")
+                    and str(r.get("key"))[4:].isdigit()]
+        n = max(existing, default=0)
+        added = 0
+        for f in accepted:
+            n += 1
+            loc = f.get("location", "?")
+            rows.append({
+                "key": f"FIX-{n}",
+                "summary": f"fix: {(f.get('description') or loc)[:70]}",
+                "description": (
+                    f"Address this finding from the final feature review "
+                    f"(round {review_round}):\n\n"
+                    f"- location: {loc}\n"
+                    f"- severity: {f.get('severity')}\n"
+                    f"- corroboration: {f.get('corroboration')} reviewer(s)\n\n"
+                    f"{f.get('description', '')}\n\n"
+                    f"Make the change and add/adjust a test proving it. "
+                    f"Commit only — the dispatcher integrates."
+                ),
+                "type": "Task",
+                "labels": ["size:S", "area:fix"],
+                "agent": "claude",
+            })
+            added += 1
+        doc["tasks"] = rows
+        yaml_io.dump(doc, cfg.tasks_path)
+    return added
 
 
 def _spawn_panel_iterate(
@@ -3052,6 +3278,9 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
         cross_family_panel_iterate=getattr(
             args, "cross_family_panel_iterate", 0,
         ),
+        haiku_summary=getattr(args, "haiku_summary", False),
+        feature_review=getattr(args, "feature_review", False),
+        feature_review_rounds=getattr(args, "feature_review_rounds", 3),
         # getattr default keeps `dispatcher resume` of pre-BUDGET journals
         # working — their genesis run_config lacks the key. cost_baseline_usd is
         # set by execute() for a fresh run; on resume it comes from the genesis.
@@ -3388,6 +3617,37 @@ def _task_started_payload(
                 "key": c.key, "branch": c.branch, "detail": c.detail[:300],
             }
     return payload
+
+
+def _log_transcript_and_haiku(
+    cfg: RunConfig, snap: TaskSnapshot, result: spawn_mod.SpawnResult,
+    out_dir: Path, log_path: Path,
+) -> None:
+    """Step 6: persist the agent's captured output as a transcript log + a cheap
+    haiku summary, reference both from the YAML row, and journal it. Best-effort:
+    any failure is logged and swallowed — this is an audit nicety and must never
+    block or fail a task. (The captured output is the agent's stdout — the JSON
+    envelope for claude, fuller stdout for cross-family agents; a richer
+    turn-by-turn transcript is a future enhancement.)"""
+    try:
+        transcript = out_dir / "transcript.json"
+        transcript.write_text(result.stdout or "", encoding="utf-8")
+        haiku = spawn_mod.summarize_transcript_haiku(
+            result.stdout or "", claude_bin=cfg.claude_bin)
+        haiku_path = out_dir / "summary-haiku.md"
+        if haiku:
+            haiku_path.write_text(haiku, encoding="utf-8")
+        refs = {"transcript_log": str(transcript)}
+        if haiku:
+            refs["haiku_summary"] = str(haiku_path)
+        _mutate_row(cfg, snap.key, lambda r: r.update(refs))
+        _emit_event(cfg, journal_mod.EventType.transcript_logged, {
+            "transcript_log": str(transcript),
+            "haiku_summary": str(haiku_path) if haiku else None,
+            "haiku_chars": len(haiku) if haiku else 0,
+        }, task_key=snap.key)
+    except Exception as e:  # noqa: BLE001 — audit nicety, never fatal
+        _log(log_path, f"  {snap.key} transcript/haiku log failed (non-fatal): {e}")
 
 
 def _spawn_usage_payload(result: spawn_mod.SpawnResult) -> dict[str, Any]:

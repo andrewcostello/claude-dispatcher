@@ -31,6 +31,11 @@ MERGED = "Merged"
 
 TERMINAL = {DONE, BLOCKED, ESCALATED}
 
+# Implementer agents the dispatcher can spawn as a Tasker. "claude" is the
+# default; codex/grok/gemini are cross-family CLIs run in their headless
+# agentic mode via spawn.spawn_agent(). Kept in sync with spawn.AGENT_SPECS.
+KNOWN_AGENTS = frozenset({"claude", "codex", "grok", "gemini"})
+
 # DISPATCH ordering — the statuses of a blockedBy dependency that let its
 # dependents be dispatched ("Done-or-later"). In `branch` mode that is just
 # Done. In `pr` mode Done is no longer terminal, but a dependency in Awaiting
@@ -64,6 +69,14 @@ class Task:
     # work on Opus). Absent or empty → use whatever the run-level
     # --claude-extra-args supplies (or the CLI's default).
     model: str | None = None
+    # Optional per-task IMPLEMENTER agent override. One of KNOWN_AGENTS;
+    # absent/empty -> "claude" (the default Tasker). When set to a cross-family
+    # CLI (codex/grok/gemini), the dispatcher spawns that agent's headless
+    # agentic mode in the worktree via spawn.spawn_agent() instead of
+    # `claude --print`. Lets the bake-off route each task to the agent with the
+    # best outcome/cost. Distinct from `model` (which only swaps the Claude
+    # model tier on the default claude agent).
+    agent: str | None = None
 
     @property
     def size_label(self) -> str | None:
@@ -135,6 +148,15 @@ def load_tasks(doc: Any) -> list[Task]:
         model = str(model_val).strip() if model_val else None
         if model == "":
             model = None
+        agent_val = row.get("agent")
+        agent = str(agent_val).strip().lower() if agent_val else None
+        if not agent:
+            agent = None
+        elif agent not in KNOWN_AGENTS:
+            raise ValidationError(
+                f"tasks[{idx}] ({key}) has unknown agent {agent!r}; "
+                f"must be one of {', '.join(sorted(KNOWN_AGENTS))}"
+            )
         tasks.append(
             Task(
                 key=key,
@@ -146,11 +168,33 @@ def load_tasks(doc: Any) -> list[Task]:
                 status=str(row.get("status", TODO)),
                 raw=row,
                 model=model,
+                agent=agent,
             )
         )
 
     _validate_blocked_by(tasks)
     return tasks
+
+
+def feature_prd(doc: Any) -> str | None:
+    """Return the top-level ``prd:`` path the Planner emits as the feature's
+    intent oracle (read by the final feature review). None when absent or a
+    present-but-blank string. A present ``prd:`` that is NOT a string (a list /
+    mapping / number) is a config error and raises ValidationError — consistent
+    with the rest of this module's strict field handling, and so a malformed prd
+    is caught loudly rather than silently stringified. Pure function of `doc`.
+    """
+    if not isinstance(doc, dict) or "prd" not in doc:
+        return None
+    val = doc["prd"]
+    if val is None:
+        return None
+    if not isinstance(val, str):
+        raise ValidationError(
+            f"'prd' must be a string path, got {type(val).__name__}: {val!r}"
+        )
+    stripped = val.strip()
+    return stripped or None
 
 
 def _validate_blocked_by(tasks: list[Task]) -> None:
