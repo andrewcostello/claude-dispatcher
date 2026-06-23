@@ -95,6 +95,12 @@ Task to work on:
 Description:
 {task_description}
 
+Integration is the DISPATCHER's job, not yours: commit your work to the current
+branch, but do NOT push to origin and do NOT run `gh pr create` / open a pull
+request. The dispatcher pushes your branch and raises the PR (against the
+run-level feature branch) for you — if you open one yourself it lands against
+the wrong base (the repo default branch) as a duplicate that has to be closed.
+
 When you finish the session (Done, Blocked, or Escalated) write the summary file
 to $SUMMARY_PATH in the format documented in tasker.md Phase 5. Do not print the
 summary as a separate message — write it to the file only. After writing the
@@ -253,6 +259,34 @@ def build_env(
     if reviewer_count is not None:
         env["REVIEWER_COUNT"] = str(reviewer_count)
     return env
+
+
+def summarize_transcript_haiku(
+    text: str, *, claude_bin: str = "claude",
+    model: str = "claude-haiku-4-5-20251001", timeout_seconds: int = 120,
+) -> str | None:
+    """Cheap haiku summary of an agent run's captured output for the audit log
+    (step 6). Best-effort: returns the summary text, or None on any failure
+    (empty input, timeout, non-zero exit) — never raises, so it cannot block a
+    task. Uses the cheapest model; only the last ~12k chars are summarized."""
+    if not text or not text.strip():
+        return None
+    prompt = (
+        "Summarize this dispatcher agent run in 3-6 terse bullets: what it "
+        "changed, the key decisions it made, and how it ended (Done/Blocked). "
+        "No preamble, just the bullets.\n\n" + text[-12000:]
+    )
+    try:
+        proc = subprocess.run(
+            [claude_bin, "--print", "--model", model],
+            input=prompt, capture_output=True, text=True, timeout=timeout_seconds,
+        )
+    except Exception:  # noqa: BLE001 — audit nicety must never break a run
+        return None
+    if proc.returncode != 0:
+        return None
+    out = proc.stdout.strip()
+    return out or None
 
 
 def spawn_claude(

@@ -11,6 +11,7 @@ Sub-commands:
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from pathlib import Path
 
@@ -29,6 +30,27 @@ DEFAULT_FINANCIAL_PATHS = ",".join([
     "apps/finance-domain/recovery/**",
     "apps/finance-domain/payout/**",
 ])
+
+
+def _positive_dollars(s: str) -> float:
+    """argparse type for --max-cost-usd: a budget ceiling must be a finite,
+    positive dollar amount. Rejecting 0/negative (rather than silently
+    disabling) keeps the spend-control contract unambiguous — omit the flag to
+    disable. `nan`/`inf` are rejected too: `float()` parses them but they would
+    silently neuter the gate (`cost >= inf` is never true; `nan` comparisons are
+    always false), turning a typo into an uncapped run."""
+    try:
+        v = float(s)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{s!r} is not a number")
+    if not math.isfinite(v):
+        raise argparse.ArgumentTypeError(
+            "--max-cost-usd must be a finite number (not nan/inf)")
+    if v <= 0:
+        raise argparse.ArgumentTypeError(
+            "--max-cost-usd must be a positive dollar amount (omit the flag to "
+            "disable the ceiling)")
+    return v
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -64,6 +86,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated task keys to dispatch (others skipped)",
     )
     run.add_argument("--skip-design", action="store_true")
+    run.add_argument("--haiku-summary", action="store_true",
+                     help="persist each task's transcript + a haiku summary and "
+                          "reference them from the YAML row (audit log; opt-in "
+                          "because it shells claude-haiku per task)")
+    run.add_argument("--feature-review", action="store_true",
+                     help="after the per-task drain (pr mode), review the "
+                          "cumulative feature diff vs the PRD, disposition "
+                          "findings, and loop fix tasks until clean/held/alarmed")
+    run.add_argument("--feature-review-rounds", type=int, default=3,
+                     help="max feature-review fix rounds before holding (default 3)")
     run.add_argument("--skip-security-linter", action="store_true")
     run.add_argument(
         "--reviewer-count",
@@ -93,6 +125,31 @@ def build_parser() -> argparse.ArgumentParser:
             "Per-task wall-clock budget for each spawned Claude session "
             "(default: 14400, i.e. 4h). The session is killed if it exceeds "
             "this and the task is marked Blocked."
+        ),
+    )
+    run.add_argument(
+        "--max-cost-usd",
+        type=_positive_dollars,
+        default=None,
+        metavar="DOLLARS",
+        help=(
+            "Cost ceiling for the run, in US dollars (must be > 0; omit to "
+            "disable, the default). Once cumulative per-task cost (implementer "
+            "+ verifier spawns) reaches this AND runnable work remains, the "
+            "dispatcher stops STARTING new tasks, lets in-flight tasks finish, "
+            "then holds the run for a human (a budget_exceeded event + high-"
+            "urgency notification fire; the run exits non-zero with remaining "
+            "tasks parked To Do — raise this and `dispatcher resume` to "
+            "continue). The ceiling is checked BETWEEN dispatches, so with "
+            "--max-parallel > 1 actual spend can overshoot by up to the cost of "
+            "the tasks already in flight. Cost basis counts every per-task "
+            "Claude spawn — implementer, verifier, and all corrective/retry "
+            "spawns (commit/push/test-fix retries, verifier/panel iterations), "
+            "stamped even if the task later blocks. NOT counted: cross-family "
+            "panel REVIEWER spend (the non-Claude adapters emit no usage JSON, "
+            "and the Claude reviewer's cost isn't surfaced), so a panel-heavy "
+            "run can still exceed the ceiling somewhat. Treat it as a strong "
+            "guardrail, not an exact cap."
         ),
     )
     run.add_argument(
@@ -368,6 +425,19 @@ def build_parser() -> argparse.ArgumentParser:
             "signals the original run may still be live, and resuming could "
             "double-dispatch). Use only when you are sure the original run is "
             "dead — e.g. after a kill -9 or a crashed host."
+        ),
+    )
+    rs.add_argument(
+        "--max-cost-usd",
+        type=_positive_dollars,
+        default=None,
+        metavar="DOLLARS",
+        help=(
+            "Override the cost ceiling for this resume, in US dollars (> 0). "
+            "Without it the resumed run keeps the original ceiling from the "
+            "genesis — which, for a run that was budget-held, would immediately "
+            "re-hold without progress. Raise it here to give the resumed run "
+            "room to continue."
         ),
     )
     rs.set_defaults(func=resume_cmd.execute)

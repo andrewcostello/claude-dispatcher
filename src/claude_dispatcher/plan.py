@@ -176,6 +176,27 @@ def load_tasks(doc: Any) -> list[Task]:
     return tasks
 
 
+def feature_prd(doc: Any) -> str | None:
+    """Return the top-level ``prd:`` path the Planner emits as the feature's
+    intent oracle (read by the final feature review). None when absent or a
+    present-but-blank string. A present ``prd:`` that is NOT a string (a list /
+    mapping / number) is a config error and raises ValidationError — consistent
+    with the rest of this module's strict field handling, and so a malformed prd
+    is caught loudly rather than silently stringified. Pure function of `doc`.
+    """
+    if not isinstance(doc, dict) or "prd" not in doc:
+        return None
+    val = doc["prd"]
+    if val is None:
+        return None
+    if not isinstance(val, str):
+        raise ValidationError(
+            f"'prd' must be a string path, got {type(val).__name__}: {val!r}"
+        )
+    stripped = val.strip()
+    return stripped or None
+
+
 def _validate_blocked_by(tasks: list[Task]) -> None:
     """Reject blockedBy references that don't resolve to a task in the file."""
     known = {t.key for t in tasks}
