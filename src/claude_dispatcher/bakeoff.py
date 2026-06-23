@@ -226,7 +226,76 @@ def render_report(cells: list["CellResult"]) -> str:
       4. Provenance footer: harness version + per-agent model_id/cli_version seen.
     Pure function of `cells` (may call evaluate_reviewers). Returns markdown.
     """
-    raise NotImplementedError("BKO body-fill: render_report")
+    out: list[str] = ["# Bake-off report", ""]
+    if not cells:
+        out.append("_No cells._")
+        return "\n".join(out)
+
+    # 1. Per (agent × effort) aggregate over the whole project.
+    out += ["## Aggregate by agent × effort", "",
+            "| agent | effort | cells | relaxed-pass | cost_usd | tokens | duration_s |",
+            "|---|---|--:|--:|--:|--:|--:|"]
+    agg: dict[tuple[str, str], dict] = {}
+    for c in cells:
+        a = agg.setdefault((c.agent, c.effort), {
+            "cells": 0, "relaxed": 0, "cost": 0.0, "tokens": 0, "dur": 0.0})
+        a["cells"] += 1
+        a["relaxed"] += 1 if c.relaxed_pass else 0
+        a["cost"] += c.cost_usd
+        a["tokens"] += c.input_tokens + c.output_tokens
+        a["dur"] += c.duration_s
+    for (agent, effort), a in sorted(agg.items()):
+        out.append(f"| {agent} | {effort} | {a['cells']} | {a['relaxed']} | "
+                   f"${a['cost']:.3f} | {a['tokens']} | {a['dur']:.0f} |")
+    out.append("")
+
+    # 2. Per-stack routing tables: per task, the best agent×effort cell by
+    #    (relaxed_pass, fewest blocking, then cheaper, then faster).
+    def _route_key(c: "CellResult") -> tuple:
+        return (1 if c.relaxed_pass else 0, -c.blocking_findings,
+                -c.cost_usd, -c.duration_s)
+    by_stack: dict[str, dict[str, list["CellResult"]]] = {}
+    for c in cells:
+        by_stack.setdefault(c.stack, {}).setdefault(c.task_key, []).append(c)
+    out += ["## Per-stack routing (recommended agent × effort per task)", ""]
+    for stack in sorted(by_stack):
+        out += [f"### stack: {stack}", "",
+                "| task | best agent | effort | relaxed-pass | blocking | cost_usd | duration_s |",
+                "|---|---|---|:--:|--:|--:|--:|"]
+        for task_key in sorted(by_stack[stack]):
+            best = max(by_stack[stack][task_key], key=_route_key)
+            out.append(f"| {task_key} | {best.agent} | {best.effort} | "
+                       f"{'yes' if best.relaxed_pass else 'no'} | "
+                       f"{best.blocking_findings} | ${best.cost_usd:.3f} | "
+                       f"{best.duration_s:.0f} |")
+        out.append("")
+
+    # 3. Reviewer evaluation (objective stats from evaluate_reviewers).
+    out += ["## Reviewer evaluation", ""]
+    rstats = evaluate_reviewers(cells)
+    if rstats:
+        out += ["| reviewer | reviews | approve_rate | gate-failing approvals | "
+                "findings | blocking | unique-blocking |",
+                "|---|--:|--:|--:|--:|--:|--:|"]
+        for fam in sorted(rstats):
+            s = rstats[fam]
+            out.append(
+                f"| {fam} | {s['reviews']} | {s['approve_rate']:.0%} | "
+                f"{s['approvals_of_gate_failing']} | {s['findings_total']} | "
+                f"{s['blocking_findings_total']} | {s['unique_blocking']} |")
+    else:
+        out.append("_No per-reviewer data persisted._")
+    out.append("")
+
+    # 4. Provenance footer.
+    out += ["## Provenance", "", f"- harness version: {HARNESS_VERSION}"]
+    seen: dict[str, set] = {}
+    for c in cells:
+        seen.setdefault(c.agent, set()).add((c.model_id or "?", c.cli_version or "?"))
+    for agent in sorted(seen):
+        combos = ", ".join(f"{m} / {v}" for m, v in sorted(seen[agent]))
+        out.append(f"- {agent}: {combos}")
+    return "\n".join(out)
 
 
 def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:

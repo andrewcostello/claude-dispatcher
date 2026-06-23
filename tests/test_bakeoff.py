@@ -94,7 +94,6 @@ def test_evaluate_reviewers_unique_blocking():
 
 
 # --- render_report (BKO-4) -------------------------------------------------
-@pytest.mark.skip(reason="BKO body-fill: render_report")
 def test_render_report_has_sections_and_totals():
     cells = [
         bakeoff.CellResult(task_key="T1", agent="grok", effort="high", stack="react",
