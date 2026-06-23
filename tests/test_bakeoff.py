@@ -25,44 +25,36 @@ def _panel(blocking=0):
 
 
 # --- infer_stack (BKO-1) ---------------------------------------------------
-@pytest.mark.skip(reason="BKO body-fill: infer_stack")
 def test_infer_stack_go_from_label():
     assert bakeoff.infer_stack(_task(labels=["size:S", "area:bay-session"])) == "go"
 
 
-@pytest.mark.skip(reason="BKO body-fill: infer_stack")
 def test_infer_stack_react_from_label():
     assert bakeoff.infer_stack(_task(labels=["size:M", "area:mobile"])) == "react"
 
 
-@pytest.mark.skip(reason="BKO body-fill: infer_stack")
 def test_infer_stack_react_from_path_when_no_label():
     t = _task(labels=["size:S"], description="edit apps/skillstrike-mobile/src/x.tsx")
     assert bakeoff.infer_stack(t) == "react"
 
 
-@pytest.mark.skip(reason="BKO body-fill: infer_stack")
 def test_infer_stack_unknown():
     assert bakeoff.infer_stack(_task(labels=["size:S"], description="docs only")) == "unknown"
 
 
 # --- compute_relaxed_pass (BKO-2) ------------------------------------------
-@pytest.mark.skip(reason="BKO body-fill: compute_relaxed_pass")
 def test_relaxed_pass_gate_and_no_blocking():
     assert bakeoff.compute_relaxed_pass(True, _panel(blocking=0)) is True
 
 
-@pytest.mark.skip(reason="BKO body-fill: compute_relaxed_pass")
 def test_relaxed_pass_blocked_by_critical():
     assert bakeoff.compute_relaxed_pass(True, _panel(blocking=2)) is False
 
 
-@pytest.mark.skip(reason="BKO body-fill: compute_relaxed_pass")
 def test_relaxed_pass_requires_gate():
     assert bakeoff.compute_relaxed_pass(False, _panel(blocking=0)) is False
 
 
-@pytest.mark.skip(reason="BKO body-fill: compute_relaxed_pass")
 def test_relaxed_pass_none_panel_counts_as_no_blocking():
     assert bakeoff.compute_relaxed_pass(True, None) is True
 
@@ -73,7 +65,6 @@ def _cell(agent, gate, reviewers):
         task_key="T1", agent=agent, gate_passed=gate, reviewers=reviewers)
 
 
-@pytest.mark.skip(reason="BKO body-fill: evaluate_reviewers")
 def test_evaluate_reviewers_counts_gate_failing_approvals():
     # codex approves a solution that FAILED the gate -> objective false-negative
     cells = [
@@ -90,7 +81,6 @@ def test_evaluate_reviewers_counts_gate_failing_approvals():
     assert stats["claude"]["approvals_of_gate_failing"] == 0
 
 
-@pytest.mark.skip(reason="BKO body-fill: evaluate_reviewers")
 def test_evaluate_reviewers_unique_blocking():
     cells = [
         _cell("grok", True, [
@@ -104,7 +94,6 @@ def test_evaluate_reviewers_unique_blocking():
 
 
 # --- render_report (BKO-4) -------------------------------------------------
-@pytest.mark.skip(reason="BKO body-fill: render_report")
 def test_render_report_has_sections_and_totals():
     cells = [
         bakeoff.CellResult(task_key="T1", agent="grok", effort="high", stack="react",
