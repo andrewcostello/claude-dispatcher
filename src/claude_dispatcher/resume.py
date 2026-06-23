@@ -209,9 +209,10 @@ def execute(args: argparse.Namespace) -> int:
     # entering the loop would just immediately re-hold (and re-emit
     # budget_exceeded) without dispatching anything. Tell the operator the exact
     # number to clear instead. (None ceiling = disabled = no guard.)
-    effective_ceiling = resumed_args.max_cost_usd
+    effective_ceiling = getattr(resumed_args, "max_cost_usd", None)
     if effective_ceiling:
-        spent = orchestrator._cumulative_cost_usd(tasks)
+        baseline = getattr(resumed_args, "cost_baseline_usd", 0.0) or 0.0
+        spent = orchestrator._run_spend_usd(tasks, baseline)
         if spent >= effective_ceiling:
             print(
                 f"error: run {args.run_id} has already spent ${spent:.2f}, at or "

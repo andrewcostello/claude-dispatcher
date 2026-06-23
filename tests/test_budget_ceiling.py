@@ -75,6 +75,19 @@ def test_budget_under_ceiling_does_not_trip():
     assert orch._budget_exceeded([_task(4.99)], 5.0) is False
 
 
+# --- baseline scoping (don't count prior runs' spend) -------------------------
+def test_run_spend_subtracts_baseline():
+    assert orch._run_spend_usd([_task(13.0)], 10.0) == 3.0
+    assert orch._run_spend_usd([_task(5.0)]) == 5.0  # default baseline 0
+
+
+def test_budget_baseline_excludes_prior_run_cost():
+    # 10.0 already on rows from a prior run; this run has added 3.0 (→ cum 13.0).
+    tasks = [_task(13.0)]
+    assert orch._budget_exceeded(tasks, 5.0, baseline=10.0) is False  # run spend 3 < 5
+    assert orch._budget_exceeded(tasks, 2.0, baseline=10.0) is True   # run spend 3 >= 2
+
+
 # --- notification -------------------------------------------------------------
 def test_budget_notification_is_high_urgency_and_tagged():
     n = notify_mod.budget_exceeded_notification(

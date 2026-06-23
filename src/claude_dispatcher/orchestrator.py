@@ -191,6 +191,14 @@ class RunConfig:
     # reviewer's cost isn't surfaced). None (default) disables the ceiling — the
     # loop is byte-identical to before.
     max_cost_usd: float | None = None
+    # Run-start cost baseline (BUDGET-1). cost_usd persists on task rows across
+    # runs of the same YAML, so a FRESH run over an already-partly-completed
+    # YAML would otherwise count prior runs' spend against this run's ceiling.
+    # execute() captures the sum of pre-existing cost_usd here at run start and
+    # persists it in the genesis run_config; the ceiling caps cumulative cost
+    # MINUS this baseline, i.e. only what this run (and its resumes — which
+    # reuse the genesis baseline) actually adds.
+    cost_baseline_usd: float = 0.0
     # Notification channels for human-attention events. Built once at
     # execute() time from CLI flags + env vars; injected into _run_task
     # via this slot so tests can substitute a recording stub.
@@ -299,6 +307,13 @@ def execute(args: argparse.Namespace) -> int:
         print(f"error: {integ_err}", file=sys.stderr)
         return 2
 
+    # Budget baseline (BUDGET-1): cost_usd already on the rows from PRIOR runs of
+    # this YAML is not this run's spend. Capture it now (before any task runs) so
+    # the ceiling caps only what THIS run adds. Persisted in the genesis below so
+    # resumes reuse the same baseline (capping total spend across original +
+    # resumes), rather than recomputing it from rows this run has since written.
+    cfg.cost_baseline_usd = _cumulative_cost_usd(_load_tasks_snapshot(cfg))
+
     # Open the event journal. Its genesis (run_started, seq 0) event records
     # the run's provenance — dispatcher version, tasks.yaml + reviewer-prompts
     # content hashes, host — plus the resolved run config under `run_config`
@@ -364,12 +379,19 @@ def _cumulative_cost_usd(tasks) -> float:
     return total
 
 
-def _budget_exceeded(tasks, ceiling: float | None) -> bool:
-    """True when a positive ceiling is set and cumulative cost has reached it.
-    A None/zero/negative ceiling disables the gate (returns False) — the CLI
-    rejects non-positive ceilings, so this guard is defense-in-depth for a
-    resume whose genesis somehow carried one. Pure."""
-    return bool(ceiling and ceiling > 0) and _cumulative_cost_usd(tasks) >= ceiling
+def _run_spend_usd(tasks, baseline: float = 0.0) -> float:
+    """This run's spend = cumulative per-task cost MINUS the run-start baseline
+    (cost_usd left on rows by prior runs of the same YAML). Pure."""
+    return _cumulative_cost_usd(tasks) - baseline
+
+
+def _budget_exceeded(tasks, ceiling: float | None, baseline: float = 0.0) -> bool:
+    """True when a positive ceiling is set and THIS RUN's spend (cumulative cost
+    minus the run-start baseline) has reached it. A None/zero/negative ceiling
+    disables the gate (returns False) — the CLI rejects non-positive ceilings,
+    so this guard is defense-in-depth for a resume whose genesis carried one.
+    Pure."""
+    return bool(ceiling and ceiling > 0) and _run_spend_usd(tasks, baseline) >= ceiling
 
 
 def _add_task_cost(cfg: RunConfig, task_key: str, delta: float | None) -> None:
@@ -459,10 +481,11 @@ def _run_loop(
                 # "budget-held" (and exiting non-zero) would be a false alarm.
                 # (Dependents that aren't runnable yet are caught on the later
                 # iteration where they become runnable.)
-                if runnable and _budget_exceeded(tasks, cfg.max_cost_usd):
+                if runnable and _budget_exceeded(
+                        tasks, cfg.max_cost_usd, cfg.cost_baseline_usd):
                     if not budget_tripped:
                         budget_tripped = True
-                        spent = _cumulative_cost_usd(tasks)
+                        spent = _run_spend_usd(tasks, cfg.cost_baseline_usd)
                         in_flight_now = sorted(in_flight.values())
                         parked = sorted(t.key for t in runnable)
                         _log(log_path,
@@ -623,7 +646,8 @@ def _run_loop(
     # default payload shape is unchanged.
     if budget_tripped:
         run_complete_payload["budget_held"] = True
-        run_complete_payload["cost_usd"] = round(_cumulative_cost_usd(tasks), 4)
+        run_complete_payload["cost_usd"] = round(
+            _run_spend_usd(tasks, cfg.cost_baseline_usd), 4)
     _emit_event(cfg, journal_mod.EventType.run_complete, run_complete_payload)
     # A budget hold is an incomplete run needing a human — exit non-zero even
     # when nothing is formally Blocked/Escalated (tasks are parked To Do).
@@ -3029,8 +3053,10 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
             args, "cross_family_panel_iterate", 0,
         ),
         # getattr default keeps `dispatcher resume` of pre-BUDGET journals
-        # working — their genesis run_config lacks the key.
+        # working — their genesis run_config lacks the key. cost_baseline_usd is
+        # set by execute() for a fresh run; on resume it comes from the genesis.
         max_cost_usd=getattr(args, "max_cost_usd", None),
+        cost_baseline_usd=getattr(args, "cost_baseline_usd", 0.0),
         notifier=notify_mod.build_notifier_from_env(
             cli_ntfy_topic=getattr(args, "ntfy_topic", None),
             cli_ntfy_server=getattr(args, "ntfy_server", None),
@@ -3154,6 +3180,9 @@ def _genesis_config(args: argparse.Namespace, cfg: RunConfig) -> dict[str, Any]:
     d["feature_branch"] = cfg.feature_branch
     d["feature_branch_sha"] = cfg.feature_branch_sha
     d["feature_branch_status"] = cfg.feature_branch_status
+    # Budget baseline (BUDGET-1), resolved at run start — persisted so a resume
+    # reuses it instead of recomputing from rows this run has since written.
+    d["cost_baseline_usd"] = cfg.cost_baseline_usd
     return d
 
 
