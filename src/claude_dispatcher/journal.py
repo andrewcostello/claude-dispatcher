@@ -178,6 +178,7 @@ class EventType(str, Enum):
     pr_merge_failed = "pr_merge_failed"
     integrate_result = "integrate_result"
     notify_sent = "notify_sent"
+    budget_exceeded = "budget_exceeded"      # cost ceiling reached → holding the run
     run_complete = "run_complete"
     # Resume lifecycle (DISP-11 / INT-1). These appear only in a journal that
     # `dispatcher resume` has continued; a normal run never emits them.

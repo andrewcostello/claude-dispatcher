@@ -189,6 +189,28 @@ class RunConfig:
     # tasks until clean / held / alarmed. Opt-in (off = identical prior behavior).
     feature_review: bool = False
     feature_review_rounds: int = 3
+    # Budget ceiling (BUDGET-1). When set, the dispatch loop stops STARTING new
+    # tasks once the run's cumulative per-task cost_usd reaches this many US
+    # dollars — it does NOT kill in-flight tasks (that would orphan a worktree /
+    # PR), it lets them drain and then holds the run for a human (a
+    # budget_exceeded journal event + notification fire once; the run exits
+    # non-zero with un-dispatched tasks left To Do, so raising the ceiling and
+    # `dispatcher resume` continues). The cost basis is the row's accumulated
+    # cost_usd — every per-task Claude spawn (implementer + verifier + all
+    # corrective/retry spawns) is accounted via _account_spawn, so it's the
+    # task's full bill even when the task blocks. NOT counted: cross-family
+    # panel reviewer spend (non-Claude adapters emit no usage JSON; the Claude
+    # reviewer's cost isn't surfaced). None (default) disables the ceiling — the
+    # loop is byte-identical to before.
+    max_cost_usd: float | None = None
+    # Run-start cost baseline (BUDGET-1). cost_usd persists on task rows across
+    # runs of the same YAML, so a FRESH run over an already-partly-completed
+    # YAML would otherwise count prior runs' spend against this run's ceiling.
+    # execute() captures the sum of pre-existing cost_usd here at run start and
+    # persists it in the genesis run_config; the ceiling caps cumulative cost
+    # MINUS this baseline, i.e. only what this run (and its resumes — which
+    # reuse the genesis baseline) actually adds.
+    cost_baseline_usd: float = 0.0
     # Notification channels for human-attention events. Built once at
     # execute() time from CLI flags + env vars; injected into _run_task
     # via this slot so tests can substitute a recording stub.
@@ -299,6 +321,13 @@ def execute(args: argparse.Namespace) -> int:
         print(f"error: {integ_err}", file=sys.stderr)
         return 2
 
+    # Budget baseline (BUDGET-1): cost_usd already on the rows from PRIOR runs of
+    # this YAML is not this run's spend. Capture it now (before any task runs) so
+    # the ceiling caps only what THIS run adds. Persisted in the genesis below so
+    # resumes reuse the same baseline (capping total spend across original +
+    # resumes), rather than recomputing it from rows this run has since written.
+    cfg.cost_baseline_usd = _cumulative_cost_usd(_load_tasks_snapshot(cfg))
+
     # Open the event journal. Its genesis (run_started, seq 0) event records
     # the run's provenance — dispatcher version, tasks.yaml + reviewer-prompts
     # content hashes, host — plus the resolved run config under `run_config`
@@ -352,6 +381,65 @@ def resume_run(args: argparse.Namespace, journal: journal_mod.Journal) -> int:
     return _run_loop(cfg, run_dir, log_path, repo_root)
 
 
+def _cumulative_cost_usd(tasks) -> float:
+    """Sum the per-task ``cost_usd`` across the run (implementer + verifier
+    spawns — the same basis report.py aggregates). A task that hasn't reported
+    cost yet, or whose adapter didn't emit usage JSON, contributes 0. Pure."""
+    total = 0.0
+    for t in tasks:
+        c = t.raw.get("cost_usd")
+        if isinstance(c, (int, float)) and not isinstance(c, bool):
+            total += float(c)
+    return total
+
+
+def _run_spend_usd(tasks, baseline: float = 0.0) -> float:
+    """This run's spend = cumulative per-task cost MINUS the run-start baseline
+    (cost_usd left on rows by prior runs of the same YAML). Pure."""
+    return _cumulative_cost_usd(tasks) - baseline
+
+
+def _budget_exceeded(tasks, ceiling: float | None, baseline: float = 0.0) -> bool:
+    """True when a positive ceiling is set and THIS RUN's spend (cumulative cost
+    minus the run-start baseline) has reached it. A None/zero/negative ceiling
+    disables the gate (returns False) — the CLI rejects non-positive ceilings,
+    so this guard is defense-in-depth for a resume whose genesis carried one.
+    Pure."""
+    return bool(ceiling and ceiling > 0) and _run_spend_usd(tasks, baseline) >= ceiling
+
+
+def _add_task_cost(cfg: RunConfig, task_key: str, delta: float | None) -> None:
+    """ADD ``delta`` dollars to a task row's running ``cost_usd`` (creating it at
+    that value if absent). Accumulating — not overwriting — lets every spawn in
+    a task's lifecycle (implementer, verifier, corrective/retry, panel/verifier
+    iterations) contribute, so the row's cost_usd is the task's true bill even
+    when the task blocks before any success-path writeback. A None/0 delta is a
+    no-op."""
+    if not delta:
+        return
+
+    def _apply(row):
+        cur = row.get("cost_usd")
+        base = float(cur) if isinstance(cur, (int, float)) and not isinstance(cur, bool) else 0.0
+        row["cost_usd"] = base + float(delta)
+
+    _mutate_row(cfg, task_key, _apply)
+
+
+def _account_spawn(cfg: RunConfig, task_key: str, result, *, kind: str) -> None:
+    """Single accounting point for one ``spawn_claude`` result: emit a
+    ``task_spawn_finished`` event (tagged with ``spawn_kind``) AND add its cost
+    to the task row's running ``cost_usd``. Routing EVERY spawn through here —
+    implementer, corrective/retry (commit/push/test-fix), and panel/verifier
+    iterations — keeps both report.py's journal rollup and the budget ceiling
+    complete and consistent. (BUDGET-1 / spawn-complete cost accounting.)"""
+    payload = _spawn_usage_payload(result)
+    payload["spawn_kind"] = kind
+    _emit_event(cfg, journal_mod.EventType.task_spawn_finished,
+                payload, task_key=task_key)
+    _add_task_cost(cfg, task_key, result.usage.cost_usd)
+
+
 def _run_loop(
     cfg: RunConfig, run_dir: Path, log_path: Path, repo_root: Path,
 ) -> int:
@@ -379,6 +467,11 @@ def _run_loop(
     # exactly once across the many passes a run triggers.
     merge_state = merge_mod.MergePassState()
 
+    # Budget ceiling (BUDGET-1): set once the cost ceiling is reached so the
+    # post-loop rollup can report the hold and exit non-zero. The trip is
+    # idempotent — the event + notification fire only on the transition.
+    budget_tripped = False
+
     try:
         # OUTER feature-review loop (steps 3-4). With cfg.feature_review off (the
         # default) it runs the dispatch-drain + merge exactly ONCE then breaks —
@@ -390,10 +483,17 @@ def _run_loop(
             max_fix_rounds=cfg.feature_review_rounds)
         review_round = 0
         while True:
-            _dispatch_drain(cfg, run_dir, log_path, repo_root, merge_state)
+            # _dispatch_drain runs the inner dispatch loop incl. the budget
+            # ceiling (BUDGET-1); it returns True if the ceiling tripped this
+            # drain. A budget hold stops the outer review loop too — we don't
+            # spend more on review rounds / fix tasks once the human gate fired.
+            if _dispatch_drain(cfg, run_dir, log_path, repo_root, merge_state):
+                budget_tripped = True
             # End-of-round merge: the last task(s) to reach Awaiting Review — and
             # any PR eligible only once the final dependency merged — get a pass.
             _maybe_merge_pass(cfg, repo_root, log_path, merge_state)
+            if budget_tripped:
+                break
             if not (cfg.feature_review and cfg.integration == "pr"):
                 break
             if not _feature_review_round(
@@ -433,7 +533,8 @@ def _run_loop(
     needs_rebase = [t for t in tasks if t.raw.get("needs_rebase")]
     _log(log_path, f"end run blocked={len(blocked)} escalated={len(escalated)}"
          + (f" merged={len(merged)} awaiting={len(awaiting)} "
-            f"needs_rebase={len(needs_rebase)}" if pr_mode else ""))
+            f"needs_rebase={len(needs_rebase)}" if pr_mode else "")
+         + (" BUDGET-HELD" if budget_tripped else ""))
     # Run-complete rollup notification. Always fires (including on clean
     # runs — knowing the run finished is signal). Best-effort. Sent BEFORE
     # the run_complete journal event so that event stays the terminal record
@@ -474,8 +575,16 @@ def _run_loop(
         run_complete_payload["merged"] = len(merged)
         run_complete_payload["awaiting_review"] = len(awaiting)
         run_complete_payload["needs_rebase"] = len(needs_rebase)
+    # Budget hold (BUDGET-1): added only when the ceiling tripped, so the
+    # default payload shape is unchanged.
+    if budget_tripped:
+        run_complete_payload["budget_held"] = True
+        run_complete_payload["cost_usd"] = round(
+            _run_spend_usd(tasks, cfg.cost_baseline_usd), 4)
     _emit_event(cfg, journal_mod.EventType.run_complete, run_complete_payload)
-    return 1 if (blocked or escalated) else 0
+    # A budget hold is an incomplete run needing a human — exit non-zero even
+    # when nothing is formally Blocked/Escalated (tasks are parked To Do).
+    return 1 if (blocked or escalated or budget_tripped) else 0
 
 
 def _maybe_merge_pass(
@@ -661,8 +770,11 @@ def _run_task(
     # from the Claude CLI's JSON output (all fields optional — None when the
     # CLI didn't emit usage). Emitted for every spawn outcome, success or
     # non-zero exit, so the journal records the cost even of a failed run.
-    _emit_event(cfg, journal_mod.EventType.task_spawn_finished,
-                _spawn_usage_payload(result), task_key=snap.key)
+    # Account the implementer spawn (emits task_spawn_finished + accumulates its
+    # cost onto the row). Done here, before any block branch, so a task that
+    # spawns and THEN blocks still counts toward the cost ceiling. (BUDGET-1 /
+    # spawn-complete cost.)
+    _account_spawn(cfg, snap.key, result, kind="implementer")
     # Step 6 (opt-in via --haiku-summary): persist the agent's captured output as
     # the transcript log + a cheap haiku summary, referenced from the YAML row
     # (review/audit; what Forecast `ingest` later projects). Best-effort — never
@@ -783,6 +895,14 @@ def _run_task(
             verification_iterations = vout.iterations
             verification_detail = vout.detail
             verifier_cost_total = vout.cost_usd_total
+            # Add the verifier's verdict-spawn cost to the row so it lands on the
+            # bill whether the task ends Done or BLOCKED (the old success-path
+            # fold missed the BLOCKED case). NO event is emitted here — each
+            # verifier verdict spawn already emits its own task_spawn_finished
+            # (spawn_kind=verifier) that report.py sums, so emitting an aggregate
+            # too would double-count in the journal rollup. The Tasker re-spawns
+            # inside iterate are accounted separately in _spawn_verifier_iterate.
+            _add_task_cost(cfg, snap.key, verifier_cost_total)
             # A mechanical re-run during an iterate may have re-decided the
             # mechanical outcome — carry it through to the row stamp.
             if vout.mech_outcome is not None:
@@ -1046,20 +1166,16 @@ def _run_task(
                 "skipped-no-commits",
             ):
                 row["auto_integrate_detail"] = integrate_result.detail[:500]
-        # Stamp per-task token/cost usage from the Claude CLI's JSON output.
-        # All optional — if --output-format=json wasn't honored or parsing
-        # failed, the SpawnUsage fields are None and we skip writing them.
+        # Stamp per-task token usage from the Claude CLI's JSON output. All
+        # optional — if --output-format=json wasn't honored or parsing failed,
+        # the SpawnUsage fields are None and we skip writing them.
+        #
+        # NOTE: cost_usd is deliberately NOT written here. It is ACCUMULATED at
+        # each spawn via _account_spawn / _add_task_cost (implementer + verifier
+        # + any corrective/retry + panel/verifier iterations), so the row's
+        # running total is already the task's full bill. Overwriting it here
+        # would drop every spawn except the implementer's. (BUDGET-1.)
         u = result.usage
-        # Fold the verifier spawn(s) cost into the task's cost_usd (VG-4): the
-        # verifier is part of landing this task, so its tokens belong on the
-        # task's bill. The per-spawn journal rollup folds the equivalent
-        # verifier task_spawn_finished events; this keeps the YAML row's
-        # cost_usd consistent with that journal-sourced total.
-        combined_cost = u.cost_usd
-        if verifier_cost_total:
-            combined_cost = (combined_cost or 0.0) + verifier_cost_total
-        if combined_cost is not None:
-            row["cost_usd"] = combined_cost
         if u.input_tokens is not None:
             row["input_tokens"] = u.input_tokens
         if u.output_tokens is not None:
@@ -1342,11 +1458,13 @@ def apply_dispositions(
 def _dispatch_drain(
     cfg: RunConfig, run_dir: Path, log_path: Path, repo_root: Path,
     merge_state: merge_mod.MergePassState,
-) -> None:
+) -> bool:
     """One dispatch-drain pass: spawn runnable tasks (up to max_parallel) until
     nothing is runnable or in-flight, merging eligible PRs after each batch.
-    Extracted verbatim from _run_loop so the feature-review loop re-runs it each
-    round (to run the FIX-* tasks it appends)."""
+    Re-run by the feature-review loop each round (to run the FIX-* tasks it
+    appends). Returns True iff the cost ceiling (BUDGET-1) tripped during this
+    drain — the caller then holds the run (and stops further review rounds)."""
+    budget_tripped = False
     in_flight: dict[Future[str], str] = {}
     with ThreadPoolExecutor(max_workers=max(cfg.max_parallel, 1)) as exe:
         while True:
@@ -1355,6 +1473,36 @@ def _dispatch_drain(
             runnable = plan_mod.filter_tasks(runnable, cfg.label_filter, cfg.only_keys)
             in_flight_keys = set(in_flight.values())
             runnable = [t for t in runnable if t.key not in in_flight_keys]
+
+            # Budget ceiling (BUDGET-1): once this run's spend reaches the
+            # ceiling, stop STARTING new tasks — but let in-flight ones drain
+            # (killing a task mid-spawn orphans its worktree/PR). Fires ONLY when
+            # there is runnable work to suppress, so a run that merely finished
+            # its last task over budget is COMPLETE, not falsely held.
+            if runnable and _budget_exceeded(
+                    tasks, cfg.max_cost_usd, cfg.cost_baseline_usd):
+                if not budget_tripped:
+                    budget_tripped = True
+                    spent = _run_spend_usd(tasks, cfg.cost_baseline_usd)
+                    in_flight_now = sorted(in_flight.values())
+                    parked = sorted(t.key for t in runnable)
+                    _log(log_path,
+                         f"BUDGET: run spend ${spent:.2f} >= ceiling "
+                         f"${cfg.max_cost_usd:.2f} — holding; parking "
+                         f"{len(parked)} task(s), no new ones will start "
+                         f"(in-flight: {in_flight_now or 'none'})")
+                    _emit_event(cfg, journal_mod.EventType.budget_exceeded, {
+                        "cost_usd": round(spent, 4),
+                        "ceiling_usd": cfg.max_cost_usd,
+                        "in_flight": in_flight_now,
+                        "parked": parked,
+                    })
+                    _send_notification(cfg, notify_mod.budget_exceeded_notification(
+                        run_id=cfg.run_id, cost_usd=spent,
+                        ceiling_usd=cfg.max_cost_usd, in_flight=in_flight_now,
+                        parked_count=len(parked), tasks_yaml=str(cfg.tasks_path),
+                    ))
+                runnable = []  # stop starting new work; drain in-flight
             while runnable and len(in_flight) < cfg.max_parallel:
                 t = runnable.pop(0)
                 snap = TaskSnapshot(
@@ -1384,6 +1532,7 @@ def _dispatch_drain(
                     except Exception as mark_err:
                         _log(log_path, f"  worker {key} _mark_blocked itself raised: {mark_err}")
             _maybe_merge_pass(cfg, repo_root, log_path, merge_state)
+    return budget_tripped
 
 
 def _feature_review_round(
@@ -1533,6 +1682,7 @@ def _spawn_panel_iterate(
 
     _log(log_path,
          f"  {snap.key} panel-iterate spawn exit={result.exit_code}")
+    _account_spawn(cfg, snap.key, result, kind="panel-iterate")
     if result.exit_code != 0:
         return False
 
@@ -1881,6 +2031,7 @@ def _spawn_verifier_iterate(
         return False
     _log(log_path,
          f"  {snap.key} verifier-iterate spawn exit={result.exit_code}")
+    _account_spawn(cfg, snap.key, result, kind="verifier-iterate")
     if result.exit_code != 0:
         return False
 
@@ -2382,6 +2533,7 @@ def _retry_for_commit(cfg: RunConfig, snap: TaskSnapshot, wt: wt_mod.Worktree,
         _log(log_path, f"  {snap.key} commit-retry spawn failed: {e}")
         return None
     _log(log_path, f"  {snap.key} commit-retry exited code={result.exit_code}")
+    _account_spawn(cfg, snap.key, result, kind="commit-retry")
     if not _has_commits_on_branch(
             wt, cfg.base_branch, repo_root,
             retry_base_sha_before, log_path, snap.key,
@@ -2676,6 +2828,7 @@ def _retry_for_push(
         _log(log_path, f"  {snap.key} push-retry spawn failed: {e}")
         return False
     _log(log_path, f"  {snap.key} push-retry exited code={result.exit_code}")
+    _account_spawn(cfg, snap.key, result, kind="push-retry")
     return result.exit_code == 0
 
 
@@ -2888,6 +3041,7 @@ def _retry_for_test_fix(
         _log(log_path, f"  {snap.key} test-fix retry spawn failed: {e}")
         return False
     _log(log_path, f"  {snap.key} test-fix retry exited code={result.exit_code}")
+    _account_spawn(cfg, snap.key, result, kind="test-fix-retry")
     return result.exit_code == 0
 
 
@@ -3127,6 +3281,11 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
         haiku_summary=getattr(args, "haiku_summary", False),
         feature_review=getattr(args, "feature_review", False),
         feature_review_rounds=getattr(args, "feature_review_rounds", 3),
+        # getattr default keeps `dispatcher resume` of pre-BUDGET journals
+        # working — their genesis run_config lacks the key. cost_baseline_usd is
+        # set by execute() for a fresh run; on resume it comes from the genesis.
+        max_cost_usd=getattr(args, "max_cost_usd", None),
+        cost_baseline_usd=getattr(args, "cost_baseline_usd", 0.0),
         notifier=notify_mod.build_notifier_from_env(
             cli_ntfy_topic=getattr(args, "ntfy_topic", None),
             cli_ntfy_server=getattr(args, "ntfy_server", None),
@@ -3250,6 +3409,9 @@ def _genesis_config(args: argparse.Namespace, cfg: RunConfig) -> dict[str, Any]:
     d["feature_branch"] = cfg.feature_branch
     d["feature_branch_sha"] = cfg.feature_branch_sha
     d["feature_branch_status"] = cfg.feature_branch_status
+    # Budget baseline (BUDGET-1), resolved at run start — persisted so a resume
+    # reuses it instead of recomputing from rows this run has since written.
+    d["cost_baseline_usd"] = cfg.cost_baseline_usd
     return d
 
 
