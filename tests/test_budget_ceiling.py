@@ -33,6 +33,26 @@ def test_cumulative_cost_empty_is_zero():
     assert orch._cumulative_cost_usd([]) == 0.0
 
 
+# --- _add_task_cost (accumulation core of spawn-complete accounting) ----------
+def test_add_task_cost_accumulates_across_spawns(tmp_path):
+    import pytest
+    from claude_dispatcher import yaml_io
+    p = tmp_path / "t.yaml"
+    p.write_text(
+        "project: X\nepic: e\ntasks:\n  - key: T1\n    summary: s\n"
+        "    description: d\n    type: Task\n    labels: [size:S]\n",
+        encoding="utf-8")
+    args = build_parser().parse_args(
+        ["run", str(p), "--runs-dir", str(tmp_path / "r")])
+    cfg = orch._build_config(args)
+    orch._add_task_cost(cfg, "T1", 0.10)   # implementer
+    orch._add_task_cost(cfg, "T1", 0.05)   # e.g. a commit-retry
+    orch._add_task_cost(cfg, "T1", None)   # no-usage spawn → no-op
+    orch._add_task_cost(cfg, "T1", 0)      # no-op
+    row = next(t for t in yaml_io.load(p)["tasks"] if t["key"] == "T1")
+    assert row["cost_usd"] == pytest.approx(0.15)
+
+
 # --- _budget_exceeded ---------------------------------------------------------
 def test_budget_none_disables_gate():
     assert orch._budget_exceeded([_task(1000.0)], None) is False

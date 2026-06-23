@@ -132,13 +132,14 @@ def build_parser() -> argparse.ArgumentParser:
             "tasks parked To Do — raise this and `dispatcher resume` to "
             "continue). The ceiling is checked BETWEEN dispatches, so with "
             "--max-parallel > 1 actual spend can overshoot by up to the cost of "
-            "the tasks already in flight. Cost basis is best-effort: it counts "
-            "the implementer spawn (stamped even if the task later blocks) plus "
-            "the verifier on the success path. It does NOT yet count intra-task "
-            "corrective/retry spawns (commit/push/test-fix retries, verifier/"
-            "panel iterations) or cross-family panel/reviewer spend, so true "
-            "spend can exceed the ceiling. Treat it as a guardrail, not an exact "
-            "cap."
+            "the tasks already in flight. Cost basis counts every per-task "
+            "Claude spawn — implementer, verifier, and all corrective/retry "
+            "spawns (commit/push/test-fix retries, verifier/panel iterations), "
+            "stamped even if the task later blocks. NOT counted: cross-family "
+            "panel REVIEWER spend (the non-Claude adapters emit no usage JSON, "
+            "and the Claude reviewer's cost isn't surfaced), so a panel-heavy "
+            "run can still exceed the ceiling somewhat. Treat it as a strong "
+            "guardrail, not an exact cap."
         ),
     )
     run.add_argument(

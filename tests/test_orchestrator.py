@@ -293,6 +293,37 @@ def test_budget_counts_cost_of_blocked_task(repo: Path, monkeypatch) -> None:
     assert row.get("cost_usd") == 1.0, "blocked task's spend must be recorded"
 
 
+def test_corrective_spawn_cost_is_accounted(repo: Path, monkeypatch) -> None:
+    """A commit-retry corrective spawn's cost is added to the row AND emits a
+    task_spawn_finished tagged spawn_kind=commit-retry — so intra-task retry
+    spend counts toward the ceiling + report rollup (spawn-complete accounting,
+    the panel's gemini 5xHIGH theme)."""
+    import json
+    monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "done-commit-retry")
+    _patched_spawn_with_cost(monkeypatch, cost_usd=1.0)
+    # Isolated worktree base: done-commit-retry's first-skip/second-commit hinges
+    # on a fresh worktree sentinel, so a worktree reused from another test would
+    # commit immediately and skip the retry. (worktree_base override wins — it's
+    # appended after the helper's default.)
+    orchestrator.execute(_build_args(
+        repo, only="SMOKE-A", worktree_base=str(repo / "wt_iso")))
+
+    from claude_dispatcher import yaml_io
+    row = next(t for t in yaml_io.load(repo / "tasks.yaml")["tasks"]
+               if t["key"] == "SMOKE-A")
+    # implementer (1.0) + commit-retry (1.0) are both accounted, at minimum.
+    assert row.get("cost_usd", 0) >= 2.0
+
+    journal = (repo / "_runs" / "smoke-test-run" / "journal.jsonl").read_text(
+        encoding="utf-8")
+    kinds = [
+        json.loads(line)["payload"].get("spawn_kind")
+        for line in journal.splitlines() if line.strip()
+        and json.loads(line)["event_type"] == "task_spawn_finished"
+    ]
+    assert "implementer" in kinds and "commit-retry" in kinds
+
+
 def test_budget_held_run_resumes_under_raised_ceiling(repo: Path, monkeypatch) -> None:
     """The documented recovery path works end-to-end: a budget-held run resumes
     under a raised --max-cost-usd and completes the parked tasks. (Panel HIGH:
