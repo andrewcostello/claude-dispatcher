@@ -197,6 +197,29 @@ def execute(args: argparse.Namespace) -> int:
 
     # Rebuild the run args from the genesis config and re-enter the loop.
     resumed_args = _namespace_from_config(config)
+    # Budget ceiling override (BUDGET-1): the genesis carries the original
+    # --max-cost-usd, but a run that was budget-held would re-hold immediately
+    # under the same ceiling. A --max-cost-usd passed to `resume` supersedes the
+    # genesis value so the operator can give the resumed run room to continue.
+    cli_ceiling = getattr(args, "max_cost_usd", None)
+    if cli_ceiling is not None:
+        resumed_args.max_cost_usd = cli_ceiling
+        print(f"  budget ceiling overridden to ${cli_ceiling:.2f} for this resume")
+    # Fail fast if the run has ALREADY spent at/over the effective ceiling:
+    # entering the loop would just immediately re-hold (and re-emit
+    # budget_exceeded) without dispatching anything. Tell the operator the exact
+    # number to clear instead. (None ceiling = disabled = no guard.)
+    effective_ceiling = getattr(resumed_args, "max_cost_usd", None)
+    if effective_ceiling:
+        baseline = getattr(resumed_args, "cost_baseline_usd", 0.0) or 0.0
+        spent = orchestrator._run_spend_usd(tasks, baseline)
+        if spent >= effective_ceiling:
+            print(
+                f"error: run {args.run_id} has already spent ${spent:.2f}, at or "
+                f"over the budget ceiling ${effective_ceiling:.2f}. Pass "
+                f"--max-cost-usd greater than ${spent:.2f} to resume.",
+                file=sys.stderr)
+            return 2
     print(f"Resuming run {args.run_id} ...")
     return orchestrator.resume_run(resumed_args, journal)
 

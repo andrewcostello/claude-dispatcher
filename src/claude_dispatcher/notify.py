@@ -471,6 +471,37 @@ def run_complete_notification(
     )
 
 
+def budget_exceeded_notification(
+    *,
+    run_id: str,
+    cost_usd: float,
+    ceiling_usd: float,
+    in_flight: list[str] | None = None,
+    parked_count: int | None = None,
+    tasks_yaml: str | None = None,
+) -> Notification:
+    """The cost ceiling was reached. The run stops STARTING new tasks and drains
+    in-flight ones, then holds for a human. High urgency — money is the gate, and
+    un-dispatched tasks are parked To Do until the ceiling is raised + resumed."""
+    body_lines = [
+        f"*Run:* `{run_id}`",
+        f"*Spent:* ${cost_usd:.2f}  |  *Ceiling:* ${ceiling_usd:.2f}",
+        "Cost ceiling reached — no new tasks will start. In-flight tasks finish, "
+        "then the run holds. Raise --max-cost-usd and `dispatcher resume` to continue.",
+    ]
+    if parked_count:
+        body_lines.append(f"*Parked (To Do):* {parked_count} task(s)")
+    if in_flight:
+        body_lines.append(f"*Still in flight:* {', '.join(f'`{k}`' for k in in_flight)}")
+    return Notification(
+        title=f"[dispatcher] budget ceiling reached (${cost_usd:.2f}/${ceiling_usd:.2f})",
+        body="\n".join(body_lines),
+        urgency="high",
+        click_url=_path_to_url(tasks_yaml),
+        tags=["rotating_light", "budget"],
+    )
+
+
 def worker_exception_notification(
     *,
     task_key: str,
