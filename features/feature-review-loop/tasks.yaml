@@ -1,0 +1,135 @@
+project: FRL
+epic: feature-review-loop
+# Dogfood via the Planner role. GATE-1 skeleton approved: disposition.py +
+# journal events + plan.feature_prd stub + their SKIPPED contract tests are on
+# the base branch. Each task implements its piece per the docstring/contract AND
+# un-skips its own contract tests (tests/test_disposition.py, test_prd_field.py).
+# Keep pure functions PURE (no subprocess/network/fs). Do NOT touch other tasks'
+# functions/tests. Commit only — the dispatcher integrates (no PR/push).
+# (The Planner PRD-emission step + the escape-analyst role are claude-workflow
+# docs, hand-authored separately — not in this dispatcher run.)
+
+tasks:
+  - key: DISP-1
+    summary: "implement disposition.classify_disposition (the tiered rule) + un-skip tests"
+    description: |
+      Implement `classify_disposition(*, severity, corroboration, gate_grounded,
+      refutable, mode)` in src/claude_dispatcher/disposition.py per its docstring:
+      refutable -> REJECT; blocking severity (CRITICAL/HIGH) AND (corroboration>=2
+      OR gate_grounded) -> ACCEPT; blocking but lone+ungrounded -> HOLD; otherwise
+      (MEDIUM/LOW, or lone non-blocking) -> DEFER. Return (Disposition, reason)
+      where reason names the rule that fired. Pure. Un-skip the 5
+      test_*disposition* classify tests (refutable/corroborated/gate-grounded/
+      lone/nit) in tests/test_disposition.py.
+      Acceptance: those 5 tests run and pass; no other code/tests changed.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+
+    status: Merged
+    started_at: '2026-06-18T23:37:57-07:00'
+    dispatcher_run_id: 2026-06-19T06-37-56Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-19T06-37-56Z-tasks/DISP-1/summary.md
+    branch: feat/DISP-1-implement-disposition-classify-disposition-the
+    completed_at: '2026-06-18T23:40:09-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/39
+    pr_number: 39
+    mechanical_verification: passed
+    verified: true
+    verification_iterations: 0
+    cost_usd: 0.5136145
+    model: grok
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.183 (Claude Code)
+    merged_at: '2026-06-18T23:40:12-07:00'
+    pr_approved_by: dispatcher-agent
+    merged_by: dispatcher-agent
+    merged_sha: 5d3ad278fda16285280c1ec07da361f168ebe8c2
+  - key: DISP-2
+    summary: "implement disposition.DispositionLedger (record/tally/regenerating/alarm) + un-skip tests"
+    description: |
+      Implement the DispositionLedger methods in disposition.py per their
+      docstrings: record (append; no silent drop), tally (counts per Disposition
+      value, omitting zero-count keys), accepted_count, regenerating(finding_id)
+      (True iff that id was ACCEPTed before), alarm_tripped(rounds_done) ->
+      (bool, reason) tripping on rounds_done>=max_fix_rounds OR
+      accepted_count>max_fix_tasks (reason explains which). Pure. Un-skip the 5
+      DispositionLedger tests in tests/test_disposition.py.
+      Acceptance: those 5 tests run and pass; no other code/tests changed.
+    type: Task
+    estimate: 2h
+    labels: [size:M, area:dispatcher]
+    agent: claude
+    model: claude-opus-4-8
+
+    status: Awaiting Review
+    started_at: '2026-06-18T23:37:57-07:00'
+    dispatcher_run_id: 2026-06-19T06-37-56Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-19T06-37-56Z-tasks/DISP-2/summary.md
+    branch: feat/DISP-2-implement-disposition-dispositionledger-record-tally
+    completed_at: '2026-06-18T23:40:38-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 1
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/40
+    pr_number: 40
+    mechanical_verification: passed
+    verified: true
+    verification_iterations: 0
+    cost_usd: 1.1874905
+    input_tokens: 12071
+    output_tokens: 7809
+    cache_read_input_tokens: 786875
+    cache_creation_input_tokens: 36942
+    duration_ms: 116531
+    num_turns: 18
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.183 (Claude Code)
+  - key: PRD-1
+    summary: "implement plan.feature_prd + add a PRD template doc + un-skip tests"
+    description: |
+      (1) Implement `plan.feature_prd(doc)` per its docstring: return the
+      top-level `prd:` string from the parsed YAML doc, None if absent or blank.
+      Un-skip the 3 tests in tests/test_prd_field.py.
+      (2) Add a PRD template at docs/templates/PRD-template.md the Planner will
+      fill: sections for Problem/intent, Contracts + data-flow seams, Acceptance
+      criteria (feature-level, beyond per-task tests), Non-goals, Feature
+      asymmetry/degradation decisions, and a Deviations log (appended during the
+      run).
+      Acceptance: the 3 prd-field tests pass; the template exists with those
+      sections; no other code/tests changed.
+    type: Task
+    estimate: 2h
+    labels: [size:M, area:dispatcher, area:docs]
+    agent: claude
+    model: claude-opus-4-8
+    status: Awaiting Review
+    started_at: '2026-06-18T23:40:12-07:00'
+    dispatcher_run_id: 2026-06-19T06-37-56Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-19T06-37-56Z-tasks/PRD-1/summary.md
+    branch: feat/PRD-1-implement-plan-feature-prd-add
+    completed_at: '2026-06-18T23:43:45-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 1
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/41
+    pr_number: 41
+    mechanical_verification: passed
+    verified: true
+    verification_iterations: 0
+    cost_usd: 1.3953550000000001
+    input_tokens: 12210
+    output_tokens: 7797
+    cache_read_input_tokens: 1089604
+    cache_creation_input_tokens: 42713
+    duration_ms: 169450
+    num_turns: 24
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.183 (Claude Code)

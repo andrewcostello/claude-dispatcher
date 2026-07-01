@@ -1,0 +1,168 @@
+project: BKO
+epic: bakeoff-harness
+# Dogfood: build the eval-harness pure-logic body-fills with the dispatcher,
+# contract-first. The skeleton (CellResult v2, stubs, SKIPPED contract tests) is
+# on the base branch. Each task implements ONE pure function in
+# src/claude_dispatcher/bakeoff.py per its docstring AND removes the
+# @pytest.mark.skip from its own contract test(s) in tests/test_bakeoff.py so
+# they run + pass. Keep functions PURE (no subprocess/network/fs). Do NOT touch
+# other functions or other tasks' tests. Gate = the repo pytest suite.
+
+tasks:
+  - key: BKO-1
+    summary: "implement bakeoff.infer_stack (react|go|unknown) + un-skip its contract tests"
+    description: |
+      Implement `infer_stack(task)` in src/claude_dispatcher/bakeoff.py per its
+      docstring: "go" for Go-service tasks (label area:bay-session / area:go /
+      lang:go, or description/path under apps/platform-domain or *.go), "react"
+      for mobile/TS/React (label area:mobile / area:react / lang:react, or
+      apps/skillstrike-mobile / *.tsx), else "unknown"; labels win over paths.
+      Remove the 4 @pytest.mark.skip on test_infer_stack_* in tests/test_bakeoff.py.
+      Acceptance: those 4 tests run and pass; no other code/tests changed.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+
+    status: Merged
+    started_at: '2026-06-18T22:21:06-07:00'
+    dispatcher_run_id: 2026-06-19T05-21-04Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-19T05-21-04Z-tasks/BKO-1/summary.md
+    branch: feat/BKO-1-implement-bakeoff-infer-stack-react
+    completed_at: '2026-06-18T22:23:44-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/36
+    pr_number: 36
+    mechanical_verification: passed
+    verified: true
+    verification_iterations: 0
+    cost_usd: 0.146843
+    model: grok
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.183 (Claude Code)
+    merged_at: '2026-06-18T22:23:47-07:00'
+    pr_approved_by: dispatcher-agent
+    merged_by: dispatcher-agent
+    merged_sha: 7a255b6c29758666860f98db2a51df43f01564c7
+  - key: BKO-2
+    summary: "implement bakeoff.compute_relaxed_pass + un-skip its contract tests"
+    description: |
+      Implement `compute_relaxed_pass(gate_passed, panel)`: True iff gate_passed
+      AND the panel has zero CRITICAL/HIGH (blocking) findings; a None panel counts
+      as no blocking findings. Read `panel.blocking_findings` (a list).
+      Remove the 4 @pytest.mark.skip on test_relaxed_pass_* in tests/test_bakeoff.py.
+      Acceptance: those 4 tests run and pass; no other code/tests changed.
+    type: Task
+    estimate: 1h
+    labels: [size:XS, area:dispatcher]
+    agent: claude
+
+    status: Merged
+    started_at: '2026-06-18T22:21:06-07:00'
+    dispatcher_run_id: 2026-06-19T05-21-04Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-19T05-21-04Z-tasks/BKO-2/summary.md
+    branch: feat/BKO-2-implement-bakeoff-compute-relaxed-pass
+    completed_at: '2026-06-18T22:23:13-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/35
+    pr_number: 35
+    mechanical_verification: passed
+    verified: true
+    verification_iterations: 0
+    cost_usd: 0.148468
+    model: grok
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.183 (Claude Code)
+    merged_at: '2026-06-18T22:23:15-07:00'
+    pr_approved_by: dispatcher-agent
+    merged_by: dispatcher-agent
+    merged_sha: 7a255b6c29758666860f98db2a51df43f01564c7
+  - key: BKO-3
+    summary: "implement bakeoff.evaluate_reviewers (objective reviewer stats) + un-skip tests"
+    description: |
+      Implement `evaluate_reviewers(cells)` per its docstring: per reviewer family
+      (from each cell.reviewers = [{family, verdict, findings:[{severity,location}]}]),
+      return reviews, approvals, approvals_of_gate_failing (approve when
+      cell.gate_passed is False), findings_total, blocking_findings_total
+      (CRITICAL/HIGH), approve_rate, and unique_blocking (a CRITICAL/HIGH finding at
+      a location no OTHER reviewer flagged on the same cell). Pure function. Remove
+      the 2 @pytest.mark.skip on test_evaluate_reviewers_* in tests/test_bakeoff.py.
+      Acceptance: those 2 tests run and pass; no other code/tests changed.
+    type: Task
+    estimate: 2h
+    labels: [size:M, area:dispatcher]
+    agent: claude
+    model: claude-opus-4-8
+
+    status: Awaiting Review
+    started_at: '2026-06-18T22:23:15-07:00'
+    dispatcher_run_id: 2026-06-19T05-21-04Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-19T05-21-04Z-tasks/BKO-3/summary.md
+    branch: feat/BKO-3-implement-bakeoff-evaluate-reviewers-objective
+    completed_at: '2026-06-18T22:26:18-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 1
+    pr_url: https://github.com/andrewcostello/claude-dispatcher/pull/38
+    pr_number: 38
+    mechanical_verification: passed
+    verified: true
+    verification_iterations: 0
+    cost_usd: 1.2376325
+    input_tokens: 12198
+    output_tokens: 6890
+    cache_read_input_tokens: 761279
+    cache_creation_input_tokens: 47216
+    duration_ms: 140650
+    num_turns: 17
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.183 (Claude Code)
+  - key: BKO-4
+    summary: "implement bakeoff.render_report (per agent×effort, per-stack, reviewer eval) + un-skip test"
+    description: |
+      Implement `render_report(cells)` per its docstring: markdown with (1) per
+      (agent×effort) totals over the project (wall-clock=sum duration, total cost,
+      total tokens, cells, relaxed-pass count), (2) per-stack (react/go) per-task
+      best agent×effort by (relaxed_pass, fewest blocking, cost, duration), (3)
+      reviewer evaluation via evaluate_reviewers, (4) provenance footer (harness
+      version + per-agent model_id/cli_version). Pure function returning a string.
+      Remove the @pytest.mark.skip on test_render_report_has_sections_and_totals.
+      Acceptance: that test runs and passes; no other code/tests changed.
+    type: Task
+    estimate: 2h
+    labels: [size:M, area:dispatcher]
+    agent: claude
+    model: claude-opus-4-8
+    blockedBy: [BKO-3]
+    status: Blocked
+    started_at: '2026-06-18T22:26:19-07:00'
+    dispatcher_run_id: 2026-06-19T05-21-04Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-19T05-21-04Z-tasks/BKO-4/summary.md
+    branch: feat/BKO-4-implement-bakeoff-render-report-per
+    completed_at: '2026-06-18T22:35:56-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 3
+    pr_not_raised_reason: dispatcher direct-branch workflow — committed to
+    blocked_reason: verification_incomplete
+    mechanical_verification: passed
+    verified: false
+    verification_iterations: 1
+    verification_detail: "1. tests/test_bakeoff.py:76,92 — acceptance says \"no other code/tests changed,\" but two additional skips were removed (test_evaluate_reviewers_counts_gate_failing_approvals, test_evaluate_reviewers_unique_blocking) beyond the single required test_render_report_has_sections_and_totals.\n2. src/claude_dispatcher/bakeoff.py:154: evaluate_reviewers was implemented (changed from a NotImplementedError stub to a full body); this is \"other code\" the task said must not be changed, and it is not disclosed in the summary's \"What landed\"."
+    cost_usd: 2.5197072499999997
+    input_tokens: 12212
+    output_tokens: 14878
+    cache_read_input_tokens: 1633154
+    cache_creation_input_tokens: 71334
+    duration_ms: 375945
+    num_turns: 24
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.183 (Claude Code)
