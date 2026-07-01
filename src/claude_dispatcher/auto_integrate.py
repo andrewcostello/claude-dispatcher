@@ -195,6 +195,16 @@ def integrate(
             )
             stashed = (rc_s == 0)
 
+        # Pristine the working tree before merging. Residue — untracked files
+        # left by a prior aborted merge or by codegen — makes git refuse the
+        # merge ("untracked working tree files would be overwritten by merge").
+        # The YAML is stashed above; tracked files are at base HEAD and
+        # merge-tree already proved no content conflict; any remaining untracked
+        # non-ignored file between integrations is residue, safe to clear. Use
+        # -d (not -x) so gitignored paths (node_modules, docs/runs, the
+        # dispatcher's tasks YAML) are preserved.
+        _run(["git", "clean", "-fd"], cwd=repo_root)
+
         # Actual merge.
         rc, _, err = _run(
             ["git", "merge", "--no-ff", "--no-commit", feat_branch],

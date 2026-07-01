@@ -280,6 +280,9 @@ def summarize_transcript_haiku(
         proc = subprocess.run(
             [claude_bin, "--print", "--model", model],
             input=prompt, capture_output=True, text=True, timeout=timeout_seconds,
+            # subscription, not metered (mirror spawn_claude's cost default)
+            env={k: v for k, v in os.environ.items()
+                 if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")},
         )
     except Exception:  # noqa: BLE001 — audit nicety must never break a run
         return None
@@ -297,6 +300,7 @@ def spawn_claude(
     prompt: str,
     extra_args: list[str] | None = None,
     timeout_seconds: int = 60 * 60 * 4,
+    metered: bool = False,
 ) -> SpawnResult:
     """Invoke `claude` with the prompt piped on stdin. Block until exit.
 
@@ -324,13 +328,21 @@ def spawn_claude(
     # (we don't try to dedupe — `claude` will reject duplicate flags loudly).
     cmd = [claude_bin, "--print", "--output-format", "json",
            *(extra_args or [])]
+    # Cost control: default to the Claude Code SUBSCRIPTION (included tokens),
+    # not the metered Anthropic API. Strip ANTHROPIC_API_KEY/AUTH_TOKEN so the
+    # `claude` CLI falls back to the logged-in subscription. The cost_policy
+    # overflow (run.py) passes metered=True to deliberately bill the metered API.
+    run_env = dict(env)
+    if not metered:
+        run_env.pop("ANTHROPIC_API_KEY", None)
+        run_env.pop("ANTHROPIC_AUTH_TOKEN", None)
     proc = subprocess.run(
         cmd,
         input=prompt,
         capture_output=True,
         text=True,
         cwd=str(cwd),
-        env=env,
+        env=run_env,
         timeout=timeout_seconds,
     )
     return SpawnResult(
@@ -385,7 +397,11 @@ def _agent_argv(
     (ignored, runs default).
     """
     if agent == "codex":
-        cmd = [bin_, "exec", "--sandbox", "workspace-write"]
+        # --skip-git-repo-check: a freshly-created git worktree is not in codex's
+        # trusted-projects list, so without this codex exits 1 ("Not inside a trusted
+        # directory and --skip-git-repo-check was not specified") before doing any work.
+        # The reviewer codex already passes it (cross_family_reviewer.py).
+        cmd = [bin_, "exec", "--sandbox", "workspace-write", "--skip-git-repo-check"]
         if model:
             cmd += ["--model", model]
         if effort:
@@ -399,7 +415,12 @@ def _agent_argv(
             cmd += ["--effort", effort]
         return cmd + ["--prompt-file", str(prompt_file)]
     if agent == "gemini":  # -> agy (no effort flag; runs default)
-        cmd = [bin_, "--print"]
+        # CRITICAL: agy writes files to its own ~/.gemini scratch dir, NOT the
+        # process cwd, unless the worktree is added to the workspace via
+        # --add-dir. And it stalls on tool-permission prompts without
+        # --dangerously-skip-permissions. Without BOTH, the Tasker produces no
+        # commits in the worktree and blocks. (Verified 2026-06-25.)
+        cmd = [bin_, "--add-dir", str(cwd), "--dangerously-skip-permissions", "--print"]
         if model:
             cmd += ["--model", model]
         return cmd + [prompt_text]

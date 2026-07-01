@@ -227,6 +227,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument(
+        "--implementer",
+        choices=["claude", "codex", "grok", "gemini"],
+        default=None,
+        help=(
+            "Run-level default implementer agent (the Tasker). A per-task `agent:` "
+            "in the YAML still wins; otherwise every task is built by this family's "
+            "headless CLI instead of `claude --print`. codex/grok/gemini are "
+            "flat-rate / off the Claude meter — use to keep building when the Claude "
+            "subscription is rate-limited. Default: claude."
+        ),
+    )
+    run.add_argument(
         "--integration",
         choices=["branch", "pr"],
         default=None,

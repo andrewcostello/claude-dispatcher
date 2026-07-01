@@ -107,6 +107,10 @@ class RunConfig:
     label_filter: list[tuple[str, str]]
     only_keys: list[str] | None
     gh_bin: str = "gh"
+    # Run-level default implementer family (claude/codex/grok/gemini). A per-task
+    # `agent:` in the YAML wins; otherwise every task routes to this family's
+    # headless CLI instead of `claude --print`. None -> claude (the default Tasker).
+    implementer: str | None = None
     claude_extra_args: list[str] = field(default_factory=list)
     base_branch: str = "main"
     # Integration mode (PRF-1). "branch" (default) forks each task worktree
@@ -880,11 +884,20 @@ def _run_task(
     verification_detail: str | None = None
     verifier_cost_total = 0.0
     if final_status == plan_mod.DONE:
-        if cfg.skip_verification:
+        # A `skeleton`-labeled task is INTENTIONALLY incomplete (panic-stubs +
+        # t.Skip'd RED tests the bodies fill later). The completeness verifier
+        # would flag those stubs as gaps by design and loop until it Blocks —
+        # so skip the LLM verifier for skeletons. The mechanical gate (build +
+        # tests-skip) and the cross-family panel still run.
+        skeleton = any(str(l).strip().lower() == "skeleton"
+                       for l in (snap.labels or []))
+        if cfg.skip_verification or skeleton:
+            reason = ("--skip-verification" if cfg.skip_verification
+                      else "skeleton task (intentional stubs/skipped tests)")
             _emit_event(cfg, journal_mod.EventType.verification_skipped,
-                        {"reason": "--skip-verification"}, task_key=snap.key)
+                        {"reason": reason}, task_key=snap.key)
             _log(log_path,
-                 f"  {snap.key} LLM verification skipped (--skip-verification)")
+                 f"  {snap.key} LLM verification skipped ({reason})")
         else:
             vout = _verify_llm_and_maybe_iterate(
                 cfg=cfg, snap=snap, wt=wt, repo_root=repo_root,
@@ -954,6 +967,7 @@ def _run_task(
             # the advisory_verdicts map in panel_verdict) are the raw
             # material for a future promotion decision.
             _emit_advisory_finding_events(cfg, panel_verdict, snap.key)
+            _emit_authoritative_finding_events(cfg, panel_verdict, snap.key)
             if panel_verdict.is_approve or iterations_remaining <= 0:
                 break
 
@@ -1313,7 +1327,12 @@ def _run_cross_family_panel(
         diff=diff,
         branch=diff_branch,
         base_branch=diff_base,
-        reviewers=_panel_reviewer_factory(cfg),
+        # Exclude the author's own family from its jury — cross-family review
+        # means a DIFFERENT family judges. The author self-reviewing (and
+        # self-flagging) is circular and drives false corroboration blocks on
+        # gemini/codex-authored tasks (the bake-off already excludes the author).
+        reviewers=[r for r in _panel_reviewer_factory(cfg)
+                   if r.family != (snap.agent or "claude")],
         advisory_reviewers=_panel_advisory_reviewer_factory(
             cfg, repo_root, log_path, snap.key,
         ),
@@ -1508,7 +1527,9 @@ def _dispatch_drain(
                 snap = TaskSnapshot(
                     key=t.key, summary=t.summary, description=t.description,
                     type=t.type, labels=list(t.labels), model=t.model,
-                    agent=t.agent, blocked_by=list(t.blocked_by),
+                    # Per-task `agent:` wins; else fall back to the run-level
+                    # --implementer (cfg.implementer); else None -> claude.
+                    agent=(t.agent or cfg.implementer), blocked_by=list(t.blocked_by),
                 )
                 _mark_in_progress(cfg, snap, run_dir)
                 fut = exe.submit(_run_task, snap, cfg, run_dir, log_path, repo_root)
@@ -1671,7 +1692,8 @@ def _spawn_panel_iterate(
     base_sha_before_iter = _branch_sha(repo_root, cfg.base_branch, log_path, snap.key)
 
     try:
-        result = spawn_mod.spawn_claude(
+        result = spawn_mod.spawn_agent(
+            agent=snap.agent,
             claude_bin=cfg.claude_bin, cwd=wt.path, env=env, prompt=iter_prompt,
             extra_args=extra,
             timeout_seconds=cfg.task_timeout_seconds,
@@ -2021,7 +2043,8 @@ def _spawn_verifier_iterate(
     base_sha_before_iter = _branch_sha(repo_root, cfg.base_branch, log_path, snap.key)
 
     try:
-        result = spawn_mod.spawn_claude(
+        result = spawn_mod.spawn_agent(
+            agent=snap.agent,
             claude_bin=cfg.claude_bin, cwd=wt.path, env=env, prompt=iter_prompt,
             extra_args=extra,
             timeout_seconds=cfg.task_timeout_seconds,
@@ -2185,6 +2208,31 @@ def _emit_advisory_finding_events(
                 "description": (f.description or "")[:500],
                 "fix": (f.fix or "")[:500],
                 "advisory_verdict": adv.verdict.value,
+            }, task_key=task_key)
+
+
+def _emit_authoritative_finding_events(
+    cfg: RunConfig, panel: cfr_mod.PanelVerdict, task_key: str,
+) -> None:
+    """Emit one `panel_finding` event per authoritative reviewer finding.
+
+    Mirrors the advisory emitter but for the gating (authoritative) families,
+    and fires at EVERY severity regardless of consensus — under the
+    corroboration gate most tasks ship with uncorroborated HIGH/MEDIUM/LOW
+    findings that don't block; this is how the review-findings backlog captures
+    them so they can be triaged and fixed later. Purely observational: emitting
+    these has no effect on the gate.
+    """
+    for rv in panel.reviewers:
+        for f in rv.findings:
+            _emit_event(cfg, journal_mod.EventType.panel_finding, {
+                "family": rv.family,
+                "severity": f.severity.value,
+                "location": f.location,
+                "description": (f.description or "")[:500],
+                "fix": (f.fix or "")[:500],
+                "reviewer_verdict": rv.verdict.value,
+                "consensus": panel.consensus,
             }, task_key=task_key)
 
 
@@ -2524,7 +2572,8 @@ def _retry_for_commit(cfg: RunConfig, snap: TaskSnapshot, wt: wt_mod.Worktree,
     retry_base_sha_before = _branch_sha(
         repo_root, cfg.base_branch, log_path, snap.key)
     try:
-        result = spawn_mod.spawn_claude(
+        result = spawn_mod.spawn_agent(
+            agent=snap.agent,
             claude_bin=cfg.claude_bin, cwd=wt.path, env=env, prompt=prompt,
             extra_args=retry_extra,
             timeout_seconds=cfg.task_timeout_seconds,
@@ -2819,7 +2868,8 @@ def _retry_for_push(
     if snap.model:
         retry_extra.extend(["--model", snap.model])
     try:
-        result = spawn_mod.spawn_claude(
+        result = spawn_mod.spawn_agent(
+            agent=snap.agent,
             claude_bin=cfg.claude_bin, cwd=wt.path, env=env, prompt=prompt,
             extra_args=retry_extra,
             timeout_seconds=cfg.task_timeout_seconds,
@@ -3032,7 +3082,8 @@ def _retry_for_test_fix(
     if snap.model:
         retry_extra.extend(["--model", snap.model])
     try:
-        result = spawn_mod.spawn_claude(
+        result = spawn_mod.spawn_agent(
+            agent=snap.agent,
             claude_bin=cfg.claude_bin, cwd=wt.path, env=env, prompt=prompt,
             extra_args=retry_extra,
             timeout_seconds=cfg.task_timeout_seconds,
@@ -3248,6 +3299,7 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
         label_filter=plan_mod.parse_label_filter(args.filter_spec),
         only_keys=_split_keys(args.only_keys),
         gh_bin=getattr(args, "gh_bin", "gh"),
+        implementer=getattr(args, "implementer", None),
         claude_extra_args=extra.split() if extra else [],
         base_branch=cli_base if cli_base else "main",
         # Integration mode (PRF-1). A fresh CLI run carries the raw --integration

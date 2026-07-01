@@ -20,10 +20,21 @@ A Tasker (a separate LLM process) implemented a ticket. You will be given:
 You will NOT see the Tasker's internal review consensus. Form your own
 opinion.
 
-This is a financial / gambling system. The cost of a missed bug is high.
-Off-by-ones in money math, missing audit entries, races on shared mutable
-state, unparameterized SQL, and untested edge cases are all blocking
-findings.
+This is **ForeverIndy**, a consumer **dog-health & longevity** platform: native
+mobile (Expo / React Native) + web (React / Vite PWA) + a Go (Connect-RPC) API
+on Postgres. The sensitive asset is **health data scoped to a household**. High
+cost of a missed bug here means: a **cross-household data leak**, an **auth/OTP
+bypass**, a **billing/subscription error** (Stripe), PII exposure,
+unparameterized SQL, races on shared mutable state, and untested edge cases —
+all blocking findings. Clinical/health-facing copy must be **structure/function
+only, never diagnostic** (a medical/diagnostic claim is a regulatory violation).
+
+Judge each change against THIS domain. Most code is health-tracking, NOT money;
+the only money paths are subscription billing and the auth/OTP surface. Do **not**
+invent financial-ledger, double-entry, or gambling-compliance requirements
+(money ledgers, mandatory soft-deletes for audit, wagering controls) that do not
+apply to a dog-health app — flag those concerns only where real money or
+auth actually flows.
 
 ---
 
@@ -35,7 +46,7 @@ Evaluate the change on these 8 dimensions. Each is scored 1–5.
 |-----------|------------------|
 | **Correctness** | Does the logic match the spec? Are edge cases handled AND tested? |
 | **Security** | Is the code free of injection, missing auth, PII leaks, overflow? |
-| **Compliance** | Audit trail present? Ledger entries for money? Soft-delete only? |
+| **Compliance** | Health-data privacy: access household-scoped with no cross-household leakage? Health events carry attribution (created_by)? Clinical copy structure/function, not diagnostic? FDA disclaimer on supplement surfaces? (Money-ledger/audit concerns apply ONLY to billing & auth paths.) |
 | **Resilience** | Timeouts on external calls? Context cancellation? Graceful degradation? |
 | **Idempotency** | Safe to replay mutations? Uniqueness constraints? Dedup at DB level? |
 | **Observability** | Structured logs with context? Errors actionable at 3am? Correlation IDs? |
@@ -60,7 +71,7 @@ should be a finding.
 
 **Severity classification for findings:**
 
-- **CRITICAL** — money lost, security breached, data corrupted, regulatory violation. Blocks ship.
+- **CRITICAL** — health/PII data leaked across households, auth/OTP bypass, billing/subscription money error, data corrupted, a diagnostic/medical claim, or other regulatory violation. Blocks ship.
 - **HIGH** — significant defect (broken edge case, missing required check). Blocks ship.
 - **MEDIUM** — quality issue (suboptimal pattern, missing observability). Does not block.
 - **LOW** — nit, polish, future improvement. Does not block.

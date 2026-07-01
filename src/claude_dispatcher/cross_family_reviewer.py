@@ -35,6 +35,7 @@ future explicit human decision based on the journaled scorecard events.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import threading
@@ -686,6 +687,9 @@ class ClaudeReviewer(Reviewer):
             text=True,
             check=False,
             timeout=self.timeout_seconds,
+            # claude reviewer rides the subscription, not the metered API
+            env={k: v for k, v in os.environ.items()
+                 if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")},
         )
         if proc.returncode != 0:
             raise RuntimeError(
@@ -1067,10 +1071,18 @@ def _extract_claude_message(stdout: str) -> str | None:
 
 # Default panel composition. Tests substitute with mock reviewers.
 def default_reviewers(timeout_seconds: int = DEFAULT_REVIEWER_TIMEOUT_SECONDS) -> list[Reviewer]:
+    # ForeverIndy cost optimisation: the authoritative panel is the three
+    # FLAT-RATE-subscription families (Gemini, Codex, Grok). Claude is dropped
+    # from the panel because (a) it is the metered/per-token agent AND already
+    # the Tasker, so Claude-reviewing-Claude is same-family/partially circular,
+    # and (b) leaning on the fixed-cost reviewers makes the panel effectively
+    # free. The corroboration gate (see aggregate()) blocks only on a CRITICAL
+    # or a HIGH that ≥2 of these three independently raise, so no single family
+    # (incl. a flaky/UNAVAILABLE Grok seat) can solo-block.
     return [
-        ClaudeReviewer(timeout_seconds=timeout_seconds),
         GeminiReviewer(timeout_seconds=timeout_seconds),
         CodexReviewer(timeout_seconds=timeout_seconds),
+        GrokReviewer(timeout_seconds=timeout_seconds),
     ]
 
 
@@ -1250,16 +1262,32 @@ def aggregate(
     for r in reviews:
         blocking_findings.extend(r.blocking_findings())
 
-    has_unavailable = any(r.verdict == Verdict.UNAVAILABLE for r in reviews)
-    all_approve = all(r.verdict == Verdict.APPROVE for r in reviews)
-    any_blocker = any(r.is_blocker() for r in reviews)
+    # --- ForeverIndy corroboration gate -------------------------------------
+    # Original rule: unanimous APPROVE; any single dissenter (or one
+    # UNAVAILABLE seat) blocks. With three independent strict LLM reviewers
+    # that each reliably surface a DIFFERENT idiosyncratic HIGH finding on any
+    # diff, unanimous-approve never converges — good work parks while reviewers
+    # play whack-a-mole. Instead we require CORROBORATION:
+    #   * a CRITICAL from ANY family blocks immediately (real ship-stoppers:
+    #     cross-household data leak, auth bypass, billing error, regulatory —
+    #     no second vote needed);
+    #   * a non-CRITICAL (HIGH) blocker blocks only when ≥2 AVAILABLE families
+    #     each independently raise a blocking finding (a peer confirms it);
+    #   * a single uncorroborated dissenter does NOT block — its findings are
+    #     still recorded (journal + summary) and harvested into the review
+    #     backlog to fix later, but the task ships;
+    #   * an UNAVAILABLE seat no longer blocks on its own (it can't corroborate
+    #     or dissent); only an all-unavailable panel is "incomplete".
+    available = [r for r in reviews if r.verdict != Verdict.UNAVAILABLE]
+    families_with_blocking = sum(1 for r in available if r.blocking_findings())
+    any_critical = any(f.severity == Severity.CRITICAL for f in blocking_findings)
 
-    if all_approve and not blocking_findings and not any_blocker:
-        consensus = "approve"
-    elif has_unavailable:
+    if not available:
         consensus = "incomplete"
-    else:
+    elif any_critical or families_with_blocking >= 2:
         consensus = "block"
+    else:
+        consensus = "approve"
 
     summary = _summarize(reviews, consensus, blocking_findings)
     return PanelVerdict(

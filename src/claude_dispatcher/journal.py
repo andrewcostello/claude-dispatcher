@@ -141,6 +141,10 @@ class EventType(str, Enum):
     # One event per advisory (probationary, non-blocking) reviewer finding —
     # the scorecard raw material for a future promotion decision (VG-5).
     panel_advisory_finding = "panel_advisory_finding"
+    # One event per AUTHORITATIVE reviewer finding (any severity), emitted even
+    # when the panel approves — so the review-findings backlog captures the
+    # HIGH/MEDIUM/LOW items the corroboration gate let through (not just blocks).
+    panel_finding = "panel_finding"
     # Feature review loop (docs/feature-review-loop.md). Schema authored now so
     # the loop (steps 3-4, built with a human) and Forecast's `ingest` projection
     # share it. feature_review_* = the final whole-feature review; disposition_*
