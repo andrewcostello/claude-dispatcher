@@ -187,6 +187,14 @@ def repo(tmp_path: Path) -> Path:
     roles = repo_dir / ".claude" / "workflow" / "roles"
     roles.mkdir(parents=True)
     (roles / "tasker.md").write_text("stub", encoding="utf-8")
+    # The dispatcher writes its run artifacts under `_runs/` inside the repo.
+    # With --auto-integrate, auto_integrate.integrate() pristines the working
+    # tree (`git clean -fd`) before merging; that removes any untracked,
+    # non-ignored path — which would wipe `_runs/` mid-run and make the next
+    # `_log` fail with FileNotFoundError. Production keeps the runs dir
+    # gitignored (see the auto_integrate `git clean -fd` comment, which lists
+    # `docs/runs` among the preserved ignored paths), so mirror that here.
+    (repo_dir / ".gitignore").write_text("_runs/\n", encoding="utf-8")
     src = Path(__file__).parent / "fixtures" / "three_task.yaml"
     (repo_dir / "tasks.yaml").write_text(src.read_text(), encoding="utf-8")
     subprocess.run(["git", "add", "."], cwd=repo_dir, check=True, capture_output=True)

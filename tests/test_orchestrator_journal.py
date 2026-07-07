@@ -58,6 +58,13 @@ def repo(tmp_path: Path) -> Path:
     roles = repo_dir / ".claude" / "workflow" / "roles"
     roles.mkdir(parents=True)
     (roles / "tasker.md").write_text("stub", encoding="utf-8")
+    # With --auto-integrate, auto_integrate.integrate() pristines the working
+    # tree (`git clean -fd`) before merging; that removes any untracked,
+    # non-ignored path — which would wipe the dispatcher's `_runs/` dir mid-run
+    # and make the next `_log` fail with FileNotFoundError. Production keeps the
+    # runs dir gitignored (see the auto_integrate `git clean -fd` comment, which
+    # lists `docs/runs` among the preserved ignored paths), so mirror that.
+    (repo_dir / ".gitignore").write_text("_runs/\n", encoding="utf-8")
     (repo_dir / "tasks.yaml").write_text(
         (FIXTURE_DIR / "three_task.yaml").read_text(encoding="utf-8"),
         encoding="utf-8",
@@ -325,14 +332,16 @@ def test_malformed_summary_events_and_reason(repo: Path, monkeypatch) -> None:
 def test_panel_block_events_and_reason(repo: Path, monkeypatch) -> None:
     _seed_yaml(repo, _CRITICAL_TASK_YAML)
     _patch_spawn(monkeypatch)
+    # J-CRIT is claude-authored → the panel excludes the claude reviewer, and
+    # the corroboration gate needs >=2 available families to raise a blocking
+    # HIGH, so both surviving families (gemini, codex) must dissent to block.
     orchestrator.set_panel_reviewers([
-        _StubReviewer("claude", _APPROVE_OUTPUT),
         _StubReviewer("gemini", _CHANGES_REQUESTED_OUTPUT),
-        _StubReviewer("codex", _APPROVE_OUTPUT),
+        _StubReviewer("codex", _CHANGES_REQUESTED_OUTPUT),
     ])
 
     rc = orchestrator.execute(_args(repo, only="J-CRIT", cross_family_panel="auto"))
-    assert rc == 1, "a dissenting reviewer must block the task"
+    assert rc == 1, "corroborated dissent must block the task"
 
     assert journal_mod.verify(_journal_path(repo)).ok
     events = _events(repo)

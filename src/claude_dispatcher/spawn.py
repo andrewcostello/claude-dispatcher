@@ -17,6 +17,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -373,6 +374,86 @@ def spawn_claude(
 
 AGENT_BINS: dict[str, str] = {"codex": "codex", "grok": "grok", "gemini": "agy"}
 
+
+# ---------------------------------------------------------------------------
+# agy (Antigravity CLI) model selection.
+#
+# agy does NOT accept a model at launch — `--model` is silently ignored. It
+# reads its active engine from a single global settings.json (`.model` key),
+# defaulting to "Gemini 3.5 Flash (Medium)". To run a chosen engine in a
+# non-interactive loop we mutate that file BEFORE spawning agy.
+#
+# Because settings.json is a global singleton, two concurrent agy spawns with
+# DIFFERENT models would clobber each other's setting. `_AgyModelGate`
+# enforces the invariant "all live agy processes agree on the model": any
+# number of SAME-model spawns run concurrently; a DIFFERENT-model spawn waits
+# until the current cohort drains before it rewrites the file and proceeds.
+#
+# The dispatcher's per-task `model` value for a gemini task must be one of the
+# exact agy engine strings, e.g. "Gemini 3.1 Pro (High)", "Gemini 3.5 Flash
+# (Medium)", "Claude Opus 4.6 (Thinking)". A None model leaves settings.json
+# untouched (agy runs whatever is on disk) and forms its own cohort.
+# ---------------------------------------------------------------------------
+
+AGY_SETTINGS_PATH = Path.home() / ".gemini" / "antigravity-cli" / "settings.json"
+
+
+def _write_agy_model(model: str, settings_path: Path) -> None:
+    """Set the `.model` key in agy's settings.json, preserving other keys.
+
+    Atomic (temp file + os.replace). A missing or unparseable file is treated
+    as an empty object rather than a hard error — agy recreates the rest of
+    its state on next launch, but we must not lose an explicitly-chosen model.
+    """
+    try:
+        data = json.loads(settings_path.read_text()) if settings_path.exists() else {}
+        if not isinstance(data, dict):
+            data = {}
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    data["model"] = model
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = settings_path.with_suffix(settings_path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    os.replace(tmp, settings_path)
+
+
+class _AgyModelGate:
+    """Serialize agy spawns across models; allow same-model spawns in parallel.
+
+    Usage: gate.acquire(model) -> run agy -> gate.release(). acquire() writes
+    the model into settings.json only when it opens a new cohort (active count
+    0 -> 1), so a burst of same-model spawns writes once and runs together.
+    """
+
+    def __init__(self, settings_path: Path = AGY_SETTINGS_PATH) -> None:
+        self._cond = threading.Condition()
+        self._current_model: str | None = None
+        self._active = 0
+        self._settings_path = settings_path
+
+    def acquire(self, model: str | None) -> None:
+        with self._cond:
+            while self._active > 0 and self._current_model != model:
+                self._cond.wait()
+            if self._active == 0:
+                if model is not None:
+                    _write_agy_model(model, self._settings_path)
+                self._current_model = model
+            self._active += 1
+
+    def release(self) -> None:
+        with self._cond:
+            self._active -= 1
+            if self._active == 0:
+                self._current_model = None
+                self._cond.notify_all()
+
+
+# Process-wide gate shared by every agy spawn in the run (the dispatch pool is
+# a ThreadPoolExecutor in one process, so a threading primitive suffices).
+_agy_model_gate = _AgyModelGate()
+
 _CROSS_FAMILY_SUFFIX = """
 
 ---
@@ -420,10 +501,12 @@ def _agent_argv(
         # --add-dir. And it stalls on tool-permission prompts without
         # --dangerously-skip-permissions. Without BOTH, the Tasker produces no
         # commits in the worktree and blocks. (Verified 2026-06-25.)
-        cmd = [bin_, "--add-dir", str(cwd), "--dangerously-skip-permissions", "--print"]
-        if model:
-            cmd += ["--model", model]
-        return cmd + [prompt_text]
+        #
+        # NB: no `--model` here — agy ignores a launch-time model and reads it
+        # from settings.json. The model is applied by _agy_model_gate in
+        # spawn_agent() before this argv runs (see AGY_SETTINGS_PATH notes).
+        return [bin_, "--add-dir", str(cwd), "--dangerously-skip-permissions",
+                "--print", prompt_text]
     raise ValueError(f"no argv builder for agent {agent!r}")
 
 
@@ -515,6 +598,12 @@ def spawn_agent(
     prompt_file.write_text(xprompt)
     argv = _agent_argv(agent, bin_, prompt_file, cwd, model, xprompt, effort)
 
+    # agy takes its model from settings.json, not the argv — set it under the
+    # cross-model gate so concurrent agy spawns can't clobber each other's
+    # engine (same-model spawns still run in parallel). No-op for codex/grok.
+    gate_held = agent == "gemini"
+    if gate_held:
+        _agy_model_gate.acquire(model)
     try:
         proc = subprocess.run(
             argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
@@ -525,6 +614,9 @@ def spawn_agent(
         rc = 124
         out = (e.stdout.decode() if isinstance(e.stdout, bytes) else (e.stdout or ""))
         err = f"timeout after {timeout_seconds}s"
+    finally:
+        if gate_held:
+            _agy_model_gate.release()
 
     committed = _autocommit_worktree(cwd, task_key, agent)
     if not summary_path.exists():

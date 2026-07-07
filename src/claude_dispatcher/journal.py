@@ -118,6 +118,11 @@ class EventType(str, Enum):
     task_spawn_finished = "task_spawn_finished"
     summary_parsed = "summary_parsed"
     commit_retry = "commit_retry"
+    # Automatic implementer fallback: a rung of the fallback chain produced no
+    # usable result (spawn error / non-zero exit / missing summary — e.g. a
+    # cheap cross-family agent hit its spend cap and stopped), so the next
+    # agent in the chain is tried. Payload: from_agent, to_agent, reason.
+    agent_fallback = "agent_fallback"
     push_verify = "push_verify"
     # Mechanical verification gate (VG-2): one event per test-command
     # execution (first run AND post-fix re-run), plus single events for the

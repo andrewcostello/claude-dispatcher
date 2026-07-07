@@ -26,7 +26,7 @@ from concurrent.futures import (
     ThreadPoolExecutor,
     wait,
 )
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -633,6 +633,41 @@ def _maybe_merge_pass(
 # --- per-worker -------------------------------------------------------------
 
 
+def _implementer_fallback_chain(snap: TaskSnapshot) -> list[str]:
+    """Ordered implementer agents to try for one task.
+
+    The task's own agent runs first; if it produces no usable result (stop /
+    non-zero exit / missing summary), we fall back to claude as the quality
+    backstop. claude is terminal — there is no rung after it. A claude-authored
+    task has a single-element chain (nothing to fall back to).
+    """
+    primary = snap.agent or "claude"
+    if primary == "claude":
+        return ["claude"]
+    return [primary, "claude"]
+
+
+def _reset_worktree(
+    wt: "wt_mod.Worktree", sha: str, log_path: Path, task_key: str,
+) -> None:
+    """Discard a failed attempt's partial changes so the next fallback rung
+    starts from the same pre-spawn worktree state. Best-effort — a git failure
+    is logged, not raised (the next agent then simply inherits the tree)."""
+    import subprocess
+    for args in (["reset", "--hard", sha], ["clean", "-fd"]):
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(wt.path), *args],
+                capture_output=True, text=True, check=False, timeout=60,
+            )
+            if proc.returncode != 0:
+                _log(log_path,
+                     f"  {task_key} worktree {args[0]} before fallback failed: "
+                     f"{proc.stderr.strip()}")
+        except Exception as e:
+            _log(log_path, f"  {task_key} worktree {args[0]} before fallback raised: {e}")
+
+
 def _run_task(
     snap: TaskSnapshot,
     cfg: RunConfig,
@@ -740,9 +775,6 @@ def _run_task(
     # --claude-extra-args so the per-task value wins); for cross-family agents
     # (codex/grok/gemini) it dispatches to that CLI's headless agentic mode and
     # normalizes the result (auto-commit + summary). See spawn.spawn_agent.
-    if snap.agent and snap.agent != "claude":
-        _log(log_path, f"  {snap.key} implementer agent = {snap.agent}"
-                       + (f" (model={snap.model})" if snap.model else ""))
 
     # Snapshot base_branch's tip SHA BEFORE the spawn. This is the
     # discriminator for the direct-to-base workflow: a Tasker that
@@ -753,45 +785,81 @@ def _run_task(
     # _has_commits_on_branch() for the two-condition success check.
     base_sha_before = _branch_sha(repo_root, cfg.base_branch, log_path, snap.key)
 
-    try:
-        result = spawn_mod.spawn_agent(
-            agent=snap.agent,
-            claude_bin=cfg.claude_bin,
-            cwd=wt.path,
-            env=env,
-            prompt=prompt,
-            model=snap.model,
-            extra_args=list(cfg.claude_extra_args),
-            timeout_seconds=cfg.task_timeout_seconds,
-        )
-    except Exception as e:
-        _log(log_path, f"  {snap.key} spawn failed: {e}")
-        _mark_blocked(cfg, snap.key, reason=f"spawn_failed: {e}")
+    # Automatic implementer fallback: try the task's agent, then fall back to
+    # claude (the quality backstop) if a cheap cross-family agent produces NO
+    # usable result — e.g. it hit a spend cap / rate limit and stopped, exited
+    # non-zero, or never wrote its summary. Each rung starts from the same
+    # pre-spawn worktree state. "Usable" = clean spawn (exit 0) with a summary
+    # file; malformed-summary / no-commit handling stays downstream and does
+    # NOT trigger fallback (the agent DID produce work — that's a quality issue,
+    # not a stop). claude has no rung after it: if it fails, the task blocks.
+    fallback_chain = _implementer_fallback_chain(snap)
+    pre_spawn_sha = _branch_sha(repo_root, wt.branch, log_path, snap.key)
+    result = None
+    used_agent: str | None = None
+    fail_reason: str | None = None
+    for idx, attempt_agent in enumerate(fallback_chain):
+        if idx > 0:
+            _log(log_path,
+                 f"  {snap.key} implementer {fallback_chain[idx - 1]} produced no "
+                 f"usable result ({fail_reason}); falling back to {attempt_agent}")
+            _emit_event(cfg, journal_mod.EventType.agent_fallback, {
+                "from_agent": fallback_chain[idx - 1],
+                "to_agent": attempt_agent,
+                "reason": fail_reason,
+            }, task_key=snap.key)
+            if pre_spawn_sha:
+                _reset_worktree(wt, pre_spawn_sha, log_path, snap.key)
+        if attempt_agent != "claude":
+            _log(log_path, f"  {snap.key} implementer agent = {attempt_agent}"
+                           + (f" (model={snap.model})" if snap.model else ""))
+        # snap.model is the primary agent's model string (often agent-specific,
+        # e.g. an agy engine name); don't forward it to a fallback agent.
+        attempt_model = snap.model if attempt_agent == fallback_chain[0] else None
+        try:
+            result = spawn_mod.spawn_agent(
+                agent=attempt_agent,
+                claude_bin=cfg.claude_bin,
+                cwd=wt.path,
+                env=env,
+                prompt=prompt,
+                model=attempt_model,
+                extra_args=list(cfg.claude_extra_args),
+                timeout_seconds=cfg.task_timeout_seconds,
+            )
+        except Exception as e:
+            _log(log_path, f"  {snap.key} spawn failed: {e}")
+            fail_reason = f"spawn_failed: {e}"
+            result = None
+            continue
+        _log(log_path, f"  {snap.key} spawn exited code={result.exit_code}")
+        # Spawn-completion event: carries the per-task usage/cost payload parsed
+        # from the CLI's JSON output. Accounted for EVERY attempt (each real
+        # spawn has a real cost), before any fallback/block branch, so a task
+        # that spawns and THEN blocks still counts toward the cost ceiling.
+        _account_spawn(cfg, snap.key, result, kind="implementer")
+        if cfg.haiku_summary:
+            _log_transcript_and_haiku(cfg, snap, result, summary_path.parent, log_path)
+        if result.exit_code != 0:
+            fail_reason = f"session_exit_code_{result.exit_code}"
+            continue
+        if not result.summary_path.exists():
+            fail_reason = "summary_missing"
+            continue
+        used_agent = attempt_agent
+        break
+
+    if used_agent is None:
+        # Every rung of the fallback chain failed to produce a usable result.
+        _mark_blocked(cfg, snap.key, reason=fail_reason or "spawn_failed")
         return plan_mod.BLOCKED
 
-    _log(log_path, f"  {snap.key} spawn exited code={result.exit_code}")
-    # Spawn-completion event: carries the per-task usage/cost payload parsed
-    # from the Claude CLI's JSON output (all fields optional — None when the
-    # CLI didn't emit usage). Emitted for every spawn outcome, success or
-    # non-zero exit, so the journal records the cost even of a failed run.
-    # Account the implementer spawn (emits task_spawn_finished + accumulates its
-    # cost onto the row). Done here, before any block branch, so a task that
-    # spawns and THEN blocks still counts toward the cost ceiling. (BUDGET-1 /
-    # spawn-complete cost.)
-    _account_spawn(cfg, snap.key, result, kind="implementer")
-    # Step 6 (opt-in via --haiku-summary): persist the agent's captured output as
-    # the transcript log + a cheap haiku summary, referenced from the YAML row
-    # (review/audit; what Forecast `ingest` later projects). Best-effort — never
-    # blocks the task; runs for every outcome so a blocked run is auditable too.
-    if cfg.haiku_summary:
-        _log_transcript_and_haiku(cfg, snap, result, summary_path.parent, log_path)
-    if result.exit_code != 0:
-        _mark_blocked(cfg, snap.key, reason=f"session_exit_code_{result.exit_code}")
-        return plan_mod.BLOCKED
-
-    if not result.summary_path.exists():
-        _mark_blocked(cfg, snap.key, reason="summary_missing")
-        return plan_mod.BLOCKED
+    # Record which agent actually produced the work when a fallback fired, so
+    # the terminal row + downstream panel author-exclusion reflect reality.
+    if used_agent != (snap.agent or "claude"):
+        _mutate_row(cfg, snap.key,
+                    lambda r, a=used_agent: r.__setitem__("agent", a))
+        snap = replace(snap, agent=used_agent)
 
     s = summary_mod.parse(result.summary_path)
     _emit_event(cfg, journal_mod.EventType.summary_parsed,
