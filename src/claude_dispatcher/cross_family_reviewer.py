@@ -166,10 +166,11 @@ class PanelVerdict:
       - "approve" — ALL THREE returned APPROVE with no blocking findings.
       - "block"   — at least one reviewer returned non-APPROVE OR raised a
                     CRITICAL/HIGH finding.
-      - "incomplete" — one or more reviewers were UNAVAILABLE and the panel
-                    config treats that as a hard requirement. Defaults to
-                    "block" semantically; the orchestrator should NOT
-                    auto-integrate on "incomplete" either.
+      - "incomplete" — fewer than two seats produced a valid (parseable, ran)
+                    review — i.e. the panel is mostly/entirely UNAVAILABLE
+                    and/or PARSE_FAILED, so it cannot be trusted as a real
+                    review. Defaults to "block" semantically; the orchestrator
+                    must NOT auto-integrate on "incomplete" either.
 
     `advisory` carries verdicts from probationary (advisory-tier) reviewers.
     They are journaled and rendered for scorecard comparison but have ZERO
@@ -1134,10 +1135,11 @@ def run_panel(
     family-specific preamble. They run on separate threads and as soon as
     all three complete the panel composes its consensus.
 
-    A reviewer that returns UNAVAILABLE is counted as a soft fail — the
-    panel consensus is "incomplete" if any reviewer is UNAVAILABLE (because
-    we cannot prove 3/3 agreement). The orchestrator treats "incomplete"
-    the same as "block" for auto-integration gating.
+    A reviewer that returns UNAVAILABLE (or PARSE_FAILED) is counted as a
+    degraded seat: a single one is tolerated, but a panel with fewer than two
+    VALID (parseable, ran) reviews degrades to "incomplete" because we cannot
+    prove the code was actually reviewed. The orchestrator treats "incomplete"
+    the same as "block" for auto-integration gating (see aggregate()).
 
     `advisory_reviewers` (probationary tier) run in the SAME executor pass,
     in parallel with the authoritative set, but their verdicts attach to
@@ -1240,10 +1242,15 @@ def aggregate(
 ) -> PanelVerdict:
     """Compose a PanelVerdict from a set of reviewer outputs.
 
-    Rules (locked design — see brief):
-      * ALL THREE must be APPROVE with no blocking findings → "approve"
-      * Any UNAVAILABLE → "incomplete" (treated as block by callers)
-      * Anything else → "block"
+    Rules (ForeverIndy corroboration gate — see the block comment below):
+      * a CRITICAL from ANY family blocks immediately;
+      * a HIGH blocks only when ≥2 VALID families independently raise a
+        blocking finding (corroboration);
+      * otherwise the panel APPROVES — but only if ≥2 seats produced a real,
+        parseable review (the valid set). A panel with fewer than two valid
+        seats (all/most UNAVAILABLE and/or PARSE_FAILED) is "incomplete",
+        never "approve": auto-integrate must not proceed on effectively
+        unreviewed code.
 
     `advisory` verdicts are attached verbatim to ``PanelVerdict.advisory``
     and have ZERO effect on the consensus math above — an advisory
@@ -1277,17 +1284,34 @@ def aggregate(
     #     still recorded (journal + summary) and harvested into the review
     #     backlog to fix later, but the task ships;
     #   * an UNAVAILABLE seat no longer blocks on its own (it can't corroborate
-    #     or dissent); only an all-unavailable panel is "incomplete".
+    #     or dissent); only a panel with no VALID review is "incomplete".
+    #
+    # PARSE_FAILED is treated like UNAVAILABLE for the "did the panel actually
+    # review anything" question. A PARSE_FAILED seat RAN but produced no
+    # parseable verdict or findings, so — exactly like an UNAVAILABLE seat — it
+    # can neither corroborate a block nor stand as evidence the code was
+    # reviewed. Crucially it must NOT prop up an auto-integrate "approve":
+    # without this, a MAJORITY- or ALL-PARSE_FAILED panel used to fall through
+    # to "approve" and auto-integrate effectively-unreviewed (money-adjacent)
+    # code. It drops out of the `valid` set below. (It already contributes zero
+    # blocking findings, so the block-side corroboration count is unchanged.)
     available = [r for r in reviews if r.verdict != Verdict.UNAVAILABLE]
-    families_with_blocking = sum(1 for r in available if r.blocking_findings())
+    valid = [r for r in available if r.verdict != Verdict.PARSE_FAILED]
+    families_with_blocking = sum(1 for r in valid if r.blocking_findings())
     any_critical = any(f.severity == Severity.CRITICAL for f in blocking_findings)
 
-    if not available:
-        consensus = "incomplete"
-    elif any_critical or families_with_blocking >= 2:
+    # Block wins over everything (a real ship-stopper was found). Otherwise an
+    # "approve" requires CORROBORATION on the valid set, mirroring the ≥2 block
+    # gate: at least two seats must have produced a real review. This preserves
+    # the single-flaky-seat tolerance (one UNAVAILABLE/PARSE_FAILED among an
+    # otherwise-valid panel still ships) while refusing to auto-integrate on a
+    # panel a majority of whose seats never actually reviewed the code.
+    if any_critical or families_with_blocking >= 2:
         consensus = "block"
-    else:
+    elif len(valid) >= 2:
         consensus = "approve"
+    else:
+        consensus = "incomplete"
 
     summary = _summarize(reviews, consensus, blocking_findings)
     return PanelVerdict(
