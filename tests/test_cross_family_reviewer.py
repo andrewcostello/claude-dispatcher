@@ -270,17 +270,46 @@ def test_aggregate_all_approve():
     assert panel.blocking_findings == []
 
 
-def test_aggregate_single_dissenter_blocks():
-    panel = cfr.aggregate([_approve_verdict("claude"), _approve_verdict("gemini"), _changes_verdict("codex")])
-    assert panel.consensus == "block"
-    assert not panel.is_approve
-    assert len(panel.blocking_findings) == 1
+def test_aggregate_lone_high_does_not_block_but_corroborated_high_does():
+    """Corroboration gate: a LONE HIGH dissenter is uncorroborated and does NOT
+    block (the finding is still recorded for the backlog); a HIGH raised by >=2
+    available families IS corroborated and blocks.
+    """
+    lone = cfr.aggregate([
+        _approve_verdict("claude"), _approve_verdict("gemini"),
+        _changes_verdict("codex"),
+    ])
+    assert lone.consensus == "approve"
+    assert lone.is_approve
+    # The finding is still harvested even though it did not block.
+    assert len(lone.blocking_findings) == 1
+
+    corroborated = cfr.aggregate([
+        _approve_verdict("claude"),
+        _changes_verdict("gemini"), _changes_verdict("codex"),
+    ])
+    assert corroborated.consensus == "block"
+    assert not corroborated.is_approve
+    assert len(corroborated.blocking_findings) == 2
 
 
-def test_aggregate_unavailable_yields_incomplete():
-    panel = cfr.aggregate([_approve_verdict("claude"), _approve_verdict("gemini"), _unavailable_verdict("codex")])
-    assert panel.consensus == "incomplete"
-    assert not panel.is_approve
+def test_aggregate_partial_unavailable_approves_all_unavailable_incomplete():
+    """Corroboration gate: a single UNAVAILABLE seat is tolerated — the panel
+    still reaches a verdict from the reviewers that DID run. Consensus is only
+    "incomplete" when the whole available set is UNAVAILABLE.
+    """
+    partial = cfr.aggregate([
+        _approve_verdict("claude"), _approve_verdict("gemini"),
+        _unavailable_verdict("codex"),
+    ])
+    assert partial.consensus == "approve"
+
+    all_gone = cfr.aggregate([
+        _unavailable_verdict("claude"), _unavailable_verdict("gemini"),
+        _unavailable_verdict("codex"),
+    ])
+    assert all_gone.consensus == "incomplete"
+    assert not all_gone.is_approve
 
 
 def test_aggregate_critical_finding_alone_blocks_even_if_verdict_is_approve():
@@ -294,10 +323,75 @@ def test_aggregate_critical_finding_alone_blocks_even_if_verdict_is_approve():
     assert len(panel.blocking_findings) == 1
 
 
-def test_aggregate_parse_failed_blocks():
+def test_aggregate_lone_parse_failed_is_tolerated():
+    """Corroboration gate: a single PARSE_FAILED seat yields no parseable
+    findings, so it cannot corroborate a block. With the other reviewers
+    approving, the flaky seat cannot solo-block and the panel ships.
+
+    (NB: aggregate() no longer consults ReviewerVerdict.is_blocker() — it counts
+    blocking FINDINGS. A PARSE_FAILED still reports is_blocker()==True in
+    isolation, but contributes nothing to the panel's finding-based gate.)
+    """
     rv = cfr.ReviewerVerdict(family="codex", verdict=cfr.Verdict.PARSE_FAILED)
+    assert rv.is_blocker()  # would block in isolation...
     panel = cfr.aggregate([_approve_verdict("claude"), _approve_verdict("gemini"), rv])
-    assert panel.consensus == "block"
+    assert panel.consensus == "approve"  # ...but one flaky seat can't solo-block
+
+
+def test_aggregate_one_parse_failed_among_valid_seats_still_ships():
+    """Single-flaky-seat tolerance preserved: ONE PARSE_FAILED beside two valid
+    APPROVE seats still meets the >=2 valid-review floor, so the panel ships.
+    (Scenario (c) — unchanged behaviour, asserted explicitly.)
+    """
+    panel = cfr.aggregate([
+        _approve_verdict("gemini"), _approve_verdict("codex"),
+        cfr.ReviewerVerdict(family="grok", verdict=cfr.Verdict.PARSE_FAILED),
+    ])
+    assert panel.consensus == "approve"
+    assert panel.is_approve
+
+
+def test_aggregate_all_parse_failed_is_incomplete():
+    """Money-adjacent gating gap: a panel where EVERY seat failed to parse is
+    NOT a valid review. It must degrade to "incomplete" (which blocks
+    auto-integrate), never silently "approve" on zero real reviews.
+    (Scenario (a).)
+    """
+    panel = cfr.aggregate([
+        cfr.ReviewerVerdict(family="gemini", verdict=cfr.Verdict.PARSE_FAILED),
+        cfr.ReviewerVerdict(family="codex", verdict=cfr.Verdict.PARSE_FAILED),
+        cfr.ReviewerVerdict(family="grok", verdict=cfr.Verdict.PARSE_FAILED),
+    ])
+    assert panel.consensus == "incomplete"
+    assert not panel.is_approve
+
+
+def test_aggregate_majority_parse_failed_with_one_approve_is_not_approve():
+    """A lone APPROVE beside a MAJORITY of PARSE_FAILED seats is uncorroborated:
+    two seats never produced a real review, so the one that parsed cannot clear
+    the auto-integrate gate on its own. Must be "incomplete", not a clean
+    "approve". (Scenario (b).)
+    """
+    panel = cfr.aggregate([
+        _approve_verdict("gemini"),
+        cfr.ReviewerVerdict(family="codex", verdict=cfr.Verdict.PARSE_FAILED),
+        cfr.ReviewerVerdict(family="grok", verdict=cfr.Verdict.PARSE_FAILED),
+    ])
+    assert panel.consensus == "incomplete"
+    assert not panel.is_approve
+
+
+def test_aggregate_mixed_unavailable_and_parse_failed_is_incomplete():
+    """The "no valid seat" floor covers ANY mix of degraded seats — one
+    UNAVAILABLE plus two PARSE_FAILED leaves zero valid reviews → "incomplete".
+    """
+    panel = cfr.aggregate([
+        _unavailable_verdict("gemini"),
+        cfr.ReviewerVerdict(family="codex", verdict=cfr.Verdict.PARSE_FAILED),
+        cfr.ReviewerVerdict(family="grok", verdict=cfr.Verdict.PARSE_FAILED),
+    ])
+    assert panel.consensus == "incomplete"
+    assert not panel.is_approve
 
 
 def test_aggregate_empty_reviews_is_incomplete():
@@ -352,7 +446,7 @@ def test_run_panel_three_stubs_all_approve():
     assert all(r.call_count == 1 for r in revs)
 
 
-def test_run_panel_one_dissenter_blocks():
+def test_run_panel_corroborated_dissent_blocks():
     approve = textwrap.dedent("""\
         ## Verdict
         APPROVE
@@ -384,9 +478,11 @@ def test_run_panel_one_dissenter_blocks():
         Description: race on shared state.
         Fix: lock it.
     """)
+    # Corroboration gate: a HIGH blocks only when >=2 available families raise
+    # a blocking finding, so both gemini and codex must dissent.
     revs = [
         _StubReviewer("claude", approve),
-        _StubReviewer("gemini", approve),
+        _StubReviewer("gemini", block),
         _StubReviewer("codex", block),
     ]
     panel = cfr.run_panel(
@@ -394,28 +490,18 @@ def test_run_panel_one_dissenter_blocks():
         branch="feat/t2", base_branch="main", reviewers=revs,
     )
     assert panel.consensus == "block"
-    assert len(panel.blocking_findings) == 1
-    assert panel.blocking_findings[0].severity == cfr.Severity.HIGH
+    assert len(panel.blocking_findings) == 2
+    assert all(f.severity == cfr.Severity.HIGH for f in panel.blocking_findings)
 
 
-def test_run_panel_unavailable_reviewer_yields_incomplete():
-    out = textwrap.dedent("""\
-        ## Verdict
-        APPROVE
-        ## Dimension scores
-        - Correctness: 5
-        - Security: 5
-        - Compliance: 5
-        - Resilience: 4
-        - Idempotency: 4
-        - Observability: 4
-        - Performance: 4
-        - Maintainability: 4
-        ## Findings
-    """)
+def test_run_panel_all_unavailable_yields_incomplete():
+    """Corroboration gate: "incomplete" requires the WHOLE available set to be
+    UNAVAILABLE (a single missing seat is tolerated), so all three CLIs must be
+    missing for the panel to report it cannot reach a verdict.
+    """
     revs = [
-        _StubReviewer("claude", out),
-        _StubReviewer("gemini", out),
+        _StubReviewer("claude", "", raise_exc=FileNotFoundError("claude")),
+        _StubReviewer("gemini", "", raise_exc=FileNotFoundError("gemini")),
         _StubReviewer("codex", "", raise_exc=FileNotFoundError("codex")),
     ]
     panel = cfr.run_panel(
@@ -468,9 +554,12 @@ def test_run_panel_parse_failure_triggers_one_retry():
     assert panel.consensus == "approve"
 
 
-def test_run_panel_parse_failure_twice_blocks():
-    """Reviewer that fails to produce a parseable verdict on BOTH attempts
-    must end up PARSE_FAILED — which counts as a blocker.
+def test_run_panel_parse_failure_twice_is_tolerated_uncorroborated():
+    """Reviewer that fails to produce a parseable verdict on BOTH attempts ends
+    up PARSE_FAILED. In isolation that verdict is a blocker, but the
+    corroboration gate no longer lets a single flaky seat solo-block: with the
+    other two families approving, the panel ships. The retry + PARSE_FAILED
+    mechanics are still asserted so the parse path itself stays covered.
     """
     revs = [
         _StubReviewer("claude", "still not a verdict either way"),
@@ -493,10 +582,29 @@ def test_run_panel_parse_failure_twice_blocks():
         ticket_key="T5", ticket_summary="s", summary_md="sm", diff="d",
         branch="feat/t5", base_branch="main", reviewers=revs,
     )
-    assert panel.consensus == "block"
+    assert panel.consensus == "approve"  # one flaky seat cannot solo-block
     claude_rv = next(r for r in panel.reviewers if r.family == "claude")
     assert claude_rv.verdict == cfr.Verdict.PARSE_FAILED
     assert revs[0].call_count == 2  # the flaky reviewer was retried
+
+
+def test_run_panel_all_parse_failed_yields_incomplete():
+    """End-to-end money-adjacent gate: if EVERY seat's output is unparseable on
+    both attempts, the panel has zero valid reviews and must be "incomplete" —
+    never "approve" on an effectively-unreviewed diff.
+    """
+    revs = [
+        _StubReviewer("gemini", "not a verdict"),
+        _StubReviewer("codex", "still garbage"),
+        _StubReviewer("grok", "nope, no template here"),
+    ]
+    panel = cfr.run_panel(
+        ticket_key="T6", ticket_summary="s", summary_md="sm", diff="d",
+        branch="feat/t6", base_branch="main", reviewers=revs,
+    )
+    assert panel.consensus == "incomplete"
+    assert not panel.is_approve
+    assert all(r.verdict == cfr.Verdict.PARSE_FAILED for r in panel.reviewers)
 
 
 # --- render output ----------------------------------------------------------
@@ -923,13 +1031,16 @@ def test_panel_verdict_to_dict_has_consensus_and_reviewers():
 
 def test_default_reviewers_returns_three_families():
     revs = cfr.default_reviewers()
-    assert [r.family for r in revs] == ["claude", "gemini", "codex"]
+    # ForeverIndy cost optimisation: the authoritative panel is the three
+    # FLAT-RATE-subscription families (Gemini, Codex, Grok). Claude is dropped
+    # from the default panel (it is the metered agent and already the Tasker).
+    assert [r.family for r in revs] == ["gemini", "codex", "grok"]
     assert all(isinstance(r, cfr.Reviewer) for r in revs)
     # Each carries the per-class default cli_bin. The gemini-family
     # reviewer uses agy (Antigravity, post-2026-05 rebrand of gemini); the
     # family identifier remains "gemini" for record compatibility.
     families_to_bins = {r.family: r.cli_bin for r in revs}
-    assert families_to_bins == {"claude": "claude", "gemini": "agy", "codex": "codex"}
+    assert families_to_bins == {"gemini": "agy", "codex": "codex", "grok": "grok"}
 
 
 def test_default_reviewers_propagates_timeout():
@@ -1167,11 +1278,16 @@ def test_aggregate_advisory_unavailable_does_not_make_incomplete():
 
 
 def test_aggregate_advisory_approve_does_not_rescue_block():
-    """Edge 3 (unit): authoritative dissent blocks regardless of advisory
+    """Edge 3 (unit): an authoritative block stands regardless of advisory
     APPROVE, and blocking_findings carries only authoritative findings.
+
+    Under the corroboration gate a lone HIGH would not block, so the
+    authoritative block here is driven by a CRITICAL (which blocks on a single
+    family) — the advisory APPROVE must still not rescue it.
     """
     panel = cfr.aggregate(
-        [_approve_verdict("claude"), _approve_verdict("gemini"), _changes_verdict("codex")],
+        [_approve_verdict("claude"), _approve_verdict("gemini"),
+         _changes_verdict("codex", cfr.Severity.CRITICAL)],
         advisory=[_approve_verdict("grok")],
     )
     assert panel.consensus == "block"
@@ -1192,11 +1308,16 @@ def test_aggregate_advisory_parse_failed_is_non_blocking():
 
 
 def test_aggregate_authoritative_unavailable_stays_incomplete_despite_advisory_approve():
-    """Edge 8 (unit): advisory APPROVE cannot rescue a missing authoritative
-    seat — consensus stays "incomplete".
+    """Edge 8 (unit): advisory APPROVE cannot rescue a fully-missing
+    authoritative panel — consensus stays "incomplete".
+
+    Under the corroboration gate a single missing seat is tolerated, so
+    "incomplete" requires the whole authoritative set UNAVAILABLE; the advisory
+    APPROVE must not turn that into "approve".
     """
     panel = cfr.aggregate(
-        [_approve_verdict("claude"), _approve_verdict("gemini"), _unavailable_verdict("codex")],
+        [_unavailable_verdict("claude"), _unavailable_verdict("gemini"),
+         _unavailable_verdict("codex")],
         advisory=[_approve_verdict("grok")],
     )
     assert panel.consensus == "incomplete"
@@ -1330,8 +1451,11 @@ def test_render_markdown_block_keeps_advisory_separate_from_blocking():
     """Edge 2/3 (render, block path): advisory findings render ONLY under
     the advisory appendix, never inside 'Blocking findings'.
     """
+    # A CRITICAL authoritative dissent drives the block render path (a lone HIGH
+    # would not block under the corroboration gate).
     panel = cfr.aggregate(
-        [_approve_verdict("claude"), _approve_verdict("gemini"), _changes_verdict("codex")],
+        [_approve_verdict("claude"), _approve_verdict("gemini"),
+         _changes_verdict("codex", cfr.Severity.CRITICAL)],
         advisory=[_advisory_changes_verdict()],
     )
     md = cfr.render_findings_markdown(panel)
