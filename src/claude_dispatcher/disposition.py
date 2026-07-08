@@ -72,8 +72,11 @@ def classify_disposition(
 
     `mode` is "unattended" or "supervised".
     Rules (see docs/feature-review-loop.md):
-      - refutable=True (duplicate / code outside diff / contradicted by a passing
-        gate) -> REJECT, regardless of severity.
+      - refutable=True (duplicate / contradicted by a passing gate) -> REJECT,
+        regardless of severity. NOTE: "references code outside the diff" is NOT
+        refutable — 36% of shipped escapes in the 2026-07 audit lived in
+        outside-the-diff interactions; callers must never set refutable for
+        that reason (route it to the blocking/lone rules below instead).
       - blocking severity (CRITICAL/HIGH) AND (corroboration >= 2 OR gate_grounded)
         -> ACCEPT.
       - blocking severity but NOT corroborated and NOT gate_grounded (a lone
