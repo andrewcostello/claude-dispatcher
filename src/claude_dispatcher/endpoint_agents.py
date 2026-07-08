@@ -97,7 +97,19 @@ def resolve_endpoint_agent(
       - otherwise return EndpointResolution(spec, key=env[key_env].strip(),
         model=model if a non-empty model was given else spec.default_model).
     """
-    raise NotImplementedError("EPA-1")
+    spec = ENDPOINT_AGENTS.get(agent)
+    if spec is None:
+        known = ", ".join(ENDPOINT_AGENTS)
+        raise EndpointConfigError(
+            f"unknown endpoint agent {agent!r}; known endpoint agents: {known}"
+        )
+    key = env.get(spec.key_env, "").strip()
+    if not key:
+        raise EndpointConfigError(
+            f"endpoint agent {agent!r} ({spec.provider}) needs {spec.key_env} "
+            f"set in the environment: export {spec.key_env}=..."
+        )
+    return EndpointResolution(spec=spec, key=key, model=model or spec.default_model)
 
 
 def build_endpoint_env(

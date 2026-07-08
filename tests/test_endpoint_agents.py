@@ -34,7 +34,6 @@ def test_registry_names_are_known_agents():
 
 
 # --- resolve_endpoint_agent (EPA-1) -----------------------------------------
-@pytest.mark.skip(reason="EPA-1 body-fill")
 def test_resolve_known_agent_with_key():
     r = ea.resolve_endpoint_agent("kimi", _ENV)
     assert r.spec.name == "kimi"
@@ -42,13 +41,11 @@ def test_resolve_known_agent_with_key():
     assert r.model == ea.ENDPOINT_AGENTS["kimi"].default_model
 
 
-@pytest.mark.skip(reason="EPA-1 body-fill")
 def test_resolve_task_model_overrides_default():
     r = ea.resolve_endpoint_agent("glm", _ENV, model="glm-5.2-air")
     assert r.model == "glm-5.2-air"
 
 
-@pytest.mark.skip(reason="EPA-1 body-fill")
 def test_resolve_missing_key_is_actionable_error():
     env = {k: v for k, v in _ENV.items() if k != "DEEPSEEK_API_KEY"}
     with pytest.raises(ea.EndpointConfigError) as exc:
@@ -57,14 +54,12 @@ def test_resolve_missing_key_is_actionable_error():
     assert "deepseek" in str(exc.value)
 
 
-@pytest.mark.skip(reason="EPA-1 body-fill")
 def test_resolve_blank_key_treated_as_missing():
     env = dict(_ENV, MOONSHOT_API_KEY="   ")
     with pytest.raises(ea.EndpointConfigError):
         ea.resolve_endpoint_agent("kimi", env)
 
 
-@pytest.mark.skip(reason="EPA-1 body-fill")
 def test_resolve_unknown_agent_names_known_ones():
     with pytest.raises(ea.EndpointConfigError) as exc:
         ea.resolve_endpoint_agent("qwen", _ENV)
