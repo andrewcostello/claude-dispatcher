@@ -1,0 +1,116 @@
+project: EPA
+epic: endpoint-agents
+# Dogfood: endpoint implementer agents (kimi / glm / deepseek) — open-weight
+# models behind Anthropic-compatible endpoints, run as the ordinary claude
+# Tasker with ANTHROPIC_BASE_URL/AUTH_TOKEN re-pointed. Contract-first: the
+# skeleton (endpoint_agents.py registry + stubs, spawn.spawn_endpoint_agent
+# stub + spawn_agent routing hook, KNOWN_AGENTS extension, SKIPPED contract
+# tests in tests/test_endpoint_agents.py) is on the base branch. Each task
+# implements ONE stub per its docstring contract AND removes the
+# @pytest.mark.skip from its own contract test(s) so they run + pass. EPA-1/2/4
+# are PURE (no subprocess/network/fs). Do NOT touch other functions or other
+# tasks' tests. Gate = the repo pytest suite.
+#
+# Motivation + model choices: see the model-bakeoff plan (2026-07-07) — Kimi
+# K2.7-Code, GLM-5.2, DeepSeek V4-Pro-Max as implementer/scout arms; Fable 5
+# stays the reviewer seat. Default model ids in the registry are pinned from
+# provider docs and re-verified by the EPA-5 doctor probe once keys exist.
+
+tasks:
+  - key: EPA-1
+    summary: "implement endpoint_agents.resolve_endpoint_agent + un-skip its contract tests"
+    description: |
+      Implement `resolve_endpoint_agent(agent, env, model=None)` in
+      src/claude_dispatcher/endpoint_agents.py exactly per its docstring
+      contract: unknown agent -> EndpointConfigError naming the agent AND
+      listing the known endpoint agents; missing/blank key_env ->
+      EndpointConfigError naming agent, provider, and key_env; otherwise
+      EndpointResolution with stripped key and model = given model (if
+      non-empty) else spec.default_model. PURE — no os.environ access; only
+      the passed `env` mapping.
+      Remove the 5 @pytest.mark.skip on test_resolve_* in
+      tests/test_endpoint_agents.py.
+      Acceptance: those 5 tests run and pass; no other code/tests changed.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+
+  - key: EPA-2
+    summary: "implement endpoint_agents.build_endpoint_env + un-skip its contract tests"
+    description: |
+      Implement `build_endpoint_env(base_env, resolution)` in
+      src/claude_dispatcher/endpoint_agents.py per its docstring contract:
+      copy base_env (never mutate); set ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN,
+      ANTHROPIC_MODEL, ANTHROPIC_SMALL_FAST_MODEL,
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1"; REMOVE ANTHROPIC_API_KEY.
+      PURE.
+      Remove the 3 @pytest.mark.skip on test_build_env_* in
+      tests/test_endpoint_agents.py.
+      Acceptance: those 3 tests run and pass; no other code/tests changed.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+
+  - key: EPA-3
+    summary: "implement spawn.spawn_endpoint_agent body + un-skip its contract tests"
+    description: |
+      Fill the body of `spawn_endpoint_agent(...)` in
+      src/claude_dispatcher/spawn.py per its docstring contract: resolve via
+      endpoint_agents.resolve_endpoint_agent (EndpointConfigError propagates —
+      NO silent fallback to Anthropic); build the child env via
+      endpoint_agents.build_endpoint_env; delegate to spawn_claude with
+      metered=True (the provider token must survive the subscription strip)
+      and extra_args extended with ["--model", resolution.model] (and
+      ["--effort", effort] when effort is set, mirroring the claude branch);
+      return the SpawnResult with usage.model replaced by resolution.model.
+      The spawn_agent routing hook already exists — do not change it.
+      Remove the 3 @pytest.mark.skip on test_spawn_* in
+      tests/test_endpoint_agents.py.
+      Acceptance: those 3 tests run and pass; no other code/tests changed.
+    type: Task
+    estimate: 2h
+    labels: [size:M, area:dispatcher]
+    agent: claude
+    blockedBy: [EPA-1, EPA-2]
+
+  - key: EPA-4
+    summary: "implement endpoint_agents.endpoint_doctor_report + un-skip its contract tests"
+    description: |
+      Implement `endpoint_doctor_report(env)` in
+      src/claude_dispatcher/endpoint_agents.py per its docstring contract: one
+      (agent_name, ok, detail) per ENDPOINT_AGENTS entry in registry order;
+      ok=True when key_env present and non-blank with detail
+      "<provider>: <key_env> set (model <default_model>)"; ok=False with
+      detail "<provider>: set <key_env> to enable". PURE.
+      Remove the 2 @pytest.mark.skip on test_doctor_report_* in
+      tests/test_endpoint_agents.py.
+      Acceptance: those 2 tests run and pass; no other code/tests changed.
+    type: Task
+    estimate: 30m
+    labels: [size:XS, area:dispatcher]
+    agent: claude
+
+  - key: EPA-5
+    summary: "wire endpoint readiness into `dispatcher doctor` + optional live probe"
+    description: |
+      In src/claude_dispatcher/doctor.py, add an "Endpoint agents" section that
+      renders endpoint_agents.endpoint_doctor_report(os.environ) rows in the
+      doctor's existing check format (this is the only os.environ read; keep
+      the report function pure). Behind a new `--probe-endpoints` doctor flag,
+      for each agent whose key is set, run ONE minimal live probe: the claude
+      CLI via spawn.spawn_endpoint_agent-style env (or a direct HTTP messages
+      call) with a 1-token prompt and a short timeout; report ok / auth
+      failure / model-id-not-found DISTINCTLY — a wrong default_model in the
+      registry must be loudly visible, since ids were pinned from docs without
+      live verification. No probe when the flag is absent (doctor stays
+      offline-safe). Add tests for the new doctor section with the probe
+      mocked (no network in tests).
+      Acceptance: doctor shows the three agents' readiness; probe path
+      covered by mocked tests; pytest suite green.
+    type: Task
+    estimate: 2h
+    labels: [size:M, area:dispatcher]
+    agent: claude
+    blockedBy: [EPA-3, EPA-4]

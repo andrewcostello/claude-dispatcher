@@ -34,7 +34,11 @@ TERMINAL = {DONE, BLOCKED, ESCALATED}
 # Implementer agents the dispatcher can spawn as a Tasker. "claude" is the
 # default; codex/grok/gemini are cross-family CLIs run in their headless
 # agentic mode via spawn.spawn_agent(). Kept in sync with spawn.AGENT_SPECS.
-KNOWN_AGENTS = frozenset({"claude", "codex", "grok", "gemini"})
+# kimi/glm/deepseek are ENDPOINT agents: the claude CLI re-pointed at an
+# Anthropic-compatible provider endpoint (see endpoint_agents.ENDPOINT_AGENTS).
+KNOWN_AGENTS = frozenset(
+    {"claude", "codex", "grok", "gemini", "kimi", "glm", "deepseek"}
+)
 
 # DISPATCH ordering — the statuses of a blockedBy dependency that let its
 # dependents be dispatched ("Done-or-later"). In `branch` mode that is just

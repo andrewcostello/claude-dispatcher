@@ -21,6 +21,8 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import endpoint_agents as endpoint_agents_mod
+
 
 # Agent identity stamped onto every terminal task row + terminal journal
 # event (OPS-4). The dispatcher only spawns the Claude CLI today; if other
@@ -559,6 +561,36 @@ def _write_synthetic_summary(
     )
 
 
+def spawn_endpoint_agent(
+    *,
+    agent: str,
+    cwd: Path,
+    env: dict[str, str],
+    prompt: str,
+    model: str | None = None,
+    effort: str | None = None,
+    extra_args: list[str] | None = None,
+    claude_bin: str = "claude",
+    timeout_seconds: int = 60 * 60 * 4,
+) -> SpawnResult:
+    """Run one endpoint agent (kimi/glm/deepseek) as a re-pointed claude Tasker.
+
+    Contract (EPA-3, see endpoint_agents module docstring):
+      - resolve via endpoint_agents.resolve_endpoint_agent(agent, env, model);
+        an EndpointConfigError propagates to the caller (misconfiguration must
+        fail the cell loudly, not silently fall back to Anthropic),
+      - child env = endpoint_agents.build_endpoint_env(env, resolution),
+      - delegate to spawn_claude() with metered=True (module invariant 1: the
+        provider token must survive spawn_claude's subscription strip) and
+        extra_args extended with ["--model", resolution.model]; a caller
+        `effort` maps to ["--effort", effort] exactly as the claude branch of
+        spawn_agent does,
+      - the returned SpawnResult passes through unchanged EXCEPT
+        usage.model, which must carry resolution.model for provenance.
+    """
+    raise NotImplementedError("EPA-3")
+
+
 def spawn_agent(
     *,
     agent: str | None,
@@ -587,6 +619,13 @@ def spawn_agent(
         return spawn_claude(
             claude_bin=claude_bin, cwd=cwd, env=env, prompt=prompt,
             extra_args=spawn_extra, timeout_seconds=timeout_seconds,
+        )
+
+    if agent in endpoint_agents_mod.ENDPOINT_AGENTS:
+        return spawn_endpoint_agent(
+            agent=agent, cwd=cwd, env=env, prompt=prompt, model=model,
+            effort=effort, extra_args=extra_args, claude_bin=claude_bin,
+            timeout_seconds=timeout_seconds,
         )
 
     summary_path = Path(env["SUMMARY_PATH"])
