@@ -32,6 +32,7 @@ from typing import Any
 
 from . import __version__
 from . import auto_integrate as ai_mod
+from . import blast_radius as br_mod
 from . import cross_family_reviewer as cfr_mod
 from . import disposition as disposition_mod
 from . import journal as journal_mod
@@ -43,6 +44,7 @@ from . import pr as pr_mod
 from . import preflight as preflight_mod
 from . import push_verify as pv_mod
 from . import repo_config as repo_config_mod
+from . import seal_verify as sv_mod
 from . import spawn as spawn_mod
 from . import summary as summary_mod
 from . import verifier as verifier_mod
@@ -253,6 +255,80 @@ class TaskSnapshot:
     blocked_by: list[str] = field(default_factory=list)
 
 
+CAPSTONE_KEY = "CAPSTONE-INTEGRATION"
+
+_CAPSTONE_DESCRIPTION = """\
+You are running the EPIC INTEGRATION PASS — the final task before this epic
+branch merges toward main. Per-task review sees each diff in isolation; a
+single epic squash once originated 54 shipped escapes (2026-07 audit, PR
+#582), all in the seams BETWEEN tasks. Your job is the seams.
+
+1. Blast-radius map. From the epic's cumulative diff (git diff
+   <base>...HEAD), enumerate every table, column, RPC, event, and consumer
+   the epic touches or replaces. For every legacy path the epic supersedes,
+   list every write/read the legacy path performed and mark each one:
+   covered by the new path / explicitly deferred (name the ticket) / GAP.
+2. Sibling-surface sweep. For each state field, gate, or event the epic
+   introduces or consumes, grep ALL readers and writers and verify parity:
+   unary vs stream vs snapshot/recovery frames; explicit RPC vs
+   auto/background paths; entry vs exit lifecycle (everything set on
+   join/arm/enable is cleared on EVERY exit variant); flag-gated vs
+   unconditional cutovers (a cutover must ride the same flag as its
+   sibling reads/writes).
+3. Runtime sweep. If a live stack is available, drive the DOMINANT
+   production flows end-to-end (the auto/background variants, not only the
+   explicit ones). Otherwise run the full suite including integration tags
+   and say so explicitly in the summary.
+4. Deliverable: summary.md containing the map with per-item verdicts.
+   Small gaps you can close safely: fix and commit. Anything else: report
+   Status: Blocked with the concrete gap list — an honest Blocked here is
+   the success case; claiming Done over an unverified seam is the failure
+   this task exists to prevent.
+"""
+
+
+def _maybe_append_capstone(cfg: RunConfig, doc: Any) -> Any:
+    """Append the epic-integration capstone task for epic-shaped runs.
+
+    Trigger: top-level ``capstone: true`` in the tasks YAML, or a base
+    branch under ``epic/``. Idempotent (a resume or re-run that already has
+    the row appends nothing). The capstone is blockedBy every existing task
+    so it drains last; it flows the normal pipeline (worktree, gates,
+    panel). Returns the (possibly reloaded) doc.
+
+    Known limitation, on purpose: FIX-* tasks synthesized by later
+    feature-review rounds are not added to the capstone's blockedBy — the
+    capstone audits the epic's task set; the review loop audits the fixes.
+    """
+    if not isinstance(doc, dict):
+        return doc
+    wants = bool(doc.get("capstone")) or cfg.base_branch.startswith("epic/")
+    if not wants:
+        return doc
+    rows = doc.get("tasks") or []
+    keys = [str(r.get("key")) for r in rows if r.get("key")]
+    if not keys or CAPSTONE_KEY in keys:
+        return doc
+    with yaml_io.FileLock(cfg.tasks_path, timeout_seconds=cfg.lock_timeout_seconds):
+        doc = yaml_io.load(cfg.tasks_path)
+        rows = doc.get("tasks") or []
+        keys = [str(r.get("key")) for r in rows if r.get("key")]
+        if not keys or CAPSTONE_KEY in keys:
+            return doc
+        rows.append({
+            "key": CAPSTONE_KEY,
+            "summary": "Epic integration pass: seam audit + runtime sweep before merge",
+            "description": _CAPSTONE_DESCRIPTION,
+            "type": "Task",
+            "labels": ["size:M", "area:integration"],
+            "agent": "claude",
+            "blockedBy": list(keys),
+        })
+        doc["tasks"] = rows
+        yaml_io.dump(doc, cfg.tasks_path)
+    return doc
+
+
 # --- entry point -----------------------------------------------------------
 
 
@@ -277,6 +353,12 @@ def execute(args: argparse.Namespace) -> int:
         yaml_base = (doc.get("base_branch") if isinstance(doc, dict) else None)
         if yaml_base:
             cfg.base_branch = str(yaml_base).strip()
+
+    # Epic capstone: epic-shaped runs (capstone: true, or an epic/ base
+    # branch) get a synthesized final integration task that audits the seams
+    # BETWEEN tasks before the epic merges (mega-merge escape class). Done
+    # before preflight/journal so the genesis hash covers the final YAML.
+    doc = _maybe_append_capstone(cfg, doc)
 
     # Pure read; needed by the preflight before any run artifact exists.
     repo_root = wt_mod.detect_repo_root(cfg.tasks_path.parent)
@@ -935,6 +1017,22 @@ def _run_task(
             final_status = plan_mod.BLOCKED
             final_blocked_reason = "mechanical_verification_failed"
 
+    # Seal-inversion gate (VG-3): fix-shaped work (FIX-* keys, type:fix /
+    # seal-check labels) must prove its new tests fail WITHOUT the fix.
+    # Runs only over a green mechanical gate (an inverted run of a red suite
+    # proves nothing) and a committed-clean tree (the gate above enforces
+    # it, and seal_verify restores via reset --hard).
+    seal_outcome: str | None = None
+    seal_detail: str | None = None
+    if (final_status == plan_mod.DONE and mech_outcome == "passed"
+            and base_sha_before
+            and sv_mod.applies(snap.key, snap.labels)):
+        seal_outcome, seal_detail = _verify_seal(
+            cfg, snap, wt, base_sha_before, log_path)
+        if seal_outcome in ("failed", "error"):
+            final_status = plan_mod.BLOCKED
+            final_blocked_reason = "seal_verification_failed"
+
     # LLM verification gate (VG-4). Spawned ONLY for a still-Done task, AFTER
     # the mechanical gate above (ordering rule: never spend verifier tokens on
     # a red suite) and BEFORE the cross-family panel below. The verifier asks
@@ -1201,6 +1299,12 @@ def _run_task(
             row["mechanical_verification"] = mech_outcome
             if mech_outcome == "failed" and mech_detail:
                 row["mechanical_verification_detail"] = mech_detail
+        # Seal-inversion outcome (VG-3). Absent when the gate never ran
+        # (not fix-shaped, non-Done, or the mechanical gate wasn't green).
+        if seal_outcome is not None:
+            row["seal_verification"] = seal_outcome
+            if seal_outcome in ("failed", "error") and seal_detail:
+                row["seal_verification_detail"] = seal_detail[:mv_mod.TAIL_CHARS]
         # LLM verification outcome (VG-4). Absent entirely when the gate never
         # ran (non-Done, or --skip-verification) — absence means "not
         # evaluated". verification_iterations is the count of INCOMPLETE →
@@ -1388,6 +1492,14 @@ def _run_cross_family_panel(
     except (OSError, FileNotFoundError) as e:
         _log(log_path, f"  {snap.key} panel: summary.md read failed: {e}")
 
+    blast = br_mod.build_blast_radius(
+        repo_root=repo_root, branch=diff_branch, diff=diff,
+    )
+    if blast:
+        _log(log_path,
+             f"  {snap.key} panel: blast-radius artifact "
+             f"({blast.count(chr(10)) + 1} lines) attached")
+
     return cfr_mod.run_panel(
         ticket_key=snap.key,
         ticket_summary=snap.summary,
@@ -1395,6 +1507,8 @@ def _run_cross_family_panel(
         diff=diff,
         branch=diff_branch,
         base_branch=diff_base,
+        blast_radius=blast,
+        implementer_prior=cfr_mod.implementer_prior_for(snap.agent),
         # Exclude the author's own family from its jury — cross-family review
         # means a DIFFERENT family judges. The author self-reviewing (and
         # self-flagging) is circular and drives false corroboration blocks on
@@ -1464,6 +1578,9 @@ def run_feature_review(
         ticket_key="FEATURE-REVIEW",
         ticket_summary=f"final review of feature {epic}",
         summary_md=summary_md, diff=diff, branch=branch, base_branch=base,
+        blast_radius=br_mod.build_blast_radius(
+            repo_root=repo_root, branch=branch, diff=diff),
+        implementer_prior=cfr_mod.implementer_prior_for(None),
         reviewers=_panel_reviewer_factory(cfg),
         advisory_reviewers=_panel_advisory_reviewer_factory(
             cfg, repo_root, log_path, "FEATURE-REVIEW"),
@@ -2986,6 +3103,48 @@ Task context (for reference, do NOT redo):
 """
 
 
+def _verify_seal(
+    cfg: RunConfig,
+    snap: TaskSnapshot,
+    wt: wt_mod.Worktree,
+    base_sha: str,
+    log_path: Path,
+) -> tuple[str, str | None]:
+    """Run the seal-inversion gate (VG-3) for a fix-shaped task.
+
+    Caller has already checked ``seal_verify.applies``; this loads the repo
+    test command, runs the inversion, journals ONE ``verification_seal``
+    event, and returns ``(outcome, detail)`` in the mechanical gate's shape:
+    "passed"/"skipped" proceed, "failed"/"error" block. No retry spawn — a
+    false-passing seal needs a rethink of the test, not a mechanical nudge,
+    and the panel's evidence lens gets the detail either way.
+    """
+    try:
+        repo_cfg = repo_config_mod.load(wt.path)
+    except repo_config_mod.RepoConfigError:
+        repo_cfg = None
+    if repo_cfg is None or repo_cfg.test is None:
+        _emit_event(cfg, journal_mod.EventType.verification_seal, {
+            "outcome": "skipped", "reason": "no test command",
+        }, task_key=snap.key)
+        return "skipped", None
+
+    res = sv_mod.run_seal_inversion(
+        worktree=wt.path,
+        base=base_sha,
+        test_command=repo_cfg.test,
+        timeout_seconds=cfg.verify_test_timeout_seconds,
+        log=lambda m: _log(log_path, m),
+    )
+    _log(log_path, f"  {snap.key} seal-verify {res.outcome}: {res.detail[:160]}")
+    _emit_event(cfg, journal_mod.EventType.verification_seal, {
+        "outcome": res.outcome,
+        "detail": res.detail[:mv_mod.TAIL_CHARS],
+        "command": repo_cfg.test,
+    }, task_key=snap.key)
+    return res.outcome, res.detail
+
+
 def _verify_mechanical_and_maybe_retry(
     cfg: RunConfig,
     snap: TaskSnapshot,
@@ -3046,6 +3205,26 @@ def _verify_mechanical_and_maybe_retry(
             "reason": reason,
         }, task_key=snap.key)
         return "skipped", None
+
+    dirty = mv_mod.uncommitted_changes(wt.path)
+    if dirty:
+        # Committed-tree gate: a green suite over a dirty tree is evidence
+        # about the working tree, not the committed one (escape-audit class
+        # PR #671: never-added file, green output, broken build). No retry —
+        # commit discipline is the Tasker's contract, and a fix-the-tests
+        # re-spawn cannot adjudicate which dirty paths belong in the commit.
+        detail = (
+            "uncommitted changes in worktree at verification time — test "
+            "evidence is not keyed to the committed tree: " + ", ".join(dirty)
+        )
+        _log(log_path, f"  {snap.key} mechanical-verify: {detail}")
+        _emit_event(cfg, journal_mod.EventType.verification_mechanical, {
+            "outcome": "failed",
+            "reason": "uncommitted_changes",
+            "files": dirty,
+            "retried": False,
+        }, task_key=snap.key)
+        return "failed", detail
 
     first = _run_mechanical_test(cfg, snap, wt, repo_cfg,
                                  retried=False, log_path=log_path)

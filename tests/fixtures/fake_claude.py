@@ -14,9 +14,22 @@ to exercise the other branches of the orchestrator.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
+import tempfile
 from pathlib import Path
+
+
+def _harness_path(name: str) -> Path:
+    """A bookkeeping file for the fake harness, OUTSIDE the worktree.
+
+    The committed-tree gate treats any uncommitted worktree file as a
+    verification failure, so counters/sentinels that track invocation
+    state live in the system temp dir, keyed by a cwd hash (each test's
+    worktree is unique, so state never leaks across tests)."""
+    cwd_key = hashlib.md5(str(Path.cwd()).encode()).hexdigest()[:12]
+    return Path(tempfile.gettempdir()) / f"{name}-{cwd_key}"
 
 SCENARIOS = {
     "done": "Done",
@@ -129,7 +142,7 @@ def main() -> int:
         actually producing new history.
         """
         import subprocess
-        counter_path = Path(f".fake-claude-counter-{task_key}")
+        counter_path = _harness_path(f".fake-claude-counter-{task_key}")
         try:
             n = int(counter_path.read_text()) + 1
         except (OSError, ValueError):
@@ -213,7 +226,7 @@ def main() -> int:
         _do_commit()
         _commit_green_file()
     elif scenario == "done-tests-red-then-fixed":
-        sentinel = Path(f".fake-claude-test-fix-{task_key}")
+        sentinel = _harness_path(f".fake-claude-test-fix-{task_key}")
         if sentinel.exists():
             # Second invocation = the fix-the-tests retry: commit the green
             # file this time so the gate's re-run passes.
@@ -230,7 +243,7 @@ def main() -> int:
         # push-retry invocation — so the dispatcher must flag needs_push.
         _do_commit()
     elif scenario == "done-push-retry":
-        sentinel = Path(f".fake-claude-push-{task_key}")
+        sentinel = _harness_path(f".fake-claude-push-{task_key}")
         if sentinel.exists():
             # Second invocation = the push retry. The commit already exists on
             # the branch from the first run; just push it this time.
@@ -239,7 +252,7 @@ def main() -> int:
             sentinel.write_text("first invocation skipped push\n", encoding="utf-8")
             _do_commit()
     elif scenario == "done-commit-retry":
-        sentinel = Path(f".fake-claude-retry-{task_key}")
+        sentinel = _harness_path(f".fake-claude-retry-{task_key}")
         if sentinel.exists():
             _do_commit()  # second invocation = the retry; commit this time
         else:
