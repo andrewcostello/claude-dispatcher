@@ -22,6 +22,7 @@ from . import report as report_cmd
 from . import merge_prs as merge_prs_cmd
 from . import forecast_bridge
 from . import doctor as doctor_cmd
+from . import unblock as unblock_cmd
 
 
 DEFAULT_FINANCIAL_PATHS = ",".join([
@@ -414,6 +415,32 @@ def build_parser() -> argparse.ArgumentParser:
     st.set_defaults(func=status_cmd.execute)
 
     # --- resume ------------------------------------------------------------
+    bl = sub.add_parser(
+        "blocked",
+        help=("Review queue: every Blocked task with its blocked_reason and "
+              "the gate detail that explains it. Exit 3 when anything is "
+              "blocked (alertable), 0 when clean."),
+    )
+    bl.add_argument("tasks_yaml")
+    bl.set_defaults(func=unblock_cmd.list_blocked)
+
+    ub = sub.add_parser(
+        "unblock",
+        help=("Clear reviewed Blocked tasks back to To Do so the next run "
+              "re-dispatches them on their existing branches. --note carries "
+              "your adjudication into the re-spawned Tasker's prompt. All "
+              "gates re-run — this grants a retry, never a waiver."),
+    )
+    ub.add_argument("tasks_yaml")
+    ub.add_argument("keys", nargs="*", metavar="KEY",
+                    help="Task keys to clear (or use --all)")
+    ub.add_argument("--all", action="store_true",
+                    help="Clear every Blocked task")
+    ub.add_argument("--note", default=None,
+                    help=("Human adjudication appended to the task "
+                          "description — the re-spawned Tasker reads it"))
+    ub.set_defaults(func=unblock_cmd.unblock)
+
     rs = sub.add_parser("resume", help="Resume an interrupted run from checkpoint")
     rs.add_argument("run_id")
     rs.add_argument("--runs-dir", default="docs/runs")
