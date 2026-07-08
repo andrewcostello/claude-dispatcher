@@ -129,7 +129,14 @@ def build_endpoint_env(
       - sets CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1" (no telemetry /
         update pings against a third-party host).
     """
-    raise NotImplementedError("EPA-2")
+    env = dict(base_env)
+    env.pop("ANTHROPIC_API_KEY", None)
+    env["ANTHROPIC_BASE_URL"] = resolution.spec.base_url
+    env["ANTHROPIC_AUTH_TOKEN"] = resolution.key
+    env["ANTHROPIC_MODEL"] = resolution.model
+    env["ANTHROPIC_SMALL_FAST_MODEL"] = resolution.model
+    env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+    return env
 
 
 def endpoint_doctor_report(env: Mapping[str, str]) -> list[tuple[str, bool, str]]:

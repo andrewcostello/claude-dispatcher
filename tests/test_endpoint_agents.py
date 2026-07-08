@@ -75,7 +75,6 @@ def _resolution(agent="kimi", model=None):
     )
 
 
-@pytest.mark.skip(reason="EPA-2 body-fill")
 def test_build_env_points_at_provider():
     env = ea.build_endpoint_env(_ENV, _resolution("kimi"))
     assert env["ANTHROPIC_BASE_URL"] == "https://api.moonshot.ai/anthropic"
@@ -85,13 +84,11 @@ def test_build_env_points_at_provider():
     assert env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
 
 
-@pytest.mark.skip(reason="EPA-2 body-fill")
 def test_build_env_strips_real_anthropic_key():
     env = ea.build_endpoint_env(_ENV, _resolution("glm"))
     assert "ANTHROPIC_API_KEY" not in env
 
 
-@pytest.mark.skip(reason="EPA-2 body-fill")
 def test_build_env_passes_dispatcher_vars_and_does_not_mutate():
     base = dict(_ENV)
     env = ea.build_endpoint_env(base, _resolution("deepseek"))
