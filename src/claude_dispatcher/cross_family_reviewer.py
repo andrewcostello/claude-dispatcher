@@ -501,9 +501,18 @@ def build_review_prompt(
     diff: str,
     branch: str,
     base_branch: str,
+    blast_radius: str = "",
+    implementer_prior: str = "",
 ) -> str:
     """Render the per-family prompt. The shared block has format slots; the
     preamble has none.
+
+    ``blast_radius`` — the generated sibling-surface artifact (symbols the
+    diff touches and their references outside the diff); empty when the
+    diff yields nothing grep-able. ``implementer_prior`` — a short
+    watch-for block keyed to who authored the diff (e.g. agent-authored
+    code's known defect signature); empty when no prior applies. Both are
+    plain-prose enrichments: empty strings render as empty sections.
     """
     tmpl = _load_prompt(family)
     return tmpl.format(
@@ -513,6 +522,8 @@ def build_review_prompt(
         diff=diff,
         branch=branch,
         base_branch=base_branch,
+        blast_radius=blast_radius or "(none identified)",
+        implementer_prior=implementer_prior or "(none)",
     )
 
 
@@ -1117,6 +1128,39 @@ def advisory_reviewers_from_names(
     return reviewers, unknown
 
 
+# Known defect signature of LLM-agent-authored diffs, from the 2026-07
+# escape audit of 418 agent-authored PRs (131 shipped escapes). Family-
+# agnostic: every dispatcher implementer is an agent, and the signature
+# held across families. Injected as the {implementer_prior} prompt slot —
+# it biases reviewer ATTENTION; it never changes the verdict rules.
+_AGENT_IMPLEMENTER_PRIOR = """\
+This diff was authored by an LLM agent. Audit-proven signature classes to
+probe FIRST (each caused shipped escapes):
+- Vacuous tests: seals that pass without the fix, fixed sleeps as
+  synchronization, absence-only assertions, property tests with fixed keys,
+  mocks encoding a stale contract. Ask: would this test FAIL if the fix
+  were reverted?
+- Fail-open defaults on degraded paths: empty config/table/lookup silently
+  enabling a gated capability; error guards that skip on ANY error instead
+  of the one expected error.
+- Sibling-surface gaps: the change applied to the path in the diff but not
+  its twin (unary vs stream, explicit vs auto/background, entry vs exit
+  lifecycle) — cross-check the blast-radius section.
+- Docs/code drift: comments and docstrings asserting behavior the final
+  iteration no longer has, including safety-direction claims.
+- Overclaimed completeness: "X already handles this" without a cited,
+  demonstrated flow; stub bodies behind claimed-done surface."""
+
+
+def implementer_prior_for(agent: str | None) -> str:
+    """The watch-for block for a diff authored by ``agent`` (a dispatcher
+    implementer family; None means claude). All dispatcher implementers are
+    LLM agents, so today this returns one shared signature block — the seam
+    exists so per-family (or per-human, for PR-mode reviews) priors can
+    slot in without touching call sites."""
+    return _AGENT_IMPLEMENTER_PRIOR
+
+
 def run_panel(
     *,
     ticket_key: str,
@@ -1125,6 +1169,8 @@ def run_panel(
     diff: str,
     branch: str,
     base_branch: str,
+    blast_radius: str = "",
+    implementer_prior: str = "",
     reviewers: list[Reviewer] | None = None,
     advisory_reviewers: list[Reviewer] | None = None,
     log: Callable[[str], None] = lambda _m: None,
@@ -1176,6 +1222,8 @@ def run_panel(
             diff=diff,
             branch=branch,
             base_branch=base_branch,
+            blast_radius=blast_radius,
+            implementer_prior=implementer_prior,
         )
         return r.review(prompt)
 
