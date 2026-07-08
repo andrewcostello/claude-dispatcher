@@ -98,7 +98,6 @@ def test_build_env_passes_dispatcher_vars_and_does_not_mutate():
 
 
 # --- spawn_endpoint_agent (EPA-3) -------------------------------------------
-@pytest.mark.skip(reason="EPA-3 body-fill")
 def test_spawn_routes_through_metered_spawn_claude(monkeypatch, tmp_path):
     seen = {}
 
@@ -122,7 +121,6 @@ def test_spawn_routes_through_metered_spawn_claude(monkeypatch, tmp_path):
     assert res.usage.model == kimi_model  # provenance overrides passthrough
 
 
-@pytest.mark.skip(reason="EPA-3 body-fill")
 def test_spawn_agent_dispatches_endpoint_names(monkeypatch, tmp_path):
     called = {}
 
@@ -141,7 +139,6 @@ def test_spawn_agent_dispatches_endpoint_names(monkeypatch, tmp_path):
     assert called["agent"] == "glm"
 
 
-@pytest.mark.skip(reason="EPA-3 body-fill")
 def test_spawn_missing_key_fails_loudly_no_fallback(monkeypatch, tmp_path):
     def boom(**kw):  # any real spawn attempt is a contract violation
         raise AssertionError("spawn_claude must not be called on config error")

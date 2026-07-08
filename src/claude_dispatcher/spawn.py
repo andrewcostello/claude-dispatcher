@@ -588,7 +588,18 @@ def spawn_endpoint_agent(
       - the returned SpawnResult passes through unchanged EXCEPT
         usage.model, which must carry resolution.model for provenance.
     """
-    raise NotImplementedError("EPA-3")
+    resolution = endpoint_agents_mod.resolve_endpoint_agent(agent, env, model)
+    child_env = endpoint_agents_mod.build_endpoint_env(env, resolution)
+    spawn_extra = list(extra_args or [])
+    spawn_extra += ["--model", resolution.model]
+    if effort:
+        spawn_extra += ["--effort", effort]
+    result = spawn_claude(
+        claude_bin=claude_bin, cwd=cwd, env=child_env, prompt=prompt,
+        extra_args=spawn_extra, timeout_seconds=timeout_seconds, metered=True,
+    )
+    result.usage.model = resolution.model
+    return result
 
 
 def spawn_agent(
