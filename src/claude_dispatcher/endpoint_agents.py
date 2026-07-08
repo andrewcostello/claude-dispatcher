@@ -130,4 +130,11 @@ def endpoint_doctor_report(env: Mapping[str, str]) -> list[tuple[str, bool, str]
     doctor output tells the user exactly what to export. This covers the pure
     half of doctoring; the live endpoint probe (EPA-5) is separate glue.
     """
-    raise NotImplementedError("EPA-4")
+    report: list[tuple[str, bool, str]] = []
+    for name, spec in ENDPOINT_AGENTS.items():
+        if env.get(spec.key_env, "").strip():
+            detail = f"{spec.provider}: {spec.key_env} set (model {spec.default_model})"
+            report.append((name, True, detail))
+        else:
+            report.append((name, False, f"{spec.provider}: set {spec.key_env} to enable"))
+    return report

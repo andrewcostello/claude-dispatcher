@@ -164,14 +164,12 @@ def test_spawn_missing_key_fails_loudly_no_fallback(monkeypatch, tmp_path):
 
 
 # --- endpoint_doctor_report (EPA-4) -----------------------------------------
-@pytest.mark.skip(reason="EPA-4 body-fill")
 def test_doctor_report_all_keys_present():
     report = ea.endpoint_doctor_report(_ENV)
     assert [name for name, _, _ in report] == list(ea.ENDPOINT_AGENTS)
     assert all(ok for _, ok, _ in report)
 
 
-@pytest.mark.skip(reason="EPA-4 body-fill")
 def test_doctor_report_missing_key_says_what_to_set():
     env = {k: v for k, v in _ENV.items() if k != "ZAI_API_KEY"}
     report = {name: (ok, detail) for name, ok, detail in ea.endpoint_doctor_report(env)}
