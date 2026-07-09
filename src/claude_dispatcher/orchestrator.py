@@ -143,6 +143,8 @@ class RunConfig:
     # the post-fix re-run are bounded independently). A timed-out execution
     # is a failure like any non-zero exit.
     verify_test_timeout_seconds: int = 600
+    # Set at run start from repo config; maps a risk tier to a default model.
+    model_router: Any = None
     # LLM verification gate (VG-4). After the mechanical gate passes and
     # before the cross-family panel, an independent verifier (verifier.py) is
     # spawned over the task + summary + committed diff to answer "does this
@@ -353,6 +355,15 @@ def execute(args: argparse.Namespace) -> int:
         yaml_base = (doc.get("base_branch") if isinstance(doc, dict) else None)
         if yaml_base:
             cfg.base_branch = str(yaml_base).strip()
+
+    # Tier-based model routing (repo config): resolved once per run from the
+    # repo root the dispatcher runs against. Rows with explicit model: win;
+    # rows without route by their risk: field; no config -> None (CLI default).
+    try:
+        _routing_cfg = repo_config_mod.load(wt_mod.detect_repo_root(cfg.tasks_path.parent))
+    except repo_config_mod.RepoConfigError:
+        _routing_cfg = None
+    cfg.model_router = (_routing_cfg.routed_model if _routing_cfg else (lambda _r: None))
 
     # Epic capstone: epic-shaped runs (capstone: true, or an epic/ base
     # branch) get a synthesized final integration task that audits the seams
@@ -1709,9 +1720,17 @@ def _dispatch_drain(
                 runnable = []  # stop starting new work; drain in-flight
             while runnable and len(in_flight) < cfg.max_parallel:
                 t = runnable.pop(0)
+                # Explicit row model: wins; else tier-route by the row's
+                # risk: field (repo model_routing config); else None (CLI
+                # default). The routed value lands on the snapshot so the
+                # journal's task_spawn_finished model field stays truthful.
+                routed = t.model or (
+                    cfg.model_router(str(t.raw.get("risk") or "") or None)
+                    if cfg.model_router else None
+                )
                 snap = TaskSnapshot(
                     key=t.key, summary=t.summary, description=t.description,
-                    type=t.type, labels=list(t.labels), model=t.model,
+                    type=t.type, labels=list(t.labels), model=routed,
                     # Per-task `agent:` wins; else fall back to the run-level
                     # --implementer (cfg.implementer); else None -> claude.
                     agent=(t.agent or cfg.implementer), blocked_by=list(t.blocked_by),
@@ -1802,6 +1821,9 @@ def _append_fix_tasks(cfg: RunConfig, accepted: list[dict], review_round: int) -
                 "type": "Task",
                 "labels": ["size:S", "area:fix"],
                 "agent": "claude",
+                # Synthesized fixes are review-finding remediations on code
+                # that already passed gates once — High tier for model routing.
+                "risk": "High",
             })
             added += 1
         doc["tasks"] = rows

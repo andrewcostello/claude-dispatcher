@@ -36,6 +36,31 @@ tasks:
     labels: [size:S, area:dispatcher]
     agent: claude
 
+    status: Done
+    started_at: '2026-07-08T03:12:17-07:00'
+    dispatcher_run_id: endpoint-agents-20260708
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/endpoint-agents-20260708/EPA-1/summary.md
+    branch: feat/EPA-1-implement-endpoint-agents-resolve-endpoint
+    cost_usd: 6.149920000000001
+    completed_at: '2026-07-08T03:24:17-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    final_quality_score: 23
+    human_gate_fired: false
+    deferred_findings_count: 3
+    pr_not_raised_reason: 'dispatcher owns integration for this run (pushes branch and raises PR against the run-level feature branch per run instructions). Branch `feat/EPA-1-implement-endpoint-agents-resolve-endpoint` has 1 commit (`56ca2c1 feat(agents): [EPA-1] implement resolve_endpoint_agent body-fill`), working tree clean, ready to push.'
+    mechanical_verification: passed
+    verified: true
+    verification_iterations: 0
+    input_tokens: 14762
+    output_tokens: 10993
+    cache_read_input_tokens: 823511
+    cache_creation_input_tokens: 56515
+    duration_ms: 584065
+    num_turns: 19
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.204 (Claude Code)
   - key: EPA-2
     summary: "implement endpoint_agents.build_endpoint_env + un-skip its contract tests"
     description: |
@@ -53,6 +78,30 @@ tasks:
     labels: [size:S, area:dispatcher]
     agent: claude
 
+    status: Done
+    started_at: '2026-07-08T03:12:17-07:00'
+    dispatcher_run_id: endpoint-agents-20260708
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/endpoint-agents-20260708/EPA-2/summary.md
+    branch: feat/EPA-2-implement-endpoint-agents-build-endpoint
+    cost_usd: 2.9585589999999997
+    completed_at: '2026-07-08T03:16:42-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 1
+    pr_not_raised_reason: dispatcher-mode task — dispatcher pushes the branch and raises the
+    mechanical_verification: passed
+    verified: true
+    verification_iterations: 0
+    input_tokens: 14625
+    output_tokens: 6794
+    cache_read_input_tokens: 509918
+    cache_creation_input_tokens: 42952
+    duration_ms: 158269
+    num_turns: 15
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.204 (Claude Code)
   - key: EPA-3
     summary: "implement spawn.spawn_endpoint_agent body + un-skip its contract tests"
     description: |
@@ -74,7 +123,32 @@ tasks:
     labels: [size:M, area:dispatcher]
     agent: claude
     blockedBy: [EPA-1, EPA-2]
+    status: Done
+    started_at: '2026-07-08T03:24:17-07:00'
+    dispatcher_run_id: endpoint-agents-20260708
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/endpoint-agents-20260708/EPA-3/summary.md
 
+    branch: feat/EPA-3-implement-spawn-spawn-endpoint-agent
+    cost_usd: 10.1148405
+    completed_at: '2026-07-08T03:44:28-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    final_quality_score: 20
+    human_gate_fired: false
+    deferred_findings_count: 5
+    pr_not_raised_reason: dispatcher integrates (per run instructions — dispatcher pushes the branch and raises the PR against the run-level feature branch).
+    mechanical_verification: passed
+    verified: true
+    verification_iterations: 0
+    input_tokens: 14764
+    output_tokens: 14203
+    cache_read_input_tokens: 971484
+    cache_creation_input_tokens: 128915
+    duration_ms: 1061123
+    num_turns: 20
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.204 (Claude Code)
   - key: EPA-4
     summary: "implement endpoint_agents.endpoint_doctor_report + un-skip its contract tests"
     description: |
@@ -92,6 +166,30 @@ tasks:
     labels: [size:XS, area:dispatcher]
     agent: claude
 
+    status: Done
+    started_at: '2026-07-08T03:16:42-07:00'
+    dispatcher_run_id: endpoint-agents-20260708
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/endpoint-agents-20260708/EPA-4/summary.md
+    branch: feat/EPA-4-implement-endpoint-agents-endpoint-doctor
+    cost_usd: 2.691761
+    completed_at: '2026-07-08T03:22:41-07:00'
+    iteration_count: 1
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 1
+    pr_not_raised_reason: dispatcher integrates — branch committed locally (1 commit on feat/EPA-4-implement-endpoint-agents-endpoint-doctor); dispatcher pushes and raises the PR against the run-level feature branch.
+    mechanical_verification: passed
+    verified: true
+    verification_iterations: 0
+    input_tokens: 14762
+    output_tokens: 5593
+    cache_read_input_tokens: 725425
+    cache_creation_input_tokens: 41904
+    duration_ms: 266806
+    num_turns: 18
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.204 (Claude Code)
   - key: EPA-5
     summary: "wire endpoint readiness into `dispatcher doctor` + optional live probe"
     description: |

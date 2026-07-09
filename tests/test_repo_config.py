@@ -298,3 +298,45 @@ def test_integration_bool_rejected(tmp_path: Path) -> None:
     _write(tmp_path, "integration: true\n")
     with pytest.raises(RepoConfigError):
         repo_config.load(tmp_path)
+
+
+# --- model_routing ------------------------------------------------------------
+
+
+def test_model_routing_parsed_and_resolves(tmp_path):
+    p = tmp_path / ".dispatcher.yaml"
+    p.write_text(
+        "model_routing:\n"
+        "  Critical: claude-fable-5\n"
+        "  high: claude-opus-4-8\n"
+        "  default: claude-sonnet-5\n",
+        encoding="utf-8",
+    )
+    cfg = repo_config.load(tmp_path)
+    assert cfg.routed_model("Critical") == "claude-fable-5"
+    assert cfg.routed_model("CRITICAL") == "claude-fable-5"   # case-insensitive
+    assert cfg.routed_model("High") == "claude-opus-4-8"
+    assert cfg.routed_model("Medium") == "claude-sonnet-5"    # falls to default
+    assert cfg.routed_model(None) == "claude-sonnet-5"
+    assert "model_routing" not in cfg.unknown_keys
+
+
+def test_model_routing_absent_inherits(tmp_path):
+    p = tmp_path / ".dispatcher.yaml"
+    p.write_text("test: 'true'\n", encoding="utf-8")
+    cfg = repo_config.load(tmp_path)
+    assert cfg.routed_model("Critical") is None   # inherit CLI default
+
+
+def test_model_routing_rejects_non_mapping(tmp_path):
+    (tmp_path / ".dispatcher.yaml").write_text(
+        "model_routing: [a, b]\n", encoding="utf-8")
+    with pytest.raises(repo_config.RepoConfigError):
+        repo_config.load(tmp_path)
+
+
+def test_model_routing_rejects_blank_model(tmp_path):
+    (tmp_path / ".dispatcher.yaml").write_text(
+        "model_routing:\n  high: ''\n", encoding="utf-8")
+    with pytest.raises(repo_config.RepoConfigError):
+        repo_config.load(tmp_path)
