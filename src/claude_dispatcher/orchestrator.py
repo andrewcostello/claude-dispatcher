@@ -937,6 +937,16 @@ def _run_task(
             fail_reason = f"session_exit_code_{result.exit_code}"
             continue
         if not result.summary_path.exists():
+            # Chronic class: the session did the work (commits exist) but
+            # ended without writing summary.md — league-P1 hit this 9x, all
+            # recovered by a re-spawn that only wrote the summary. Recover
+            # with a micro summary-writer spawn instead of blocking; a
+            # genuinely workless session (no commits) still fails through.
+            if _recover_missing_summary(
+                    cfg, snap, wt, repo_root, summary_path,
+                    base_sha_before, feat_baseline_sha, env, log_path):
+                used_agent = attempt_agent
+                break
             fail_reason = "summary_missing"
             continue
         used_agent = attempt_agent
@@ -2741,6 +2751,84 @@ _PUSH_RETRY_PR_STEP = """\
    `gh pr create --base {base_branch} --head {branch}` (fill in a title/body
    consistent with the summary file).
 """
+
+
+_SUMMARY_RECOVERY_PROMPT = """\
+SUMMARY-RECOVERY SPAWN (dispatcher Tasker contract, report-only).
+A prior session completed implementation work for the task below in this
+worktree but ended WITHOUT writing its summary file — that is the ONLY gap.
+Do NOT write code, do NOT commit, do NOT rework anything.
+
+Read `.claude/workflow/roles/tasker.md` Phase 5 for the summary format, then
+reconstruct what happened from the branch itself:
+- `git log --stat {base_branch}..HEAD` shows what landed
+- read key changed files only if the log alone is ambiguous
+
+Write the summary to {summary_path} with the correct **Status:** line
+(`Done` if the committed work fulfils the task, `Blocked` with an
+escalation reason if it clearly does not). Writing that file is your only
+deliverable.
+
+Task:
+- Key:     {task_key}
+- Summary: {task_summary}
+
+Description:
+{task_description}
+"""
+
+
+def _recover_missing_summary(cfg: RunConfig, snap: TaskSnapshot,
+                             wt: wt_mod.Worktree, repo_root: Path,
+                             summary_path: Path,
+                             base_sha_before: str | None,
+                             feat_baseline_sha: str | None,
+                             env: dict, log_path: Path) -> bool:
+    """Micro summary-writer recovery for the summary_missing chronic class.
+
+    Fires only when the branch has real commits (work happened, the report
+    didn't). Spawns a bounded write-the-summary-only session on the task's
+    routed model. Returns True iff summary_path exists afterwards; the
+    caller then proceeds through the normal parse/verify gates, so this
+    grants a report, never a waiver.
+    """
+    if not _has_commits_on_branch(
+            wt, cfg.base_branch, repo_root,
+            base_sha_before, log_path, snap.key,
+            feat_baseline_sha=feat_baseline_sha):
+        return False
+    _log(log_path, f"  {snap.key} summary missing but branch has commits — "
+                   f"spawning summary-writer recovery")
+    prompt = _SUMMARY_RECOVERY_PROMPT.format(
+        base_branch=cfg.base_branch,
+        summary_path=summary_path,
+        task_key=snap.key,
+        task_summary=snap.summary,
+        task_description=snap.description,
+    )
+    extra = list(cfg.claude_extra_args)
+    if snap.model:
+        extra.extend(["--model", snap.model])
+    try:
+        result = spawn_mod.spawn_agent(
+            agent=snap.agent,
+            claude_bin=cfg.claude_bin, cwd=wt.path, env=env, prompt=prompt,
+            extra_args=extra,
+            timeout_seconds=min(cfg.task_timeout_seconds, 900),
+        )
+    except Exception as e:
+        _log(log_path, f"  {snap.key} summary-recovery spawn failed: {e}")
+        return False
+    _log(log_path,
+         f"  {snap.key} summary-recovery exited code={result.exit_code}")
+    _account_spawn(cfg, snap.key, result, kind="summary-recovery")
+    recovered = summary_path.exists()
+    _emit_event(cfg, journal_mod.EventType.commit_retry, {
+        "trigger": "summary_missing with commits on branch",
+        "outcome": "summary_written" if recovered else "still_missing",
+        "kind": "summary-recovery",
+    }, task_key=snap.key)
+    return recovered
 
 
 def _retry_for_commit(cfg: RunConfig, snap: TaskSnapshot, wt: wt_mod.Worktree,

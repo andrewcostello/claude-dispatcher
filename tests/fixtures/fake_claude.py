@@ -34,6 +34,10 @@ def _harness_path(name: str) -> Path:
 SCENARIOS = {
     "done": "Done",
     "done-no-commit": "Done",        # Done but skip the git commit step
+    "summary-skip-then-recover": "Done",   # first run commits, writes NO
+                                     # summary; second (recovery) writes it
+    "no-commit-no-summary": "Done",  # neither commits nor writes a summary
+                                     # (recovery must NOT fire; hard block)
     "done-commit-retry": "Done",     # Done; first run skips commit, second commits
     "done-direct-to-base": "Done",   # Done; commits on feat/X AND FF-merges into
                                      # base_branch (BSA-style direct-to-base
@@ -88,7 +92,8 @@ def main() -> int:
     # here BEFORE the Tasker simulation (commit/summary side effects) and emit
     # a verdict directly. Default VERIFIED; FAKE_CLAUDE_VERIFIER_VERDICT=
     # INCOMPLETE drives the gap-and-iterate path for subprocess-level e2e tests.
-    if "adopt the Tasker role" not in prompt:
+    if ("adopt the Tasker role" not in prompt
+            and "SUMMARY-RECOVERY SPAWN" not in prompt):
         import json
         verdict = os.environ.get("FAKE_CLAUDE_VERIFIER_VERDICT", "VERIFIED").upper()
         if verdict == "INCOMPLETE":
@@ -257,6 +262,20 @@ def main() -> int:
             _do_commit()  # second invocation = the retry; commit this time
         else:
             sentinel.write_text("first invocation skipped commit\n", encoding="utf-8")
+    elif scenario == "summary-skip-then-recover":
+        sentinel = _harness_path(f".fake-claude-nosummary-{task_key}")
+        if not sentinel.exists():
+            # First invocation: do the work, "forget" the summary.
+            sentinel.write_text("first invocation skipped summary\n",
+                                encoding="utf-8")
+            _do_commit()
+            return 0
+        # Second invocation = the summary-recovery spawn: per its prompt it
+        # writes ONLY the summary (no commit); fall through to the writer.
+    elif scenario == "no-commit-no-summary":
+        # Workless session that also reports nothing — the recovery guard
+        # (commits-on-branch) must decline and the task must hard-block.
+        return 0
     elif scenario == "done-direct-to-base":
         # base_branch defaults to "main" in the test fixture; allow
         # override via env for parity with other tests.

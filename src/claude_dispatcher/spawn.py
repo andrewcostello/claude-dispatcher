@@ -104,10 +104,14 @@ request. The dispatcher pushes your branch and raises the PR (against the
 run-level feature branch) for you — if you open one yourself it lands against
 the wrong base (the repo default branch) as a duplicate that has to be closed.
 
-When you finish the session (Done, Blocked, or Escalated) write the summary file
-to $SUMMARY_PATH in the format documented in tasker.md Phase 5. Do not print the
-summary as a separate message — write it to the file only. After writing the
-file the session is complete.
+SUMMARY CONTRACT (the single most common dispatch failure is skipping this):
+BEFORE starting the work, create $SUMMARY_PATH with the tasker.md Phase 5
+skeleton and `**Status:** Blocked` as a placeholder. Update it as you work and
+finalize it (Done, Blocked, or Escalated) as your LAST action. A session that
+ends without a parseable summary blocks the whole task and burns a retry —
+writing the skeleton first makes that impossible. Do not print the summary as
+a chat message — write it to the file only. After finalizing the file the
+session is complete.
 """
 
 
