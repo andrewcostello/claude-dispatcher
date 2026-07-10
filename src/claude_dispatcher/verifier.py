@@ -482,6 +482,7 @@ def run_verifier(
     summary_text: str,
     claude_bin: str = "claude",
     timeout_seconds: int = DEFAULT_VERIFIER_TIMEOUT_SECONDS,
+    model: str | None = None,
 ) -> VerifierResult:
     """Spawn an independent claude verifier over one task's diff + summary.
 
@@ -511,13 +512,20 @@ def run_verifier(
 
     try:
         prompt = build_verifier_prompt(task, diff, summary_text)
+        # Without an explicit --model the spawn inherits the operator's CLI
+        # session default — the exact "default cascades into headless
+        # spawns" cost leak tier routing exists to prevent. Callers pass the
+        # task's routed model; None preserves the legacy inherit behavior.
+        argv = [
+            claude_bin, "--print",
+            "--output-format", "json",
+            "--permission-mode", "bypassPermissions",
+            "--allow-dangerously-skip-permissions",
+        ]
+        if model:
+            argv.extend(["--model", model])
         proc = subprocess.run(
-            [
-                claude_bin, "--print",
-                "--output-format", "json",
-                "--permission-mode", "bypassPermissions",
-                "--allow-dangerously-skip-permissions",
-            ],
+            argv,
             input=prompt,
             capture_output=True,
             text=True,
