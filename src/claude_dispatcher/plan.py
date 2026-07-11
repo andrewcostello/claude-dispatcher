@@ -168,7 +168,7 @@ def load_tasks(doc: Any) -> list[Task]:
                 description=str(row["description"]),
                 type=str(row["type"]),
                 labels=labels,
-                blocked_by=_as_str_list(row.get("blockedBy")),
+                blocked_by=_dependency_list(row, idx, key),
                 status=str(row.get("status", TODO)),
                 raw=row,
                 model=model,
@@ -199,6 +199,28 @@ def feature_prd(doc: Any) -> str | None:
         )
     stripped = val.strip()
     return stripped or None
+
+
+# Accepted spellings for the dependency field. `blockedBy` is canonical;
+# the aliases exist because a silently-ignored misspelling voids a whole
+# worklist's ordering (partner-hub Stage B, 2026-07-10: `depends_on` parsed
+# as nothing, a dependent dispatched against a Blocked dependency's absent
+# code and had to be killed mid-spawn). Unknown near-misses are an ERROR,
+# never a no-op.
+_DEP_FIELD_CANONICAL = "blockedBy"
+_DEP_FIELD_ALIASES = ("blockedBy", "blocked_by", "depends_on", "dependsOn")
+
+
+def _dependency_list(row: dict, idx: int, key: str) -> list[str]:
+    present = [f for f in _DEP_FIELD_ALIASES if row.get(f) is not None]
+    if len(present) > 1:
+        raise ValidationError(
+            f"tasks[{idx}] ({key}) sets {' and '.join(present)}; "
+            f"use only {_DEP_FIELD_CANONICAL!r}"
+        )
+    if not present:
+        return []
+    return _as_str_list(row.get(present[0]))
 
 
 def _validate_blocked_by(tasks: list[Task]) -> None:
