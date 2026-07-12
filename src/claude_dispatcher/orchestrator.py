@@ -929,6 +929,11 @@ def _run_task(
             result = None
             continue
         _log(log_path, f"  {snap.key} spawn exited code={result.exit_code}")
+        if result.exit_code != 0 and (result.stderr or result.stdout):
+            # A dead spawn's last words are the only diagnostic; PH-12's
+            # grok spawn failed opaquely (2026-07-12) with nothing logged.
+            tail = ((result.stderr or "") + "\n" + (result.stdout or "")).strip()[-600:]
+            _log(log_path, f"  {snap.key} spawn output tail: {tail}")
         # Spawn-completion event: carries the per-task usage/cost payload parsed
         # from the CLI's JSON output. Accounted for EVERY attempt (each real
         # spawn has a real cost), before any fallback/block branch, so a task
