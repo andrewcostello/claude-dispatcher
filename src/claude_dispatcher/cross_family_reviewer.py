@@ -72,7 +72,7 @@ DEFAULT_REVIEWER_TIMEOUT_SECONDS = 600
 # limits. Real BSA diffs land at ~300-2000 lines; 8000 lines is the safety
 # bound. Above that we truncate with a marker. Tickets larger than this
 # should be split anyway.
-MAX_DIFF_LINES = 8000
+MAX_DIFF_LINES = 24000  # raised from 8000 (2026-07-12): real epics exceed 8k after generated-file exclusion; modern models hold 24k diff lines comfortably
 
 
 # --- public dataclasses -----------------------------------------------------
