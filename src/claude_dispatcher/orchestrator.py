@@ -251,6 +251,8 @@ class TaskSnapshot:
     model: str | None = None
     # Per-task implementer agent (claude/codex/grok/gemini); None -> claude.
     agent: str | None = None
+    # Per-task reasoning-effort knob (codex/grok only; claude/gemini ignore).
+    effort: str | None = None
     # blockedBy dependency keys, in declaration order. Used at worker start to
     # merge each dependency's branch into this task's fresh worktree branch
     # when the dependency's commits are not yet on base (INT-4).
@@ -917,6 +919,7 @@ def _run_task(
                 env=env,
                 prompt=prompt,
                 model=attempt_model,
+                effort=(snap.effort if attempt_agent == fallback_chain[0] else None),
                 extra_args=list(cfg.claude_extra_args),
                 timeout_seconds=cfg.task_timeout_seconds,
             )
@@ -1744,6 +1747,7 @@ def _dispatch_drain(
                     # Per-task `agent:` wins; else fall back to the run-level
                     # --implementer (cfg.implementer); else None -> claude.
                     agent=(t.agent or cfg.implementer), blocked_by=list(t.blocked_by),
+                    effort=(str(t.raw.get("effort")) if t.raw.get("effort") else None),
                 )
                 _mark_in_progress(cfg, snap, run_dir)
                 fut = exe.submit(_run_task, snap, cfg, run_dir, log_path, repo_root)
