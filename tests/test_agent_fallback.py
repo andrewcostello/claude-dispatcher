@@ -118,7 +118,7 @@ def test_fallback_to_claude_when_primary_stops(repo: Path, monkeypatch) -> None:
     calls: list[str] = []
 
     def fake_spawn_agent(*, agent, claude_bin, cwd, env, prompt,
-                         model=None, extra_args=None, timeout_seconds=3600):
+                         model=None, effort=None, extra_args=None, timeout_seconds=3600):
         calls.append(agent)
         sp = Path(env["SUMMARY_PATH"])
         sp.parent.mkdir(parents=True, exist_ok=True)
@@ -156,7 +156,7 @@ def test_no_fallback_after_claude_blocks(repo: Path, monkeypatch) -> None:
     calls: list[str] = []
 
     def always_stop(*, agent, claude_bin, cwd, env, prompt,
-                    model=None, extra_args=None, timeout_seconds=3600):
+                    model=None, effort=None, extra_args=None, timeout_seconds=3600):
         calls.append(agent)
         sp = Path(env["SUMMARY_PATH"])
         sp.parent.mkdir(parents=True, exist_ok=True)
