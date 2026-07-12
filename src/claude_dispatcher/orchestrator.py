@@ -2188,11 +2188,12 @@ def _run_llm_verifier(
         summary_text=summary_text,
         claude_bin=cfg.claude_bin,
         timeout_seconds=cfg.verifier_timeout_seconds,
-        # Route the verifier to the task's routed model. snap.model already
-        # carries explicit-row-model-or-tier-routing; without this the spawn
-        # inherits the operator's CLI default (observed: a Medium/sonnet task
-        # verified on fable because the session default leaked in).
-        model=snap.model,
+        # Route the verifier to the task's routed model — but ONLY for
+        # claude-family implementers. The verifier is always a claude spawn;
+        # a cross-family row's model (e.g. grok-4.5) fed to the claude CLI
+        # dies instantly with a model error (PH-12, 2026-07-12). Cross-family
+        # rows fall back to the CLI default for verification.
+        model=(snap.model if (snap.agent or "claude") == "claude" else None),
     )
 
     # Cost folding for the per-spawn journal rollup. The verifier IS a claude
