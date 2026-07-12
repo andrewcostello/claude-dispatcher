@@ -527,6 +527,26 @@ def build_review_prompt(
     )
 
 
+# Generated artifacts excluded from review/verify diffs. They are never the
+# review target, and on proto-heavy tasks they consumed the entire truncated
+# diff window: PR-2/PR-3/PH-7/PH-10 (2026-07-12) each false-blocked
+# verification_incomplete with real code "absent from the provided diff"
+# while thousands of pb.go/connect/sqlc lines filled the cap. Reviewers who
+# need generated output can read it in the worktree.
+DIFF_EXCLUDE_PATHSPECS = [
+    ":(exclude)*.pb.go",
+    ":(exclude)**/*.pb.go",
+    ":(exclude)**/*_grpc.pb.go",
+    ":(exclude)**/*connect/*.connect.go",
+    ":(exclude)**/*_pb.ts",
+    ":(exclude)**/*_connect.ts",
+    ":(exclude)**/db/sqlc/**",
+    ":(exclude)package-lock.json",
+    ":(exclude)**/go.sum",
+    ":(exclude)**/*.swagger.json",
+]
+
+
 def collect_diff(
     *,
     repo_root: Path,
@@ -542,7 +562,7 @@ def collect_diff(
     cross-merge differences".
     """
     proc = subprocess.run(
-        ["git", "diff", f"{base_branch}...{branch}"],
+        ["git", "diff", f"{base_branch}...{branch}", "--"] + DIFF_EXCLUDE_PATHSPECS,
         cwd=str(repo_root),
         capture_output=True,
         text=True,
@@ -553,7 +573,7 @@ def collect_diff(
         # Fall back to .. (two-dot) — useful when fork point is broken
         # (e.g., a brand new orphan branch).
         proc = subprocess.run(
-            ["git", "diff", f"{base_branch}..{branch}"],
+            ["git", "diff", f"{base_branch}..{branch}", "--"] + DIFF_EXCLUDE_PATHSPECS,
             cwd=str(repo_root),
             capture_output=True,
             text=True,
