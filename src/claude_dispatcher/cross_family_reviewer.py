@@ -542,6 +542,7 @@ DIFF_EXCLUDE_PATHSPECS = [
     ":(exclude)**/*_connect.ts",
     ":(exclude)**/db/sqlc/**",
     ":(exclude)package-lock.json",
+    ":(exclude)go.sum",
     ":(exclude)**/go.sum",
     ":(exclude)**/*.swagger.json",
 ]
