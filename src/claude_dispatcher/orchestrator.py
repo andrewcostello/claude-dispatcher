@@ -1406,9 +1406,12 @@ def _run_task(
             row["num_turns"] = u.num_turns
         if u.model is not None:
             row["model"] = u.model
-        # Agent/version provenance (OPS-4): agent, dispatcher_version, and —
-        # when the once-per-run capture succeeded — agent_version.
-        row.update(_agent_meta(cfg))
+        # Agent/version provenance (OPS-4): actual implementer family, not a
+        # hard-coded "claude" string (Grok/codex/gemini dogfood depends on this).
+        row.update(_agent_meta(cfg, agent=snap.agent or cfg.implementer))
+        # Prefer the snap's agent when already stamped (cascade may have updated it).
+        if snap.agent:
+            row["agent"] = snap.agent
 
     _mutate_row(cfg, snap.batch_keys, _apply)
 
@@ -1433,12 +1436,12 @@ def _run_task(
             "auto_integrate_status": integrate_result.status
                 if integrate_result else None,
             "needs_push": needs_push,
-            **_agent_meta(cfg),
+            **_agent_meta(cfg, agent=snap.agent or cfg.implementer),
         }, task_key=snap.key)
     else:
         _emit_event(cfg, journal_mod.EventType.task_blocked, {
             "reason": final_blocked_reason or "blocked",
-            **_agent_meta(cfg),
+            **_agent_meta(cfg, agent=snap.agent or cfg.implementer),
         }, task_key=snap.key)
 
     # If the final status is Blocked (panel block, auto-integrate fail,
@@ -3579,12 +3582,25 @@ def _mark_blocked(cfg: RunConfig, task_key: str | list[str], *, reason: str) -> 
 # --- misc helpers -----------------------------------------------------------
 
 
-def _agent_meta(cfg: RunConfig) -> dict[str, Any]:
+def _agent_meta(
+    cfg: RunConfig,
+    *,
+    agent: str | None = None,
+) -> dict[str, Any]:
     """Agent/version provenance stamped on every terminal row + terminal
     journal event (OPS-4). `agent_version` is OMITTED (not None) when the
-    once-per-run capture failed — degrade-to-absent, never write null."""
+    once-per-run capture failed — degrade-to-absent, never write null.
+
+    Prefer the actual implementer family (``agent=`` / snap.agent /
+    cfg.implementer) over the legacy hard-coded Claude name.
+    """
+    family = (
+        agent
+        or getattr(cfg, "implementer", None)
+        or spawn_mod.AGENT_NAME
+    )
     meta: dict[str, Any] = {
-        "agent": spawn_mod.AGENT_NAME,
+        "agent": family,
         "dispatcher_version": __version__,
     }
     if cfg.agent_version:
