@@ -215,3 +215,57 @@ def test_panel_should_run_honors_task_full():
     )
     snap = _snap(labels=["size:M"], panel="full")
     assert orchestrator._panel_should_run(cfg, snap) is True
+
+
+def test_design_recommendation_parses_from_claude_json_envelope():
+    """First live design run regression: the worker couldn't write its file
+    and the fallback parsed the raw `--output-format json` envelope, so every
+    Recommendation field came back None. The fallback must unwrap `result`."""
+    import json as _json
+
+    from claude_dispatcher import design as design_mod
+
+    message = (
+        "# D-1 design\n\n## Designs\n### Design A\nstuff\n\n"
+        "## Recommendation\n"
+        "- selected: A\n"
+        "- verify: mechanical\n"
+        "- panel: never\n"
+        "- rationale: verbatim spec\n"
+    )
+    envelope = _json.dumps({"type": "result", "result": message,
+                            "total_cost_usd": 1.0})
+    rec = design_mod.parse_design_recommendation(
+        design_mod._unwrap_json_envelope(envelope))
+    assert rec.selected == "A"
+    assert rec.verify == "mechanical"
+    assert rec.panel == "never"
+
+
+def test_design_spawn_receives_run_extra_args(tmp_path, monkeypatch):
+    """The design worker must inherit the run's permission-bypass flags —
+    without them a headless claude session has no write access at all."""
+    from claude_dispatcher import design as design_mod
+    from claude_dispatcher import spawn as spawn_mod
+
+    seen = {}
+
+    def fake_spawn_agent(*, agent, cwd, env, prompt, claude_bin="claude",
+                         model=None, effort=None, extra_args=None,
+                         timeout_seconds=3600):
+        seen["extra_args"] = list(extra_args or [])
+        sp = Path(env["SUMMARY_PATH"])
+        sp.parent.mkdir(parents=True, exist_ok=True)
+        sp.write_text("## Recommendation\n- selected: A\n", encoding="utf-8")
+        return spawn_mod.SpawnResult(
+            exit_code=0, summary_path=sp, stdout="", stderr="")
+
+    monkeypatch.setattr(spawn_mod, "spawn_agent", fake_spawn_agent)
+    design_mod.run_design(
+        agent="claude", cwd=tmp_path,
+        env={"SUMMARY_PATH": str(tmp_path / "runs" / "summary.md"),
+             "TASK_KEY": "D-1"},
+        task_key="D-1", task_summary="s", task_description="d", labels=[],
+        extra_args=["--permission-mode", "bypassPermissions"],
+    )
+    assert seen["extra_args"] == ["--permission-mode", "bypassPermissions"]
