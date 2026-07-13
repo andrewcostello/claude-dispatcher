@@ -1,0 +1,96 @@
+# Batch-grouping smoke: two co-runnable XS docs tasks sharing a batch_id must
+# run as ONE work unit (one worktree, one implementer session, combined
+# prompt, both rows Done together). Validates _take_batch_group end to end.
+prd: features/grok-dogfood/PRD.md
+project: claude-dispatcher
+epic: batch-smoke
+
+tasks:
+  - key: BATCH-SMOKE-1
+    summary: "Write docs/dogfood/BATCH_SMOKE_A.md marker (batch member A)"
+    description: |
+      Create the file docs/dogfood/BATCH_SMOKE_A.md with:
+
+      # Batch smoke A
+      - member: A
+      - note: written in the shared batch session
+
+      Acceptance:
+        - docs/dogfood/BATCH_SMOKE_A.md exists
+        - contains the string "Batch smoke A"
+
+      Out of scope: any Python source changes; running or modifying tests.
+    type: Task
+    estimate: 5m
+    labels: [size:XS, area:docs, dogfood, smoke, batch]
+    verify: mechanical
+    panel: never
+    batch_id: batch-smoke-pair
+
+    status: Done
+    started_at: '2026-07-13T15:55:02-07:00'
+    dispatcher_run_id: batch-smoke-20260713a
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/batch-smoke-20260713a/BATCH-SMOKE-1/summary.md
+    branch: feat/BATCH-SMOKE-1-batch-batch-smoke-pair-write
+    cost_usd: 1.4139995
+    completed_at: '2026-07-13T15:57:03-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    mechanical_verification: passed
+    verified: true
+    verification_iterations: 0
+    input_tokens: 8
+    output_tokens: 1795
+    cache_read_input_tokens: 122563
+    cache_creation_input_tokens: 23468
+    duration_ms: 42212
+    num_turns: 6
+    model: claude-fable-5
+    agent: claude
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.207 (Claude Code)
+  - key: BATCH-SMOKE-2
+    summary: "Write docs/dogfood/BATCH_SMOKE_B.md marker (batch member B)"
+    description: |
+      Create the file docs/dogfood/BATCH_SMOKE_B.md with:
+
+      # Batch smoke B
+      - member: B
+      - note: written in the shared batch session
+
+      Acceptance:
+        - docs/dogfood/BATCH_SMOKE_B.md exists
+        - contains the string "Batch smoke B"
+
+      Out of scope: any Python source changes; running or modifying tests.
+    type: Task
+    estimate: 5m
+    labels: [size:XS, area:docs, dogfood, smoke, batch]
+    verify: mechanical
+    panel: never
+    batch_id: batch-smoke-pair
+    status: Done
+    started_at: '2026-07-13T15:55:02-07:00'
+    dispatcher_run_id: batch-smoke-20260713a
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/batch-smoke-20260713a/BATCH-SMOKE-1/summary.md
+    branch: feat/BATCH-SMOKE-1-batch-batch-smoke-pair-write
+    completed_at: '2026-07-13T15:57:03-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    mechanical_verification: passed
+    verified: true
+    verification_iterations: 0
+    input_tokens: 8
+    output_tokens: 1795
+    cache_read_input_tokens: 122563
+    cache_creation_input_tokens: 23468
+    duration_ms: 42212
+    num_turns: 6
+    model: claude-fable-5
+    agent: claude
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.207 (Claude Code)
