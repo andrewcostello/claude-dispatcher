@@ -104,3 +104,17 @@ Key deltas proven live vs the 2026-07-13 morning smokes:
 2. `--no-claude`/`--implementer` provenance stamps the implementer's own CLI
    version (was: Claude's version on grok rows via the resume/version-capture
    divergence).
+
+## Batch + design smokes (2026-07-13, post PR #56/#59, pipx binary)
+
+| Field | Batch smoke | Design smoke |
+|-------|-------------|--------------|
+| Run ID | `batch-smoke-20260713a` | `design-smoke-20260713a` |
+| Feature | `_take_batch_group` (2 tasks, one `batch_id`) | `--enable-design-stage` + `design: true` |
+| Status | **Both rows Done** (one session/branch/PR #60) | **Done** (PR #61) |
+| Mechanical gate | passed | passed |
+| Cost | $1.41 (billed to primary row only) | $3.06 ($1.46 design + $0.76 impl + $0.85 push-retry) |
+| Notes | both markers in one commit; combined prompt executed both | design spawn journaled `spawn_kind=design`; recommendation parse empty (format follow-up) |
+
+Follow-ups surfaced: design-worker Recommendation block format compliance
+(parser got verify/panel/selected = None); one push-retry on the design run.
