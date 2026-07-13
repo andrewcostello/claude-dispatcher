@@ -5,47 +5,29 @@ project: claude-dispatcher
 epic: grok-smoke
 
 tasks:
-  - key: DOG-SMOKE-1
-    summary: "Write docs/dogfood/SMOKE.md proving Grok implementer ran"
-    description: |
-      Create or update the file docs/dogfood/SMOKE.md with:
+- key: DOG-SMOKE-1
+  summary: "Write docs/dogfood/SMOKE.md proving Grok implementer ran"
+  description: |
+    Create or update the file docs/dogfood/SMOKE.md with:
 
-      # Grok smoke
-      - agent: grok
-      - mode: unattended --no-claude
-      - date: (today's ISO date UTC is fine)
-      - note: written by the dispatcher implementer worker
+    # Grok smoke
+    - agent: grok
+    - mode: unattended --no-claude
+    - date: (today's ISO date UTC is fine)
+    - note: written by the dispatcher implementer worker
 
-      Acceptance:
-        - docs/dogfood/SMOKE.md exists
-        - contains the string "Grok smoke"
-        - contains the string "no-claude"
+    Acceptance:
+      - docs/dogfood/SMOKE.md exists
+      - contains the string "Grok smoke"
+      - contains the string "no-claude"
 
-      Out of scope:
-        - any Python source changes
-        - running or modifying tests (mechanical gate will still run the suite)
-    type: Task
-    estimate: 5m
-    labels: [size:XS, area:docs, dogfood, smoke]
-    agent: claude
-    verify: mechanical
-    panel: never
-    status: Done
-    started_at: '2026-07-12T23:06:09-07:00'
-    dispatcher_run_id: dogfood-smoke-20260713T060608Z
-    summary_path: /Users/andrewcostello/Projects/claude-dispatcher/docs/runs/dogfood-smoke-20260713T060608Z/DOG-SMOKE-1/summary.md
-    branch: feat/DOG-SMOKE-1-write-docs-dogfood-smoke-md
-    completed_at: '2026-07-12T23:09:21-07:00'
-    iteration_count: 0
-    linter_cycles: 0
-    human_gate_fired: false
-    deferred_findings_count: 0
-    mechanical_verification: passed
-    needs_push: true
-    input_tokens: 20599
-    output_tokens: 833
-    cache_read_input_tokens: 81664
-    num_turns: 4
-    model: grok
-    dispatcher_version: 0.1.0
-    agent_version: 2.1.207 (Claude Code)
+    Out of scope:
+      - any Python source changes
+      - running or modifying tests (mechanical gate will still run the suite)
+  type: Task
+  estimate: 5m
+  labels: [size:XS, area:docs, dogfood, smoke]
+  agent: grok
+  verify: mechanical
+  panel: never
+  status: To Do
