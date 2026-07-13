@@ -481,6 +481,7 @@ def run_verifier(
     diff: str,
     summary_text: str,
     claude_bin: str = "claude",
+    model: str | None = None,
     timeout_seconds: int = DEFAULT_VERIFIER_TIMEOUT_SECONDS,
 ) -> VerifierResult:
     """Spawn an independent claude verifier over one task's diff + summary.
@@ -511,13 +512,16 @@ def run_verifier(
 
     try:
         prompt = build_verifier_prompt(task, diff, summary_text)
+        cmd = [
+            claude_bin, "--print",
+            "--output-format", "json",
+            "--permission-mode", "bypassPermissions",
+            "--allow-dangerously-skip-permissions",
+        ]
+        if model:
+            cmd.extend(["--model", model])
         proc = subprocess.run(
-            [
-                claude_bin, "--print",
-                "--output-format", "json",
-                "--permission-mode", "bypassPermissions",
-                "--allow-dangerously-skip-permissions",
-            ],
+            cmd,
             input=prompt,
             capture_output=True,
             text=True,

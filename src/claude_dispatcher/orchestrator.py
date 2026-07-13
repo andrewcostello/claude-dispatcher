@@ -153,6 +153,7 @@ class RunConfig:
     # EACH verifier spawn.
     max_verify_iterations: int = 2
     skip_verification: bool = False
+    verifier_model: str | None = None
     verifier_timeout_seconds: int = verifier_mod.DEFAULT_VERIFIER_TIMEOUT_SECONDS
     # If True, after each Tasker reports Done with commits on its feat
     # branch, the dispatcher attempts to merge that branch into base_branch
@@ -1346,7 +1347,7 @@ def _panel_should_run(cfg: RunConfig, snap: TaskSnapshot) -> bool:
         if snap.type and snap.type.lower() in cfr_mod._PANEL_SKIP_TYPES:
             return False
         return True
-    # "auto" — risk-tier gating
+    # "auto" or "progressive" — risk-tier gating
     return cfr_mod.panel_required(snap.labels, task_type=snap.type)
 
 
@@ -1388,6 +1389,52 @@ def _run_cross_family_panel(
     except (OSError, FileNotFoundError) as e:
         _log(log_path, f"  {snap.key} panel: summary.md read failed: {e}")
 
+    reviewers = [r for r in _panel_reviewer_factory(cfg)
+                 if r.family != (snap.agent or "claude")]
+    advisory_reviewers = _panel_advisory_reviewer_factory(
+        cfg, repo_root, log_path, snap.key,
+    )
+
+    if cfg.cross_family_panel == "progressive":
+        # Codex was identified in retroactive reports as the fastest and most rigorous blocker.
+        codex_revs = [r for r in reviewers if r.family == "codex"]
+        other_revs = [r for r in reviewers if r.family != "codex"]
+        if codex_revs:
+            _log(log_path, f"  {snap.key} panel: progressive mode, running codex first")
+            codex_verdict = cfr_mod.run_panel(
+                ticket_key=snap.key,
+                ticket_summary=snap.summary,
+                summary_md=summary_md,
+                diff=diff,
+                branch=diff_branch,
+                base_branch=diff_base,
+                reviewers=codex_revs,
+                advisory_reviewers=[], # skip advisory for the first stage
+                log=lambda m: _log(log_path, m),
+            )
+            
+            # If codex finds ANY blocking finding, we short circuit and return block.
+            if codex_verdict.consensus == "block" or any(f for r in codex_verdict.reviewers for f in r.blocking_findings()):
+                codex_verdict.consensus = "block"
+                codex_verdict.summary += " (Progressive short-circuit on Codex block)"
+                return codex_verdict
+            
+            _log(log_path, f"  {snap.key} panel: codex approved, running remainder")
+            # If it approves, run the others and aggregate
+            other_verdict = cfr_mod.run_panel(
+                ticket_key=snap.key,
+                ticket_summary=snap.summary,
+                summary_md=summary_md,
+                diff=diff,
+                branch=diff_branch,
+                base_branch=diff_base,
+                reviewers=other_revs,
+                advisory_reviewers=advisory_reviewers,
+                log=lambda m: _log(log_path, m),
+            )
+            combined_reviewers = codex_verdict.reviewers + other_verdict.reviewers
+            return cfr_mod.aggregate(combined_reviewers, other_verdict.advisory)
+
     return cfr_mod.run_panel(
         ticket_key=snap.key,
         ticket_summary=snap.summary,
@@ -1395,15 +1442,8 @@ def _run_cross_family_panel(
         diff=diff,
         branch=diff_branch,
         base_branch=diff_base,
-        # Exclude the author's own family from its jury — cross-family review
-        # means a DIFFERENT family judges. The author self-reviewing (and
-        # self-flagging) is circular and drives false corroboration blocks on
-        # gemini/codex-authored tasks (the bake-off already excludes the author).
-        reviewers=[r for r in _panel_reviewer_factory(cfg)
-                   if r.family != (snap.agent or "claude")],
-        advisory_reviewers=_panel_advisory_reviewer_factory(
-            cfg, repo_root, log_path, snap.key,
-        ),
+        reviewers=reviewers,
+        advisory_reviewers=advisory_reviewers,
         log=lambda m: _log(log_path, m),
     )
 
@@ -2010,6 +2050,31 @@ def _run_llm_verifier(
     diff = cfr_mod.collect_diff(
         repo_root=repo_root, base_branch=diff_base, branch=diff_branch,
     )
+    
+    if not diff.strip():
+        _log(log_path, f"  {snap.key} verifier: empty diff, short-circuiting to INCOMPLETE")
+        _emit_event(cfg, journal_mod.EventType.task_spawn_finished,
+                    {"spawn_kind": "verifier", "cost_usd": 0.0, "duration_ms": 0}, task_key=snap.key)
+        _emit_event(cfg, journal_mod.EventType.verification_verdict, {
+            "verdict": "INCOMPLETE",
+            "gaps": 1,
+            "iteration": iteration,
+            "reason": None,
+            "error": None,
+            "cost_usd": 0.0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "duration_seconds": 0.0,
+        }, task_key=snap.key)
+        return verifier_mod.VerifierResult(
+            verdict=verifier_mod.VerifierVerdict(
+                verdict=verifier_mod.VerdictKind.INCOMPLETE,
+                gaps=[verifier_mod.Gap(index=1, location=None, description="No code changes committed vs base branch.")],
+            ),
+            usage=spawn_mod.SpawnUsage(cost_usd=0.0),
+            duration_seconds=0.0,
+        )
+
     summary_text = ""
     try:
         summary_text = summary_path.read_text(encoding="utf-8")
@@ -2029,6 +2094,7 @@ def _run_llm_verifier(
         diff=diff,
         summary_text=summary_text,
         claude_bin=cfg.claude_bin,
+        model=cfg.verifier_model,
         timeout_seconds=cfg.verifier_timeout_seconds,
     )
 

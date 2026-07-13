@@ -176,9 +176,11 @@ def build_parser() -> argparse.ArgumentParser:
             "and re-verify — up to N times before marking the task Blocked "
             "with reason verification_incomplete (default: 2). Distinct from "
             "--cross-family-panel-iterate; the verifier runs first. Each "
-            "iteration is one Tasker re-spawn + one mechanical re-run + one "
-            "verifier re-spawn."
         ),
+    )
+    run.add_argument(
+        "--verifier-model",
+        help="Model to use for the LLM verification gate",
     )
     run.add_argument(
         "--skip-verification",
@@ -313,7 +315,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument(
         "--cross-family-panel",
-        choices=["auto", "always", "never"],
+        choices=["auto", "always", "never", "progressive"],
         default="auto",
         help=(
             "Cross-family reviewer panel: after each Tasker reports Done, "
