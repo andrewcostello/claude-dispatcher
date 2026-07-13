@@ -184,7 +184,6 @@ def build_verifier_prompt(
     a prefix, not the whole change.
     """
     labels = task.get("labels") or []
-    diff = GENERATED_EXCLUSION_NOTICE + diff
     diff_lines = diff.splitlines()
     if len(diff_lines) > max_diff_lines:
         head = "\n".join(diff_lines[:max_diff_lines])
@@ -192,6 +191,9 @@ def build_verifier_prompt(
             f"{head}\n\n... [diff truncated at {max_diff_lines} lines "
             f"of {len(diff_lines)} total] ..."
         )
+    # After truncation so the notice never eats diff budget or skews the
+    # truncation marker's line accounting.
+    diff = GENERATED_EXCLUSION_NOTICE + diff
     return _load_prompt().format(
         task_key=str(task.get("key") or "unknown"),
         task_summary=str(task.get("summary") or ""),
