@@ -154,6 +154,20 @@ def _load_prompt() -> str:
     return path.read_text(encoding="utf-8")
 
 
+
+# Injected into every verifier prompt: the diff DELIBERATELY excludes
+# generated artifacts (cross_family_reviewer.DIFF_EXCLUDE_PATHSPECS), so
+# their absence is never evidence of missing work — the mechanical gate
+# compiles against them. Without this notice the verifier false-blocks
+# proto tasks for "absent" pb.go (CH-CRUD, 2026-07-13).
+GENERATED_EXCLUSION_NOTICE = (
+    "NOTE: this diff deliberately EXCLUDES generated artifacts "
+    "(*.pb.go, *_grpc.pb.go, *connect Go packages, *_pb.ts, sqlc output, "
+    "lockfiles). Their absence from the diff is BY DESIGN and must never "
+    "be reported as a gap; the mechanical test gate already compiled the "
+    "task against them. Judge only hand-written code.\n\n"
+)
+
 def build_verifier_prompt(
     task: Mapping,
     diff: str,
@@ -170,6 +184,7 @@ def build_verifier_prompt(
     a prefix, not the whole change.
     """
     labels = task.get("labels") or []
+    diff = GENERATED_EXCLUSION_NOTICE + diff
     diff_lines = diff.splitlines()
     if len(diff_lines) > max_diff_lines:
         head = "\n".join(diff_lines[:max_diff_lines])
