@@ -91,5 +91,12 @@
       "dispatcher_run_id": "fixture-run",
       "journal": null
     }
+  ],
+  "needs_attention": [
+    {
+      "key": "SMOKE-D",
+      "reason": "spawn_failed: boom",
+      "summary": "Task that failed to spawn"
+    }
   ]
 }

@@ -48,8 +48,11 @@ def test_build_config_no_claude_defaults():
     assert cfg.no_claude is True
     assert cfg.implementer == "grok"
     assert cfg.cascade_terminal == "grok"
-    assert cfg.skip_verification is True
+    assert cfg.verifier_agent == "grok"
+    assert cfg.design_agent == "grok"
     assert cfg.haiku_summary is False
+    # LLM verifier stays available via grok — not force-skipped
+    assert cfg.skip_verification is False
 
 
 def test_parse_grok_usage_object():
@@ -153,6 +156,43 @@ def test_design_required_critical_and_leaf():
         ["size:M"], description="Introduce a new contract for X",
     ) is True
     assert ql.design_required(["size:M"], task_design=False) is False
+
+
+def test_parse_design_recommendation():
+    from claude_dispatcher import design as design_mod
+    text = """
+## Designs
+### Design A
+do a
+
+### Design B
+do b
+
+## Recommendation
+- selected: A
+- verify: llm_strict
+- panel: full
+- rationale: safer
+"""
+    rec = design_mod.parse_design_recommendation(text)
+    assert rec.selected == "A"
+    assert rec.verify == "llm_strict"
+    assert rec.panel == "full"
+
+
+def test_routing_defaults():
+    from claude_dispatcher import routing as routing_mod
+    assert routing_mod.default_implementer(["size:XS"], no_claude=True) == "grok"
+    assert routing_mod.default_implementer(["size:XS"]) == "claude"
+    assert routing_mod.default_implementer(
+        ["size:XS"], cheap_first=True,
+    ) == "grok"
+    assert routing_mod.default_implementer(
+        ["size:L", "security"], cheap_first=True,
+    ) == "claude"
+    assert routing_mod.default_implementer(
+        ["size:L"], run_implementer="codex",
+    ) == "codex"
 
 
 def test_panel_should_run_honors_task_full():

@@ -24,4 +24,9 @@ test: |
 panel:
   advisory: [grok]
 
+# Fleet defaults (Phase 7): leave implementer unpinned in YAML for routing.py
+# cheap-first (grok on leaves; claude on hard). Dogfood: --no-claude.
+# implementer: grok   # optional repo pin
+# cascade.terminal is CLI-only today (--cascade-terminal / --no-claude)
+
 # Dogfood: dispatcher run … --no-claude

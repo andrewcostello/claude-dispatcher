@@ -96,6 +96,9 @@ class Task:
     # floors / run defaults / design recommendations.
     verify: str | None = None
     panel: str | None = None
+    # Optional design-stage pin (Phase 5). True/False force on/off; None →
+    # design_required() heuristics.
+    design: bool | None = None
 
     @property
     def size_label(self) -> str | None:
@@ -207,6 +210,23 @@ def load_tasks(doc: Any) -> list[Task]:
                 f"tasks[{idx}] ({key}) has unknown panel {panel!r}; "
                 f"must be one of {', '.join(sorted(KNOWN_PANEL))}"
             )
+        design_raw = row.get("design")
+        design: bool | None
+        if design_raw is None or design_raw == "":
+            design = None
+        elif isinstance(design_raw, bool):
+            design = design_raw
+        else:
+            s = str(design_raw).strip().lower()
+            if s in ("true", "yes", "1", "on"):
+                design = True
+            elif s in ("false", "no", "0", "off"):
+                design = False
+            else:
+                raise ValidationError(
+                    f"tasks[{idx}] ({key}) has unknown design {design_raw!r}; "
+                    f"must be true/false"
+                )
         tasks.append(
             Task(
                 key=key,
@@ -223,6 +243,7 @@ def load_tasks(doc: Any) -> list[Task]:
                 batch_id=batch_id,
                 verify=verify,
                 panel=panel,
+                design=design,
             )
         )
 

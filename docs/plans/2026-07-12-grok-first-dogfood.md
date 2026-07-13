@@ -613,11 +613,11 @@ Session C — Phase 4–5 quality + design stage
 - [x] Phase 2: --no-claude / cascade-terminal / preflight / grok usage parse / fake_grok
 - [x] **Unattended smoke with real Grok** — `dogfood-smoke-20260713T061016Z` Done; see `docs/dogfood/SMOKE_RESULTS.md`
 - [x] Phase 3: dogfood tasks expanded (DOG-0/2/4); operator runbook updated (live dogfood loop still operator-driven)
-- [x] Phase 4: per-task `verify`/`panel` fields + `quality_levels` resolution + gate wiring (Grok LLM verifier still TODO)
-- [x] Phase 5: `design_required()` heuristics (full design stage spawn still TODO)
-- [x] Phase 6: `dispatcher watch` (status `needs_attention` still TODO)
-- [ ] Phase 7: routing defaults
-- [ ] Phase 8: workflow package dual-runtime
+- [x] Phase 4: per-task `verify`/`panel` + `quality_levels` + **Grok LLM verifier** (`--verifier-agent`) + panel without Claude under `--no-claude`
+- [x] Phase 5: `design_required()` + **design stage** (`--enable-design-stage`, parse Recommendation → levels)
+- [x] Phase 6: `dispatcher watch` + status JSON **`needs_attention`**
+- [x] Phase 7: `routing.py` + `--cheap-first` / `--no-claude` routing defaults
+- [x] Phase 8: `claude-workflow` dual-runtime (`implementer.md`, Tasker interactive-only notes)
 
 ---
 

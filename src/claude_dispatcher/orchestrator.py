@@ -42,8 +42,10 @@ from . import plan as plan_mod
 from . import pr as pr_mod
 from . import preflight as preflight_mod
 from . import push_verify as pv_mod
+from . import design as design_mod
 from . import quality_levels as ql_mod
 from . import repo_config as repo_config_mod
+from . import routing as routing_mod
 from . import spawn as spawn_mod
 from . import summary as summary_mod
 from . import verifier as verifier_mod
@@ -116,9 +118,18 @@ class RunConfig:
     # (dogfood / no-Claude fleets). Never append a rung after this family.
     cascade_terminal: str = "claude"
     # When True: no Claude binary required; default implementer grok; cascade
-    # terminal grok; haiku off; LLM verification skipped (mechanical still runs)
-    # unless a later phase provides a non-Claude verifier.
+    # terminal grok; haiku off; LLM verifier uses grok (not Claude).
     no_claude: bool = False
+    # Which family runs the LLM verifier (claude|grok). Default claude;
+    # --no-claude sets grok.
+    verifier_agent: str = "claude"
+    # Which family runs the optional design stage (claude|grok).
+    design_agent: str = "claude"
+    # When True, run design stage for tasks matching design_required().
+    # Opt-in (default False) so hermetic tests never spawn a design worker.
+    enable_design_stage: bool = False
+    # When True, unpinned tasks use routing.cheap_first (grok leaves, claude hard).
+    cheap_first: bool = False
     claude_extra_args: list[str] = field(default_factory=list)
     base_branch: str = "main"
     # Integration mode (PRF-1). "branch" (default) forks each task worktree
@@ -263,6 +274,12 @@ class TaskSnapshot:
     # Per-task quality intensity (Phase 4); None → resolve at gate time.
     verify: str | None = None
     panel: str | None = None
+    # Explicit design stage pin (True/False); None → design_required heuristics.
+    design: bool | None = None
+    # Design-stage recommendations applied when task verify/panel unset.
+    design_verify: str | None = None
+    design_panel: str | None = None
+    design_spec: str | None = None
     # blockedBy dependency keys, in declaration order. Used at worker start to
     # merge each dependency's branch into this task's fresh worktree branch
     # when the dependency's commits are not yet on base (INT-4).
@@ -872,6 +889,42 @@ def _run_task(
     # for the direct-to-base workflow (see _has_commits_on_branch).
     base_sha_before = _branch_sha(repo_root, cfg.base_branch, log_path, snap.key)
 
+    # --- Design stage (Phase 5) ---------------------------------------------
+    if (
+        getattr(cfg, "enable_design_stage", True)
+        and not cfg.skip_design
+        and ql_mod.design_required(
+            snap.labels,
+            task_design=snap.design,
+            blocked_by_count=len(snap.blocked_by or []),
+            description=snap.description or "",
+        )
+    ):
+        design_agent = getattr(cfg, "design_agent", "claude") or "claude"
+        if cfg.no_claude and design_agent == "claude":
+            design_agent = "grok"
+        rec = design_mod.run_design(
+            agent=design_agent,
+            cwd=wt.path,
+            env=env,
+            task_key=snap.key,
+            task_summary=snap.summary,
+            task_description=snap.description,
+            labels=list(snap.labels or []),
+            timeout_seconds=min(cfg.task_timeout_seconds, 900),
+            claude_bin=cfg.claude_bin,
+            log=lambda m: _log(log_path, m),
+        )
+        snap = replace(
+            snap,
+            design_verify=rec.verify,
+            design_panel=rec.panel,
+            design_spec=rec.raw[:12000] if rec.raw else None,
+        )
+        _log(log_path,
+             f"  {snap.key} design done: verify={rec.verify} panel={rec.panel} "
+             f"selected={rec.selected}")
+
     # Spawn + quality cascade (docs/agent-routing-policy.md):
     #   (agent, effort) rungs — bump effort before switching models; claude is
     #   the terminal closer. Escalate on spawn death OR quality failure
@@ -922,12 +975,18 @@ def _run_task(
                 except OSError:
                     pass
 
+        desc = snap.description or ""
+        if snap.design_spec:
+            desc = (
+                f"{desc}\n\n### Approved Design Spec\n\n"
+                f"{snap.design_spec[:8000]}\n"
+            )
         prompt = spawn_mod.build_prompt(
             task_key=snap.key,
             task_summary=snap.summary,
             task_type=snap.type,
             task_labels=snap.labels,
-            task_description=snap.description,
+            task_description=desc,
             branch=wt.branch,
             summary_path=summary_path,
             run_id=cfg.run_id,
@@ -1084,8 +1143,6 @@ def _run_task(
                 reason = "skeleton task (intentional stubs/skipped tests)"
             elif snap.verify in ("none", "mechanical"):
                 reason = f"task verify={snap.verify}"
-            elif cfg.no_claude:
-                reason = "--no-claude (LLM verifier requires Claude until Phase 4 grok verifier)"
             elif cfg.skip_verification:
                 reason = "--skip-verification"
             else:
@@ -1096,11 +1153,18 @@ def _run_task(
             _log(log_path,
                  f"  {snap.key} LLM verification skipped ({reason})")
         else:
-            vout = _verify_llm_and_maybe_iterate(
-                cfg=cfg, snap=snap, wt=wt, repo_root=repo_root,
-                summary_path=summary_path, env=env, log_path=log_path,
-                base_sha_before=base_sha_before,
-            )
+            # llm_strict: allow one extra incomplete iterate.
+            saved_max = cfg.max_verify_iterations
+            if qlevels.verify == "llm_strict":
+                cfg.max_verify_iterations = max(saved_max, saved_max + 1)
+            try:
+                vout = _verify_llm_and_maybe_iterate(
+                    cfg=cfg, snap=snap, wt=wt, repo_root=repo_root,
+                    summary_path=summary_path, env=env, log_path=log_path,
+                    base_sha_before=base_sha_before,
+                )
+            finally:
+                cfg.max_verify_iterations = saved_max
             verified = vout.verified
             verification_iterations = vout.iterations
             verification_detail = vout.detail
@@ -1472,13 +1536,13 @@ def _resolved_quality(cfg: RunConfig, snap: TaskSnapshot) -> ql_mod.QualityLevel
     run_panel = (cfg.cross_family_panel or "auto").lower()
     if run_panel not in ql_mod.KNOWN_PANEL:
         run_panel = "auto"
-    run_verify = "mechanical" if (
-        getattr(cfg, "skip_verification", False) or getattr(cfg, "no_claude", False)
-    ) else "llm"
+    run_verify = "mechanical" if getattr(cfg, "skip_verification", False) else "llm"
     return ql_mod.resolve_quality_levels(
         labels=snap.labels,
         task_verify=snap.verify,
         task_panel=snap.panel,
+        design_verify=snap.design_verify,
+        design_panel=snap.design_panel,
         run_verify=run_verify,
         run_panel=run_panel,
     )
@@ -1547,6 +1611,10 @@ def _run_cross_family_panel(
 
     reviewers = [r for r in _panel_reviewer_factory(cfg)
                  if r.family != (snap.agent or "claude")]
+    # Per-task panel: single → keep one available seat.
+    levels = _resolved_quality(cfg, snap)
+    if levels.panel == "single" and reviewers:
+        reviewers = reviewers[:1]
     advisory_reviewers = _panel_advisory_reviewer_factory(
         cfg, repo_root, log_path, snap.key,
     )
@@ -1788,12 +1856,16 @@ def _dispatch_drain(
                 runnable = []  # stop starting new work; drain in-flight
             while runnable and len(in_flight) < cfg.max_parallel:
                 t = runnable.pop(0)
+                agent = t.agent or routing_mod.default_implementer(
+                    t.labels,
+                    run_implementer=cfg.implementer,
+                    no_claude=cfg.no_claude,
+                    cheap_first=getattr(cfg, "cheap_first", False),
+                )
                 snap = TaskSnapshot(
                     key=t.key, summary=t.summary, description=t.description,
                     type=t.type, labels=list(t.labels), model=t.model,
-                    # Per-task `agent:` wins; else fall back to the run-level
-                    # --implementer (cfg.implementer); else None -> claude.
-                    agent=(t.agent or cfg.implementer),
+                    agent=agent,
                     effort=t.effort,
                     batch_id=t.batch_id,
                     # Until full batch grouping is wired, every task is its
@@ -1801,6 +1873,7 @@ def _dispatch_drain(
                     batch_keys=[t.key],
                     verify=t.verify,
                     panel=t.panel,
+                    design=t.design if hasattr(t, "design") else None,
                     blocked_by=list(t.blocked_by),
                 )
                 _mark_in_progress(cfg, snap, run_dir)
@@ -2253,6 +2326,7 @@ def _run_llm_verifier(
         "description": snap.description,
     }
     runner = _verifier_run_override or verifier_mod.run_verifier
+    v_agent = getattr(cfg, "verifier_agent", "claude") or "claude"
     result = runner(
         task=task_row,
         diff=diff,
@@ -2260,6 +2334,7 @@ def _run_llm_verifier(
         claude_bin=cfg.claude_bin,
         model=cfg.verifier_model,
         timeout_seconds=cfg.verifier_timeout_seconds,
+        agent=v_agent,
     )
 
     # Cost folding for the per-spawn journal rollup. The verifier IS a claude
@@ -2436,8 +2511,14 @@ def set_panel_reviewers(reviewers: list[cfr_mod.Reviewer] | None) -> None:
 
 def _panel_reviewer_factory(cfg: RunConfig) -> list[cfr_mod.Reviewer]:
     if _panel_reviewers_override is not None:
-        return _panel_reviewers_override
-    return cfr_mod.default_reviewers(timeout_seconds=cfg.cross_family_panel_timeout)
+        revs = list(_panel_reviewers_override)
+    else:
+        revs = list(cfr_mod.default_reviewers(
+            timeout_seconds=cfg.cross_family_panel_timeout))
+    # --no-claude: drop Claude seat from the authoritative panel.
+    if getattr(cfg, "no_claude", False):
+        revs = [r for r in revs if getattr(r, "family", None) != "claude"]
+    return revs
 
 
 # Test hook for ADVISORY (probationary, non-blocking) reviewers, mirroring
@@ -3623,23 +3704,36 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
     skip_verification = getattr(args, "skip_verification", False)
     haiku_summary = getattr(args, "haiku_summary", False)
     cross_family_panel = getattr(args, "cross_family_panel", "auto")
+    verifier_agent = getattr(args, "verifier_agent", None)
+    design_agent = getattr(args, "design_agent", None)
+    enable_design = bool(getattr(args, "enable_design_stage", False))
+    cheap_first = bool(getattr(args, "cheap_first", False))
     if no_claude:
         # Dogfood / Grok-only fleet: never require or escalate to Claude.
         if not implementer:
             implementer = "grok"
         if not cascade_terminal:
             cascade_terminal = "grok"
-        skip_verification = True  # LLM verifier is Claude-only until Phase 4
+        if not verifier_agent:
+            verifier_agent = "grok"
+        if not design_agent:
+            design_agent = "grok"
         haiku_summary = False
-        if cross_family_panel == "auto":
-            # Prefer never for early dogfood unless user forced always/full.
-            # Callers can still pass --cross-family-panel always.
-            pass
     if not cascade_terminal:
         cascade_terminal = "claude"
     cascade_terminal = str(cascade_terminal).strip().lower()
     if cascade_terminal not in ("claude", "grok"):
         cascade_terminal = "claude"
+    if not verifier_agent:
+        verifier_agent = "claude"
+    verifier_agent = str(verifier_agent).strip().lower()
+    if verifier_agent not in ("claude", "grok"):
+        verifier_agent = "claude"
+    if not design_agent:
+        design_agent = "claude" if not no_claude else "grok"
+    design_agent = str(design_agent).strip().lower()
+    if design_agent not in ("claude", "grok", "codex", "gemini"):
+        design_agent = "grok" if no_claude else "claude"
     return RunConfig(
         tasks_path=Path(args.tasks_yaml).resolve(),
         runs_dir=Path(args.runs_dir).resolve(),
@@ -3659,6 +3753,10 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
         implementer=implementer,
         cascade_terminal=cascade_terminal,
         no_claude=no_claude,
+        verifier_agent=verifier_agent,
+        design_agent=design_agent,
+        enable_design_stage=bool(enable_design),
+        cheap_first=cheap_first or no_claude,
         claude_extra_args=extra.split() if extra else [],
         base_branch=cli_base if cli_base else "main",
         # Integration mode (PRF-1). A fresh CLI run carries the raw --integration

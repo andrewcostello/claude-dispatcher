@@ -483,14 +483,14 @@ def run_verifier(
     claude_bin: str = "claude",
     model: str | None = None,
     timeout_seconds: int = DEFAULT_VERIFIER_TIMEOUT_SECONDS,
+    agent: str = "claude",
+    grok_bin: str = "grok",
 ) -> VerifierResult:
-    """Spawn an independent claude verifier over one task's diff + summary.
+    """Spawn an independent verifier over one task's diff + summary.
 
-    Uses the same flag set as the dispatcher's Tasker spawn and the panel's
-    ClaudeReviewer: `--print --output-format json --permission-mode
-    bypassPermissions --allow-dangerously-skip-permissions`. The verifier
-    needs no tool use beyond reading the prompt, but the bypass flags
-    prevent any incidental tool-permission prompt from stalling stdin.
+    ``agent`` is ``claude`` (default) or ``grok``. Claude uses
+    ``--print --output-format json`` with permission bypass flags. Grok uses
+    headless ``--always-approve --output-format json --prompt-file``.
 
     Never raises. Conservative contract: a spawn or parse failure is never
     VERIFIED. CLI missing / timeout / nonzero exit / any other exception
@@ -500,6 +500,7 @@ def run_verifier(
     None, gaps populated).
     """
     start = time.monotonic()
+    agent = (agent or "claude").strip().lower()
 
     def _spawn_failed(message: str) -> VerifierResult:
         return VerifierResult(
@@ -512,6 +513,15 @@ def run_verifier(
 
     try:
         prompt = build_verifier_prompt(task, diff, summary_text)
+        if agent == "grok":
+            return _run_grok_verifier(
+                prompt=prompt,
+                grok_bin=grok_bin,
+                model=model,
+                timeout_seconds=timeout_seconds,
+                start=start,
+                spawn_failed=_spawn_failed,
+            )
         cmd = [
             claude_bin, "--print",
             "--output-format", "json",
@@ -543,6 +553,66 @@ def run_verifier(
     usage = parse_usage_from_json(proc.stdout)
     # Unwrap the JSON envelope; fall back to raw stdout (parse_verdict is
     # tolerant and conservatively yields INCOMPLETE on anything unparseable).
+    message = _extract_message(proc.stdout) or proc.stdout
+    return VerifierResult(
+        verdict=parse_verdict(message),
+        usage=usage,
+        duration_seconds=time.monotonic() - start,
+    )
+
+
+def _run_grok_verifier(
+    *,
+    prompt: str,
+    grok_bin: str,
+    model: str | None,
+    timeout_seconds: int,
+    start: float,
+    spawn_failed,
+) -> VerifierResult:
+    """Headless grok path for the verifier worker."""
+    import tempfile
+    from .spawn import parse_grok_usage
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".md", prefix="verifier-grok-", delete=False,
+        ) as tf:
+            tf.write(prompt)
+            prompt_path = Path(tf.name)
+        cmd = [
+            grok_bin, "--always-approve",
+            "--output-format", "json",
+            "--prompt-file", str(prompt_path),
+        ]
+        if model:
+            cmd.extend(["--model", model])
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_seconds,
+            stdin=subprocess.DEVNULL,
+        )
+    except FileNotFoundError as e:
+        return spawn_failed(f"cli not found: {e}")
+    except subprocess.TimeoutExpired:
+        return spawn_failed(f"cli timed out after {timeout_seconds}s")
+    except Exception as e:
+        return spawn_failed(f"cli invocation raised: {e}")
+    finally:
+        try:
+            prompt_path.unlink(missing_ok=True)  # type: ignore[name-defined]
+        except Exception:
+            pass
+
+    if proc.returncode != 0:
+        return spawn_failed(
+            f"grok exit={proc.returncode}: {proc.stderr.strip()[-400:]}"
+        )
+
+    usage = parse_grok_usage(proc.stdout)
     message = _extract_message(proc.stdout) or proc.stdout
     return VerifierResult(
         verdict=parse_verdict(message),

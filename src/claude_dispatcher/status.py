@@ -292,6 +292,23 @@ def build_status(
 
     liveness = _liveness(run_dir, events, now)
 
+    # Operator attention surface (Phase 6): blocked / needs_push / in-flight
+    # long enough to stall — used by Grok operator loops without YAML scrape.
+    needs_attention: list[dict[str, Any]] = []
+    for e in task_entries:
+        if e["status"] in (plan_mod.BLOCKED, plan_mod.ESCALATED):
+            needs_attention.append({
+                "key": e["key"],
+                "reason": e.get("blocked_reason") or e["status"],
+                "summary": e.get("summary"),
+            })
+        elif e.get("needs_push"):
+            needs_attention.append({
+                "key": e["key"],
+                "reason": "needs_push",
+                "summary": e.get("summary"),
+            })
+
     result: dict[str, Any] = {
         "run_id": run_id,
         "tasks_yaml": str(yaml_path),
@@ -310,6 +327,7 @@ def build_status(
             "run_cost_usd": round(cost_total, 6) if tasks_billed else None,
             "tasks_billed": tasks_billed,
         },
+        "needs_attention": needs_attention,
         "tasks": task_entries,
     })
     return result

@@ -255,9 +255,39 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help=(
             "Grok-only fleet mode: default implementer=grok, cascade-terminal=grok, "
-            "skip LLM verification (Claude-only today), disable haiku summaries, "
+            "verifier_agent=grok, design_agent=grok, disable haiku summaries, "
             "and preflight without requiring the claude binary. Per-task "
             "`agent: claude` still allowed if you explicitly pin it."
+        ),
+    )
+    run.add_argument(
+        "--verifier-agent",
+        choices=["claude", "grok"],
+        default=None,
+        help="Family that runs the LLM verifier (default: claude; grok under --no-claude).",
+    )
+    run.add_argument(
+        "--design-agent",
+        choices=["claude", "grok", "codex", "gemini"],
+        default=None,
+        help="Family that runs the optional design stage (default: claude; grok under --no-claude).",
+    )
+    run.add_argument(
+        "--enable-design-stage",
+        action="store_true",
+        default=False,
+        help=(
+            "Run the pre-implement design stage when design_required() matches "
+            "(Critical/High/sometimes Medium). Off by default."
+        ),
+    )
+    run.add_argument(
+        "--cheap-first",
+        action="store_true",
+        default=False,
+        help=(
+            "Route unpinned tasks cheap-first (grok on leaves/medium; claude on "
+            "HARD). Implied by --no-claude. Default without this flag: claude."
         ),
     )
     run.add_argument(
