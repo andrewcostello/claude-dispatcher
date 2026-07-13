@@ -1,0 +1,34 @@
+# Minimal unattended smoke for real Claude (default path, no --no-claude).
+# Proves the thin implementer brief (not Tasker) still works under dispatcher run.
+prd: features/grok-dogfood/PRD.md
+project: claude-dispatcher
+epic: claude-smoke
+
+tasks:
+  - key: DOG-CLAUDE-SMOKE-1
+    summary: "Write docs/dogfood/CLAUDE_SMOKE.md proving Claude implementer ran"
+    description: |
+      Create or update the file docs/dogfood/CLAUDE_SMOKE.md with:
+
+      # Claude smoke
+      - agent: claude
+      - mode: unattended (no --no-claude)
+      - date: (today's ISO date UTC is fine)
+      - note: written by the dispatcher implementer worker (thin brief, not Tasker)
+
+      Acceptance:
+        - docs/dogfood/CLAUDE_SMOKE.md exists
+        - contains the string "Claude smoke"
+        - contains the string "not Tasker"
+
+      Out of scope:
+        - any Python source changes
+        - running or modifying tests (mechanical gate will still run the suite)
+        - adopting Tasker / opening PRs / running panel yourself
+    type: Task
+    estimate: 5m
+    labels: [size:XS, area:docs, dogfood, smoke, claude]
+    agent: claude
+    verify: mechanical
+    panel: never
+    status: To Do

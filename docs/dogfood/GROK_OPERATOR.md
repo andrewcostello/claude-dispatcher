@@ -72,6 +72,29 @@ Optional knobs (Phases 4–7):
   --cross-family-panel auto
 ```
 
+## Claude regression smoke (thin implementer, not Tasker)
+
+Before merging this branch to `main`, prove the **default Claude path** still
+works under the single-orchestrator brief (no Tasker, no `--no-claude`):
+
+```bash
+RUN_ID="claude-smoke-$(date -u +%Y%m%dT%H%M%SZ)"
+
+.venv/bin/dispatcher run features/grok-dogfood/claude-smoke.yaml \
+  --mode unattended \
+  --cross-family-panel never \
+  --max-parallel 1 \
+  --base-branch dogfood/grok-first \
+  --worktree-base "$(pwd)/worktrees-dogfood" \
+  --runs-dir docs/runs \
+  --run-id "$RUN_ID" \
+  --claude-extra-args '--permission-mode bypassPermissions --allow-dangerously-skip-permissions'
+```
+
+Expect: task **Done**, `agent: claude` provenance, mechanical gate passed,
+`docs/dogfood/CLAUDE_SMOKE.md` on the task branch. Record in
+`docs/dogfood/SMOKE_RESULTS.md`.
+
 ## Monitor
 
 ```bash
