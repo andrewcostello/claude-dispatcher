@@ -277,10 +277,14 @@ def execute(args: argparse.Namespace) -> int:
     completion (some Blocked/Escalated), 2 on validation error.
     """
     cfg = _build_config(args)
-    # Capture the agent CLI version exactly once per run (OPS-4). Failure
-    # degrades to None (capture_agent_version never raises) and the
-    # provenance field is simply omitted from terminal rows/events.
-    cfg.agent_version = spawn_mod.capture_agent_version(cfg.claude_bin)
+    # Capture the primary implementer CLI version exactly once per run (OPS-4).
+    # Under --no-claude, probe grok (or the chosen implementer), not claude.
+    # Failure degrades to None (capture never raises).
+    version_bin = cfg.claude_bin
+    if cfg.no_claude:
+        impl = (cfg.implementer or "grok").strip().lower()
+        version_bin = {"gemini": "agy"}.get(impl, impl)
+    cfg.agent_version = spawn_mod.capture_agent_version(version_bin)
     doc = yaml_io.load(cfg.tasks_path)
     try:
         plan_mod.load_tasks(doc)  # validate
