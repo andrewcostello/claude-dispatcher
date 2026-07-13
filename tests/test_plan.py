@@ -272,3 +272,27 @@ def test_filter_tasks_by_only() -> None:
     tasks = plan.load_tasks(doc)
     filtered = plan.filter_tasks(tasks, None, only_keys=["B"])
     assert [t.key for t in filtered] == ["B"]
+
+
+def _dep_alias_doc(b_row_extra: dict) -> dict:
+    base = {"summary": "s", "description": "d", "type": "Story",
+            "labels": ["size:S", "type:component"]}
+    return {"tasks": [
+        {"key": "A", **base},
+        {"key": "B", **base, **b_row_extra},
+    ]}
+
+
+def test_dependency_field_aliases_accepted():
+    """depends_on / blocked_by / dependsOn parse as blockedBy — a silently
+    ignored spelling voided all ordering in the partner-hub Stage B run."""
+    import claude_dispatcher.plan as plan_mod
+    tasks = plan_mod.load_tasks(_dep_alias_doc({"depends_on": ["A"]}))
+    assert next(t for t in tasks if t.key == "B").blocked_by == ["A"]
+
+
+def test_dependency_field_conflict_rejected():
+    import pytest
+    import claude_dispatcher.plan as plan_mod
+    with pytest.raises(plan_mod.ValidationError):
+        plan_mod.load_tasks(_dep_alias_doc({"blockedBy": ["A"], "depends_on": ["A"]}))

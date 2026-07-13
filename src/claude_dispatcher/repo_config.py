@@ -63,6 +63,24 @@ class RepoConfig:
     # — the orchestrator then falls back to the built-in "branch" default. The
     # `dispatcher run --integration` CLI flag always wins over this.
     integration: str | None = None
+    # Tier-based default model routing (2026-07-08): maps a task row's `risk:`
+    # value (lowercased; plus the special key "default") to a model id. Used
+    # ONLY when the row has no explicit `model:` — per-row model always wins,
+    # which is where per-task complexity judgment lives. Empty when the key is
+    # absent (the orchestrator then inherits the CLI/session default — the
+    # behavior that let an entire epic silently run on the most expensive
+    # tier, which this key exists to prevent).
+    model_routing: tuple[tuple[str, str], ...] = ()
+
+    def routed_model(self, risk: str | None) -> str | None:
+        """The configured model for ``risk`` (case-insensitive), falling back
+        to the "default" entry, else None (inherit the CLI/session default)."""
+        table = dict(self.model_routing)
+        if risk:
+            hit = table.get(str(risk).strip().lower())
+            if hit:
+                return hit
+        return table.get("default")
 
 
 def load(repo_root: str | Path) -> RepoConfig:
@@ -146,7 +164,30 @@ def load(repo_root: str | Path) -> RepoConfig:
                 f"got {integration!r}"
             )
 
-    known_top_level = ("test", "panel", "integration")
+    model_routing: tuple[tuple[str, str], ...] = ()
+    if "model_routing" in doc:
+        mr = doc.get("model_routing")
+        if not isinstance(mr, dict):
+            raise RepoConfigError(
+                f"'model_routing' in {path} must be a mapping of "
+                f"risk-tier -> model id, got {type(mr).__name__}"
+            )
+        pairs: list[tuple[str, str]] = []
+        for k, v in mr.items():
+            if not isinstance(k, str) or not k.strip():
+                raise RepoConfigError(
+                    f"'model_routing' key in {path} must be a non-empty "
+                    f"string risk tier, got {k!r}"
+                )
+            if not isinstance(v, str) or not v.strip():
+                raise RepoConfigError(
+                    f"'model_routing.{k}' in {path} must be a non-empty "
+                    f"model id string, got {v!r}"
+                )
+            pairs.append((k.strip().lower(), v.strip()))
+        model_routing = tuple(pairs)
+
+    known_top_level = ("test", "panel", "integration", "model_routing")
     unknown = tuple(sorted(
         [str(key) for key in doc if key not in known_top_level]
         + panel_unknown
@@ -156,4 +197,5 @@ def load(repo_root: str | Path) -> RepoConfig:
         unknown_keys=unknown,
         panel_advisory=panel_advisory,
         integration=integration,
+        model_routing=model_routing,
     )

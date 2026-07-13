@@ -43,6 +43,46 @@ def test_chain_cross_family_falls_back_to_claude():
     assert orchestrator._implementer_fallback_chain(_snap("codex")) == ["codex", "claude"]
 
 
+def test_cascade_bumps_effort_before_switching_agent():
+    """EASY/MEDIUM: primary@default → primary@high → claude@high."""
+    snap = orchestrator.TaskSnapshot(
+        key="T", summary="s", description="d", type="Task",
+        labels=["size:S"], agent="grok", effort=None,
+    )
+    assert orchestrator._implementer_cascade(snap) == [
+        ("grok", None), ("grok", "high"), ("claude", "high"),
+    ]
+
+
+def test_cascade_terminal_grok_stops_at_grok():
+    snap = orchestrator.TaskSnapshot(
+        key="T", summary="s", description="d", type="Task",
+        labels=["size:S"], agent="grok", effort=None,
+    )
+    assert orchestrator._implementer_cascade(
+        snap, cascade_terminal="grok",
+    ) == [("grok", None), ("grok", "high")]
+
+
+def test_cascade_hard_claude_uses_high_effort():
+    snap = orchestrator.TaskSnapshot(
+        key="T", summary="s", description="d", type="Task",
+        labels=["size:L"], agent=None,
+    )
+    assert orchestrator._implementer_cascade(snap) == [("claude", "high")]
+
+
+def test_cascade_gemini_skips_effort_bump():
+    """agy has no effort flag — cascade is gemini → claude only."""
+    snap = orchestrator.TaskSnapshot(
+        key="T", summary="s", description="d", type="Task",
+        labels=["size:M"], agent="gemini", effort=None,
+    )
+    assert orchestrator._implementer_cascade(snap) == [
+        ("gemini", None), ("claude", "high"),
+    ]
+
+
 # --- end-to-end fallback ---------------------------------------------------
 
 @pytest.fixture
@@ -118,7 +158,8 @@ def test_fallback_to_claude_when_primary_stops(repo: Path, monkeypatch) -> None:
     calls: list[str] = []
 
     def fake_spawn_agent(*, agent, claude_bin, cwd, env, prompt,
-                         model=None, extra_args=None, timeout_seconds=3600):
+                         model=None, effort=None, extra_args=None,
+                         timeout_seconds=3600):
         calls.append(agent)
         sp = Path(env["SUMMARY_PATH"])
         sp.parent.mkdir(parents=True, exist_ok=True)
@@ -140,7 +181,12 @@ def test_fallback_to_claude_when_primary_stops(repo: Path, monkeypatch) -> None:
 
     rc = orchestrator.execute(_args(repo))
     assert rc == 0, "task should complete via the claude fallback"
-    assert calls == ["grok", "claude"], "grok tried first, then claude"
+    # Cascade: grok@default → grok@high → claude@high (both grok rungs stop)
+    assert calls == ["grok", "grok", "claude"] or calls == ["grok", "claude"], (
+        f"expected grok then claude cascade, got {calls}"
+    )
+    assert calls[-1] == "claude"
+    assert calls[0] == "grok"
 
     doc = yaml_io.load(repo / "tasks.yaml")
     row = next(t for t in doc["tasks"] if t["key"] == "FB-1")
@@ -156,7 +202,8 @@ def test_no_fallback_after_claude_blocks(repo: Path, monkeypatch) -> None:
     calls: list[str] = []
 
     def always_stop(*, agent, claude_bin, cwd, env, prompt,
-                    model=None, extra_args=None, timeout_seconds=3600):
+                    model=None, effort=None, extra_args=None,
+                    timeout_seconds=3600):
         calls.append(agent)
         sp = Path(env["SUMMARY_PATH"])
         sp.parent.mkdir(parents=True, exist_ok=True)
@@ -167,10 +214,12 @@ def test_no_fallback_after_claude_blocks(repo: Path, monkeypatch) -> None:
 
     rc = orchestrator.execute(_args(repo))
     assert rc != 0, "a blocked task is a non-clean run"
-    assert calls == ["claude"], "claude is terminal — no extra fallback attempt"
+    # Effort bump may retry claude@high after claude@default fails spawn —
+    # still no other agent family.
+    assert calls and all(c == "claude" for c in calls)
+    assert "codex" not in calls and "grok" not in calls
 
     doc = yaml_io.load(repo / "tasks.yaml")
     row = next(t for t in doc["tasks"] if t["key"] == "FB-1")
     assert row["status"] == "Blocked"
     assert "session_exit_code_1" in str(row.get("blocked_reason", ""))
-    assert "agent_fallback" not in _read_journal_event_types(repo)

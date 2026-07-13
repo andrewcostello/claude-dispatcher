@@ -312,6 +312,33 @@ def test_aggregate_partial_unavailable_approves_all_unavailable_incomplete():
     assert not all_gone.is_approve
 
 
+def test_aggregate_two_seat_panel_one_unavailable_is_incomplete():
+    """Two invited seats with one UNAVAILABLE is "incomplete" — a single
+    valid review is not an auto-integrate green light (the bar collapsed
+    to 1 only lets a deliberately single-seat panel approve alone)."""
+    panel = cfr.aggregate([
+        _unavailable_verdict("gemini"),
+        _approve_verdict("codex"),
+    ])
+    assert panel.consensus == "incomplete"
+    assert not panel.is_approve
+
+
+def test_aggregate_two_seat_panel_both_valid_approves():
+    panel = cfr.aggregate([
+        _approve_verdict("gemini"),
+        _approve_verdict("codex"),
+    ])
+    assert panel.consensus == "approve"
+    assert panel.is_approve
+
+
+def test_aggregate_single_seat_panel_one_valid_approves():
+    panel = cfr.aggregate([_approve_verdict("codex")])
+    assert panel.consensus == "approve"
+    assert panel.is_approve
+
+
 def test_aggregate_critical_finding_alone_blocks_even_if_verdict_is_approve():
     # A reviewer that returns APPROVE but lists a CRITICAL finding is
     # self-contradicting — the finding wins, panel blocks.
@@ -1487,3 +1514,44 @@ def test_panel_verdict_to_dict_includes_advisory():
     d = panel.to_dict()
     assert d["advisory"][0]["family"] == "grok"
     assert d["advisory"][0]["verdict"] == "UNAVAILABLE"
+
+
+# --- lens prompts + blast-radius / implementer-prior slots --------------------
+
+
+def test_each_family_prompt_carries_its_lens() -> None:
+    lenses = {
+        "claude": "money & state integrity",
+        "gemini": "systems & seams",
+        "codex": "evidence & claims",
+        "grok": "environment & operations",
+    }
+    for fam, lens in lenses.items():
+        p = cfr.build_review_prompt(
+            family=fam, ticket_key="T", ticket_summary="s", summary_md="m",
+            diff="d", branch="b", base_branch="main",
+        )
+        assert lens in p, fam
+        # Exactly one lens per seat — no cross-contamination.
+        others = [v for k, v in lenses.items() if k != fam]
+        assert not any(o in p for o in others), fam
+
+
+def test_blast_radius_and_prior_render_in_prompt() -> None:
+    p = cfr.build_review_prompt(
+        family="claude", ticket_key="T", ticket_summary="s", summary_md="m",
+        diff="d", branch="b", base_branch="main",
+        blast_radius="- `AcceptWager` is referenced outside this diff",
+        implementer_prior=cfr.implementer_prior_for("claude"),
+    )
+    assert "`AcceptWager` is referenced outside this diff" in p
+    assert "authored by an LLM agent" in p
+
+
+def test_empty_enrichments_render_placeholders() -> None:
+    p = cfr.build_review_prompt(
+        family="codex", ticket_key="T", ticket_summary="s", summary_md="m",
+        diff="d", branch="b", base_branch="main",
+    )
+    assert "(none identified)" in p
+    assert "Blast radius" in p

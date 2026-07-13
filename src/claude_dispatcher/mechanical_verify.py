@@ -122,3 +122,47 @@ def run_test_command(
         duration_seconds=duration,
         output_tail=_tail(proc.stdout or ""),
     )
+
+# Bound on how many dirty paths are named in the committed-tree check's
+# result — enough to act on, small enough for a journal payload.
+MAX_DIRTY_PATHS = 20
+
+
+def uncommitted_changes(
+    worktree: Path,
+    *,
+    timeout_seconds: int = 30,
+    max_paths: int = MAX_DIRTY_PATHS,
+) -> list[str]:
+    """Paths with uncommitted state (staged, unstaged, or untracked) in
+    ``worktree``, bounded to ``max_paths`` entries (a ``"... and N more"``
+    sentinel is appended when truncated). Empty list == the tree is clean and
+    test evidence is keyed to the committed SHA.
+
+    This is the committed-tree gate: a green suite over a dirty tree proves
+    nothing about what was committed (the 2026-07 escape audit's PR #671 —
+    a never-``git add``-ed file, green pasted output, two packages that did
+    not build). A ``git status`` failure is reported AS a dirty entry so the
+    gate fails closed — a worktree where ``git status`` errors is not a tree
+    whose committed state has been verified.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=str(worktree),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return [f"<git status failed: {exc}>"]
+    if proc.returncode != 0:
+        tail = (proc.stdout or "").strip()[-200:]
+        return [f"<git status exited {proc.returncode}: {tail}>"]
+    paths = [ln[3:] for ln in (proc.stdout or "").splitlines() if len(ln) > 3]
+    if len(paths) > max_paths:
+        extra = len(paths) - max_paths
+        paths = paths[:max_paths] + [f"... and {extra} more"]
+    return paths
+

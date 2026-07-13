@@ -1,5 +1,9 @@
 # Task Batching
 
+> Implemented: co-runnable tasks sharing a non-empty `batch_id` dispatch as
+> one work unit (`orchestrator._take_batch_group`) — one worktree, one
+> implementer session, combined prompt, shared Done/Blocked outcome.
+
 ## What is Task Batching?
 
 Task Batching allows the dispatcher to group multiple related tasks from `tasks.yaml` into a single logical execution unit (a "batch"). Instead of spawning an isolated worktree and a fresh LLM session for every individual task, batched tasks are executed together in the same worktree by a single agent session.
@@ -11,6 +15,11 @@ Task Batching allows the dispatcher to group multiple related tasks from `tasks.
 3. **Cohesive Context:** When related tasks are batched, the agent has native context on its own recent changes. It doesn't have to wait for an upstream PR to merge before it can consume an API or database column it just created in a previous task.
 
 ## How to Use Task Batching
+
+To batch tasks, assign them the same `batch_id` string in `tasks.yaml`. Members
+must be **co-runnable** (same wave — every `blockedBy` dep already satisfied).
+The first runnable task of a `batch_id` claims all other currently-runnable
+siblings with that id into one dispatch.
 
 To batch tasks, simply assign them the same `batch_id` string in `tasks.yaml`:
 

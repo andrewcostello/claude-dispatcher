@@ -21,11 +21,39 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import endpoint_agents as endpoint_agents_mod
+
 
 # Agent identity stamped onto every terminal task row + terminal journal
 # event (OPS-4). The dispatcher only spawns the Claude CLI today; if other
 # agents are ever supported this becomes per-config.
 AGENT_NAME = "claude"
+
+
+def effective_model_for_agent(
+    agent: str | None,
+    model: str | None,
+    *,
+    log=None,
+    task_key: str | None = None,
+) -> str | None:
+    """Return a model pin safe to pass to ``agent``'s CLI.
+
+    Claude-shaped pins (``claude-*``, strings containing ``claude``) are
+    dropped for non-Claude families so YAML written for Claude does not break
+    grok/codex/agy retries and verifiers.
+    """
+    if not model:
+        return None
+    a = (agent or "claude").strip().lower() or "claude"
+    if a == "claude":
+        return model
+    if "claude" in str(model).lower():
+        if log:
+            key = task_key or "?"
+            log(f"  {key} ignoring Claude model pin {model!r} for agent={a}")
+        return None
+    return model
 
 
 def capture_agent_version(claude_bin: str, timeout_seconds: int = 30) -> str | None:
@@ -73,12 +101,22 @@ def capture_agent_version(claude_bin: str, timeout_seconds: int = 30) -> str | N
     return None
 
 
-# Default prompt template handed to the Tasker. The Tasker reads .claude/workflow/roles/tasker.md
-# from the worktree's checked-out tree (the refactored router) and proceeds from there.
-TASKER_PROMPT_TEMPLATE = """\
-Read the file `.claude/workflow/roles/tasker.md` and adopt the Tasker role.
+# Unified implementer brief for EVERY family under `dispatcher run` (claude,
+# codex, grok, gemini). The dispatcher is the sole orchestrator — agents do
+# not adopt Tasker, dispatch sub-reviewers, or raise PRs. Interactive
+# Tasker (`tasker.md`) remains for non-dispatch Claude/Grok sessions only.
+#
+# Optional env/context lines (SKIP_*, REVIEWER_COUNT) are informational for
+# agents that still honor them; the dispatcher owns verification and panel.
+IMPLEMENTER_PROMPT_TEMPLATE = """\
+You are an autonomous implementer agent under the dispatcher (agent family:
+{agent}). Work only in the CURRENT WORKING DIRECTORY.
 
-You are running under the dispatcher. Environment vars are set:
+You are a WORKER, not an orchestrator. The dispatcher owns worktrees, gates,
+review panels, PRs, and merges. Do NOT adopt a Tasker role, spawn reviewer
+subagents, or open pull requests.
+
+## Dispatcher context
 - TASK_KEY={task_key}
 - SUMMARY_PATH={summary_path}
 - DISPATCHER_RUN_ID={run_id}
@@ -86,27 +124,56 @@ You are running under the dispatcher. Environment vars are set:
 - FINANCIAL_PATHS={financial_paths}
 {optional_env_lines}
 
-Task to work on:
+## Task
 - Key:     {task_key}
 - Summary: {task_summary}
 - Type:    {task_type}
 - Labels:  {task_labels}
 - Branch:  {branch}
 
-Description:
+## Description
 {task_description}
 
-Integration is the DISPATCHER's job, not yours: commit your work to the current
-branch, but do NOT push to origin and do NOT run `gh pr create` / open a pull
-request. The dispatcher pushes your branch and raises the PR (against the
-run-level feature branch) for you — if you open one yourself it lands against
-the wrong base (the repo default branch) as a duplicate that has to be closed.
+## Instructions
+1. Make the minimum code changes that fully satisfy the task description.
+2. Prefer existing patterns and public seams in this repo; do not redesign
+   architecture unless the task explicitly requires it.
+3. Run the most relevant tests you can; fix failures you introduce.
+4. Commit your work to the current branch with a conventional-commit message
+   (`type(scope): summary`, include [{task_key}] in the subject). Do NOT push
+   and do NOT open a PR — the dispatcher integrates. If your environment
+   cannot run `git commit`, leave the changes in the working tree and the
+   dispatcher will commit them for you.
+5. When finished, write a short markdown summary ONLY to this path:
+   {summary_path}
 
-When you finish the session (Done, Blocked, or Escalated) write the summary file
-to $SUMMARY_PATH in the format documented in tasker.md Phase 5. Do not print the
-summary as a separate message — write it to the file only. After writing the
-file the session is complete.
+## Summary format (required)
+```
+# {task_key}: implementation
+**Status:** Done
+
+## What landed
+- concrete bullet list of changes (files + behavior)
+
+## Tests
+- what you ran and the result, or "not run: <reason>"
+```
+
+SUMMARY CONTRACT (the single most common dispatch failure is skipping this):
+BEFORE starting the work, create the summary file above with this skeleton and
+`**Status:** Blocked` as a placeholder. Update it as you work and finalize it
+(Done or Blocked) as your LAST action. A session that ends without a parseable
+summary blocks the whole task and burns a retry — writing the skeleton first
+makes that impossible. Do not print the summary as a chat message — write it
+to the file only.
+
+Use `**Status:** Blocked` instead of Done if you cannot complete the task, and
+add an `## Escalation reason` section explaining why.
 """
+
+# Back-compat aliases (tests / older imports).
+CROSS_FAMILY_IMPLEMENTER_PROMPT = IMPLEMENTER_PROMPT_TEMPLATE
+TASKER_PROMPT_TEMPLATE = IMPLEMENTER_PROMPT_TEMPLATE
 
 
 @dataclass
@@ -144,6 +211,20 @@ class SpawnResult:
     usage: SpawnUsage = field(default_factory=SpawnUsage)
 
 
+def _coerce_int(v) -> int | None:
+    try:
+        return int(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_float(v) -> float | None:
+    try:
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def parse_usage_from_json(stdout: str) -> SpawnUsage:
     """Pull usage data out of a Claude CLI `--output-format=json` blob.
 
@@ -168,30 +249,82 @@ def parse_usage_from_json(stdout: str) -> SpawnUsage:
     # modelUsage is keyed by model id; for a single-model run there's one key.
     primary_model = next(iter(model_usage), None) if model_usage else None
 
-    def _int(v):
-        try:
-            return int(v) if v is not None else None
-        except (TypeError, ValueError):
-            return None
-
-    def _float(v):
-        try:
-            return float(v) if v is not None else None
-        except (TypeError, ValueError):
-            return None
-
     return SpawnUsage(
-        cost_usd=_float(doc.get("total_cost_usd")),
-        input_tokens=_int(usage_obj.get("input_tokens")),
-        output_tokens=_int(usage_obj.get("output_tokens")),
-        cache_read_input_tokens=_int(usage_obj.get("cache_read_input_tokens")),
-        cache_creation_input_tokens=_int(usage_obj.get("cache_creation_input_tokens")),
-        duration_ms=_int(doc.get("duration_ms")),
-        duration_api_ms=_int(doc.get("duration_api_ms")),
-        ttft_ms=_int(doc.get("ttft_ms")),
-        num_turns=_int(doc.get("num_turns")),
+        cost_usd=_coerce_float(doc.get("total_cost_usd")),
+        input_tokens=_coerce_int(usage_obj.get("input_tokens")),
+        output_tokens=_coerce_int(usage_obj.get("output_tokens")),
+        cache_read_input_tokens=_coerce_int(usage_obj.get("cache_read_input_tokens")),
+        cache_creation_input_tokens=_coerce_int(
+            usage_obj.get("cache_creation_input_tokens")),
+        duration_ms=_coerce_int(doc.get("duration_ms")),
+        duration_api_ms=_coerce_int(doc.get("duration_api_ms")),
+        ttft_ms=_coerce_int(doc.get("ttft_ms")),
+        num_turns=_coerce_int(doc.get("num_turns")),
         model=primary_model,
         session_id=doc.get("session_id"),
+    )
+
+
+def parse_grok_usage(stdout: str) -> SpawnUsage:
+    """Best-effort usage extract from `grok --output-format json` stdout.
+
+    Grok's JSON envelope has varied across CLI versions. We accept:
+      * a single JSON object (whole stdout)
+      * NDJSON / last JSON object on stdout
+    and look for usage under common keys (usage, token_usage, tokens,
+    total_cost_usd, cost_usd, model, num_turns / turns). Never raises.
+    """
+    if not stdout or not stdout.strip():
+        return SpawnUsage()
+
+    doc: dict | None = None
+    text = stdout.strip()
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            doc = parsed
+    except (json.JSONDecodeError, ValueError):
+        # Try last non-empty line as NDJSON tail.
+        for line in reversed(text.splitlines()):
+            line = line.strip()
+            if not line or not line.startswith("{"):
+                continue
+            try:
+                parsed = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(parsed, dict):
+                doc = parsed
+                break
+    if not doc:
+        return SpawnUsage()
+
+    usage_obj = {}
+    for key in ("usage", "token_usage", "tokens", "tokenUsage"):
+        cand = doc.get(key)
+        if isinstance(cand, dict):
+            usage_obj = cand
+            break
+
+    return SpawnUsage(
+        cost_usd=_coerce_float(
+            doc.get("total_cost_usd", doc.get("cost_usd", usage_obj.get("cost_usd")))
+        ),
+        input_tokens=_coerce_int(
+            usage_obj.get("input_tokens", usage_obj.get("prompt_tokens",
+                          usage_obj.get("input")))
+        ),
+        output_tokens=_coerce_int(
+            usage_obj.get("output_tokens", usage_obj.get("completion_tokens",
+                          usage_obj.get("output")))
+        ),
+        cache_read_input_tokens=_coerce_int(
+            usage_obj.get("cache_read_input_tokens", usage_obj.get("cached_tokens"))
+        ),
+        duration_ms=_coerce_int(doc.get("duration_ms", doc.get("durationMs"))),
+        num_turns=_coerce_int(doc.get("num_turns", doc.get("turns"))),
+        model=doc.get("model") or usage_obj.get("model"),
+        session_id=doc.get("session_id") or doc.get("sessionId"),
     )
 
 
@@ -210,8 +343,15 @@ def build_prompt(
     skip_design: bool,
     skip_security_linter: bool,
     reviewer_count: int | None,
+    agent: str | None = None,
 ) -> str:
-    """Render the prompt template for one task."""
+    """Render the unified implementer prompt for one task.
+
+    Single-orchestrator rule: every agent family (including Claude) gets the
+    same implementer worker brief. No family is asked to adopt tasker.md
+    under ``dispatcher run``.
+    """
+    agent_name = (agent or "claude").strip().lower() or "claude"
     optional_lines = []
     if skip_design:
         optional_lines.append("- SKIP_DESIGN=1")
@@ -219,13 +359,17 @@ def build_prompt(
         optional_lines.append("- SKIP_SECURITY_LINTER=1")
     if reviewer_count is not None:
         optional_lines.append(f"- REVIEWER_COUNT={reviewer_count}")
-    return TASKER_PROMPT_TEMPLATE.format(
+    optional_env = "\n".join(optional_lines)
+    if optional_env:
+        optional_env = optional_env + "\n"
+    return IMPLEMENTER_PROMPT_TEMPLATE.format(
+        agent=agent_name,
         task_key=task_key,
         summary_path=str(summary_path),
         run_id=run_id,
         max_iterations=max_iterations,
         financial_paths=financial_paths,
-        optional_env_lines="\n".join(optional_lines),
+        optional_env_lines=optional_env,
         task_summary=task_summary,
         task_type=task_type,
         task_labels=", ".join(task_labels),
@@ -375,6 +519,17 @@ def spawn_claude(
 AGENT_BINS: dict[str, str] = {"codex": "codex", "grok": "grok", "gemini": "agy"}
 
 
+def agent_bin_name(agent: str | None) -> str:
+    """Resolve CLI binary name for an implementer/verifier/design family.
+
+    gemini → agy; claude/None → claude; others pass through.
+    """
+    a = (agent or "claude").strip().lower() or "claude"
+    if a == "claude":
+        return "claude"
+    return AGENT_BINS.get(a, a)
+
+
 # ---------------------------------------------------------------------------
 # agy (Antigravity CLI) model selection.
 #
@@ -454,19 +609,6 @@ class _AgyModelGate:
 # a ThreadPoolExecutor in one process, so a threading primitive suffices).
 _agy_model_gate = _AgyModelGate()
 
-_CROSS_FAMILY_SUFFIX = """
-
----
-You are running as a cross-family implementer agent under the dispatcher.
-Make the code changes in the CURRENT WORKING DIRECTORY to satisfy the task
-above. You do NOT need to run `git commit` — the dispatcher commits your
-working-tree changes for you. When done, also write a short summary to the
-file {summary_path} containing at minimum a line `**Status:** Done` (or
-`**Status:** Blocked` if you could not complete it) and a `## What landed`
-section. Do not open a PR.
-"""
-
-
 def _agent_argv(
     agent: str, bin_: str, prompt_file: Path, cwd: Path,
     model: str | None, prompt_text: str, effort: str | None = None,
@@ -489,7 +631,9 @@ def _agent_argv(
             cmd += ["-c", f"model_reasoning_effort={effort}"]
         return cmd + ["-"]  # Read from stdin
     if agent == "grok":
-        cmd = [bin_, "--cwd", str(cwd), "--always-approve"]
+        # --output-format json: usage/cost-ish metadata on stdout when supported.
+        cmd = [bin_, "--cwd", str(cwd), "--always-approve",
+               "--output-format", "json"]
         if model:
             cmd += ["--model", model]
         if effort:
@@ -499,12 +643,11 @@ def _agent_argv(
         # CRITICAL: agy writes files to its own ~/.gemini scratch dir, NOT the
         # process cwd, unless the worktree is added to the workspace via
         # --add-dir. And it stalls on tool-permission prompts without
-        # --dangerously-skip-permissions. Without BOTH, the Tasker produces no
-        # commits in the worktree and blocks. (Verified 2026-06-25.)
-        cmd = [bin_, "--add-dir", str(cwd), "--dangerously-skip-permissions", "--print"]
-        if model:
-            cmd += ["--model", model]
-        return cmd
+        # --dangerously-skip-permissions. Without BOTH, the implementer
+        # produces no commits in the worktree and blocks. (Verified 2026-06-25.)
+        # Model: agy ignores launch --model; selection is via settings.json
+        # (_AgyModelGate). Never pass --model on argv.
+        return [bin_, "--add-dir", str(cwd), "--dangerously-skip-permissions", "--print"]
     raise ValueError(f"no argv builder for agent {agent!r}")
 
 
@@ -557,6 +700,36 @@ def _write_synthetic_summary(
     )
 
 
+def spawn_endpoint_agent(
+    *,
+    agent: str,
+    cwd: Path,
+    env: dict[str, str],
+    prompt: str,
+    model: str | None = None,
+    effort: str | None = None,
+    extra_args: list[str] | None = None,
+    claude_bin: str = "claude",
+    timeout_seconds: int = 60 * 60 * 4,
+) -> SpawnResult:
+    """Run one endpoint agent (kimi/glm/deepseek) as a re-pointed claude Tasker.
+
+    Contract (EPA-3, see endpoint_agents module docstring):
+      - resolve via endpoint_agents.resolve_endpoint_agent(agent, env, model);
+        an EndpointConfigError propagates to the caller (misconfiguration must
+        fail the cell loudly, not silently fall back to Anthropic),
+      - child env = endpoint_agents.build_endpoint_env(env, resolution),
+      - delegate to spawn_claude() with metered=True (module invariant 1: the
+        provider token must survive spawn_claude's subscription strip) and
+        extra_args extended with ["--model", resolution.model]; a caller
+        `effort` maps to ["--effort", effort] exactly as the claude branch of
+        spawn_agent does,
+      - the returned SpawnResult passes through unchanged EXCEPT
+        usage.model, which must carry resolution.model for provenance.
+    """
+    raise NotImplementedError("EPA-3")
+
+
 def spawn_agent(
     *,
     agent: str | None,
@@ -571,34 +744,54 @@ def spawn_agent(
 ) -> SpawnResult:
     """Spawn the chosen implementer agent for one task.
 
-    agent in (None, "claude") -> the default `claude --print` Tasker (with an
+    agent in (None, "claude") -> the default `claude --print` worker (with an
     optional --model). Otherwise dispatch to the cross-family CLI's headless
-    agentic mode (see module notes), then auto-commit + ensure a summary so the
-    downstream gate/verifier/panel flow is identical regardless of agent.
+    agentic mode (see module notes), then auto-commit + ensure a summary so
+    the downstream gate/verifier/panel flow is identical regardless of agent.
+    The claude-shaped-model guard below applies to EVERY non-claude spawn —
+    primary, retries, and iterates alike.
     """
+    summary_path = Path(env["SUMMARY_PATH"])
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    task_key = env.get("TASK_KEY", "task")
+    # Single choke point: a Claude-shaped model pin never reaches a
+    # non-Claude CLI, no matter which call site (primary spawn, retries,
+    # panel/verifier iterates) forwarded it.
+    safe_model = effective_model_for_agent(agent, model)
+
     if not agent or agent == "claude":
         spawn_extra = list(extra_args or [])
-        if model:
-            spawn_extra += ["--model", model]
+        if safe_model:
+            spawn_extra += ["--model", safe_model]
         if effort:
             spawn_extra += ["--effort", effort]
+        # No auto-commit here: the brief instructs claude to commit, and the
+        # committed-tree gate treats stray uncommitted files as an evidence
+        # failure — a blanket `git add -A` would mask exactly that signal
+        # (and commit stray artifacts). Cross-family CLIs that cannot commit
+        # get the auto-commit normalization below instead.
         return spawn_claude(
             claude_bin=claude_bin, cwd=cwd, env=env, prompt=prompt,
             extra_args=spawn_extra, timeout_seconds=timeout_seconds,
         )
 
-    summary_path = Path(env["SUMMARY_PATH"])
-    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    if agent in endpoint_agents_mod.ENDPOINT_AGENTS:
+        return spawn_endpoint_agent(
+            agent=agent, cwd=cwd, env=env, prompt=prompt, model=safe_model,
+            effort=effort, extra_args=extra_args, claude_bin=claude_bin,
+            timeout_seconds=timeout_seconds,
+        )
+
     bin_ = AGENT_BINS[agent]
-    task_key = env.get("TASK_KEY", "task")
-    xprompt = prompt + _CROSS_FAMILY_SUFFIX.format(summary_path=summary_path)
+    # Prompt is already agent-native (see build_prompt); do not wrap with a
+    # Claude Tasker suffix — that was the main quality gap for grok/codex/agy.
     prompt_file = summary_path.parent / f"{task_key}-{agent}-prompt.txt"
-    prompt_file.write_text(xprompt)
-    argv = _agent_argv(agent, bin_, prompt_file, cwd, model, xprompt, effort)
+    prompt_file.write_text(prompt)
+    argv = _agent_argv(agent, bin_, prompt_file, cwd, safe_model, prompt, effort)
 
     try:
         proc = subprocess.run(
-            argv, input=xprompt, capture_output=True, text=True,
+            argv, input=prompt, capture_output=True, text=True,
             cwd=str(cwd), env=env, timeout=timeout_seconds,
         )
         rc, out, err = proc.returncode, proc.stdout, proc.stderr
@@ -615,7 +808,14 @@ def spawn_agent(
     # CLI returned non-zero; conversely a clean exit with no commits falls
     # through to the orchestrator's no-commits handling.
     exit_code = 0 if (rc == 0 or committed) else rc
+    usage = SpawnUsage(model=safe_model or agent)
+    if agent == "grok":
+        gusage = parse_grok_usage(out)
+        # Prefer parsed fields; keep model tag if parser left it empty.
+        if gusage.model is None:
+            gusage.model = safe_model or agent
+        usage = gusage
     return SpawnResult(
         exit_code=exit_code, summary_path=summary_path,
-        stdout=out, stderr=err, usage=SpawnUsage(model=agent),
+        stdout=out, stderr=err, usage=usage,
     )

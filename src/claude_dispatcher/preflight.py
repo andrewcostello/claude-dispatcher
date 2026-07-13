@@ -137,24 +137,94 @@ def run_preflight(
     base_branch: str,
     role_file: str = DEFAULT_ROLE_FILE,
     worktree_base: Path | None = None,
+    no_claude: bool = False,
+    implementer: str | None = None,
+    cascade_terminal: str | None = None,
+    verifier_agent: str | None = None,
+    design_agent: str | None = None,
+    enable_design_stage: bool = False,
 ) -> PreflightResult:
-    """Run all four checks and aggregate their verdicts.
+    """Run preflight checks and aggregate their verdicts.
 
     ``worktree_base`` is the same ``--worktree-base`` override the run will
     hand to task-worktree creation (None → the conventional default); the
     role-file probe must live at that exact base or its verdict can diverge
     from reality (see module docstring).
 
+    ``no_claude``: skip Claude binary + Claude permission-flag requirements;
+    require the implementer binary (default grok) instead. Also probes the
+    union of cascade/verifier/design family binaries so missing seats fail
+    before implementer spend.
+
     Pure apart from the subprocess reads (and the throwaway probe worktree,
     removed before returning); creates nothing under the repo or runs dir.
     """
+    from . import spawn as spawn_mod
+
     failures: list[str] = []
     warnings: list[str] = []
     checks: dict[str, Any] = {}
 
-    _check_claude_binary(claude_bin, failures, warnings, checks)
+    if no_claude:
+        impl = (implementer or "grok").strip().lower()
+        if impl == "claude":
+            failures.append(
+                "--no-claude combined with implementer=claude is contradictory; "
+                "drop --no-claude or choose a non-Claude implementer"
+            )
+        bin_name = spawn_mod.agent_bin_name(impl)
+        _check_implementer_binary(bin_name, failures, warnings, checks)
+        checks["no_claude"] = True
+        # Permission flags are Claude-specific; skip under no_claude.
+        checks["permission_flags"] = {
+            "ok": True, "mechanism": "skipped-no-claude", "mode": mode,
+        }
+    else:
+        _check_claude_binary(claude_bin, failures, warnings, checks)
+        _check_permission_flags(claude_extra_args, mode, failures, checks)
+
+    # Probe every family the run may spawn (beyond the primary implementer).
+    fleet: set[str] = set()
+    if no_claude:
+        fleet.add((implementer or "grok").strip().lower())
+        fleet.add((cascade_terminal or "grok").strip().lower())
+        fleet.add((verifier_agent or "grok").strip().lower())
+        if enable_design_stage:
+            fleet.add((design_agent or "grok").strip().lower())
+    else:
+        if implementer:
+            fleet.add(implementer.strip().lower())
+        if cascade_terminal:
+            fleet.add(cascade_terminal.strip().lower())
+        if verifier_agent:
+            fleet.add(verifier_agent.strip().lower())
+        if enable_design_stage and design_agent:
+            fleet.add(design_agent.strip().lower())
+    fleet.discard("claude")  # already checked (or skipped under no_claude)
+    fleet_bins: dict[str, Any] = {}
+    for fam in sorted(fleet):
+        if not fam:
+            continue
+        b = spawn_mod.agent_bin_name(fam)
+        info = doctor.probe_binary(b)
+        entry = {
+            "ok": bool(info.get("present")),
+            "bin": b,
+            "family": fam,
+            "path": info.get("path"),
+            "version": info.get("version"),
+        }
+        fleet_bins[fam] = entry
+        if not info.get("present"):
+            failures.append(
+                f"fleet binary for {fam!r} ({b!r}) not found on PATH — install "
+                f"it or change --implementer/--cascade-terminal/--verifier-agent"
+                f"/--design-agent"
+            )
+    if fleet_bins:
+        checks["fleet_binaries"] = fleet_bins
+
     _check_dispatcher_staleness(repo_root, warnings, checks)
-    _check_permission_flags(claude_extra_args, mode, failures, checks)
     _check_role_file(
         repo_root, base_branch, role_file, failures, warnings, checks,
         worktree_base=worktree_base,
@@ -166,6 +236,33 @@ def run_preflight(
 
 
 # --- check 1: claude binary ---------------------------------------------------
+
+
+def _check_implementer_binary(
+    bin_name: str,
+    failures: list[str],
+    warnings: list[str],
+    checks: dict[str, Any],
+) -> None:
+    """Require the implementer CLI on PATH for no-Claude fleets."""
+    info = doctor.probe_binary(bin_name)
+    entry = {
+        "ok": bool(info.get("present")),
+        "bin": bin_name,
+        "path": info.get("path"),
+        "version": info.get("version"),
+    }
+    checks["implementer_binary"] = entry
+    if not info.get("present"):
+        failures.append(
+            f"implementer binary {bin_name!r} not found on PATH — install it "
+            f"or drop --no-claude / set --implementer to an available agent"
+        )
+    elif not info.get("version"):
+        warnings.append(
+            f"implementer binary {bin_name!r} is present but --version failed "
+            f"({info.get('version_error') or 'unknown'})"
+        )
 
 
 def _check_claude_binary(
@@ -486,11 +583,16 @@ def _check_role_file(
     entry["method"] = "probe-worktree"
     if resolves:
         return
-    entry["ok"] = False
-    failures.append(
-        f"Tasker role file {role_file} won't resolve in fresh worktrees: it "
-        f"is neither git-tracked nor resolvable in a probe worktree of {ref}. "
-        f"Commit it (or a relative symlink to it) so checkouts carry it, "
-        f"e.g. `git add .claude/workflow` (precedent: dogfood run #1 fix, "
-        f"commit 6923d0a)"
+    # Single-orchestrator: dispatched runs use a self-contained implementer
+    # prompt and do not require tasker.md. Missing role file is a warning so
+    # interactive/Tasker tooling still gets a signal, but dogfood / Grok-only
+    # runs are not blocked.
+    entry["ok"] = True
+    entry["missing"] = True
+    warnings.append(
+        f"role file {role_file} won't resolve in fresh worktrees (neither "
+        f"git-tracked nor resolvable in a probe of {ref}). Dispatched "
+        f"implementers no longer require Tasker; this only matters for "
+        f"interactive Tasker sessions. To silence: commit "
+        f"`.claude/workflow` (or a relative symlink)."
     )

@@ -2,17 +2,23 @@
 
 After a Tasker reports Done, the dispatcher can run a panel of three
 independent reviewers — one Claude, one Gemini, one Codex — over the
-committed diff and the Tasker's summary.md. ALL THREE must APPROVE for the
-panel verdict to be "approve"; a single dissenter blocks. The motivation is
-that the Tasker's in-cycle review panel is same-family (also Claude), so it
-shares its blind spots. Cross-family review surfaces defects that
-same-family review provably misses (see /tmp/bsa-adversarial-review/
-synthesis.md for the 6 Criticals an adversarial pass caught on top of the
-in-cycle panels).
+committed diff and the Tasker's summary.md.
+
+Consensus uses a **relaxed corroboration bar** (see `aggregate`):
+  * any CRITICAL finding from any valid seat blocks immediately;
+  * HIGH findings block only when ≥2 valid families independently raise one;
+  * a lone uncorroborated HIGH / CHANGES_REQUESTED is journaled but does not
+    block ship;
+  * ≥2 valid (parseable) seats are required for "approve"; fewer → "incomplete".
+
+The motivation is that the Tasker's in-cycle review panel is same-family
+(also Claude), so it shares its blind spots. Cross-family review surfaces
+defects that same-family review misses, without requiring unanimous APPROVE
+(which almost never converges across three strict reviewers).
 
 The panel is gated by risk tier (`panel_required`). High-risk tickets
-(critical/security/financial/high) run the panel; medium/low/docs/test
-tickets skip it and trust the Tasker's in-cycle panel.
+(critical/security/financial/high) run the panel; size XS/S leaves without
+risk labels, and docs/test tickets, skip it.
 
 Three layers:
   * `Reviewer` ABC + three subclasses — each owns a CLI invocation.
@@ -72,7 +78,7 @@ DEFAULT_REVIEWER_TIMEOUT_SECONDS = 600
 # limits. Real BSA diffs land at ~300-2000 lines; 8000 lines is the safety
 # bound. Above that we truncate with a marker. Tickets larger than this
 # should be split anyway.
-MAX_DIFF_LINES = 8000
+MAX_DIFF_LINES = 24000  # raised from 8000 (2026-07-12): real epics exceed 8k after generated-file exclusion; modern models hold 24k diff lines comfortably
 
 
 # --- public dataclasses -----------------------------------------------------
@@ -162,10 +168,10 @@ class ReviewerVerdict:
 class PanelVerdict:
     """Aggregate of the three reviewers. `consensus` is the orchestrator gate.
 
-    consensus values:
-      - "approve" — ALL THREE returned APPROVE with no blocking findings.
-      - "block"   — at least one reviewer returned non-APPROVE OR raised a
-                    CRITICAL/HIGH finding.
+    consensus values (relaxed corroboration bar — see aggregate()):
+      - "approve" — ≥2 valid seats reviewed; no CRITICAL; HIGH findings from
+                    fewer than 2 families (lone HIGH is logged, not blocking).
+      - "block"   — any CRITICAL, or HIGH findings from ≥2 valid families.
       - "incomplete" — fewer than two seats produced a valid (parseable, ran)
                     review — i.e. the panel is mostly/entirely UNAVAILABLE
                     and/or PARSE_FAILED, so it cannot be trusted as a real
@@ -204,6 +210,31 @@ class PanelVerdict:
 # --- risk-tier gating -------------------------------------------------------
 
 
+def has_risk_label(labels: Iterable[str] | None) -> bool:
+    """True if any label is a panel-forcing risk tier (critical/security/…).
+
+    Delegates to :func:`quality_levels.has_risk_label` so floors, panel skip,
+    and HARD cascade share one matcher.
+    """
+    from . import quality_levels as ql_mod
+    return ql_mod.has_risk_label(labels)
+
+
+def is_small_leaf(labels: Iterable[str] | None) -> bool:
+    """True when the task is size XS or S (cheap leaf work).
+
+    Used to skip the cross-family panel under both auto and always modes when
+    no risk label is present — three reviewers on a leaf is poor cost/speed.
+    """
+    if not labels:
+        return False
+    for raw in labels:
+        lab = str(raw).strip().lower()
+        if lab in ("size:xs", "size:s"):
+            return True
+    return False
+
+
 def panel_required(
     labels: Iterable[str] | None,
     *,
@@ -221,22 +252,7 @@ def panel_required(
     if task_type and task_type.lower() in _PANEL_SKIP_TYPES:
         return False
 
-    if not labels:
-        return False
-
-    for raw in labels:
-        if not raw:
-            continue
-        lab = str(raw).strip().lower()
-        if lab in _PANEL_REQUIRED_BARE:
-            return True
-        for prefix in _PANEL_REQUIRED_PREFIXES:
-            if lab.startswith(prefix):
-                bare = lab.split(":", 1)[1].strip()
-                if bare in _PANEL_REQUIRED_BARE:
-                    return True
-                break  # matched a prefix but bare didn't satisfy — done
-    return False
+    return has_risk_label(labels)
 
 
 # --- output parser ----------------------------------------------------------
@@ -501,9 +517,18 @@ def build_review_prompt(
     diff: str,
     branch: str,
     base_branch: str,
+    blast_radius: str = "",
+    implementer_prior: str = "",
 ) -> str:
     """Render the per-family prompt. The shared block has format slots; the
     preamble has none.
+
+    ``blast_radius`` — the generated sibling-surface artifact (symbols the
+    diff touches and their references outside the diff); empty when the
+    diff yields nothing grep-able. ``implementer_prior`` — a short
+    watch-for block keyed to who authored the diff (e.g. agent-authored
+    code's known defect signature); empty when no prior applies. Both are
+    plain-prose enrichments: empty strings render as empty sections.
     """
     tmpl = _load_prompt(family)
     return tmpl.format(
@@ -513,7 +538,30 @@ def build_review_prompt(
         diff=diff,
         branch=branch,
         base_branch=base_branch,
+        blast_radius=blast_radius or "(none identified)",
+        implementer_prior=implementer_prior or "(none)",
     )
+
+
+# Generated artifacts excluded from review/verify diffs. They are never the
+# review target, and on proto-heavy tasks they consumed the entire truncated
+# diff window: PR-2/PR-3/PH-7/PH-10 (2026-07-12) each false-blocked
+# verification_incomplete with real code "absent from the provided diff"
+# while thousands of pb.go/connect/sqlc lines filled the cap. Reviewers who
+# need generated output can read it in the worktree.
+DIFF_EXCLUDE_PATHSPECS = [
+    ":(exclude)*.pb.go",
+    ":(exclude)**/*.pb.go",
+    ":(exclude)**/*_grpc.pb.go",
+    ":(exclude)**/*connect/*.connect.go",
+    ":(exclude)**/*_pb.ts",
+    ":(exclude)**/*_connect.ts",
+    ":(exclude)**/db/sqlc/**",
+    ":(exclude)package-lock.json",
+    ":(exclude)go.sum",
+    ":(exclude)**/go.sum",
+    ":(exclude)**/*.swagger.json",
+]
 
 
 def collect_diff(
@@ -531,7 +579,7 @@ def collect_diff(
     cross-merge differences".
     """
     proc = subprocess.run(
-        ["git", "diff", f"{base_branch}...{branch}"],
+        ["git", "diff", f"{base_branch}...{branch}", "--"] + DIFF_EXCLUDE_PATHSPECS,
         cwd=str(repo_root),
         capture_output=True,
         text=True,
@@ -542,7 +590,7 @@ def collect_diff(
         # Fall back to .. (two-dot) — useful when fork point is broken
         # (e.g., a brand new orphan branch).
         proc = subprocess.run(
-            ["git", "diff", f"{base_branch}..{branch}"],
+            ["git", "diff", f"{base_branch}..{branch}", "--"] + DIFF_EXCLUDE_PATHSPECS,
             cwd=str(repo_root),
             capture_output=True,
             text=True,
@@ -1117,6 +1165,39 @@ def advisory_reviewers_from_names(
     return reviewers, unknown
 
 
+# Known defect signature of LLM-agent-authored diffs, from the 2026-07
+# escape audit of 418 agent-authored PRs (131 shipped escapes). Family-
+# agnostic: every dispatcher implementer is an agent, and the signature
+# held across families. Injected as the {implementer_prior} prompt slot —
+# it biases reviewer ATTENTION; it never changes the verdict rules.
+_AGENT_IMPLEMENTER_PRIOR = """\
+This diff was authored by an LLM agent. Audit-proven signature classes to
+probe FIRST (each caused shipped escapes):
+- Vacuous tests: seals that pass without the fix, fixed sleeps as
+  synchronization, absence-only assertions, property tests with fixed keys,
+  mocks encoding a stale contract. Ask: would this test FAIL if the fix
+  were reverted?
+- Fail-open defaults on degraded paths: empty config/table/lookup silently
+  enabling a gated capability; error guards that skip on ANY error instead
+  of the one expected error.
+- Sibling-surface gaps: the change applied to the path in the diff but not
+  its twin (unary vs stream, explicit vs auto/background, entry vs exit
+  lifecycle) — cross-check the blast-radius section.
+- Docs/code drift: comments and docstrings asserting behavior the final
+  iteration no longer has, including safety-direction claims.
+- Overclaimed completeness: "X already handles this" without a cited,
+  demonstrated flow; stub bodies behind claimed-done surface."""
+
+
+def implementer_prior_for(agent: str | None) -> str:
+    """The watch-for block for a diff authored by ``agent`` (a dispatcher
+    implementer family; None means claude). All dispatcher implementers are
+    LLM agents, so today this returns one shared signature block — the seam
+    exists so per-family (or per-human, for PR-mode reviews) priors can
+    slot in without touching call sites."""
+    return _AGENT_IMPLEMENTER_PRIOR
+
+
 def run_panel(
     *,
     ticket_key: str,
@@ -1125,6 +1206,8 @@ def run_panel(
     diff: str,
     branch: str,
     base_branch: str,
+    blast_radius: str = "",
+    implementer_prior: str = "",
     reviewers: list[Reviewer] | None = None,
     advisory_reviewers: list[Reviewer] | None = None,
     log: Callable[[str], None] = lambda _m: None,
@@ -1176,6 +1259,8 @@ def run_panel(
             diff=diff,
             branch=branch,
             base_branch=base_branch,
+            blast_radius=blast_radius,
+            implementer_prior=implementer_prior,
         )
         return r.review(prompt)
 
@@ -1301,14 +1386,17 @@ def aggregate(
     any_critical = any(f.severity == Severity.CRITICAL for f in blocking_findings)
 
     # Block wins over everything (a real ship-stopper was found). Otherwise an
-    # "approve" requires CORROBORATION on the valid set, mirroring the ≥2 block
-    # gate: at least two seats must have produced a real review. This preserves
-    # the single-flaky-seat tolerance (one UNAVAILABLE/PARSE_FAILED among an
-    # otherwise-valid panel still ships) while refusing to auto-integrate on a
-    # panel a majority of whose seats never actually reviewed the code.
+    # "approve" requires enough VALID seats that the code was actually reviewed.
+    #
+    # Approve requires ≥2 valid seats whenever ≥2 were invited — a 2-seat
+    # panel (author-family exclusion, --no-claude) with one flaky seat is
+    # "incomplete", not an auto-integrate green light on a single review.
+    # Only a deliberately single-seat panel (panel: single, or a test
+    # override) approves on its one valid seat.
+    min_valid_for_approve = min(2, len(reviews))
     if any_critical or families_with_blocking >= 2:
         consensus = "block"
-    elif len(valid) >= 2:
+    elif len(valid) >= min_valid_for_approve:
         consensus = "approve"
     else:
         consensus = "incomplete"

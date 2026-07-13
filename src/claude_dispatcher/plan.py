@@ -16,6 +16,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
+from .quality_levels import KNOWN_PANEL, KNOWN_VERIFY
 
 TODO = "To Do"
 IN_PROGRESS = "In Progress"
@@ -34,7 +35,17 @@ TERMINAL = {DONE, BLOCKED, ESCALATED}
 # Implementer agents the dispatcher can spawn as a Tasker. "claude" is the
 # default; codex/grok/gemini are cross-family CLIs run in their headless
 # agentic mode via spawn.spawn_agent(). Kept in sync with spawn.AGENT_SPECS.
-KNOWN_AGENTS = frozenset({"claude", "codex", "grok", "gemini"})
+# kimi/glm/deepseek are ENDPOINT agents: the claude CLI re-pointed at an
+# Anthropic-compatible provider endpoint (see endpoint_agents.ENDPOINT_AGENTS).
+KNOWN_AGENTS = frozenset(
+    {"claude", "codex", "grok", "gemini", "kimi", "glm", "deepseek"}
+)
+
+# Per-task reasoning/effort knob (maps to claude --effort, grok --effort,
+# codex model_reasoning_effort). gemini/agy has no flag and ignores it.
+KNOWN_EFFORTS = frozenset({"low", "medium", "high"})
+
+# Per-task quality intensity sets: KNOWN_VERIFY / KNOWN_PANEL imported above.
 
 # DISPATCH ordering — the statuses of a blockedBy dependency that let its
 # dependents be dispatched ("Done-or-later"). In `branch` mode that is just
@@ -77,7 +88,21 @@ class Task:
     # best outcome/cost. Distinct from `model` (which only swaps the Claude
     # model tier on the default claude agent).
     agent: str | None = None
+    # Optional per-task reasoning effort (low|medium|high). Plumbed to each
+    # CLI's effort flag by spawn_agent. Absent → CLI default. The quality
+    # cascade may bump effort to "high" before switching agents.
+    effort: str | None = None
+    # Optional batch grouping: co-runnable tasks sharing a batch_id dispatch
+    # as one work unit — one worktree / one implementer session (see
+    # docs/task-batching.md and orchestrator._take_batch_group).
     batch_id: str | None = None
+    # Optional quality intensity overrides (Phase 4). None → resolved from
+    # floors / run defaults / design recommendations.
+    verify: str | None = None
+    panel: str | None = None
+    # Optional design-stage pin (Phase 5). True/False force on/off; None →
+    # design_required() heuristics.
+    design: bool | None = None
 
     @property
     def size_label(self) -> str | None:
@@ -158,8 +183,54 @@ def load_tasks(doc: Any) -> list[Task]:
                 f"tasks[{idx}] ({key}) has unknown agent {agent!r}; "
                 f"must be one of {', '.join(sorted(KNOWN_AGENTS))}"
             )
+        effort_val = row.get("effort")
+        effort = str(effort_val).strip().lower() if effort_val else None
+        if effort == "":
+            effort = None
+        elif effort is not None and effort not in KNOWN_EFFORTS:
+            raise ValidationError(
+                f"tasks[{idx}] ({key}) has unknown effort {effort!r}; "
+                f"must be one of {', '.join(sorted(KNOWN_EFFORTS))}"
+            )
         batch_id_val = row.get("batch_id")
         batch_id = str(batch_id_val).strip() if batch_id_val else None
+        if batch_id == "":
+            batch_id = None
+        verify_val = row.get("verify")
+        verify = str(verify_val).strip().lower() if verify_val else None
+        if verify == "":
+            verify = None
+        elif verify is not None and verify not in KNOWN_VERIFY:
+            raise ValidationError(
+                f"tasks[{idx}] ({key}) has unknown verify {verify!r}; "
+                f"must be one of {', '.join(sorted(KNOWN_VERIFY))}"
+            )
+        panel_val = row.get("panel")
+        panel = str(panel_val).strip().lower() if panel_val else None
+        if panel == "":
+            panel = None
+        elif panel is not None and panel not in KNOWN_PANEL:
+            raise ValidationError(
+                f"tasks[{idx}] ({key}) has unknown panel {panel!r}; "
+                f"must be one of {', '.join(sorted(KNOWN_PANEL))}"
+            )
+        design_raw = row.get("design")
+        design: bool | None
+        if design_raw is None or design_raw == "":
+            design = None
+        elif isinstance(design_raw, bool):
+            design = design_raw
+        else:
+            s = str(design_raw).strip().lower()
+            if s in ("true", "yes", "1", "on"):
+                design = True
+            elif s in ("false", "no", "0", "off"):
+                design = False
+            else:
+                raise ValidationError(
+                    f"tasks[{idx}] ({key}) has unknown design {design_raw!r}; "
+                    f"must be true/false"
+                )
         tasks.append(
             Task(
                 key=key,
@@ -167,12 +238,16 @@ def load_tasks(doc: Any) -> list[Task]:
                 description=str(row["description"]),
                 type=str(row["type"]),
                 labels=labels,
-                blocked_by=_as_str_list(row.get("blockedBy")),
+                blocked_by=_dependency_list(row, idx, key),
                 status=str(row.get("status", TODO)),
                 raw=row,
                 model=model,
                 agent=agent,
+                effort=effort,
                 batch_id=batch_id,
+                verify=verify,
+                panel=panel,
+                design=design,
             )
         )
 
@@ -199,6 +274,28 @@ def feature_prd(doc: Any) -> str | None:
         )
     stripped = val.strip()
     return stripped or None
+
+
+# Accepted spellings for the dependency field. `blockedBy` is canonical;
+# the aliases exist because a silently-ignored misspelling voids a whole
+# worklist's ordering (partner-hub Stage B, 2026-07-10: `depends_on` parsed
+# as nothing, a dependent dispatched against a Blocked dependency's absent
+# code and had to be killed mid-spawn). Unknown near-misses are an ERROR,
+# never a no-op.
+_DEP_FIELD_CANONICAL = "blockedBy"
+_DEP_FIELD_ALIASES = ("blockedBy", "blocked_by", "depends_on", "dependsOn")
+
+
+def _dependency_list(row: dict, idx: int, key: str) -> list[str]:
+    present = [f for f in _DEP_FIELD_ALIASES if row.get(f) is not None]
+    if len(present) > 1:
+        raise ValidationError(
+            f"tasks[{idx}] ({key}) sets {' and '.join(present)}; "
+            f"use only {_DEP_FIELD_CANONICAL!r}"
+        )
+    if not present:
+        return []
+    return _as_str_list(row.get(present[0]))
 
 
 def _validate_blocked_by(tasks: list[Task]) -> None:

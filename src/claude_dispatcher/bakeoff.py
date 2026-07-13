@@ -348,6 +348,7 @@ def run_cell(
             branch=branch, summary_path=summary_path, run_id=run_id,
             max_iterations=1, financial_paths=financial_paths,
             skip_design=False, skip_security_linter=False, reviewer_count=None,
+            agent=agent,
         )
         log(f"  [{task.key}/{agent}] spawning…")
         res = spawn_mod.spawn_agent(

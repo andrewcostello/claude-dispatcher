@@ -4,7 +4,11 @@
 > referenced from the tasks.yaml top-level (`prd: features/<feature>/PRD.md`).
 > The **final feature review** reads this as the intent oracle — it reviews the
 > cumulative diff *against* this file, not just for internal quality. Keep it
-> current; the run appends to the Deviations log.
+> current. Agents record deviations in task summaries; fold them into this
+> log during review (the dispatcher does not auto-append here yet).
+>
+> Planner process: `docs/how-to-author-tasks.md` · paste prompt:
+> `docs/templates/planner-prompt.md`.
 
 ## Problem / intent
 <What this feature must accomplish and why. The outcome a human cares about —

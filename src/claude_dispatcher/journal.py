@@ -129,6 +129,11 @@ class EventType(str, Enum):
     # skip / malformed-config outcomes. See orchestrator's
     # _verify_mechanical_and_maybe_retry.
     verification_mechanical = "verification_mechanical"
+    # Seal-inversion gate (VG-3): for fix-shaped tasks, the new tests must
+    # FAIL with the non-test half of the change reverted to base. One event
+    # per evaluation (outcome: passed / failed / skipped / error). See
+    # orchestrator's _verify_seal and seal_verify.py.
+    verification_seal = "verification_seal"
     # LLM verification gate (VG-4): the independent verifier spawned AFTER the
     # mechanical gate passes and BEFORE the cross-family panel. Each verifier
     # spawn is bracketed by verification_started / verification_verdict (the

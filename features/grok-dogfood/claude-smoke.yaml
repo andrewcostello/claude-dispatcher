@@ -1,0 +1,56 @@
+# Minimal unattended smoke for real Claude (default path, no --no-claude).
+# Proves the thin implementer brief (not Tasker) still works under dispatcher run.
+prd: features/grok-dogfood/PRD.md
+project: claude-dispatcher
+epic: claude-smoke
+
+tasks:
+  - key: DOG-CLAUDE-SMOKE-1
+    summary: "Write docs/dogfood/CLAUDE_SMOKE.md proving Claude implementer ran"
+    description: |
+      Create or update the file docs/dogfood/CLAUDE_SMOKE.md with:
+
+      # Claude smoke
+      - agent: claude
+      - mode: unattended (no --no-claude)
+      - date: (today's ISO date UTC is fine)
+      - note: written by the dispatcher implementer worker (thin brief, not Tasker)
+
+      Acceptance:
+        - docs/dogfood/CLAUDE_SMOKE.md exists
+        - contains the string "Claude smoke"
+        - contains the string "not Tasker"
+
+      Out of scope:
+        - any Python source changes
+        - running or modifying tests (mechanical gate will still run the suite)
+        - adopting Tasker / opening PRs / running panel yourself
+    type: Task
+    estimate: 5m
+    labels: [size:XS, area:docs, dogfood, smoke, claude]
+    agent: claude
+    verify: mechanical
+    panel: never
+    status: Done
+    started_at: '2026-07-13T15:22:09-07:00'
+    dispatcher_run_id: claude-smoke-rerun-20260713a
+    summary_path: /tmp/claude-1000/-home-andrew-Project-claude-dispatcher/15cbeec1-d4ce-4d05-bda8-7ced55e27d3d/scratchpad/trial-merge/docs/runs/claude-smoke-rerun-20260713a/DOG-CLAUDE-SMOKE-1/summary.md
+    branch: feat/DOG-CLAUDE-SMOKE-1-write-docs-dogfood-claude-smoke
+    cost_usd: 1.602515
+    completed_at: '2026-07-13T15:24:31-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    mechanical_verification: passed
+    verified: true
+    verification_iterations: 0
+    input_tokens: 12
+    output_tokens: 2623
+    cache_read_input_tokens: 199953
+    cache_creation_input_tokens: 24551
+    duration_ms: 53393
+    num_turns: 8
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.207 (Claude Code)

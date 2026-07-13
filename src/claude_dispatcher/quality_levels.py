@@ -1,0 +1,186 @@
+"""Per-task quality intensity (verify + panel) resolution.
+
+Resolution order (highest wins):
+  1. Explicit task field (verify: / panel:)
+  2. Design recommendation (optional; Phase 5)
+  3. Deterministic floors from risk/size labels
+  4. Run-level defaults
+
+Design may raise intensity above the floor; it may not sink below the floor
+unless the task explicitly overrides.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Iterable
+
+KNOWN_VERIFY = frozenset({"none", "mechanical", "llm", "llm_strict"})
+KNOWN_PANEL = frozenset({"never", "auto", "single", "full", "always"})
+
+# Rank for max() comparisons (higher = more scrutiny).
+_VERIFY_RANK = {"none": 0, "mechanical": 1, "llm": 2, "llm_strict": 3}
+_PANEL_RANK = {"never": 0, "auto": 1, "single": 2, "full": 3, "always": 4}
+
+# Deterministic floors by risk tier.
+_FLOORS: dict[str, tuple[str, str]] = {
+    # (verify, panel)
+    "critical": ("llm_strict", "full"),
+    "high": ("llm", "full"),
+    "medium": ("llm", "auto"),
+    "low": ("mechanical", "never"),
+}
+
+# Shared risk vocabulary — single source for floors, panel skip, HARD cascade.
+_CRITICAL_TOKENS = frozenset({"critical", "security", "financial"})
+_HIGH_TOKENS = frozenset({"high"})
+_RISK_PREFIXES = ("risk:", "tier:", "severity:", "priority:")
+
+
+@dataclass(frozen=True)
+class QualityLevels:
+    verify: str
+    panel: str
+    source: str  # e.g. "task", "design+floor", "floor", "run_default"
+
+
+def risk_tokens(labels: Iterable[str] | None) -> set[str]:
+    """Extract recognized risk tokens from labels (shared matcher).
+
+    Accepts bare tokens (``security``) or prefixed forms with an allowlisted
+    prefix (``risk:critical``, ``tier:high``). Does **not** treat arbitrary
+    suffixes as risk (``area:security`` is not risk unless listed bare).
+    """
+    out: set[str] = set()
+    for raw in labels or []:
+        lab = str(raw).strip().lower()
+        if not lab:
+            continue
+        if lab in _CRITICAL_TOKENS or lab in _HIGH_TOKENS:
+            out.add(lab)
+            continue
+        for prefix in _RISK_PREFIXES:
+            if lab.startswith(prefix):
+                bare = lab.split(":", 1)[1].strip()
+                if bare in _CRITICAL_TOKENS or bare in _HIGH_TOKENS:
+                    out.add(bare)
+                break
+    return out
+
+
+def has_risk_label(labels: Iterable[str] | None) -> bool:
+    """True if any label forces elevated risk (panel / floors / HARD)."""
+    return bool(risk_tokens(labels))
+
+
+def is_hard_task_labels(labels: Iterable[str] | None) -> bool:
+    """HARD under agent-routing: size L/XL or critical/security/financial/high."""
+    labs = [str(l).strip().lower() for l in (labels or [])]
+    if any(l in ("size:l", "size:xl") for l in labs):
+        return True
+    tokens = risk_tokens(labels)
+    return bool(tokens & (_CRITICAL_TOKENS | _HIGH_TOKENS))
+
+
+def design_required(
+    labels: Iterable[str] | None,
+    *,
+    task_design: bool | None = None,
+    blocked_by_count: int = 0,
+    description: str = "",
+) -> bool:
+    """Whether the dispatcher should run a design stage before implement.
+
+    Explicit task_design True/False wins. Otherwise Critical/High risk and
+    size L/XL always design; Medium designs when description signals novelty /
+    core, or when blocked_by_count >= 2 (caller may pass fan-in if known).
+    XS/S leaves without risk: no.
+    """
+    if task_design is False:
+        return False
+    if task_design is True:
+        return True
+    labs = [str(l).strip().lower() for l in (labels or [])]
+    tier = risk_tier(labs)
+    if tier in ("critical", "high"):
+        return True
+    if any(l in ("size:l", "size:xl") for l in labs):
+        return True
+    if "design" in labs or any(l.endswith(":design") for l in labs):
+        return True
+    if any(l in ("size:m",) for l in labs):
+        desc = (description or "").lower()
+        if any(
+            tok in desc for tok in (
+                "new contract", "new interface", "state machine",
+                "architecture", "skeleton", "novel",
+            )
+        ):
+            return True
+        if blocked_by_count >= 2:
+            return True
+        if any(l in ("area:core", "area:skeleton") for l in labs):
+            return True
+    return False
+
+
+def risk_tier(labels: Iterable[str] | None) -> str:
+    """Map labels to a coarse risk tier for quality floors."""
+    labs = [str(l).strip().lower() for l in (labels or [])]
+    tokens = risk_tokens(labs)
+    if tokens & _CRITICAL_TOKENS:
+        return "critical"
+    if tokens & _HIGH_TOKENS:
+        return "high"
+    if any(lab in ("size:l", "size:xl") for lab in labs):
+        return "high"
+    if any(lab in ("size:m",) for lab in labs):
+        return "medium"
+    return "low"
+
+
+def _max_level(a: str, b: str, ranks: dict[str, int]) -> str:
+    return a if ranks.get(a, 0) >= ranks.get(b, 0) else b
+
+
+def resolve_quality_levels(
+    *,
+    labels: Iterable[str] | None,
+    task_verify: str | None = None,
+    task_panel: str | None = None,
+    design_verify: str | None = None,
+    design_panel: str | None = None,
+    run_verify: str = "llm",
+    run_panel: str = "auto",
+) -> QualityLevels:
+    """Resolve effective verify + panel for one task."""
+    tier = risk_tier(labels)
+    floor_v, floor_p = _FLOORS[tier]
+    rv = run_verify if run_verify in KNOWN_VERIFY else "llm"
+    rp = run_panel if run_panel in KNOWN_PANEL else "auto"
+
+    # Start from run defaults, raised to floor — except run-level panel:never
+    # is an absolute opt-out unless design/task later raises it.
+    verify = _max_level(rv, floor_v, _VERIFY_RANK)
+    if rp == "never" and design_panel is None and task_panel is None:
+        panel = "never"
+        source = "run_never"
+    else:
+        panel = _max_level(rp, floor_p, _PANEL_RANK)
+        source = "floor+run"
+
+    if design_verify in KNOWN_VERIFY:
+        verify = _max_level(verify, design_verify, _VERIFY_RANK)
+        source = "design+floor"
+    if design_panel in KNOWN_PANEL:
+        panel = _max_level(panel, design_panel, _PANEL_RANK)
+        source = "design+floor"
+
+    if task_verify in KNOWN_VERIFY:
+        verify = task_verify
+        source = "task"
+    if task_panel in KNOWN_PANEL:
+        panel = task_panel
+        source = "task"
+
+    return QualityLevels(verify=verify, panel=panel, source=source)

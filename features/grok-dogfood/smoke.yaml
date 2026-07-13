@@ -1,0 +1,48 @@
+# Minimal unattended smoke for real Grok + --no-claude.
+# Does not depend on the multi-task dogfood wave; one trivial docs task.
+prd: features/grok-dogfood/PRD.md
+project: claude-dispatcher
+epic: grok-smoke
+
+tasks:
+  - key: DOG-SMOKE-1
+    summary: "Write docs/dogfood/SMOKE.md proving Grok implementer ran"
+    description: |
+      Create or update the file docs/dogfood/SMOKE.md with:
+
+      # Grok smoke
+      - agent: grok
+      - mode: unattended --no-claude
+      - date: (today's ISO date UTC is fine)
+      - note: written by the dispatcher implementer worker
+
+      Acceptance:
+        - docs/dogfood/SMOKE.md exists
+        - contains the string "Grok smoke"
+        - contains the string "no-claude"
+
+      Out of scope:
+        - any Python source changes
+        - running or modifying tests (mechanical gate will still run the suite)
+    type: Task
+    estimate: 5m
+    labels: [size:XS, area:docs, dogfood, smoke]
+    agent: grok
+    verify: mechanical
+    panel: never
+    status: Done
+    started_at: '2026-07-13T15:22:13-07:00'
+    dispatcher_run_id: grok-smoke-rerun-20260713a
+    summary_path: /tmp/claude-1000/-home-andrew-Project-claude-dispatcher/15cbeec1-d4ce-4d05-bda8-7ced55e27d3d/scratchpad/trial-merge/docs/runs/grok-smoke-rerun-20260713a/DOG-SMOKE-1/summary.md
+    branch: feat/DOG-SMOKE-1-write-docs-dogfood-smoke-md
+    completed_at: '2026-07-13T15:23:29-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    mechanical_verification: passed
+    verified: true
+    verification_iterations: 0
+    model: grok
+    dispatcher_version: 0.1.0
+    agent_version: grok 0.2.93 (f00f96316d) [stable]

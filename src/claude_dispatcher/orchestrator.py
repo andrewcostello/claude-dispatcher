@@ -32,6 +32,7 @@ from typing import Any
 
 from . import __version__
 from . import auto_integrate as ai_mod
+from . import blast_radius as br_mod
 from . import cross_family_reviewer as cfr_mod
 from . import disposition as disposition_mod
 from . import journal as journal_mod
@@ -42,7 +43,11 @@ from . import plan as plan_mod
 from . import pr as pr_mod
 from . import preflight as preflight_mod
 from . import push_verify as pv_mod
+from . import design as design_mod
+from . import quality_levels as ql_mod
 from . import repo_config as repo_config_mod
+from . import routing as routing_mod
+from . import seal_verify as sv_mod
 from . import spawn as spawn_mod
 from . import summary as summary_mod
 from . import verifier as verifier_mod
@@ -109,8 +114,24 @@ class RunConfig:
     gh_bin: str = "gh"
     # Run-level default implementer family (claude/codex/grok/gemini). A per-task
     # `agent:` in the YAML wins; otherwise every task routes to this family's
-    # headless CLI instead of `claude --print`. None -> claude (the default Tasker).
+    # headless CLI instead of `claude --print`. None -> claude (the default).
     implementer: str | None = None
+    # Quality cascade terminal agent: "claude" (default closer) or "grok"
+    # (dogfood / no-Claude fleets). Never append a rung after this family.
+    cascade_terminal: str = "claude"
+    # When True: no Claude binary required; default implementer grok; cascade
+    # terminal grok; haiku off; LLM verifier uses grok (not Claude).
+    no_claude: bool = False
+    # Which family runs the LLM verifier (claude|grok). Default claude;
+    # --no-claude sets grok.
+    verifier_agent: str = "claude"
+    # Which family runs the optional design stage (claude|grok).
+    design_agent: str = "claude"
+    # When True, run design stage for tasks matching design_required().
+    # Opt-in (default False) so hermetic tests never spawn a design worker.
+    enable_design_stage: bool = False
+    # When True, unpinned tasks use routing.cheap_first (grok leaves, claude hard).
+    cheap_first: bool = False
     claude_extra_args: list[str] = field(default_factory=list)
     base_branch: str = "main"
     # Integration mode (PRF-1). "branch" (default) forks each task worktree
@@ -141,6 +162,8 @@ class RunConfig:
     # the post-fix re-run are bounded independently). A timed-out execution
     # is a failure like any non-zero exit.
     verify_test_timeout_seconds: int = 600
+    # Set at run start from repo config; maps a risk tier to a default model.
+    model_router: Any = None
     # LLM verification gate (VG-4). After the mechanical gate passes and
     # before the cross-family panel, an independent verifier (verifier.py) is
     # spawned over the task + summary + committed diff to answer "does this
@@ -248,12 +271,98 @@ class TaskSnapshot:
     model: str | None = None
     # Per-task implementer agent (claude/codex/grok/gemini); None -> claude.
     agent: str | None = None
+    # Per-task reasoning effort (low|medium|high); None -> CLI default.
+    # Plumbed to claude/codex/grok effort flags; gemini/agy has none.
+    effort: str | None = None
     batch_id: str | None = None
     batch_keys: list[str] = field(default_factory=list)
+    # Per-task quality intensity (Phase 4); None → resolve at gate time.
+    verify: str | None = None
+    panel: str | None = None
+    # Explicit design stage pin (True/False); None → design_required heuristics.
+    design: bool | None = None
+    # Design-stage recommendations applied when task verify/panel unset.
+    design_verify: str | None = None
+    design_panel: str | None = None
+    design_spec: str | None = None
     # blockedBy dependency keys, in declaration order. Used at worker start to
     # merge each dependency's branch into this task's fresh worktree branch
     # when the dependency's commits are not yet on base (INT-4).
     blocked_by: list[str] = field(default_factory=list)
+
+
+CAPSTONE_KEY = "CAPSTONE-INTEGRATION"
+
+_CAPSTONE_DESCRIPTION = """\
+You are running the EPIC INTEGRATION PASS — the final task before this epic
+branch merges toward main. Per-task review sees each diff in isolation; a
+single epic squash once originated 54 shipped escapes (2026-07 audit, PR
+#582), all in the seams BETWEEN tasks. Your job is the seams.
+
+1. Blast-radius map. From the epic's cumulative diff (git diff
+   <base>...HEAD), enumerate every table, column, RPC, event, and consumer
+   the epic touches or replaces. For every legacy path the epic supersedes,
+   list every write/read the legacy path performed and mark each one:
+   covered by the new path / explicitly deferred (name the ticket) / GAP.
+2. Sibling-surface sweep. For each state field, gate, or event the epic
+   introduces or consumes, grep ALL readers and writers and verify parity:
+   unary vs stream vs snapshot/recovery frames; explicit RPC vs
+   auto/background paths; entry vs exit lifecycle (everything set on
+   join/arm/enable is cleared on EVERY exit variant); flag-gated vs
+   unconditional cutovers (a cutover must ride the same flag as its
+   sibling reads/writes).
+3. Runtime sweep. If a live stack is available, drive the DOMINANT
+   production flows end-to-end (the auto/background variants, not only the
+   explicit ones). Otherwise run the full suite including integration tags
+   and say so explicitly in the summary.
+4. Deliverable: summary.md containing the map with per-item verdicts.
+   Small gaps you can close safely: fix and commit. Anything else: report
+   Status: Blocked with the concrete gap list — an honest Blocked here is
+   the success case; claiming Done over an unverified seam is the failure
+   this task exists to prevent.
+"""
+
+
+def _maybe_append_capstone(cfg: RunConfig, doc: Any) -> Any:
+    """Append the epic-integration capstone task for epic-shaped runs.
+
+    Trigger: top-level ``capstone: true`` in the tasks YAML, or a base
+    branch under ``epic/``. Idempotent (a resume or re-run that already has
+    the row appends nothing). The capstone is blockedBy every existing task
+    so it drains last; it flows the normal pipeline (worktree, gates,
+    panel). Returns the (possibly reloaded) doc.
+
+    Known limitation, on purpose: FIX-* tasks synthesized by later
+    feature-review rounds are not added to the capstone's blockedBy — the
+    capstone audits the epic's task set; the review loop audits the fixes.
+    """
+    if not isinstance(doc, dict):
+        return doc
+    wants = bool(doc.get("capstone")) or cfg.base_branch.startswith("epic/")
+    if not wants:
+        return doc
+    rows = doc.get("tasks") or []
+    keys = [str(r.get("key")) for r in rows if r.get("key")]
+    if not keys or CAPSTONE_KEY in keys:
+        return doc
+    with yaml_io.FileLock(cfg.tasks_path, timeout_seconds=cfg.lock_timeout_seconds):
+        doc = yaml_io.load(cfg.tasks_path)
+        rows = doc.get("tasks") or []
+        keys = [str(r.get("key")) for r in rows if r.get("key")]
+        if not keys or CAPSTONE_KEY in keys:
+            return doc
+        rows.append({
+            "key": CAPSTONE_KEY,
+            "summary": "Epic integration pass: seam audit + runtime sweep before merge",
+            "description": _CAPSTONE_DESCRIPTION,
+            "type": "Task",
+            "labels": ["size:M", "area:integration"],
+            "agent": "claude",
+            "blockedBy": list(keys),
+        })
+        doc["tasks"] = rows
+        yaml_io.dump(doc, cfg.tasks_path)
+    return doc
 
 
 # --- entry point -----------------------------------------------------------
@@ -264,10 +373,10 @@ def execute(args: argparse.Namespace) -> int:
     completion (some Blocked/Escalated), 2 on validation error.
     """
     cfg = _build_config(args)
-    # Capture the agent CLI version exactly once per run (OPS-4). Failure
-    # degrades to None (capture_agent_version never raises) and the
-    # provenance field is simply omitted from terminal rows/events.
-    cfg.agent_version = spawn_mod.capture_agent_version(cfg.claude_bin)
+    # Capture the primary implementer CLI version exactly once per run (OPS-4).
+    # Under --no-claude, probe grok (or the chosen implementer), not claude.
+    # Failure degrades to None (capture never raises).
+    cfg.agent_version = _capture_run_agent_version(cfg)
     doc = yaml_io.load(cfg.tasks_path)
     try:
         plan_mod.load_tasks(doc)  # validate
@@ -280,6 +389,21 @@ def execute(args: argparse.Namespace) -> int:
         yaml_base = (doc.get("base_branch") if isinstance(doc, dict) else None)
         if yaml_base:
             cfg.base_branch = str(yaml_base).strip()
+
+    # Tier-based model routing (repo config): resolved once per run from the
+    # repo root the dispatcher runs against. Rows with explicit model: win;
+    # rows without route by their risk: field; no config -> None (CLI default).
+    try:
+        _routing_cfg = repo_config_mod.load(wt_mod.detect_repo_root(cfg.tasks_path.parent))
+    except repo_config_mod.RepoConfigError:
+        _routing_cfg = None
+    cfg.model_router = (_routing_cfg.routed_model if _routing_cfg else (lambda _r: None))
+
+    # Epic capstone: epic-shaped runs (capstone: true, or an epic/ base
+    # branch) get a synthesized final integration task that audits the seams
+    # BETWEEN tasks before the epic merges (mega-merge escape class). Done
+    # before preflight/journal so the genesis hash covers the final YAML.
+    doc = _maybe_append_capstone(cfg, doc)
 
     # Pure read; needed by the preflight before any run artifact exists.
     repo_root = wt_mod.detect_repo_root(cfg.tasks_path.parent)
@@ -301,6 +425,12 @@ def execute(args: argparse.Namespace) -> int:
             repo_root=repo_root,
             base_branch=cfg.base_branch,
             worktree_base=cfg.worktree_base,
+            no_claude=cfg.no_claude,
+            implementer=cfg.implementer,
+            cascade_terminal=cfg.cascade_terminal,
+            verifier_agent=cfg.verifier_agent,
+            design_agent=cfg.design_agent,
+            enable_design_stage=cfg.enable_design_stage,
         )
         pf_skipped = False
         if not pf.ok:
@@ -378,7 +508,7 @@ def resume_run(args: argparse.Namespace, journal: journal_mod.Journal) -> int:
     """
     cfg = _build_config(args)
     # Same once-per-run agent version capture as execute() (OPS-4).
-    cfg.agent_version = spawn_mod.capture_agent_version(cfg.claude_bin)
+    cfg.agent_version = _capture_run_agent_version(cfg)
     cfg.journal = journal
     run_dir = cfg.runs_dir / cfg.run_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -444,7 +574,10 @@ def _account_spawn(cfg: RunConfig, task_key: str, result, *, kind: str) -> None:
     payload["spawn_kind"] = kind
     _emit_event(cfg, journal_mod.EventType.task_spawn_finished,
                 payload, task_key=task_key)
-    _add_task_cost(cfg, task_key, result.usage.cost_usd)
+    cost = None
+    if getattr(result, "usage", None) is not None:
+        cost = getattr(result.usage, "cost_usd", None)
+    _add_task_cost(cfg, task_key, cost)
 
 
 def _run_loop(
@@ -636,18 +769,192 @@ def _maybe_merge_pass(
 # --- per-worker -------------------------------------------------------------
 
 
-def _implementer_fallback_chain(snap: TaskSnapshot) -> list[str]:
-    """Ordered implementer agents to try for one task.
+# Agents that expose an effort / reasoning-level CLI flag. gemini/agy does not.
+_EFFORT_CAPABLE_AGENTS = frozenset({"claude", "codex", "grok"})
 
-    The task's own agent runs first; if it produces no usable result (stop /
-    non-zero exit / missing summary), we fall back to claude as the quality
-    backstop. claude is terminal — there is no rung after it. A claude-authored
-    task has a single-element chain (nothing to fall back to).
+
+def _capture_run_agent_version(cfg: RunConfig) -> str | None:
+    """Probe the primary implementer CLI for provenance (OPS-4).
+
+    Shared by execute() and resume_run() so --no-claude / --implementer grok
+    never stamp Claude's version onto Grok rows.
     """
+    if cfg.no_claude:
+        impl = (cfg.implementer or "grok").strip().lower()
+        version_bin = spawn_mod.agent_bin_name(impl)
+    elif cfg.implementer and cfg.implementer != "claude":
+        version_bin = spawn_mod.agent_bin_name(cfg.implementer)
+    else:
+        version_bin = cfg.claude_bin
+    return spawn_mod.capture_agent_version(version_bin)
+
+
+def _effective_model(
+    agent: str | None,
+    model: str | None,
+    *,
+    log_path: Path | None = None,
+    task_key: str | None = None,
+) -> str | None:
+    """Model pin safe for agent — drops Claude-shaped pins for other families."""
+    log_fn = None
+    if log_path is not None:
+        log_fn = lambda m: _log(log_path, m)  # noqa: E731
+    return spawn_mod.effective_model_for_agent(
+        agent, model, log=log_fn, task_key=task_key,
+    )
+
+
+def _verifier_model_for(
+    v_agent: str,
+    row_model: str | None,
+    verifier_model: str | None,
+    *,
+    log=None,
+) -> str | None:
+    """Model for the verifier spawn, keyed on the VERIFIER family and the
+    MODEL SHAPE — never on snap.agent, which the cascade re-stamps to the
+    terminal family (a grok-pinned row that escalated to the claude rung
+    looks claude-family while still carrying its grok pin; PH-12 mirror).
+
+      * claude verifier: the row model iff it is claude-shaped (tier routing
+        / explicit claude pin), else run-level --verifier-model.
+      * non-claude verifier: --verifier-model unless claude-shaped.
+    """
+    if v_agent == "claude":
+        row = str(row_model).lower() if row_model else ""
+        if row_model and "claude" in row:
+            return row_model
+        if row_model and log:
+            log(f"verifier: ignoring non-claude row model {row_model!r} "
+                f"for the claude verifier spawn")
+        return verifier_model
+    return spawn_mod.effective_model_for_agent(v_agent, verifier_model, log=log)
+
+
+def _is_hard_task(snap: TaskSnapshot) -> bool:
+    """True for HARD tasks under the agent-routing policy.
+
+    Triggers: size L/XL, or a risk label (critical/security/financial/high,
+    bare or prefixed via quality_levels). HARD tasks skip the cheap cascade
+    and start at claude.
+    """
+    return ql_mod.is_hard_task_labels(snap.labels)
+
+
+def _take_batch_group(runnable: list) -> tuple[list, list]:
+    """Split the first co-runnable batch off ``runnable``.
+
+    Tasks sharing a non-empty ``batch_id`` that are all currently runnable are
+    dispatched as one work unit (one worktree, one implementer session). Tasks
+    without ``batch_id`` remain singletons. Returns ``(group, remainder)``.
+    """
+    if not runnable:
+        return [], []
+    head = runnable[0]
+    bid = getattr(head, "batch_id", None) or None
+    if not bid:
+        return [head], list(runnable[1:])
+    group = [head]
+    rest: list = []
+    for t in runnable[1:]:
+        if (getattr(t, "batch_id", None) or None) == bid:
+            group.append(t)
+        else:
+            rest.append(t)
+    return group, rest
+
+
+def _combined_batch_description(group: list) -> str:
+    """Composite implementer description for a batch group."""
+    if len(group) == 1:
+        return group[0].description
+    parts = [
+        f"# Batch `{group[0].batch_id}` — implement ALL of the following "
+        f"tasks in this single session. All succeed or all fail together.\n"
+    ]
+    for t in group:
+        parts.append(
+            f"## Task {t.key}: {t.summary}\n\n{t.description.strip()}\n"
+        )
+    return "\n".join(parts)
+
+
+def _implementer_cascade(
+    snap: TaskSnapshot,
+    *,
+    cascade_terminal: str = "claude",
+) -> list[tuple[str, str | None]]:
+    """Ordered (agent, effort) rungs for spawn- and quality-cascade.
+
+    Policy (docs/agent-routing-policy.md), with configurable terminal:
+      * primary@effort → primary@high (if effort-capable) → terminal@high
+      * terminal is "claude" (default production closer) or "grok" (no-Claude /
+        dogfood fleets). When primary is already the terminal family, no
+        further agent switch.
+
+    Each rung is tried on spawn death OR quality failure (gate-red / panel
+    block / verifier incomplete).
+    """
+    terminal = (cascade_terminal or "claude").strip().lower()
+    if terminal not in ("claude", "grok"):
+        terminal = "claude"
     primary = snap.agent or "claude"
+    base_effort = snap.effort  # None = CLI default
+
+    def _with_effort_bump(agent: str, effort: str | None) -> list[tuple[str, str | None]]:
+        out: list[tuple[str, str | None]] = [(agent, effort)]
+        if agent in _EFFORT_CAPABLE_AGENTS and effort != "high":
+            out.append((agent, "high"))
+        return out
+
+    # Pinned claude: single-family chain (maybe effort high on HARD).
     if primary == "claude":
-        return ["claude"]
-    return [primary, "claude"]
+        effort = base_effort or ("high" if _is_hard_task(snap) else None)
+        return _dedupe_cascade_rungs(_with_effort_bump("claude", effort))
+
+    # Non-claude primary: effort bump, then optional terminal closer.
+    rungs = _with_effort_bump(primary, base_effort)
+    if terminal != primary:
+        rungs.append((terminal, "high"))
+    return _dedupe_cascade_rungs(rungs)
+
+
+def _dedupe_cascade_rungs(
+    rungs: list[tuple[str, str | None]],
+) -> list[tuple[str, str | None]]:
+    """Drop consecutive duplicate (agent, effort) pairs."""
+    out: list[tuple[str, str | None]] = []
+    for rung in rungs:
+        if not out or out[-1] != rung:
+            out.append(rung)
+    return out
+
+
+def _implementer_fallback_chain(snap: TaskSnapshot) -> list[str]:
+    """Ordered implementer agents (effort-agnostic view of the cascade).
+
+    Kept for callers/tests that only care about agent identity. Prefer
+    `_implementer_cascade` when effort matters.
+    """
+    agents: list[str] = []
+    for agent, _effort in _implementer_cascade(snap):
+        if not agents or agents[-1] != agent:
+            agents.append(agent)
+    return agents
+
+
+def _implementer_fallback_chain_for(
+    snap: TaskSnapshot, *, cascade_terminal: str = "claude",
+) -> list[str]:
+    """Like _implementer_fallback_chain but honors cascade_terminal."""
+    agents: list[str] = []
+    for agent, _effort in _implementer_cascade(
+        snap, cascade_terminal=cascade_terminal,
+    ):
+        if not agents or agents[-1] != agent:
+            agents.append(agent)
+    return agents
 
 
 def _reset_worktree(
@@ -733,7 +1040,7 @@ def _run_task(
         # event above already journaled the detail.
         c = merge_result.conflict
         _mark_blocked(
-            cfg, snap.key,
+            cfg, snap.batch_keys or snap.key,
             reason=f"{c.reason}: {c.key} ({c.branch}): {c.detail}",
         )
         return plan_mod.BLOCKED
@@ -758,67 +1065,178 @@ def _run_task(
         skip_security_linter=cfg.skip_security_linter,
         reviewer_count=cfg.reviewer_count,
     )
-    prompt = spawn_mod.build_prompt(
-        task_key=snap.key,
-        task_summary=snap.summary,
-        task_type=snap.type,
-        task_labels=snap.labels,
-        task_description=snap.description,
-        branch=wt.branch,
-        summary_path=summary_path,
-        run_id=cfg.run_id,
-        max_iterations=cfg.max_iterations,
-        financial_paths=cfg.financial_paths,
-        skip_design=cfg.skip_design,
-        skip_security_linter=cfg.skip_security_linter,
-        reviewer_count=cfg.reviewer_count,
-    )
-    # Per-task agent + model routing is handled inside spawn_agent: for the
-    # default "claude" agent it appends --model (stacking after run-level
-    # --claude-extra-args so the per-task value wins); for cross-family agents
-    # (codex/grok/gemini) it dispatches to that CLI's headless agentic mode and
-    # normalizes the result (auto-commit + summary). See spawn.spawn_agent.
-
-    # Snapshot base_branch's tip SHA BEFORE the spawn. This is the
-    # discriminator for the direct-to-base workflow: a Tasker that
-    # fast-forwards feat/X into base_branch leaves feat/X equal to
-    # base_branch, so the standard "rev-list base..feat" check returns 0
-    # even though the work landed. Comparing base_branch's tip before vs
-    # after the spawn detects the FF advance. See
-    # _has_commits_on_branch() for the two-condition success check.
+    # Snapshot base_branch's tip SHA BEFORE any cascade spawn. Discriminator
+    # for the direct-to-base workflow (see _has_commits_on_branch).
     base_sha_before = _branch_sha(repo_root, cfg.base_branch, log_path, snap.key)
 
-    # Automatic implementer fallback: try the task's agent, then fall back to
-    # claude (the quality backstop) if a cheap cross-family agent produces NO
-    # usable result — e.g. it hit a spend cap / rate limit and stopped, exited
-    # non-zero, or never wrote its summary. Each rung starts from the same
-    # pre-spawn worktree state. "Usable" = clean spawn (exit 0) with a summary
-    # file; malformed-summary / no-commit handling stays downstream and does
-    # NOT trigger fallback (the agent DID produce work — that's a quality issue,
-    # not a stop). claude has no rung after it: if it fails, the task blocks.
-    fallback_chain = _implementer_fallback_chain(snap)
-    pre_spawn_sha = _branch_sha(repo_root, wt.branch, log_path, snap.key)
-    result = None
-    used_agent: str | None = None
-    fail_reason: str | None = None
-    for idx, attempt_agent in enumerate(fallback_chain):
-        if idx > 0:
+    # --- Design stage (Phase 5) ---------------------------------------------
+    if (
+        getattr(cfg, "enable_design_stage", False)
+        and not cfg.skip_design
+        and ql_mod.design_required(
+            snap.labels,
+            task_design=snap.design,
+            blocked_by_count=len(snap.blocked_by or []),
+            description=snap.description or "",
+        )
+    ):
+        design_agent = getattr(cfg, "design_agent", "claude") or "claude"
+        if cfg.no_claude and design_agent == "claude":
+            design_agent = "grok"
+        rec = design_mod.run_design(
+            agent=design_agent,
+            cwd=wt.path,
+            env=env,
+            task_key=snap.key,
+            task_summary=snap.summary,
+            task_description=snap.description,
+            labels=list(snap.labels or []),
+            timeout_seconds=min(cfg.task_timeout_seconds, 900),
+            claude_bin=cfg.claude_bin,
+            log=lambda m: _log(log_path, m),
+        )
+        if rec.usage is not None:
+            # Bill design spend against the same ceiling as implementer spawns.
+            class _DesignUsageWrap:
+                def __init__(self, usage, failed: bool):
+                    self.usage = usage
+                    self.exit_code = 1 if failed else 0
+                    self.summary_path = Path(env.get("SUMMARY_PATH", "."))
+                    self.stdout = ""
+                    self.stderr = ""
+            _account_spawn(
+                cfg, snap.key,
+                _DesignUsageWrap(rec.usage, rec.failed),
+                kind="design",
+            )
+        if rec.failed:
             _log(log_path,
-                 f"  {snap.key} implementer {fallback_chain[idx - 1]} produced no "
-                 f"usable result ({fail_reason}); falling back to {attempt_agent}")
+                 f"  {snap.key} design failed: {rec.failure_reason} — "
+                 f"continuing without design_spec")
+        else:
+            snap = replace(
+                snap,
+                design_verify=rec.verify,
+                design_panel=rec.panel,
+                design_spec=rec.raw[:12000] if rec.raw else None,
+            )
+            _log(log_path,
+                 f"  {snap.key} design done: verify={rec.verify} panel={rec.panel} "
+                 f"selected={rec.selected}")
+
+    # Spawn + quality cascade (docs/agent-routing-policy.md):
+    #   (agent, effort) rungs — bump effort before switching models; claude is
+    #   the terminal closer. Escalate on spawn death OR quality failure
+    #   (mechanical red / verifier incomplete / panel block). Each rung starts
+    #   from the same pre-spawn worktree; prior failure context is prepended.
+    cascade = _implementer_cascade(
+        snap, cascade_terminal=getattr(cfg, "cascade_terminal", "claude") or "claude",
+    )
+    original_primary = snap.agent or "claude"
+    pre_spawn_sha = _branch_sha(repo_root, wt.branch, log_path, snap.key)
+    cascade_context = ""
+    result: spawn_mod.SpawnResult | None = None
+    used_agent: str | None = None
+    used_effort: str | None = None
+    fail_reason: str | None = None
+    s: summary_mod.Summary | None = None
+    final_status = plan_mod.BLOCKED
+    final_url: str | None = None
+    final_blocked_reason: str | None = None
+    mech_outcome: str | None = None
+    mech_detail: str | None = None
+    seal_outcome: str | None = None
+    seal_detail: str | None = None
+    verified: bool | None = None
+    verification_iterations = 0
+    verification_detail: str | None = None
+    verifier_cost_total = 0.0
+    panel_verdict: cfr_mod.PanelVerdict | None = None
+    panel_iterations_used = 0
+
+    for idx, (attempt_agent, attempt_effort) in enumerate(cascade):
+        if idx > 0:
+            prev_agent, prev_effort = cascade[idx - 1]
+            _log(log_path,
+                 f"  {snap.key} cascade: {prev_agent}"
+                 f"@{prev_effort or 'default'} → {attempt_agent}"
+                 f"@{attempt_effort or 'default'} ({fail_reason})")
             _emit_event(cfg, journal_mod.EventType.agent_fallback, {
-                "from_agent": fallback_chain[idx - 1],
+                "from_agent": prev_agent,
                 "to_agent": attempt_agent,
+                "from_effort": prev_effort,
+                "to_effort": attempt_effort,
                 "reason": fail_reason,
             }, task_key=snap.key)
             if pre_spawn_sha:
                 _reset_worktree(wt, pre_spawn_sha, log_path, snap.key)
+            if summary_path.exists():
+                try:
+                    summary_path.unlink()
+                except OSError:
+                    pass
+
+        # Fresh state per rung — a discarded rung's results (gate stamps,
+        # parsed summary, spawn result, blocked reason) must never leak onto
+        # the terminal row: a Blocked row asserting verified: true — or
+        # blaming a prior rung's panel — for a diff that was reset away.
+        mech_outcome = mech_detail = None
+        seal_outcome = seal_detail = None
+        verified = None
+        verification_iterations = 0
+        verification_detail = None
+        verifier_cost_total = 0.0
+        panel_verdict = None
+        panel_iterations_used = 0
+        result = None
+        s = None
+        used_agent = None
+        used_effort = None
+        final_status = plan_mod.BLOCKED
+        final_url = None
+        final_blocked_reason = None
+
+        desc = snap.description or ""
+        if snap.design_spec:
+            desc = (
+                f"{desc}\n\n### Approved Design Spec\n\n"
+                f"{snap.design_spec[:8000]}\n"
+            )
+        prompt = spawn_mod.build_prompt(
+            task_key=snap.key,
+            task_summary=snap.summary,
+            task_type=snap.type,
+            task_labels=snap.labels,
+            task_description=desc,
+            branch=wt.branch,
+            summary_path=summary_path,
+            run_id=cfg.run_id,
+            max_iterations=cfg.max_iterations,
+            financial_paths=cfg.financial_paths,
+            skip_design=cfg.skip_design,
+            skip_security_linter=cfg.skip_security_linter,
+            reviewer_count=cfg.reviewer_count,
+            agent=attempt_agent,
+        )
+        if cascade_context:
+            prompt = (
+                "## Prior cascade attempt — fix these failures\n\n"
+                f"{cascade_context}\n\n---\n\n{prompt}"
+            )
+
         if attempt_agent != "claude":
             _log(log_path, f"  {snap.key} implementer agent = {attempt_agent}"
-                           + (f" (model={snap.model})" if snap.model else ""))
-        # snap.model is the primary agent's model string (often agent-specific,
-        # e.g. an agy engine name); don't forward it to a fallback agent.
-        attempt_model = snap.model if attempt_agent == fallback_chain[0] else None
+                           + (f" (model={snap.model})" if snap.model else "")
+                           + (f" effort={attempt_effort}" if attempt_effort else ""))
+        elif attempt_effort:
+            _log(log_path, f"  {snap.key} implementer effort = {attempt_effort}")
+
+        # Model pin only while still on the original primary family; always
+        # drop Claude-shaped pins for non-Claude agents (retries share helper).
+        attempt_model = snap.model if attempt_agent == original_primary else None
+        attempt_model = _effective_model(
+            attempt_agent, attempt_model, log_path=log_path, task_key=snap.key,
+        )
         try:
             result = spawn_mod.spawn_agent(
                 agent=attempt_agent,
@@ -827,6 +1245,7 @@ def _run_task(
                 env=env,
                 prompt=prompt,
                 model=attempt_model,
+                effort=attempt_effort,
                 extra_args=list(cfg.claude_extra_args),
                 timeout_seconds=cfg.task_timeout_seconds,
             )
@@ -836,6 +1255,11 @@ def _run_task(
             result = None
             continue
         _log(log_path, f"  {snap.key} spawn exited code={result.exit_code}")
+        if result.exit_code != 0 and (result.stderr or result.stdout):
+            # A dead spawn's last words are the only diagnostic; PH-12's
+            # grok spawn failed opaquely (2026-07-12) with nothing logged.
+            tail = ((result.stderr or "") + "\n" + (result.stdout or "")).strip()[-600:]
+            _log(log_path, f"  {snap.key} spawn output tail: {tail}")
         # Spawn-completion event: carries the per-task usage/cost payload parsed
         # from the CLI's JSON output. Accounted for EVERY attempt (each real
         # spawn has a real cost), before any fallback/block branch, so a task
@@ -847,240 +1271,293 @@ def _run_task(
             fail_reason = f"session_exit_code_{result.exit_code}"
             continue
         if not result.summary_path.exists():
-            fail_reason = "summary_missing"
-            continue
+            # Chronic class: the session did the work (commits exist) but
+            # ended without writing summary.md — league-P1 hit this 9x, all
+            # recovered by a re-spawn that only wrote the summary. Recover
+            # with a micro summary-writer spawn instead of blocking; a
+            # genuinely workless session (no commits) still fails through.
+            # On success FALL THROUGH to the normal gate flow (parse →
+            # mech → seal → verifier → panel) — breaking out here would
+            # skip every quality gate for the recovered work.
+            if not _recover_missing_summary(
+                    cfg, snap, wt, repo_root, summary_path,
+                    base_sha_before, feat_baseline_sha, env, log_path,
+                    agent=attempt_agent):
+                fail_reason = "summary_missing"
+                continue
+
         used_agent = attempt_agent
-        break
+        used_effort = attempt_effort
+        # Stamp the agent/effort that actually produced this attempt so
+        # provenance (YAML agent column / journal) is accurate.
+        if (used_agent != (snap.agent or "claude")
+                or used_effort != snap.effort):
+            def _stamp_agent_effort(row, a=used_agent, e=used_effort):
+                row["agent"] = a
+                if e:
+                    row["effort"] = e
+            _mutate_row(cfg, snap.batch_keys or snap.key, _stamp_agent_effort)
+            snap = replace(snap, agent=used_agent, effort=used_effort)
 
-    if used_agent is None:
-        # Every rung of the fallback chain failed to produce a usable result.
-        _mark_blocked(cfg, snap.batch_keys, reason=fail_reason or "spawn_failed")
-        return plan_mod.BLOCKED
-
-    # Record which agent actually produced the work when a fallback fired, so
-    # the terminal row + downstream panel author-exclusion reflect reality.
-    if used_agent != (snap.agent or "claude"):
-        _mutate_row(cfg, snap.batch_keys,
-                    lambda r, a=used_agent: r.__setitem__("agent", a))
-        snap = replace(snap, agent=used_agent)
-
-    s = summary_mod.parse(result.summary_path)
-    _emit_event(cfg, journal_mod.EventType.summary_parsed,
-                _summary_parsed_payload(s), task_key=snap.key)
-    if s.malformed:
-        _log_summary_problems(log_path, snap.key, s)
-        _mark_blocked(cfg, snap.batch_keys,
-                      reason=f"summary_malformed: {_summary_problem_detail(s)}")
-        return plan_mod.BLOCKED
-
-    # If the Tasker reported Done (or any terminal-success status) but the
-    # branch has no commits beyond base_branch, the work is uncommitted in
-    # the worktree. This is recoverable: re-prompt the Tasker to commit
-    # (NOT a Block — it's a "forgot to commit" mistake, fixable with one
-    # corrective spawn). Max 1 commit-retry; if commits still missing
-    # after, only then is this a real failure.
-    if (s.status == "Done"
-            and not _has_commits_on_branch(
-                wt, cfg.base_branch, repo_root,
-                base_sha_before, log_path, snap.key,
-                feat_baseline_sha=feat_baseline_sha)):
-        _log(log_path, f"  {snap.key} reported Done but no commits on branch — retrying with commit-only prompt")
-        retry_status = _retry_for_commit(
-            cfg, snap, wt, repo_root, summary_path, env, log_path,
-            feat_baseline_sha=feat_baseline_sha,
-        )
-        _emit_event(cfg, journal_mod.EventType.commit_retry, {
-            "trigger": "reported Done with no commits on branch",
-            "outcome": "committed" if retry_status is not None else "still_no_commits",
-        }, task_key=snap.key)
-        if retry_status is None:
-            # Retry failed — really no work. Mark Blocked with clear reason.
-            _mark_blocked(cfg, snap.batch_keys,
-                          reason="no commits produced after commit-retry; Tasker spawn 2x failed to commit")
-            return plan_mod.BLOCKED
-        # Retry succeeded — re-parse summary and continue with Done flow.
         s = summary_mod.parse(result.summary_path)
         _emit_event(cfg, journal_mod.EventType.summary_parsed,
-                    {**_summary_parsed_payload(s), "after_commit_retry": True},
-                    task_key=snap.key)
+                    _summary_parsed_payload(s), task_key=snap.key)
         if s.malformed:
             _log_summary_problems(log_path, snap.key, s)
-            _mark_blocked(
-                cfg, snap.key,
-                reason=f"summary_malformed after commit retry: {_summary_problem_detail(s)}")
+            _mark_blocked(cfg, snap.batch_keys or snap.key,
+                          reason=f"summary_malformed: {_summary_problem_detail(s)}")
             return plan_mod.BLOCKED
 
-    # Awaiting-human-approval handling — supervised may raise the PR.
-    final_status, final_url, final_blocked_reason = _resolve_summary(
-        cfg, snap, s, wt, log_path
-    )
+        # Commit-retry: Done with no commits is fixable with one corrective
+        # spawn (not a cascade-quality failure).
+        if (s.status == "Done"
+                and not _has_commits_on_branch(
+                    wt, cfg.base_branch, repo_root,
+                    base_sha_before, log_path, snap.key,
+                    feat_baseline_sha=feat_baseline_sha)):
+            _log(log_path,
+                 f"  {snap.key} reported Done but no commits on branch — "
+                 f"retrying with commit-only prompt")
+            retry_status = _retry_for_commit(
+                cfg, snap, wt, repo_root, summary_path, env, log_path,
+                feat_baseline_sha=feat_baseline_sha,
+            )
+            _emit_event(cfg, journal_mod.EventType.commit_retry, {
+                "trigger": "reported Done with no commits on branch",
+                "outcome": ("committed" if retry_status is not None
+                            else "still_no_commits"),
+            }, task_key=snap.key)
+            if retry_status is None:
+                _mark_blocked(
+                    cfg, snap.batch_keys or snap.key,
+                    reason="no commits produced after commit-retry; "
+                           "Tasker spawn 2x failed to commit")
+                return plan_mod.BLOCKED
+            s = summary_mod.parse(result.summary_path)
+            _emit_event(cfg, journal_mod.EventType.summary_parsed,
+                        {**_summary_parsed_payload(s), "after_commit_retry": True},
+                        task_key=snap.key)
+            if s.malformed:
+                _log_summary_problems(log_path, snap.key, s)
+                _mark_blocked(
+                    cfg, snap.batch_keys or snap.key,
+                    reason=f"summary_malformed after commit retry: "
+                           f"{_summary_problem_detail(s)}")
+                return plan_mod.BLOCKED
 
-    # Mechanical verification gate (VG-2): run the repo's own test command
-    # (.dispatcher.yaml `test:`, loaded from the WORKTREE so the branch under
-    # test governs its own gate) before any LLM checkpoint spends tokens on
-    # the work. Positioned deliberately BEFORE the cross-family panel and
-    # auto-integrate blocks: a failed gate flips final_status to BLOCKED
-    # here, and the panel / auto-integrate / push-verify blocks below are
-    # all gated on final_status == DONE, so a red suite can never be
-    # panel-reviewed, integrated, or push-flagged. Outcomes:
-    #   passed  — green (possibly after one fix-the-tests re-spawn); proceed.
-    #   skipped — no config / no test command; behavior unchanged from
-    #             pre-gate runs (Done stays Done).
-    #   failed  — still red after the retry, or the config is malformed;
-    #             Blocked with the failing output tail on the row.
-    mech_outcome: str | None = None
-    mech_detail: str | None = None
-    if final_status == plan_mod.DONE:
+        final_status, final_url, final_blocked_reason = _resolve_summary(
+            cfg, snap, s, wt, log_path
+        )
+        # Agent-declared Blocked/Escalated (or awaiting-human) is not a
+        # quality-cascade trigger — only gate/panel/verifier failures escalate.
+        if final_status != plan_mod.DONE:
+            break
+
+        # --- Mechanical gate ------------------------------------------------
         mech_outcome, mech_detail = _verify_mechanical_and_maybe_retry(
             cfg, snap, wt, summary_path, env, log_path,
         )
         if mech_outcome == "failed":
             final_status = plan_mod.BLOCKED
             final_blocked_reason = "mechanical_verification_failed"
+            if idx + 1 < len(cascade):
+                cascade_context = (
+                    f"Mechanical gate FAILED after {attempt_agent}"
+                    f"@{attempt_effort or 'default'}:\n"
+                    f"{(mech_detail or '')[:2000]}"
+                )
+                fail_reason = "mechanical_verification_failed"
+                continue
+            break
 
-    # LLM verification gate (VG-4). Spawned ONLY for a still-Done task, AFTER
-    # the mechanical gate above (ordering rule: never spend verifier tokens on
-    # a red suite) and BEFORE the cross-family panel below. The verifier asks
-    # one question — does the committed diff actually do what the task asked,
-    # nothing stubbed/deferred/quietly narrowed? VERIFIED proceeds as today;
-    # INCOMPLETE re-spawns the Tasker with the gap list, re-runs the mechanical
-    # gate, and re-verifies up to --max-verify-iterations times before Blocking
-    # with reason verification_incomplete (gaps in the YAML detail). The whole
-    # gate is skippable via --skip-verification (journaled). Because a block
-    # flips final_status to BLOCKED here, the panel / auto-integrate / push
-    # blocks below — all gated on final_status == DONE — never run on an
-    # unverified change.
-    verified: bool | None = None
-    verification_iterations = 0
-    verification_detail: str | None = None
-    verifier_cost_total = 0.0
-    if final_status == plan_mod.DONE:
-        # A `skeleton`-labeled task is INTENTIONALLY incomplete (panic-stubs +
-        # t.Skip'd RED tests the bodies fill later). The completeness verifier
-        # would flag those stubs as gaps by design and loop until it Blocks —
-        # so skip the LLM verifier for skeletons. The mechanical gate (build +
-        # tests-skip) and the cross-family panel still run.
+        # --- Seal-inversion gate (VG-3) ---------------------------------
+        # Fix-shaped work (FIX-* keys, type:fix / seal-check labels) must
+        # prove its new tests fail WITHOUT the fix. Runs only over a green
+        # mechanical gate (an inverted run of a red suite proves nothing)
+        # and a committed-clean tree (seal_verify restores via reset --hard).
+        if (final_status == plan_mod.DONE and mech_outcome == "passed"
+                and base_sha_before
+                and sv_mod.applies(snap.key, snap.labels)):
+            seal_outcome, seal_detail = _verify_seal(
+                cfg, snap, wt, base_sha_before, log_path)
+            if seal_outcome in ("failed", "error"):
+                final_status = plan_mod.BLOCKED
+                final_blocked_reason = "seal_verification_failed"
+                if idx + 1 < len(cascade):
+                    cascade_context = (
+                        f"Seal-inversion gate {seal_outcome.upper()} after "
+                        f"{attempt_agent}@{attempt_effort or 'default'} — new "
+                        f"tests must FAIL with the fix reverted:\n"
+                        f"{(seal_detail or '')[:2000]}"
+                    )
+                    fail_reason = "seal_verification_failed"
+                    continue
+                break
+
+        # --- LLM verifier ---------------------------------------------------
         skeleton = any(str(l).strip().lower() == "skeleton"
                        for l in (snap.labels or []))
-        if cfg.skip_verification or skeleton:
-            reason = ("--skip-verification" if cfg.skip_verification
-                      else "skeleton task (intentional stubs/skipped tests)")
+        qlevels = _resolved_quality(cfg, snap)
+        skip_llm = (
+            skeleton
+            or cfg.skip_verification
+            or qlevels.verify in ("none", "mechanical")
+        )
+        if skip_llm:
+            if skeleton:
+                reason = "skeleton task (intentional stubs/skipped tests)"
+            elif snap.verify in ("none", "mechanical"):
+                reason = f"task verify={snap.verify}"
+            elif cfg.skip_verification:
+                reason = "--skip-verification"
+            else:
+                reason = f"resolved verify={qlevels.verify}"
             _emit_event(cfg, journal_mod.EventType.verification_skipped,
-                        {"reason": reason}, task_key=snap.key)
+                        {"reason": reason, "verify_level": qlevels.verify},
+                        task_key=snap.key)
             _log(log_path,
                  f"  {snap.key} LLM verification skipped ({reason})")
+            # Risk ladder first-pass requires verified==True. When the task
+            # planned mechanical-only intensity and the mechanical gate passed,
+            # that *is* first-pass verification — stamp so PR-flow can
+            # self-approve low-risk feature-branch merges (human stays on main).
+            if (
+                mech_outcome == "passed"
+                and qlevels.verify in ("none", "mechanical")
+            ):
+                verified = True
+                verification_iterations = 0
         else:
+            # llm_strict: one extra incomplete iterate — pass as param so we
+            # never mutate the RunConfig shared across ThreadPoolExecutor workers.
+            max_v_iters = cfg.max_verify_iterations
+            if qlevels.verify == "llm_strict":
+                max_v_iters = cfg.max_verify_iterations + 1
             vout = _verify_llm_and_maybe_iterate(
                 cfg=cfg, snap=snap, wt=wt, repo_root=repo_root,
                 summary_path=summary_path, env=env, log_path=log_path,
                 base_sha_before=base_sha_before,
+                max_verify_iterations=max_v_iters,
             )
             verified = vout.verified
             verification_iterations = vout.iterations
             verification_detail = vout.detail
             verifier_cost_total = vout.cost_usd_total
             # Add the verifier's verdict-spawn cost to the row so it lands on the
-            # bill whether the task ends Done or BLOCKED (the old success-path
-            # fold missed the BLOCKED case). NO event is emitted here — each
-            # verifier verdict spawn already emits its own task_spawn_finished
-            # (spawn_kind=verifier) that report.py sums, so emitting an aggregate
-            # too would double-count in the journal rollup. The Tasker re-spawns
-            # inside iterate are accounted separately in _spawn_verifier_iterate.
-            _add_task_cost(cfg, snap.batch_keys, verifier_cost_total)
-            # A mechanical re-run during an iterate may have re-decided the
-            # mechanical outcome — carry it through to the row stamp.
+            # bill whether the task ends Done or BLOCKED. NO aggregate event —
+            # each verifier spawn already emits task_spawn_finished.
+            _add_task_cost(cfg, snap.key, verifier_cost_total)
             if vout.mech_outcome is not None:
                 mech_outcome, mech_detail = vout.mech_outcome, vout.mech_detail
             if vout.blocked_reason is not None:
                 final_status = plan_mod.BLOCKED
                 final_blocked_reason = vout.blocked_reason
+                # Verifier infrastructure failure: do not cascade-escalate
+                # (that would burn rungs×iterations on a dead verifier).
+                if vout.blocked_reason == "verifier_unavailable":
+                    break
+                if idx + 1 < len(cascade):
+                    cascade_context = (
+                        f"LLM verifier INCOMPLETE after {attempt_agent}"
+                        f"@{attempt_effort or 'default'}:\n"
+                        f"{(verification_detail or vout.blocked_reason)[:2000]}"
+                    )
+                    fail_reason = vout.blocked_reason
+                    continue
+                break
 
-    # Cross-family reviewer panel. Runs ONLY for Done tasks that match
-    # the configured gating mode (always | auto via labels | never).
-    # Diff bounds: prefer base_sha_before..feat-tip so the direct-to-base
-    # workflow is covered (where feat == base_branch by the time we get
-    # here). Falls back to base_branch..feat for plain feat-branch work.
-    #
-    # When `cross_family_panel_iterate > 0` and the panel blocks, the
-    # dispatcher re-spawns the Tasker with the blocking findings as a
-    # corrective prompt and re-runs the panel up to N times before giving
-    # up. Each iteration is one extra Tasker spawn + one extra panel run.
-    panel_verdict: cfr_mod.PanelVerdict | None = None
-    panel_iterations_used = 0
-    if final_status == plan_mod.DONE and _panel_should_run(cfg, snap):
-        iterations_remaining = max(0, cfg.cross_family_panel_iterate)
-        while True:
-            _emit_event(cfg, journal_mod.EventType.panel_started, {
-                "iteration": panel_iterations_used,
-                "iterations_remaining": iterations_remaining,
-            }, task_key=snap.key)
-            try:
-                panel_verdict = _run_cross_family_panel(
-                    cfg=cfg, snap=snap, wt=wt,
-                    summary_path=result.summary_path,
-                    repo_root=repo_root,
-                    base_sha_before=base_sha_before,
-                    log_path=log_path,
-                )
-            except Exception as e:
-                _log(log_path, f"  {snap.key} cross-family panel raised: {e}")
+        # --- Cross-family panel ---------------------------------------------
+        panel_verdict = None
+        panel_iterations_used = 0
+        if final_status == plan_mod.DONE and _panel_should_run(cfg, snap):
+            iterations_remaining = max(0, cfg.cross_family_panel_iterate)
+            while True:
+                _emit_event(cfg, journal_mod.EventType.panel_started, {
+                    "iteration": panel_iterations_used,
+                    "iterations_remaining": iterations_remaining,
+                }, task_key=snap.key)
+                try:
+                    panel_verdict = _run_cross_family_panel(
+                        cfg=cfg, snap=snap, wt=wt,
+                        summary_path=result.summary_path,
+                        repo_root=repo_root,
+                        base_sha_before=base_sha_before,
+                        log_path=log_path,
+                    )
+                except Exception as e:
+                    _log(log_path,
+                         f"  {snap.key} cross-family panel raised: {e}")
+                    _emit_event(cfg, journal_mod.EventType.panel_verdict,
+                                {"error": str(e)[:300]}, task_key=snap.key)
+                    panel_verdict = None
+                    final_status = plan_mod.BLOCKED
+                    final_blocked_reason = f"cross_family_panel_error: {e}"
+                    break
+
                 _emit_event(cfg, journal_mod.EventType.panel_verdict,
-                            {"error": str(e)[:300]}, task_key=snap.key)
-                panel_verdict = None
-                final_status = plan_mod.BLOCKED
-                final_blocked_reason = f"cross_family_panel_error: {e}"
-                break
+                            _panel_verdict_payload(panel_verdict),
+                            task_key=snap.key)
+                _emit_advisory_finding_events(cfg, panel_verdict, snap.key)
+                _emit_authoritative_finding_events(cfg, panel_verdict, snap.key)
+                if panel_verdict.is_approve or iterations_remaining <= 0:
+                    break
 
-            _emit_event(cfg, journal_mod.EventType.panel_verdict,
-                        _panel_verdict_payload(panel_verdict), task_key=snap.key)
-            # Scorecard groundwork (VG-5): one event per advisory finding.
-            # Advisory verdicts never gate anything — these events (plus
-            # the advisory_verdicts map in panel_verdict) are the raw
-            # material for a future promotion decision.
-            _emit_advisory_finding_events(cfg, panel_verdict, snap.key)
-            _emit_authoritative_finding_events(cfg, panel_verdict, snap.key)
-            if panel_verdict.is_approve or iterations_remaining <= 0:
-                break
-
-            _log(log_path,
-                 f"  {snap.key} cross-family panel block — iterating "
-                 f"({iterations_remaining} attempt(s) left)")
-            corrective_ok = _spawn_panel_iterate(
-                cfg=cfg, snap=snap, wt=wt, repo_root=repo_root,
-                summary_path=result.summary_path,
-                env=env, log_path=log_path,
-                panel=panel_verdict,
-                iterations_left=iterations_remaining,
-            )
-            panel_iterations_used += 1
-            iterations_remaining -= 1
-            _emit_event(cfg, journal_mod.EventType.panel_iterate, {
-                "iteration": panel_iterations_used,
-                "iterations_remaining": iterations_remaining,
-                "corrective_spawn_ok": bool(corrective_ok),
-                "blocking_findings": len(panel_verdict.blocking_findings),
-            }, task_key=snap.key)
-            if not corrective_ok:
                 _log(log_path,
-                     f"  {snap.key} panel-iterate spawn failed — leaving "
-                     f"last panel verdict in place")
-                break
-            # Loop: re-run the panel against the now-updated diff.
+                     f"  {snap.key} cross-family panel block — iterating "
+                     f"({iterations_remaining} attempt(s) left)")
+                corrective_ok = _spawn_panel_iterate(
+                    cfg=cfg, snap=snap, wt=wt, repo_root=repo_root,
+                    summary_path=result.summary_path,
+                    env=env, log_path=log_path,
+                    panel=panel_verdict,
+                    iterations_left=iterations_remaining,
+                )
+                panel_iterations_used += 1
+                iterations_remaining -= 1
+                _emit_event(cfg, journal_mod.EventType.panel_iterate, {
+                    "iteration": panel_iterations_used,
+                    "iterations_remaining": iterations_remaining,
+                    "corrective_spawn_ok": bool(corrective_ok),
+                    "blocking_findings": len(panel_verdict.blocking_findings),
+                }, task_key=snap.key)
+                if not corrective_ok:
+                    _log(log_path,
+                         f"  {snap.key} panel-iterate spawn failed — leaving "
+                         f"last panel verdict in place")
+                    break
 
-        if panel_verdict is not None and not panel_verdict.is_approve:
-            final_status = plan_mod.BLOCKED
-            final_blocked_reason = (
-                f"cross_family_panel: {panel_verdict.summary}"
-                + (f" (after {panel_iterations_used} iterate attempt(s))"
-                   if panel_iterations_used else "")
-            )
-            _append_panel_findings_to_summary(
-                result.summary_path, panel_verdict, log_path, snap.key,
-            )
-        elif panel_verdict is not None:
-            _append_panel_findings_to_summary(
-                result.summary_path, panel_verdict, log_path, snap.key,
-            )
+            if panel_verdict is not None and not panel_verdict.is_approve:
+                final_status = plan_mod.BLOCKED
+                final_blocked_reason = (
+                    f"cross_family_panel: {panel_verdict.summary}"
+                    + (f" (after {panel_iterations_used} iterate attempt(s))"
+                       if panel_iterations_used else "")
+                )
+                _append_panel_findings_to_summary(
+                    result.summary_path, panel_verdict, log_path, snap.key,
+                )
+                if idx + 1 < len(cascade):
+                    findings_txt = cfr_mod.render_findings_markdown(panel_verdict)
+                    cascade_context = (
+                        f"Cross-family panel BLOCKED after {attempt_agent}"
+                        f"@{attempt_effort or 'default'}:\n"
+                        f"{panel_verdict.summary}\n\n{findings_txt[:3000]}"
+                    )
+                    fail_reason = "cross_family_panel_block"
+                    continue
+            elif panel_verdict is not None:
+                _append_panel_findings_to_summary(
+                    result.summary_path, panel_verdict, log_path, snap.key,
+                )
+
+        # Gates passed (or no further cascade). Exit cascade loop.
+        break
+
+    if used_agent is None or result is None or s is None:
+        # Every cascade rung failed to produce a usable spawn result.
+        _mark_blocked(cfg, snap.batch_keys or snap.key,
+                      reason=fail_reason or "spawn_failed")
+        return plan_mod.BLOCKED
 
     # Auto-integrate: if the Tasker landed work and the run config asks for
     # auto-integration, merge feat → base_branch BEFORE we flip the YAML
@@ -1204,6 +1681,12 @@ def _run_task(
             row["mechanical_verification"] = mech_outcome
             if mech_outcome == "failed" and mech_detail:
                 row["mechanical_verification_detail"] = mech_detail
+        # Seal-inversion outcome (VG-3). Absent when the gate never ran
+        # (not fix-shaped, non-Done, or the mechanical gate wasn't green).
+        if seal_outcome is not None:
+            row["seal_verification"] = seal_outcome
+            if seal_outcome in ("failed", "error") and seal_detail:
+                row["seal_verification_detail"] = seal_detail[:mv_mod.TAIL_CHARS]
         # LLM verification outcome (VG-4). Absent entirely when the gate never
         # ran (non-Done, or --skip-verification) — absence means "not
         # evaluated". verification_iterations is the count of INCOMPLETE →
@@ -1275,9 +1758,12 @@ def _run_task(
             row["num_turns"] = u.num_turns
         if u.model is not None:
             row["model"] = u.model
-        # Agent/version provenance (OPS-4): agent, dispatcher_version, and —
-        # when the once-per-run capture succeeded — agent_version.
-        row.update(_agent_meta(cfg))
+        # Agent/version provenance (OPS-4): actual implementer family, not a
+        # hard-coded "claude" string (Grok/codex/gemini dogfood depends on this).
+        row.update(_agent_meta(cfg, agent=snap.agent or cfg.implementer))
+        # Prefer the snap's agent when already stamped (cascade may have updated it).
+        if snap.agent:
+            row["agent"] = snap.agent
 
     _mutate_row(cfg, snap.batch_keys, _apply)
 
@@ -1302,12 +1788,12 @@ def _run_task(
             "auto_integrate_status": integrate_result.status
                 if integrate_result else None,
             "needs_push": needs_push,
-            **_agent_meta(cfg),
+            **_agent_meta(cfg, agent=snap.agent or cfg.implementer),
         }, task_key=snap.key)
     else:
         _emit_event(cfg, journal_mod.EventType.task_blocked, {
             "reason": final_blocked_reason or "blocked",
-            **_agent_meta(cfg),
+            **_agent_meta(cfg, agent=snap.agent or cfg.implementer),
         }, task_key=snap.key)
 
     # If the final status is Blocked (panel block, auto-integrate fail,
@@ -1329,27 +1815,53 @@ def _run_task(
     return final_status
 
 
+def _resolved_quality(cfg: RunConfig, snap: TaskSnapshot) -> ql_mod.QualityLevels:
+    """Resolve verify + panel intensity for this task (Phase 4)."""
+    run_panel = (cfg.cross_family_panel or "auto").lower()
+    if run_panel not in ql_mod.KNOWN_PANEL:
+        run_panel = "auto"
+    run_verify = "mechanical" if getattr(cfg, "skip_verification", False) else "llm"
+    return ql_mod.resolve_quality_levels(
+        labels=snap.labels,
+        task_verify=snap.verify,
+        task_panel=snap.panel,
+        design_verify=snap.design_verify,
+        design_panel=snap.design_panel,
+        run_verify=run_verify,
+        run_panel=run_panel,
+    )
+
+
 def _panel_should_run(cfg: RunConfig, snap: TaskSnapshot) -> bool:
     """Decide whether to fire the cross-family panel for this Done task.
 
-    Reads `cfg.cross_family_panel`:
-      - "never"  → no
-      - "always" → yes (regardless of labels)
-      - "auto"   → yes iff the labels indicate critical/security/financial/high
+    Honors per-task ``panel:`` when set (Phase 4), else run-level mode +
+    risk/size policy. docs/test types always skip.
 
-    "auto" is the default. docs/test-type tickets always skip the panel,
-    even with high-risk labels, because they don't ship code paths that
-    need the safety net.
+    Explicit task pins ``full`` / ``single`` / ``always`` always win over the
+    small-leaf skip (contract: task fields always win).
     """
-    mode = (cfg.cross_family_panel or "auto").lower()
+    if snap.type and snap.type.lower() in cfr_mod._PANEL_SKIP_TYPES:
+        return False
+    levels = _resolved_quality(cfg, snap)
+    mode = levels.panel
     if mode == "never":
         return False
-    if mode == "always":
-        # docs/tests still skip — same rule as auto.
-        if snap.type and snap.type.lower() in cfr_mod._PANEL_SKIP_TYPES:
-            return False
+    # Explicit task pin of an affirmative panel intensity always runs.
+    task_panel = (snap.panel or "").strip().lower()
+    if task_panel in ("full", "single", "always"):
         return True
-    # "auto" or "progressive" — risk-tier gating
+    # Cost/speed: XS/S leaves without risk skip under auto (and under
+    # run-level full when not task-pinned). Run-level ``always`` still runs.
+    if cfr_mod.is_small_leaf(snap.labels) and not cfr_mod.has_risk_label(snap.labels):
+        # Cost/speed: XS/S leaves without risk labels skip the panel under
+        # auto/full — but never over an explicit task pin (the early return
+        # above) and never under run-level always (main behavior).
+        if snap.panel is None and mode != "always":
+            return False
+    if mode in ("full", "always", "single"):
+        return True
+    # auto — risk-tier gating
     return cfr_mod.panel_required(snap.labels, task_type=snap.type)
 
 
@@ -1391,8 +1903,43 @@ def _run_cross_family_panel(
     except (OSError, FileNotFoundError) as e:
         _log(log_path, f"  {snap.key} panel: summary.md read failed: {e}")
 
-    reviewers = [r for r in _panel_reviewer_factory(cfg)
-                 if r.family != (snap.agent or "claude")]
+    blast = br_mod.build_blast_radius(
+        repo_root=repo_root, branch=diff_branch, diff=diff,
+    )
+    if blast:
+        _log(log_path,
+             f"  {snap.key} panel: blast-radius artifact "
+             f"({blast.count(chr(10)) + 1} lines) attached")
+
+    # Seat selection composes two rules that pull opposite directions:
+    #   * Cross-family review means a DIFFERENT family judges — the author's
+    #     own family self-reviewing is circular and drove false corroboration
+    #     blocks on gemini/codex-authored tasks, so exclude it by default.
+    #   * Reduced fleets (--no-claude, panel: single) can't afford the lost
+    #     seat — when exclusion would leave the panel un-corroboratable
+    #     (< 2 seats), re-seat the author's family and say so loudly.
+    all_seats = list(_panel_reviewer_factory(cfg))
+    author_family = snap.agent or "claude"
+    reviewers = [r for r in all_seats if r.family != author_family]
+    if len(reviewers) < 2 and len(all_seats) > len(reviewers):
+        reviewers = all_seats
+        _log(log_path,
+             f"  {snap.key} panel: seating author family {author_family!r} — "
+             f"exclusion would leave only {len(all_seats) - 1} seat(s)")
+    levels = _resolved_quality(cfg, snap)
+    if levels.panel == "single" and reviewers:
+        # One cheap second look: never the author's own family when any
+        # other seat exists; prefer codex among the rest.
+        preferred = sorted(
+            reviewers,
+            key=lambda r: (
+                1 if getattr(r, "family", None) == author_family else 0,
+                0 if getattr(r, "family", None) == "codex" else 1,
+            ),
+        )
+        reviewers = preferred[:1]
+        _log(log_path,
+             f"  {snap.key} panel: single seat → {reviewers[0].family}")
     advisory_reviewers = _panel_advisory_reviewer_factory(
         cfg, repo_root, log_path, snap.key,
     )
@@ -1410,17 +1957,19 @@ def _run_cross_family_panel(
                 diff=diff,
                 branch=diff_branch,
                 base_branch=diff_base,
+                blast_radius=blast,
+                implementer_prior=cfr_mod.implementer_prior_for(snap.agent),
                 reviewers=codex_revs,
                 advisory_reviewers=[], # skip advisory for the first stage
                 log=lambda m: _log(log_path, m),
             )
-            
+
             # If codex finds ANY blocking finding, we short circuit and return block.
             if codex_verdict.consensus == "block" or any(f for r in codex_verdict.reviewers for f in r.blocking_findings()):
                 codex_verdict.consensus = "block"
                 codex_verdict.summary += " (Progressive short-circuit on Codex block)"
                 return codex_verdict
-            
+
             _log(log_path, f"  {snap.key} panel: codex approved, running remainder")
             # If it approves, run the others and aggregate
             other_verdict = cfr_mod.run_panel(
@@ -1430,6 +1979,8 @@ def _run_cross_family_panel(
                 diff=diff,
                 branch=diff_branch,
                 base_branch=diff_base,
+                blast_radius=blast,
+                implementer_prior=cfr_mod.implementer_prior_for(snap.agent),
                 reviewers=other_revs,
                 advisory_reviewers=advisory_reviewers,
                 log=lambda m: _log(log_path, m),
@@ -1444,6 +1995,8 @@ def _run_cross_family_panel(
         diff=diff,
         branch=diff_branch,
         base_branch=diff_base,
+        blast_radius=blast,
+        implementer_prior=cfr_mod.implementer_prior_for(snap.agent),
         reviewers=reviewers,
         advisory_reviewers=advisory_reviewers,
         log=lambda m: _log(log_path, m),
@@ -1506,6 +2059,9 @@ def run_feature_review(
         ticket_key="FEATURE-REVIEW",
         ticket_summary=f"final review of feature {epic}",
         summary_md=summary_md, diff=diff, branch=branch, base_branch=base,
+        blast_radius=br_mod.build_blast_radius(
+            repo_root=repo_root, branch=branch, diff=diff),
+        implementer_prior=cfr_mod.implementer_prior_for(None),
         reviewers=_panel_reviewer_factory(cfg),
         advisory_reviewers=_panel_advisory_reviewer_factory(
             cfg, repo_root, log_path, "FEATURE-REVIEW"),
@@ -1600,7 +2156,12 @@ def _dispatch_drain(
             tasks = _load_tasks_snapshot(cfg)
             runnable = plan_mod.runnable_now(tasks, integration=cfg.integration)
             runnable = plan_mod.filter_tasks(runnable, cfg.label_filter, cfg.only_keys)
-            in_flight_keys = set(in_flight.values())
+            # in_flight values are single keys or batch_keys lists — flatten
+            # so no member of an in-flight batch is ever re-dispatched.
+            in_flight_keys = {
+                k for v in in_flight.values()
+                for k in (v if isinstance(v, list) else [v])
+            }
             runnable = [t for t in runnable if t.key not in in_flight_keys]
 
             # Budget ceiling (BUDGET-1): once this run's spend reaches the
@@ -1633,18 +2194,89 @@ def _dispatch_drain(
                     ))
                 runnable = []  # stop starting new work; drain in-flight
             while runnable and len(in_flight) < cfg.max_parallel:
-                t = runnable.pop(0)
+                group, runnable = _take_batch_group(runnable)
+                primary = group[0]
+                agent = primary.agent or routing_mod.default_implementer(
+                    primary.labels,
+                    run_implementer=cfg.implementer,
+                    no_claude=cfg.no_claude,
+                    cheap_first=getattr(cfg, "cheap_first", False),
+                )
+                batch_keys = [t.key for t in group]
+                description = _combined_batch_description(group)
+                summary = (
+                    primary.summary
+                    if len(group) == 1
+                    else (
+                        f"batch {primary.batch_id}: "
+                        + "; ".join(t.summary for t in group)
+                    )
+                )
+                # Highest intensity wins for verify/panel across the batch.
+                verify = primary.verify
+                panel = primary.panel
+                for t in group[1:]:
+                    if t.verify and (
+                        verify is None
+                        or ql_mod._VERIFY_RANK.get(t.verify, 0)
+                        > ql_mod._VERIFY_RANK.get(verify or "none", 0)
+                    ):
+                        verify = t.verify
+                    if t.panel and (
+                        panel is None
+                        or ql_mod._PANEL_RANK.get(t.panel, 0)
+                        > ql_mod._PANEL_RANK.get(panel or "never", 0)
+                    ):
+                        panel = t.panel
+                # Union labels; blocked_by is primary only (siblings co-runnable).
+                labels: list[str] = []
+                seen_lbl: set[str] = set()
+                for t in group:
+                    for lab in t.labels or []:
+                        if lab not in seen_lbl:
+                            seen_lbl.add(lab)
+                            labels.append(lab)
+                # Explicit row model wins; else tier-route by the primary
+                # row's risk: field (repo model_routing config); else None
+                # (CLI default). Tier routing is Claude-tier oriented — only
+                # consulted when the task routes to the claude family
+                # (spawn_agent drops claude-shaped pins for other families).
+                routed = primary.model or (
+                    cfg.model_router(str(primary.raw.get("risk") or "") or None)
+                    if cfg.model_router and agent in (None, "claude") else None
+                )
                 snap = TaskSnapshot(
-                    key=t.key, summary=t.summary, description=t.description,
-                    type=t.type, labels=list(t.labels), model=t.model,
-                    # Per-task `agent:` wins; else fall back to the run-level
-                    # --implementer (cfg.implementer); else None -> claude.
-                    agent=(t.agent or cfg.implementer), blocked_by=list(t.blocked_by),
+                    key=primary.key,
+                    summary=summary,
+                    description=description,
+                    type=primary.type,
+                    labels=labels,
+                    model=routed,
+                    agent=agent,
+                    effort=primary.effort,
+                    batch_id=primary.batch_id,
+                    batch_keys=batch_keys,
+                    verify=verify,
+                    panel=panel,
+                    design=primary.design if hasattr(primary, "design") else None,
+                    # Union of the whole group's deps (deduped, minus
+                    # in-batch keys): sibling B's Done-but-not-on-base
+                    # dependency branch must be merged into the shared
+                    # worktree exactly as if B ran solo (INT-4).
+                    blocked_by=[
+                        k for k in dict.fromkeys(
+                            k for t in group for k in (t.blocked_by or [])
+                        ) if k not in {g.key for g in group}
+                    ],
                 )
                 _mark_in_progress(cfg, snap, run_dir)
                 fut = exe.submit(_run_task, snap, cfg, run_dir, log_path, repo_root)
-                in_flight[fut] = snap.key
-                _log(log_path, f"dispatch {snap.key} submitted")
+                in_flight[fut] = list(snap.batch_keys) or snap.key
+                _log(
+                    log_path,
+                    f"dispatch {snap.key} submitted"
+                    + (f" batch={batch_keys}" if len(batch_keys) > 1 else ""),
+                )
             if not in_flight:
                 break
             done, _pending = wait(list(in_flight), return_when=FIRST_COMPLETED)
@@ -1727,6 +2359,9 @@ def _append_fix_tasks(cfg: RunConfig, accepted: list[dict], review_round: int) -
                 "type": "Task",
                 "labels": ["size:S", "area:fix"],
                 "agent": "claude",
+                # Synthesized fixes are review-finding remediations on code
+                # that already passed gates once — High tier for model routing.
+                "risk": "High",
             })
             added += 1
         doc["tasks"] = rows
@@ -1788,10 +2423,8 @@ def _spawn_panel_iterate(
         skip_design=cfg.skip_design,
         skip_security_linter=cfg.skip_security_linter,
         reviewer_count=cfg.reviewer_count,
+        agent=snap.agent,
     )
-    extra = list(cfg.claude_extra_args)
-    if snap.model:
-        extra.extend(["--model", snap.model])
 
     # Snapshot feat HEAD AND base_branch tip BEFORE the iterate spawn.
     # The "did the iterate actually produce a commit?" check needs to
@@ -1805,7 +2438,11 @@ def _spawn_panel_iterate(
         result = spawn_mod.spawn_agent(
             agent=snap.agent,
             claude_bin=cfg.claude_bin, cwd=wt.path, env=env, prompt=iter_prompt,
-            extra_args=extra,
+            model=_effective_model(
+                snap.agent, snap.model, log_path=log_path, task_key=snap.key,
+            ),
+            effort=snap.effort,
+            extra_args=list(cfg.claude_extra_args),
             timeout_seconds=cfg.task_timeout_seconds,
         )
     except Exception as e:
@@ -1943,6 +2580,7 @@ def _verify_llm_and_maybe_iterate(
     env: dict,
     log_path: Path,
     base_sha_before: str | None,
+    max_verify_iterations: int | None = None,
 ) -> _LlmVerifyOutcome:
     """Run the LLM verifier; iterate on INCOMPLETE up to the budget.
 
@@ -1952,7 +2590,15 @@ def _verify_llm_and_maybe_iterate(
     iterate produced no new commit, or an iterate's mechanical re-run went red.
     Never raises — the verifier is conservative (a spawn/parse failure is
     INCOMPLETE, never VERIFIED).
+
+    ``max_verify_iterations`` overrides ``cfg.max_verify_iterations`` without
+    mutating the shared RunConfig (thread-safe for llm_strict bumps).
     """
+    budget = (
+        cfg.max_verify_iterations
+        if max_verify_iterations is None
+        else max_verify_iterations
+    )
     cost_total = 0.0
     iterations = 0
     while True:
@@ -1961,7 +2607,7 @@ def _verify_llm_and_maybe_iterate(
             summary_path=summary_path, base_sha_before=base_sha_before,
             log_path=log_path, iteration=iterations,
         )
-        if result.usage.cost_usd is not None:
+        if result.usage and result.usage.cost_usd is not None:
             cost_total += result.usage.cost_usd
 
         if result.verdict.verdict == verifier_mod.VerdictKind.VERIFIED:
@@ -1969,12 +2615,25 @@ def _verify_llm_and_maybe_iterate(
                 verified=True, iterations=iterations, cost_usd_total=cost_total,
             )
 
+        # Pure verifier infrastructure failure: do not iterate the implementer
+        # or cascade-escalate (that burns rungs×iterations on a dead seat).
+        if result.verdict.reason == verifier_mod.REASON_SPAWN_FAILED:
+            detail = result.error or result.verdict.reason or "verifier_spawn_failed"
+            _log(log_path,
+                 f"  {snap.key} verifier UNAVAILABLE ({detail}) — "
+                 f"blocking verifier_unavailable (no iterate/cascade)")
+            return _LlmVerifyOutcome(
+                verified=False, iterations=iterations, cost_usd_total=cost_total,
+                detail=str(detail)[:2000],
+                blocked_reason="verifier_unavailable",
+            )
+
         # INCOMPLETE. Out of budget → Blocked with the gaps as the detail.
         detail = _render_gaps_detail(result.verdict)
-        if iterations >= cfg.max_verify_iterations:
+        if iterations >= budget:
             _log(log_path,
                  f"  {snap.key} verifier INCOMPLETE and iterate budget "
-                 f"exhausted ({iterations}/{cfg.max_verify_iterations}) — "
+                 f"exhausted ({iterations}/{budget}) — "
                  f"blocking verification_incomplete")
             return _LlmVerifyOutcome(
                 verified=False, iterations=iterations, cost_usd_total=cost_total,
@@ -1984,7 +2643,7 @@ def _verify_llm_and_maybe_iterate(
         # Iterate: re-spawn the Tasker with the gap list.
         _log(log_path,
              f"  {snap.key} verifier INCOMPLETE — iterating "
-             f"({cfg.max_verify_iterations - iterations} attempt(s) left)")
+             f"({budget - iterations} attempt(s) left)")
         corrective_ok = _spawn_verifier_iterate(
             cfg=cfg, snap=snap, wt=wt, repo_root=repo_root,
             summary_path=summary_path, env=env, log_path=log_path,
@@ -1993,7 +2652,7 @@ def _verify_llm_and_maybe_iterate(
         iterations += 1
         _emit_event(cfg, journal_mod.EventType.verification_iterate, {
             "iteration": iterations,
-            "iterations_remaining": cfg.max_verify_iterations - iterations,
+            "iterations_remaining": budget - iterations,
             "corrective_spawn_ok": bool(corrective_ok),
             "gaps": len(result.verdict.gaps),
         }, task_key=snap.key)
@@ -2091,13 +2750,19 @@ def _run_llm_verifier(
         "description": snap.description,
     }
     runner = _verifier_run_override or verifier_mod.run_verifier
+    v_agent = getattr(cfg, "verifier_agent", "claude") or "claude"
+    v_model = _verifier_model_for(
+        v_agent, snap.model, cfg.verifier_model,
+        log=lambda m: _log(log_path, f"  {snap.key} {m}"),
+    )
     result = runner(
         task=task_row,
         diff=diff,
         summary_text=summary_text,
         claude_bin=cfg.claude_bin,
-        model=cfg.verifier_model,
+        model=v_model,
         timeout_seconds=cfg.verifier_timeout_seconds,
+        agent=v_agent,
     )
 
     # Cost folding for the per-spawn journal rollup. The verifier IS a claude
@@ -2170,10 +2835,8 @@ def _spawn_verifier_iterate(
         skip_design=cfg.skip_design,
         skip_security_linter=cfg.skip_security_linter,
         reviewer_count=cfg.reviewer_count,
+        agent=snap.agent,
     )
-    extra = list(cfg.claude_extra_args)
-    if snap.model:
-        extra.extend(["--model", snap.model])
 
     feat_sha_before_iter = _branch_sha(repo_root, wt.branch, log_path, snap.key)
     base_sha_before_iter = _branch_sha(repo_root, cfg.base_branch, log_path, snap.key)
@@ -2182,7 +2845,11 @@ def _spawn_verifier_iterate(
         result = spawn_mod.spawn_agent(
             agent=snap.agent,
             claude_bin=cfg.claude_bin, cwd=wt.path, env=env, prompt=iter_prompt,
-            extra_args=extra,
+            model=_effective_model(
+                snap.agent, snap.model, log_path=log_path, task_key=snap.key,
+            ),
+            effort=snap.effort,
+            extra_args=list(cfg.claude_extra_args),
             timeout_seconds=cfg.task_timeout_seconds,
         )
     except Exception as e:
@@ -2274,8 +2941,14 @@ def set_panel_reviewers(reviewers: list[cfr_mod.Reviewer] | None) -> None:
 
 def _panel_reviewer_factory(cfg: RunConfig) -> list[cfr_mod.Reviewer]:
     if _panel_reviewers_override is not None:
-        return _panel_reviewers_override
-    return cfr_mod.default_reviewers(timeout_seconds=cfg.cross_family_panel_timeout)
+        revs = list(_panel_reviewers_override)
+    else:
+        revs = list(cfr_mod.default_reviewers(
+            timeout_seconds=cfg.cross_family_panel_timeout))
+    # --no-claude: drop Claude seat from the authoritative panel.
+    if getattr(cfg, "no_claude", False):
+        revs = [r for r in revs if getattr(r, "family", None) != "claude"]
+    return revs
 
 
 # Test hook for ADVISORY (probationary, non-blocking) reviewers, mirroring
@@ -2667,6 +3340,83 @@ _PUSH_RETRY_PR_STEP = """\
 """
 
 
+_SUMMARY_RECOVERY_PROMPT = """\
+SUMMARY-RECOVERY SPAWN (dispatcher Tasker contract, report-only).
+A prior session completed implementation work for the task below in this
+worktree but ended WITHOUT writing its summary file — that is the ONLY gap.
+Do NOT write code, do NOT commit, do NOT rework anything.
+
+Read `.claude/workflow/roles/tasker.md` Phase 5 for the summary format, then
+reconstruct what happened from the branch itself:
+- `git log --stat {base_branch}..HEAD` shows what landed
+- read key changed files only if the log alone is ambiguous
+
+Write the summary to {summary_path} with the correct **Status:** line
+(`Done` if the committed work fulfils the task, `Blocked` with an
+escalation reason if it clearly does not). Writing that file is your only
+deliverable.
+
+Task:
+- Key:     {task_key}
+- Summary: {task_summary}
+
+Description:
+{task_description}
+"""
+
+
+def _recover_missing_summary(cfg: RunConfig, snap: TaskSnapshot,
+                             wt: wt_mod.Worktree, repo_root: Path,
+                             summary_path: Path,
+                             base_sha_before: str | None,
+                             feat_baseline_sha: str | None,
+                             env: dict, log_path: Path,
+                             agent: str | None = None) -> bool:
+    """Micro summary-writer recovery for the summary_missing chronic class.
+
+    Fires only when the branch has real commits (work happened, the report
+    didn't). Spawns a bounded write-the-summary-only session on the task's
+    routed model. Returns True iff summary_path exists afterwards; the
+    caller then proceeds through the normal parse/verify gates, so this
+    grants a report, never a waiver.
+    """
+    if not _has_commits_on_branch(
+            wt, cfg.base_branch, repo_root,
+            base_sha_before, log_path, snap.key,
+            feat_baseline_sha=feat_baseline_sha):
+        return False
+    _log(log_path, f"  {snap.key} summary missing but branch has commits — "
+                   f"spawning summary-writer recovery")
+    prompt = _SUMMARY_RECOVERY_PROMPT.format(
+        base_branch=cfg.base_branch,
+        summary_path=summary_path,
+        task_key=snap.key,
+        task_summary=snap.summary,
+        task_description=snap.description,
+    )
+    try:
+        result = spawn_mod.spawn_agent(
+            agent=agent or snap.agent,
+            claude_bin=cfg.claude_bin, cwd=wt.path, env=env, prompt=prompt,
+            model=snap.model,
+            extra_args=list(cfg.claude_extra_args),
+            timeout_seconds=min(cfg.task_timeout_seconds, 900),
+        )
+    except Exception as e:
+        _log(log_path, f"  {snap.key} summary-recovery spawn failed: {e}")
+        return False
+    _log(log_path,
+         f"  {snap.key} summary-recovery exited code={result.exit_code}")
+    _account_spawn(cfg, snap.key, result, kind="summary-recovery")
+    recovered = summary_path.exists()
+    _emit_event(cfg, journal_mod.EventType.commit_retry, {
+        "trigger": "summary_missing with commits on branch",
+        "outcome": "summary_written" if recovered else "still_missing",
+        "kind": "summary-recovery",
+    }, task_key=snap.key)
+    return recovered
+
+
 def _retry_for_commit(cfg: RunConfig, snap: TaskSnapshot, wt: wt_mod.Worktree,
                       repo_root: Path, summary_path: Path, env: dict,
                       log_path: Path,
@@ -2698,10 +3448,8 @@ def _retry_for_commit(cfg: RunConfig, snap: TaskSnapshot, wt: wt_mod.Worktree,
         skip_design=cfg.skip_design,
         skip_security_linter=cfg.skip_security_linter,
         reviewer_count=cfg.reviewer_count,
+        agent=snap.agent,
     )
-    retry_extra = list(cfg.claude_extra_args)
-    if snap.model:
-        retry_extra.extend(["--model", snap.model])
     # Snapshot base_branch tip BEFORE the retry spawn so we can detect a
     # direct-to-base advance the retry may produce (parallel to the
     # check performed on the first-spawn path).
@@ -2711,7 +3459,11 @@ def _retry_for_commit(cfg: RunConfig, snap: TaskSnapshot, wt: wt_mod.Worktree,
         result = spawn_mod.spawn_agent(
             agent=snap.agent,
             claude_bin=cfg.claude_bin, cwd=wt.path, env=env, prompt=prompt,
-            extra_args=retry_extra,
+            model=_effective_model(
+                snap.agent, snap.model, log_path=log_path, task_key=snap.key,
+            ),
+            effort=snap.effort,
+            extra_args=list(cfg.claude_extra_args),
             timeout_seconds=cfg.task_timeout_seconds,
         )
     except Exception as e:
@@ -2999,15 +3751,17 @@ def _retry_for_push(
         skip_design=cfg.skip_design,
         skip_security_linter=cfg.skip_security_linter,
         reviewer_count=cfg.reviewer_count,
+        agent=snap.agent,
     )
-    retry_extra = list(cfg.claude_extra_args)
-    if snap.model:
-        retry_extra.extend(["--model", snap.model])
     try:
         result = spawn_mod.spawn_agent(
             agent=snap.agent,
             claude_bin=cfg.claude_bin, cwd=wt.path, env=env, prompt=prompt,
-            extra_args=retry_extra,
+            model=_effective_model(
+                snap.agent, snap.model, log_path=log_path, task_key=snap.key,
+            ),
+            effort=snap.effort,
+            extra_args=list(cfg.claude_extra_args),
             timeout_seconds=cfg.task_timeout_seconds,
         )
     except Exception as e:
@@ -3052,6 +3806,48 @@ mechanical_verification_failed.
 
 Task context (for reference, do NOT redo):
 """
+
+
+def _verify_seal(
+    cfg: RunConfig,
+    snap: TaskSnapshot,
+    wt: wt_mod.Worktree,
+    base_sha: str,
+    log_path: Path,
+) -> tuple[str, str | None]:
+    """Run the seal-inversion gate (VG-3) for a fix-shaped task.
+
+    Caller has already checked ``seal_verify.applies``; this loads the repo
+    test command, runs the inversion, journals ONE ``verification_seal``
+    event, and returns ``(outcome, detail)`` in the mechanical gate's shape:
+    "passed"/"skipped" proceed, "failed"/"error" block. No retry spawn — a
+    false-passing seal needs a rethink of the test, not a mechanical nudge,
+    and the panel's evidence lens gets the detail either way.
+    """
+    try:
+        repo_cfg = repo_config_mod.load(wt.path)
+    except repo_config_mod.RepoConfigError:
+        repo_cfg = None
+    if repo_cfg is None or repo_cfg.test is None:
+        _emit_event(cfg, journal_mod.EventType.verification_seal, {
+            "outcome": "skipped", "reason": "no test command",
+        }, task_key=snap.key)
+        return "skipped", None
+
+    res = sv_mod.run_seal_inversion(
+        worktree=wt.path,
+        base=base_sha,
+        test_command=repo_cfg.test,
+        timeout_seconds=cfg.verify_test_timeout_seconds,
+        log=lambda m: _log(log_path, m),
+    )
+    _log(log_path, f"  {snap.key} seal-verify {res.outcome}: {res.detail[:160]}")
+    _emit_event(cfg, journal_mod.EventType.verification_seal, {
+        "outcome": res.outcome,
+        "detail": res.detail[:mv_mod.TAIL_CHARS],
+        "command": repo_cfg.test,
+    }, task_key=snap.key)
+    return res.outcome, res.detail
 
 
 def _verify_mechanical_and_maybe_retry(
@@ -3114,6 +3910,26 @@ def _verify_mechanical_and_maybe_retry(
             "reason": reason,
         }, task_key=snap.key)
         return "skipped", None
+
+    dirty = mv_mod.uncommitted_changes(wt.path)
+    if dirty:
+        # Committed-tree gate: a green suite over a dirty tree is evidence
+        # about the working tree, not the committed one (escape-audit class
+        # PR #671: never-added file, green output, broken build). No retry —
+        # commit discipline is the Tasker's contract, and a fix-the-tests
+        # re-spawn cannot adjudicate which dirty paths belong in the commit.
+        detail = (
+            "uncommitted changes in worktree at verification time — test "
+            "evidence is not keyed to the committed tree: " + ", ".join(dirty)
+        )
+        _log(log_path, f"  {snap.key} mechanical-verify: {detail}")
+        _emit_event(cfg, journal_mod.EventType.verification_mechanical, {
+            "outcome": "failed",
+            "reason": "uncommitted_changes",
+            "files": dirty,
+            "retried": False,
+        }, task_key=snap.key)
+        return "failed", detail
 
     first = _run_mechanical_test(cfg, snap, wt, repo_cfg,
                                  retried=False, log_path=log_path)
@@ -3213,15 +4029,17 @@ def _retry_for_test_fix(
         skip_design=cfg.skip_design,
         skip_security_linter=cfg.skip_security_linter,
         reviewer_count=cfg.reviewer_count,
+        agent=snap.agent,
     )
-    retry_extra = list(cfg.claude_extra_args)
-    if snap.model:
-        retry_extra.extend(["--model", snap.model])
     try:
         result = spawn_mod.spawn_agent(
             agent=snap.agent,
             claude_bin=cfg.claude_bin, cwd=wt.path, env=env, prompt=prompt,
-            extra_args=retry_extra,
+            model=_effective_model(
+                snap.agent, snap.model, log_path=log_path, task_key=snap.key,
+            ),
+            effort=snap.effort,
+            extra_args=list(cfg.claude_extra_args),
             timeout_seconds=cfg.task_timeout_seconds,
         )
     except Exception as e:
@@ -3326,25 +4144,39 @@ def _resolve_summary(
 # --- YAML mutation helpers -------------------------------------------------
 
 
-def _mutate_row(cfg: RunConfig, task_key: str, mutator) -> bool:
-    """Acquire the FileLock, load the YAML, find the row by key, apply
+def _mutate_row(cfg: RunConfig, task_key: str | list[str], mutator) -> bool:
+    """Acquire the FileLock, load the YAML, find the row(s) by key, apply
     `mutator(row)`, save. The mutator is called with the row's ruamel mapping.
 
-    Returns True if the row was found and mutated, False if no row matched
-    `task_key`. A missing row is logged to stderr but is NOT fatal -- the
-    YAML may have been edited externally between plan-load and write, and
+    ``task_key`` may be a single key or a list (batch_keys). All matching
+    rows are mutated in one lock/load/dump cycle.
+
+    Returns True if at least one row was found and mutated, False if no row
+    matched. A missing row is logged to stderr but is NOT fatal -- the YAML
+    may have been edited externally between plan-load and write, and
     crashing the dispatcher because a status flip can't land is a worse
     outcome than letting the run continue.
     """
+    keys = task_key if isinstance(task_key, list) else [task_key]
+    keys = [str(k) for k in keys if k is not None and str(k) != ""]
+    if not keys:
+        sys.stderr.write(
+            "warning: _mutate_row: empty task_key list (skipping status flip)\n"
+        )
+        return False
+    key_set = set(keys)
     with yaml_io.FileLock(cfg.tasks_path, timeout_seconds=cfg.lock_timeout_seconds):
         doc = yaml_io.load(cfg.tasks_path)
+        found = 0
         for row in doc.get("tasks", []):
-            if str(row.get("key")) == task_key:
+            if str(row.get("key")) in key_set:
                 mutator(row)
-                yaml_io.dump(doc, cfg.tasks_path)
-                return True
+                found += 1
+        if found:
+            yaml_io.dump(doc, cfg.tasks_path)
+            return True
         sys.stderr.write(
-            f"warning: _mutate_row: task {task_key!r} not in YAML at write time "
+            f"warning: _mutate_row: task(s) {keys!r} not in YAML at write time "
             f"(skipping status flip; YAML may have been edited mid-run)\n"
         )
         return False
@@ -3393,29 +4225,45 @@ def _mark_blocked(cfg: RunConfig, task_key: str | list[str], *, reason: str) -> 
     # worker exception). Disjoint from the in-worker Blocked task_blocked
     # in _run_task, so exactly one terminal event fires per task.
     _emit_event(cfg, journal_mod.EventType.task_blocked,
-                {"reason": reason, **_agent_meta(cfg)}, task_key=task_key)
+                {"reason": reason,
+                 **({"batch_keys": task_key} if isinstance(task_key, list)
+                    else {}),
+                 **_agent_meta(cfg)}, task_key=emit_key)
     # Best-effort notification + notify_sent journal event. Failures are
     # swallowed — never let a flaky webhook (or a journal write) break the
     # dispatch loop.
     _send_notification(cfg, notify_mod.task_blocked_notification(
-        task_key=task_key,
+        task_key=notify_key,
         summary=summary_for_notify["summary"],
         reason=reason,
         run_id=cfg.run_id,
         summary_path=summary_for_notify["summary_path"],
         tasks_yaml=str(cfg.tasks_path),
-    ), task_key=task_key)
+    ), task_key=notify_key)
 
 
 # --- misc helpers -----------------------------------------------------------
 
 
-def _agent_meta(cfg: RunConfig) -> dict[str, Any]:
+def _agent_meta(
+    cfg: RunConfig,
+    *,
+    agent: str | None = None,
+) -> dict[str, Any]:
     """Agent/version provenance stamped on every terminal row + terminal
     journal event (OPS-4). `agent_version` is OMITTED (not None) when the
-    once-per-run capture failed — degrade-to-absent, never write null."""
+    once-per-run capture failed — degrade-to-absent, never write null.
+
+    Prefer the actual implementer family (``agent=`` / snap.agent /
+    cfg.implementer) over the legacy hard-coded Claude name.
+    """
+    family = (
+        agent
+        or getattr(cfg, "implementer", None)
+        or spawn_mod.AGENT_NAME
+    )
     meta: dict[str, Any] = {
-        "agent": spawn_mod.AGENT_NAME,
+        "agent": family,
         "dispatcher_version": __version__,
     }
     if cfg.agent_version:
@@ -3428,6 +4276,42 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
     # CLI base_branch wins if explicitly set; else fall back to "main" here
     # and let execute() check the YAML's top-level before final resolution.
     cli_base = getattr(args, "base_branch", None)
+    no_claude = bool(getattr(args, "no_claude", False))
+    implementer = getattr(args, "implementer", None)
+    cascade_terminal = getattr(args, "cascade_terminal", None)
+    skip_verification = getattr(args, "skip_verification", False)
+    haiku_summary = getattr(args, "haiku_summary", False)
+    cross_family_panel = getattr(args, "cross_family_panel", "auto")
+    verifier_agent = getattr(args, "verifier_agent", None)
+    design_agent = getattr(args, "design_agent", None)
+    enable_design = bool(getattr(args, "enable_design_stage", False))
+    cheap_first = bool(getattr(args, "cheap_first", False))
+    if no_claude:
+        # Dogfood / Grok-only fleet: never require or escalate to Claude.
+        if not implementer:
+            implementer = "grok"
+        if not cascade_terminal:
+            cascade_terminal = "grok"
+        if not verifier_agent:
+            verifier_agent = "grok"
+        if not design_agent:
+            design_agent = "grok"
+        haiku_summary = False
+    if not cascade_terminal:
+        cascade_terminal = "claude"
+    cascade_terminal = str(cascade_terminal).strip().lower()
+    if cascade_terminal not in ("claude", "grok"):
+        cascade_terminal = "claude"
+    if not verifier_agent:
+        verifier_agent = "claude"
+    verifier_agent = str(verifier_agent).strip().lower()
+    if verifier_agent not in ("claude", "grok"):
+        verifier_agent = "claude"
+    if not design_agent:
+        design_agent = "claude" if not no_claude else "grok"
+    design_agent = str(design_agent).strip().lower()
+    if design_agent not in ("claude", "grok", "codex", "gemini"):
+        design_agent = "grok" if no_claude else "claude"
     return RunConfig(
         tasks_path=Path(args.tasks_yaml).resolve(),
         runs_dir=Path(args.runs_dir).resolve(),
@@ -3444,7 +4328,13 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
         label_filter=plan_mod.parse_label_filter(args.filter_spec),
         only_keys=_split_keys(args.only_keys),
         gh_bin=getattr(args, "gh_bin", "gh"),
-        implementer=getattr(args, "implementer", None),
+        implementer=implementer,
+        cascade_terminal=cascade_terminal,
+        no_claude=no_claude,
+        verifier_agent=verifier_agent,
+        design_agent=design_agent,
+        enable_design_stage=bool(enable_design),
+        cheap_first=cheap_first or no_claude,
         claude_extra_args=extra.split() if extra else [],
         base_branch=cli_base if cli_base else "main",
         # Integration mode (PRF-1). A fresh CLI run carries the raw --integration
@@ -3465,9 +4355,9 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
         # getattr defaults keep `dispatcher resume` of pre-VG-4 journals
         # working — their genesis run_config lacks these keys.
         max_verify_iterations=getattr(args, "max_verify_iterations", 2),
-        skip_verification=getattr(args, "skip_verification", False),
+        skip_verification=skip_verification,
         auto_integrate=getattr(args, "auto_integrate", False),
-        cross_family_panel=getattr(args, "cross_family_panel", "auto"),
+        cross_family_panel=cross_family_panel,
         cross_family_panel_timeout=getattr(
             args, "cross_family_panel_timeout",
             cfr_mod.DEFAULT_REVIEWER_TIMEOUT_SECONDS,
@@ -3475,7 +4365,7 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
         cross_family_panel_iterate=getattr(
             args, "cross_family_panel_iterate", 0,
         ),
-        haiku_summary=getattr(args, "haiku_summary", False),
+        haiku_summary=haiku_summary,
         feature_review=getattr(args, "feature_review", False),
         feature_review_rounds=getattr(args, "feature_review_rounds", 3),
         # getattr default keeps `dispatcher resume` of pre-BUDGET journals

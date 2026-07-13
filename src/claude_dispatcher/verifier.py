@@ -53,7 +53,7 @@ DEFAULT_VERIFIER_TIMEOUT_SECONDS = 600
 # Real diffs land at ~300-2000 lines; 8000 lines is the safety bound. Above
 # that we truncate with a marker. Tickets larger than this should be split
 # anyway.
-MAX_DIFF_LINES = 8000
+MAX_DIFF_LINES = 24000  # raised from 8000 (2026-07-12): real epics exceed 8k after generated-file exclusion; modern models hold 24k diff lines comfortably
 
 # Reason codes stamped on a VerifierVerdict when the INCOMPLETE verdict was
 # produced by the parser/spawn machinery rather than by the verifier model
@@ -154,6 +154,20 @@ def _load_prompt() -> str:
     return path.read_text(encoding="utf-8")
 
 
+
+# Injected into every verifier prompt: the diff DELIBERATELY excludes
+# generated artifacts (cross_family_reviewer.DIFF_EXCLUDE_PATHSPECS), so
+# their absence is never evidence of missing work — the mechanical gate
+# compiles against them. Without this notice the verifier false-blocks
+# proto tasks for "absent" pb.go (CH-CRUD, 2026-07-13).
+GENERATED_EXCLUSION_NOTICE = (
+    "NOTE: this diff deliberately EXCLUDES generated artifacts "
+    "(*.pb.go, *_grpc.pb.go, *connect Go packages, *_pb.ts, sqlc output, "
+    "lockfiles). Their absence from the diff is BY DESIGN and must never "
+    "be reported as a gap; the mechanical test gate already compiled the "
+    "task against them. Judge only hand-written code.\n\n"
+)
+
 def build_verifier_prompt(
     task: Mapping,
     diff: str,
@@ -177,6 +191,9 @@ def build_verifier_prompt(
             f"{head}\n\n... [diff truncated at {max_diff_lines} lines "
             f"of {len(diff_lines)} total] ..."
         )
+    # After truncation so the notice never eats diff budget or skews the
+    # truncation marker's line accounting.
+    diff = GENERATED_EXCLUSION_NOTICE + diff
     return _load_prompt().format(
         task_key=str(task.get("key") or "unknown"),
         task_summary=str(task.get("summary") or ""),
@@ -483,14 +500,14 @@ def run_verifier(
     claude_bin: str = "claude",
     model: str | None = None,
     timeout_seconds: int = DEFAULT_VERIFIER_TIMEOUT_SECONDS,
+    agent: str = "claude",
+    grok_bin: str = "grok",
 ) -> VerifierResult:
-    """Spawn an independent claude verifier over one task's diff + summary.
+    """Spawn an independent verifier over one task's diff + summary.
 
-    Uses the same flag set as the dispatcher's Tasker spawn and the panel's
-    ClaudeReviewer: `--print --output-format json --permission-mode
-    bypassPermissions --allow-dangerously-skip-permissions`. The verifier
-    needs no tool use beyond reading the prompt, but the bypass flags
-    prevent any incidental tool-permission prompt from stalling stdin.
+    ``agent`` is ``claude`` (default) or ``grok``. Claude uses
+    ``--print --output-format json`` with permission bypass flags. Grok uses
+    headless ``--always-approve --output-format json --prompt-file``.
 
     Never raises. Conservative contract: a spawn or parse failure is never
     VERIFIED. CLI missing / timeout / nonzero exit / any other exception
@@ -500,6 +517,7 @@ def run_verifier(
     None, gaps populated).
     """
     start = time.monotonic()
+    agent = (agent or "claude").strip().lower()
 
     def _spawn_failed(message: str) -> VerifierResult:
         return VerifierResult(
@@ -512,6 +530,19 @@ def run_verifier(
 
     try:
         prompt = build_verifier_prompt(task, diff, summary_text)
+        if agent == "grok":
+            return _run_grok_verifier(
+                prompt=prompt,
+                grok_bin=grok_bin,
+                model=model,
+                timeout_seconds=timeout_seconds,
+                start=start,
+                spawn_failed=_spawn_failed,
+            )
+        # Without an explicit --model the spawn inherits the operator's CLI
+        # session default — the exact "default cascades into headless
+        # spawns" cost leak tier routing exists to prevent. Callers pass the
+        # task's routed model; None preserves the legacy inherit behavior.
         cmd = [
             claude_bin, "--print",
             "--output-format", "json",
@@ -543,6 +574,68 @@ def run_verifier(
     usage = parse_usage_from_json(proc.stdout)
     # Unwrap the JSON envelope; fall back to raw stdout (parse_verdict is
     # tolerant and conservatively yields INCOMPLETE on anything unparseable).
+    message = _extract_message(proc.stdout) or proc.stdout
+    return VerifierResult(
+        verdict=parse_verdict(message),
+        usage=usage,
+        duration_seconds=time.monotonic() - start,
+    )
+
+
+def _run_grok_verifier(
+    *,
+    prompt: str,
+    grok_bin: str,
+    model: str | None,
+    timeout_seconds: int,
+    start: float,
+    spawn_failed,
+) -> VerifierResult:
+    """Headless grok path for the verifier worker."""
+    import tempfile
+    from .spawn import parse_grok_usage
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".md", prefix="verifier-grok-", delete=False,
+        ) as tf:
+            tf.write(prompt)
+            prompt_path = Path(tf.name)
+        cmd = [
+            grok_bin, "--always-approve",
+            "--output-format", "json",
+            "--prompt-file", str(prompt_path),
+        ]
+        if model and "claude" in str(model).lower():
+            model = None  # a claude-shaped pin must never reach the grok CLI
+        if model:
+            cmd.extend(["--model", model])
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_seconds,
+            stdin=subprocess.DEVNULL,
+        )
+    except FileNotFoundError as e:
+        return spawn_failed(f"cli not found: {e}")
+    except subprocess.TimeoutExpired:
+        return spawn_failed(f"cli timed out after {timeout_seconds}s")
+    except Exception as e:
+        return spawn_failed(f"cli invocation raised: {e}")
+    finally:
+        try:
+            prompt_path.unlink(missing_ok=True)  # type: ignore[name-defined]
+        except Exception:
+            pass
+
+    if proc.returncode != 0:
+        return spawn_failed(
+            f"grok exit={proc.returncode}: {proc.stderr.strip()[-400:]}"
+        )
+
+    usage = parse_grok_usage(proc.stdout)
     message = _extract_message(proc.stdout) or proc.stdout
     return VerifierResult(
         verdict=parse_verdict(message),

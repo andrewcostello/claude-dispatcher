@@ -11,8 +11,18 @@ We are trialing a new way to run dispatched work, motivated by two failures:
 unreviewable code volume, and long runs thrashing on an implicit/wrong
 architecture. Full design: `docs/contract-first-deviation-model.md`.
 
-## NEW: Task Batching
-The dispatcher now supports batching multiple tasks into a single LLM session to save time and API costs. If tasks in your `tasks.yaml` share a `batch_id`, they will be executed together. Read `docs/task-batching.md` before planning multi-task workflows to understand how it handles prompts, context, and status synchronization!
+## Task Batching
+If tasks in your `tasks.yaml` share a non-empty `batch_id` **and** are
+co-runnable in the same wave, the dispatcher runs them as one work unit
+(one worktree, one implementer session, combined prompt; all keys get the
+same Done/Blocked outcome). See `docs/task-batching.md` and
+`docs/how-to-author-tasks.md` Phase C.
+
+## Authoring tasks.yaml (planners)
+If you are asked to **build or rewrite a task list / PRD** for dispatcher runs,
+follow `docs/how-to-author-tasks.md` and use `docs/templates/planner-prompt.md`.
+Skeleton/contracts first, then the task graph, then optional `batch_id`s.
+Do not invent mega-tasks; dry-run before dispatch.
 
 First subject: the dual-backend FullSwing mobile feature (its plan doc lives in
 the evenplay-mono repo at `docs/plans/2026-06-18-mobile-dual-backend-fullswing.md`).

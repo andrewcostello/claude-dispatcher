@@ -1,0 +1,68 @@
+# Dogfood tasks for Grok-first / single-orchestrator work.
+# Prefer: dispatcher run features/grok-dogfood/tasks.yaml --implementer grok
+prd: features/grok-dogfood/PRD.md
+project: claude-dispatcher
+epic: grok-dogfood
+
+tasks:
+  - key: DOG-0-1
+    summary: "Dogfood README points at operator runbook"
+    description: |
+      Ensure docs/dogfood/README.md exists and links to GROK_OPERATOR.md,
+      the grok-first plan, single-orchestrator architecture, and this tasks.yaml.
+
+      Acceptance:
+        - docs/dogfood/README.md exists
+        - It references GROK_OPERATOR.md and the plan path
+    type: Task
+    estimate: 5m
+    labels: [size:XS, area:docs, dogfood]
+    agent: grok
+
+  - key: DOG-0-2
+    summary: "Lock implementer prompts: no tasker.md for any agent"
+    description: |
+      Keep a unit test that asserts spawn.build_prompt for agent claude and
+      agent grok does NOT contain "tasker.md" or "adopt the Tasker role".
+
+      Acceptance:
+        - tests cover claude and grok (and ideally codex/gemini)
+        - pytest passes for that test file
+    type: Task
+    estimate: 10m
+    labels: [size:XS, area:tests, dogfood]
+    agent: grok
+    verify: mechanical
+    panel: never
+
+  - key: DOG-2-1
+    summary: "Document --no-claude and cascade-terminal in operator runbook"
+    description: |
+      Ensure docs/dogfood/GROK_OPERATOR.md documents --no-claude (implementer,
+      cascade terminal, preflight without claude binary).
+
+      Acceptance:
+        - GROK_OPERATOR.md mentions --no-claude and cascade-terminal or equivalent
+    type: Task
+    estimate: 5m
+    labels: [size:XS, area:docs, dogfood]
+    agent: grok
+    verify: mechanical
+    panel: never
+
+  - key: DOG-4-1
+    summary: "quality_levels unit tests for floors and overrides"
+    description: |
+      tests/test_no_claude_and_quality.py (or equivalent) must cover:
+        - task verify/panel override wins over design
+        - design cannot sink below critical floor without task override
+        - cascade_terminal=grok never includes claude
+
+      Acceptance:
+        - pytest tests/test_no_claude_and_quality.py passes
+    type: Task
+    estimate: 15m
+    labels: [size:S, area:tests, dogfood]
+    agent: grok
+    verify: mechanical
+    panel: never

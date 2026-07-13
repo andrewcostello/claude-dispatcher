@@ -69,6 +69,21 @@ tasks:
     labels: [size:XS, risk:low]
 """
 
+# Medium, no risk labels — skipped under auto, but panel-worthy under always
+# (size XS/S leaves still skip always unless a risk label is present).
+_MEDIUM_LOW_RISK_TASK_YAML = """\
+project: TEST
+epic: PANEL
+
+tasks:
+  - key: PANEL-B
+    summary: "panel-test: medium low-risk ticket"
+    description: A medium change with no risk labels.
+    type: Task
+    estimate: 30m
+    labels: [size:M, risk:low]
+"""
+
 
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
@@ -212,8 +227,7 @@ def _reset_reviewers():
 def test_panel_auto_fires_on_risk_critical_label(repo: Path, monkeypatch) -> None:
     _seed_yaml(repo, _CRITICAL_TASK_YAML)
     _patch_spawn(monkeypatch)
-    # The task is authored by claude (default agent), so the panel excludes the
-    # claude reviewer from its own jury — only the non-author families run.
+    # Author family is allowed on the panel; this test only seats gemini+codex.
     revs = _set_reviewers(monkeypatch, [
         ("gemini", _APPROVE_OUTPUT),
         ("codex", _APPROVE_OUTPUT),
@@ -226,8 +240,6 @@ def test_panel_auto_fires_on_risk_critical_label(repo: Path, monkeypatch) -> Non
 
     assert row["status"] == "Done"
     assert row["panel_consensus"] == "approve"
-    # claude is the author → excluded from the panel, so no verdict is stamped.
-    assert "panel_verdict_claude" not in row
     assert row["panel_verdict_gemini"] == "APPROVE"
     assert row["panel_verdict_codex"] == "APPROVE"
     assert all(r.call_count == 1 for r in revs)
@@ -252,8 +264,12 @@ def test_panel_auto_skips_low_risk(repo: Path, monkeypatch) -> None:
     assert all(r.call_count == 0 for r in revs)
 
 
-def test_panel_always_fires_for_low_risk(repo: Path, monkeypatch) -> None:
-    _seed_yaml(repo, _LOW_RISK_TASK_YAML)
+def test_panel_always_fires_for_medium_low_risk(repo: Path, monkeypatch) -> None:
+    """mode=always still runs the panel on non-leaf work without risk labels.
+    (size XS/S leaves skip under run-level full/auto without a pin —
+    run-level always and explicit pins run; see tests below.)
+    """
+    _seed_yaml(repo, _MEDIUM_LOW_RISK_TASK_YAML)
     _patch_spawn(monkeypatch)
     revs = _set_reviewers(monkeypatch, [
         ("claude", _APPROVE_OUTPUT),
@@ -267,9 +283,31 @@ def test_panel_always_fires_for_low_risk(repo: Path, monkeypatch) -> None:
     row = next(t for t in doc["tasks"] if t["key"] == "PANEL-B")
     assert row["status"] == "Done"
     assert row["panel_consensus"] == "approve"
-    # claude (author) is excluded; only the non-author reviewers ran.
-    assert all(r.call_count == 1 for r in revs if r.family != "claude")
-    assert all(r.call_count == 0 for r in revs if r.family == "claude")
+    # Author family (claude) is EXCLUDED when >=2 other seats remain —
+    # cross-family means a different family judges. gemini/codex review.
+    by_family = {r.family: r.call_count for r in revs}
+    assert by_family == {"claude": 0, "gemini": 1, "codex": 1}
+
+
+def test_panel_always_runs_small_leaf_without_risk(repo: Path, monkeypatch) -> None:
+    """Run-level panel=always is an explicit operator opt-in — small leaves run."""
+    _seed_yaml(repo, _LOW_RISK_TASK_YAML)
+    _patch_spawn(monkeypatch)
+    revs = _set_reviewers(monkeypatch, [
+        ("claude", _APPROVE_OUTPUT),
+        ("gemini", _APPROVE_OUTPUT),
+        ("codex", _APPROVE_OUTPUT),
+    ])
+
+    rc = orchestrator.execute(_args(repo, key="PANEL-B", panel_mode="always"))
+    assert rc == 0
+    doc = yaml_io.load(repo / "tasks.yaml")
+    row = next(t for t in doc["tasks"] if t["key"] == "PANEL-B")
+    assert row["status"] == "Done"
+    assert row.get("panel_consensus") == "approve"
+    # Author family (claude) excluded — gemini/codex review the leaf.
+    by_family = {r.family: r.call_count for r in revs}
+    assert by_family == {"claude": 0, "gemini": 1, "codex": 1}
 
 
 def test_panel_never_skips_even_for_critical(repo: Path, monkeypatch) -> None:
@@ -294,11 +332,9 @@ def test_panel_never_skips_even_for_critical(repo: Path, monkeypatch) -> None:
 
 
 def test_panel_dissenter_flips_task_to_blocked(repo: Path, monkeypatch) -> None:
-    """A corroborated HIGH finding — two non-author families each flag it — must
-    Block the task, with panel_consensus=block and findings appended to
-    summary.md. (claude is the author, so it is excluded from its own jury; the
-    corroboration gate requires ≥2 available families to raise a blocking HIGH,
-    so both surviving reviewers must dissent to block on a non-CRITICAL.)
+    """A corroborated HIGH finding — two families each flag it — must Block
+    the task, with panel_consensus=block and findings appended to summary.md.
+    (Corroboration gate: ≥2 families raising a blocking HIGH.)
     """
     _seed_yaml(repo, _CRITICAL_TASK_YAML)
     _patch_spawn(monkeypatch)
@@ -317,8 +353,6 @@ def test_panel_dissenter_flips_task_to_blocked(repo: Path, monkeypatch) -> None:
     assert row["panel_consensus"] == "block"
     assert row["panel_verdict_codex"] == "CHANGES_REQUESTED"
     assert row["panel_verdict_gemini"] == "CHANGES_REQUESTED"
-    # claude authored the task → excluded, so no claude verdict is stamped.
-    assert "panel_verdict_claude" not in row
     assert row["panel_blocking_findings"] >= 1
 
     # Findings appended to summary.md
@@ -330,12 +364,8 @@ def test_panel_dissenter_flips_task_to_blocked(repo: Path, monkeypatch) -> None:
 
 
 def test_panel_unavailable_yields_incomplete_and_blocks(repo: Path, monkeypatch) -> None:
-    """If the panel can reach NO available reviewer, it returns 'incomplete'.
-    Incomplete is treated as block — task does NOT proceed to Done.
-
-    claude authors the task and is excluded, so the panel is just
-    [gemini, codex]; the corroboration gate only reports "incomplete" when
-    every AVAILABLE seat is gone, so both surviving CLIs must be missing.
+    """If every panel seat is UNAVAILABLE, consensus is 'incomplete' and the
+    task is Blocked (does NOT proceed to Done).
     """
     _seed_yaml(repo, _CRITICAL_TASK_YAML)
     _patch_spawn(monkeypatch)
@@ -350,8 +380,13 @@ def test_panel_unavailable_yields_incomplete_and_blocks(repo: Path, monkeypatch)
         def _invoke_cli(self, prompt: str) -> str:
             raise FileNotFoundError("codex not installed")
 
+    class _UnavailableClaude(cfr.Reviewer):
+        family = "claude"
+        def _invoke_cli(self, prompt: str) -> str:
+            raise FileNotFoundError("claude not installed")
+
     revs = [
-        _StubReviewer("claude", _APPROVE_OUTPUT),
+        _UnavailableClaude(),
         _UnavailableGemini(),
         _UnavailableCodex(),
     ]
@@ -374,8 +409,7 @@ def test_panel_block_short_circuits_auto_integrate(repo: Path, monkeypatch) -> N
     """
     _seed_yaml(repo, _CRITICAL_TASK_YAML)
     _patch_spawn(monkeypatch)
-    # claude (author) is excluded; a corroborated block needs both surviving
-    # families to dissent.
+    # Corroborated block needs ≥2 families to dissent on a non-CRITICAL HIGH.
     _set_reviewers(monkeypatch, [
         ("gemini", _CHANGES_REQUESTED_OUTPUT),
         ("codex", _CHANGES_REQUESTED_OUTPUT),
@@ -464,8 +498,7 @@ def test_panel_iterate_block_then_approve_lands_done(repo: Path, monkeypatch) ->
     """
     _seed_yaml(repo, _CRITICAL_TASK_YAML)
     _patch_spawn(monkeypatch)
-    # claude (author) is excluded; a corroborated round-1 block needs BOTH
-    # surviving families to dissent, then both approve post-iterate.
+    # Corroborated block then approve across iterate rounds.
     revs = [
         _SequencedStubReviewer("gemini", [_CHANGES_REQUESTED_OUTPUT, _APPROVE_OUTPUT]),
         _SequencedStubReviewer("codex", [_CHANGES_REQUESTED_OUTPUT, _APPROVE_OUTPUT]),
@@ -493,8 +526,7 @@ def test_panel_iterate_exhausts_budget_stays_blocked(repo: Path, monkeypatch) ->
     """
     _seed_yaml(repo, _CRITICAL_TASK_YAML)
     _patch_spawn(monkeypatch)
-    # claude (author) is excluded; both surviving families block every round so
-    # the corroboration gate blocks on each pass.
+    # Both seated families block every round → corroboration gate blocks.
     revs = [
         _StubReviewer("gemini", _CHANGES_REQUESTED_OUTPUT),
         # Codex always blocks.
@@ -525,7 +557,7 @@ def test_panel_iterate_default_zero_blocks_immediately(repo: Path, monkeypatch) 
     """
     _seed_yaml(repo, _CRITICAL_TASK_YAML)
     _patch_spawn(monkeypatch)
-    # claude (author) is excluded; both surviving families block → corroborated.
+    # Both seated families block → corroborated.
     revs = [
         _StubReviewer("gemini", _CHANGES_REQUESTED_OUTPUT),
         _StubReviewer("codex", _CHANGES_REQUESTED_OUTPUT),
@@ -578,7 +610,7 @@ def test_panel_iterate_short_circuits_when_tasker_produces_no_commits(
 
     monkeypatch.setattr(spawn_mod, "spawn_claude", fake)
 
-    # claude (author) is excluded; both surviving families block → corroborated.
+    # Both seated families block → corroborated.
     revs = [
         _StubReviewer("gemini", _CHANGES_REQUESTED_OUTPUT),
         _StubReviewer("codex", _CHANGES_REQUESTED_OUTPUT),
@@ -631,8 +663,6 @@ def test_panel_iterate_exhaustion_attaches_findings_to_summary(
     """
     _seed_yaml(repo, _CRITICAL_TASK_YAML)
     _patch_spawn(monkeypatch)
-    # claude (author) is excluded; both surviving families block on every round,
-    # so iterating never clears the corroborated block.
     revs = [
         _StubReviewer("gemini", _CHANGES_REQUESTED_OUTPUT),
         _StubReviewer("codex", _CHANGES_REQUESTED_OUTPUT),
@@ -669,8 +699,6 @@ def test_panel_iterate_reviewer_unavailable_mid_iteration_blocks(
     """
     _seed_yaml(repo, _CRITICAL_TASK_YAML)
     _patch_spawn(monkeypatch)
-    # claude (author) is excluded. Both surviving families corroborate a block on
-    # round 1 (triggering the iterate), then both vanish on the re-run — so the
     # re-run panel has NO available seat → consensus "incomplete".
     codex = _BlockThenUnavailableReviewer("codex", _CHANGES_REQUESTED_OUTPUT)
     revs = [
@@ -726,9 +754,7 @@ def test_panel_iterate_findings_text_reaches_respawn_prompt(
 
     monkeypatch.setattr(spawn_mod, "spawn_claude", fake)
 
-    # claude (author) is excluded. Both surviving families block on round 1
-    # (corroborated) then approve on round 2, so the run lands Done with exactly
-    # one iterate spawn to inspect.
+        # one iterate spawn to inspect.
     revs = [
         _SequencedStubReviewer("gemini", [_CHANGES_REQUESTED_OUTPUT, _APPROVE_OUTPUT]),
         _SequencedStubReviewer("codex", [_CHANGES_REQUESTED_OUTPUT, _APPROVE_OUTPUT]),
@@ -831,7 +857,7 @@ def test_notifier_fires_task_blocked_and_run_complete(repo: Path, monkeypatch) -
     """
     _seed_yaml(repo, _CRITICAL_TASK_YAML)
     _patch_spawn(monkeypatch)
-    # claude (author) is excluded; both surviving families block → corroborated.
+    # Both seated families block → corroborated.
     _set_reviewers(monkeypatch, [
         ("gemini", _CHANGES_REQUESTED_OUTPUT),
         ("codex", _CHANGES_REQUESTED_OUTPUT),
@@ -930,8 +956,6 @@ def test_advisory_blocker_never_blocks_or_iterates(repo: Path, monkeypatch) -> N
     """
     _seed_yaml(repo, _CRITICAL_TASK_YAML)
     _patch_spawn(monkeypatch)
-    # claude (author) is excluded from the authoritative panel; advisory
-    # reviewers are NOT author-filtered, so grok still runs.
     _set_reviewers(monkeypatch, [
         ("gemini", _APPROVE_OUTPUT),
         ("codex", _APPROVE_OUTPUT),
@@ -953,7 +977,7 @@ def test_advisory_blocker_never_blocks_or_iterates(repo: Path, monkeypatch) -> N
     assert "panel_iterations_used" not in row
     # Advisory verdicts must NOT leak into the authoritative YAML columns.
     assert "panel_verdict_grok" not in row
-    # claude authored the task → excluded, so a surviving family carries the
+    # authoritative seats only (claude not in this override); a surviving family carries the
     # authoritative APPROVE column instead.
     assert "panel_verdict_claude" not in row
     assert row["panel_verdict_gemini"] == "APPROVE"
@@ -1043,7 +1067,6 @@ def test_advisory_findings_never_reach_iterate_prompt(repo: Path, monkeypatch) -
         )
 
     monkeypatch.setattr(spawn_mod, "spawn_claude", fake)
-    # claude (author) is excluded; both surviving families block (corroborated).
     revs = [
         _StubReviewer("gemini", _CHANGES_REQUESTED_OUTPUT),  # always blocks
         _StubReviewer("codex", _CHANGES_REQUESTED_OUTPUT),  # always blocks

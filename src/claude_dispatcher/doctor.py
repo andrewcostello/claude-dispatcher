@@ -58,7 +58,7 @@ AGENT_STATS_PROBES: dict[str, str | None] = {
     "claude": "json-output",
     "agy": None,
     "codex": "stats-command",
-    "grok": None,
+    "grok": "json-output",  # spawn.parse_grok_usage from --output-format json
     "opencode": None,
     "qwen": None,
 }

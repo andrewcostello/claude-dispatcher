@@ -38,7 +38,7 @@ Each piece is independently useful; together they make the run self-closing.
 - Mechanism: reuse `cross_family_reviewer.run_panel` with a FEATURE-review prompt
   ("does this satisfy the PRD's intent + acceptance + contracts; is it coherent
   across tasks; what's missing/regressed?"). Author excluded N/A (no single
-  author). Persist full findings (full text, not just counts).
+  single author). Persist full findings (full text, not just counts).
 - Output: a `PanelVerdict` whose findings feed [3].
 
 ## [3] Disposition loop + queue (the integrity mechanism)
@@ -112,12 +112,22 @@ Signals: severity, **corroboration** (# reviewers independently flagging it —
 the precision lever), gate-grounding.
 - **auto-accept → FIX task:** CRITICAL/HIGH AND (≥2 reviewers agree OR
   gate-grounded).
-- **auto-defer** (logged + Forecast backlog ticket, with reason): MEDIUM/LOW, or
-  a lone-reviewer non-corroborated finding.
-- **HOLD for human** (block + notify): a CRITICAL not corroborated (one reviewer,
-  others silent), reviewer conflict, or a cap/alarm trip.
-- **auto-reject** (with reason) only when objectively refutable: duplicate,
-  references code outside the diff, or contradicted by a passing gate.
+- **auto-defer** (logged + Forecast backlog ticket, with reason): MEDIUM/LOW.
+  Deferred HIGHs are release-blocking: the backlog ticket carries the next prod
+  fix-version (2026-07 audit: 17 deferred highs shipped live on the honor system).
+- **HOLD for human** (block + notify): any BLOCKING finding (CRITICAL or HIGH)
+  not corroborated and not gate-grounded (one reviewer, others silent — matches
+  `classify_disposition`), reviewer conflict, or a cap/alarm trip. Lone-reviewer
+  blocking findings are often the unique-lens catches (evidence-vs-decision,
+  failure-under-load) that other reviewers structurally cannot corroborate —
+  they are the last class to auto-drop.
+- **auto-reject** (with reason) only when objectively refutable: duplicate, or
+  contradicted by a passing gate. **"References code outside the diff" is NOT
+  refutable and must never auto-reject** — the 2026-07 escape audit found 36% of
+  shipped escapes (62/171, incl. the v1.0.9 prod rollback) lived exactly in
+  code-outside-the-diff interactions (sibling paths, legacy consumers). Such a
+  finding routes to HOLD with a sibling-surface check: does the referenced code
+  actually read/write state the diff touches? (See the blast-radius artifact.)
 - Caps: max fix rounds (~3) + max FIX tasks; high disposition rate or
   regenerating findings → stop + hold + notify (skeleton/PRD likely wrong).
 Supervised mode: human adjudicates the ambiguous; auto-rules handle the clear.
@@ -145,3 +155,41 @@ precision/recall on known tasks; escape analysis = recall on real escapes).
   human gate for ambiguous findings in supervised mode; log every disposition.
 - Fix-task storms: cap rounds + total fix tasks; a high disposition rate is an
   alarm (the skeleton/PRD was wrong) — surface it, don't grind.
+
+## 2026-07 audit-derived gates (implemented)
+
+Additions from the evenplay-mono escape audit (171 shipped escapes analyzed;
+ledger at `~/Project/evenplay-review-audit-2026-07/`):
+
+- **Committed-tree gate** (in VG-2, `mechanical_verify.uncommitted_changes`):
+  the test command's verdict only counts over a clean `git status --porcelain`
+  — a green suite over a dirty tree shipped a build break once (PR #671
+  class). Blocks with reason `uncommitted_changes`, no retry.
+- **Seal-inversion gate (VG-3, `seal_verify.py`)**: fix-shaped tasks (FIX-*
+  keys, `type:fix`/`seal-check` labels) must prove their new tests FAIL with
+  the non-test half of the change reverted to base. Catches the
+  false-passing-seal class (13 audit findings). Journal event
+  `verification_seal`; blocks with `seal_verification_failed`.
+- **Blast-radius artifact** (`blast_radius.py`, injected into every panel
+  prompt): touched symbols → their non-test references OUTSIDE the diff, so
+  reviewers adjudicate sibling surfaces instead of grepping (wrong-scope was
+  36% of shipped escapes).
+- **Lens-based panel seats** (`reviewer_prompts/*.md`): claude = money &
+  state integrity, gemini = systems & seams, codex = evidence & claims,
+  grok = environment & operations. Same shared core; differentiated primary
+  sweeps replace three overlapping generalists.
+- **Implementer prior** (`cross_family_reviewer.implementer_prior_for`):
+  every panel prompt carries the agent-authored defect signature (vacuous
+  tests, fail-open defaults, sibling gaps, docs drift, overclaimed
+  completeness).
+- **Epic capstone** (`orchestrator._maybe_append_capstone`): runs with
+  `capstone: true` or an `epic/` base branch get a synthesized final
+  CAPSTONE-INTEGRATION task — seam audit + runtime sweep before the epic
+  merges (the #582 mega-merge class: 54 of 171 escapes rode one squash).
+- **Review-and-clear loop** (`unblock.py`): `dispatcher blocked tasks.yaml`
+  prints every Blocked task with its reason + gate detail (exit 3 when
+  non-empty, alertable from cron); `dispatcher unblock tasks.yaml KEY --note
+  "..."` flips it back to To Do, clears the stale gate stamps, and appends
+  the human's adjudication to the description the re-spawned Tasker reads.
+  Unblocking grants a retry, never a waiver — every gate re-runs. Blocked
+  stays the only stop state; this is the human half of its lifecycle.

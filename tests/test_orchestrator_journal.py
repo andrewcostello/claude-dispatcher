@@ -332,7 +332,7 @@ def test_malformed_summary_events_and_reason(repo: Path, monkeypatch) -> None:
 def test_panel_block_events_and_reason(repo: Path, monkeypatch) -> None:
     _seed_yaml(repo, _CRITICAL_TASK_YAML)
     _patch_spawn(monkeypatch)
-    # J-CRIT is claude-authored → the panel excludes the claude reviewer, and
+    # J-CRIT panel:
     # the corroboration gate needs >=2 available families to raise a blocking
     # HIGH, so both surviving families (gemini, codex) must dissent to block.
     orchestrator.set_panel_reviewers([

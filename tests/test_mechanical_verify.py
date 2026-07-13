@@ -284,10 +284,14 @@ def test_tests_red_after_retry_blocks_with_tail(repo: Path, monkeypatch) -> None
     assert len(detail) <= mv.TAIL_CHARS + 100
 
     evs = _mech_events(repo)
-    assert len(evs) == 2
-    assert [e.payload["outcome"] for e in evs] == ["failed", "failed"]
-    assert [e.payload["retried"] for e in evs] == [False, True]
+    # Quality cascade may re-run the gate on a second effort rung (e.g.
+    # claude@default then claude@high); each rung does fail + one fix retry.
+    assert len(evs) >= 2
+    assert all(e.payload["outcome"] == "failed" for e in evs)
     assert all(e.payload["exit_code"] == 1 for e in evs)
+    # First pair of a rung is always fail then retried fail.
+    assert evs[0].payload["retried"] is False
+    assert any(e.payload.get("retried") for e in evs)
 
     # Terminal per-task event is task_blocked; the red gate prevented the
     # cross-family panel and auto-integrate from running (ordering edge:
@@ -299,8 +303,9 @@ def test_tests_red_after_retry_blocks_with_tail(repo: Path, monkeypatch) -> None
     assert "task_done" not in types
     assert "panel_started" not in types
     assert "integrate_result" not in types
-    # Initial spawn + the fix retry — the retry spawn DID fire on red.
-    assert len(calls) == 2
+    # Initial spawn + fix retry; cascade may add a few more implementer rungs
+    # but must not runaway.
+    assert 2 <= len(calls) <= 8
 
 
 # --- acceptance 4: no-config skip path ----------------------------------------
@@ -377,14 +382,17 @@ def test_malformed_config_blocks_without_retry(repo: Path, monkeypatch) -> None:
     assert "must be a non-empty string" in row["mechanical_verification_detail"]
 
     evs = _mech_events(repo)
-    assert len(evs) == 1
+    assert len(evs) >= 1
     p = evs[0].payload
     assert p["outcome"] == "failed"
     assert p["exit_code"] is None
     assert p["retried"] is False
     assert "must be a non-empty string" in p["error"]
-    # Only the initial Tasker spawn — no retry fired.
-    assert len(calls) == 1
+    # Malformed config never triggers a fix-the-tests spawn. The cascade
+    # re-spawns the implementer once at the effort-bump rung (claude@default
+    # -> claude@high), so exactly 2 implementer spawns and nothing else — a
+    # third spawn means a fix-the-tests retry regressed back in.
+    assert len(calls) == 2, f"expected 2 cascade spawns, got {len(calls)}"
 
 
 def test_timeout_is_red_and_retried_once(repo: Path, monkeypatch) -> None:
@@ -406,10 +414,10 @@ def test_timeout_is_red_and_retried_once(repo: Path, monkeypatch) -> None:
     assert "TIMEOUT-MARKER" in row["mechanical_verification_detail"]
 
     evs = _mech_events(repo)
-    assert len(evs) == 2
+    assert len(evs) >= 2
     assert all(e.payload["outcome"] == "failed" for e in evs)
     assert all(e.payload["exit_code"] is None for e in evs)
-    assert len(calls) == 2
+    assert 2 <= len(calls) <= 8
 
 
 def test_fix_retry_spawn_failure_verdict_from_rerun(repo: Path, monkeypatch) -> None:
@@ -479,3 +487,91 @@ def test_long_output_tail_capped_everywhere(repo: Path, monkeypatch) -> None:
     for e in _mech_events(repo):
         assert len(e.payload["output_tail"]) <= mv.TAIL_CHARS + 100
         assert "FINAL-TAIL-MARKER" in e.payload["output_tail"]
+
+
+# --- committed-tree gate ------------------------------------------------------
+
+
+def _git_repo(tmp_path: Path) -> Path:
+    d = tmp_path / "ct-repo"
+    d.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(d)],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=d,
+                   check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=d,
+                   check=True, capture_output=True)
+    (d / "a.txt").write_text("a\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=d, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=d,
+                   check=True, capture_output=True)
+    return d
+
+
+def test_uncommitted_changes_clean_tree(tmp_path: Path) -> None:
+    assert mv.uncommitted_changes(_git_repo(tmp_path)) == []
+
+
+def test_uncommitted_changes_reports_untracked_and_modified(tmp_path: Path) -> None:
+    d = _git_repo(tmp_path)
+    (d / "stray.txt").write_text("x\n", encoding="utf-8")   # untracked
+    (d / "a.txt").write_text("changed\n", encoding="utf-8")  # modified
+    paths = mv.uncommitted_changes(d)
+    assert sorted(paths) == ["a.txt", "stray.txt"]
+
+
+def test_uncommitted_changes_ignores_gitignored(tmp_path: Path) -> None:
+    """Gitignored artifacts (.env, logs) never trip the gate — porcelain
+    excludes them, so only files that COULD have been committed count."""
+    d = _git_repo(tmp_path)
+    (d / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".gitignore"], cwd=d, check=True,
+                   capture_output=True)
+    subprocess.run(["git", "commit", "-q", "-m", "ignore"], cwd=d,
+                   check=True, capture_output=True)
+    (d / "debug.log").write_text("noise\n", encoding="utf-8")
+    assert mv.uncommitted_changes(d) == []
+
+
+def test_uncommitted_changes_caps_path_list(tmp_path: Path) -> None:
+    d = _git_repo(tmp_path)
+    for i in range(25):
+        (d / f"f{i:02d}.txt").write_text("x\n", encoding="utf-8")
+    paths = mv.uncommitted_changes(d, max_paths=20)
+    assert len(paths) == 21
+    assert paths[-1] == "... and 5 more"
+
+
+def test_uncommitted_changes_fails_closed_on_broken_worktree(tmp_path: Path) -> None:
+    paths = mv.uncommitted_changes(tmp_path / "does-not-exist")
+    assert len(paths) == 1
+    assert "git status" in paths[0]
+
+
+def test_dirty_worktree_blocks_at_gate(repo: Path, monkeypatch) -> None:
+    """A green suite over a dirty tree is NOT evidence: the gate blocks with
+    reason uncommitted_changes naming the stray file (escape-audit PR #671
+    class), before any test command runs."""
+    _write_dispatcher_config(repo, 'test: "test -f tests-green.txt"\n')
+    monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "done-tests-green")
+
+    def leave_stray(call_n: int, cwd: Path) -> None:
+        (cwd / "never-added.go").write_text("package x\n", encoding="utf-8")
+
+    _patch_spawn(monkeypatch, hook=leave_stray)
+
+    rc = orchestrator.execute(_args(repo))
+    assert rc == 1
+    row = _row(repo)
+    assert row["status"] == "Blocked"
+    assert row["blocked_reason"] == "mechanical_verification_failed"
+    assert "never-added.go" in row["mechanical_verification_detail"]
+    assert "not keyed to the committed tree" in row["mechanical_verification_detail"]
+
+    evs = _mech_events(repo)
+    # The cascade escalates once (claude@default -> claude@high) before
+    # blocking; the hook dirties the tree on both rungs, so two gate events,
+    # both uncommitted_changes.
+    assert len(evs) == 2
+    assert all(e.payload["reason"] == "uncommitted_changes" for e in evs)
+    assert "never-added.go" in evs[0].payload["files"]
