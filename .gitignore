@@ -14,3 +14,4 @@ dist/
 # own working directory during dev/test; they belong in the target
 # project's docs/runs/, not in the dispatcher's source tree.
 docs/runs/
+worktrees-smoke/

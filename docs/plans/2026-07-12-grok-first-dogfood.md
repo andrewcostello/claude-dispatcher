@@ -639,13 +639,21 @@ Session C — Phase 4–5 quality + design stage
 
 **Plan updated:** `docs/plans/2026-07-12-grok-first-dogfood.md`
 
+**Status (2026-07-13):** Phases **0–8 complete** on branch `dogfood/grok-first`.
+Unattended smoke with real Grok (no Claude on PATH) landed. Full suite green.
+
 **Includes:**
 1. **Single-orchestrator restructure** (Phase 1) — applies even when Claude
    implements.
 2. **Grok-first dogfood** (Phases 2–3+) — no Claude on the path when
    `--no-claude`.
-3. **Claude remains** implementer / cascade terminal / panel seat outside
+3. **Quality + design** (Phases 4–5) — pluggable verifier/panel levels;
+   optional design stage.
+4. **Operator UX + routing** (Phases 6–7) — `watch`, `needs_attention`,
+   `routing.py` / `--cheap-first`.
+5. **claude-workflow dual-runtime** (Phase 8) — `implementer.md`; Tasker
+   interactive-only.
+6. **Claude remains** implementer / cascade terminal / panel seat outside
    no-Claude mode.
-4. **Tasker** reserved for interactive non-dispatch sessions only.
 
-**Ready to execute Phase 0 + Phase 1** in this session when you say go.
+**Ready to run** dogfood: see `docs/dogfood/GROK_OPERATOR.md` § Ready to run.
