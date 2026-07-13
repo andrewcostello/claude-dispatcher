@@ -1164,6 +1164,16 @@ def _run_task(
                         task_key=snap.key)
             _log(log_path,
                  f"  {snap.key} LLM verification skipped ({reason})")
+            # Risk ladder first-pass requires verified==True. When the task
+            # planned mechanical-only intensity and the mechanical gate passed,
+            # that *is* first-pass verification — stamp so PR-flow can
+            # self-approve low-risk feature-branch merges (human stays on main).
+            if (
+                mech_outcome == "passed"
+                and qlevels.verify in ("none", "mechanical")
+            ):
+                verified = True
+                verification_iterations = 0
         else:
             # llm_strict: allow one extra incomplete iterate.
             saved_max = cfg.max_verify_iterations
