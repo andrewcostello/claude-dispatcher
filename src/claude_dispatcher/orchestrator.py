@@ -1012,7 +1012,19 @@ def _run_task(
 
         # Model string is primary-agent-specific (e.g. agy engine name); keep
         # it only while the cascade is still on the original primary.
+        # Claude model pins (claude-opus-*, etc.) must not be forwarded to
+        # grok/codex/gemini — YAML often sets model: for Claude while
+        # --no-claude / agent: grok routes the implementer elsewhere.
         attempt_model = snap.model if attempt_agent == original_primary else None
+        if (
+            attempt_model
+            and attempt_agent != "claude"
+            and "claude" in str(attempt_model).lower()
+        ):
+            _log(log_path,
+                 f"  {snap.key} ignoring Claude model pin {attempt_model!r} "
+                 f"for agent={attempt_agent}")
+            attempt_model = None
         try:
             result = spawn_mod.spawn_agent(
                 agent=attempt_agent,
