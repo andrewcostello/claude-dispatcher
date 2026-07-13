@@ -514,6 +514,8 @@ def spawn_claude(
 #      the adapter synthesizes a guaranteed-parseable summary when absent.
 # The "gemini" agent maps to the `agy` CLI (Antigravity) — the authenticated
 # Google coding CLI here; the `gemini` CLI itself fails refreshAuth headless.
+# Note: agy emits NO machine-readable usage/cost/model metadata in headless mode.
+# It is honestly excluded from bakeoff metrics (marked "unmeasurable" in doctor).
 # ---------------------------------------------------------------------------
 
 AGENT_BINS: dict[str, str] = {"codex": "codex", "grok": "grok", "gemini": "agy"}

@@ -56,7 +56,7 @@ VERSION_PROBE_TIMEOUT = 10.0
 # actually present; absent CLIs get null like every other probed field.
 AGENT_STATS_PROBES: dict[str, str | None] = {
     "claude": "json-output",
-    "agy": None,
+    "agy": "unmeasurable",  # agy emits no machine-readable usage/cost metadata in headless mode
     "codex": "stats-command",
     "grok": "json-output",  # spawn.parse_grok_usage from --output-format json
     "opencode": None,
