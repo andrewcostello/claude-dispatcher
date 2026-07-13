@@ -81,3 +81,26 @@ merging `dogfood/grok-first` → `main`.
 ## Prior run: `dogfood-smoke-20260713T060608Z`
 
 Also **Done** with model `grok`, but incorrectly stamped `agent: claude` (hard-coded provenance). Fixed in later commits before the second smoke.
+
+## Rerun smokes at the reconciled head (2026-07-13, post PR #56 reviews)
+
+Both unattended smokes re-run against the merged tree (grok-first + 20
+main-line commits + two review rounds of fixes) before merging PR #56.
+
+| Field | Grok rerun | Claude rerun |
+|-------|------------|--------------|
+| Run ID | `grok-smoke-rerun-20260713a` | `claude-smoke-rerun-20260713a` |
+| Flags | `--no-claude --cross-family-panel never` | default path, panel never |
+| Status | **Done** | **Done** |
+| Mechanical gate | passed (full pytest) | passed (full pytest) |
+| Provenance | `agent: grok`, `agent_version: grok 0.2.93` | `agent: claude`, `claude-fable-5` |
+| Commit-retry | none | **none** (pre-fix run needed one) |
+| Cost | — | ~$1.60 (pre-fix run: ~$2.30) |
+| Marker PR | #57 | #58 |
+
+Key deltas proven live vs the 2026-07-13 morning smokes:
+1. The commit-your-work brief eliminates the guaranteed commit-retry detour
+   on the Claude path (one spawn instead of two; ~30% cheaper).
+2. `--no-claude`/`--implementer` provenance stamps the implementer's own CLI
+   version (was: Claude's version on grok rows via the resume/version-capture
+   divergence).

@@ -48,6 +48,7 @@ from . import quality_levels as ql_mod
 from . import repo_config as repo_config_mod
 from . import routing as routing_mod
 from . import seal_verify as sv_mod
+from . import endpoint_agents as endpoint_agents_mod
 from . import spawn as spawn_mod
 from . import summary as summary_mod
 from . import verifier as verifier_mod
@@ -382,6 +383,22 @@ def execute(args: argparse.Namespace) -> int:
         plan_mod.load_tasks(doc)  # validate
     except plan_mod.ValidationError as e:
         print(f"error: invalid tasks YAML: {e}", file=sys.stderr)
+        return 2
+
+    # Endpoint agents (kimi/glm/deepseek) are a validated schema but
+    # spawn_endpoint_agent is still an EPA-5 stub — a pinned row would burn a
+    # cascade rung on NotImplementedError and silently land on the terminal
+    # family. Fail loudly at run start until the body-fill lands.
+    stub_pins = sorted({
+        t.agent for t in plan_mod.load_tasks(doc)
+        if t.agent in endpoint_agents_mod.ENDPOINT_AGENTS
+    })
+    if stub_pins:
+        print(
+            f"error: task(s) pin endpoint agent(s) {', '.join(stub_pins)} "
+            f"but endpoint spawning is not implemented yet (EPA-5). Re-pin "
+            f"the tasks or land the endpoint body-fill first.",
+            file=sys.stderr)
         return 2
 
     # Resolve base_branch: CLI > YAML top-level > "main".
@@ -2648,6 +2665,7 @@ def _verify_llm_and_maybe_iterate(
             cfg=cfg, snap=snap, wt=wt, repo_root=repo_root,
             summary_path=summary_path, env=env, log_path=log_path,
             verdict=result.verdict, iteration_n=iterations + 1,
+            budget=budget,
         )
         iterations += 1
         _emit_event(cfg, journal_mod.EventType.verification_iterate, {
@@ -2798,6 +2816,7 @@ def _spawn_verifier_iterate(
     log_path: Path,
     verdict: verifier_mod.VerifierVerdict,
     iteration_n: int,
+    budget: int | None = None,
 ) -> bool:
     """Re-spawn the Tasker with the verifier's gap list as a corrective prompt.
 
@@ -2819,7 +2838,10 @@ def _spawn_verifier_iterate(
         gaps_block=gaps_block,
         task_key=snap.key,
         iteration_n=iteration_n,
-        iterations_left=cfg.max_verify_iterations - iteration_n,
+        # Effective budget, not cfg's — llm_strict grants +1 and the prompt
+        # must not underreport the attempts actually remaining.
+        iterations_left=(budget if budget is not None
+                         else cfg.max_verify_iterations) - iteration_n,
     )
     iter_prompt += spawn_mod.build_prompt(
         task_key=snap.key,

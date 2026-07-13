@@ -21,6 +21,11 @@ from pathlib import Path
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    # Version probes (capture_agent_version, doctor, preflight) must be
+    # side-effect free — never run the work simulation for them.
+    if "--version" in argv:
+        print("fake-grok 0.0.1 (hermetic test stand-in)")
+        return 0
     if os.environ.get("FAKE_GROK_FAIL") == "1":
         print("fake_grok: forced fail", file=sys.stderr)
         return 1
