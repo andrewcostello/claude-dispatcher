@@ -1623,10 +1623,18 @@ def _run_cross_family_panel(
 
     reviewers = [r for r in _panel_reviewer_factory(cfg)
                  if r.family != (snap.agent or "claude")]
-    # Per-task panel: single → keep one available seat.
+    # Per-task panel: single → one non-author seat. Prefer codex (reliable
+    # flat-rate seat) over gemini/others when present — gemini-as-only-seat
+    # under --no-claude often UNAVAILABLE and incomplete-blocks the task.
     levels = _resolved_quality(cfg, snap)
     if levels.panel == "single" and reviewers:
-        reviewers = reviewers[:1]
+        preferred = sorted(
+            reviewers,
+            key=lambda r: (0 if getattr(r, "family", None) == "codex" else 1),
+        )
+        reviewers = preferred[:1]
+        _log(log_path,
+             f"  {snap.key} panel: single seat → {reviewers[0].family}")
     advisory_reviewers = _panel_advisory_reviewer_factory(
         cfg, repo_root, log_path, snap.key,
     )
