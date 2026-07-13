@@ -487,7 +487,7 @@ def _agent_argv(
             cmd += ["--model", model]
         if effort:
             cmd += ["-c", f"model_reasoning_effort={effort}"]
-        return cmd + [prompt_text]  # prompt positional; stdin closed by caller
+        return cmd + ["-"]  # Read from stdin
     if agent == "grok":
         cmd = [bin_, "--cwd", str(cwd), "--always-approve"]
         if model:
@@ -501,12 +501,10 @@ def _agent_argv(
         # --add-dir. And it stalls on tool-permission prompts without
         # --dangerously-skip-permissions. Without BOTH, the Tasker produces no
         # commits in the worktree and blocks. (Verified 2026-06-25.)
-        #
-        # NB: no `--model` here — agy ignores a launch-time model and reads it
-        # from settings.json. The model is applied by _agy_model_gate in
-        # spawn_agent() before this argv runs (see AGY_SETTINGS_PATH notes).
-        return [bin_, "--add-dir", str(cwd), "--dangerously-skip-permissions",
-                "--print", prompt_text]
+        cmd = [bin_, "--add-dir", str(cwd), "--dangerously-skip-permissions", "--print"]
+        if model:
+            cmd += ["--model", model]
+        return cmd
     raise ValueError(f"no argv builder for agent {agent!r}")
 
 
@@ -598,15 +596,9 @@ def spawn_agent(
     prompt_file.write_text(xprompt)
     argv = _agent_argv(agent, bin_, prompt_file, cwd, model, xprompt, effort)
 
-    # agy takes its model from settings.json, not the argv — set it under the
-    # cross-model gate so concurrent agy spawns can't clobber each other's
-    # engine (same-model spawns still run in parallel). No-op for codex/grok.
-    gate_held = agent == "gemini"
-    if gate_held:
-        _agy_model_gate.acquire(model)
     try:
         proc = subprocess.run(
-            argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            argv, input=xprompt, capture_output=True, text=True,
             cwd=str(cwd), env=env, timeout=timeout_seconds,
         )
         rc, out, err = proc.returncode, proc.stdout, proc.stderr
@@ -614,9 +606,6 @@ def spawn_agent(
         rc = 124
         out = (e.stdout.decode() if isinstance(e.stdout, bytes) else (e.stdout or ""))
         err = f"timeout after {timeout_seconds}s"
-    finally:
-        if gate_held:
-            _agy_model_gate.release()
 
     committed = _autocommit_worktree(cwd, task_key, agent)
     if not summary_path.exists():
