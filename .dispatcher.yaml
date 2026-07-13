@@ -1,20 +1,27 @@
 # Per-repo dispatcher config (schema introduced in VG-1).
 # test: shell command run inside a task worktree; exit 0 = green.
 #
-# Interpreter choice (verified 2026-06-10): the system python3 has ruamel but
-# NO pytest — `PYTHONPATH=src python3 -m pytest` fails in a fresh worktree.
-# The only interpreter with pytest on this machine is the main checkout's
-# .venv. PYTHONPATH=src makes the *worktree's* code shadow that venv's
-# editable install (PYTHONPATH precedes .pth-injected site-packages paths),
-# so the command tests the worktree under change, not the main checkout.
-test: "PYTHONPATH=src /home/andrew/Project/claude-dispatcher/.venv/bin/python -m pytest tests/ -q"
+# Resolve a Python that has pytest (main checkout .venv preferred). Worktrees
+# share the same git root metadata but usually lack their own .venv, so we
+# walk a few known locations + DISPATCHER_TEST_PYTHON.
+test: |
+  set -e
+  ROOT="$(git rev-parse --show-toplevel)"
+  if [ -n "${DISPATCHER_TEST_PYTHON:-}" ] && [ -x "${DISPATCHER_TEST_PYTHON}" ]; then
+    PY="${DISPATCHER_TEST_PYTHON}"
+  elif [ -x "$ROOT/.venv/bin/python" ]; then
+    PY="$ROOT/.venv/bin/python"
+  elif [ -x /Users/andrewcostello/Projects/claude-dispatcher/.venv/bin/python ]; then
+    PY=/Users/andrewcostello/Projects/claude-dispatcher/.venv/bin/python
+  elif [ -x /home/andrew/Project/claude-dispatcher/.venv/bin/python ]; then
+    PY=/home/andrew/Project/claude-dispatcher/.venv/bin/python
+  else
+    PY=python3
+  fi
+  PYTHONPATH=src "$PY" -m pytest tests/ -q --tb=line
 
-# Cross-family panel: probationary advisory seats (VG-5). Advisory reviewers
-# run in parallel with the authoritative three but never count toward
-# consensus — verdicts/findings are journaled for scorecard comparison only.
+# Cross-family panel: probationary advisory seats (VG-5).
 panel:
   advisory: [grok]
 
-# Dogfood / Grok-first defaults for this repo (override on CLI):
-#   dispatcher run … --no-claude
-# Production multi-agent fleets omit --no-claude so cascade terminal stays claude.
+# Dogfood: dispatcher run … --no-claude
