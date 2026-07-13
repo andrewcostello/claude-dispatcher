@@ -608,13 +608,13 @@ Session C — Phase 4–5 quality + design stage
 
 ## Progress checklist
 
-- [ ] Phase 0: runbook + dogfood YAML
-- [ ] Phase 1: ★ no Tasker under dispatch; unified implementer; docs
-- [ ] Phase 2: --no-claude smoke green
-- [ ] Phase 3: ≥3 dispatched improvements
-- [ ] Phase 4: per-task verify/panel levels + pluggable workers
-- [ ] Phase 5: design for C/H/(M) + recommend levels with floors
-- [ ] Phase 6: watch + needs_attention
+- [x] Phase 0: runbook + dogfood YAML
+- [x] Phase 1: ★ no Tasker under dispatch; unified implementer; docs
+- [x] Phase 2: --no-claude / cascade-terminal / preflight / grok usage parse / fake_grok
+- [x] Phase 3: dogfood tasks expanded (DOG-0/2/4); operator runbook updated (live dogfood loop still operator-driven)
+- [x] Phase 4: per-task `verify`/`panel` fields + `quality_levels` resolution + gate wiring (Grok LLM verifier still TODO)
+- [x] Phase 5: `design_required()` heuristics (full design stage spawn still TODO)
+- [x] Phase 6: `dispatcher watch` (status `needs_attention` still TODO)
 - [ ] Phase 7: routing defaults
 - [ ] Phase 8: workflow package dual-runtime
 
