@@ -5,6 +5,9 @@
 > The **final feature review** reads this as the intent oracle — it reviews the
 > cumulative diff *against* this file, not just for internal quality. Keep it
 > current; the run appends to the Deviations log.
+>
+> Planner process: `docs/how-to-author-tasks.md` · paste prompt:
+> `docs/templates/planner-prompt.md`.
 
 ## Problem / intent
 <What this feature must accomplish and why. The outcome a human cares about —

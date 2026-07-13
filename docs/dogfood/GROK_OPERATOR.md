@@ -22,6 +22,16 @@ The dispatcher owns the loop (worktree → optional design → implement →
 mechanical → verifier → panel → integrate). Implementers only write code.
 Do **not** expect Tasker in-cycle under `dispatcher run`.
 
+## Authoring a new feature task list
+
+Before a product wave, have a **planner** (human or agent) produce PRD +
+`tasks.yaml` using:
+
+- [How to author tasks](../how-to-author-tasks.md) — skeleton → graph → batch → dry-run
+- [Planner prompt](../templates/planner-prompt.md) — paste into Claude/Grok/Codex
+
+Then `dispatcher run … --mode dry-run` before spending implementer tokens.
+
 ## Ready to run — full dogfood wave (Phases 4–8)
 
 ```bash
