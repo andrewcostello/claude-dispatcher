@@ -1055,8 +1055,8 @@ def _run_task(
 
         used_agent = attempt_agent
         used_effort = attempt_effort
-        # Stamp the agent/effort that actually produced this attempt so the
-        # panel excludes the right author family and provenance is accurate.
+        # Stamp the agent/effort that actually produced this attempt so
+        # provenance (YAML agent column / journal) is accurate.
         if (used_agent != (snap.agent or "claude")
                 or used_effort != snap.effort):
             def _stamp_agent_effort(row, a=used_agent, e=used_effort):
@@ -1621,13 +1621,14 @@ def _run_cross_family_panel(
     except (OSError, FileNotFoundError) as e:
         _log(log_path, f"  {snap.key} panel: summary.md read failed: {e}")
 
-    reviewers = [r for r in _panel_reviewer_factory(cfg)
-                 if r.family != (snap.agent or "claude")]
-    # Per-task panel: single → one non-author seat. Prefer codex (reliable
-    # flat-rate seat) over gemini/others when present — gemini-as-only-seat
-    # under --no-claude often UNAVAILABLE and incomplete-blocks the task.
+    # Include every factory seat, including the implementer family. Same CLI
+    # family can still be a different model / session / review prompt; seating
+    # it keeps the panel full under --no-claude and Grok-first dogfood.
+    # (--no-claude still drops Claude in _panel_reviewer_factory.)
+    reviewers = list(_panel_reviewer_factory(cfg))
     levels = _resolved_quality(cfg, snap)
     if levels.panel == "single" and reviewers:
+        # Prefer codex for a cheap single second look when present.
         preferred = sorted(
             reviewers,
             key=lambda r: (0 if getattr(r, "family", None) == "codex" else 1),

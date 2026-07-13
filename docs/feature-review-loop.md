@@ -38,7 +38,7 @@ Each piece is independently useful; together they make the run self-closing.
 - Mechanism: reuse `cross_family_reviewer.run_panel` with a FEATURE-review prompt
   ("does this satisfy the PRD's intent + acceptance + contracts; is it coherent
   across tasks; what's missing/regressed?"). Author excluded N/A (no single
-  author). Persist full findings (full text, not just counts).
+  single author). Persist full findings (full text, not just counts).
 - Output: a `PanelVerdict` whose findings feed [3].
 
 ## [3] Disposition loop + queue (the integrity mechanism)

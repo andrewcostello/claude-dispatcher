@@ -1328,12 +1328,10 @@ def aggregate(
     # Block wins over everything (a real ship-stopper was found). Otherwise an
     # "approve" requires enough VALID seats that the code was actually reviewed.
     #
-    # Default bar is ≥2 valid seats when ≥3 were invited (classic 3-family
-    # panel: one flaky UNAVAILABLE still ships). When the panel is already
-    # reduced — e.g. implementer family excluded as author, and/or --no-claude
-    # drops Claude, leaving only gemini+codex — requiring 2 valid means a
-    # single UNAVAILABLE seat incomplete-blocks despite a clean APPROVE from
-    # the healthy seat. For 1–2 invited seats, one valid APPROVE is enough.
+    # Default bar is ≥2 valid seats when ≥3 were invited (classic panel: one
+    # flaky UNAVAILABLE still ships). When fewer seats were invited (panel:
+    # single, or a test override), one valid APPROVE is enough so a lone
+    # healthy seat is not incomplete-blocked.
     min_valid_for_approve = 2 if len(reviews) >= 3 else 1
     if any_critical or families_with_blocking >= 2:
         consensus = "block"

@@ -347,8 +347,8 @@ Run-level flags (`--cross-family-panel auto|always|never`,
 |-------|---------|
 | `never` | No cross-family panel |
 | `auto` | Existing risk/size policy (`panel_required` + leaf skip) |
-| `single` | One available non-author family (cheap second look) |
-| `full` | Full authoritative panel (available seats; exclude author) |
+| `single` | One available family (cheap second look; prefer codex) |
+| `full` | Full authoritative panel (all available seats, incl. implementer family) |
 | `always` | Force full even for small leaves (opt-in expensive) |
 
 **Resolution order (highest wins for a single task):**

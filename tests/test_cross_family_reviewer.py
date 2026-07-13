@@ -313,7 +313,7 @@ def test_aggregate_partial_unavailable_approves_all_unavailable_incomplete():
 
 
 def test_aggregate_two_seat_panel_one_unavailable_approves():
-    """Reduced panel (author excluded + no-claude → gemini+codex only): one
+    """Reduced panel (two invited seats): one
     UNAVAILABLE + one APPROVE must still approve, not incomplete-block.
     """
     panel = cfr.aggregate([
