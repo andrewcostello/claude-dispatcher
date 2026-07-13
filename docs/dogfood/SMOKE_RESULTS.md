@@ -1,6 +1,48 @@
-# Unattended Grok smoke results
+# Unattended smoke results
 
-## Successful run: `dogfood-smoke-20260713T061016Z`
+## Successful Claude run: `claude-smoke-20260713T203444Z`
+
+Regression for **thin Claude implementer** (no Tasker, no `--no-claude`) before
+merging `dogfood/grok-first` → `main`.
+
+| Field | Value |
+|-------|--------|
+| Command | `dispatcher run features/grok-dogfood/claude-smoke.yaml --mode unattended --cross-family-panel never --base-branch dogfood/grok-first` + permission bypass extra-args |
+| Claude on PATH | **Present** (`claude` 2.1.207) |
+| Implementer | **claude** (model `claude-fable-5`) |
+| Status | **Done** |
+| Mechanical gate | **passed** (~141s full pytest) |
+| LLM verifier | skipped (`verify: mechanical`) |
+| Panel | never |
+| Wall clock | ~5.2 min |
+| Cost (YAML) | ~$2.30 |
+| Artifact | `docs/dogfood/CLAUDE_SMOKE.md` |
+| Feature branch | `feat/DOG-CLAUDE-SMOKE-1-write-docs-dogfood-claude-smoke` |
+| PR | https://github.com/andrewcostello/claude-dispatcher/pull/55 |
+
+### Provenance (YAML row after run)
+
+- `agent: claude`
+- `model: claude-fable-5`
+- `agent_version: 2.1.207 (Claude Code)`
+- `mechanical_verification: passed`
+- `verified: true` (mechanical stamp for risk ladder)
+
+### Preflight
+
+- `no_claude: false` (default Claude path)
+- `permission_flags: --permission-mode bypassPermissions` ok
+- Tasker role file missing → **warning only** (expected; single-orchestrator)
+
+### Notes
+
+1. First spawn reported Done with no commits → **commit-retry** recovered (same pattern as Grok smoke).
+2. Push-retry recovered after branch absent on origin; PR #55 opened against `dogfood/grok-first`.
+3. Summary shows worker brief only — no Tasker phases. Artifact contains "not Tasker".
+
+---
+
+## Successful Grok run: `dogfood-smoke-20260713T061016Z`
 
 | Field | Value |
 |-------|--------|

@@ -31,4 +31,26 @@ tasks:
     agent: claude
     verify: mechanical
     panel: never
-    status: To Do
+    status: Done
+    started_at: '2026-07-13T13:34:45-07:00'
+    dispatcher_run_id: claude-smoke-20260713T203444Z
+    summary_path: /Users/andrewcostello/Projects/claude-dispatcher/docs/runs/claude-smoke-20260713T203444Z/DOG-CLAUDE-SMOKE-1/summary.md
+    branch: feat/DOG-CLAUDE-SMOKE-1-write-docs-dogfood-claude-smoke
+    cost_usd: 2.298896
+    completed_at: '2026-07-13T13:39:54-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    mechanical_verification: passed
+    verified: true
+    verification_iterations: 0
+    input_tokens: 10
+    output_tokens: 1532
+    cache_read_input_tokens: 156670
+    cache_creation_input_tokens: 21751
+    duration_ms: 41175
+    num_turns: 5
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.207 (Claude Code)
