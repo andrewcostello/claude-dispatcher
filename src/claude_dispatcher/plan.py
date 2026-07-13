@@ -77,6 +77,7 @@ class Task:
     # best outcome/cost. Distinct from `model` (which only swaps the Claude
     # model tier on the default claude agent).
     agent: str | None = None
+    batch_id: str | None = None
 
     @property
     def size_label(self) -> str | None:
@@ -157,6 +158,8 @@ def load_tasks(doc: Any) -> list[Task]:
                 f"tasks[{idx}] ({key}) has unknown agent {agent!r}; "
                 f"must be one of {', '.join(sorted(KNOWN_AGENTS))}"
             )
+        batch_id_val = row.get("batch_id")
+        batch_id = str(batch_id_val).strip() if batch_id_val else None
         tasks.append(
             Task(
                 key=key,
@@ -169,6 +172,7 @@ def load_tasks(doc: Any) -> list[Task]:
                 raw=row,
                 model=model,
                 agent=agent,
+                batch_id=batch_id,
             )
         )
 

@@ -248,6 +248,8 @@ class TaskSnapshot:
     model: str | None = None
     # Per-task implementer agent (claude/codex/grok/gemini); None -> claude.
     agent: str | None = None
+    batch_id: str | None = None
+    batch_keys: list[str] = field(default_factory=list)
     # blockedBy dependency keys, in declaration order. Used at worker start to
     # merge each dependency's branch into this task's fresh worktree branch
     # when the dependency's commits are not yet on base (INT-4).
@@ -413,7 +415,7 @@ def _budget_exceeded(tasks, ceiling: float | None, baseline: float = 0.0) -> boo
     return bool(ceiling and ceiling > 0) and _run_spend_usd(tasks, baseline) >= ceiling
 
 
-def _add_task_cost(cfg: RunConfig, task_key: str, delta: float | None) -> None:
+def _add_task_cost(cfg: RunConfig, task_key: str | list[str], delta: float | None) -> None:
     """ADD ``delta`` dollars to a task row's running ``cost_usd`` (creating it at
     that value if absent). Accumulating — not overwriting — lets every spawn in
     a task's lifecycle (implementer, verifier, corrective/retry, panel/verifier
@@ -695,7 +697,7 @@ def _run_task(
         _emit_event(cfg, journal_mod.EventType.task_started,
                     _task_started_payload(snap), task_key=snap.key)
         _log(log_path, f"  {snap.key} worktree creation failed: {e}")
-        _mark_blocked(cfg, snap.key, reason=f"worktree_create_failed: {e}")
+        _mark_blocked(cfg, snap.batch_keys, reason=f"worktree_create_failed: {e}")
         return plan_mod.BLOCKED
     _log(log_path, f"  {snap.key} worktree at {wt.path} branch {wt.branch}")
 
@@ -703,7 +705,7 @@ def _run_task(
     summary_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Stamp branch + summary_path on the row (started_at already set by main thread).
-    _mutate_row(cfg, snap.key, lambda r: r.update({
+    _mutate_row(cfg, snap.batch_keys, lambda r: r.update({
         "branch": branch,
         "summary_path": str(summary_path),
     }))
@@ -852,13 +854,13 @@ def _run_task(
 
     if used_agent is None:
         # Every rung of the fallback chain failed to produce a usable result.
-        _mark_blocked(cfg, snap.key, reason=fail_reason or "spawn_failed")
+        _mark_blocked(cfg, snap.batch_keys, reason=fail_reason or "spawn_failed")
         return plan_mod.BLOCKED
 
     # Record which agent actually produced the work when a fallback fired, so
     # the terminal row + downstream panel author-exclusion reflect reality.
     if used_agent != (snap.agent or "claude"):
-        _mutate_row(cfg, snap.key,
+        _mutate_row(cfg, snap.batch_keys,
                     lambda r, a=used_agent: r.__setitem__("agent", a))
         snap = replace(snap, agent=used_agent)
 
@@ -867,7 +869,7 @@ def _run_task(
                 _summary_parsed_payload(s), task_key=snap.key)
     if s.malformed:
         _log_summary_problems(log_path, snap.key, s)
-        _mark_blocked(cfg, snap.key,
+        _mark_blocked(cfg, snap.batch_keys,
                       reason=f"summary_malformed: {_summary_problem_detail(s)}")
         return plan_mod.BLOCKED
 
@@ -893,7 +895,7 @@ def _run_task(
         }, task_key=snap.key)
         if retry_status is None:
             # Retry failed — really no work. Mark Blocked with clear reason.
-            _mark_blocked(cfg, snap.key,
+            _mark_blocked(cfg, snap.batch_keys,
                           reason="no commits produced after commit-retry; Tasker spawn 2x failed to commit")
             return plan_mod.BLOCKED
         # Retry succeeded — re-parse summary and continue with Done flow.
@@ -984,7 +986,7 @@ def _run_task(
             # (spawn_kind=verifier) that report.py sums, so emitting an aggregate
             # too would double-count in the journal rollup. The Tasker re-spawns
             # inside iterate are accounted separately in _spawn_verifier_iterate.
-            _add_task_cost(cfg, snap.key, verifier_cost_total)
+            _add_task_cost(cfg, snap.batch_keys, verifier_cost_total)
             # A mechanical re-run during an iterate may have re-decided the
             # mechanical outcome — carry it through to the row stamp.
             if vout.mech_outcome is not None:
@@ -1277,7 +1279,7 @@ def _run_task(
         # when the once-per-run capture succeeded — agent_version.
         row.update(_agent_meta(cfg))
 
-    _mutate_row(cfg, snap.key, _apply)
+    _mutate_row(cfg, snap.batch_keys, _apply)
 
     # Terminal per-task journal event. A terminal-success status (Done, or the
     # pr-mode Awaiting Review after a successful auto-raise) → task_done;
@@ -1655,7 +1657,7 @@ def _dispatch_drain(
                     _send_notification(cfg, notify_mod.worker_exception_notification(
                         task_key=key, run_id=cfg.run_id, exception_repr=repr(e),
                         tasks_yaml=str(cfg.tasks_path),
-                    ), task_key=key)
+                    ), task_key=key[0] if isinstance(key, list) else key)
                     try:
                         _mark_blocked(cfg, key, reason=f"worker_exception: {e}")
                     except Exception as mark_err:
@@ -3357,10 +3359,10 @@ def _mark_in_progress(cfg: RunConfig, snap: TaskSnapshot, run_dir: Path) -> None
         row["dispatcher_run_id"] = cfg.run_id
         row["summary_path"] = str(summary_path)
 
-    _mutate_row(cfg, snap.key, _apply)
+    _mutate_row(cfg, snap.batch_keys, _apply)
 
 
-def _mark_blocked(cfg: RunConfig, task_key: str, *, reason: str) -> None:
+def _mark_blocked(cfg: RunConfig, task_key: str | list[str], *, reason: str) -> None:
     summary_for_notify = {"summary": "", "summary_path": None}
 
     def _apply(row):
@@ -3376,7 +3378,16 @@ def _mark_blocked(cfg: RunConfig, task_key: str, *, reason: str) -> None:
         if sp:
             summary_for_notify["summary_path"] = str(sp)
 
-    _mutate_row(cfg, task_key, _apply)
+    if isinstance(task_key, list):
+        for k in task_key:
+            _mutate_row(cfg, k, _apply)
+        emit_key = task_key[0]
+        notify_key = task_key[0]
+    else:
+        _mutate_row(cfg, task_key, _apply)
+        emit_key = task_key
+        notify_key = task_key
+
     # Terminal journal event for the early-return Blocked paths (spawn
     # failure, summary missing/malformed, commit-retry exhaustion,
     # worker exception). Disjoint from the in-worker Blocked task_blocked
@@ -3826,7 +3837,7 @@ def _log_transcript_and_haiku(
         refs = {"transcript_log": str(transcript)}
         if haiku:
             refs["haiku_summary"] = str(haiku_path)
-        _mutate_row(cfg, snap.key, lambda r: r.update(refs))
+        _mutate_row(cfg, snap.batch_keys, lambda r: r.update(refs))
         _emit_event(cfg, journal_mod.EventType.transcript_logged, {
             "transcript_log": str(transcript),
             "haiku_summary": str(haiku_path) if haiku else None,

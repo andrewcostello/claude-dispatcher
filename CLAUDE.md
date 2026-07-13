@@ -11,6 +11,9 @@ We are trialing a new way to run dispatched work, motivated by two failures:
 unreviewable code volume, and long runs thrashing on an implicit/wrong
 architecture. Full design: `docs/contract-first-deviation-model.md`.
 
+## NEW: Task Batching
+The dispatcher now supports batching multiple tasks into a single LLM session to save time and API costs. If tasks in your `tasks.yaml` share a `batch_id`, they will be executed together. Read `docs/task-batching.md` before planning multi-task workflows to understand how it handles prompts, context, and status synchronization!
+
 First subject: the dual-backend FullSwing mobile feature (its plan doc lives in
 the evenplay-mono repo at `docs/plans/2026-06-18-mobile-dual-backend-fullswing.md`).
 
