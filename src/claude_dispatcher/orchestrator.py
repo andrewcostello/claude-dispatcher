@@ -805,6 +805,33 @@ def _effective_model(
     )
 
 
+def _verifier_model_for(
+    v_agent: str,
+    row_model: str | None,
+    verifier_model: str | None,
+    *,
+    log=None,
+) -> str | None:
+    """Model for the verifier spawn, keyed on the VERIFIER family and the
+    MODEL SHAPE — never on snap.agent, which the cascade re-stamps to the
+    terminal family (a grok-pinned row that escalated to the claude rung
+    looks claude-family while still carrying its grok pin; PH-12 mirror).
+
+      * claude verifier: the row model iff it is claude-shaped (tier routing
+        / explicit claude pin), else run-level --verifier-model.
+      * non-claude verifier: --verifier-model unless claude-shaped.
+    """
+    if v_agent == "claude":
+        row = str(row_model).lower() if row_model else ""
+        if row_model and "claude" in row:
+            return row_model
+        if row_model and log:
+            log(f"verifier: ignoring non-claude row model {row_model!r} "
+                f"for the claude verifier spawn")
+        return verifier_model
+    return spawn_mod.effective_model_for_agent(v_agent, verifier_model, log=log)
+
+
 def _is_hard_task(snap: TaskSnapshot) -> bool:
     """True for HARD tasks under the agent-routing policy.
 
@@ -1013,7 +1040,7 @@ def _run_task(
         # event above already journaled the detail.
         c = merge_result.conflict
         _mark_blocked(
-            cfg, snap.key,
+            cfg, snap.batch_keys or snap.key,
             reason=f"{c.reason}: {c.key} ({c.branch}): {c.detail}",
         )
         return plan_mod.BLOCKED
@@ -1128,16 +1155,6 @@ def _run_task(
     panel_iterations_used = 0
 
     for idx, (attempt_agent, attempt_effort) in enumerate(cascade):
-        # Each rung must describe its own tree — never carry gate stamps from
-        # a discarded prior attempt onto a Blocked terminal row.
-        verified = None
-        verification_iterations = 0
-        verification_detail = None
-        verifier_cost_total = 0.0
-        mech_outcome = None
-        mech_detail = None
-        panel_verdict = None
-        panel_iterations_used = 0
         if idx > 0:
             prev_agent, prev_effort = cascade[idx - 1]
             _log(log_path,
@@ -1159,9 +1176,10 @@ def _run_task(
                 except OSError:
                     pass
 
-        # Fresh gate state per rung — a discarded rung's green results must
-        # never be stamped onto the terminal row (a Blocked row asserting
-        # verified: true for a diff that was reset away).
+        # Fresh state per rung — a discarded rung's results (gate stamps,
+        # parsed summary, spawn result, blocked reason) must never leak onto
+        # the terminal row: a Blocked row asserting verified: true — or
+        # blaming a prior rung's panel — for a diff that was reset away.
         mech_outcome = mech_detail = None
         seal_outcome = seal_detail = None
         verified = None
@@ -1170,6 +1188,13 @@ def _run_task(
         verifier_cost_total = 0.0
         panel_verdict = None
         panel_iterations_used = 0
+        result = None
+        s = None
+        used_agent = None
+        used_effort = None
+        final_status = plan_mod.BLOCKED
+        final_url = None
+        final_blocked_reason = None
 
         desc = snap.description or ""
         if snap.design_spec:
@@ -1256,7 +1281,8 @@ def _run_task(
             # skip every quality gate for the recovered work.
             if not _recover_missing_summary(
                     cfg, snap, wt, repo_root, summary_path,
-                    base_sha_before, feat_baseline_sha, env, log_path):
+                    base_sha_before, feat_baseline_sha, env, log_path,
+                    agent=attempt_agent):
                 fail_reason = "summary_missing"
                 continue
 
@@ -1420,7 +1446,7 @@ def _run_task(
             # Add the verifier's verdict-spawn cost to the row so it lands on the
             # bill whether the task ends Done or BLOCKED. NO aggregate event —
             # each verifier spawn already emits task_spawn_finished.
-            _add_task_cost(cfg, snap.batch_keys or snap.key, verifier_cost_total)
+            _add_task_cost(cfg, snap.key, verifier_cost_total)
             if vout.mech_outcome is not None:
                 mech_outcome, mech_detail = vout.mech_outcome, vout.mech_detail
             if vout.blocked_reason is not None:
@@ -2130,7 +2156,12 @@ def _dispatch_drain(
             tasks = _load_tasks_snapshot(cfg)
             runnable = plan_mod.runnable_now(tasks, integration=cfg.integration)
             runnable = plan_mod.filter_tasks(runnable, cfg.label_filter, cfg.only_keys)
-            in_flight_keys = set(in_flight.values())
+            # in_flight values are single keys or batch_keys lists — flatten
+            # so no member of an in-flight batch is ever re-dispatched.
+            in_flight_keys = {
+                k for v in in_flight.values()
+                for k in (v if isinstance(v, list) else [v])
+            }
             runnable = [t for t in runnable if t.key not in in_flight_keys]
 
             # Budget ceiling (BUDGET-1): once this run's spend reaches the
@@ -2228,11 +2259,19 @@ def _dispatch_drain(
                     verify=verify,
                     panel=panel,
                     design=primary.design if hasattr(primary, "design") else None,
-                    blocked_by=list(primary.blocked_by),
+                    # Union of the whole group's deps (deduped, minus
+                    # in-batch keys): sibling B's Done-but-not-on-base
+                    # dependency branch must be merged into the shared
+                    # worktree exactly as if B ran solo (INT-4).
+                    blocked_by=[
+                        k for k in dict.fromkeys(
+                            k for t in group for k in (t.blocked_by or [])
+                        ) if k not in {g.key for g in group}
+                    ],
                 )
                 _mark_in_progress(cfg, snap, run_dir)
                 fut = exe.submit(_run_task, snap, cfg, run_dir, log_path, repo_root)
-                in_flight[fut] = snap.key
+                in_flight[fut] = list(snap.batch_keys) or snap.key
                 _log(
                     log_path,
                     f"dispatch {snap.key} submitted"
@@ -2712,22 +2751,10 @@ def _run_llm_verifier(
     }
     runner = _verifier_run_override or verifier_mod.run_verifier
     v_agent = getattr(cfg, "verifier_agent", "claude") or "claude"
-    # Verifier model, keyed on the VERIFIER family (not the implementer):
-    #   * claude verifier + claude-family row → the task's routed model
-    #     (tier routing / explicit pin; avoids the CLI-session-default leak).
-    #   * claude verifier + cross-family row → run-level --verifier-model
-    #     (never the row model — a grok pin fed to the claude CLI dies
-    #     instantly with a model error; PH-12, 2026-07-12).
-    #   * non-claude verifier → --verifier-model unless it is claude-shaped
-    #     (the mirrored PH-12: a claude pin fed to the grok CLI).
-    if v_agent == "claude":
-        v_model = (snap.model
-                   if (snap.agent or "claude") == "claude" and snap.model
-                   else cfg.verifier_model)
-    else:
-        v_model = _effective_model(
-            v_agent, cfg.verifier_model, log_path=log_path, task_key=snap.key,
-        )
+    v_model = _verifier_model_for(
+        v_agent, snap.model, cfg.verifier_model,
+        log=lambda m: _log(log_path, f"  {snap.key} {m}"),
+    )
     result = runner(
         task=task_row,
         diff=diff,
@@ -3343,7 +3370,8 @@ def _recover_missing_summary(cfg: RunConfig, snap: TaskSnapshot,
                              summary_path: Path,
                              base_sha_before: str | None,
                              feat_baseline_sha: str | None,
-                             env: dict, log_path: Path) -> bool:
+                             env: dict, log_path: Path,
+                             agent: str | None = None) -> bool:
     """Micro summary-writer recovery for the summary_missing chronic class.
 
     Fires only when the branch has real commits (work happened, the report
@@ -3366,14 +3394,12 @@ def _recover_missing_summary(cfg: RunConfig, snap: TaskSnapshot,
         task_summary=snap.summary,
         task_description=snap.description,
     )
-    extra = list(cfg.claude_extra_args)
-    if snap.model:
-        extra.extend(["--model", snap.model])
     try:
         result = spawn_mod.spawn_agent(
-            agent=snap.agent,
+            agent=agent or snap.agent,
             claude_bin=cfg.claude_bin, cwd=wt.path, env=env, prompt=prompt,
-            extra_args=extra,
+            model=snap.model,
+            extra_args=list(cfg.claude_extra_args),
             timeout_seconds=min(cfg.task_timeout_seconds, 900),
         )
     except Exception as e:
@@ -4199,18 +4225,21 @@ def _mark_blocked(cfg: RunConfig, task_key: str | list[str], *, reason: str) -> 
     # worker exception). Disjoint from the in-worker Blocked task_blocked
     # in _run_task, so exactly one terminal event fires per task.
     _emit_event(cfg, journal_mod.EventType.task_blocked,
-                {"reason": reason, **_agent_meta(cfg)}, task_key=task_key)
+                {"reason": reason,
+                 **({"batch_keys": task_key} if isinstance(task_key, list)
+                    else {}),
+                 **_agent_meta(cfg)}, task_key=emit_key)
     # Best-effort notification + notify_sent journal event. Failures are
     # swallowed — never let a flaky webhook (or a journal write) break the
     # dispatch loop.
     _send_notification(cfg, notify_mod.task_blocked_notification(
-        task_key=task_key,
+        task_key=notify_key,
         summary=summary_for_notify["summary"],
         reason=reason,
         run_id=cfg.run_id,
         summary_path=summary_for_notify["summary_path"],
         tasks_yaml=str(cfg.tasks_path),
-    ), task_key=task_key)
+    ), task_key=notify_key)
 
 
 # --- misc helpers -----------------------------------------------------------

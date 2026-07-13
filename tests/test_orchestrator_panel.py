@@ -266,7 +266,8 @@ def test_panel_auto_skips_low_risk(repo: Path, monkeypatch) -> None:
 
 def test_panel_always_fires_for_medium_low_risk(repo: Path, monkeypatch) -> None:
     """mode=always still runs the panel on non-leaf work without risk labels.
-    (size XS/S leaves skip even under always — see test below.)
+    (size XS/S leaves skip under run-level full/auto without a pin —
+    run-level always and explicit pins run; see tests below.)
     """
     _seed_yaml(repo, _MEDIUM_LOW_RISK_TASK_YAML)
     _patch_spawn(monkeypatch)

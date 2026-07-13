@@ -312,14 +312,29 @@ def test_aggregate_partial_unavailable_approves_all_unavailable_incomplete():
     assert not all_gone.is_approve
 
 
-def test_aggregate_two_seat_panel_one_unavailable_approves():
-    """Reduced panel (two invited seats): one
-    UNAVAILABLE + one APPROVE must still approve, not incomplete-block.
-    """
+def test_aggregate_two_seat_panel_one_unavailable_is_incomplete():
+    """Two invited seats with one UNAVAILABLE is "incomplete" — a single
+    valid review is not an auto-integrate green light (the bar collapsed
+    to 1 only lets a deliberately single-seat panel approve alone)."""
     panel = cfr.aggregate([
         _unavailable_verdict("gemini"),
         _approve_verdict("codex"),
     ])
+    assert panel.consensus == "incomplete"
+    assert not panel.is_approve
+
+
+def test_aggregate_two_seat_panel_both_valid_approves():
+    panel = cfr.aggregate([
+        _approve_verdict("gemini"),
+        _approve_verdict("codex"),
+    ])
+    assert panel.consensus == "approve"
+    assert panel.is_approve
+
+
+def test_aggregate_single_seat_panel_one_valid_approves():
+    panel = cfr.aggregate([_approve_verdict("codex")])
     assert panel.consensus == "approve"
     assert panel.is_approve
 

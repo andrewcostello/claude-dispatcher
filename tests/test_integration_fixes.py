@@ -134,3 +134,29 @@ def test_small_leaf_explicit_single_pin_runs_panel(tmp_path):
     cfg = _cfg(tmp_path)
     assert orchestrator._panel_should_run(
         cfg, _snap(["size:xs"], panel="single")) is True
+
+
+# --- verifier model is keyed on model SHAPE, not the cascade-mutated agent ----
+
+
+def test_verifier_model_grok_pin_never_reaches_claude_verifier():
+    """A grok-pinned row that escalated to the claude terminal rung looks
+    claude-family (the cascade re-stamps snap.agent) — the verifier model
+    choice must key on the model's shape, not the mutable agent field."""
+    assert orchestrator._verifier_model_for(
+        "claude", "grok-4-fast", "claude-haiku-4-5") == "claude-haiku-4-5"
+
+
+def test_verifier_model_claude_row_pin_wins_for_claude_verifier():
+    assert orchestrator._verifier_model_for(
+        "claude", "claude-fable-5", "claude-haiku-4-5") == "claude-fable-5"
+
+
+def test_verifier_model_claude_shaped_verifier_model_dropped_for_grok():
+    assert orchestrator._verifier_model_for(
+        "grok", "grok-4-fast", "claude-haiku-4-5") is None
+
+
+def test_verifier_model_native_verifier_model_kept_for_grok():
+    assert orchestrator._verifier_model_for(
+        "grok", None, "grok-4-fast") == "grok-4-fast"
