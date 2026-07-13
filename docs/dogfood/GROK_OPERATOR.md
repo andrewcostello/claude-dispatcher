@@ -69,3 +69,21 @@ pgrep -fl '[c]laude' || true
 - Tasks Done with real commits  
 - `pytest` green on the feature branch  
 - No unexpected `agent: claude` unless pinned  
+
+## Proven unattended smoke
+
+See [SMOKE_RESULTS.md](./SMOKE_RESULTS.md). One-liner:
+
+```bash
+# Block claude on PATH so --no-claude is honest
+mkdir -p /tmp/no-claude-bin
+printf '#!/bin/sh\necho blocked >&2; exit 127\n' > /tmp/no-claude-bin/claude && chmod +x /tmp/no-claude-bin/claude
+export PATH="/tmp/no-claude-bin:$PATH"
+
+.venv/bin/dispatcher run features/grok-dogfood/smoke.yaml \
+  --mode unattended --no-claude --cross-family-panel never \
+  --base-branch dogfood/grok-first \
+  --worktree-base "$(pwd)/worktrees-smoke" \
+  --runs-dir docs/runs
+```
+

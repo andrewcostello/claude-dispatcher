@@ -611,6 +611,7 @@ Session C — Phase 4–5 quality + design stage
 - [x] Phase 0: runbook + dogfood YAML
 - [x] Phase 1: ★ no Tasker under dispatch; unified implementer; docs
 - [x] Phase 2: --no-claude / cascade-terminal / preflight / grok usage parse / fake_grok
+- [x] **Unattended smoke with real Grok** — `dogfood-smoke-20260713T061016Z` Done; see `docs/dogfood/SMOKE_RESULTS.md`
 - [x] Phase 3: dogfood tasks expanded (DOG-0/2/4); operator runbook updated (live dogfood loop still operator-driven)
 - [x] Phase 4: per-task `verify`/`panel` fields + `quality_levels` resolution + gate wiring (Grok LLM verifier still TODO)
 - [x] Phase 5: `design_required()` heuristics (full design stage spawn still TODO)
