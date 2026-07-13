@@ -11,8 +11,8 @@ test: |
     PY="${DISPATCHER_TEST_PYTHON}"
   elif [ -x "$ROOT/.venv/bin/python" ]; then
     PY="$ROOT/.venv/bin/python"
-  elif [ -x /Users/andrewcostello/Projects/claude-dispatcher/.venv/bin/python ]; then
-    PY=/Users/andrewcostello/Projects/claude-dispatcher/.venv/bin/python
+  elif [ -x /Users/andrewcostello/Project/claude-dispatcher/.venv/bin/python ]; then
+    PY=/Users/andrewcostello/Project/claude-dispatcher/.venv/bin/python
   elif [ -x /home/andrew/Project/claude-dispatcher/.venv/bin/python ]; then
     PY=/home/andrew/Project/claude-dispatcher/.venv/bin/python
   else
