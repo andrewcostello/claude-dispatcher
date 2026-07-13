@@ -158,6 +158,10 @@ def main() -> int:
         marker.write_text(
             f"smoke marker for {task_key} #{n}\n", encoding="utf-8",
         )
+        # Stage ONLY the marker file — a real implementer commits its own
+        # work, and the committed-tree gate must still see stray files the
+        # hook (or a buggy agent) leaves behind. `git add -A` here would
+        # sweep strays into the commit and blind the gate.
         subprocess.run(["git", "add", str(marker)], check=False, capture_output=True)
         subprocess.run(
             ["git", "commit", "-m",

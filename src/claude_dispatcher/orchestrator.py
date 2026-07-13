@@ -376,11 +376,7 @@ def execute(args: argparse.Namespace) -> int:
     # Capture the primary implementer CLI version exactly once per run (OPS-4).
     # Under --no-claude, probe grok (or the chosen implementer), not claude.
     # Failure degrades to None (capture never raises).
-    version_bin = cfg.claude_bin
-    if cfg.no_claude:
-        impl = (cfg.implementer or "grok").strip().lower()
-        version_bin = {"gemini": "agy"}.get(impl, impl)
-    cfg.agent_version = spawn_mod.capture_agent_version(version_bin)
+    cfg.agent_version = _capture_run_agent_version(cfg)
     doc = yaml_io.load(cfg.tasks_path)
     try:
         plan_mod.load_tasks(doc)  # validate
@@ -431,6 +427,10 @@ def execute(args: argparse.Namespace) -> int:
             worktree_base=cfg.worktree_base,
             no_claude=cfg.no_claude,
             implementer=cfg.implementer,
+            cascade_terminal=cfg.cascade_terminal,
+            verifier_agent=cfg.verifier_agent,
+            design_agent=cfg.design_agent,
+            enable_design_stage=cfg.enable_design_stage,
         )
         pf_skipped = False
         if not pf.ok:
@@ -508,7 +508,7 @@ def resume_run(args: argparse.Namespace, journal: journal_mod.Journal) -> int:
     """
     cfg = _build_config(args)
     # Same once-per-run agent version capture as execute() (OPS-4).
-    cfg.agent_version = spawn_mod.capture_agent_version(cfg.claude_bin)
+    cfg.agent_version = _capture_run_agent_version(cfg)
     cfg.journal = journal
     run_dir = cfg.runs_dir / cfg.run_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -574,7 +574,10 @@ def _account_spawn(cfg: RunConfig, task_key: str, result, *, kind: str) -> None:
     payload["spawn_kind"] = kind
     _emit_event(cfg, journal_mod.EventType.task_spawn_finished,
                 payload, task_key=task_key)
-    _add_task_cost(cfg, task_key, result.usage.cost_usd)
+    cost = None
+    if getattr(result, "usage", None) is not None:
+        cost = getattr(result.usage, "cost_usd", None)
+    _add_task_cost(cfg, task_key, cost)
 
 
 def _run_loop(
@@ -769,29 +772,85 @@ def _maybe_merge_pass(
 # Agents that expose an effort / reasoning-level CLI flag. gemini/agy does not.
 _EFFORT_CAPABLE_AGENTS = frozenset({"claude", "codex", "grok"})
 
-# Risk tokens that mark a task HARD (start at claude; panel always relevant).
-_HARD_RISK_TOKENS = frozenset({"critical", "security", "financial", "high"})
+
+def _capture_run_agent_version(cfg: RunConfig) -> str | None:
+    """Probe the primary implementer CLI for provenance (OPS-4).
+
+    Shared by execute() and resume_run() so --no-claude / --implementer grok
+    never stamp Claude's version onto Grok rows.
+    """
+    if cfg.no_claude:
+        impl = (cfg.implementer or "grok").strip().lower()
+        version_bin = spawn_mod.agent_bin_name(impl)
+    elif cfg.implementer and cfg.implementer != "claude":
+        version_bin = spawn_mod.agent_bin_name(cfg.implementer)
+    else:
+        version_bin = cfg.claude_bin
+    return spawn_mod.capture_agent_version(version_bin)
+
+
+def _effective_model(
+    agent: str | None,
+    model: str | None,
+    *,
+    log_path: Path | None = None,
+    task_key: str | None = None,
+) -> str | None:
+    """Model pin safe for agent — drops Claude-shaped pins for other families."""
+    log_fn = None
+    if log_path is not None:
+        log_fn = lambda m: _log(log_path, m)  # noqa: E731
+    return spawn_mod.effective_model_for_agent(
+        agent, model, log=log_fn, task_key=task_key,
+    )
 
 
 def _is_hard_task(snap: TaskSnapshot) -> bool:
     """True for HARD tasks under the agent-routing policy.
 
     Triggers: size L/XL, or a risk label (critical/security/financial/high,
-    bare or prefixed). HARD tasks skip the cheap cascade and start at claude.
+    bare or prefixed via quality_levels). HARD tasks skip the cheap cascade
+    and start at claude.
     """
-    for raw in snap.labels or []:
-        lab = str(raw).strip().lower()
-        if lab in ("size:l", "size:xl"):
-            return True
-        if lab in _HARD_RISK_TOKENS:
-            return True
-        for prefix in ("risk:", "tier:", "severity:", "priority:"):
-            if lab.startswith(prefix):
-                bare = lab.split(":", 1)[1].strip()
-                if bare in _HARD_RISK_TOKENS:
-                    return True
-                break
-    return False
+    return ql_mod.is_hard_task_labels(snap.labels)
+
+
+def _take_batch_group(runnable: list) -> tuple[list, list]:
+    """Split the first co-runnable batch off ``runnable``.
+
+    Tasks sharing a non-empty ``batch_id`` that are all currently runnable are
+    dispatched as one work unit (one worktree, one implementer session). Tasks
+    without ``batch_id`` remain singletons. Returns ``(group, remainder)``.
+    """
+    if not runnable:
+        return [], []
+    head = runnable[0]
+    bid = getattr(head, "batch_id", None) or None
+    if not bid:
+        return [head], list(runnable[1:])
+    group = [head]
+    rest: list = []
+    for t in runnable[1:]:
+        if (getattr(t, "batch_id", None) or None) == bid:
+            group.append(t)
+        else:
+            rest.append(t)
+    return group, rest
+
+
+def _combined_batch_description(group: list) -> str:
+    """Composite implementer description for a batch group."""
+    if len(group) == 1:
+        return group[0].description
+    parts = [
+        f"# Batch `{group[0].batch_id}` — implement ALL of the following "
+        f"tasks in this single session. All succeed or all fail together.\n"
+    ]
+    for t in group:
+        parts.append(
+            f"## Task {t.key}: {t.summary}\n\n{t.description.strip()}\n"
+        )
+    return "\n".join(parts)
 
 
 def _implementer_cascade(
@@ -985,7 +1044,7 @@ def _run_task(
 
     # --- Design stage (Phase 5) ---------------------------------------------
     if (
-        getattr(cfg, "enable_design_stage", True)
+        getattr(cfg, "enable_design_stage", False)
         and not cfg.skip_design
         and ql_mod.design_required(
             snap.labels,
@@ -1009,15 +1068,34 @@ def _run_task(
             claude_bin=cfg.claude_bin,
             log=lambda m: _log(log_path, m),
         )
-        snap = replace(
-            snap,
-            design_verify=rec.verify,
-            design_panel=rec.panel,
-            design_spec=rec.raw[:12000] if rec.raw else None,
-        )
-        _log(log_path,
-             f"  {snap.key} design done: verify={rec.verify} panel={rec.panel} "
-             f"selected={rec.selected}")
+        if rec.usage is not None:
+            # Bill design spend against the same ceiling as implementer spawns.
+            class _DesignUsageWrap:
+                def __init__(self, usage, failed: bool):
+                    self.usage = usage
+                    self.exit_code = 1 if failed else 0
+                    self.summary_path = Path(env.get("SUMMARY_PATH", "."))
+                    self.stdout = ""
+                    self.stderr = ""
+            _account_spawn(
+                cfg, snap.key,
+                _DesignUsageWrap(rec.usage, rec.failed),
+                kind="design",
+            )
+        if rec.failed:
+            _log(log_path,
+                 f"  {snap.key} design failed: {rec.failure_reason} — "
+                 f"continuing without design_spec")
+        else:
+            snap = replace(
+                snap,
+                design_verify=rec.verify,
+                design_panel=rec.panel,
+                design_spec=rec.raw[:12000] if rec.raw else None,
+            )
+            _log(log_path,
+                 f"  {snap.key} design done: verify={rec.verify} panel={rec.panel} "
+                 f"selected={rec.selected}")
 
     # Spawn + quality cascade (docs/agent-routing-policy.md):
     #   (agent, effort) rungs — bump effort before switching models; claude is
@@ -1050,6 +1128,16 @@ def _run_task(
     panel_iterations_used = 0
 
     for idx, (attempt_agent, attempt_effort) in enumerate(cascade):
+        # Each rung must describe its own tree — never carry gate stamps from
+        # a discarded prior attempt onto a Blocked terminal row.
+        verified = None
+        verification_iterations = 0
+        verification_detail = None
+        verifier_cost_total = 0.0
+        mech_outcome = None
+        mech_detail = None
+        panel_verdict = None
+        panel_iterations_used = 0
         if idx > 0:
             prev_agent, prev_effort = cascade[idx - 1]
             _log(log_path,
@@ -1118,21 +1206,12 @@ def _run_task(
         elif attempt_effort:
             _log(log_path, f"  {snap.key} implementer effort = {attempt_effort}")
 
-        # Model string is primary-agent-specific (e.g. agy engine name); keep
-        # it only while the cascade is still on the original primary.
-        # Claude model pins (claude-opus-*, etc.) must not be forwarded to
-        # grok/codex/gemini — YAML often sets model: for Claude while
-        # --no-claude / agent: grok routes the implementer elsewhere.
+        # Model pin only while still on the original primary family; always
+        # drop Claude-shaped pins for non-Claude agents (retries share helper).
         attempt_model = snap.model if attempt_agent == original_primary else None
-        if (
-            attempt_model
-            and attempt_agent != "claude"
-            and "claude" in str(attempt_model).lower()
-        ):
-            _log(log_path,
-                 f"  {snap.key} ignoring Claude model pin {attempt_model!r} "
-                 f"for agent={attempt_agent}")
-            attempt_model = None
+        attempt_model = _effective_model(
+            attempt_agent, attempt_model, log_path=log_path, task_key=snap.key,
+        )
         try:
             result = spawn_mod.spawn_agent(
                 agent=attempt_agent,
@@ -1323,17 +1402,16 @@ def _run_task(
                 verified = True
                 verification_iterations = 0
         else:
-            # llm_strict: allow one extra incomplete iterate. NEVER mutate
-            # the shared cfg (one RunConfig serves every worker thread) — a
-            # shallow per-call copy carries the bumped budget instead.
-            vcfg = cfg
+            # llm_strict: one extra incomplete iterate — pass as param so we
+            # never mutate the RunConfig shared across ThreadPoolExecutor workers.
+            max_v_iters = cfg.max_verify_iterations
             if qlevels.verify == "llm_strict":
-                vcfg = replace(
-                    cfg, max_verify_iterations=cfg.max_verify_iterations + 1)
+                max_v_iters = cfg.max_verify_iterations + 1
             vout = _verify_llm_and_maybe_iterate(
-                cfg=vcfg, snap=snap, wt=wt, repo_root=repo_root,
+                cfg=cfg, snap=snap, wt=wt, repo_root=repo_root,
                 summary_path=summary_path, env=env, log_path=log_path,
                 base_sha_before=base_sha_before,
+                max_verify_iterations=max_v_iters,
             )
             verified = vout.verified
             verification_iterations = vout.iterations
@@ -1348,6 +1426,10 @@ def _run_task(
             if vout.blocked_reason is not None:
                 final_status = plan_mod.BLOCKED
                 final_blocked_reason = vout.blocked_reason
+                # Verifier infrastructure failure: do not cascade-escalate
+                # (that would burn rungs×iterations on a dead verifier).
+                if vout.blocked_reason == "verifier_unavailable":
+                    break
                 if idx + 1 < len(cascade):
                     cascade_context = (
                         f"LLM verifier INCOMPLETE after {attempt_agent}"
@@ -1729,6 +1811,9 @@ def _panel_should_run(cfg: RunConfig, snap: TaskSnapshot) -> bool:
 
     Honors per-task ``panel:`` when set (Phase 4), else run-level mode +
     risk/size policy. docs/test types always skip.
+
+    Explicit task pins ``full`` / ``single`` / ``always`` always win over the
+    small-leaf skip (contract: task fields always win).
     """
     if snap.type and snap.type.lower() in cfr_mod._PANEL_SKIP_TYPES:
         return False
@@ -1736,14 +1821,17 @@ def _panel_should_run(cfg: RunConfig, snap: TaskSnapshot) -> bool:
     mode = levels.panel
     if mode == "never":
         return False
-    # Cost/speed: XS/S leaves without risk skip even under always/full unless
-    # the task explicitly set panel: always.
+    # Explicit task pin of an affirmative panel intensity always runs.
+    task_panel = (snap.panel or "").strip().lower()
+    if task_panel in ("full", "single", "always"):
+        return True
+    # Cost/speed: XS/S leaves without risk skip under auto (and under
+    # run-level full when not task-pinned). Run-level ``always`` still runs.
     if cfr_mod.is_small_leaf(snap.labels) and not cfr_mod.has_risk_label(snap.labels):
-        # Cost/speed: XS/S leaves without risk labels skip the panel — but
-        # only when the task didn't pin panel: explicitly. Any explicit pin
-        # (single/full/always) wins; silently discarding one is a fail-open
-        # on a quality gate.
-        if snap.panel is None:
+        # Cost/speed: XS/S leaves without risk labels skip the panel under
+        # auto/full — but never over an explicit task pin (the early return
+        # above) and never under run-level always (main behavior).
+        if snap.panel is None and mode != "always":
             return False
     if mode in ("full", "always", "single"):
         return True
@@ -2075,40 +2163,81 @@ def _dispatch_drain(
                     ))
                 runnable = []  # stop starting new work; drain in-flight
             while runnable and len(in_flight) < cfg.max_parallel:
-                t = runnable.pop(0)
-                agent = t.agent or routing_mod.default_implementer(
-                    t.labels,
+                group, runnable = _take_batch_group(runnable)
+                primary = group[0]
+                agent = primary.agent or routing_mod.default_implementer(
+                    primary.labels,
                     run_implementer=cfg.implementer,
                     no_claude=cfg.no_claude,
                     cheap_first=getattr(cfg, "cheap_first", False),
                 )
-                # Explicit row model: wins; else tier-route by the row's
-                # risk: field (repo model_routing config); else None (CLI
-                # default). Tier routing is Claude-tier oriented — only
-                # consult it when the task routes to the claude family
+                batch_keys = [t.key for t in group]
+                description = _combined_batch_description(group)
+                summary = (
+                    primary.summary
+                    if len(group) == 1
+                    else (
+                        f"batch {primary.batch_id}: "
+                        + "; ".join(t.summary for t in group)
+                    )
+                )
+                # Highest intensity wins for verify/panel across the batch.
+                verify = primary.verify
+                panel = primary.panel
+                for t in group[1:]:
+                    if t.verify and (
+                        verify is None
+                        or ql_mod._VERIFY_RANK.get(t.verify, 0)
+                        > ql_mod._VERIFY_RANK.get(verify or "none", 0)
+                    ):
+                        verify = t.verify
+                    if t.panel and (
+                        panel is None
+                        or ql_mod._PANEL_RANK.get(t.panel, 0)
+                        > ql_mod._PANEL_RANK.get(panel or "never", 0)
+                    ):
+                        panel = t.panel
+                # Union labels; blocked_by is primary only (siblings co-runnable).
+                labels: list[str] = []
+                seen_lbl: set[str] = set()
+                for t in group:
+                    for lab in t.labels or []:
+                        if lab not in seen_lbl:
+                            seen_lbl.add(lab)
+                            labels.append(lab)
+                # Explicit row model wins; else tier-route by the primary
+                # row's risk: field (repo model_routing config); else None
+                # (CLI default). Tier routing is Claude-tier oriented — only
+                # consulted when the task routes to the claude family
                 # (spawn_agent drops claude-shaped pins for other families).
-                routed = t.model or (
-                    cfg.model_router(str(t.raw.get("risk") or "") or None)
+                routed = primary.model or (
+                    cfg.model_router(str(primary.raw.get("risk") or "") or None)
                     if cfg.model_router and agent in (None, "claude") else None
                 )
                 snap = TaskSnapshot(
-                    key=t.key, summary=t.summary, description=t.description,
-                    type=t.type, labels=list(t.labels), model=routed,
+                    key=primary.key,
+                    summary=summary,
+                    description=description,
+                    type=primary.type,
+                    labels=labels,
+                    model=routed,
                     agent=agent,
-                    effort=t.effort,
-                    batch_id=t.batch_id,
-                    # Until full batch grouping is wired, every task is its
-                    # own batch of one (status flips must target a real key).
-                    batch_keys=[t.key],
-                    verify=t.verify,
-                    panel=t.panel,
-                    design=t.design if hasattr(t, "design") else None,
-                    blocked_by=list(t.blocked_by),
+                    effort=primary.effort,
+                    batch_id=primary.batch_id,
+                    batch_keys=batch_keys,
+                    verify=verify,
+                    panel=panel,
+                    design=primary.design if hasattr(primary, "design") else None,
+                    blocked_by=list(primary.blocked_by),
                 )
                 _mark_in_progress(cfg, snap, run_dir)
                 fut = exe.submit(_run_task, snap, cfg, run_dir, log_path, repo_root)
                 in_flight[fut] = snap.key
-                _log(log_path, f"dispatch {snap.key} submitted")
+                _log(
+                    log_path,
+                    f"dispatch {snap.key} submitted"
+                    + (f" batch={batch_keys}" if len(batch_keys) > 1 else ""),
+                )
             if not in_flight:
                 break
             done, _pending = wait(list(in_flight), return_when=FIRST_COMPLETED)
@@ -2270,7 +2399,9 @@ def _spawn_panel_iterate(
         result = spawn_mod.spawn_agent(
             agent=snap.agent,
             claude_bin=cfg.claude_bin, cwd=wt.path, env=env, prompt=iter_prompt,
-            model=snap.model,
+            model=_effective_model(
+                snap.agent, snap.model, log_path=log_path, task_key=snap.key,
+            ),
             effort=snap.effort,
             extra_args=list(cfg.claude_extra_args),
             timeout_seconds=cfg.task_timeout_seconds,
@@ -2410,6 +2541,7 @@ def _verify_llm_and_maybe_iterate(
     env: dict,
     log_path: Path,
     base_sha_before: str | None,
+    max_verify_iterations: int | None = None,
 ) -> _LlmVerifyOutcome:
     """Run the LLM verifier; iterate on INCOMPLETE up to the budget.
 
@@ -2419,7 +2551,15 @@ def _verify_llm_and_maybe_iterate(
     iterate produced no new commit, or an iterate's mechanical re-run went red.
     Never raises — the verifier is conservative (a spawn/parse failure is
     INCOMPLETE, never VERIFIED).
+
+    ``max_verify_iterations`` overrides ``cfg.max_verify_iterations`` without
+    mutating the shared RunConfig (thread-safe for llm_strict bumps).
     """
+    budget = (
+        cfg.max_verify_iterations
+        if max_verify_iterations is None
+        else max_verify_iterations
+    )
     cost_total = 0.0
     iterations = 0
     while True:
@@ -2428,7 +2568,7 @@ def _verify_llm_and_maybe_iterate(
             summary_path=summary_path, base_sha_before=base_sha_before,
             log_path=log_path, iteration=iterations,
         )
-        if result.usage.cost_usd is not None:
+        if result.usage and result.usage.cost_usd is not None:
             cost_total += result.usage.cost_usd
 
         if result.verdict.verdict == verifier_mod.VerdictKind.VERIFIED:
@@ -2436,12 +2576,25 @@ def _verify_llm_and_maybe_iterate(
                 verified=True, iterations=iterations, cost_usd_total=cost_total,
             )
 
+        # Pure verifier infrastructure failure: do not iterate the implementer
+        # or cascade-escalate (that burns rungs×iterations on a dead seat).
+        if result.verdict.reason == verifier_mod.REASON_SPAWN_FAILED:
+            detail = result.error or result.verdict.reason or "verifier_spawn_failed"
+            _log(log_path,
+                 f"  {snap.key} verifier UNAVAILABLE ({detail}) — "
+                 f"blocking verifier_unavailable (no iterate/cascade)")
+            return _LlmVerifyOutcome(
+                verified=False, iterations=iterations, cost_usd_total=cost_total,
+                detail=str(detail)[:2000],
+                blocked_reason="verifier_unavailable",
+            )
+
         # INCOMPLETE. Out of budget → Blocked with the gaps as the detail.
         detail = _render_gaps_detail(result.verdict)
-        if iterations >= cfg.max_verify_iterations:
+        if iterations >= budget:
             _log(log_path,
                  f"  {snap.key} verifier INCOMPLETE and iterate budget "
-                 f"exhausted ({iterations}/{cfg.max_verify_iterations}) — "
+                 f"exhausted ({iterations}/{budget}) — "
                  f"blocking verification_incomplete")
             return _LlmVerifyOutcome(
                 verified=False, iterations=iterations, cost_usd_total=cost_total,
@@ -2451,7 +2604,7 @@ def _verify_llm_and_maybe_iterate(
         # Iterate: re-spawn the Tasker with the gap list.
         _log(log_path,
              f"  {snap.key} verifier INCOMPLETE — iterating "
-             f"({cfg.max_verify_iterations - iterations} attempt(s) left)")
+             f"({budget - iterations} attempt(s) left)")
         corrective_ok = _spawn_verifier_iterate(
             cfg=cfg, snap=snap, wt=wt, repo_root=repo_root,
             summary_path=summary_path, env=env, log_path=log_path,
@@ -2460,7 +2613,7 @@ def _verify_llm_and_maybe_iterate(
         iterations += 1
         _emit_event(cfg, journal_mod.EventType.verification_iterate, {
             "iteration": iterations,
-            "iterations_remaining": cfg.max_verify_iterations - iterations,
+            "iterations_remaining": budget - iterations,
             "corrective_spawn_ok": bool(corrective_ok),
             "gaps": len(result.verdict.gaps),
         }, task_key=snap.key)
@@ -2572,12 +2725,9 @@ def _run_llm_verifier(
                    if (snap.agent or "claude") == "claude" and snap.model
                    else cfg.verifier_model)
     else:
-        v_model = cfg.verifier_model
-        if v_model and "claude" in str(v_model).lower():
-            _log(log_path,
-                 f"  {snap.key} ignoring claude-shaped --verifier-model "
-                 f"{v_model!r} for verifier_agent={v_agent}")
-            v_model = None
+        v_model = _effective_model(
+            v_agent, cfg.verifier_model, log_path=log_path, task_key=snap.key,
+        )
     result = runner(
         task=task_row,
         diff=diff,
@@ -2668,7 +2818,9 @@ def _spawn_verifier_iterate(
         result = spawn_mod.spawn_agent(
             agent=snap.agent,
             claude_bin=cfg.claude_bin, cwd=wt.path, env=env, prompt=iter_prompt,
-            model=snap.model,
+            model=_effective_model(
+                snap.agent, snap.model, log_path=log_path, task_key=snap.key,
+            ),
             effort=snap.effort,
             extra_args=list(cfg.claude_extra_args),
             timeout_seconds=cfg.task_timeout_seconds,
@@ -3281,7 +3433,9 @@ def _retry_for_commit(cfg: RunConfig, snap: TaskSnapshot, wt: wt_mod.Worktree,
         result = spawn_mod.spawn_agent(
             agent=snap.agent,
             claude_bin=cfg.claude_bin, cwd=wt.path, env=env, prompt=prompt,
-            model=snap.model,
+            model=_effective_model(
+                snap.agent, snap.model, log_path=log_path, task_key=snap.key,
+            ),
             effort=snap.effort,
             extra_args=list(cfg.claude_extra_args),
             timeout_seconds=cfg.task_timeout_seconds,
@@ -3577,7 +3731,9 @@ def _retry_for_push(
         result = spawn_mod.spawn_agent(
             agent=snap.agent,
             claude_bin=cfg.claude_bin, cwd=wt.path, env=env, prompt=prompt,
-            model=snap.model,
+            model=_effective_model(
+                snap.agent, snap.model, log_path=log_path, task_key=snap.key,
+            ),
             effort=snap.effort,
             extra_args=list(cfg.claude_extra_args),
             timeout_seconds=cfg.task_timeout_seconds,
@@ -3853,7 +4009,9 @@ def _retry_for_test_fix(
         result = spawn_mod.spawn_agent(
             agent=snap.agent,
             claude_bin=cfg.claude_bin, cwd=wt.path, env=env, prompt=prompt,
-            model=snap.model,
+            model=_effective_model(
+                snap.agent, snap.model, log_path=log_path, task_key=snap.key,
+            ),
             effort=snap.effort,
             extra_args=list(cfg.claude_extra_args),
             timeout_seconds=cfg.task_timeout_seconds,

@@ -122,7 +122,7 @@ Validated by `plan.load_tasks`:
 | `status` | no | Default `To Do` |
 | `agent` | no | `claude` \| `codex` \| `grok` \| `gemini` |
 | `effort` | no | `low` \| `medium` \| `high` |
-| `batch_id` | no | Reserved: accepted-but-inert today (no grouping yet — see task-batching.md banner) |
+| `batch_id` | no | Same string + co-runnable → one implementer session (one worktree, combined prompt) |
 | `verify` | no | `none` \| `mechanical` \| `llm` \| `llm_strict` |
 | `panel` | no | `never` \| `auto` \| `single` \| `full` \| `always` |
 | `design` | no | `true`/`false` force design stage; else heuristics |
@@ -180,7 +180,7 @@ Useful conventions (not all enforced):
 | `size:XS…XL` | Required; drives design/quality heuristics |
 | `area:core` / `area:skeleton` / `area:docs` / `area:game` | Routing + design |
 | `risk:high` / class markers | Operator signal; pair with verify/panel |
-| `security` / `auth` / `financial` / `critical` | HARD routing triggers |
+| `security` / `financial` / `critical` / `risk:high` | HARD routing triggers (bare or `risk:`/`tier:`/`severity:`/`priority:` prefix; not arbitrary `area:` suffixes) |
 | `dogfood` / `smoke` | Operator filtering |
 
 Quality **floors** (when task does not pin `verify`/`panel`) rise with risk
@@ -206,18 +206,15 @@ mechanical leaves to save cost.
   `--implementer`, `--cheap-first`, or per-task `agent:`.
 - Bounded leaves → `grok` + `effort: medium` is a proven cheap default.
 - Shared skeleton / hard state → `claude` or `effort: high` (see routing policy).
-- Do **not** put Claude model pins on Grok-only fleets; non-Claude agents ignore them.
+- Do **not** put Claude model pins on Grok-only fleets; Claude-shaped `model:`
+  strings are dropped for non-Claude agents (retries included). Non-Claude
+  model pins (e.g. agy engine names) still apply when the family matches.
 
 ---
 
 ## Phase C — Batching
 
-> **Batching is NOT YET IMPLEMENTED** — `batch_id` is accepted and
-> validated but has no runtime effect today; every task runs alone.
-> Author batches for forward-compatibility only, and do not rely on
-> shared-session cost savings or all-or-nothing batch status.
-
-Full mechanics (design): [task-batching.md](./task-batching.md).
+Full mechanics: [task-batching.md](./task-batching.md).
 
 ### Batch when
 

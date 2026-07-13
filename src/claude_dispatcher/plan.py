@@ -16,6 +16,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
+from .quality_levels import KNOWN_PANEL, KNOWN_VERIFY
 
 TODO = "To Do"
 IN_PROGRESS = "In Progress"
@@ -44,9 +45,7 @@ KNOWN_AGENTS = frozenset(
 # codex model_reasoning_effort). gemini/agy has no flag and ignores it.
 KNOWN_EFFORTS = frozenset({"low", "medium", "high"})
 
-# Per-task quality intensity (see quality_levels.py + plan Phase 4).
-KNOWN_VERIFY = frozenset({"none", "mechanical", "llm", "llm_strict"})
-KNOWN_PANEL = frozenset({"never", "auto", "single", "full", "always"})
+# Per-task quality intensity sets: KNOWN_VERIFY / KNOWN_PANEL imported above.
 
 # DISPATCH ordering — the statuses of a blockedBy dependency that let its
 # dependents be dispatched ("Done-or-later"). In `branch` mode that is just
@@ -93,9 +92,9 @@ class Task:
     # CLI's effort flag by spawn_agent. Absent → CLI default. The quality
     # cascade may bump effort to "high" before switching agents.
     effort: str | None = None
-    # Optional batch grouping (accepted-but-inert: parsed + validated, but
-    # the orchestrator does not group yet — every task runs as its own batch
-    # of one; see docs/task-batching.md status banner).
+    # Optional batch grouping: co-runnable tasks sharing a batch_id dispatch
+    # as one work unit — one worktree / one implementer session (see
+    # docs/task-batching.md and orchestrator._take_batch_group).
     batch_id: str | None = None
     # Optional quality intensity overrides (Phase 4). None → resolved from
     # floors / run defaults / design recommendations.

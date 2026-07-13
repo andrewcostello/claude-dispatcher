@@ -7,7 +7,7 @@ Resolution order (highest wins):
   4. Run-level defaults
 
 Design may raise intensity above the floor; it may not sink below the floor
-unless the task explicitly overrides (journal below_floor_override).
+unless the task explicitly overrides.
 """
 
 from __future__ import annotations
@@ -31,12 +31,55 @@ _FLOORS: dict[str, tuple[str, str]] = {
     "low": ("mechanical", "never"),
 }
 
+# Shared risk vocabulary — single source for floors, panel skip, HARD cascade.
+_CRITICAL_TOKENS = frozenset({"critical", "security", "financial"})
+_HIGH_TOKENS = frozenset({"high"})
+_RISK_PREFIXES = ("risk:", "tier:", "severity:", "priority:")
+
 
 @dataclass(frozen=True)
 class QualityLevels:
     verify: str
     panel: str
     source: str  # e.g. "task", "design+floor", "floor", "run_default"
+
+
+def risk_tokens(labels: Iterable[str] | None) -> set[str]:
+    """Extract recognized risk tokens from labels (shared matcher).
+
+    Accepts bare tokens (``security``) or prefixed forms with an allowlisted
+    prefix (``risk:critical``, ``tier:high``). Does **not** treat arbitrary
+    suffixes as risk (``area:security`` is not risk unless listed bare).
+    """
+    out: set[str] = set()
+    for raw in labels or []:
+        lab = str(raw).strip().lower()
+        if not lab:
+            continue
+        if lab in _CRITICAL_TOKENS or lab in _HIGH_TOKENS:
+            out.add(lab)
+            continue
+        for prefix in _RISK_PREFIXES:
+            if lab.startswith(prefix):
+                bare = lab.split(":", 1)[1].strip()
+                if bare in _CRITICAL_TOKENS or bare in _HIGH_TOKENS:
+                    out.add(bare)
+                break
+    return out
+
+
+def has_risk_label(labels: Iterable[str] | None) -> bool:
+    """True if any label forces elevated risk (panel / floors / HARD)."""
+    return bool(risk_tokens(labels))
+
+
+def is_hard_task_labels(labels: Iterable[str] | None) -> bool:
+    """HARD under agent-routing: size L/XL or critical/security/financial/high."""
+    labs = [str(l).strip().lower() for l in (labels or [])]
+    if any(l in ("size:l", "size:xl") for l in labs):
+        return True
+    tokens = risk_tokens(labels)
+    return bool(tokens & (_CRITICAL_TOKENS | _HIGH_TOKENS))
 
 
 def design_required(
@@ -49,10 +92,9 @@ def design_required(
     """Whether the dispatcher should run a design stage before implement.
 
     Explicit task_design True/False wins. Otherwise Critical/High risk and
-    size L/XL always design; Medium designs when foundation (≥2 dependents
-    known only at plan time — callers pass blocked_by_count as *fan-in* is
-    not available here; use design:true) or description signals novelty /
-    core. XS/S leaves without risk: no.
+    size L/XL always design; Medium designs when description signals novelty /
+    core, or when blocked_by_count >= 2 (caller may pass fan-in if known).
+    XS/S leaves without risk: no.
     """
     if task_design is False:
         return False
@@ -68,12 +110,14 @@ def design_required(
         return True
     if any(l in ("size:m",) for l in labs):
         desc = (description or "").lower()
-        if blocked_by_count >= 0 and any(
+        if any(
             tok in desc for tok in (
                 "new contract", "new interface", "state machine",
                 "architecture", "skeleton", "novel",
             )
         ):
+            return True
+        if blocked_by_count >= 2:
             return True
         if any(l in ("area:core", "area:skeleton") for l in labs):
             return True
@@ -83,20 +127,10 @@ def design_required(
 def risk_tier(labels: Iterable[str] | None) -> str:
     """Map labels to a coarse risk tier for quality floors."""
     labs = [str(l).strip().lower() for l in (labels or [])]
-    bare = set()
-    for lab in labs:
-        if lab in ("critical", "security", "financial"):
-            return "critical"
-        if ":" in lab:
-            bare.add(lab.split(":", 1)[1].strip())
-        else:
-            bare.add(lab)
-        if lab in ("size:l", "size:xl"):
-            # Large work gets at least high floor for panel/verify defaults.
-            pass
-    if bare & {"critical", "security", "financial"}:
+    tokens = risk_tokens(labs)
+    if tokens & _CRITICAL_TOKENS:
         return "critical"
-    if "high" in bare or any(lab.endswith(":high") for lab in labs):
+    if tokens & _HIGH_TOKENS:
         return "high"
     if any(lab in ("size:l", "size:xl") for lab in labs):
         return "high"

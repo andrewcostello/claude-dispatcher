@@ -211,22 +211,13 @@ class PanelVerdict:
 
 
 def has_risk_label(labels: Iterable[str] | None) -> bool:
-    """True if any label is a panel-forcing risk tier (critical/security/…)."""
-    if not labels:
-        return False
-    for raw in labels:
-        if not raw:
-            continue
-        lab = str(raw).strip().lower()
-        if lab in _PANEL_REQUIRED_BARE:
-            return True
-        for prefix in _PANEL_REQUIRED_PREFIXES:
-            if lab.startswith(prefix):
-                bare = lab.split(":", 1)[1].strip()
-                if bare in _PANEL_REQUIRED_BARE:
-                    return True
-                break
-    return False
+    """True if any label is a panel-forcing risk tier (critical/security/…).
+
+    Delegates to :func:`quality_levels.has_risk_label` so floors, panel skip,
+    and HARD cascade share one matcher.
+    """
+    from . import quality_levels as ql_mod
+    return ql_mod.has_risk_label(labels)
 
 
 def is_small_leaf(labels: Iterable[str] | None) -> bool:

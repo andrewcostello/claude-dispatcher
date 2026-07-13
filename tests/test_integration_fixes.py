@@ -110,11 +110,14 @@ def _cfg(tmp_path):
         worktree_base=None,
         label_filter=plan_mod.parse_label_filter(None),
         only_keys=None,
-        cross_family_panel="always",
+        cross_family_panel="full",
     )
 
 
 def test_small_leaf_without_pin_skips_panel(tmp_path):
+    """Run-level full (not task-pinned) still skips riskless XS/S leaves;
+    run-level always and any explicit task pin do not (covered below and in
+    test_orchestrator_panel)."""
     cfg = _cfg(tmp_path)
     assert orchestrator._panel_should_run(cfg, _snap(["size:xs"])) is False
 

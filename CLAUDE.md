@@ -11,12 +11,12 @@ We are trialing a new way to run dispatched work, motivated by two failures:
 unreviewable code volume, and long runs thrashing on an implicit/wrong
 architecture. Full design: `docs/contract-first-deviation-model.md`.
 
-## Task Batching (NOT YET IMPLEMENTED)
-`tasks.yaml` accepts a `batch_id` field and the schema is validated, but the
-orchestrator does not yet group batches — today every task runs as its own
-worktree/session regardless of `batch_id` (it is accepted-but-inert). Do NOT
-plan multi-task workflows around shared-session cost savings or all-or-nothing
-batch status until the grouping lands. Design notes: `docs/task-batching.md`.
+## Task Batching
+If tasks in your `tasks.yaml` share a non-empty `batch_id` **and** are
+co-runnable in the same wave, the dispatcher runs them as one work unit
+(one worktree, one implementer session, combined prompt; all keys get the
+same Done/Blocked outcome). See `docs/task-batching.md` and
+`docs/how-to-author-tasks.md` Phase C.
 
 ## Authoring tasks.yaml (planners)
 If you are asked to **build or rewrite a task list / PRD** for dispatcher runs,
