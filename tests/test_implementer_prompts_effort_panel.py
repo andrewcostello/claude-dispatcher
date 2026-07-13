@@ -55,9 +55,10 @@ def test_claude_and_grok_share_same_job_shape():
     claude = _prompt(agent="claude")
     grok = _prompt(agent="grok")
     # Same instructions / summary contract; only family name differs.
-    assert "Do NOT run `git commit`" in claude and "Do NOT run `git commit`" in grok
+    assert "Do NOT push" in claude and "Do NOT push" in grok
+    assert "auto-commits" in claude and "auto-commits" in grok
     assert "**Status:** Done" in claude and "**Status:** Done" in grok
-    assert "agent family:\nclaude" in claude or "claude" in claude.lower()
+    assert "claude" in claude.lower()
     assert "grok" in grok
 
 
@@ -118,11 +119,26 @@ def _snap(labels, task_type="Task"):
     )
 
 
-def test_panel_skips_xs_even_when_always_unless_risk():
-    assert orchestrator._panel_should_run(_cfg("always"), _snap(["size:XS"])) is False
+def test_panel_run_level_always_runs_xs_leaf():
+    """Run-level panel=always is an operator opt-in — do not silent-skip leaves."""
+    assert orchestrator._panel_should_run(_cfg("always"), _snap(["size:XS"])) is True
     assert orchestrator._panel_should_run(
         _cfg("always"), _snap(["size:XS", "security"])
     ) is True
+
+
+def test_panel_explicit_task_pin_beats_small_leaf_skip():
+    snap = _snap(["size:XS"])
+    snap = orchestrator.TaskSnapshot(
+        key="T", summary="s", description="d", type="Task",
+        labels=["size:XS"], panel="full",
+    )
+    assert orchestrator._panel_should_run(_cfg("auto"), snap) is True
+    snap_never = orchestrator.TaskSnapshot(
+        key="T", summary="s", description="d", type="Task",
+        labels=["size:XS"], panel="never",
+    )
+    assert orchestrator._panel_should_run(_cfg("always"), snap_never) is False
 
 
 def test_panel_always_still_runs_medium_without_risk():

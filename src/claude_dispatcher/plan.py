@@ -16,6 +16,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
+from .quality_levels import KNOWN_PANEL, KNOWN_VERIFY
 
 TODO = "To Do"
 IN_PROGRESS = "In Progress"
@@ -40,9 +41,7 @@ KNOWN_AGENTS = frozenset({"claude", "codex", "grok", "gemini"})
 # codex model_reasoning_effort). gemini/agy has no flag and ignores it.
 KNOWN_EFFORTS = frozenset({"low", "medium", "high"})
 
-# Per-task quality intensity (see quality_levels.py + plan Phase 4).
-KNOWN_VERIFY = frozenset({"none", "mechanical", "llm", "llm_strict"})
-KNOWN_PANEL = frozenset({"never", "auto", "single", "full", "always"})
+# Per-task quality intensity sets: KNOWN_VERIFY / KNOWN_PANEL imported above.
 
 # DISPATCH ordering — the statuses of a blockedBy dependency that let its
 # dependents be dispatched ("Done-or-later"). In `branch` mode that is just

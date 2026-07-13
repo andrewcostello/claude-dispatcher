@@ -139,7 +139,9 @@ def main() -> int:
         marker.write_text(
             f"smoke marker for {task_key} #{n}\n", encoding="utf-8",
         )
-        subprocess.run(["git", "add", str(marker)], check=False, capture_output=True)
+        # Stage everything (including counter) so the dispatcher auto-commit
+        # path does not create a second commit from leftover dirt.
+        subprocess.run(["git", "add", "-A"], check=False, capture_output=True)
         subprocess.run(
             ["git", "commit", "-m",
              f"feat(smoke): [{task_key}] simulated work #{n}"],
@@ -213,7 +215,9 @@ def main() -> int:
         _do_commit()
         _commit_green_file()
     elif scenario == "done-tests-red-then-fixed":
-        sentinel = Path(f".fake-claude-test-fix-{task_key}")
+        # Sentinel lives next to SUMMARY_PATH (outside the worktree) so the
+        # dispatcher auto-commit path cannot pick it up as dirty work.
+        sentinel = summary_path.parent / f".fake-claude-test-fix-{task_key}"
         if sentinel.exists():
             # Second invocation = the fix-the-tests retry: commit the green
             # file this time so the gate's re-run passes.
@@ -230,7 +234,7 @@ def main() -> int:
         # push-retry invocation — so the dispatcher must flag needs_push.
         _do_commit()
     elif scenario == "done-push-retry":
-        sentinel = Path(f".fake-claude-push-{task_key}")
+        sentinel = summary_path.parent / f".fake-claude-push-{task_key}"
         if sentinel.exists():
             # Second invocation = the push retry. The commit already exists on
             # the branch from the first run; just push it this time.
@@ -239,7 +243,10 @@ def main() -> int:
             sentinel.write_text("first invocation skipped push\n", encoding="utf-8")
             _do_commit()
     elif scenario == "done-commit-retry":
-        sentinel = Path(f".fake-claude-retry-{task_key}")
+        # First spawn: Done with a clean empty tree (no dirty files) so
+        # dispatcher auto-commit is a no-op and commit-retry still fires.
+        # Second spawn: real commit. Sentinel outside the worktree.
+        sentinel = summary_path.parent / f".fake-claude-retry-{task_key}"
         if sentinel.exists():
             _do_commit()  # second invocation = the retry; commit this time
         else:

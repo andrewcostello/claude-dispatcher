@@ -303,8 +303,9 @@ def test_tests_red_after_retry_blocks_with_tail(repo: Path, monkeypatch) -> None
     assert "task_done" not in types
     assert "panel_started" not in types
     assert "integrate_result" not in types
-    # Initial spawn + fix retry (cascade may add more implementer rungs).
-    assert len(calls) >= 2
+    # Initial spawn + fix retry; cascade may add a few more implementer rungs
+    # but must not runaway.
+    assert 2 <= len(calls) <= 8
 
 
 # --- acceptance 4: no-config skip path ----------------------------------------
@@ -389,7 +390,7 @@ def test_malformed_config_blocks_without_retry(repo: Path, monkeypatch) -> None:
     assert "must be a non-empty string" in p["error"]
     # Malformed config never triggers a fix-the-tests spawn; cascade may
     # re-spawn the implementer at a higher effort rung only.
-    assert all("test-fix" not in str(c) for c in calls) or len(calls) >= 1
+    assert sum("test-fix" in str(c) for c in calls) == 0
 
 
 def test_timeout_is_red_and_retried_once(repo: Path, monkeypatch) -> None:
@@ -414,7 +415,7 @@ def test_timeout_is_red_and_retried_once(repo: Path, monkeypatch) -> None:
     assert len(evs) >= 2
     assert all(e.payload["outcome"] == "failed" for e in evs)
     assert all(e.payload["exit_code"] is None for e in evs)
-    assert len(calls) >= 2
+    assert 2 <= len(calls) <= 8
 
 
 def test_fix_retry_spawn_failure_verdict_from_rerun(repo: Path, monkeypatch) -> None:

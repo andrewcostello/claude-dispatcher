@@ -286,9 +286,8 @@ def test_panel_always_fires_for_medium_low_risk(repo: Path, monkeypatch) -> None
     assert all(r.call_count == 1 for r in revs)
 
 
-def test_panel_always_skips_small_leaf_without_risk(repo: Path, monkeypatch) -> None:
-    """Cost/speed: size XS/S without a risk label skips the panel even under
-    mode=always — three reviewers on a leaf is not worth it."""
+def test_panel_always_runs_small_leaf_without_risk(repo: Path, monkeypatch) -> None:
+    """Run-level panel=always is an explicit operator opt-in — small leaves run."""
     _seed_yaml(repo, _LOW_RISK_TASK_YAML)
     _patch_spawn(monkeypatch)
     revs = _set_reviewers(monkeypatch, [
@@ -302,8 +301,8 @@ def test_panel_always_skips_small_leaf_without_risk(repo: Path, monkeypatch) -> 
     doc = yaml_io.load(repo / "tasks.yaml")
     row = next(t for t in doc["tasks"] if t["key"] == "PANEL-B")
     assert row["status"] == "Done"
-    assert "panel_consensus" not in row
-    assert all(r.call_count == 0 for r in revs)
+    assert row.get("panel_consensus") == "approve"
+    assert all(r.call_count == 1 for r in revs)
 
 
 def test_panel_never_skips_even_for_critical(repo: Path, monkeypatch) -> None:

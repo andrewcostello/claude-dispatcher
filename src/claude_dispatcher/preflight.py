@@ -139,6 +139,10 @@ def run_preflight(
     worktree_base: Path | None = None,
     no_claude: bool = False,
     implementer: str | None = None,
+    cascade_terminal: str | None = None,
+    verifier_agent: str | None = None,
+    design_agent: str | None = None,
+    enable_design_stage: bool = False,
 ) -> PreflightResult:
     """Run preflight checks and aggregate their verdicts.
 
@@ -148,20 +152,27 @@ def run_preflight(
     from reality (see module docstring).
 
     ``no_claude``: skip Claude binary + Claude permission-flag requirements;
-    require the implementer binary (default grok) instead.
+    require the implementer binary (default grok) instead. Also probes the
+    union of cascade/verifier/design family binaries so missing seats fail
+    before implementer spend.
 
     Pure apart from the subprocess reads (and the throwaway probe worktree,
     removed before returning); creates nothing under the repo or runs dir.
     """
+    from . import spawn as spawn_mod
+
     failures: list[str] = []
     warnings: list[str] = []
     checks: dict[str, Any] = {}
 
     if no_claude:
         impl = (implementer or "grok").strip().lower()
-        # Map gemini → agy binary for PATH probe.
-        bin_name = {"gemini": "agy", "claude": "claude", "codex": "codex",
-                    "grok": "grok"}.get(impl, impl)
+        if impl == "claude":
+            failures.append(
+                "--no-claude combined with implementer=claude is contradictory; "
+                "drop --no-claude or choose a non-Claude implementer"
+            )
+        bin_name = spawn_mod.agent_bin_name(impl)
         _check_implementer_binary(bin_name, failures, warnings, checks)
         checks["no_claude"] = True
         # Permission flags are Claude-specific; skip under no_claude.
@@ -171,6 +182,48 @@ def run_preflight(
     else:
         _check_claude_binary(claude_bin, failures, warnings, checks)
         _check_permission_flags(claude_extra_args, mode, failures, checks)
+
+    # Probe every family the run may spawn (beyond the primary implementer).
+    fleet: set[str] = set()
+    if no_claude:
+        fleet.add((implementer or "grok").strip().lower())
+        fleet.add((cascade_terminal or "grok").strip().lower())
+        fleet.add((verifier_agent or "grok").strip().lower())
+        if enable_design_stage:
+            fleet.add((design_agent or "grok").strip().lower())
+    else:
+        if implementer:
+            fleet.add(implementer.strip().lower())
+        if cascade_terminal:
+            fleet.add(cascade_terminal.strip().lower())
+        if verifier_agent:
+            fleet.add(verifier_agent.strip().lower())
+        if enable_design_stage and design_agent:
+            fleet.add(design_agent.strip().lower())
+    fleet.discard("claude")  # already checked (or skipped under no_claude)
+    fleet_bins: dict[str, Any] = {}
+    for fam in sorted(fleet):
+        if not fam:
+            continue
+        b = spawn_mod.agent_bin_name(fam)
+        info = doctor.probe_binary(b)
+        entry = {
+            "ok": bool(info.get("present")),
+            "bin": b,
+            "family": fam,
+            "path": info.get("path"),
+            "version": info.get("version"),
+        }
+        fleet_bins[fam] = entry
+        if not info.get("present"):
+            failures.append(
+                f"fleet binary for {fam!r} ({b!r}) not found on PATH — install "
+                f"it or change --implementer/--cascade-terminal/--verifier-agent"
+                f"/--design-agent"
+            )
+    if fleet_bins:
+        checks["fleet_binaries"] = fleet_bins
+
     _check_dispatcher_staleness(repo_root, warnings, checks)
     _check_role_file(
         repo_root, base_branch, role_file, failures, warnings, checks,

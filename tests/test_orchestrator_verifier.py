@@ -273,11 +273,11 @@ def test_incomplete_exhausts_budget_blocks_with_gaps(repo: Path, monkeypatch) ->
 
     # Per cascade rung: up to max_verify_iterations+1 verifier runs.
     # Effort cascade may repeat the verifier path on a second claude@high rung.
-    assert stub.call_count >= 3
-    assert len(prompts) >= 3
+    assert 3 <= stub.call_count <= 12
+    assert 3 <= len(prompts) <= 12
 
     types = _types_for(_events(repo), "VER-A")
-    assert types.count("verification_iterate") >= 2
+    assert 2 <= types.count("verification_iterate") <= 8
     # Terminal is task_blocked; no panel ran (plain ticket) and no task_done.
     assert "task_done" not in types
     assert "panel_started" not in types
@@ -349,7 +349,7 @@ def test_max_verify_iterations_zero_blocks_immediately(repo: Path, monkeypatch) 
     assert row["status"] == "Blocked"
     assert row["verification_iterations"] == 0
     # No in-rung iterate; cascade may still re-verify on a higher-effort rung.
-    assert stub.call_count >= 1
+    assert 1 <= stub.call_count <= 4
     assert "verification_iterate" not in _types_for(_events(repo), "VER-A")
 
 

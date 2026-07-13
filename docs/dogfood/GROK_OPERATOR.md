@@ -125,8 +125,9 @@ pgrep -fl '[c]laude' || true
 ## Triage Blocked tasks
 
 1. `docs/runs/<run-id>/<KEY>/summary.md`
-2. Journal: `mechanical_verification`, `agent_fallback`, `panel_verdict`,
-   `design_*`, `quality_levels_resolved`
+2. Journal: `verification_mechanical`, `agent_fallback`, `panel_verdict`,
+   `task_spawn_finished` (spawn_kind=design|implementer|verifier|…),
+   `verification_verdict`
 3. Worktree under `--worktree-base`
 4. Fix description/tests, or add a `FIX-*` task and re-run / resume
 

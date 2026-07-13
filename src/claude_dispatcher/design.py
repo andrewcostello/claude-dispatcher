@@ -25,6 +25,9 @@ class DesignRecommendation:
     panel: str | None = None
     rationale: str = ""
     raw: str = ""
+    failed: bool = False
+    failure_reason: str | None = None
+    usage: object | None = None  # spawn.SpawnUsage when spawn ran
 
 
 _REC_BLOCK = re.compile(
@@ -142,7 +145,13 @@ def run_design(
         )
     except Exception as e:
         log(f"  {task_key} design stage failed: {e}")
-        return DesignRecommendation(raw=f"error: {e}")
+        # Never put error text into design_spec — that would be prepended as
+        # an "Approved Design Spec" for the implementer.
+        return DesignRecommendation(
+            failed=True,
+            failure_reason=str(e),
+            raw="",
+        )
 
     text = ""
     if design_summary.exists():
@@ -158,4 +167,10 @@ def run_design(
             design_summary.write_text(text, encoding="utf-8")
     except OSError:
         pass
-    return parse_design_recommendation(text)
+    rec = parse_design_recommendation(text)
+    rec.usage = res.usage
+    if res.exit_code != 0 and not text.strip():
+        rec.failed = True
+        rec.failure_reason = f"design spawn exit={res.exit_code}"
+        rec.raw = ""
+    return rec

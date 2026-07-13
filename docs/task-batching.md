@@ -12,6 +12,11 @@ Task Batching allows the dispatcher to group multiple related tasks from `tasks.
 
 ## How to Use Task Batching
 
+To batch tasks, assign them the same `batch_id` string in `tasks.yaml`. Members
+must be **co-runnable** (same wave — every `blockedBy` dep already satisfied).
+The first runnable task of a `batch_id` claims all other currently-runnable
+siblings with that id into one dispatch.
+
 To batch tasks, simply assign them the same `batch_id` string in `tasks.yaml`:
 
 ```yaml

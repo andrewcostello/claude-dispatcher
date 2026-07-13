@@ -180,7 +180,7 @@ Useful conventions (not all enforced):
 | `size:XS…XL` | Required; drives design/quality heuristics |
 | `area:core` / `area:skeleton` / `area:docs` / `area:game` | Routing + design |
 | `risk:high` / class markers | Operator signal; pair with verify/panel |
-| `security` / `auth` / `financial` / `critical` | HARD routing triggers |
+| `security` / `financial` / `critical` / `risk:high` | HARD routing triggers (bare or `risk:`/`tier:`/`severity:`/`priority:` prefix; not arbitrary `area:` suffixes) |
 | `dogfood` / `smoke` | Operator filtering |
 
 Quality **floors** (when task does not pin `verify`/`panel`) rise with risk
@@ -206,7 +206,9 @@ mechanical leaves to save cost.
   `--implementer`, `--cheap-first`, or per-task `agent:`.
 - Bounded leaves → `grok` + `effort: medium` is a proven cheap default.
 - Shared skeleton / hard state → `claude` or `effort: high` (see routing policy).
-- Do **not** put Claude model pins on Grok-only fleets; non-Claude agents ignore them.
+- Do **not** put Claude model pins on Grok-only fleets; Claude-shaped `model:`
+  strings are dropped for non-Claude agents (retries included). Non-Claude
+  model pins (e.g. agy engine names) still apply when the family matches.
 
 ---
 

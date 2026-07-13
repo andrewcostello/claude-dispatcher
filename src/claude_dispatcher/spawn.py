@@ -28,6 +28,32 @@ from pathlib import Path
 AGENT_NAME = "claude"
 
 
+def effective_model_for_agent(
+    agent: str | None,
+    model: str | None,
+    *,
+    log=None,
+    task_key: str | None = None,
+) -> str | None:
+    """Return a model pin safe to pass to ``agent``'s CLI.
+
+    Claude-shaped pins (``claude-*``, strings containing ``claude``) are
+    dropped for non-Claude families so YAML written for Claude does not break
+    grok/codex/agy retries and verifiers.
+    """
+    if not model:
+        return None
+    a = (agent or "claude").strip().lower() or "claude"
+    if a == "claude":
+        return model
+    if "claude" in str(model).lower():
+        if log:
+            key = task_key or "?"
+            log(f"  {key} ignoring Claude model pin {model!r} for agent={a}")
+        return None
+    return model
+
+
 def capture_agent_version(claude_bin: str, timeout_seconds: int = 30) -> str | None:
     """Run `<claude_bin> --version` once and return its version line.
 
@@ -111,9 +137,9 @@ subagents, or open pull requests.
 2. Prefer existing patterns and public seams in this repo; do not redesign
    architecture unless the task explicitly requires it.
 3. Run the most relevant tests you can; fix failures you introduce.
-4. Do NOT run `git commit`, push, or open a PR — the dispatcher commits and
-   integrates your working-tree changes. (If your CLI cannot leave a dirty
-   tree, still do not push or open a PR.)
+4. Do NOT push or open a PR — the dispatcher integrates. Prefer leaving a
+   dirty worktree (the dispatcher auto-commits). You may `git commit` if your
+   CLI cannot leave dirty state; never push.
 5. When finished, write a short markdown summary ONLY to this path:
    {summary_path}
 
@@ -481,6 +507,17 @@ def spawn_claude(
 AGENT_BINS: dict[str, str] = {"codex": "codex", "grok": "grok", "gemini": "agy"}
 
 
+def agent_bin_name(agent: str | None) -> str:
+    """Resolve CLI binary name for an implementer/verifier/design family.
+
+    gemini → agy; claude/None → claude; others pass through.
+    """
+    a = (agent or "claude").strip().lower() or "claude"
+    if a == "claude":
+        return "claude"
+    return AGENT_BINS.get(a, a)
+
+
 # ---------------------------------------------------------------------------
 # agy (Antigravity CLI) model selection.
 #
@@ -670,26 +707,44 @@ def spawn_agent(
     agentic mode (see module notes), then auto-commit + ensure a summary so the
     downstream gate/verifier/panel flow is identical regardless of agent.
     """
+    summary_path = Path(env["SUMMARY_PATH"])
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    task_key = env.get("TASK_KEY", "task")
+    safe_model = effective_model_for_agent(agent, model)
+
     if not agent or agent == "claude":
         spawn_extra = list(extra_args or [])
-        if model:
-            spawn_extra += ["--model", model]
+        if safe_model:
+            spawn_extra += ["--model", safe_model]
         if effort:
             spawn_extra += ["--effort", effort]
-        return spawn_claude(
+        result = spawn_claude(
             claude_bin=claude_bin, cwd=cwd, env=env, prompt=prompt,
             extra_args=spawn_extra, timeout_seconds=timeout_seconds,
         )
+        # Same contract as cross-family: dispatcher owns the commit so the
+        # unified "leave dirty / do not push" brief does not force commit-retry.
+        committed = _autocommit_worktree(cwd, task_key, "claude")
+        if not result.summary_path.exists():
+            _write_synthetic_summary(
+                result.summary_path, task_key, "claude",
+                result.exit_code, result.stdout or "", committed,
+            )
+        exit_code = 0 if (result.exit_code == 0 or committed) else result.exit_code
+        return SpawnResult(
+            exit_code=exit_code,
+            summary_path=result.summary_path,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            usage=result.usage,
+        )
 
-    summary_path = Path(env["SUMMARY_PATH"])
-    summary_path.parent.mkdir(parents=True, exist_ok=True)
     bin_ = AGENT_BINS[agent]
-    task_key = env.get("TASK_KEY", "task")
     # Prompt is already agent-native (see build_prompt); do not wrap with a
     # Claude Tasker suffix — that was the main quality gap for grok/codex/agy.
     prompt_file = summary_path.parent / f"{task_key}-{agent}-prompt.txt"
     prompt_file.write_text(prompt)
-    argv = _agent_argv(agent, bin_, prompt_file, cwd, model, prompt, effort)
+    argv = _agent_argv(agent, bin_, prompt_file, cwd, safe_model, prompt, effort)
 
     try:
         proc = subprocess.run(
@@ -710,12 +765,12 @@ def spawn_agent(
     # CLI returned non-zero; conversely a clean exit with no commits falls
     # through to the orchestrator's no-commits handling.
     exit_code = 0 if (rc == 0 or committed) else rc
-    usage = SpawnUsage(model=model or agent)
+    usage = SpawnUsage(model=safe_model or agent)
     if agent == "grok":
         gusage = parse_grok_usage(out)
         # Prefer parsed fields; keep model tag if parser left it empty.
         if gusage.model is None:
-            gusage.model = model or agent
+            gusage.model = safe_model or agent
         usage = gusage
     return SpawnResult(
         exit_code=exit_code, summary_path=summary_path,
