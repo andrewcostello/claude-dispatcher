@@ -17,6 +17,26 @@ from typing import Callable
 from . import quality_levels as ql_mod
 from . import spawn as spawn_mod
 
+import json
+
+
+def _unwrap_json_envelope(stdout: str) -> str:
+    """If stdout is a `claude --output-format json` envelope, return its
+    `result` (the final assistant message). The design worker's fallback
+    text MUST be the message, not the envelope — the ^-anchored field regex
+    in parse_design_recommendation cannot match inside a one-line JSON blob
+    (this exact miss made the first live design run's recommendation parse
+    return all-None)."""
+    if not stdout or not stdout.strip():
+        return ""
+    try:
+        doc = json.loads(stdout.strip())
+    except (json.JSONDecodeError, ValueError):
+        return stdout
+    if isinstance(doc, dict) and isinstance(doc.get("result"), str):
+        return doc["result"]
+    return stdout
+
 
 @dataclass
 class DesignRecommendation:
@@ -118,6 +138,7 @@ def run_design(
     labels: list[str],
     timeout_seconds: int = 600,
     claude_bin: str = "claude",
+    extra_args: list[str] | None = None,
     log: Callable[[str], None] = lambda _m: None,
 ) -> DesignRecommendation:
     """Spawn a design worker; return parsed recommendation (best-effort)."""
@@ -141,6 +162,10 @@ def run_design(
             env=design_env,
             prompt=prompt,
             claude_bin=claude_bin,
+            # The run's permission-bypass flags — without them a headless
+            # claude design worker has NO write access (every Write/Bash
+            # denied; first live run produced its design only in stdout).
+            extra_args=list(extra_args or []),
             timeout_seconds=timeout_seconds,
         )
     except Exception as e:
@@ -158,9 +183,9 @@ def run_design(
         try:
             text = design_summary.read_text(encoding="utf-8")
         except OSError:
-            text = res.stdout or ""
+            text = _unwrap_json_envelope(res.stdout or "")
     else:
-        text = res.stdout or ""
+        text = _unwrap_json_envelope(res.stdout or "")
     # Persist a copy next to the run summary when possible.
     try:
         if text and not design_summary.exists():

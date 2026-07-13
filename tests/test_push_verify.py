@@ -282,6 +282,12 @@ def test_unpushed_done_retries_then_flags_needs_push(repo: Path, monkeypatch) ->
     the YAML row AND the journal. (Acceptance 1.)"""
     monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "done-no-push")
     _patch_spawn(monkeypatch)
+    # Reject ALL pushes at the remote so the mechanical recovery (which
+    # would otherwise simply push the branch) fails like the agent did.
+    hook = repo.parent / "origin.git" / "hooks" / "pre-receive"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
     rc = orchestrator.execute(_args(repo))
     # needs_push is advisory — the task is still Done, run still "clean".
     assert rc == 0
@@ -311,8 +317,10 @@ def test_unpushed_done_retries_then_flags_needs_push(repo: Path, monkeypatch) ->
 
 
 def test_push_retry_recovers(repo: Path, monkeypatch) -> None:
-    """When the first run forgets to push but the push-retry invocation pushes,
-    the task lands Done with NO needs_push flag and a recovered event."""
+    """An unpushed Done recovers MECHANICALLY (dispatcher `git push`) — no
+    LLM push-retry spawn. The unified brief tells agents not to push, so
+    this state is the norm; the first live runs paid a corrective spawn
+    that cost more than the implementation itself."""
     monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "done-push-retry")
     _patch_spawn(monkeypatch)
     rc = orchestrator.execute(_args(repo))
@@ -323,8 +331,9 @@ def test_push_retry_recovers(repo: Path, monkeypatch) -> None:
 
     evs = _push_verify_events(repo)
     assert len(evs) == 1
-    assert evs[0].payload["outcome"] == "recovered"
-    assert evs[0].payload["retry_attempted"] is True
+    assert evs[0].payload["outcome"] == "recovered-mechanical"
+    assert evs[0].payload["retry_attempted"] is False
+    assert evs[0].payload["mechanical_recovery"] is True
 
     # The branch reached the remote.
     bare = repo.parent / "origin.git"

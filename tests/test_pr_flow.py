@@ -533,8 +533,11 @@ def test_branch_mode_run_complete_payload_has_no_merge_tallies(
 
 
 def test_branch_mode_does_not_auto_raise(repo: Path, monkeypatch) -> None:
-    """branch mode is unaffected: no pr_opened event, tasks land Done (not
-    Awaiting Review), no pr_number stamped."""
+    """branch mode never runs pr-mode AUTO-raise: tasks land Done (not
+    Awaiting Review) and no pr_number is stamped on the row. The push-verify
+    safety net MAY mechanically raise the expected PR (that used to happen
+    via an LLM push-retry spawn); such events are tagged mechanical-recovery
+    and do not change task status."""
     _patched_spawn(monkeypatch)
     rc = orchestrator.execute(_build_args(repo, only="SMOKE-B"))
     assert rc == 0
@@ -542,7 +545,10 @@ def test_branch_mode_does_not_auto_raise(repo: Path, monkeypatch) -> None:
     row = _row_of(repo, "SMOKE-B")
     assert row["status"] == "Done"
     assert "pr_number" not in row
-    assert _journal_events(repo, "pr_opened") == []
+    assert all(
+        e.payload.get("body_source") == "mechanical-recovery"
+        for e in _journal_events(repo, "pr_opened")
+    )
 
 
 def test_pr_mode_blocks_when_push_fails(repo: Path, monkeypatch) -> None:

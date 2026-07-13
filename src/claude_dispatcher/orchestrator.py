@@ -1110,6 +1110,7 @@ def _run_task(
             labels=list(snap.labels or []),
             timeout_seconds=min(cfg.task_timeout_seconds, 900),
             claude_bin=cfg.claude_bin,
+            extra_args=list(cfg.claude_extra_args),
             log=lambda m: _log(log_path, m),
         )
         if rec.usage is not None:
@@ -3690,9 +3691,41 @@ def _verify_push_and_maybe_retry(
         }, task_key=snap.key)
         return False
 
-    # not-pushed / no-pr → one corrective push/PR-only re-spawn, then re-check.
+    # not-pushed / no-pr → MECHANICAL recovery first. Pushing a branch and
+    # opening a PR are deterministic git/gh operations; the unified brief
+    # deliberately forbids agents to push, so this state is the NORM, not a
+    # mistake — and the LLM push-retry spawn cost more than the implementer
+    # spawn itself on the first live runs (batch: $0.77 vs $0.64). The LLM
+    # retry below survives only as a fallback when git/gh themselves fail.
     _log(log_path,
          f"  {snap.key} reported Done but {res.status} ({res.detail}) — "
+         f"mechanical push/PR recovery")
+    if _mechanical_push_recovery(
+            cfg, snap, wt, summary_path, log_path,
+            initial=res, expect_pr=expect_pr):
+        res_m = pv_mod.verify(
+            repo_root=wt.path,
+            branch=wt.branch,
+            expect_pr=expect_pr,
+            gh_bin=cfg.gh_bin,
+            log=lambda m: _log(log_path, m),
+        )
+        if not res_m.needs_attention:
+            outcome = ("recovered-mechanical" if res_m.status == "ok"
+                       else res_m.status)
+            _log(log_path, f"  {snap.key} push-verify: {outcome}")
+            _emit_event(cfg, journal_mod.EventType.push_verify, {
+                "expect_pr": expect_pr, "outcome": outcome,
+                "reason": res_m.detail, "pr_checked": res_m.pr_checked,
+                "retry_attempted": False, "mechanical_recovery": True,
+                "pre_retry_status": res.status,
+            }, task_key=snap.key)
+            return False
+
+    # Mechanical recovery failed or didn't verify — one corrective
+    # push/PR-only re-spawn, then re-check.
+    _log(log_path,
+         f"  {snap.key} mechanical push recovery incomplete — "
          f"retrying with push/PR-only prompt")
     _retry_for_push(cfg, snap, wt, summary_path, env, log_path,
                     initial=res, expect_pr=expect_pr)
@@ -3723,6 +3756,64 @@ def _verify_push_and_maybe_retry(
         "reason": res2.detail, "pr_checked": res2.pr_checked,
         "retry_attempted": True, "pre_retry_status": res.status,
         "post_retry_status": res2.status,
+    }, task_key=snap.key)
+    return True
+
+
+def _mechanical_push_recovery(
+    cfg: RunConfig,
+    snap: TaskSnapshot,
+    wt: wt_mod.Worktree,
+    summary_path: Path,
+    log_path: Path,
+    *,
+    initial: pv_mod.PushVerifyResult,
+    expect_pr: bool,
+) -> bool:
+    """Deterministic push + PR-raise, no LLM: `git push -u origin <branch>`
+    and (when a PR is expected and missing) `gh pr create` with the same
+    title/body conventions as pr-mode auto-raise. Returns True iff every
+    required step succeeded (caller re-verifies); False falls back to the
+    LLM push-retry."""
+    if initial.status == "not-pushed":
+        pushed, push_detail = _push_branch(wt.path, wt.branch, log_path,
+                                           snap.key)
+        if not pushed:
+            _log(log_path,
+                 f"  {snap.key} mechanical push failed: {push_detail}")
+            return False
+    if not expect_pr:
+        return True
+    # Branch is pushed (either just now or already); ensure the PR exists.
+    check = pv_mod.verify(
+        repo_root=wt.path, branch=wt.branch, expect_pr=True,
+        gh_bin=cfg.gh_bin, log=lambda m: _log(log_path, m),
+    )
+    if check.status != "no-pr":
+        return not check.needs_attention
+    try:
+        summ = summary_mod.parse(summary_path)
+    except Exception:
+        summ = None
+    title = ((summ.prepared_pr_title if summ else "")
+             or _generated_pr_title(snap))
+    body = ((summ.prepared_pr_body if summ else "")
+            or (_generated_pr_body(snap, summ) if summ
+                else f"## What\n{snap.summary}\n\n## Ticket\n{snap.key}"))
+    base = cfg.feature_branch or cfg.base_branch
+    result = pr_mod.raise_pr(
+        cwd=wt.path, title=title, body=body,
+        branch=wt.branch, base=base, gh_bin=cfg.gh_bin,
+    )
+    if result.url is None:
+        _log(log_path,
+             f"  {snap.key} mechanical gh pr create failed: {result.error}")
+        return False
+    _log(log_path,
+         f"  {snap.key} mechanical PR opened against {base}: {result.url}")
+    _emit_event(cfg, journal_mod.EventType.pr_opened, {
+        "number": result.number, "url": result.url, "target": base,
+        "body_source": "mechanical-recovery",
     }, task_key=snap.key)
     return True
 
