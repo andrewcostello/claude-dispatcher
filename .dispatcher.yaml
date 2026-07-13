@@ -14,3 +14,7 @@ test: "PYTHONPATH=src /home/andrew/Project/claude-dispatcher/.venv/bin/python -m
 # consensus — verdicts/findings are journaled for scorecard comparison only.
 panel:
   advisory: [grok]
+
+# Dogfood / Grok-first defaults for this repo (override on CLI):
+#   dispatcher run … --no-claude
+# Production multi-agent fleets omit --no-claude so cascade terminal stays claude.

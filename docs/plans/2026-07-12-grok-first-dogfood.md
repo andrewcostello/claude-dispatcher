@@ -112,8 +112,8 @@ Phase 0   Operator loop + dogfood YAML scaffolding
 Phase 1   ★ Single-orchestrator restructure (all agents)   ← core restructure
 Phase 2   Grok-only runtime (--no-claude, preflight, usage)
 Phase 3   Dogfood wave: improve dispatcher via dispatcher
-Phase 4   Quality: pluggable verifier + panel without requiring Claude
-Phase 5   Optional design stage (Critical/High)
+Phase 4   Quality: per-task verify/panel levels + pluggable workers
+Phase 5   Design stage (Critical/High/sometimes Medium) → levels + spec
 Phase 6   Operator UX (watch, needs_attention)
 Phase 7   Fleet defaults (routing as code) + policy refresh
 Phase 8   claude-workflow dual-runtime docs/roles
@@ -314,53 +314,184 @@ Not main until suite green.
 
 ---
 
-## Phase 4 — Quality workers (still no second orchestrator)
+## Phase 4 — Quality workers + per-task intensity
 
-**Goal:** Verifier + panel as pluggable workers; Claude optional.
+**Goal:** Verifier + panel as pluggable **workers**; intensity is a
+**first-class task field** that overrides run defaults. Still no second
+orchestrator.
 
-### Task 4.1 — Pluggable verifier
+### Why per-task levels
 
-- `verifier_agent: claude|grok|none` in config
-- Same VERIFIED/INCOMPLETE contract
-- `--no-claude` ⇒ `grok` or `none` (mechanical-only)
+Run-level flags (`--cross-family-panel auto|always|never`,
+`--skip-verification`) are too coarse:
 
-### Task 4.2 — Panel seats without requiring Claude
+- An XS leaf and an M auth task in the same run need different scrutiny.
+- Planners (and Phase 5 design) can **name** the right intensity up front.
+- Dogfood / `--no-claude` can keep cheap defaults while Critical tasks still
+  request a real panel when seats are available.
 
-- no-Claude / config: authoritative `grok` + `codex` + `gemini` (available only)
-- keep corroboration consensus
-- Claude seat remains default when Claude is in the fleet
+### Intensity model (resolved at dispatch)
 
-### Task 4.3 — Done requires evidence
+**Verifier levels** (`verify:` on task, or run default):
 
-Cross-family auto-commit OK; Done requires mechanical green (else cascade/Block).
+| Level | Meaning |
+|-------|---------|
+| `none` | Skip LLM verifier (mechanical gate still runs unless skipped elsewhere) |
+| `mechanical` | Mechanical only; journal `verification_skipped: mechanical_only` |
+| `llm` | One LLM verifier pass (default family from config: claude\|grok) |
+| `llm_strict` | LLM verifier + stricter incomplete handling (lower bar for INCOMPLETE / more iterations) |
 
-**Exit gate:** Risk-labeled dogfood task can panel+verify without Claude binary.
+**Panel levels** (`panel:` on task, or run default / auto policy):
+
+| Level | Meaning |
+|-------|---------|
+| `never` | No cross-family panel |
+| `auto` | Existing risk/size policy (`panel_required` + leaf skip) |
+| `single` | One available non-author family (cheap second look) |
+| `full` | Full authoritative panel (available seats; exclude author) |
+| `always` | Force full even for small leaves (opt-in expensive) |
+
+**Resolution order (highest wins for a single task):**
+
+```text
+1. Explicit task field:   verify: / panel:
+2. Design recommendation  (Phase 5 — written onto the row or run artifact)
+3. Deterministic defaults from labels/size/risk (routing table)
+4. Run-level CLI / .dispatcher.yaml defaults
+```
+
+Explicit task fields always win over design and defaults (human/planner intent).
+
+### Task 4.1 — Schema + resolution
+
+**Files:** `plan.py` (`Task.verify`, `Task.panel`), `orchestrator.py`
+`TaskSnapshot`, `RunConfig` defaults, tests
+
+```yaml
+tasks:
+  - key: LEAF-1
+    labels: [size:XS]
+    verify: mechanical      # override: no LLM verifier
+    panel: never
+    agent: grok
+
+  - key: AUTH-1
+    labels: [size:M, security]
+    verify: llm_strict
+    panel: full
+    agent: claude
+```
+
+Validate enums; unknown → `ValidationError`.
+
+### Task 4.2 — Pluggable verifier worker
+
+- Config: `verifier_agent: claude|grok` (who runs `llm` / `llm_strict`)
+- `--no-claude` ⇒ default verifier_agent `grok` if present else treat `llm*` as
+  `mechanical` + warning
+- Honor per-task `verify:` level in `_verify_llm_and_maybe_iterate` path
+
+### Task 4.3 — Panel seats without requiring Claude
+
+- Build panel from available families; under no-Claude drop Claude seat
+- Honor per-task `panel:` (`never`/`single`/`full`/`always`/`auto`)
+- Keep corroboration consensus for multi-seat panels
+
+### Task 4.4 — Done requires evidence
+
+Auto-commit OK; Done requires mechanical green when a test command exists
+(else cascade/Block). Independent of verify/panel levels.
+
+**Exit gate:**
+- Unit tests for resolution order and enum validation
+- Two tasks in one run with different `verify`/`panel` levels behave differently
+- Risk task can `panel: full` without Claude binary when grok/codex/gemini exist
 
 ---
 
-## Phase 5 — Optional design stage (extract last Tasker gap)
+## Phase 5 — Design stage (Critical / High / sometimes Medium)
 
-**Goal:** Critical/High design without Tasker-in-session.
+**Goal:** Dispatcher-owned design **before** implement, for tasks that need
+architecture judgment — and design **recommends** verify/panel intensity when
+the task did not pin them.
 
-### Task 5.1 — Dispatcher stage `design` (config-gated)
+### When design runs
 
-**When:** label risk critical/high or `design: true` on task, and not
-`SKIP_DESIGN`.
+| Trigger | Design? |
+|---------|---------|
+| `design: true` / `design: false` on task | Honor explicit |
+| Labels critical / security / financial / high (risk) | **Yes** (unless `design: false` or `SKIP_DESIGN`) |
+| `size:L` / `size:XL` | **Yes** |
+| `size:M` + (foundation: ≥2 dependents, or label `design`, or `area:core` / novel-contract language in description) | **Sometimes — yes** |
+| `size:XS` / `S` leaf, no risk | **No** (default) |
+
+Deterministic rules live in dispatcher code (not the design agent). Journal
+`design_skipped` with reason when skipped.
+
+### Design outputs (structured, machine-usable)
+
+Worker uses design-agent role; must emit (or dispatcher extracts):
+
+```markdown
+## Designs
+### Design A …
+### Design B …
+
+## Recommendation
+- selected: A   # or left for human in supervised mode
+- verify: llm_strict | llm | mechanical | none
+- panel: full | single | auto | never
+- rationale: one paragraph
+```
+
+**Rules for applying recommendations:**
+
+1. If task already has `verify:` / `panel:`, **do not overwrite** (task wins).
+2. Else write recommended levels onto the in-memory snapshot for this run
+   (and optionally stamp the YAML row for audit: `verify_recommended` /
+   `panel_recommended` vs applied `verify`/`panel`).
+3. Never *lower* intensity below the deterministic floor for the risk tier
+   without an explicit task field. Example: Critical risk floor is at least
+   `verify: llm` + `panel: full` even if design says `never`.
+4. Supervised mode: human can pick design + override levels before implement.
+
+### Task 5.1 — Design stage in orchestrator
+
+**When:** triggers above and not skipped.
 
 **Flow:**
-1. Spawn worker with `.claude/workflow/roles/design-agent.md` (any agent family
-   configurable; default claude if available else grok).
-2. Parse 2–3 designs or raw markdown.
-3. Selection: supervised → human; unattended → heuristic or first design +
-   journal `design_selected`.
-4. Attach `### Approved Design Spec` to implementer prompt.
-5. Journal design artifact under `run_dir/<key>/design.md`.
+1. Spawn design worker (config `design_agent: claude|grok|…`).
+2. Parse designs + recommendation block.
+3. Select design (supervised human / unattended first+heuristic).
+4. Resolve verify/panel via Phase 4 resolution order (incl. design recs).
+5. Attach `### Approved Design Spec` to implementer prompt.
+6. Journal `run_dir/<key>/design.md` + events `design_started` /
+   `design_selected` / `quality_levels_resolved`.
 
-**Not in scope:** Full financial sub-agents inside design — keep design-agent
-role as the worker.
+### Task 5.2 — Medium “sometimes” heuristics (unit-tested)
 
-**Exit gate:** One Critical-labeled fixture task shows design.md + implementer
-prompt contains approved spec.
+Pure function e.g. `design_required(task) -> bool` covering critical/high/L/XL
+and medium rules; no network.
+
+### Task 5.3 — Floors table (config)
+
+```yaml
+quality_floors:
+  critical: { verify: llm_strict, panel: full }
+  high:     { verify: llm,        panel: full }
+  medium:   { verify: llm,        panel: auto }
+  low:      { verify: mechanical, panel: never }
+```
+
+Design may raise above floor; may not sink below without explicit task override.
+
+**Exit gate:**
+- Critical fixture: design.md exists, implementer prompt has approved spec,
+  resolved levels ≥ floor
+- Medium-with-`design: true`: design runs; recommends levels applied when unset
+- Medium leaf with no flags: design skipped; cheap defaults
+- Task with `verify: mechanical` on Critical still honors task override
+  (documented escape hatch; journal `below_floor_override`)
 
 ---
 
@@ -481,8 +612,8 @@ Session C — Phase 4–5 quality + design stage
 - [ ] Phase 1: ★ no Tasker under dispatch; unified implementer; docs
 - [ ] Phase 2: --no-claude smoke green
 - [ ] Phase 3: ≥3 dispatched improvements
-- [ ] Phase 4: verifier/panel without requiring Claude
-- [ ] Phase 5: optional design stage
+- [ ] Phase 4: per-task verify/panel levels + pluggable workers
+- [ ] Phase 5: design for C/H/(M) + recommend levels with floors
 - [ ] Phase 6: watch + needs_attention
 - [ ] Phase 7: routing defaults
 - [ ] Phase 8: workflow package dual-runtime
@@ -493,11 +624,12 @@ Session C — Phase 4–5 quality + design stage
 
 | Decision | Recommendation |
 |----------|----------------|
-| Panel in early dogfood | `never` until Phase 4 |
+| Panel in early dogfood | task `panel: never` / run default until Phase 4 |
 | Cascade terminal (dogfood) | `grok` via `--no-claude` |
 | Cascade terminal (prod config) | `claude` when installed |
-| Verifier under no-Claude | mechanical-only first; Grok verifier next |
+| Verifier under no-Claude | default `mechanical`; per-task may request `llm` via grok |
 | Design stage agent | claude if present else grok |
+| Design may lower intensity? | No — only raise above floor unless task explicitly overrides |
 | Integration | feature branch `dogfood/grok-first` |
 
 ---

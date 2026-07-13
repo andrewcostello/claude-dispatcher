@@ -137,13 +137,18 @@ def run_preflight(
     base_branch: str,
     role_file: str = DEFAULT_ROLE_FILE,
     worktree_base: Path | None = None,
+    no_claude: bool = False,
+    implementer: str | None = None,
 ) -> PreflightResult:
-    """Run all four checks and aggregate their verdicts.
+    """Run preflight checks and aggregate their verdicts.
 
     ``worktree_base`` is the same ``--worktree-base`` override the run will
     hand to task-worktree creation (None → the conventional default); the
     role-file probe must live at that exact base or its verdict can diverge
     from reality (see module docstring).
+
+    ``no_claude``: skip Claude binary + Claude permission-flag requirements;
+    require the implementer binary (default grok) instead.
 
     Pure apart from the subprocess reads (and the throwaway probe worktree,
     removed before returning); creates nothing under the repo or runs dir.
@@ -152,9 +157,21 @@ def run_preflight(
     warnings: list[str] = []
     checks: dict[str, Any] = {}
 
-    _check_claude_binary(claude_bin, failures, warnings, checks)
+    if no_claude:
+        impl = (implementer or "grok").strip().lower()
+        # Map gemini → agy binary for PATH probe.
+        bin_name = {"gemini": "agy", "claude": "claude", "codex": "codex",
+                    "grok": "grok"}.get(impl, impl)
+        _check_implementer_binary(bin_name, failures, warnings, checks)
+        checks["no_claude"] = True
+        # Permission flags are Claude-specific; skip under no_claude.
+        checks["permission_flags"] = {
+            "ok": True, "mechanism": "skipped-no-claude", "mode": mode,
+        }
+    else:
+        _check_claude_binary(claude_bin, failures, warnings, checks)
+        _check_permission_flags(claude_extra_args, mode, failures, checks)
     _check_dispatcher_staleness(repo_root, warnings, checks)
-    _check_permission_flags(claude_extra_args, mode, failures, checks)
     _check_role_file(
         repo_root, base_branch, role_file, failures, warnings, checks,
         worktree_base=worktree_base,
@@ -166,6 +183,33 @@ def run_preflight(
 
 
 # --- check 1: claude binary ---------------------------------------------------
+
+
+def _check_implementer_binary(
+    bin_name: str,
+    failures: list[str],
+    warnings: list[str],
+    checks: dict[str, Any],
+) -> None:
+    """Require the implementer CLI on PATH for no-Claude fleets."""
+    info = doctor.probe_binary(bin_name)
+    entry = {
+        "ok": bool(info.get("present")),
+        "bin": bin_name,
+        "path": info.get("path"),
+        "version": info.get("version"),
+    }
+    checks["implementer_binary"] = entry
+    if not info.get("present"):
+        failures.append(
+            f"implementer binary {bin_name!r} not found on PATH — install it "
+            f"or drop --no-claude / set --implementer to an available agent"
+        )
+    elif not info.get("version"):
+        warnings.append(
+            f"implementer binary {bin_name!r} is present but --version failed "
+            f"({info.get('version_error') or 'unknown'})"
+        )
 
 
 def _check_claude_binary(

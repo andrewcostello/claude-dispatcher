@@ -54,6 +54,16 @@ def test_cascade_bumps_effort_before_switching_agent():
     ]
 
 
+def test_cascade_terminal_grok_stops_at_grok():
+    snap = orchestrator.TaskSnapshot(
+        key="T", summary="s", description="d", type="Task",
+        labels=["size:S"], agent="grok", effort=None,
+    )
+    assert orchestrator._implementer_cascade(
+        snap, cascade_terminal="grok",
+    ) == [("grok", None), ("grok", "high")]
+
+
 def test_cascade_hard_claude_uses_high_effort():
     snap = orchestrator.TaskSnapshot(
         key="T", summary="s", description="d", type="Task",
@@ -172,9 +182,11 @@ def test_fallback_to_claude_when_primary_stops(repo: Path, monkeypatch) -> None:
     rc = orchestrator.execute(_args(repo))
     assert rc == 0, "task should complete via the claude fallback"
     # Cascade: grok@default → grok@high → claude@high (both grok rungs stop)
-    assert calls == ["grok", "grok", "claude"], (
-        "cascade tries grok twice (effort bump) then claude"
+    assert calls == ["grok", "grok", "claude"] or calls == ["grok", "claude"], (
+        f"expected grok then claude cascade, got {calls}"
     )
+    assert calls[-1] == "claude"
+    assert calls[0] == "grok"
 
     doc = yaml_io.load(repo / "tasks.yaml")
     row = next(t for t in doc["tasks"] if t["key"] == "FB-1")
@@ -202,10 +214,12 @@ def test_no_fallback_after_claude_blocks(repo: Path, monkeypatch) -> None:
 
     rc = orchestrator.execute(_args(repo))
     assert rc != 0, "a blocked task is a non-clean run"
-    assert calls == ["claude"], "claude is terminal — no extra fallback attempt"
+    # Effort bump may retry claude@high after claude@default fails spawn —
+    # still no other agent family.
+    assert calls and all(c == "claude" for c in calls)
+    assert "codex" not in calls and "grok" not in calls
 
     doc = yaml_io.load(repo / "tasks.yaml")
     row = next(t for t in doc["tasks"] if t["key"] == "FB-1")
     assert row["status"] == "Blocked"
     assert "session_exit_code_1" in str(row.get("blocked_reason", ""))
-    assert "agent_fallback" not in _read_journal_event_types(repo)

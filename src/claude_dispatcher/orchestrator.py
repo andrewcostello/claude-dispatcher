@@ -42,6 +42,7 @@ from . import plan as plan_mod
 from . import pr as pr_mod
 from . import preflight as preflight_mod
 from . import push_verify as pv_mod
+from . import quality_levels as ql_mod
 from . import repo_config as repo_config_mod
 from . import spawn as spawn_mod
 from . import summary as summary_mod
@@ -109,8 +110,15 @@ class RunConfig:
     gh_bin: str = "gh"
     # Run-level default implementer family (claude/codex/grok/gemini). A per-task
     # `agent:` in the YAML wins; otherwise every task routes to this family's
-    # headless CLI instead of `claude --print`. None -> claude (the default Tasker).
+    # headless CLI instead of `claude --print`. None -> claude (the default).
     implementer: str | None = None
+    # Quality cascade terminal agent: "claude" (default closer) or "grok"
+    # (dogfood / no-Claude fleets). Never append a rung after this family.
+    cascade_terminal: str = "claude"
+    # When True: no Claude binary required; default implementer grok; cascade
+    # terminal grok; haiku off; LLM verification skipped (mechanical still runs)
+    # unless a later phase provides a non-Claude verifier.
+    no_claude: bool = False
     claude_extra_args: list[str] = field(default_factory=list)
     base_branch: str = "main"
     # Integration mode (PRF-1). "branch" (default) forks each task worktree
@@ -252,6 +260,9 @@ class TaskSnapshot:
     effort: str | None = None
     batch_id: str | None = None
     batch_keys: list[str] = field(default_factory=list)
+    # Per-task quality intensity (Phase 4); None → resolve at gate time.
+    verify: str | None = None
+    panel: str | None = None
     # blockedBy dependency keys, in declaration order. Used at worker start to
     # merge each dependency's branch into this task's fresh worktree branch
     # when the dependency's commits are not yet on base (INT-4).
@@ -303,6 +314,8 @@ def execute(args: argparse.Namespace) -> int:
             repo_root=repo_root,
             base_branch=cfg.base_branch,
             worktree_base=cfg.worktree_base,
+            no_claude=cfg.no_claude,
+            implementer=cfg.implementer,
         )
         pf_skipped = False
         if not pf.ok:
@@ -666,44 +679,43 @@ def _is_hard_task(snap: TaskSnapshot) -> bool:
     return False
 
 
-def _implementer_cascade(snap: TaskSnapshot) -> list[tuple[str, str | None]]:
+def _implementer_cascade(
+    snap: TaskSnapshot,
+    *,
+    cascade_terminal: str = "claude",
+) -> list[tuple[str, str | None]]:
     """Ordered (agent, effort) rungs for spawn- and quality-cascade.
 
-    Policy (docs/agent-routing-policy.md):
-      * HARD (or primary claude) → single claude rung (effort high on HARD).
-      * EASY/MEDIUM cheap primary → primary@effort → primary@high (if effort
-        capable and not already high) → claude@high.
+    Policy (docs/agent-routing-policy.md), with configurable terminal:
+      * primary@effort → primary@high (if effort-capable) → terminal@high
+      * terminal is "claude" (default production closer) or "grok" (no-Claude /
+        dogfood fleets). When primary is already the terminal family, no
+        further agent switch.
 
     Each rung is tried on spawn death OR quality failure (gate-red / panel
-    block / verifier incomplete). claude is always terminal.
+    block / verifier incomplete).
     """
+    terminal = (cascade_terminal or "claude").strip().lower()
+    if terminal not in ("claude", "grok"):
+        terminal = "claude"
     primary = snap.agent or "claude"
     base_effort = snap.effort  # None = CLI default
 
-    if primary == "claude" or _is_hard_task(snap):
-        # HARD always closes with claude; if the task pinned a non-claude agent
-        # but is HARD, still start at claude@high (don't burn a cheap attempt
-        # the routing policy says is thrown away).
-        if _is_hard_task(snap) and primary != "claude":
-            # Respect an explicit pin on HARD only when the user chose claude;
-            # otherwise force the strong closer. (Pinned grok on a critical
-            # task still cascades: grok first was the old behavior — keep the
-            # pin as first rung so bake-offs can force an agent, then escalate.)
-            rungs: list[tuple[str, str | None]] = [
-                (primary, base_effort if base_effort == "high" else (base_effort or None)),
-            ]
-            if primary in _EFFORT_CAPABLE_AGENTS and base_effort != "high":
-                rungs.append((primary, "high"))
-            rungs.append(("claude", "high"))
-            return _dedupe_cascade_rungs(rungs)
-        # Default / pinned claude
-        effort = base_effort or ("high" if _is_hard_task(snap) else None)
-        return [("claude", effort)]
+    def _with_effort_bump(agent: str, effort: str | None) -> list[tuple[str, str | None]]:
+        out: list[tuple[str, str | None]] = [(agent, effort)]
+        if agent in _EFFORT_CAPABLE_AGENTS and effort != "high":
+            out.append((agent, "high"))
+        return out
 
-    rungs = [(primary, base_effort)]
-    if primary in _EFFORT_CAPABLE_AGENTS and base_effort != "high":
-        rungs.append((primary, "high"))
-    rungs.append(("claude", "high"))
+    # Pinned claude: single-family chain (maybe effort high on HARD).
+    if primary == "claude":
+        effort = base_effort or ("high" if _is_hard_task(snap) else None)
+        return _dedupe_cascade_rungs(_with_effort_bump("claude", effort))
+
+    # Non-claude primary: effort bump, then optional terminal closer.
+    rungs = _with_effort_bump(primary, base_effort)
+    if terminal != primary:
+        rungs.append((terminal, "high"))
     return _dedupe_cascade_rungs(rungs)
 
 
@@ -726,6 +738,19 @@ def _implementer_fallback_chain(snap: TaskSnapshot) -> list[str]:
     """
     agents: list[str] = []
     for agent, _effort in _implementer_cascade(snap):
+        if not agents or agents[-1] != agent:
+            agents.append(agent)
+    return agents
+
+
+def _implementer_fallback_chain_for(
+    snap: TaskSnapshot, *, cascade_terminal: str = "claude",
+) -> list[str]:
+    """Like _implementer_fallback_chain but honors cascade_terminal."""
+    agents: list[str] = []
+    for agent, _effort in _implementer_cascade(
+        snap, cascade_terminal=cascade_terminal,
+    ):
         if not agents or agents[-1] != agent:
             agents.append(agent)
     return agents
@@ -848,7 +873,9 @@ def _run_task(
     #   the terminal closer. Escalate on spawn death OR quality failure
     #   (mechanical red / verifier incomplete / panel block). Each rung starts
     #   from the same pre-spawn worktree; prior failure context is prepended.
-    cascade = _implementer_cascade(snap)
+    cascade = _implementer_cascade(
+        snap, cascade_terminal=getattr(cfg, "cascade_terminal", "claude") or "claude",
+    )
     original_primary = snap.agent or "claude"
     pre_spawn_sha = _branch_sha(repo_root, wt.branch, log_path, snap.key)
     cascade_context = ""
@@ -1042,11 +1069,26 @@ def _run_task(
         verifier_cost_total = 0.0
         skeleton = any(str(l).strip().lower() == "skeleton"
                        for l in (snap.labels or []))
-        if cfg.skip_verification or skeleton:
-            reason = ("--skip-verification" if cfg.skip_verification
-                      else "skeleton task (intentional stubs/skipped tests)")
+        qlevels = _resolved_quality(cfg, snap)
+        skip_llm = (
+            skeleton
+            or cfg.skip_verification
+            or qlevels.verify in ("none", "mechanical")
+        )
+        if skip_llm:
+            if skeleton:
+                reason = "skeleton task (intentional stubs/skipped tests)"
+            elif snap.verify in ("none", "mechanical"):
+                reason = f"task verify={snap.verify}"
+            elif cfg.no_claude:
+                reason = "--no-claude (LLM verifier requires Claude until Phase 4 grok verifier)"
+            elif cfg.skip_verification:
+                reason = "--skip-verification"
+            else:
+                reason = f"resolved verify={qlevels.verify}"
             _emit_event(cfg, journal_mod.EventType.verification_skipped,
-                        {"reason": reason}, task_key=snap.key)
+                        {"reason": reason, "verify_level": qlevels.verify},
+                        task_key=snap.key)
             _log(log_path,
                  f"  {snap.key} LLM verification skipped ({reason})")
         else:
@@ -1418,31 +1460,43 @@ def _run_task(
     return final_status
 
 
+def _resolved_quality(cfg: RunConfig, snap: TaskSnapshot) -> ql_mod.QualityLevels:
+    """Resolve verify + panel intensity for this task (Phase 4)."""
+    run_panel = (cfg.cross_family_panel or "auto").lower()
+    if run_panel not in ql_mod.KNOWN_PANEL:
+        run_panel = "auto"
+    run_verify = "mechanical" if (
+        getattr(cfg, "skip_verification", False) or getattr(cfg, "no_claude", False)
+    ) else "llm"
+    return ql_mod.resolve_quality_levels(
+        labels=snap.labels,
+        task_verify=snap.verify,
+        task_panel=snap.panel,
+        run_verify=run_verify,
+        run_panel=run_panel,
+    )
+
+
 def _panel_should_run(cfg: RunConfig, snap: TaskSnapshot) -> bool:
     """Decide whether to fire the cross-family panel for this Done task.
 
-    Reads `cfg.cross_family_panel`:
-      - "never"  → no
-      - "always" → yes, except docs/tests and size XS/S leaves without risk labels
-      - "auto"   → yes iff risk labels (critical/security/financial/high)
-
-    "auto" is the default. docs/test-type tickets always skip the panel,
-    even with high-risk labels. Size XS/S without risk labels skip even under
-    "always" (cost/speed — three reviewers is not worth a leaf typo fix).
-    Consensus uses the relaxed corroboration bar in aggregate() (any CRITICAL
-    blocks; HIGH needs ≥2 families).
+    Honors per-task ``panel:`` when set (Phase 4), else run-level mode +
+    risk/size policy. docs/test types always skip.
     """
-    mode = (cfg.cross_family_panel or "auto").lower()
-    if mode == "never":
-        return False
     if snap.type and snap.type.lower() in cfr_mod._PANEL_SKIP_TYPES:
         return False
-    # Cheap leaves: skip unless a real risk label forces the panel.
-    if cfr_mod.is_small_leaf(snap.labels) and not cfr_mod.has_risk_label(snap.labels):
+    levels = _resolved_quality(cfg, snap)
+    mode = levels.panel
+    if mode == "never":
         return False
-    if mode == "always":
+    # Cost/speed: XS/S leaves without risk skip even under always/full unless
+    # the task explicitly set panel: always.
+    if cfr_mod.is_small_leaf(snap.labels) and not cfr_mod.has_risk_label(snap.labels):
+        if snap.panel != "always":
+            return False
+    if mode in ("full", "always", "single"):
         return True
-    # "auto" or "progressive" — risk-tier gating
+    # auto — risk-tier gating
     return cfr_mod.panel_required(snap.labels, task_type=snap.type)
 
 
@@ -1738,6 +1792,8 @@ def _dispatch_drain(
                     # Until full batch grouping is wired, every task is its
                     # own batch of one (status flips must target a real key).
                     batch_keys=[t.key],
+                    verify=t.verify,
+                    panel=t.panel,
                     blocked_by=list(t.blocked_by),
                 )
                 _mark_in_progress(cfg, snap, run_dir)
@@ -3541,6 +3597,29 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
     # CLI base_branch wins if explicitly set; else fall back to "main" here
     # and let execute() check the YAML's top-level before final resolution.
     cli_base = getattr(args, "base_branch", None)
+    no_claude = bool(getattr(args, "no_claude", False))
+    implementer = getattr(args, "implementer", None)
+    cascade_terminal = getattr(args, "cascade_terminal", None)
+    skip_verification = getattr(args, "skip_verification", False)
+    haiku_summary = getattr(args, "haiku_summary", False)
+    cross_family_panel = getattr(args, "cross_family_panel", "auto")
+    if no_claude:
+        # Dogfood / Grok-only fleet: never require or escalate to Claude.
+        if not implementer:
+            implementer = "grok"
+        if not cascade_terminal:
+            cascade_terminal = "grok"
+        skip_verification = True  # LLM verifier is Claude-only until Phase 4
+        haiku_summary = False
+        if cross_family_panel == "auto":
+            # Prefer never for early dogfood unless user forced always/full.
+            # Callers can still pass --cross-family-panel always.
+            pass
+    if not cascade_terminal:
+        cascade_terminal = "claude"
+    cascade_terminal = str(cascade_terminal).strip().lower()
+    if cascade_terminal not in ("claude", "grok"):
+        cascade_terminal = "claude"
     return RunConfig(
         tasks_path=Path(args.tasks_yaml).resolve(),
         runs_dir=Path(args.runs_dir).resolve(),
@@ -3557,7 +3636,9 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
         label_filter=plan_mod.parse_label_filter(args.filter_spec),
         only_keys=_split_keys(args.only_keys),
         gh_bin=getattr(args, "gh_bin", "gh"),
-        implementer=getattr(args, "implementer", None),
+        implementer=implementer,
+        cascade_terminal=cascade_terminal,
+        no_claude=no_claude,
         claude_extra_args=extra.split() if extra else [],
         base_branch=cli_base if cli_base else "main",
         # Integration mode (PRF-1). A fresh CLI run carries the raw --integration
@@ -3578,9 +3659,9 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
         # getattr defaults keep `dispatcher resume` of pre-VG-4 journals
         # working — their genesis run_config lacks these keys.
         max_verify_iterations=getattr(args, "max_verify_iterations", 2),
-        skip_verification=getattr(args, "skip_verification", False),
+        skip_verification=skip_verification,
         auto_integrate=getattr(args, "auto_integrate", False),
-        cross_family_panel=getattr(args, "cross_family_panel", "auto"),
+        cross_family_panel=cross_family_panel,
         cross_family_panel_timeout=getattr(
             args, "cross_family_panel_timeout",
             cfr_mod.DEFAULT_REVIEWER_TIMEOUT_SECONDS,
@@ -3588,7 +3669,7 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
         cross_family_panel_iterate=getattr(
             args, "cross_family_panel_iterate", 0,
         ),
-        haiku_summary=getattr(args, "haiku_summary", False),
+        haiku_summary=haiku_summary,
         feature_review=getattr(args, "feature_review", False),
         feature_review_rounds=getattr(args, "feature_review_rounds", 3),
         # getattr default keeps `dispatcher resume` of pre-BUDGET journals

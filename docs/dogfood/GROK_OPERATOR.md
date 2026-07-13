@@ -24,17 +24,15 @@ Do **not** expect Tasker in-cycle panels under `dispatcher run`.
 cd /path/to/claude-dispatcher
 .venv/bin/dispatcher run features/grok-dogfood/tasks.yaml \
   --mode unattended \
-  --implementer grok \
+  --no-claude \
   --cross-family-panel never \
-  --skip-verification \
   --max-parallel 1 \
   --run-id "dogfood-$(date -u +%Y%m%dT%H%M%SZ)" \
   --runs-dir docs/runs
 ```
 
-Until Phase 2 (`--no-claude`) lands, if preflight still requires Claude on your
-machine, add `--skip-preflight` only after reading the failure — prefer fixing
-preflight over skipping.
+`--no-claude` sets implementer=grok, cascade-terminal=grok, skips Claude LLM
+verifier/haiku, and preflights the `grok` binary instead of `claude`.
 
 ## Monitor
 

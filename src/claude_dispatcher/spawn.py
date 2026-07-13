@@ -173,6 +173,20 @@ class SpawnResult:
     usage: SpawnUsage = field(default_factory=SpawnUsage)
 
 
+def _coerce_int(v) -> int | None:
+    try:
+        return int(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_float(v) -> float | None:
+    try:
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def parse_usage_from_json(stdout: str) -> SpawnUsage:
     """Pull usage data out of a Claude CLI `--output-format=json` blob.
 
@@ -197,30 +211,82 @@ def parse_usage_from_json(stdout: str) -> SpawnUsage:
     # modelUsage is keyed by model id; for a single-model run there's one key.
     primary_model = next(iter(model_usage), None) if model_usage else None
 
-    def _int(v):
-        try:
-            return int(v) if v is not None else None
-        except (TypeError, ValueError):
-            return None
-
-    def _float(v):
-        try:
-            return float(v) if v is not None else None
-        except (TypeError, ValueError):
-            return None
-
     return SpawnUsage(
-        cost_usd=_float(doc.get("total_cost_usd")),
-        input_tokens=_int(usage_obj.get("input_tokens")),
-        output_tokens=_int(usage_obj.get("output_tokens")),
-        cache_read_input_tokens=_int(usage_obj.get("cache_read_input_tokens")),
-        cache_creation_input_tokens=_int(usage_obj.get("cache_creation_input_tokens")),
-        duration_ms=_int(doc.get("duration_ms")),
-        duration_api_ms=_int(doc.get("duration_api_ms")),
-        ttft_ms=_int(doc.get("ttft_ms")),
-        num_turns=_int(doc.get("num_turns")),
+        cost_usd=_coerce_float(doc.get("total_cost_usd")),
+        input_tokens=_coerce_int(usage_obj.get("input_tokens")),
+        output_tokens=_coerce_int(usage_obj.get("output_tokens")),
+        cache_read_input_tokens=_coerce_int(usage_obj.get("cache_read_input_tokens")),
+        cache_creation_input_tokens=_coerce_int(
+            usage_obj.get("cache_creation_input_tokens")),
+        duration_ms=_coerce_int(doc.get("duration_ms")),
+        duration_api_ms=_coerce_int(doc.get("duration_api_ms")),
+        ttft_ms=_coerce_int(doc.get("ttft_ms")),
+        num_turns=_coerce_int(doc.get("num_turns")),
         model=primary_model,
         session_id=doc.get("session_id"),
+    )
+
+
+def parse_grok_usage(stdout: str) -> SpawnUsage:
+    """Best-effort usage extract from `grok --output-format json` stdout.
+
+    Grok's JSON envelope has varied across CLI versions. We accept:
+      * a single JSON object (whole stdout)
+      * NDJSON / last JSON object on stdout
+    and look for usage under common keys (usage, token_usage, tokens,
+    total_cost_usd, cost_usd, model, num_turns / turns). Never raises.
+    """
+    if not stdout or not stdout.strip():
+        return SpawnUsage()
+
+    doc: dict | None = None
+    text = stdout.strip()
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            doc = parsed
+    except (json.JSONDecodeError, ValueError):
+        # Try last non-empty line as NDJSON tail.
+        for line in reversed(text.splitlines()):
+            line = line.strip()
+            if not line or not line.startswith("{"):
+                continue
+            try:
+                parsed = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(parsed, dict):
+                doc = parsed
+                break
+    if not doc:
+        return SpawnUsage()
+
+    usage_obj = {}
+    for key in ("usage", "token_usage", "tokens", "tokenUsage"):
+        cand = doc.get(key)
+        if isinstance(cand, dict):
+            usage_obj = cand
+            break
+
+    return SpawnUsage(
+        cost_usd=_coerce_float(
+            doc.get("total_cost_usd", doc.get("cost_usd", usage_obj.get("cost_usd")))
+        ),
+        input_tokens=_coerce_int(
+            usage_obj.get("input_tokens", usage_obj.get("prompt_tokens",
+                          usage_obj.get("input")))
+        ),
+        output_tokens=_coerce_int(
+            usage_obj.get("output_tokens", usage_obj.get("completion_tokens",
+                          usage_obj.get("output")))
+        ),
+        cache_read_input_tokens=_coerce_int(
+            usage_obj.get("cache_read_input_tokens", usage_obj.get("cached_tokens"))
+        ),
+        duration_ms=_coerce_int(doc.get("duration_ms", doc.get("durationMs"))),
+        num_turns=_coerce_int(doc.get("num_turns", doc.get("turns"))),
+        model=doc.get("model") or usage_obj.get("model"),
+        session_id=doc.get("session_id") or doc.get("sessionId"),
     )
 
 
@@ -516,7 +582,9 @@ def _agent_argv(
             cmd += ["-c", f"model_reasoning_effort={effort}"]
         return cmd + ["-"]  # Read from stdin
     if agent == "grok":
-        cmd = [bin_, "--cwd", str(cwd), "--always-approve"]
+        # --output-format json: usage/cost-ish metadata on stdout when supported.
+        cmd = [bin_, "--cwd", str(cwd), "--always-approve",
+               "--output-format", "json"]
         if model:
             cmd += ["--model", model]
         if effort:
@@ -642,7 +710,14 @@ def spawn_agent(
     # CLI returned non-zero; conversely a clean exit with no commits falls
     # through to the orchestrator's no-commits handling.
     exit_code = 0 if (rc == 0 or committed) else rc
+    usage = SpawnUsage(model=model or agent)
+    if agent == "grok":
+        gusage = parse_grok_usage(out)
+        # Prefer parsed fields; keep model tag if parser left it empty.
+        if gusage.model is None:
+            gusage.model = model or agent
+        usage = gusage
     return SpawnResult(
         exit_code=exit_code, summary_path=summary_path,
-        stdout=out, stderr=err, usage=SpawnUsage(model=agent),
+        stdout=out, stderr=err, usage=usage,
     )

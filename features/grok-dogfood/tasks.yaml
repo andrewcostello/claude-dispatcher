@@ -32,3 +32,37 @@ tasks:
     estimate: 10m
     labels: [size:XS, area:tests, dogfood]
     agent: grok
+    verify: mechanical
+    panel: never
+
+  - key: DOG-2-1
+    summary: "Document --no-claude and cascade-terminal in operator runbook"
+    description: |
+      Ensure docs/dogfood/GROK_OPERATOR.md documents --no-claude (implementer,
+      cascade terminal, preflight without claude binary).
+
+      Acceptance:
+        - GROK_OPERATOR.md mentions --no-claude and cascade-terminal or equivalent
+    type: Task
+    estimate: 5m
+    labels: [size:XS, area:docs, dogfood]
+    agent: grok
+    verify: mechanical
+    panel: never
+
+  - key: DOG-4-1
+    summary: "quality_levels unit tests for floors and overrides"
+    description: |
+      tests/test_no_claude_and_quality.py (or equivalent) must cover:
+        - task verify/panel override wins over design
+        - design cannot sink below critical floor without task override
+        - cascade_terminal=grok never includes claude
+
+      Acceptance:
+        - pytest tests/test_no_claude_and_quality.py passes
+    type: Task
+    estimate: 15m
+    labels: [size:S, area:tests, dogfood]
+    agent: grok
+    verify: mechanical
+    panel: never

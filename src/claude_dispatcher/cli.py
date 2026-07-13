@@ -22,6 +22,7 @@ from . import report as report_cmd
 from . import merge_prs as merge_prs_cmd
 from . import forecast_bridge
 from . import doctor as doctor_cmd
+from . import watch as watch_cmd
 
 
 DEFAULT_FINANCIAL_PATHS = ",".join([
@@ -233,11 +234,30 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["claude", "codex", "grok", "gemini"],
         default=None,
         help=(
-            "Run-level default implementer agent (the Tasker). A per-task `agent:` "
-            "in the YAML still wins; otherwise every task is built by this family's "
-            "headless CLI instead of `claude --print`. codex/grok/gemini are "
-            "flat-rate / off the Claude meter — use to keep building when the Claude "
-            "subscription is rate-limited. Default: claude."
+            "Run-level default implementer agent (worker, not Tasker). A per-task "
+            "`agent:` in the YAML still wins; otherwise every task is built by this "
+            "family's headless CLI. Default: claude (or grok under --no-claude)."
+        ),
+    )
+    run.add_argument(
+        "--cascade-terminal",
+        choices=["claude", "grok"],
+        default=None,
+        help=(
+            "Final agent in the quality cascade after effort bumps. Default: claude. "
+            "Use grok for dogfood fleets that must not call Claude. Implied by "
+            "--no-claude."
+        ),
+    )
+    run.add_argument(
+        "--no-claude",
+        action="store_true",
+        default=False,
+        help=(
+            "Grok-only fleet mode: default implementer=grok, cascade-terminal=grok, "
+            "skip LLM verification (Claude-only today), disable haiku summaries, "
+            "and preflight without requiring the claude binary. Per-task "
+            "`agent: claude` still allowed if you explicitly pin it."
         ),
     )
     run.add_argument(
@@ -520,6 +540,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rp.set_defaults(func=report_cmd.execute)
 
+    # --- watch ---------------------------------------------------------------
+    wh = sub.add_parser(
+        "watch",
+        help=("Stream compact journal events for a run (task_started, "
+              "spawn, panel, blocked, done). Exit 1 if any task_blocked."),
+    )
+    wh.add_argument("run_id", help="Run ID under --runs-dir")
+    wh.add_argument("--runs-dir", default="docs/runs")
+    wh.add_argument(
+        "--no-follow",
+        action="store_true",
+        help="Print existing events once and exit (do not tail).",
+    )
+    wh.add_argument(
+        "--poll",
+        type=float,
+        default=1.0,
+        metavar="SECONDS",
+        help="Poll interval when following (default 1.0).",
+    )
+    wh.set_defaults(func=_watch_entry)
+
     # --- doctor --------------------------------------------------------------
     dr = sub.add_parser(
         "doctor",
@@ -619,6 +661,15 @@ def _print_bridge_result(result: dict, *, action: str) -> int:
             print(f"  {k}: {msg}", file=sys.stderr)
         return 1
     return 0
+
+
+def _watch_entry(args: argparse.Namespace) -> int:
+    return watch_cmd.watch_run(
+        args.run_id,
+        runs_dir=Path(args.runs_dir),
+        poll_seconds=float(args.poll),
+        follow=not args.no_follow,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -40,6 +40,10 @@ KNOWN_AGENTS = frozenset({"claude", "codex", "grok", "gemini"})
 # codex model_reasoning_effort). gemini/agy has no flag and ignores it.
 KNOWN_EFFORTS = frozenset({"low", "medium", "high"})
 
+# Per-task quality intensity (see quality_levels.py + plan Phase 4).
+KNOWN_VERIFY = frozenset({"none", "mechanical", "llm", "llm_strict"})
+KNOWN_PANEL = frozenset({"never", "auto", "single", "full", "always"})
+
 # DISPATCH ordering — the statuses of a blockedBy dependency that let its
 # dependents be dispatched ("Done-or-later"). In `branch` mode that is just
 # Done. In `pr` mode Done is no longer terminal, but a dependency in Awaiting
@@ -88,6 +92,10 @@ class Task:
     # Optional batch grouping: tasks sharing a batch_id run in one worktree /
     # one implementer session (see docs/task-batching.md).
     batch_id: str | None = None
+    # Optional quality intensity overrides (Phase 4). None → resolved from
+    # floors / run defaults / design recommendations.
+    verify: str | None = None
+    panel: str | None = None
 
     @property
     def size_label(self) -> str | None:
@@ -181,6 +189,24 @@ def load_tasks(doc: Any) -> list[Task]:
         batch_id = str(batch_id_val).strip() if batch_id_val else None
         if batch_id == "":
             batch_id = None
+        verify_val = row.get("verify")
+        verify = str(verify_val).strip().lower() if verify_val else None
+        if verify == "":
+            verify = None
+        elif verify is not None and verify not in KNOWN_VERIFY:
+            raise ValidationError(
+                f"tasks[{idx}] ({key}) has unknown verify {verify!r}; "
+                f"must be one of {', '.join(sorted(KNOWN_VERIFY))}"
+            )
+        panel_val = row.get("panel")
+        panel = str(panel_val).strip().lower() if panel_val else None
+        if panel == "":
+            panel = None
+        elif panel is not None and panel not in KNOWN_PANEL:
+            raise ValidationError(
+                f"tasks[{idx}] ({key}) has unknown panel {panel!r}; "
+                f"must be one of {', '.join(sorted(KNOWN_PANEL))}"
+            )
         tasks.append(
             Task(
                 key=key,
@@ -195,6 +221,8 @@ def load_tasks(doc: Any) -> list[Task]:
                 agent=agent,
                 effort=effort,
                 batch_id=batch_id,
+                verify=verify,
+                panel=panel,
             )
         )
 
