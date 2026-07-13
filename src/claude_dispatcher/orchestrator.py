@@ -415,7 +415,7 @@ def _budget_exceeded(tasks, ceiling: float | None, baseline: float = 0.0) -> boo
     return bool(ceiling and ceiling > 0) and _run_spend_usd(tasks, baseline) >= ceiling
 
 
-def _add_task_cost(cfg: RunConfig, task_key: str, delta: float | None) -> None:
+def _add_task_cost(cfg: RunConfig, task_key: str | list[str], delta: float | None) -> None:
     """ADD ``delta`` dollars to a task row's running ``cost_usd`` (creating it at
     that value if absent). Accumulating — not overwriting — lets every spawn in
     a task's lifecycle (implementer, verifier, corrective/retry, panel/verifier
@@ -3362,7 +3362,7 @@ def _mark_in_progress(cfg: RunConfig, snap: TaskSnapshot, run_dir: Path) -> None
     _mutate_row(cfg, snap.batch_keys, _apply)
 
 
-def _mark_blocked(cfg: RunConfig, task_key: str, *, reason: str) -> None:
+def _mark_blocked(cfg: RunConfig, task_key: str | list[str], *, reason: str) -> None:
     summary_for_notify = {"summary": "", "summary_path": None}
 
     def _apply(row):
@@ -3378,7 +3378,16 @@ def _mark_blocked(cfg: RunConfig, task_key: str, *, reason: str) -> None:
         if sp:
             summary_for_notify["summary_path"] = str(sp)
 
-    _mutate_row(cfg, task_key, _apply)
+    if isinstance(task_key, list):
+        for k in task_key:
+            _mutate_row(cfg, k, _apply)
+        emit_key = task_key[0]
+        notify_key = task_key[0]
+    else:
+        _mutate_row(cfg, task_key, _apply)
+        emit_key = task_key
+        notify_key = task_key
+
     # Terminal journal event for the early-return Blocked paths (spawn
     # failure, summary missing/malformed, commit-retry exhaustion,
     # worker exception). Disjoint from the in-worker Blocked task_blocked
