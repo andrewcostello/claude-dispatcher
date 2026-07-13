@@ -312,6 +312,18 @@ def test_aggregate_partial_unavailable_approves_all_unavailable_incomplete():
     assert not all_gone.is_approve
 
 
+def test_aggregate_two_seat_panel_one_unavailable_approves():
+    """Reduced panel (author excluded + no-claude → gemini+codex only): one
+    UNAVAILABLE + one APPROVE must still approve, not incomplete-block.
+    """
+    panel = cfr.aggregate([
+        _unavailable_verdict("gemini"),
+        _approve_verdict("codex"),
+    ])
+    assert panel.consensus == "approve"
+    assert panel.is_approve
+
+
 def test_aggregate_critical_finding_alone_blocks_even_if_verdict_is_approve():
     # A reviewer that returns APPROVE but lists a CRITICAL finding is
     # self-contradicting — the finding wins, panel blocks.

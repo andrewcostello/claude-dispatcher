@@ -1326,14 +1326,18 @@ def aggregate(
     any_critical = any(f.severity == Severity.CRITICAL for f in blocking_findings)
 
     # Block wins over everything (a real ship-stopper was found). Otherwise an
-    # "approve" requires CORROBORATION on the valid set, mirroring the ≥2 block
-    # gate: at least two seats must have produced a real review. This preserves
-    # the single-flaky-seat tolerance (one UNAVAILABLE/PARSE_FAILED among an
-    # otherwise-valid panel still ships) while refusing to auto-integrate on a
-    # panel a majority of whose seats never actually reviewed the code.
+    # "approve" requires enough VALID seats that the code was actually reviewed.
+    #
+    # Default bar is ≥2 valid seats when ≥3 were invited (classic 3-family
+    # panel: one flaky UNAVAILABLE still ships). When the panel is already
+    # reduced — e.g. implementer family excluded as author, and/or --no-claude
+    # drops Claude, leaving only gemini+codex — requiring 2 valid means a
+    # single UNAVAILABLE seat incomplete-blocks despite a clean APPROVE from
+    # the healthy seat. For 1–2 invited seats, one valid APPROVE is enough.
+    min_valid_for_approve = 2 if len(reviews) >= 3 else 1
     if any_critical or families_with_blocking >= 2:
         consensus = "block"
-    elif len(valid) >= 2:
+    elif len(valid) >= min_valid_for_approve:
         consensus = "approve"
     else:
         consensus = "incomplete"
