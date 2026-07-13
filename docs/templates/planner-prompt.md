@@ -62,7 +62,9 @@ optional batching, correct quality knobs.
 
 - Same `batch_id` only for co-runnable tasks that share a module/context.
 - Do not batch different risk floors or strict serial ownership.
-- Remember: batch success/failure applies to **all** members.
+- Remember: batch success/failure will apply to **all** members once
+  grouping is implemented — today `batch_id` is accepted-but-inert
+  (every task still runs alone).
 
 ### 5. Emit artifacts
 

@@ -1,5 +1,11 @@
 # Task Batching
 
+> **STATUS: DESIGN DOC — NOT YET IMPLEMENTED.** The `batch_id` field is
+> parsed and validated, but the orchestrator currently runs every task as its
+> own batch of one (`orchestrator._dispatch_drain`: "Until full batch grouping
+> is wired"). Nothing below — shared worktree/session, composite prompt,
+> all-or-nothing status — happens yet.
+
 ## What is Task Batching?
 
 Task Batching allows the dispatcher to group multiple related tasks from `tasks.yaml` into a single logical execution unit (a "batch"). Instead of spawning an isolated worktree and a fresh LLM session for every individual task, batched tasks are executed together in the same worktree by a single agent session.

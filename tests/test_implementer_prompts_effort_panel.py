@@ -55,7 +55,8 @@ def test_claude_and_grok_share_same_job_shape():
     claude = _prompt(agent="claude")
     grok = _prompt(agent="grok")
     # Same instructions / summary contract; only family name differs.
-    assert "Do NOT run `git commit`" in claude and "Do NOT run `git commit`" in grok
+    assert "Commit your work" in claude and "Commit your work" in grok
+    assert "Do NOT push" in claude and "Do NOT push" in grok
     assert "**Status:** Done" in claude and "**Status:** Done" in grok
     assert "agent family:\nclaude" in claude or "claude" in claude.lower()
     assert "grok" in grok

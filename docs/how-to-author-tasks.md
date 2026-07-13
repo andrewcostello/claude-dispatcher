@@ -122,7 +122,7 @@ Validated by `plan.load_tasks`:
 | `status` | no | Default `To Do` |
 | `agent` | no | `claude` \| `codex` \| `grok` \| `gemini` |
 | `effort` | no | `low` \| `medium` \| `high` |
-| `batch_id` | no | Same string → one implementer session |
+| `batch_id` | no | Reserved: accepted-but-inert today (no grouping yet — see task-batching.md banner) |
 | `verify` | no | `none` \| `mechanical` \| `llm` \| `llm_strict` |
 | `panel` | no | `never` \| `auto` \| `single` \| `full` \| `always` |
 | `design` | no | `true`/`false` force design stage; else heuristics |
@@ -212,7 +212,12 @@ mechanical leaves to save cost.
 
 ## Phase C — Batching
 
-Full mechanics: [task-batching.md](./task-batching.md).
+> **Batching is NOT YET IMPLEMENTED** — `batch_id` is accepted and
+> validated but has no runtime effect today; every task runs alone.
+> Author batches for forward-compatibility only, and do not rely on
+> shared-session cost savings or all-or-nothing batch status.
+
+Full mechanics (design): [task-batching.md](./task-batching.md).
 
 ### Batch when
 

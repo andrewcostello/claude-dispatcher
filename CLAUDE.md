@@ -11,8 +11,12 @@ We are trialing a new way to run dispatched work, motivated by two failures:
 unreviewable code volume, and long runs thrashing on an implicit/wrong
 architecture. Full design: `docs/contract-first-deviation-model.md`.
 
-## NEW: Task Batching
-The dispatcher now supports batching multiple tasks into a single LLM session to save time and API costs. If tasks in your `tasks.yaml` share a `batch_id`, they will be executed together. Read `docs/task-batching.md` before planning multi-task workflows to understand how it handles prompts, context, and status synchronization!
+## Task Batching (NOT YET IMPLEMENTED)
+`tasks.yaml` accepts a `batch_id` field and the schema is validated, but the
+orchestrator does not yet group batches — today every task runs as its own
+worktree/session regardless of `batch_id` (it is accepted-but-inert). Do NOT
+plan multi-task workflows around shared-session cost savings or all-or-nothing
+batch status until the grouping lands. Design notes: `docs/task-batching.md`.
 
 ## Authoring tasks.yaml (planners)
 If you are asked to **build or rewrite a task list / PRD** for dispatcher runs,

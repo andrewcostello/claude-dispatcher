@@ -32,6 +32,7 @@ from typing import Any
 
 from . import __version__
 from . import auto_integrate as ai_mod
+from . import blast_radius as br_mod
 from . import cross_family_reviewer as cfr_mod
 from . import disposition as disposition_mod
 from . import journal as journal_mod
@@ -46,6 +47,7 @@ from . import design as design_mod
 from . import quality_levels as ql_mod
 from . import repo_config as repo_config_mod
 from . import routing as routing_mod
+from . import seal_verify as sv_mod
 from . import spawn as spawn_mod
 from . import summary as summary_mod
 from . import verifier as verifier_mod
@@ -160,6 +162,8 @@ class RunConfig:
     # the post-fix re-run are bounded independently). A timed-out execution
     # is a failure like any non-zero exit.
     verify_test_timeout_seconds: int = 600
+    # Set at run start from repo config; maps a risk tier to a default model.
+    model_router: Any = None
     # LLM verification gate (VG-4). After the mechanical gate passes and
     # before the cross-family panel, an independent verifier (verifier.py) is
     # spawned over the task + summary + committed diff to answer "does this
@@ -268,6 +272,7 @@ class TaskSnapshot:
     # Per-task implementer agent (claude/codex/grok/gemini); None -> claude.
     agent: str | None = None
     # Per-task reasoning effort (low|medium|high); None -> CLI default.
+    # Plumbed to claude/codex/grok effort flags; gemini/agy has none.
     effort: str | None = None
     batch_id: str | None = None
     batch_keys: list[str] = field(default_factory=list)
@@ -284,6 +289,80 @@ class TaskSnapshot:
     # merge each dependency's branch into this task's fresh worktree branch
     # when the dependency's commits are not yet on base (INT-4).
     blocked_by: list[str] = field(default_factory=list)
+
+
+CAPSTONE_KEY = "CAPSTONE-INTEGRATION"
+
+_CAPSTONE_DESCRIPTION = """\
+You are running the EPIC INTEGRATION PASS — the final task before this epic
+branch merges toward main. Per-task review sees each diff in isolation; a
+single epic squash once originated 54 shipped escapes (2026-07 audit, PR
+#582), all in the seams BETWEEN tasks. Your job is the seams.
+
+1. Blast-radius map. From the epic's cumulative diff (git diff
+   <base>...HEAD), enumerate every table, column, RPC, event, and consumer
+   the epic touches or replaces. For every legacy path the epic supersedes,
+   list every write/read the legacy path performed and mark each one:
+   covered by the new path / explicitly deferred (name the ticket) / GAP.
+2. Sibling-surface sweep. For each state field, gate, or event the epic
+   introduces or consumes, grep ALL readers and writers and verify parity:
+   unary vs stream vs snapshot/recovery frames; explicit RPC vs
+   auto/background paths; entry vs exit lifecycle (everything set on
+   join/arm/enable is cleared on EVERY exit variant); flag-gated vs
+   unconditional cutovers (a cutover must ride the same flag as its
+   sibling reads/writes).
+3. Runtime sweep. If a live stack is available, drive the DOMINANT
+   production flows end-to-end (the auto/background variants, not only the
+   explicit ones). Otherwise run the full suite including integration tags
+   and say so explicitly in the summary.
+4. Deliverable: summary.md containing the map with per-item verdicts.
+   Small gaps you can close safely: fix and commit. Anything else: report
+   Status: Blocked with the concrete gap list — an honest Blocked here is
+   the success case; claiming Done over an unverified seam is the failure
+   this task exists to prevent.
+"""
+
+
+def _maybe_append_capstone(cfg: RunConfig, doc: Any) -> Any:
+    """Append the epic-integration capstone task for epic-shaped runs.
+
+    Trigger: top-level ``capstone: true`` in the tasks YAML, or a base
+    branch under ``epic/``. Idempotent (a resume or re-run that already has
+    the row appends nothing). The capstone is blockedBy every existing task
+    so it drains last; it flows the normal pipeline (worktree, gates,
+    panel). Returns the (possibly reloaded) doc.
+
+    Known limitation, on purpose: FIX-* tasks synthesized by later
+    feature-review rounds are not added to the capstone's blockedBy — the
+    capstone audits the epic's task set; the review loop audits the fixes.
+    """
+    if not isinstance(doc, dict):
+        return doc
+    wants = bool(doc.get("capstone")) or cfg.base_branch.startswith("epic/")
+    if not wants:
+        return doc
+    rows = doc.get("tasks") or []
+    keys = [str(r.get("key")) for r in rows if r.get("key")]
+    if not keys or CAPSTONE_KEY in keys:
+        return doc
+    with yaml_io.FileLock(cfg.tasks_path, timeout_seconds=cfg.lock_timeout_seconds):
+        doc = yaml_io.load(cfg.tasks_path)
+        rows = doc.get("tasks") or []
+        keys = [str(r.get("key")) for r in rows if r.get("key")]
+        if not keys or CAPSTONE_KEY in keys:
+            return doc
+        rows.append({
+            "key": CAPSTONE_KEY,
+            "summary": "Epic integration pass: seam audit + runtime sweep before merge",
+            "description": _CAPSTONE_DESCRIPTION,
+            "type": "Task",
+            "labels": ["size:M", "area:integration"],
+            "agent": "claude",
+            "blockedBy": list(keys),
+        })
+        doc["tasks"] = rows
+        yaml_io.dump(doc, cfg.tasks_path)
+    return doc
 
 
 # --- entry point -----------------------------------------------------------
@@ -314,6 +393,21 @@ def execute(args: argparse.Namespace) -> int:
         yaml_base = (doc.get("base_branch") if isinstance(doc, dict) else None)
         if yaml_base:
             cfg.base_branch = str(yaml_base).strip()
+
+    # Tier-based model routing (repo config): resolved once per run from the
+    # repo root the dispatcher runs against. Rows with explicit model: win;
+    # rows without route by their risk: field; no config -> None (CLI default).
+    try:
+        _routing_cfg = repo_config_mod.load(wt_mod.detect_repo_root(cfg.tasks_path.parent))
+    except repo_config_mod.RepoConfigError:
+        _routing_cfg = None
+    cfg.model_router = (_routing_cfg.routed_model if _routing_cfg else (lambda _r: None))
+
+    # Epic capstone: epic-shaped runs (capstone: true, or an epic/ base
+    # branch) get a synthesized final integration task that audits the seams
+    # BETWEEN tasks before the epic merges (mega-merge escape class). Done
+    # before preflight/journal so the genesis hash covers the final YAML.
+    doc = _maybe_append_capstone(cfg, doc)
 
     # Pure read; needed by the preflight before any run artifact exists.
     repo_root = wt_mod.detect_repo_root(cfg.tasks_path.parent)
@@ -946,6 +1040,8 @@ def _run_task(
     final_blocked_reason: str | None = None
     mech_outcome: str | None = None
     mech_detail: str | None = None
+    seal_outcome: str | None = None
+    seal_detail: str | None = None
     verified: bool | None = None
     verification_iterations = 0
     verification_detail: str | None = None
@@ -974,6 +1070,18 @@ def _run_task(
                     summary_path.unlink()
                 except OSError:
                     pass
+
+        # Fresh gate state per rung — a discarded rung's green results must
+        # never be stamped onto the terminal row (a Blocked row asserting
+        # verified: true for a diff that was reset away).
+        mech_outcome = mech_detail = None
+        seal_outcome = seal_detail = None
+        verified = None
+        verification_iterations = 0
+        verification_detail = None
+        verifier_cost_total = 0.0
+        panel_verdict = None
+        panel_iterations_used = 0
 
         desc = snap.description or ""
         if snap.design_spec:
@@ -1043,6 +1151,15 @@ def _run_task(
             result = None
             continue
         _log(log_path, f"  {snap.key} spawn exited code={result.exit_code}")
+        if result.exit_code != 0 and (result.stderr or result.stdout):
+            # A dead spawn's last words are the only diagnostic; PH-12's
+            # grok spawn failed opaquely (2026-07-12) with nothing logged.
+            tail = ((result.stderr or "") + "\n" + (result.stdout or "")).strip()[-600:]
+            _log(log_path, f"  {snap.key} spawn output tail: {tail}")
+        # Spawn-completion event: carries the per-task usage/cost payload parsed
+        # from the CLI's JSON output. Accounted for EVERY attempt (each real
+        # spawn has a real cost), before any fallback/block branch, so a task
+        # that spawns and THEN blocks still counts toward the cost ceiling.
         _account_spawn(cfg, snap.key, result, kind="implementer")
         if cfg.haiku_summary:
             _log_transcript_and_haiku(cfg, snap, result, summary_path.parent, log_path)
@@ -1050,8 +1167,19 @@ def _run_task(
             fail_reason = f"session_exit_code_{result.exit_code}"
             continue
         if not result.summary_path.exists():
-            fail_reason = "summary_missing"
-            continue
+            # Chronic class: the session did the work (commits exist) but
+            # ended without writing summary.md — league-P1 hit this 9x, all
+            # recovered by a re-spawn that only wrote the summary. Recover
+            # with a micro summary-writer spawn instead of blocking; a
+            # genuinely workless session (no commits) still fails through.
+            # On success FALL THROUGH to the normal gate flow (parse →
+            # mech → seal → verifier → panel) — breaking out here would
+            # skip every quality gate for the recovered work.
+            if not _recover_missing_summary(
+                    cfg, snap, wt, repo_root, summary_path,
+                    base_sha_before, feat_baseline_sha, env, log_path):
+                fail_reason = "summary_missing"
+                continue
 
         used_agent = attempt_agent
         used_effort = attempt_effort
@@ -1137,11 +1265,31 @@ def _run_task(
                 continue
             break
 
+        # --- Seal-inversion gate (VG-3) ---------------------------------
+        # Fix-shaped work (FIX-* keys, type:fix / seal-check labels) must
+        # prove its new tests fail WITHOUT the fix. Runs only over a green
+        # mechanical gate (an inverted run of a red suite proves nothing)
+        # and a committed-clean tree (seal_verify restores via reset --hard).
+        if (final_status == plan_mod.DONE and mech_outcome == "passed"
+                and base_sha_before
+                and sv_mod.applies(snap.key, snap.labels)):
+            seal_outcome, seal_detail = _verify_seal(
+                cfg, snap, wt, base_sha_before, log_path)
+            if seal_outcome in ("failed", "error"):
+                final_status = plan_mod.BLOCKED
+                final_blocked_reason = "seal_verification_failed"
+                if idx + 1 < len(cascade):
+                    cascade_context = (
+                        f"Seal-inversion gate {seal_outcome.upper()} after "
+                        f"{attempt_agent}@{attempt_effort or 'default'} — new "
+                        f"tests must FAIL with the fix reverted:\n"
+                        f"{(seal_detail or '')[:2000]}"
+                    )
+                    fail_reason = "seal_verification_failed"
+                    continue
+                break
+
         # --- LLM verifier ---------------------------------------------------
-        verified = None
-        verification_iterations = 0
-        verification_detail = None
-        verifier_cost_total = 0.0
         skeleton = any(str(l).strip().lower() == "skeleton"
                        for l in (snap.labels or []))
         qlevels = _resolved_quality(cfg, snap)
@@ -1175,18 +1323,18 @@ def _run_task(
                 verified = True
                 verification_iterations = 0
         else:
-            # llm_strict: allow one extra incomplete iterate.
-            saved_max = cfg.max_verify_iterations
+            # llm_strict: allow one extra incomplete iterate. NEVER mutate
+            # the shared cfg (one RunConfig serves every worker thread) — a
+            # shallow per-call copy carries the bumped budget instead.
+            vcfg = cfg
             if qlevels.verify == "llm_strict":
-                cfg.max_verify_iterations = max(saved_max, saved_max + 1)
-            try:
-                vout = _verify_llm_and_maybe_iterate(
-                    cfg=cfg, snap=snap, wt=wt, repo_root=repo_root,
-                    summary_path=summary_path, env=env, log_path=log_path,
-                    base_sha_before=base_sha_before,
-                )
-            finally:
-                cfg.max_verify_iterations = saved_max
+                vcfg = replace(
+                    cfg, max_verify_iterations=cfg.max_verify_iterations + 1)
+            vout = _verify_llm_and_maybe_iterate(
+                cfg=vcfg, snap=snap, wt=wt, repo_root=repo_root,
+                summary_path=summary_path, env=env, log_path=log_path,
+                base_sha_before=base_sha_before,
+            )
             verified = vout.verified
             verification_iterations = vout.iterations
             verification_detail = vout.detail
@@ -1425,6 +1573,12 @@ def _run_task(
             row["mechanical_verification"] = mech_outcome
             if mech_outcome == "failed" and mech_detail:
                 row["mechanical_verification_detail"] = mech_detail
+        # Seal-inversion outcome (VG-3). Absent when the gate never ran
+        # (not fix-shaped, non-Done, or the mechanical gate wasn't green).
+        if seal_outcome is not None:
+            row["seal_verification"] = seal_outcome
+            if seal_outcome in ("failed", "error") and seal_detail:
+                row["seal_verification_detail"] = seal_detail[:mv_mod.TAIL_CHARS]
         # LLM verification outcome (VG-4). Absent entirely when the gate never
         # ran (non-Done, or --skip-verification) — absence means "not
         # evaluated". verification_iterations is the count of INCOMPLETE →
@@ -1585,7 +1739,11 @@ def _panel_should_run(cfg: RunConfig, snap: TaskSnapshot) -> bool:
     # Cost/speed: XS/S leaves without risk skip even under always/full unless
     # the task explicitly set panel: always.
     if cfr_mod.is_small_leaf(snap.labels) and not cfr_mod.has_risk_label(snap.labels):
-        if snap.panel != "always":
+        # Cost/speed: XS/S leaves without risk labels skip the panel — but
+        # only when the task didn't pin panel: explicitly. Any explicit pin
+        # (single/full/always) wins; silently discarding one is a fail-open
+        # on a quality gate.
+        if snap.panel is None:
             return False
     if mode in ("full", "always", "single"):
         return True
@@ -1631,17 +1789,39 @@ def _run_cross_family_panel(
     except (OSError, FileNotFoundError) as e:
         _log(log_path, f"  {snap.key} panel: summary.md read failed: {e}")
 
-    # Include every factory seat, including the implementer family. Same CLI
-    # family can still be a different model / session / review prompt; seating
-    # it keeps the panel full under --no-claude and Grok-first dogfood.
-    # (--no-claude still drops Claude in _panel_reviewer_factory.)
-    reviewers = list(_panel_reviewer_factory(cfg))
+    blast = br_mod.build_blast_radius(
+        repo_root=repo_root, branch=diff_branch, diff=diff,
+    )
+    if blast:
+        _log(log_path,
+             f"  {snap.key} panel: blast-radius artifact "
+             f"({blast.count(chr(10)) + 1} lines) attached")
+
+    # Seat selection composes two rules that pull opposite directions:
+    #   * Cross-family review means a DIFFERENT family judges — the author's
+    #     own family self-reviewing is circular and drove false corroboration
+    #     blocks on gemini/codex-authored tasks, so exclude it by default.
+    #   * Reduced fleets (--no-claude, panel: single) can't afford the lost
+    #     seat — when exclusion would leave the panel un-corroboratable
+    #     (< 2 seats), re-seat the author's family and say so loudly.
+    all_seats = list(_panel_reviewer_factory(cfg))
+    author_family = snap.agent or "claude"
+    reviewers = [r for r in all_seats if r.family != author_family]
+    if len(reviewers) < 2 and len(all_seats) > len(reviewers):
+        reviewers = all_seats
+        _log(log_path,
+             f"  {snap.key} panel: seating author family {author_family!r} — "
+             f"exclusion would leave only {len(all_seats) - 1} seat(s)")
     levels = _resolved_quality(cfg, snap)
     if levels.panel == "single" and reviewers:
-        # Prefer codex for a cheap single second look when present.
+        # One cheap second look: never the author's own family when any
+        # other seat exists; prefer codex among the rest.
         preferred = sorted(
             reviewers,
-            key=lambda r: (0 if getattr(r, "family", None) == "codex" else 1),
+            key=lambda r: (
+                1 if getattr(r, "family", None) == author_family else 0,
+                0 if getattr(r, "family", None) == "codex" else 1,
+            ),
         )
         reviewers = preferred[:1]
         _log(log_path,
@@ -1663,17 +1843,19 @@ def _run_cross_family_panel(
                 diff=diff,
                 branch=diff_branch,
                 base_branch=diff_base,
+                blast_radius=blast,
+                implementer_prior=cfr_mod.implementer_prior_for(snap.agent),
                 reviewers=codex_revs,
                 advisory_reviewers=[], # skip advisory for the first stage
                 log=lambda m: _log(log_path, m),
             )
-            
+
             # If codex finds ANY blocking finding, we short circuit and return block.
             if codex_verdict.consensus == "block" or any(f for r in codex_verdict.reviewers for f in r.blocking_findings()):
                 codex_verdict.consensus = "block"
                 codex_verdict.summary += " (Progressive short-circuit on Codex block)"
                 return codex_verdict
-            
+
             _log(log_path, f"  {snap.key} panel: codex approved, running remainder")
             # If it approves, run the others and aggregate
             other_verdict = cfr_mod.run_panel(
@@ -1683,6 +1865,8 @@ def _run_cross_family_panel(
                 diff=diff,
                 branch=diff_branch,
                 base_branch=diff_base,
+                blast_radius=blast,
+                implementer_prior=cfr_mod.implementer_prior_for(snap.agent),
                 reviewers=other_revs,
                 advisory_reviewers=advisory_reviewers,
                 log=lambda m: _log(log_path, m),
@@ -1697,6 +1881,8 @@ def _run_cross_family_panel(
         diff=diff,
         branch=diff_branch,
         base_branch=diff_base,
+        blast_radius=blast,
+        implementer_prior=cfr_mod.implementer_prior_for(snap.agent),
         reviewers=reviewers,
         advisory_reviewers=advisory_reviewers,
         log=lambda m: _log(log_path, m),
@@ -1759,6 +1945,9 @@ def run_feature_review(
         ticket_key="FEATURE-REVIEW",
         ticket_summary=f"final review of feature {epic}",
         summary_md=summary_md, diff=diff, branch=branch, base_branch=base,
+        blast_radius=br_mod.build_blast_radius(
+            repo_root=repo_root, branch=branch, diff=diff),
+        implementer_prior=cfr_mod.implementer_prior_for(None),
         reviewers=_panel_reviewer_factory(cfg),
         advisory_reviewers=_panel_advisory_reviewer_factory(
             cfg, repo_root, log_path, "FEATURE-REVIEW"),
@@ -1893,9 +2082,18 @@ def _dispatch_drain(
                     no_claude=cfg.no_claude,
                     cheap_first=getattr(cfg, "cheap_first", False),
                 )
+                # Explicit row model: wins; else tier-route by the row's
+                # risk: field (repo model_routing config); else None (CLI
+                # default). Tier routing is Claude-tier oriented — only
+                # consult it when the task routes to the claude family
+                # (spawn_agent drops claude-shaped pins for other families).
+                routed = t.model or (
+                    cfg.model_router(str(t.raw.get("risk") or "") or None)
+                    if cfg.model_router and agent in (None, "claude") else None
+                )
                 snap = TaskSnapshot(
                     key=t.key, summary=t.summary, description=t.description,
-                    type=t.type, labels=list(t.labels), model=t.model,
+                    type=t.type, labels=list(t.labels), model=routed,
                     agent=agent,
                     effort=t.effort,
                     batch_id=t.batch_id,
@@ -1993,6 +2191,9 @@ def _append_fix_tasks(cfg: RunConfig, accepted: list[dict], review_round: int) -
                 "type": "Task",
                 "labels": ["size:S", "area:fix"],
                 "agent": "claude",
+                # Synthesized fixes are review-finding remediations on code
+                # that already passed gates once — High tier for model routing.
+                "risk": "High",
             })
             added += 1
         doc["tasks"] = rows
@@ -2358,12 +2559,31 @@ def _run_llm_verifier(
     }
     runner = _verifier_run_override or verifier_mod.run_verifier
     v_agent = getattr(cfg, "verifier_agent", "claude") or "claude"
+    # Verifier model, keyed on the VERIFIER family (not the implementer):
+    #   * claude verifier + claude-family row → the task's routed model
+    #     (tier routing / explicit pin; avoids the CLI-session-default leak).
+    #   * claude verifier + cross-family row → run-level --verifier-model
+    #     (never the row model — a grok pin fed to the claude CLI dies
+    #     instantly with a model error; PH-12, 2026-07-12).
+    #   * non-claude verifier → --verifier-model unless it is claude-shaped
+    #     (the mirrored PH-12: a claude pin fed to the grok CLI).
+    if v_agent == "claude":
+        v_model = (snap.model
+                   if (snap.agent or "claude") == "claude" and snap.model
+                   else cfg.verifier_model)
+    else:
+        v_model = cfg.verifier_model
+        if v_model and "claude" in str(v_model).lower():
+            _log(log_path,
+                 f"  {snap.key} ignoring claude-shaped --verifier-model "
+                 f"{v_model!r} for verifier_agent={v_agent}")
+            v_model = None
     result = runner(
         task=task_row,
         diff=diff,
         summary_text=summary_text,
         claude_bin=cfg.claude_bin,
-        model=cfg.verifier_model,
+        model=v_model,
         timeout_seconds=cfg.verifier_timeout_seconds,
         agent=v_agent,
     )
@@ -2941,6 +3161,84 @@ _PUSH_RETRY_PR_STEP = """\
 """
 
 
+_SUMMARY_RECOVERY_PROMPT = """\
+SUMMARY-RECOVERY SPAWN (dispatcher Tasker contract, report-only).
+A prior session completed implementation work for the task below in this
+worktree but ended WITHOUT writing its summary file — that is the ONLY gap.
+Do NOT write code, do NOT commit, do NOT rework anything.
+
+Read `.claude/workflow/roles/tasker.md` Phase 5 for the summary format, then
+reconstruct what happened from the branch itself:
+- `git log --stat {base_branch}..HEAD` shows what landed
+- read key changed files only if the log alone is ambiguous
+
+Write the summary to {summary_path} with the correct **Status:** line
+(`Done` if the committed work fulfils the task, `Blocked` with an
+escalation reason if it clearly does not). Writing that file is your only
+deliverable.
+
+Task:
+- Key:     {task_key}
+- Summary: {task_summary}
+
+Description:
+{task_description}
+"""
+
+
+def _recover_missing_summary(cfg: RunConfig, snap: TaskSnapshot,
+                             wt: wt_mod.Worktree, repo_root: Path,
+                             summary_path: Path,
+                             base_sha_before: str | None,
+                             feat_baseline_sha: str | None,
+                             env: dict, log_path: Path) -> bool:
+    """Micro summary-writer recovery for the summary_missing chronic class.
+
+    Fires only when the branch has real commits (work happened, the report
+    didn't). Spawns a bounded write-the-summary-only session on the task's
+    routed model. Returns True iff summary_path exists afterwards; the
+    caller then proceeds through the normal parse/verify gates, so this
+    grants a report, never a waiver.
+    """
+    if not _has_commits_on_branch(
+            wt, cfg.base_branch, repo_root,
+            base_sha_before, log_path, snap.key,
+            feat_baseline_sha=feat_baseline_sha):
+        return False
+    _log(log_path, f"  {snap.key} summary missing but branch has commits — "
+                   f"spawning summary-writer recovery")
+    prompt = _SUMMARY_RECOVERY_PROMPT.format(
+        base_branch=cfg.base_branch,
+        summary_path=summary_path,
+        task_key=snap.key,
+        task_summary=snap.summary,
+        task_description=snap.description,
+    )
+    extra = list(cfg.claude_extra_args)
+    if snap.model:
+        extra.extend(["--model", snap.model])
+    try:
+        result = spawn_mod.spawn_agent(
+            agent=snap.agent,
+            claude_bin=cfg.claude_bin, cwd=wt.path, env=env, prompt=prompt,
+            extra_args=extra,
+            timeout_seconds=min(cfg.task_timeout_seconds, 900),
+        )
+    except Exception as e:
+        _log(log_path, f"  {snap.key} summary-recovery spawn failed: {e}")
+        return False
+    _log(log_path,
+         f"  {snap.key} summary-recovery exited code={result.exit_code}")
+    _account_spawn(cfg, snap.key, result, kind="summary-recovery")
+    recovered = summary_path.exists()
+    _emit_event(cfg, journal_mod.EventType.commit_retry, {
+        "trigger": "summary_missing with commits on branch",
+        "outcome": "summary_written" if recovered else "still_missing",
+        "kind": "summary-recovery",
+    }, task_key=snap.key)
+    return recovered
+
+
 def _retry_for_commit(cfg: RunConfig, snap: TaskSnapshot, wt: wt_mod.Worktree,
                       repo_root: Path, summary_path: Path, env: dict,
                       log_path: Path,
@@ -3328,6 +3626,48 @@ Task context (for reference, do NOT redo):
 """
 
 
+def _verify_seal(
+    cfg: RunConfig,
+    snap: TaskSnapshot,
+    wt: wt_mod.Worktree,
+    base_sha: str,
+    log_path: Path,
+) -> tuple[str, str | None]:
+    """Run the seal-inversion gate (VG-3) for a fix-shaped task.
+
+    Caller has already checked ``seal_verify.applies``; this loads the repo
+    test command, runs the inversion, journals ONE ``verification_seal``
+    event, and returns ``(outcome, detail)`` in the mechanical gate's shape:
+    "passed"/"skipped" proceed, "failed"/"error" block. No retry spawn — a
+    false-passing seal needs a rethink of the test, not a mechanical nudge,
+    and the panel's evidence lens gets the detail either way.
+    """
+    try:
+        repo_cfg = repo_config_mod.load(wt.path)
+    except repo_config_mod.RepoConfigError:
+        repo_cfg = None
+    if repo_cfg is None or repo_cfg.test is None:
+        _emit_event(cfg, journal_mod.EventType.verification_seal, {
+            "outcome": "skipped", "reason": "no test command",
+        }, task_key=snap.key)
+        return "skipped", None
+
+    res = sv_mod.run_seal_inversion(
+        worktree=wt.path,
+        base=base_sha,
+        test_command=repo_cfg.test,
+        timeout_seconds=cfg.verify_test_timeout_seconds,
+        log=lambda m: _log(log_path, m),
+    )
+    _log(log_path, f"  {snap.key} seal-verify {res.outcome}: {res.detail[:160]}")
+    _emit_event(cfg, journal_mod.EventType.verification_seal, {
+        "outcome": res.outcome,
+        "detail": res.detail[:mv_mod.TAIL_CHARS],
+        "command": repo_cfg.test,
+    }, task_key=snap.key)
+    return res.outcome, res.detail
+
+
 def _verify_mechanical_and_maybe_retry(
     cfg: RunConfig,
     snap: TaskSnapshot,
@@ -3388,6 +3728,26 @@ def _verify_mechanical_and_maybe_retry(
             "reason": reason,
         }, task_key=snap.key)
         return "skipped", None
+
+    dirty = mv_mod.uncommitted_changes(wt.path)
+    if dirty:
+        # Committed-tree gate: a green suite over a dirty tree is evidence
+        # about the working tree, not the committed one (escape-audit class
+        # PR #671: never-added file, green output, broken build). No retry —
+        # commit discipline is the Tasker's contract, and a fix-the-tests
+        # re-spawn cannot adjudicate which dirty paths belong in the commit.
+        detail = (
+            "uncommitted changes in worktree at verification time — test "
+            "evidence is not keyed to the committed tree: " + ", ".join(dirty)
+        )
+        _log(log_path, f"  {snap.key} mechanical-verify: {detail}")
+        _emit_event(cfg, journal_mod.EventType.verification_mechanical, {
+            "outcome": "failed",
+            "reason": "uncommitted_changes",
+            "files": dirty,
+            "retried": False,
+        }, task_key=snap.key)
+        return "failed", detail
 
     first = _run_mechanical_test(cfg, snap, wt, repo_cfg,
                                  retried=False, log_path=log_path)

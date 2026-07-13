@@ -168,6 +168,14 @@ against the base branch.
 {diff}
 ```
 
+### Blast radius — sibling surfaces OUTSIDE this diff (generated)
+
+{blast_radius}
+
+### Implementer prior — known defect signature of this diff's author
+
+{implementer_prior}
+
 ---
 
 Produce the verdict now. Remember: any dimension at 3 or below, or any HIGH

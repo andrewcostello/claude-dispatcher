@@ -769,3 +769,34 @@ def test_verifier_result_to_dict_roundtrip():
     # Default usage serializes as all-None fields.
     assert d["usage"]["cost_usd"] is None
     assert d["usage"]["input_tokens"] is None
+
+
+def test_run_verifier_routes_model_when_given(monkeypatch):
+    """model= appends --model <id>; omitting it keeps the legacy argv.
+
+    Regression: without an explicit --model the spawn inherits the
+    operator's CLI session default — observed as a Medium/sonnet task
+    verified on fable (partner-hub PH-1, 2026-07-10). The orchestrator
+    passes snap.model (explicit row model or tier routing) so the
+    verifier rides the same routing policy as the Tasker spawn.
+    """
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = list(cmd)
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout=_claude_envelope(_VERIFIED_MESSAGE),
+            stderr="",
+        )
+
+    monkeypatch.setattr(vf.subprocess, "run", fake_run)
+
+    vf.run_verifier(task=TASK, diff=DIFF, summary_text=SUMMARY,
+                    model="claude-sonnet-5")
+    assert captured["cmd"][-2:] == ["--model", "claude-sonnet-5"]
+    # Routing flag appends; the base flag set is unchanged.
+    assert captured["cmd"][:1] == ["claude"]
+    assert "--allow-dangerously-skip-permissions" in captured["cmd"]
+
+    vf.run_verifier(task=TASK, diff=DIFF, summary_text=SUMMARY, model=None)
+    assert "--model" not in captured["cmd"]

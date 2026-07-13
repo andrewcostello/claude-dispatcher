@@ -21,6 +21,8 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import endpoint_agents as endpoint_agents_mod
+
 
 # Agent identity stamped onto every terminal task row + terminal journal
 # event (OPS-4). The dispatcher only spawns the Claude CLI today; if other
@@ -111,9 +113,11 @@ subagents, or open pull requests.
 2. Prefer existing patterns and public seams in this repo; do not redesign
    architecture unless the task explicitly requires it.
 3. Run the most relevant tests you can; fix failures you introduce.
-4. Do NOT run `git commit`, push, or open a PR — the dispatcher commits and
-   integrates your working-tree changes. (If your CLI cannot leave a dirty
-   tree, still do not push or open a PR.)
+4. Commit your work to the current branch with a conventional-commit message
+   (`type(scope): summary`, include [{task_key}] in the subject). Do NOT push
+   and do NOT open a PR — the dispatcher integrates. If your environment
+   cannot run `git commit`, leave the changes in the working tree and the
+   dispatcher will commit them for you.
 5. When finished, write a short markdown summary ONLY to this path:
    {summary_path}
 
@@ -128,6 +132,14 @@ subagents, or open pull requests.
 ## Tests
 - what you ran and the result, or "not run: <reason>"
 ```
+
+SUMMARY CONTRACT (the single most common dispatch failure is skipping this):
+BEFORE starting the work, create the summary file above with this skeleton and
+`**Status:** Blocked` as a placeholder. Update it as you work and finalize it
+(Done or Blocked) as your LAST action. A session that ends without a parseable
+summary blocks the whole task and burns a retry — writing the skeleton first
+makes that impossible. Do not print the summary as a chat message — write it
+to the file only.
 
 Use `**Status:** Blocked` instead of Done if you cannot complete the task, and
 add an `## Escalation reason` section explaining why.
@@ -651,6 +663,36 @@ def _write_synthetic_summary(
     )
 
 
+def spawn_endpoint_agent(
+    *,
+    agent: str,
+    cwd: Path,
+    env: dict[str, str],
+    prompt: str,
+    model: str | None = None,
+    effort: str | None = None,
+    extra_args: list[str] | None = None,
+    claude_bin: str = "claude",
+    timeout_seconds: int = 60 * 60 * 4,
+) -> SpawnResult:
+    """Run one endpoint agent (kimi/glm/deepseek) as a re-pointed claude Tasker.
+
+    Contract (EPA-3, see endpoint_agents module docstring):
+      - resolve via endpoint_agents.resolve_endpoint_agent(agent, env, model);
+        an EndpointConfigError propagates to the caller (misconfiguration must
+        fail the cell loudly, not silently fall back to Anthropic),
+      - child env = endpoint_agents.build_endpoint_env(env, resolution),
+      - delegate to spawn_claude() with metered=True (module invariant 1: the
+        provider token must survive spawn_claude's subscription strip) and
+        extra_args extended with ["--model", resolution.model]; a caller
+        `effort` maps to ["--effort", effort] exactly as the claude branch of
+        spawn_agent does,
+      - the returned SpawnResult passes through unchanged EXCEPT
+        usage.model, which must carry resolution.model for provenance.
+    """
+    raise NotImplementedError("EPA-3")
+
+
 def spawn_agent(
     *,
     agent: str | None,
@@ -665,20 +707,41 @@ def spawn_agent(
 ) -> SpawnResult:
     """Spawn the chosen implementer agent for one task.
 
-    agent in (None, "claude") -> the default `claude --print` Tasker (with an
+    agent in (None, "claude") -> the default `claude --print` worker (with an
     optional --model). Otherwise dispatch to the cross-family CLI's headless
-    agentic mode (see module notes), then auto-commit + ensure a summary so the
-    downstream gate/verifier/panel flow is identical regardless of agent.
+    agentic mode (see module notes), then auto-commit + ensure a summary so
+    the downstream gate/verifier/panel flow is identical regardless of agent.
+    The claude-shaped-model guard below applies to EVERY non-claude spawn —
+    primary, retries, and iterates alike.
     """
+    if agent and agent != "claude" and model and "claude" in str(model).lower():
+        # A Claude model pin must never reach a non-Claude CLI (rows often
+        # pin model: for Claude while agent:/--no-claude route the spawn
+        # elsewhere). Guarded HERE — the single choke point — so no call
+        # site (primary spawn, commit/push/test-fix retries, panel/verifier
+        # iterates) can forward it.
+        model = None
     if not agent or agent == "claude":
         spawn_extra = list(extra_args or [])
         if model:
             spawn_extra += ["--model", model]
         if effort:
             spawn_extra += ["--effort", effort]
+        # No auto-commit here: the brief instructs claude to commit, and the
+        # committed-tree gate treats stray uncommitted files as an evidence
+        # failure — a blanket `git add -A` would mask exactly that signal
+        # (and commit stray artifacts). Cross-family CLIs that cannot commit
+        # get the auto-commit normalization below instead.
         return spawn_claude(
             claude_bin=claude_bin, cwd=cwd, env=env, prompt=prompt,
             extra_args=spawn_extra, timeout_seconds=timeout_seconds,
+        )
+
+    if agent in endpoint_agents_mod.ENDPOINT_AGENTS:
+        return spawn_endpoint_agent(
+            agent=agent, cwd=cwd, env=env, prompt=prompt, model=model,
+            effort=effort, extra_args=extra_args, claude_bin=claude_bin,
+            timeout_seconds=timeout_seconds,
         )
 
     summary_path = Path(env["SUMMARY_PATH"])

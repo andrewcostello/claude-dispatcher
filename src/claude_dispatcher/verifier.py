@@ -53,7 +53,7 @@ DEFAULT_VERIFIER_TIMEOUT_SECONDS = 600
 # Real diffs land at ~300-2000 lines; 8000 lines is the safety bound. Above
 # that we truncate with a marker. Tickets larger than this should be split
 # anyway.
-MAX_DIFF_LINES = 8000
+MAX_DIFF_LINES = 24000  # raised from 8000 (2026-07-12): real epics exceed 8k after generated-file exclusion; modern models hold 24k diff lines comfortably
 
 # Reason codes stamped on a VerifierVerdict when the INCOMPLETE verdict was
 # produced by the parser/spawn machinery rather than by the verifier model
@@ -154,6 +154,20 @@ def _load_prompt() -> str:
     return path.read_text(encoding="utf-8")
 
 
+
+# Injected into every verifier prompt: the diff DELIBERATELY excludes
+# generated artifacts (cross_family_reviewer.DIFF_EXCLUDE_PATHSPECS), so
+# their absence is never evidence of missing work — the mechanical gate
+# compiles against them. Without this notice the verifier false-blocks
+# proto tasks for "absent" pb.go (CH-CRUD, 2026-07-13).
+GENERATED_EXCLUSION_NOTICE = (
+    "NOTE: this diff deliberately EXCLUDES generated artifacts "
+    "(*.pb.go, *_grpc.pb.go, *connect Go packages, *_pb.ts, sqlc output, "
+    "lockfiles). Their absence from the diff is BY DESIGN and must never "
+    "be reported as a gap; the mechanical test gate already compiled the "
+    "task against them. Judge only hand-written code.\n\n"
+)
+
 def build_verifier_prompt(
     task: Mapping,
     diff: str,
@@ -177,6 +191,9 @@ def build_verifier_prompt(
             f"{head}\n\n... [diff truncated at {max_diff_lines} lines "
             f"of {len(diff_lines)} total] ..."
         )
+    # After truncation so the notice never eats diff budget or skews the
+    # truncation marker's line accounting.
+    diff = GENERATED_EXCLUSION_NOTICE + diff
     return _load_prompt().format(
         task_key=str(task.get("key") or "unknown"),
         task_summary=str(task.get("summary") or ""),
@@ -522,6 +539,10 @@ def run_verifier(
                 start=start,
                 spawn_failed=_spawn_failed,
             )
+        # Without an explicit --model the spawn inherits the operator's CLI
+        # session default — the exact "default cascades into headless
+        # spawns" cost leak tier routing exists to prevent. Callers pass the
+        # task's routed model; None preserves the legacy inherit behavior.
         cmd = [
             claude_bin, "--print",
             "--output-format", "json",
@@ -585,6 +606,8 @@ def _run_grok_verifier(
             "--output-format", "json",
             "--prompt-file", str(prompt_path),
         ]
+        if model and "claude" in str(model).lower():
+            model = None  # a claude-shaped pin must never reach the grok CLI
         if model:
             cmd.extend(["--model", model])
         proc = subprocess.run(

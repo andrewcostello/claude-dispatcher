@@ -440,3 +440,39 @@ def test_lock_timeout_flows_to_filelock(repo: Path) -> None:
         lock_path.unlink()
     # Proves the 0.3s budget was honored, not the 30s default.
     assert elapsed < 5.0
+
+
+# --- summary-missing recovery (chronic class, 2026-07-10) --------------------
+
+
+def test_summary_missing_with_commits_recovers(repo: Path, monkeypatch) -> None:
+    """Session commits work but writes no summary → the micro summary-writer
+    recovery spawn writes it and the task proceeds to Done, not Blocked.
+    League-P1 hit this 9x (partner-hub Stage A: 2x more); every one was
+    recoverable by a write-the-summary-only re-spawn."""
+    monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "summary-skip-then-recover")
+    _patched_spawn(monkeypatch)
+    args = _build_args(repo, only="SMOKE-A")
+    rc = orchestrator.execute(args)
+    assert rc == 0
+    from claude_dispatcher import yaml_io
+    doc = yaml_io.load(repo / "tasks.yaml")
+    row = next(t for t in doc["tasks"] if t["key"] == "SMOKE-A")
+    assert row["status"] == "Done"
+    assert "summary_missing" not in (row.get("blocked_reason") or "")
+
+
+def test_summary_missing_without_commits_still_blocks(repo: Path, monkeypatch) -> None:
+    """Workless session with no summary must hard-block — the recovery guard
+    (commits-on-branch) declines, so no summary is fabricated for a session
+    that produced nothing."""
+    monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "no-commit-no-summary")
+    _patched_spawn(monkeypatch)
+    args = _build_args(repo, only="SMOKE-A")
+    rc = orchestrator.execute(args)
+    assert rc == 1
+    from claude_dispatcher import yaml_io
+    doc = yaml_io.load(repo / "tasks.yaml")
+    row = next(t for t in doc["tasks"] if t["key"] == "SMOKE-A")
+    assert row["status"] == "Blocked"
+    assert "summary_missing" in row.get("blocked_reason", "")

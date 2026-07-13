@@ -282,8 +282,10 @@ def test_panel_always_fires_for_medium_low_risk(repo: Path, monkeypatch) -> None
     row = next(t for t in doc["tasks"] if t["key"] == "PANEL-B")
     assert row["status"] == "Done"
     assert row["panel_consensus"] == "approve"
-    # Implementer family (claude) is seated too — full panel including author.
-    assert all(r.call_count == 1 for r in revs)
+    # Author family (claude) is EXCLUDED when >=2 other seats remain —
+    # cross-family means a different family judges. gemini/codex review.
+    by_family = {r.family: r.call_count for r in revs}
+    assert by_family == {"claude": 0, "gemini": 1, "codex": 1}
 
 
 def test_panel_always_skips_small_leaf_without_risk(repo: Path, monkeypatch) -> None:

@@ -14,13 +14,30 @@ to exercise the other branches of the orchestrator.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
+import tempfile
 from pathlib import Path
+
+
+def _harness_path(name: str) -> Path:
+    """A bookkeeping file for the fake harness, OUTSIDE the worktree.
+
+    The committed-tree gate treats any uncommitted worktree file as a
+    verification failure, so counters/sentinels that track invocation
+    state live in the system temp dir, keyed by a cwd hash (each test's
+    worktree is unique, so state never leaks across tests)."""
+    cwd_key = hashlib.md5(str(Path.cwd()).encode()).hexdigest()[:12]
+    return Path(tempfile.gettempdir()) / f"{name}-{cwd_key}"
 
 SCENARIOS = {
     "done": "Done",
     "done-no-commit": "Done",        # Done but skip the git commit step
+    "summary-skip-then-recover": "Done",   # first run commits, writes NO
+                                     # summary; second (recovery) writes it
+    "no-commit-no-summary": "Done",  # neither commits nor writes a summary
+                                     # (recovery must NOT fire; hard block)
     "done-commit-retry": "Done",     # Done; first run skips commit, second commits
     "done-direct-to-base": "Done",   # Done; commits on feat/X AND FF-merges into
                                      # base_branch (BSA-style direct-to-base
@@ -67,15 +84,17 @@ def main() -> int:
 
     # Verifier invocation (VG-4): the independent LLM verifier pipes the
     # verifier.md prompt and reads a JSON envelope whose `result` carries the
-    # verdict. Every implementer spawn — including corrective iterate prompts
+# verdict. Every implementer spawn — including corrective iterate prompts
     # that *quote* the verifier — includes the implementer template
     # ("autonomous implementer agent under the dispatcher"); the pure
     # verifier prompt never does, so its ABSENCE is the reliable
-    # discriminator. Short-circuit here BEFORE implementer simulation
-    # (commit/summary side effects) and emit a verdict directly. Default
-    # VERIFIED; FAKE_CLAUDE_VERIFIER_VERDICT=INCOMPLETE drives the
-    # gap-and-iterate path for subprocess-level e2e tests.
-    if "autonomous implementer agent under the dispatcher" not in prompt:
+    # discriminator. The SUMMARY-RECOVERY micro-spawn also lacks the
+    # implementer template, so exclude it explicitly. Short-circuit here
+    # BEFORE implementer simulation (commit/summary side effects) and emit a
+    # verdict directly. Default VERIFIED; FAKE_CLAUDE_VERIFIER_VERDICT=
+    # INCOMPLETE drives the gap-and-iterate path for subprocess-level e2e tests.
+    if ("autonomous implementer agent under the dispatcher" not in prompt
+            and "SUMMARY-RECOVERY SPAWN" not in prompt):
         import json
         verdict = os.environ.get("FAKE_CLAUDE_VERIFIER_VERDICT", "VERIFIED").upper()
         if verdict == "INCOMPLETE":
@@ -129,7 +148,7 @@ def main() -> int:
         actually producing new history.
         """
         import subprocess
-        counter_path = Path(f".fake-claude-counter-{task_key}")
+        counter_path = _harness_path(f".fake-claude-counter-{task_key}")
         try:
             n = int(counter_path.read_text()) + 1
         except (OSError, ValueError):
@@ -213,7 +232,7 @@ def main() -> int:
         _do_commit()
         _commit_green_file()
     elif scenario == "done-tests-red-then-fixed":
-        sentinel = Path(f".fake-claude-test-fix-{task_key}")
+        sentinel = _harness_path(f".fake-claude-test-fix-{task_key}")
         if sentinel.exists():
             # Second invocation = the fix-the-tests retry: commit the green
             # file this time so the gate's re-run passes.
@@ -230,7 +249,7 @@ def main() -> int:
         # push-retry invocation — so the dispatcher must flag needs_push.
         _do_commit()
     elif scenario == "done-push-retry":
-        sentinel = Path(f".fake-claude-push-{task_key}")
+        sentinel = _harness_path(f".fake-claude-push-{task_key}")
         if sentinel.exists():
             # Second invocation = the push retry. The commit already exists on
             # the branch from the first run; just push it this time.
@@ -239,11 +258,25 @@ def main() -> int:
             sentinel.write_text("first invocation skipped push\n", encoding="utf-8")
             _do_commit()
     elif scenario == "done-commit-retry":
-        sentinel = Path(f".fake-claude-retry-{task_key}")
+        sentinel = _harness_path(f".fake-claude-retry-{task_key}")
         if sentinel.exists():
             _do_commit()  # second invocation = the retry; commit this time
         else:
             sentinel.write_text("first invocation skipped commit\n", encoding="utf-8")
+    elif scenario == "summary-skip-then-recover":
+        sentinel = _harness_path(f".fake-claude-nosummary-{task_key}")
+        if not sentinel.exists():
+            # First invocation: do the work, "forget" the summary.
+            sentinel.write_text("first invocation skipped summary\n",
+                                encoding="utf-8")
+            _do_commit()
+            return 0
+        # Second invocation = the summary-recovery spawn: per its prompt it
+        # writes ONLY the summary (no commit); fall through to the writer.
+    elif scenario == "no-commit-no-summary":
+        # Workless session that also reports nothing — the recovery guard
+        # (commits-on-branch) must decline and the task must hard-block.
+        return 0
     elif scenario == "done-direct-to-base":
         # base_branch defaults to "main" in the test fixture; allow
         # override via env for parity with other tests.

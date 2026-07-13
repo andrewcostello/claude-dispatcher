@@ -34,7 +34,11 @@ TERMINAL = {DONE, BLOCKED, ESCALATED}
 # Implementer agents the dispatcher can spawn as a Tasker. "claude" is the
 # default; codex/grok/gemini are cross-family CLIs run in their headless
 # agentic mode via spawn.spawn_agent(). Kept in sync with spawn.AGENT_SPECS.
-KNOWN_AGENTS = frozenset({"claude", "codex", "grok", "gemini"})
+# kimi/glm/deepseek are ENDPOINT agents: the claude CLI re-pointed at an
+# Anthropic-compatible provider endpoint (see endpoint_agents.ENDPOINT_AGENTS).
+KNOWN_AGENTS = frozenset(
+    {"claude", "codex", "grok", "gemini", "kimi", "glm", "deepseek"}
+)
 
 # Per-task reasoning/effort knob (maps to claude --effort, grok --effort,
 # codex model_reasoning_effort). gemini/agy has no flag and ignores it.
@@ -89,8 +93,9 @@ class Task:
     # CLI's effort flag by spawn_agent. Absent → CLI default. The quality
     # cascade may bump effort to "high" before switching agents.
     effort: str | None = None
-    # Optional batch grouping: tasks sharing a batch_id run in one worktree /
-    # one implementer session (see docs/task-batching.md).
+    # Optional batch grouping (accepted-but-inert: parsed + validated, but
+    # the orchestrator does not group yet — every task runs as its own batch
+    # of one; see docs/task-batching.md status banner).
     batch_id: str | None = None
     # Optional quality intensity overrides (Phase 4). None → resolved from
     # floors / run defaults / design recommendations.
@@ -234,7 +239,7 @@ def load_tasks(doc: Any) -> list[Task]:
                 description=str(row["description"]),
                 type=str(row["type"]),
                 labels=labels,
-                blocked_by=_as_str_list(row.get("blockedBy")),
+                blocked_by=_dependency_list(row, idx, key),
                 status=str(row.get("status", TODO)),
                 raw=row,
                 model=model,
@@ -270,6 +275,28 @@ def feature_prd(doc: Any) -> str | None:
         )
     stripped = val.strip()
     return stripped or None
+
+
+# Accepted spellings for the dependency field. `blockedBy` is canonical;
+# the aliases exist because a silently-ignored misspelling voids a whole
+# worklist's ordering (partner-hub Stage B, 2026-07-10: `depends_on` parsed
+# as nothing, a dependent dispatched against a Blocked dependency's absent
+# code and had to be killed mid-spawn). Unknown near-misses are an ERROR,
+# never a no-op.
+_DEP_FIELD_CANONICAL = "blockedBy"
+_DEP_FIELD_ALIASES = ("blockedBy", "blocked_by", "depends_on", "dependsOn")
+
+
+def _dependency_list(row: dict, idx: int, key: str) -> list[str]:
+    present = [f for f in _DEP_FIELD_ALIASES if row.get(f) is not None]
+    if len(present) > 1:
+        raise ValidationError(
+            f"tasks[{idx}] ({key}) sets {' and '.join(present)}; "
+            f"use only {_DEP_FIELD_CANONICAL!r}"
+        )
+    if not present:
+        return []
+    return _as_str_list(row.get(present[0]))
 
 
 def _validate_blocked_by(tasks: list[Task]) -> None:
