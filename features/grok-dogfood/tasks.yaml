@@ -1,0 +1,34 @@
+# Dogfood tasks for Grok-first / single-orchestrator work.
+# Prefer: dispatcher run features/grok-dogfood/tasks.yaml --implementer grok
+prd: features/grok-dogfood/PRD.md
+project: claude-dispatcher
+epic: grok-dogfood
+
+tasks:
+  - key: DOG-0-1
+    summary: "Dogfood README points at operator runbook"
+    description: |
+      Ensure docs/dogfood/README.md exists and links to GROK_OPERATOR.md,
+      the grok-first plan, single-orchestrator architecture, and this tasks.yaml.
+
+      Acceptance:
+        - docs/dogfood/README.md exists
+        - It references GROK_OPERATOR.md and the plan path
+    type: Task
+    estimate: 5m
+    labels: [size:XS, area:docs, dogfood]
+    agent: grok
+
+  - key: DOG-0-2
+    summary: "Lock implementer prompts: no tasker.md for any agent"
+    description: |
+      Keep a unit test that asserts spawn.build_prompt for agent claude and
+      agent grok does NOT contain "tasker.md" or "adopt the Tasker role".
+
+      Acceptance:
+        - tests cover claude and grok (and ideally codex/gemini)
+        - pytest passes for that test file
+    type: Task
+    estimate: 10m
+    labels: [size:XS, area:tests, dogfood]
+    agent: grok

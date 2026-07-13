@@ -73,12 +73,22 @@ def capture_agent_version(claude_bin: str, timeout_seconds: int = 30) -> str | N
     return None
 
 
-# Default prompt template handed to the Tasker. The Tasker reads .claude/workflow/roles/tasker.md
-# from the worktree's checked-out tree (the refactored router) and proceeds from there.
-TASKER_PROMPT_TEMPLATE = """\
-Read the file `.claude/workflow/roles/tasker.md` and adopt the Tasker role.
+# Unified implementer brief for EVERY family under `dispatcher run` (claude,
+# codex, grok, gemini). The dispatcher is the sole orchestrator — agents do
+# not adopt Tasker, dispatch sub-reviewers, or raise PRs. Interactive
+# Tasker (`tasker.md`) remains for non-dispatch Claude/Grok sessions only.
+#
+# Optional env/context lines (SKIP_*, REVIEWER_COUNT) are informational for
+# agents that still honor them; the dispatcher owns verification and panel.
+IMPLEMENTER_PROMPT_TEMPLATE = """\
+You are an autonomous implementer agent under the dispatcher (agent family:
+{agent}). Work only in the CURRENT WORKING DIRECTORY.
 
-You are running under the dispatcher. Environment vars are set:
+You are a WORKER, not an orchestrator. The dispatcher owns worktrees, gates,
+review panels, PRs, and merges. Do NOT adopt a Tasker role, spawn reviewer
+subagents, or open pull requests.
+
+## Dispatcher context
 - TASK_KEY={task_key}
 - SUMMARY_PATH={summary_path}
 - DISPATCHER_RUN_ID={run_id}
@@ -86,27 +96,46 @@ You are running under the dispatcher. Environment vars are set:
 - FINANCIAL_PATHS={financial_paths}
 {optional_env_lines}
 
-Task to work on:
+## Task
 - Key:     {task_key}
 - Summary: {task_summary}
 - Type:    {task_type}
 - Labels:  {task_labels}
 - Branch:  {branch}
 
-Description:
+## Description
 {task_description}
 
-Integration is the DISPATCHER's job, not yours: commit your work to the current
-branch, but do NOT push to origin and do NOT run `gh pr create` / open a pull
-request. The dispatcher pushes your branch and raises the PR (against the
-run-level feature branch) for you — if you open one yourself it lands against
-the wrong base (the repo default branch) as a duplicate that has to be closed.
+## Instructions
+1. Make the minimum code changes that fully satisfy the task description.
+2. Prefer existing patterns and public seams in this repo; do not redesign
+   architecture unless the task explicitly requires it.
+3. Run the most relevant tests you can; fix failures you introduce.
+4. Do NOT run `git commit`, push, or open a PR — the dispatcher commits and
+   integrates your working-tree changes. (If your CLI cannot leave a dirty
+   tree, still do not push or open a PR.)
+5. When finished, write a short markdown summary ONLY to this path:
+   {summary_path}
 
-When you finish the session (Done, Blocked, or Escalated) write the summary file
-to $SUMMARY_PATH in the format documented in tasker.md Phase 5. Do not print the
-summary as a separate message — write it to the file only. After writing the
-file the session is complete.
+## Summary format (required)
+```
+# {task_key}: implementation
+**Status:** Done
+
+## What landed
+- concrete bullet list of changes (files + behavior)
+
+## Tests
+- what you ran and the result, or "not run: <reason>"
+```
+
+Use `**Status:** Blocked` instead of Done if you cannot complete the task, and
+add an `## Escalation reason` section explaining why.
 """
+
+# Back-compat aliases (tests / older imports).
+CROSS_FAMILY_IMPLEMENTER_PROMPT = IMPLEMENTER_PROMPT_TEMPLATE
+TASKER_PROMPT_TEMPLATE = IMPLEMENTER_PROMPT_TEMPLATE
 
 
 @dataclass
@@ -210,8 +239,15 @@ def build_prompt(
     skip_design: bool,
     skip_security_linter: bool,
     reviewer_count: int | None,
+    agent: str | None = None,
 ) -> str:
-    """Render the prompt template for one task."""
+    """Render the unified implementer prompt for one task.
+
+    Single-orchestrator rule: every agent family (including Claude) gets the
+    same implementer worker brief. No family is asked to adopt tasker.md
+    under ``dispatcher run``.
+    """
+    agent_name = (agent or "claude").strip().lower() or "claude"
     optional_lines = []
     if skip_design:
         optional_lines.append("- SKIP_DESIGN=1")
@@ -219,13 +255,17 @@ def build_prompt(
         optional_lines.append("- SKIP_SECURITY_LINTER=1")
     if reviewer_count is not None:
         optional_lines.append(f"- REVIEWER_COUNT={reviewer_count}")
-    return TASKER_PROMPT_TEMPLATE.format(
+    optional_env = "\n".join(optional_lines)
+    if optional_env:
+        optional_env = optional_env + "\n"
+    return IMPLEMENTER_PROMPT_TEMPLATE.format(
+        agent=agent_name,
         task_key=task_key,
         summary_path=str(summary_path),
         run_id=run_id,
         max_iterations=max_iterations,
         financial_paths=financial_paths,
-        optional_env_lines="\n".join(optional_lines),
+        optional_env_lines=optional_env,
         task_summary=task_summary,
         task_type=task_type,
         task_labels=", ".join(task_labels),
@@ -454,19 +494,6 @@ class _AgyModelGate:
 # a ThreadPoolExecutor in one process, so a threading primitive suffices).
 _agy_model_gate = _AgyModelGate()
 
-_CROSS_FAMILY_SUFFIX = """
-
----
-You are running as a cross-family implementer agent under the dispatcher.
-Make the code changes in the CURRENT WORKING DIRECTORY to satisfy the task
-above. You do NOT need to run `git commit` — the dispatcher commits your
-working-tree changes for you. When done, also write a short summary to the
-file {summary_path} containing at minimum a line `**Status:** Done` (or
-`**Status:** Blocked` if you could not complete it) and a `## What landed`
-section. Do not open a PR.
-"""
-
-
 def _agent_argv(
     agent: str, bin_: str, prompt_file: Path, cwd: Path,
     model: str | None, prompt_text: str, effort: str | None = None,
@@ -499,12 +526,11 @@ def _agent_argv(
         # CRITICAL: agy writes files to its own ~/.gemini scratch dir, NOT the
         # process cwd, unless the worktree is added to the workspace via
         # --add-dir. And it stalls on tool-permission prompts without
-        # --dangerously-skip-permissions. Without BOTH, the Tasker produces no
-        # commits in the worktree and blocks. (Verified 2026-06-25.)
-        cmd = [bin_, "--add-dir", str(cwd), "--dangerously-skip-permissions", "--print"]
-        if model:
-            cmd += ["--model", model]
-        return cmd
+        # --dangerously-skip-permissions. Without BOTH, the implementer
+        # produces no commits in the worktree and blocks. (Verified 2026-06-25.)
+        # Model: agy ignores launch --model; selection is via settings.json
+        # (_AgyModelGate). Never pass --model on argv.
+        return [bin_, "--add-dir", str(cwd), "--dangerously-skip-permissions", "--print"]
     raise ValueError(f"no argv builder for agent {agent!r}")
 
 
@@ -591,14 +617,15 @@ def spawn_agent(
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     bin_ = AGENT_BINS[agent]
     task_key = env.get("TASK_KEY", "task")
-    xprompt = prompt + _CROSS_FAMILY_SUFFIX.format(summary_path=summary_path)
+    # Prompt is already agent-native (see build_prompt); do not wrap with a
+    # Claude Tasker suffix — that was the main quality gap for grok/codex/agy.
     prompt_file = summary_path.parent / f"{task_key}-{agent}-prompt.txt"
-    prompt_file.write_text(xprompt)
-    argv = _agent_argv(agent, bin_, prompt_file, cwd, model, xprompt, effort)
+    prompt_file.write_text(prompt)
+    argv = _agent_argv(agent, bin_, prompt_file, cwd, model, prompt, effort)
 
     try:
         proc = subprocess.run(
-            argv, input=xprompt, capture_output=True, text=True,
+            argv, input=prompt, capture_output=True, text=True,
             cwd=str(cwd), env=env, timeout=timeout_seconds,
         )
         rc, out, err = proc.returncode, proc.stdout, proc.stderr

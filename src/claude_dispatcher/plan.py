@@ -36,6 +36,10 @@ TERMINAL = {DONE, BLOCKED, ESCALATED}
 # agentic mode via spawn.spawn_agent(). Kept in sync with spawn.AGENT_SPECS.
 KNOWN_AGENTS = frozenset({"claude", "codex", "grok", "gemini"})
 
+# Per-task reasoning/effort knob (maps to claude --effort, grok --effort,
+# codex model_reasoning_effort). gemini/agy has no flag and ignores it.
+KNOWN_EFFORTS = frozenset({"low", "medium", "high"})
+
 # DISPATCH ordering — the statuses of a blockedBy dependency that let its
 # dependents be dispatched ("Done-or-later"). In `branch` mode that is just
 # Done. In `pr` mode Done is no longer terminal, but a dependency in Awaiting
@@ -77,6 +81,12 @@ class Task:
     # best outcome/cost. Distinct from `model` (which only swaps the Claude
     # model tier on the default claude agent).
     agent: str | None = None
+    # Optional per-task reasoning effort (low|medium|high). Plumbed to each
+    # CLI's effort flag by spawn_agent. Absent → CLI default. The quality
+    # cascade may bump effort to "high" before switching agents.
+    effort: str | None = None
+    # Optional batch grouping: tasks sharing a batch_id run in one worktree /
+    # one implementer session (see docs/task-batching.md).
     batch_id: str | None = None
 
     @property
@@ -158,8 +168,19 @@ def load_tasks(doc: Any) -> list[Task]:
                 f"tasks[{idx}] ({key}) has unknown agent {agent!r}; "
                 f"must be one of {', '.join(sorted(KNOWN_AGENTS))}"
             )
+        effort_val = row.get("effort")
+        effort = str(effort_val).strip().lower() if effort_val else None
+        if effort == "":
+            effort = None
+        elif effort is not None and effort not in KNOWN_EFFORTS:
+            raise ValidationError(
+                f"tasks[{idx}] ({key}) has unknown effort {effort!r}; "
+                f"must be one of {', '.join(sorted(KNOWN_EFFORTS))}"
+            )
         batch_id_val = row.get("batch_id")
         batch_id = str(batch_id_val).strip() if batch_id_val else None
+        if batch_id == "":
+            batch_id = None
         tasks.append(
             Task(
                 key=key,
@@ -172,6 +193,7 @@ def load_tasks(doc: Any) -> list[Task]:
                 raw=row,
                 model=model,
                 agent=agent,
+                effort=effort,
                 batch_id=batch_id,
             )
         )

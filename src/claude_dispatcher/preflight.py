@@ -486,11 +486,16 @@ def _check_role_file(
     entry["method"] = "probe-worktree"
     if resolves:
         return
-    entry["ok"] = False
-    failures.append(
-        f"Tasker role file {role_file} won't resolve in fresh worktrees: it "
-        f"is neither git-tracked nor resolvable in a probe worktree of {ref}. "
-        f"Commit it (or a relative symlink to it) so checkouts carry it, "
-        f"e.g. `git add .claude/workflow` (precedent: dogfood run #1 fix, "
-        f"commit 6923d0a)"
+    # Single-orchestrator: dispatched runs use a self-contained implementer
+    # prompt and do not require tasker.md. Missing role file is a warning so
+    # interactive/Tasker tooling still gets a signal, but dogfood / Grok-only
+    # runs are not blocked.
+    entry["ok"] = True
+    entry["missing"] = True
+    warnings.append(
+        f"role file {role_file} won't resolve in fresh worktrees (neither "
+        f"git-tracked nor resolvable in a probe of {ref}). Dispatched "
+        f"implementers no longer require Tasker; this only matters for "
+        f"interactive Tasker sessions. To silence: commit "
+        f"`.claude/workflow` (or a relative symlink)."
     )

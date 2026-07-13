@@ -2,17 +2,23 @@
 
 After a Tasker reports Done, the dispatcher can run a panel of three
 independent reviewers — one Claude, one Gemini, one Codex — over the
-committed diff and the Tasker's summary.md. ALL THREE must APPROVE for the
-panel verdict to be "approve"; a single dissenter blocks. The motivation is
-that the Tasker's in-cycle review panel is same-family (also Claude), so it
-shares its blind spots. Cross-family review surfaces defects that
-same-family review provably misses (see /tmp/bsa-adversarial-review/
-synthesis.md for the 6 Criticals an adversarial pass caught on top of the
-in-cycle panels).
+committed diff and the Tasker's summary.md.
+
+Consensus uses a **relaxed corroboration bar** (see `aggregate`):
+  * any CRITICAL finding from any valid seat blocks immediately;
+  * HIGH findings block only when ≥2 valid families independently raise one;
+  * a lone uncorroborated HIGH / CHANGES_REQUESTED is journaled but does not
+    block ship;
+  * ≥2 valid (parseable) seats are required for "approve"; fewer → "incomplete".
+
+The motivation is that the Tasker's in-cycle review panel is same-family
+(also Claude), so it shares its blind spots. Cross-family review surfaces
+defects that same-family review misses, without requiring unanimous APPROVE
+(which almost never converges across three strict reviewers).
 
 The panel is gated by risk tier (`panel_required`). High-risk tickets
-(critical/security/financial/high) run the panel; medium/low/docs/test
-tickets skip it and trust the Tasker's in-cycle panel.
+(critical/security/financial/high) run the panel; size XS/S leaves without
+risk labels, and docs/test tickets, skip it.
 
 Three layers:
   * `Reviewer` ABC + three subclasses — each owns a CLI invocation.
@@ -162,10 +168,10 @@ class ReviewerVerdict:
 class PanelVerdict:
     """Aggregate of the three reviewers. `consensus` is the orchestrator gate.
 
-    consensus values:
-      - "approve" — ALL THREE returned APPROVE with no blocking findings.
-      - "block"   — at least one reviewer returned non-APPROVE OR raised a
-                    CRITICAL/HIGH finding.
+    consensus values (relaxed corroboration bar — see aggregate()):
+      - "approve" — ≥2 valid seats reviewed; no CRITICAL; HIGH findings from
+                    fewer than 2 families (lone HIGH is logged, not blocking).
+      - "block"   — any CRITICAL, or HIGH findings from ≥2 valid families.
       - "incomplete" — fewer than two seats produced a valid (parseable, ran)
                     review — i.e. the panel is mostly/entirely UNAVAILABLE
                     and/or PARSE_FAILED, so it cannot be trusted as a real
@@ -204,6 +210,40 @@ class PanelVerdict:
 # --- risk-tier gating -------------------------------------------------------
 
 
+def has_risk_label(labels: Iterable[str] | None) -> bool:
+    """True if any label is a panel-forcing risk tier (critical/security/…)."""
+    if not labels:
+        return False
+    for raw in labels:
+        if not raw:
+            continue
+        lab = str(raw).strip().lower()
+        if lab in _PANEL_REQUIRED_BARE:
+            return True
+        for prefix in _PANEL_REQUIRED_PREFIXES:
+            if lab.startswith(prefix):
+                bare = lab.split(":", 1)[1].strip()
+                if bare in _PANEL_REQUIRED_BARE:
+                    return True
+                break
+    return False
+
+
+def is_small_leaf(labels: Iterable[str] | None) -> bool:
+    """True when the task is size XS or S (cheap leaf work).
+
+    Used to skip the cross-family panel under both auto and always modes when
+    no risk label is present — three reviewers on a leaf is poor cost/speed.
+    """
+    if not labels:
+        return False
+    for raw in labels:
+        lab = str(raw).strip().lower()
+        if lab in ("size:xs", "size:s"):
+            return True
+    return False
+
+
 def panel_required(
     labels: Iterable[str] | None,
     *,
@@ -221,22 +261,7 @@ def panel_required(
     if task_type and task_type.lower() in _PANEL_SKIP_TYPES:
         return False
 
-    if not labels:
-        return False
-
-    for raw in labels:
-        if not raw:
-            continue
-        lab = str(raw).strip().lower()
-        if lab in _PANEL_REQUIRED_BARE:
-            return True
-        for prefix in _PANEL_REQUIRED_PREFIXES:
-            if lab.startswith(prefix):
-                bare = lab.split(":", 1)[1].strip()
-                if bare in _PANEL_REQUIRED_BARE:
-                    return True
-                break  # matched a prefix but bare didn't satisfy — done
-    return False
+    return has_risk_label(labels)
 
 
 # --- output parser ----------------------------------------------------------

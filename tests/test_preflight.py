@@ -394,16 +394,17 @@ def test_tracked_regular_role_file_passes_without_probe(
     assert res.checks["tasker_role_file"]["method"] == "tracked-regular-file"
 
 
-def test_untracked_unresolvable_role_file_fails_with_symlink_hint(
+def test_untracked_unresolvable_role_file_is_warning_not_failure(
     bare_repo: Path,
 ) -> None:
+    """Single-orchestrator: missing tasker.md no longer fails preflight —
+    dispatched implementers use a self-contained prompt. Still warned."""
     res = _pf(bare_repo)
-    assert not res.ok
-    msg = "\n".join(res.failures)
+    assert res.ok, res.failures
+    msg = "\n".join(res.warnings)
     assert "won't resolve in fresh worktrees" in msg
-    assert "git add .claude/workflow" in msg
-    assert "6923d0a" in msg
-    assert res.checks["tasker_role_file"]["ok"] is False
+    assert res.checks["tasker_role_file"]["ok"] is True
+    assert res.checks["tasker_role_file"].get("missing") is True
 
 
 def test_tracked_symlink_resolvable_passes_via_probe(symlink_repo: Path) -> None:
@@ -445,35 +446,35 @@ def test_probe_worktree_cleaned_up(fixture_name: str, request) -> None:
     assert "preflight-probe" not in out
 
 
-def test_probe_at_configured_deeper_base_fails_not_false_passes(
+def test_probe_at_configured_deeper_base_warns_not_fails(
     symlink_repo: Path,
 ) -> None:
-    """Regression (round-2 HIGH): the symlink target ../../claude-workflow is
-    valid at the DEFAULT base depth (repo.parent) but NOT one level deeper.
-    With --worktree-base one level deeper, real task worktrees would not
-    resolve the role file, so preflight must FAIL — a probe hardcoded to
-    repo.parent would falsely pass and recreate the dogfood-run-#1 burn."""
+    """Symlink may not resolve at a deeper worktree base. Preflight still
+    probes the configured base (so we detect the miss) but only warns —
+    Tasker is not required for dispatch."""
     res = _pf(symlink_repo, worktree_base=symlink_repo.parent / "wt")
-    assert not res.ok, "false pass: probe ignored the configured worktree base"
+    assert res.ok, res.failures
     entry = res.checks["tasker_role_file"]
-    assert entry["ok"] is False
+    assert entry["ok"] is True
     assert entry["method"] == "probe-worktree"
-    assert any("won't resolve in fresh worktrees" in f for f in res.failures)
+    assert entry.get("missing") is True
+    assert any("won't resolve in fresh worktrees" in w for w in res.warnings)
 
 
 def test_probe_at_configured_base_passes_when_symlink_valid_there(
     deep_symlink_repo: Path,
 ) -> None:
     """Inverse layout: the symlink target resolves ONLY at the configured
-    non-default base — preflight must PASS there (no false block), while the
-    same repo probed at the default base must fail."""
+    non-default base — preflight must PASS there. At the default base the
+    miss is a warning only (still ok=True)."""
     base = deep_symlink_repo.parent / "wt"
     res = _pf(deep_symlink_repo, worktree_base=base)
     assert res.ok, res.failures
     assert res.checks["tasker_role_file"]["method"] == "probe-worktree"
 
     res_default = _pf(deep_symlink_repo)  # worktree_base=None → repo.parent
-    assert not res_default.ok, "false pass at the default base"
+    assert res_default.ok, res_default.failures
+    assert res_default.checks["tasker_role_file"].get("missing") is True
 
 
 def test_probe_with_configured_base_cleans_up_and_creates_base(

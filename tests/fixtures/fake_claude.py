@@ -67,15 +67,15 @@ def main() -> int:
 
     # Verifier invocation (VG-4): the independent LLM verifier pipes the
     # verifier.md prompt and reads a JSON envelope whose `result` carries the
-    # verdict. Every Tasker spawn — including the corrective iterate prompts
-    # that *quote* the verifier — appends the Tasker template ("adopt the
-    # Tasker role"); the verifier prompt never does, so its ABSENCE is the
-    # reliable discriminator (a substring like "independent verifier" also
-    # appears in the verifier-iterate prompt and would misfire). Short-circuit
-    # here BEFORE the Tasker simulation (commit/summary side effects) and emit
-    # a verdict directly. Default VERIFIED; FAKE_CLAUDE_VERIFIER_VERDICT=
-    # INCOMPLETE drives the gap-and-iterate path for subprocess-level e2e tests.
-    if "adopt the Tasker role" not in prompt:
+    # verdict. Every implementer spawn — including corrective iterate prompts
+    # that *quote* the verifier — includes the implementer template
+    # ("autonomous implementer agent under the dispatcher"); the pure
+    # verifier prompt never does, so its ABSENCE is the reliable
+    # discriminator. Short-circuit here BEFORE implementer simulation
+    # (commit/summary side effects) and emit a verdict directly. Default
+    # VERIFIED; FAKE_CLAUDE_VERIFIER_VERDICT=INCOMPLETE drives the
+    # gap-and-iterate path for subprocess-level e2e tests.
+    if "autonomous implementer agent under the dispatcher" not in prompt:
         import json
         verdict = os.environ.get("FAKE_CLAUDE_VERIFIER_VERDICT", "VERIFIED").upper()
         if verdict == "INCOMPLETE":

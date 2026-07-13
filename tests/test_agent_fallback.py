@@ -43,6 +43,36 @@ def test_chain_cross_family_falls_back_to_claude():
     assert orchestrator._implementer_fallback_chain(_snap("codex")) == ["codex", "claude"]
 
 
+def test_cascade_bumps_effort_before_switching_agent():
+    """EASY/MEDIUM: primary@default → primary@high → claude@high."""
+    snap = orchestrator.TaskSnapshot(
+        key="T", summary="s", description="d", type="Task",
+        labels=["size:S"], agent="grok", effort=None,
+    )
+    assert orchestrator._implementer_cascade(snap) == [
+        ("grok", None), ("grok", "high"), ("claude", "high"),
+    ]
+
+
+def test_cascade_hard_claude_uses_high_effort():
+    snap = orchestrator.TaskSnapshot(
+        key="T", summary="s", description="d", type="Task",
+        labels=["size:L"], agent=None,
+    )
+    assert orchestrator._implementer_cascade(snap) == [("claude", "high")]
+
+
+def test_cascade_gemini_skips_effort_bump():
+    """agy has no effort flag — cascade is gemini → claude only."""
+    snap = orchestrator.TaskSnapshot(
+        key="T", summary="s", description="d", type="Task",
+        labels=["size:M"], agent="gemini", effort=None,
+    )
+    assert orchestrator._implementer_cascade(snap) == [
+        ("gemini", None), ("claude", "high"),
+    ]
+
+
 # --- end-to-end fallback ---------------------------------------------------
 
 @pytest.fixture
@@ -118,7 +148,8 @@ def test_fallback_to_claude_when_primary_stops(repo: Path, monkeypatch) -> None:
     calls: list[str] = []
 
     def fake_spawn_agent(*, agent, claude_bin, cwd, env, prompt,
-                         model=None, extra_args=None, timeout_seconds=3600):
+                         model=None, effort=None, extra_args=None,
+                         timeout_seconds=3600):
         calls.append(agent)
         sp = Path(env["SUMMARY_PATH"])
         sp.parent.mkdir(parents=True, exist_ok=True)
@@ -140,7 +171,10 @@ def test_fallback_to_claude_when_primary_stops(repo: Path, monkeypatch) -> None:
 
     rc = orchestrator.execute(_args(repo))
     assert rc == 0, "task should complete via the claude fallback"
-    assert calls == ["grok", "claude"], "grok tried first, then claude"
+    # Cascade: grok@default → grok@high → claude@high (both grok rungs stop)
+    assert calls == ["grok", "grok", "claude"], (
+        "cascade tries grok twice (effort bump) then claude"
+    )
 
     doc = yaml_io.load(repo / "tasks.yaml")
     row = next(t for t in doc["tasks"] if t["key"] == "FB-1")
@@ -156,7 +190,8 @@ def test_no_fallback_after_claude_blocks(repo: Path, monkeypatch) -> None:
     calls: list[str] = []
 
     def always_stop(*, agent, claude_bin, cwd, env, prompt,
-                    model=None, extra_args=None, timeout_seconds=3600):
+                    model=None, effort=None, extra_args=None,
+                    timeout_seconds=3600):
         calls.append(agent)
         sp = Path(env["SUMMARY_PATH"])
         sp.parent.mkdir(parents=True, exist_ok=True)

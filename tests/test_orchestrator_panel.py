@@ -69,6 +69,21 @@ tasks:
     labels: [size:XS, risk:low]
 """
 
+# Medium, no risk labels — skipped under auto, but panel-worthy under always
+# (size XS/S leaves still skip always unless a risk label is present).
+_MEDIUM_LOW_RISK_TASK_YAML = """\
+project: TEST
+epic: PANEL
+
+tasks:
+  - key: PANEL-B
+    summary: "panel-test: medium low-risk ticket"
+    description: A medium change with no risk labels.
+    type: Task
+    estimate: 30m
+    labels: [size:M, risk:low]
+"""
+
 
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
@@ -252,8 +267,11 @@ def test_panel_auto_skips_low_risk(repo: Path, monkeypatch) -> None:
     assert all(r.call_count == 0 for r in revs)
 
 
-def test_panel_always_fires_for_low_risk(repo: Path, monkeypatch) -> None:
-    _seed_yaml(repo, _LOW_RISK_TASK_YAML)
+def test_panel_always_fires_for_medium_low_risk(repo: Path, monkeypatch) -> None:
+    """mode=always still runs the panel on non-leaf work without risk labels.
+    (size XS/S leaves skip even under always — see test below.)
+    """
+    _seed_yaml(repo, _MEDIUM_LOW_RISK_TASK_YAML)
     _patch_spawn(monkeypatch)
     revs = _set_reviewers(monkeypatch, [
         ("claude", _APPROVE_OUTPUT),
@@ -270,6 +288,26 @@ def test_panel_always_fires_for_low_risk(repo: Path, monkeypatch) -> None:
     # claude (author) is excluded; only the non-author reviewers ran.
     assert all(r.call_count == 1 for r in revs if r.family != "claude")
     assert all(r.call_count == 0 for r in revs if r.family == "claude")
+
+
+def test_panel_always_skips_small_leaf_without_risk(repo: Path, monkeypatch) -> None:
+    """Cost/speed: size XS/S without a risk label skips the panel even under
+    mode=always — three reviewers on a leaf is not worth it."""
+    _seed_yaml(repo, _LOW_RISK_TASK_YAML)
+    _patch_spawn(monkeypatch)
+    revs = _set_reviewers(monkeypatch, [
+        ("claude", _APPROVE_OUTPUT),
+        ("gemini", _APPROVE_OUTPUT),
+        ("codex", _APPROVE_OUTPUT),
+    ])
+
+    rc = orchestrator.execute(_args(repo, key="PANEL-B", panel_mode="always"))
+    assert rc == 0
+    doc = yaml_io.load(repo / "tasks.yaml")
+    row = next(t for t in doc["tasks"] if t["key"] == "PANEL-B")
+    assert row["status"] == "Done"
+    assert "panel_consensus" not in row
+    assert all(r.call_count == 0 for r in revs)
 
 
 def test_panel_never_skips_even_for_critical(repo: Path, monkeypatch) -> None:
