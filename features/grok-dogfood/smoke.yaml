@@ -31,20 +31,18 @@ tasks:
     verify: mechanical
     panel: never
     status: Done
-    started_at: '2026-07-12T23:10:17-07:00'
-    dispatcher_run_id: dogfood-smoke-20260713T061016Z
-    summary_path: /Users/andrewcostello/Projects/claude-dispatcher/docs/runs/dogfood-smoke-20260713T061016Z/DOG-SMOKE-1/summary.md
+    started_at: '2026-07-13T15:22:13-07:00'
+    dispatcher_run_id: grok-smoke-rerun-20260713a
+    summary_path: /tmp/claude-1000/-home-andrew-Project-claude-dispatcher/15cbeec1-d4ce-4d05-bda8-7ced55e27d3d/scratchpad/trial-merge/docs/runs/grok-smoke-rerun-20260713a/DOG-SMOKE-1/summary.md
     branch: feat/DOG-SMOKE-1-write-docs-dogfood-smoke-md
-    completed_at: '2026-07-12T23:16:54-07:00'
+    completed_at: '2026-07-13T15:23:29-07:00'
     iteration_count: 0
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
     mechanical_verification: passed
-    input_tokens: 21410
-    output_tokens: 1233
-    cache_read_input_tokens: 134528
-    num_turns: 6
+    verified: true
+    verification_iterations: 0
     model: grok
     dispatcher_version: 0.1.0
-    agent_version: grok 0.2.99 (b1b49ccb71a7) [stable]
+    agent_version: grok 0.2.93 (f00f96316d) [stable]
