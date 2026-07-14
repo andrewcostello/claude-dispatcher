@@ -12,14 +12,26 @@ from pathlib import Path
 import claude_dispatcher
 
 
-def test_verifier_prompt_ships_with_the_package():
+def test_every_source_data_asset_ships_with_the_package():
+    """Class seal, not an instance seal: EVERY non-.py asset in the source
+    tree must be importlib-reachable next to the installed package. The
+    instance version of this test missed reviewer_prompts/ and the panel
+    broke on the next run (gpa-wave1b)."""
     pkg_dir = Path(claude_dispatcher.__file__).parent
-    prompt = pkg_dir / "verifier_prompts" / "verifier.md"
-    assert prompt.is_file(), (
-        "verifier_prompts/verifier.md must live inside the package dir "
-        "(and be declared in [tool.setuptools.package-data])"
+    src_pkg = Path(__file__).resolve().parents[1] / "src" / "claude_dispatcher"
+    if not src_pkg.is_dir():  # running from an installed copy
+        src_pkg = pkg_dir
+    assets = [
+        p.relative_to(src_pkg)
+        for p in src_pkg.rglob("*")
+        if p.is_file() and p.suffix != ".py" and "__pycache__" not in p.parts
+    ]
+    assert assets, "expected at least the prompt assets in the source tree"
+    missing = [str(rel) for rel in assets if not (pkg_dir / rel).is_file()]
+    assert not missing, (
+        f"source data assets not reachable next to the installed package "
+        f"(declare them in [tool.setuptools.package-data]): {missing}"
     )
-    assert prompt.stat().st_size > 100
 
 
 def test_pyproject_declares_prompt_package_data():
