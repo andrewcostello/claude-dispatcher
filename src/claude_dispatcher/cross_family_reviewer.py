@@ -508,6 +508,19 @@ def _load_prompt(family: str) -> str:
     return f"{fam_path.read_text(encoding='utf-8')}\n\n{shared_path.read_text(encoding='utf-8')}"
 
 
+# Same notice the verifier carries: the diff EXCLUDES generated artifacts
+# and lockfiles (DIFF_EXCLUDE_PATHSPECS) — reviewers reported committed
+# go.sum / sqlc output as "missing" because they literally cannot see them
+# (LC-1-2 panel, 2026-07-13). Absence of excluded paths is never a finding.
+REVIEW_EXCLUSION_NOTICE = (
+    "NOTE: this diff deliberately EXCLUDES generated artifacts and lockfiles "
+    "(*.pb.go, connect packages, *_pb.ts, sqlc output, go.sum, "
+    "package-lock.json). Their absence from the diff is BY DESIGN — they are "
+    "committed and the mechanical gate compiled against them. Never report "
+    "an excluded path as missing; judge only hand-written code.\n\n"
+)
+
+
 def build_review_prompt(
     *,
     family: str,
@@ -530,6 +543,7 @@ def build_review_prompt(
     code's known defect signature); empty when no prior applies. Both are
     plain-prose enrichments: empty strings render as empty sections.
     """
+    diff = REVIEW_EXCLUSION_NOTICE + diff
     tmpl = _load_prompt(family)
     return tmpl.format(
         ticket_key=ticket_key,
