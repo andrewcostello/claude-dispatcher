@@ -27,10 +27,12 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-# Prompt assets must ship in the wheel — a pipx install without them makes
-# every LLM verification fail as verifier_unavailable (hit live 2026-07-13:
-# gpa-wave1 blocked on "verifier prompt missing" from the pipx site-packages).
-claude_dispatcher = ["verifier_prompts/*.md"]
+# ALL prompt assets must ship in the wheel — a pipx install without them
+# breaks the corresponding stage at runtime (hit live twice on 2026-07-13:
+# gpa-wave1 verifier_unavailable on verifier_prompts/, then gpa-wave1b
+# cross_family_panel_error on reviewer_prompts/). tests/test_packaging.py
+# walks the source tree and fails on any non-.py asset this glob misses.
+claude_dispatcher = ["*_prompts/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
