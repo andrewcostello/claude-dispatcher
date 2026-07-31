@@ -239,16 +239,31 @@ def panel_required(
     labels: Iterable[str] | None,
     *,
     task_type: str | None = None,
+    classification: object | None = None,
 ) -> bool:
     """Return True if this ticket's risk tier requires the cross-family panel.
 
-    The required tiers are: critical, security, financial, high. Matches
-    case-insensitively against either the bare token (`critical`) or any of
-    the common prefix forms (`risk:critical`, `tier:critical`, etc.).
+    Two independent sources, and they compose one-directionally:
 
-    Docs / test tickets skip the panel even if labelled high-risk — they
-    don't ship code paths that need this safety net.
+    **Path evidence** (``classification``, from ``cmd/classify``) — what the
+    diff actually touches. If the changed surface demands the full panel, it
+    fires regardless of labels or type. This can only ever ADD review.
+
+    **Ticket metadata** (labels, type) — the original rule. The required tiers
+    are critical, security, financial, high, matched case-insensitively against
+    either the bare token (`critical`) or the common prefix forms
+    (`risk:critical`, `tier:critical`, …).
+
+    Docs / test *types* skip the metadata path — they are not supposed to ship
+    code paths that need this safety net. But a "docs" ticket whose diff touches
+    a wallet file is a mislabelled ticket, not a docs ticket, so path evidence
+    overrides the type skip. That ordering is the whole point: PR 1294 shipped a
+    customer-facing wallet regression because the change was judged by how it was
+    described rather than by what it touched.
     """
+    if classification is not None and getattr(classification, "requires_full_panel", False):
+        return True
+
     if task_type and task_type.lower() in _PANEL_SKIP_TYPES:
         return False
 
@@ -532,6 +547,7 @@ def build_review_prompt(
     base_branch: str,
     blast_radius: str = "",
     implementer_prior: str = "",
+    risk_context: str = "",
 ) -> str:
     """Render the per-family prompt. The shared block has format slots; the
     preamble has none.
@@ -542,6 +558,11 @@ def build_review_prompt(
     watch-for block keyed to who authored the diff (e.g. agent-authored
     code's known defect signature); empty when no prior applies. Both are
     plain-prose enrichments: empty strings render as empty sections.
+
+    ``risk_context`` — the path-derived tier, component floors, financial/
+    migration flags and gate signals from ``cmd/classify``. Reviewers previously
+    received no tier at all, so they could not know a change sat on a path
+    carrying hard 5/5 dimension floors. Empty when classification is unavailable.
     """
     diff = REVIEW_EXCLUSION_NOTICE + diff
     tmpl = _load_prompt(family)
@@ -554,6 +575,7 @@ def build_review_prompt(
         base_branch=base_branch,
         blast_radius=blast_radius or "(none identified)",
         implementer_prior=implementer_prior or "(none)",
+        risk_context=risk_context or "(classification unavailable — judge the diff on its contents)",
     )
 
 
@@ -1222,6 +1244,7 @@ def run_panel(
     base_branch: str,
     blast_radius: str = "",
     implementer_prior: str = "",
+    risk_context: str = "",
     reviewers: list[Reviewer] | None = None,
     advisory_reviewers: list[Reviewer] | None = None,
     log: Callable[[str], None] = lambda _m: None,
@@ -1244,6 +1267,12 @@ def run_panel(
     worker that leaks an exception is recorded as UNAVAILABLE for that
     family instead of crashing the panel; authoritative worker exceptions
     still re-raise (framework bugs must stay loud).
+
+    `risk_context` is the path-derived tier/component/flag block from
+    ``cmd/classify`` (see ``classification.Classification.review_context``).
+    The orchestrator computes the classification once and passes it here and to
+    ``panel_required``; empty is fine and renders as an explicit
+    "classification unavailable" note rather than silently omitting the tier.
 
     `log` is an optional one-arg sink for progress messages — the
     orchestrator wires this to its run.log.
@@ -1275,6 +1304,7 @@ def run_panel(
             base_branch=base_branch,
             blast_radius=blast_radius,
             implementer_prior=implementer_prior,
+            risk_context=risk_context,
         )
         return r.review(prompt)
 

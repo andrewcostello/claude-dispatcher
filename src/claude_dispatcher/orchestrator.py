@@ -33,6 +33,7 @@ from typing import Any
 from . import __version__
 from . import auto_integrate as ai_mod
 from . import blast_radius as br_mod
+from . import classification
 from . import cross_family_reviewer as cfr_mod
 from . import disposition as disposition_mod
 from . import journal as journal_mod
@@ -1487,7 +1488,29 @@ def _run_task(
         # --- Cross-family panel ---------------------------------------------
         panel_verdict = None
         panel_iterations_used = 0
-        if final_status == plan_mod.DONE and _panel_should_run(cfg, snap):
+        _should_panel = _panel_should_run(cfg, snap)
+        if final_status == plan_mod.DONE and not _should_panel:
+            # Metadata (labels, type, size) says skip. Before trusting that,
+            # ask what the diff actually TOUCHES. Path evidence may only ever
+            # ADD review, never remove it — PR 1294 shipped a customer-facing
+            # wallet regression because the change was judged by how it was
+            # described rather than by its surface.
+            _gate_cls = _panel_gate_classification(
+                cfg=cfg, snap=snap, wt=wt, repo_root=repo_root,
+                base_sha_before=base_sha_before, log_path=log_path,
+            )
+            if _gate_cls is not None and _gate_cls.requires_full_panel:
+                _should_panel = True
+                _log(log_path,
+                     f"  {snap.key} panel: metadata said skip, but the diff "
+                     f"requires it ({_gate_cls.summary_line()}) — running")
+                _emit_event(cfg, journal_mod.EventType.panel_started, {
+                    "forced_by": "path_classification",
+                    "risk": _gate_cls.risk,
+                    "components": list(_gate_cls.components),
+                    "financial": _gate_cls.financial_paths_touched,
+                }, task_key=snap.key)
+        if final_status == plan_mod.DONE and _should_panel:
             iterations_remaining = max(0, cfg.cross_family_panel_iterate)
             while True:
                 _emit_event(cfg, journal_mod.EventType.panel_started, {
@@ -1850,6 +1873,34 @@ def _resolved_quality(cfg: RunConfig, snap: TaskSnapshot) -> ql_mod.QualityLevel
     )
 
 
+def _panel_gate_classification(
+    *,
+    cfg: RunConfig,
+    snap: TaskSnapshot,
+    wt: wt_mod.Worktree,
+    repo_root: Path,
+    base_sha_before: str | None,
+    log_path: Path,
+) -> "classification.Classification | None":
+    """Classify the task's diff for panel gating, or None if unavailable.
+
+    Only called when metadata gating already decided to SKIP the panel, so the
+    subprocess cost is paid exactly when it might change the answer. Any failure
+    returns None and leaves the existing decision intact.
+    """
+    try:
+        diff_base, diff_branch = _resolve_diff_bounds(
+            cfg, snap, wt, repo_root, base_sha_before, log_path,
+        )
+        diff = cfr_mod.collect_diff(
+            repo_root=repo_root, base_branch=diff_base, branch=diff_branch,
+        )
+        return classification.classify_diff(diff=diff, repo_root=repo_root)
+    except Exception as e:  # never let the safety net break the run
+        _log(log_path, f"  {snap.key} panel gate: classification failed: {e}")
+        return None
+
+
 def _panel_should_run(cfg: RunConfig, snap: TaskSnapshot) -> bool:
     """Decide whether to fire the cross-family panel for this Done task.
 
@@ -1929,6 +1980,17 @@ def _run_cross_family_panel(
              f"  {snap.key} panel: blast-radius artifact "
              f"({blast.count(chr(10)) + 1} lines) attached")
 
+    # Path-derived context for the reviewers. The panel prompt previously
+    # carried no risk tier and no component information at all, so a reviewer
+    # could not know a change sat on a path with hard 5/5 dimension floors.
+    cls = classification.classify_diff(diff=diff, repo_root=repo_root)
+    risk_context = ""
+    if cls is not None:
+        risk_context = cls.review_context()
+        _log(log_path, f"  {snap.key} panel: classification {cls.summary_line()}")
+    else:
+        _log(log_path, f"  {snap.key} panel: classification unavailable")
+
     # Seat selection composes two rules that pull opposite directions:
     #   * Cross-family review means a DIFFERENT family judges — the author's
     #     own family self-reviewing is circular and drove false corroboration
@@ -1977,6 +2039,7 @@ def _run_cross_family_panel(
                 base_branch=diff_base,
                 blast_radius=blast,
                 implementer_prior=cfr_mod.implementer_prior_for(snap.agent),
+                risk_context=risk_context,
                 reviewers=codex_revs,
                 advisory_reviewers=[], # skip advisory for the first stage
                 log=lambda m: _log(log_path, m),
@@ -1999,6 +2062,7 @@ def _run_cross_family_panel(
                 base_branch=diff_base,
                 blast_radius=blast,
                 implementer_prior=cfr_mod.implementer_prior_for(snap.agent),
+                risk_context=risk_context,
                 reviewers=other_revs,
                 advisory_reviewers=advisory_reviewers,
                 log=lambda m: _log(log_path, m),
@@ -2015,6 +2079,7 @@ def _run_cross_family_panel(
         base_branch=diff_base,
         blast_radius=blast,
         implementer_prior=cfr_mod.implementer_prior_for(snap.agent),
+        risk_context=risk_context,
         reviewers=reviewers,
         advisory_reviewers=advisory_reviewers,
         log=lambda m: _log(log_path, m),
