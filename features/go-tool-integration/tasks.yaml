@@ -1,0 +1,337 @@
+project: DISP
+epic: GO-TOOL-INTEGRATION
+# ============================================================================
+# Consume the claude-workflow Go tools instead of reimplementing them.
+#
+# WHY
+# The dispatcher and claude-workflow independently implement the same three
+# concepts. cross_family_reviewer.py (1551 lines) is a second review panel
+# alongside cmd/reviewer, with a different seat count and different floor
+# handling. verifier.py + mechanical_verify.py (812) duplicate cmd/gates.
+# risk.py (555) duplicates classification. They have already drifted and will
+# keep drifting, because nothing forces them to agree.
+#
+# The fix is deleting the duplicates, NOT porting the dispatcher to Go. Only
+# ~2900 of 19600 source lines overlap; the other 85% (spawn, journal, notify,
+# report, merge_engine, worktree, plan, cli) has no Go counterpart and no
+# reason to grow one. The proven pattern is classification.py: ~230 lines that
+# shell out over a JSON contract and degrade to the existing behaviour when the
+# binary is absent.
+#
+# DOGFOOD
+# This run is also the test of that work. Bootstrap safety is real but mild:
+# the editable install points at the MAIN checkout (src/), tasks are edited in
+# git worktrees, and the panel reviewing each change runs the OLD code against
+# the new diff. So the running dispatcher is not modified underneath itself.
+#
+# The risk is not during a run, it is after a merge: once GO-2 lands, the next
+# run's panel depends on the new integration. Hence the shape of every task
+# here:
+#
+#   * ADD the Go path with the Python retained as a fallback. Never both
+#     add-and-delete in one task.
+#   * DELETE in a separate, blocked follow-up, after the integration has been
+#     proven on a real run.
+#   * Land one at a time. After each merge, do a throwaway dispatcher run
+#     before starting the next task — a broken integration must be caught by
+#     machinery that is not part of the same change.
+#
+# The chain is STRICTLY SERIAL, not maximally parallel. A first draft let GO-3
+# (delete the panel) run alongside GO-4 (change verification), which would
+# remove the panel fallback while verification was in flight — exactly what the
+# "land one at a time" rule above forbids. For self-modifying changes to review
+# machinery, serial is the point, not a limitation.
+#
+# GO-0 and GO-1 are deliberately first and deliberately low-value. GO-0 fixes a
+# live safety gap found by dry-running this very plan; GO-1 is the cheap proof
+# that this repo can invoke a Go binary from inside a task worktree at all.
+# Every later task assumes that works.
+#
+# PREREQUISITES
+#   * claude-workflow built: cmd/{classify,gates,reviewer,recheck,iterate}
+#   * .agent/risk-paths.json in this repo (landed alongside this plan)
+#   * Binaries reachable by absolute path from a worktree; classification.py
+#     already resolves $CLASSIFY_BIN, then PATH, then ~/Project/claude-workflow
+# ============================================================================
+
+tasks:
+
+  - key: GO-0
+    summary: "Fix the dead FINANCIAL_PATHS default and the stale MAX_ITERATIONS"
+    description: |
+      Found by dry-running this very plan: `dispatcher run --mode dry-run`
+      prints the env it hands each Tasker, and it reads
+
+        FINANCIAL_PATHS=apps/finance-domain/wallet/**,
+                        apps/finance-domain/settlement/**,
+                        apps/finance-domain/recovery/**,
+                        apps/finance-domain/payout/**
+
+      Three of those four directories DO NOT EXIST. apps/finance-domain/ in
+      evenplay-mono contains only paygate/ and wallet/. Settlement, refunds and
+      dispute reversal live under apps/platform-domain/bay-session/store/.
+
+      FINANCIAL_PATHS is the human PR gate's second, path-based check — the
+      backstop for when tier judgment misses. For every money path outside
+      wallet/ that backstop has been dead: a Tasker classifying a refund change
+      as High rather than Critical would have auto-raised with no human gate.
+      claude-workflow's pr-raise.md carried the identical list and was corrected
+      on 2026-07-31; cli.py:29-34 is the same bug in the dispatcher.
+
+      Replace the default with the corrected set (see pr-raise.md's fallback
+      list, or better: derive it from classification.financial_paths_touched
+      once GO-1 lands — this task only needs to stop the list being wrong).
+
+      Second, smaller fix: MAX_ITERATIONS defaults to 2. iteration-protocol.md's
+      ceiling is 4, corrected across three doc sites on 2026-07-31; 2 was a
+      stale value that conflated the iteration ceiling with the linter-cycle
+      cap. Align the default to 4.
+
+      This is GO-0 rather than a footnote because it is a live safety gap, it is
+      ten lines, and it makes a good first dogfood task: small, real, and
+      independent of the Go binaries.
+
+      Acceptance:
+        - Default FINANCIAL_PATHS names only paths that exist in evenplay-mono;
+          add a comment pointing at .agent/risk-paths.json as the source of
+          truth so it does not drift again
+        - MAX_ITERATIONS default is 4
+        - Test asserting the default list is non-empty and that each entry's
+          first two path segments are plausible (cheap guard against another
+          silent typo)
+        - The dry-run output is re-checked by hand and pasted into the summary
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:cli, risk:high, phase:go-integration]
+
+  - key: GO-1
+    summary: "risk.py consumes cmd/classify instead of duplicating glob matching"
+    description: |
+      risk.py answers a genuinely different question from cmd/classify — binary
+      low-vs-elevated for auto-merge, not the four-tier review depth — so it
+      STAYS. What it should not do is maintain its own glob engine and its own
+      forbidden-paths list when classify already computes that from the
+      project's rule table.
+
+      Change: when a classification is available, evaluate::
+
+        elevated  if  classification.risk in {high, critical}
+                  or  classification.financial_paths_touched
+                  or  classification.gate_signals is non-empty
+
+      and OR that with the existing verdict. Path evidence may only ever raise
+      to elevated, never lower to low — same one-directional contract as
+      classification.py's panel gating. The existing size/label/forbidden-path
+      rules stay exactly as they are.
+
+      Use classification.classify_diff(); when it returns None (binary absent,
+      non-zero exit, unparsable output) the current behaviour must be
+      byte-for-byte unchanged.
+
+      This task is FIRST because it is the cheapest possible proof that a task
+      worktree in this repo can shell out to a claude-workflow binary and parse
+      the result. If that does not work, everything after it is blocked, and we
+      want to learn it here rather than in the middle of replacing the panel.
+
+      Acceptance:
+        - RiskConfig/evaluate unchanged in shape; classification is an optional
+          input, never required
+        - Test: elevated classification forces elevated on a task the existing
+          rules call low
+        - Test: low classification NEVER downgrades an elevated verdict
+        - Test: classification=None reproduces today's verdict exactly, across
+          the existing risk test cases
+        - Test: a diff whose classification errors (simulate non-zero exit) is
+          treated as None, not as an exception
+        - Journal the classification summary_line() when one was obtained, so a
+          run's audit trail records which table produced the verdict
+    type: Task
+    estimate: 2h
+    labels: [size:S, area:cfr, risk:high, phase:go-integration]
+    blockedBy: [GO-0]
+
+  - key: GO-2
+    summary: "Panel dispatches cmd/reviewer, with cross_family_reviewer retained as fallback"
+    description: |
+      The highest-value task in this plan and the one with the most drift
+      already accumulated. cmd/reviewer runs five seats (claude, claude-scouts,
+      codex, grok, agy) with per-scout role slicing, finding dedup, tier
+      consensus floors and component dimension floors. cross_family_reviewer.py
+      runs three to four families with none of that. Two implementations of
+      "review this diff" that disagree about how many opinions constitute a
+      verdict.
+
+      Change: in orchestrator._run_cross_family_panel, when cmd/reviewer is
+      available, invoke it with the argv from classification.reviewer_args
+      (verbatim — do not hand-assemble -risk/-component; that contract exists
+      because those flags were forgotten repeatedly) plus -findings-out. Parse
+      its findings JSON into the existing PanelVerdict shape so every consumer
+      (aggregate(), auto_integrate, report, journal) is untouched.
+
+      DO NOT DELETE cross_family_reviewer.py in this task. Retain it as the
+      fallback when the binary is missing, errors, or returns
+      REVIEW_UNAVAILABLE (exit 2). Deletion is GO-3, after this has run for
+      real. The reason is specific: after this merges, the NEXT run's panel is
+      the new path. If it is broken and there is no fallback, the dispatcher
+      has no panel at all — and a dispatcher with a silently absent panel is
+      precisely the failure this whole effort exists to prevent.
+
+      Map the exit codes honestly:
+        0 -> parse findings, build PanelVerdict
+        2 -> REVIEW_UNAVAILABLE; fall back to the Python panel and journal that
+             it happened (do NOT treat as approve)
+        3 -> INVALID_INPUT; this is a dispatcher bug in what it passed, not a
+             finding about the code. Journal and fall back.
+
+      Acceptance:
+        - A real cmd/reviewer run against a fixture diff produces a PanelVerdict
+          whose consensus/blocking_findings match what the JSON says
+        - Test: binary absent -> Python panel runs, journaled as fallback
+        - Test: exit 2 -> Python panel runs, journaled; never approve-by-default
+        - Test: exit 3 -> journaled as invalid input; never approve-by-default
+        - Test: reviewer_args are passed through verbatim (assert the argv)
+        - aggregate(), report and auto_integrate require NO changes — if they
+          do, the PanelVerdict mapping is wrong
+        - Journal records which panel implementation produced the verdict
+    type: Task
+    estimate: 8h
+    labels: [size:M, area:panel, risk:critical, phase:go-integration]
+    blockedBy: [GO-1]
+
+  - key: GO-3
+    summary: "Delete the Python panel once cmd/reviewer has run for real"
+    description: |
+      Removes cross_family_reviewer.py's panel implementation (~1551 lines) and
+      its tests, keeping only what is still used: the parsing helpers, the
+      PanelVerdict/Finding dataclasses, panel_required(), is_small_leaf() and
+      implementer_prior_for().
+
+      DO NOT START THIS until GO-2 has been merged AND a real dispatcher run
+      has completed using the cmd/reviewer path. That is a human gate, not an
+      automated one — check the journal for a panel verdict produced by the Go
+      binary before dispatching this task.
+
+      This is separated from GO-2 for one reason: GO-2 changes behaviour and
+      GO-3 removes the test coverage that proves the old behaviour. Doing both
+      at once means shrinking the verification surface in the same change that
+      alters what is verified, which is how a gate stops checking without
+      anyone noticing.
+
+      Acceptance:
+        - The Python panel path and its tests are gone; the dataclasses,
+          parsers and gating helpers remain with their tests
+        - `pytest tests/ -q` green with no skipped tests introduced
+        - Fallback removal is explicit in the commit message: from here on a
+          missing cmd/reviewer is a hard failure, not a degradation. State that
+          tradeoff and why it is now acceptable.
+        - Line count reduction reported in the summary
+    type: Task
+    estimate: 3h
+    labels: [size:S, area:panel, risk:critical, phase:go-integration]
+    blockedBy: [GO-2]
+
+  - key: GO-4
+    summary: "Mechanical verification dispatches cmd/gates, with the existing path as fallback"
+    description: |
+      verifier.py and mechanical_verify.py run the repo's configured `test:`
+      command and grade the result. cmd/gates does that and more: it derives
+      the gate set from the classification, runs each gate INSIDE the owning Go
+      module (evenplay-mono has no root go.mod, so root-level gates test
+      nothing), records raw output to disk, and refuses to report a skip
+      without a reason.
+
+      Change: where mechanical verification runs today, invoke cmd/gates with
+      the run state when one exists, and map its exit codes:
+        0 -> pass
+        1 -> a gate failed; the failing gate name and its output_path go into
+             the Blocked detail, replacing today's test-output tail
+        3 -> INVALID_INPUT; a dispatcher bug, not a code finding
+
+      Retain the existing `test:`-command path as the fallback for repos with
+      no .agent/gates.json — most repos will not have one, and this must not
+      break them. Deletion is GO-5.
+
+      Note the asymmetry with GO-2: cmd/gates needs a run state, which means
+      cmd/classify must have run for this task first. If no run state exists,
+      fall back rather than synthesising one.
+
+      Acceptance:
+        - Test: repo with .agent/gates.json -> cmd/gates runs, per-gate results
+          land in the journal
+        - Test: repo without one -> existing test: command path, unchanged
+        - Test: exit 1 -> Blocked with the failing gate named and its raw
+          output path recorded (not the full output inline)
+        - Test: exit 3 -> journaled as a dispatcher input bug; NOT sent to a
+          Coder as a fix-the-tests iteration
+        - Test: a gates result containing a skipped gate with no reason is
+          rejected (cmd/gates already refuses to emit one; assert we do not
+          quietly accept it if it appears)
+    type: Task
+    estimate: 6h
+    labels: [size:M, area:verifier, risk:critical, phase:go-integration]
+    blockedBy: [GO-3]
+
+  - key: GO-5
+    summary: "Delete the duplicated verification path once cmd/gates has run for real"
+    description: |
+      Removes the parts of verifier.py and mechanical_verify.py that cmd/gates
+      now owns (~812 lines) and their tests. Same gating rule as GO-3: do not
+      start until GO-4 is merged and a real run has used the cmd/gates path.
+
+      Keep the LLM verifier — it does judgment work (does the summary match the
+      diff, is the seal vacuous) that cmd/gates deliberately does not attempt.
+      Only the mechanical half is duplicated.
+
+      Acceptance:
+        - Mechanical duplication and its tests gone; LLM verifier untouched
+        - `pytest tests/ -q` green
+        - A repo without .agent/gates.json still verifies (via the LLM verifier
+          plus whatever remains), or the plan explicitly states that such repos
+          now require a gates config — decide and document, do not leave it
+          ambiguous
+    type: Task
+    estimate: 3h
+    labels: [size:S, area:verifier, risk:critical, phase:go-integration]
+    blockedBy: [GO-4]
+
+  - key: GO-6
+    summary: "Panel iteration uses cmd/iterate for round selection and convergence"
+    description: |
+      The orchestrator's cross_family_panel_iterate loop decides round count
+      and re-review scope with its own logic. cmd/iterate owns exactly that for
+      the CLI flow: which tool runs each round (full re-audit through round 2,
+      cmd/recheck from round 3), the severity floor from
+      classification.recheck_min_severity, the -max-new value, and the
+      convergence verdict — escalate immediately on a finding that survived its
+      dedicated fix round, escalate when new findings stop strictly decreasing.
+
+      Prerequisite this task must satisfy first: the orchestrator needs to
+      maintain a run state across panel rounds. It does not today. Write the
+      run state after classification (GO-1 gives you the classification), then
+      append each round's result. cmd/iterate reads rounds[] and needs nothing
+      else.
+
+      Then replace the loop's decisions with `iterate next` (which prints the
+      decision and argv without running anything) so the orchestrator keeps
+      control of spawning while iterate owns the arithmetic. Do not use
+      `iterate run` here — the orchestrator has its own spawn/journal
+      machinery that should stay in charge.
+
+      Note for whoever implements this: iterate's -max-new is the PRIOR round's
+      new-finding count passed verbatim, not minus one. The protocol doc said
+      minus one for months and it was wrong — it demands a decrease of two and
+      escalates a converging 3 -> 2 round. Do not reintroduce that.
+
+      Acceptance:
+        - Run state written and appended per round; validates against
+          config/run-state.schema.json (cmd/gates validates on read — use it)
+        - Round 1-2 full re-audit, 3+ recheck, asserted by test
+        - Test: a STILL_OPEN prior finding escalates immediately, at any round
+        - Test: new findings not strictly decreasing escalates
+        - Test: -max-new equals the prior round's count, verbatim
+        - Existing iteration behaviour preserved where it already agrees; where
+          it disagrees, cmd/iterate wins and the divergence is documented
+    type: Task
+    estimate: 8h
+    labels: [size:M, area:orchestrator, risk:high, phase:go-integration]
+    blockedBy: [GO-5]

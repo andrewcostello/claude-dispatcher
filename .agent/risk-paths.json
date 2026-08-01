@@ -1,0 +1,180 @@
+{
+  "schema_version": 1,
+
+  "_comment": [
+    "Risk-path rule table for claude-dispatcher. Consumed by cmd/classify and",
+    "cmd/gates from claude-workflow.",
+    "",
+    "This repo moves no money, so there are no financial rules. The equivalent",
+    "safety-critical surface here is DIFFERENT: the code that decides whether",
+    "review happens at all. cross_family_reviewer.py gates the panel, risk.py",
+    "gates auto-merge, verifier.py and mechanical_verify.py gate Done, and",
+    "orchestrator.py holds _panel_should_run. A fail-open in any of them does not",
+    "corrupt data — it silently ships unreviewed code to every repo this",
+    "dispatcher drives, which is worse. Those are critical; the rest of the",
+    "orchestration surface is high.",
+    "",
+    "Semantics are the same everywhere: risk is the MAX over matched rules,",
+    "components the UNION, financial an OR, and a file is presentational only if",
+    "every rule it matched is. Adding a rule can only ever raise risk. A file",
+    "matching no rule takes unmatched_risk (fail-closed).",
+    "",
+    "No component presets apply: wallet/bet-settlement/etc. are evenplay-mono",
+    "domain concepts and mean nothing here.",
+    "",
+    "scaffold is false: these paths have been reviewed by a human."
+  ],
+
+  "scaffold": false,
+  "unmatched_risk": "high",
+
+  "server_surface_extensions": [".py"],
+
+  "rules": [
+    {
+      "id": "review-gates",
+      "note": "The code that decides whether a change gets reviewed. cross_family_reviewer.py owns panel_required and the panel itself; risk.py decides low-vs-elevated and therefore auto-merge; verifier.py and mechanical_verify.py decide whether Done is real. A fail-open here ships unreviewed code across every repo the dispatcher drives.",
+      "paths": [
+        "src/claude_dispatcher/cross_family_reviewer.py",
+        "src/claude_dispatcher/risk.py",
+        "src/claude_dispatcher/verifier.py",
+        "src/claude_dispatcher/mechanical_verify.py",
+        "src/claude_dispatcher/seal_verify.py",
+        "src/claude_dispatcher/push_verify.py",
+        "src/claude_dispatcher/classification.py",
+        "src/claude_dispatcher/quality_levels.py"
+      ],
+      "risk": "critical"
+    },
+    {
+      "id": "reviewer-and-verifier-prompts",
+      "note": "The prompts ARE the review. A weakened instruction here degrades every panel verdict silently, with no code change to notice.",
+      "paths": [
+        "src/claude_dispatcher/reviewer_prompts/**",
+        "src/claude_dispatcher/verifier_prompts/**"
+      ],
+      "risk": "critical"
+    },
+    {
+      "id": "merge-and-pr",
+      "note": "Merge and PR machinery acts on real repositories. merge_engine.py self-approves low-risk PRs and orders dependent merges; a defect here lands code no human or panel cleared.",
+      "paths": [
+        "src/claude_dispatcher/merge_engine.py",
+        "src/claude_dispatcher/merge_prs.py",
+        "src/claude_dispatcher/pr.py",
+        "src/claude_dispatcher/auto_integrate.py",
+        "src/claude_dispatcher/disposition.py"
+      ],
+      "risk": "critical"
+    },
+    {
+      "id": "orchestrator-core",
+      "note": "Spawn, worktree, plan and the orchestrator itself. _panel_should_run lives in orchestrator.py and IS a review gate, but the file is 5k lines of mostly sequencing, so it sits here rather than in review-gates; judge panel changes inside it on their own merits.",
+      "paths": [
+        "src/claude_dispatcher/orchestrator.py",
+        "src/claude_dispatcher/spawn.py",
+        "src/claude_dispatcher/worktree.py",
+        "src/claude_dispatcher/plan.py",
+        "src/claude_dispatcher/dispatch_plan.py",
+        "src/claude_dispatcher/routing.py",
+        "src/claude_dispatcher/resume.py",
+        "src/claude_dispatcher/cli.py",
+        "src/claude_dispatcher/run.py"
+      ],
+      "risk": "high"
+    },
+    {
+      "id": "state-and-io",
+      "note": "yaml_io.py round-trips task YAML whose header comments carry load-bearing design history; journal.py is the audit trail a run is reconstructed from. Corruption in either is silent and unrecoverable.",
+      "paths": [
+        "src/claude_dispatcher/yaml_io.py",
+        "src/claude_dispatcher/journal.py",
+        "src/claude_dispatcher/journal_read.py",
+        "src/claude_dispatcher/repo_config.py"
+      ],
+      "risk": "high"
+    },
+    {
+      "id": "repo-config",
+      "note": ".dispatcher.yaml holds the test: command that IS the mechanical gate, and .agent/ holds the rule tables. Editing either is editing the safety net.",
+      "paths": [".dispatcher.yaml", ".agent/**"],
+      "risk": "high"
+    },
+    {
+      "id": "dispatcher-support",
+      "note": "Reporting, notification and status surfaces. Wrong output misleads a human but does not itself ship code. The trailing catch-all keeps any new module in this package at medium rather than the fail-closed tier.",
+      "paths": [
+        "src/claude_dispatcher/report.py",
+        "src/claude_dispatcher/status.py",
+        "src/claude_dispatcher/notify.py",
+        "src/claude_dispatcher/summary.py",
+        "src/claude_dispatcher/watch.py",
+        "src/claude_dispatcher/doctor.py",
+        "src/claude_dispatcher/preflight.py",
+        "src/claude_dispatcher/blast_radius.py",
+        "src/claude_dispatcher/design.py",
+        "src/claude_dispatcher/endpoint_agents.py",
+        "src/claude_dispatcher/bakeoff.py",
+        "src/claude_dispatcher/forecast_bridge.py",
+        "src/claude_dispatcher/unblock.py",
+        "src/claude_dispatcher/**"
+      ],
+      "risk": "medium"
+    },
+    {
+      "id": "tests",
+      "note": "The test suite is this repo's only mechanical gate — .dispatcher.yaml's test: command runs pytest. Deleting or weakening tests weakens the gate, so tests are NOT presentation here even though they ship nothing.",
+      "paths": ["tests/**", "**/conftest.py"],
+      "risk": "medium"
+    },
+    {
+      "id": "ci-and-packaging",
+      "note": "A change here can DISABLE a check rather than fail one, so it is never presentation.",
+      "paths": [".github/**", "pyproject.toml", "scripts/**", "**/Makefile"],
+      "risk": "medium"
+    },
+    {
+      "id": "task-plans",
+      "note": "Task YAML is input, not code, and carries completed-run provenance.",
+      "paths": ["features/**"],
+      "risk": "low",
+      "presentation": true
+    },
+    {
+      "id": "docs-and-meta",
+      "paths": [
+        "**/*.md",
+        "**/README*",
+        "docs/**",
+        ".gitignore",
+        "**/.gitignore",
+        "**/*.txt"
+      ],
+      "risk": "low",
+      "presentation": true
+    }
+  ],
+
+  "gate_signals": [
+    {
+      "id": "gate-disable",
+      "note": "Anything that can turn a check off. In THIS repo that is the highest-value thing to review: a new skip branch in the panel or verifier is how review stops happening without anyone noticing.",
+      "pattern": "_PANEL_SKIP|panel_required|skip_reason|skipped|is_low\\(|advisory|waive"
+    },
+    {
+      "id": "fail-open",
+      "note": "Defaults that let a missing answer read as a passing one — the shape of every review-gate regression this project has had.",
+      "pattern": "except\\s+Exception|except\\s*:|or True|default=True|=\\s*True\\s*#"
+    },
+    {
+      "id": "env-gate",
+      "note": "Environment-driven behaviour switches in orchestration code.",
+      "pattern": "os\\.environ|getenv|DISPATCHER_[A-Z_]+"
+    },
+    {
+      "id": "merge-authority",
+      "note": "Anything touching self-approval or merge authority.",
+      "pattern": "self_approve|auto_merge|_approve|merge_pr|APPROVE"
+    }
+  ]
+}
