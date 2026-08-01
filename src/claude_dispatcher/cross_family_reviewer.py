@@ -1156,15 +1156,32 @@ def _extract_claude_message(stdout: str) -> str | None:
 
 # Default panel composition. Tests substitute with mock reviewers.
 def default_reviewers(timeout_seconds: int = DEFAULT_REVIEWER_TIMEOUT_SECONDS) -> list[Reviewer]:
-    # ForeverIndy cost optimisation: the authoritative panel is the three
-    # FLAT-RATE-subscription families (Gemini, Codex, Grok). Claude is dropped
-    # from the panel because (a) it is the metered/per-token agent AND already
-    # the Tasker, so Claude-reviewing-Claude is same-family/partially circular,
-    # and (b) leaning on the fixed-cost reviewers makes the panel effectively
-    # free. The corroboration gate (see aggregate()) blocks only on a CRITICAL
-    # or a HIGH that ≥2 of these three independently raise, so no single family
-    # (incl. a flaky/UNAVAILABLE Grok seat) can solo-block.
+    # Claude is SEATED by default (changed 2026-08-01). The panel was the three
+    # FLAT-RATE families (Gemini, Codex, Grok) on two grounds, and both have
+    # been overtaken:
+    #
+    #   (a) "Claude-reviewing-Claude is same-family/partially circular." The
+    #       PR-1353 bake-off then found that of the available families, only
+    #       claude reliably catches a Critical — grok is a cheap supplementary
+    #       seat and codex was dropped. Since nearly every task is
+    #       claude-authored, that circularity argument was removing the only
+    #       reliable detector from effectively every review. It traded a
+    #       false-POSITIVE risk for a false-NEGATIVE one, and missed Criticals
+    #       are the expensive direction. A reviewer instance also shares no
+    #       context with the author instance: it sees the diff cold, with the
+    #       reviewer role and none of the implementation reasoning. Same model,
+    #       not the same mind.
+    #
+    #   (b) "Leaning on fixed-cost reviewers makes the panel effectively free."
+    #       True, and still the reason `--no-claude` exists — that flag drops
+    #       this seat and is the right lever when cost dominates. But free
+    #       review that misses Criticals is not cheap, it is expensive later.
+    #       Cost belongs behind an opt-out, not baked into the default.
+    #
+    # The corroboration gate (see aggregate()) is unchanged and still counts by
+    # FAMILY, so adding a fourth family cannot let one seat solo-block a HIGH.
     return [
+        ClaudeReviewer(timeout_seconds=timeout_seconds),
         GeminiReviewer(timeout_seconds=timeout_seconds),
         CodexReviewer(timeout_seconds=timeout_seconds),
         GrokReviewer(timeout_seconds=timeout_seconds),

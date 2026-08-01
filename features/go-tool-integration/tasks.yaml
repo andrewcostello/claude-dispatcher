@@ -181,7 +181,15 @@ tasks:
     estimate: 2h
     labels: [size:S, area:cfr, risk:high, phase:go-integration]
     blockedBy: [GO-0]
+    status: In Progress
+    started_at: '2026-08-01T09:47:52-07:00'
+    dispatcher_run_id: 2026-08-01T16-47-52Z-tasks
+    summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-08-01T16-47-52Z-tasks/GO-1/summary.md
 
+    branch: feat/GO-1-risk-py-consumes-cmd-classify
+    cost_usd: 5.044928
+    agent: claude
+    effort: high
   - key: GO-2
     summary: "Panel dispatches cmd/reviewer, with cross_family_reviewer retained as fallback"
     description: |

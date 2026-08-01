@@ -1056,18 +1056,24 @@ def test_panel_verdict_to_dict_has_consensus_and_reviewers():
     assert d["blocking_findings"] == []
 
 
-def test_default_reviewers_returns_three_families():
+def test_default_reviewers_returns_four_families():
     revs = cfr.default_reviewers()
-    # ForeverIndy cost optimisation: the authoritative panel is the three
-    # FLAT-RATE-subscription families (Gemini, Codex, Grok). Claude is dropped
-    # from the default panel (it is the metered agent and already the Tasker).
-    assert [r.family for r in revs] == ["gemini", "codex", "grok"]
+    # Changed 2026-08-01: claude is SEATED. The panel was the three flat-rate
+    # families (Gemini, Codex, Grok), which meant claude never reviewed
+    # anything — on a circularity argument the PR-1353 bake-off overturned.
+    # Of the available families only claude reliably catches a Critical, and
+    # nearly every task is claude-authored, so the exclusion removed the only
+    # reliable detector from effectively every review. Cost now lives behind
+    # --no-claude rather than in the default.
+    assert [r.family for r in revs] == ["claude", "gemini", "codex", "grok"]
     assert all(isinstance(r, cfr.Reviewer) for r in revs)
     # Each carries the per-class default cli_bin. The gemini-family
     # reviewer uses agy (Antigravity, post-2026-05 rebrand of gemini); the
     # family identifier remains "gemini" for record compatibility.
     families_to_bins = {r.family: r.cli_bin for r in revs}
-    assert families_to_bins == {"gemini": "agy", "codex": "codex", "grok": "grok"}
+    assert families_to_bins == {
+        "claude": "claude", "gemini": "agy", "codex": "codex", "grok": "grok",
+    }
 
 
 def test_default_reviewers_propagates_timeout():
@@ -1555,3 +1561,61 @@ def test_empty_enrichments_render_placeholders() -> None:
     )
     assert "(none identified)" in p
     assert "Blast radius" in p
+
+
+# --------------------------------------------------------------------------- #
+# Default panel composition
+# --------------------------------------------------------------------------- #
+
+
+def test_no_claude_still_drops_the_seat():
+    """Cost belongs behind an opt-out, not baked into the default. --no-claude
+    is that opt-out and must keep working: it is the lever for when the metered
+    seat's cost dominates."""
+    from claude_dispatcher import orchestrator
+
+    class _Cfg:
+        cross_family_panel_timeout = 60
+        no_claude = True
+
+    families = [r.family for r in orchestrator._panel_reviewer_factory(_Cfg())]
+    assert "claude" not in families
+    assert families == ["gemini", "codex", "grok"]
+
+
+def test_a_lone_claude_high_still_needs_corroboration():
+    """Adding a fourth family must not let one seat solo-block a HIGH. The
+    corroboration gate counts by FAMILY and is unchanged."""
+    verdict = cfr.aggregate([
+        _changes_verdict("claude"),
+        _approve_verdict("gemini"),
+        _approve_verdict("codex"),
+        _approve_verdict("grok"),
+    ])
+    assert verdict.consensus == "approve", (
+        "an uncorroborated HIGH must not block, including from the new seat"
+    )
+
+
+def test_claude_plus_one_peer_on_a_high_does_block():
+    """The flip side: two families independently raising a HIGH is exactly
+    what corroboration means, and the new seat counts toward it."""
+    verdict = cfr.aggregate([
+        _changes_verdict("claude"),
+        _changes_verdict("codex"),
+        _approve_verdict("gemini"),
+        _approve_verdict("grok"),
+    ])
+    assert verdict.consensus == "block"
+
+
+def test_a_claude_critical_blocks_alone():
+    """A CRITICAL from any family blocks immediately — no second vote. That is
+    the rule the bake-off says claude is uniquely good at exercising."""
+    verdict = cfr.aggregate([
+        _changes_verdict("claude", cfr.Severity.CRITICAL),
+        _approve_verdict("gemini"),
+        _approve_verdict("codex"),
+        _approve_verdict("grok"),
+    ])
+    assert verdict.consensus == "block"
