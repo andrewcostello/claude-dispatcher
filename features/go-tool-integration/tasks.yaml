@@ -137,7 +137,7 @@ tasks:
     dispatcher_version: 0.1.0
     agent_version: 2.1.220 (Claude Code)
   - key: GO-1
-    summary: "risk.py consumes cmd/classify instead of duplicating glob matching"
+    summary: "risk.py consumes cmd/classify as an additional elevating signal"
     description: |
       risk.py answers a genuinely different question from cmd/classify — binary
       low-vs-elevated for auto-merge, not the four-tier review depth — so it
@@ -156,9 +156,50 @@ tasks:
       classification.py's panel gating. The existing size/label/forbidden-path
       rules stay exactly as they are.
 
-      Use classification.classify_diff(); when it returns None (binary absent,
-      non-zero exit, unparsable output) the current behaviour must be
-      byte-for-byte unchanged.
+      SPEC AMENDED 2026-08-01 after the round-1 panel blocked this task. Two of
+      the four blocking findings were defects in this description, not in the
+      implementation — the agent did what was asked and what was asked was
+      wrong. Both are corrected here.
+
+      (1) FAIL-CLOSED ON A CLASSIFICATION FAILURE. The original text said "when
+      classify_diff() returns None (binary absent, non-zero exit, unparsable
+      output) the current behaviour must be byte-for-byte unchanged". codex and
+      grok independently flagged that as fail-open, and they are right: `low`
+      here means AUTO-MERGE WITHOUT HUMAN REVIEW, so a crashed binary, a broken
+      rule table or a parser regression would silently restore weaker gating
+      and let a change self-approve. risk.py already sets the precedent one
+      branch above — a collect_diff() failure returns ELEVATED, not "carry on".
+
+      Distinguish the two cases, which currently both collapse to None:
+
+        * binary genuinely ABSENT (classify_binary() -> None): degrade to the
+          legacy rules. Expected on hosts without claude-workflow installed.
+          Journal it.
+        * binary PRESENT but the invocation failed — non-zero exit, timeout,
+          unparsable JSON, any exception: return ELEVATED with the reason. Once
+          a host has the binary, a failure must not be indistinguishable from
+          never having had it.
+
+      classification.py needs to expose that difference; today classify_diff()
+      returns None for both. Add a distinct signal rather than having callers
+      re-probe for the binary.
+
+      (2) THE SUMMARY CONTRADICTED THE BODY. The old summary said "instead of
+      duplicating glob matching" while the body said the existing size, label
+      and forbidden-path rules stay exactly as they are. codex flagged the gap
+      against the stated goal. The body was the intent — risk.py answers a
+      different question (binary low-vs-elevated for auto-merge) and keeps its
+      own rules; classify is an ADDITIONAL elevating signal, not a replacement.
+      Summary corrected.
+
+      Also still open from round 1, a genuine implementation finding rather
+      than a spec defect:
+
+      (3) TOCTOU BETWEEN THE TWO DIFF READS. classify() computes numstat and
+      the unified diff in separate `git diff` invocations against mutable refs.
+      If the branch moves between them, the size/path rules describe one commit
+      and cmd/classify describes another. Resolve both refs to SHAs once and
+      use those for every read.
 
       This task is FIRST because it is the cheapest possible proof that a task
       worktree in this repo can shell out to a claude-workflow binary and parse
@@ -181,7 +222,7 @@ tasks:
     estimate: 2h
     labels: [size:S, area:cfr, risk:high, phase:go-integration]
     blockedBy: [GO-0]
-    status: In Progress
+    status: Blocked
     started_at: '2026-08-01T09:47:52-07:00'
     dispatcher_run_id: 2026-08-01T16-47-52Z-tasks
     summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-08-01T16-47-52Z-tasks/GO-1/summary.md
@@ -190,6 +231,31 @@ tasks:
     cost_usd: 5.044928
     agent: claude
     effort: high
+    completed_at: '2026-08-01T10:04:01-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    blocked_reason: 'cross_family_panel: consensus=block | gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=4 (0C/4H)'
+    mechanical_verification: passed
+    verified: true
+    verification_iterations: 0
+    panel_consensus: block
+    panel_summary: consensus=block | gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=4 (0C/4H)
+    panel_blocking_findings: 4
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: APPROVE
+    input_tokens: 105
+    output_tokens: 39241
+    cache_read_input_tokens: 4924694
+    cache_creation_input_tokens: 105542
+    duration_ms: 619006
+    num_turns: 65
+    model: claude-opus-5[1m]
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.220 (Claude Code)
   - key: GO-2
     summary: "Panel dispatches cmd/reviewer, with cross_family_reviewer retained as fallback"
     description: |
