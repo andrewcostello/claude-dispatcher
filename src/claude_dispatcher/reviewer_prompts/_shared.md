@@ -162,6 +162,10 @@ against the base branch.
 {summary_md}
 ```
 
+### Risk classification — what these paths mean (path-derived, not label-derived)
+
+{risk_context}
+
 ### Diff vs base branch ({base_branch} → {branch})
 
 ```diff
