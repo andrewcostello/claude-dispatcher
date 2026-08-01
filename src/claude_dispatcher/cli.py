@@ -66,8 +66,10 @@ DEFAULT_FINANCIAL_PATHS = ",".join([
     "apps/platform-domain/bay-session/store/admin_bet_dispute_reverse*",
     "apps/platform-domain/bay-session/store/admin_bet_force_refund*",
     "apps/platform-domain/bay-session/cmd/admin-bet/**",
-    # financial-recovery — replay/retry of financial operations
+    # financial-recovery — replay/retry of financial operations. Both glob
+    # forms are in the rule table; the parity test enforces carrying both.
     "apps/platform-domain/bay-session/cmd/*-recovery/**",
+    "apps/platform-domain/bay-session/cmd/*recovery*/**",
     # payout tables — outcome-to-money mapping
     "apps/platform-domain/core/dao/payout*",
     "apps/platform-domain/core/model/payout*",
