@@ -283,10 +283,12 @@ def test_panel_always_fires_for_medium_low_risk(repo: Path, monkeypatch) -> None
     row = next(t for t in doc["tasks"] if t["key"] == "PANEL-B")
     assert row["status"] == "Done"
     assert row["panel_consensus"] == "approve"
-    # Author family (claude) is EXCLUDED when >=2 other seats remain —
-    # cross-family means a different family judges. gemini/codex review.
+    # Author family (claude) is SEATED (changed 2026-08-01). The PR-1353
+    # bake-off found claude is the only family that reliably catches a
+    # Critical, and most tasks are claude-authored, so excluding it removed
+    # the best detector from the majority of reviews.
     by_family = {r.family: r.call_count for r in revs}
-    assert by_family == {"claude": 0, "gemini": 1, "codex": 1}
+    assert by_family == {"claude": 1, "gemini": 1, "codex": 1}
 
 
 def test_panel_always_runs_small_leaf_without_risk(repo: Path, monkeypatch) -> None:
@@ -305,9 +307,9 @@ def test_panel_always_runs_small_leaf_without_risk(repo: Path, monkeypatch) -> N
     row = next(t for t in doc["tasks"] if t["key"] == "PANEL-B")
     assert row["status"] == "Done"
     assert row.get("panel_consensus") == "approve"
-    # Author family (claude) excluded — gemini/codex review the leaf.
+    # Author family (claude) seated here too — see the note above.
     by_family = {r.family: r.call_count for r in revs}
-    assert by_family == {"claude": 0, "gemini": 1, "codex": 1}
+    assert by_family == {"claude": 1, "gemini": 1, "codex": 1}
 
 
 def test_panel_never_skips_even_for_critical(repo: Path, monkeypatch) -> None:
@@ -1229,3 +1231,46 @@ def test_advisory_factory_reads_repo_config(tmp_path: Path) -> None:
     assert reviewers[0].timeout_seconds == 321
     # Sanity: the loader saw exactly what the factory consumed.
     assert repo_config.load(tmp_path).panel_advisory == ("grok",)
+
+
+def test_exclude_author_family_flag_restores_the_old_behaviour(
+    repo: Path, monkeypatch
+) -> None:
+    """--exclude-author-family is the escape hatch if same-family agreement
+    starts inflating corroborated blocks again."""
+    _seed_yaml(repo, _MEDIUM_LOW_RISK_TASK_YAML)
+    _patch_spawn(monkeypatch)
+    revs = _set_reviewers(monkeypatch, [
+        ("claude", _APPROVE_OUTPUT),
+        ("gemini", _APPROVE_OUTPUT),
+        ("codex", _APPROVE_OUTPUT),
+    ])
+
+    args = _args(repo, key="PANEL-B", panel_mode="always")
+    args.exclude_author_family = True
+
+    rc = orchestrator.execute(args)
+    assert rc == 0
+    by_family = {r.family: r.call_count for r in revs}
+    assert by_family == {"claude": 0, "gemini": 1, "codex": 1}
+
+
+def test_exclusion_never_drops_below_two_seats(repo: Path, monkeypatch) -> None:
+    """Even with the flag on, exclusion must not leave the panel
+    un-corroboratable — aggregate() needs two VALID seats to approve, so a
+    one-seat panel could never do anything but block or go incomplete."""
+    _seed_yaml(repo, _MEDIUM_LOW_RISK_TASK_YAML)
+    _patch_spawn(monkeypatch)
+    revs = _set_reviewers(monkeypatch, [
+        ("claude", _APPROVE_OUTPUT),
+        ("gemini", _APPROVE_OUTPUT),
+    ])
+
+    args = _args(repo, key="PANEL-B", panel_mode="always")
+    args.exclude_author_family = True
+
+    rc = orchestrator.execute(args)
+    assert rc == 0
+    # Dropping claude would leave one seat, so the author family is re-seated.
+    by_family = {r.family: r.call_count for r in revs}
+    assert by_family == {"claude": 1, "gemini": 1}
