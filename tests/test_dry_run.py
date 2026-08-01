@@ -81,19 +81,19 @@ def test_dry_run_reports_default_financial_paths(
     )
     assert rc == 0
     assert "apps/finance-domain/wallet/**" in out
-    assert "apps/finance-domain/settlement/**" in out
+    assert "apps/platform-domain/bay-session/store/*settlement*" in out
 
 
 def test_dry_run_reports_default_iteration_cap(
     three_task_yaml: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The default max-iterations is 2 per build spec."""
+    """The default max-iterations is 4 — iteration-protocol.md's ceiling."""
     rc, out, _ = _invoke(
         ["run", str(three_task_yaml), "--mode", "dry-run"],
         capsys,
     )
     assert rc == 0
-    assert "Max iterations: 2" in out
+    assert "Max iterations: 4" in out
 
 
 def test_dry_run_with_skip_design_surfaces_in_env_handoff(
