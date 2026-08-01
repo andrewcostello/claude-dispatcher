@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -450,7 +451,8 @@ def test_classify_fails_closed_on_bad_base_ref(git_repo: Path):
 #
 # The contract under test is one-directional: a classification may raise a
 # verdict to elevated and may never lower one to low, and an absent
-# classification must leave today's verdict byte-for-byte alone.
+# classification must leave today's verdict byte-for-byte alone. A classification
+# that FAILED is a separate case with its own section further down — it elevates.
 # --------------------------------------------------------------------------- #
 
 
@@ -583,24 +585,112 @@ def test_classify_keeps_low_when_classification_is_clean(git_repo: Path, classif
     assert verdict.classification_summary == "risk=medium"
 
 
-def test_classify_treats_a_failing_binary_as_no_classification(
+# --------------------------------------------------------------------------- #
+# Failing closed on a classification failure
+#
+# `low` on this seam means AUTO-MERGE WITHOUT HUMAN REVIEW. So the two ways a
+# classification can go missing are not interchangeable: an absent binary
+# degrades to the legacy rules, but a binary that was PRESENT and did not answer
+# must elevate — otherwise a crashed binary, a broken rule table or a parser
+# regression silently restores the weaker gating and a change self-approves.
+# --------------------------------------------------------------------------- #
+
+
+def test_classify_elevates_when_a_present_binary_exits_non_zero(
     git_repo: Path, classify_stub
 ):
-    """A non-zero exit is degradation, not an exception: the verdict is exactly
-    what the rules alone produce."""
-    classify_stub.install({"risk": "critical"}, exit_code=3)
+    classify_stub.install({"risk": "low"}, exit_code=3)
     _branch_with_changes(git_repo, {"src/app.py": "one\ntwo\n"})
     task_row = {"labels": ["size:S"], "verified": True, "verification_iterations": 0}
 
     verdict = risk.classify(task_row, git_repo, "main")
 
-    assert verdict.level == LOW
-    assert verdict.reasons == ()
-    assert verdict.classification_summary is None
+    assert verdict.level == ELEVATED
+    assert any("path classification failed" in r for r in verdict.reasons), (
+        verdict.reasons
+    )
+    assert any("exited 3" in r for r in verdict.reasons), verdict.reasons
+    # The failure is on the audit trail, distinguishable from "there was no table".
+    assert verdict.classification_summary is not None
+    assert verdict.classification_summary.startswith("unavailable:")
 
 
-def test_classify_without_the_binary_is_unchanged(git_repo: Path):
-    """The conftest default (no CLASSIFY_BIN) is the no-binary production case."""
+def test_classify_elevates_when_the_binary_emits_unparsable_output(
+    git_repo: Path, classify_stub
+):
+    """Exit 0 with garbage on stdout — a parser regression, not a missing binary."""
+    classify_stub.install()
+    classify_stub.payload_path.write_text("not json at all", encoding="utf-8")
+    _branch_with_changes(git_repo, {"src/app.py": "one\ntwo\n"})
+    task_row = {"labels": ["size:S"], "verified": True, "verification_iterations": 0}
+
+    verdict = risk.classify(task_row, git_repo, "main")
+
+    assert verdict.level == ELEVATED
+    assert any("unparsable JSON" in r for r in verdict.reasons), verdict.reasons
+
+
+def test_classify_elevates_when_the_invocation_raises(
+    git_repo: Path, classify_stub, monkeypatch
+):
+    """An exception anywhere under the shell-out is a failure, not a fallback —
+    and it must not escape into the caller."""
+    classify_stub.install({"risk": "low"})
+    _branch_with_changes(git_repo, {"src/app.py": "one\ntwo\n"})
+    task_row = {"labels": ["size:S"], "verified": True, "verification_iterations": 0}
+
+    def _boom(**_kwargs):
+        raise RuntimeError("classify blew up")
+
+    monkeypatch.setattr(cls_mod, "classify_diff_result", _boom)
+
+    verdict = risk.classify(task_row, git_repo, "main")
+
+    assert verdict.level == ELEVATED
+    assert any("classify blew up" in r for r in verdict.reasons), verdict.reasons
+
+
+def test_classify_elevates_when_a_timeout_kills_the_binary(
+    git_repo: Path, classify_stub, monkeypatch
+):
+    classify_stub.install({"risk": "low"})
+    _branch_with_changes(git_repo, {"src/app.py": "one\ntwo\n"})
+    task_row = {"labels": ["size:S"], "verified": True, "verification_iterations": 0}
+
+    def _timeout(*_a, **_kw):
+        raise subprocess.TimeoutExpired(cmd="classify", timeout=60)
+
+    # Swap the module reference classification.py holds, NOT subprocess.run
+    # itself — risk.py's git plumbing shares that module and would break too,
+    # which would make this test pass down the wrong branch.
+    monkeypatch.setattr(
+        cls_mod,
+        "subprocess",
+        SimpleNamespace(run=_timeout, SubprocessError=subprocess.SubprocessError),
+    )
+
+    verdict = risk.classify(task_row, git_repo, "main")
+
+    assert verdict.level == ELEVATED
+    assert any("invocation failed" in r for r in verdict.reasons), verdict.reasons
+
+
+def test_path_classification_fails_closed_on_a_bad_ref(git_repo: Path, classify_stub):
+    """A git failure with the binary installed is a failure, not an absence: we
+    were owed path evidence for this diff and did not get it."""
+    classify_stub.install({"risk": "critical"})
+    _branch_with_changes(git_repo, {"src/app.py": "one\n"})
+
+    result = risk.path_classification(git_repo, "no-such-ref")
+
+    assert result.failed
+    assert result.classification is None
+    assert "could not read the diff" in (result.detail or "")
+
+
+def test_classify_without_the_binary_degrades_to_the_legacy_rules(git_repo: Path):
+    """The conftest default (no CLASSIFY_BIN) is the no-binary production case:
+    the expected state of a host without claude-workflow, so it degrades."""
     _branch_with_changes(git_repo, {"src/app.py": "one\ntwo\n"})
     task_row = {"labels": ["size:S"], "verified": True, "verification_iterations": 0}
 
@@ -608,14 +698,101 @@ def test_classify_without_the_binary_is_unchanged(git_repo: Path):
 
     assert verdict == risk.RiskVerdict(LOW, ())
     assert verdict.classification_summary is None
+    assert risk.path_classification(git_repo, "main").absent
 
 
-def test_path_classification_swallows_a_bad_ref(git_repo: Path, classify_stub):
-    """A git failure inside the classification path returns None rather than
-    raising into the caller's verdict."""
-    classify_stub.install({"risk": "critical"})
-    _branch_with_changes(git_repo, {"src/app.py": "one\n"})
-    assert risk.path_classification(git_repo, "no-such-ref") is None
+def test_an_absent_result_leaves_the_rule_verdict_alone():
+    absent = cls_mod.ClassifyResult(status=cls_mod.CLASSIFY_ABSENT, detail="no binary")
+    assert evaluate(**_low_kwargs(), classification=absent) == evaluate(**_low_kwargs())
+
+
+def test_an_empty_diff_result_is_not_a_failure():
+    """Nothing to classify is not the same as failing to classify."""
+    empty = cls_mod.ClassifyResult(status=cls_mod.CLASSIFY_EMPTY, detail="empty diff")
+    assert evaluate(**_low_kwargs(), classification=empty).level == LOW
+
+
+def test_a_failed_result_elevates_an_otherwise_low_verdict():
+    failed = cls_mod.ClassifyResult(status=cls_mod.CLASSIFY_FAILED, detail="exit 3")
+    verdict = evaluate(**_low_kwargs(), classification=failed)
+    assert verdict.level == ELEVATED
+    assert verdict.reasons == ("path classification failed: exit 3",)
+
+
+def test_a_failed_result_keeps_the_existing_rule_reasons():
+    failed = cls_mod.ClassifyResult(status=cls_mod.CLASSIFY_FAILED, detail="exit 3")
+    kwargs = _low_kwargs(verified=False)
+    base = evaluate(**kwargs)
+    verdict = evaluate(**kwargs, classification=failed)
+    assert verdict.level == ELEVATED
+    assert verdict.reasons[: len(base.reasons)] == base.reasons
+
+
+# --------------------------------------------------------------------------- #
+# TOCTOU: both diff reads must describe the same commits
+# --------------------------------------------------------------------------- #
+
+
+def test_both_diff_reads_use_the_same_resolved_shas(
+    git_repo: Path, classify_stub, monkeypatch
+):
+    """classify() resolves base and head ONCE; the numstat read and the unified
+    diff read then reference those SHAs, not the mutable refs."""
+    classify_stub.install({"risk": "low"})
+    _branch_with_changes(git_repo, {"src/app.py": "one\ntwo\n"})
+    task_row = {"labels": ["size:S"], "verified": True, "verification_iterations": 0}
+
+    calls: list[tuple[str, str]] = []
+    real = risk._git_diff
+
+    def _spy(worktree, args, base_ref, head_ref):
+        calls.append((base_ref, head_ref))
+        return real(worktree, args, base_ref, head_ref)
+
+    monkeypatch.setattr(risk, "_git_diff", _spy)
+    risk.classify(task_row, git_repo, "main")
+
+    assert len(calls) == 2, calls
+    assert calls[0] == calls[1]
+    for ref in calls[0]:
+        assert len(ref) == 40 and all(c in "0123456789abcdef" for c in ref), ref
+    assert calls[0] == (
+        risk.resolve_ref(git_repo, "main"),
+        risk.resolve_ref(git_repo, "HEAD"),
+    )
+
+
+def test_a_branch_that_moves_mid_verdict_does_not_split_the_two_reads(
+    git_repo: Path, classify_stub, monkeypatch
+):
+    """The regression itself: commit onto the branch between the numstat read and
+    the classify read. The rules and cmd/classify must still see one commit."""
+    classify_stub.install({"risk": "low"})
+    _branch_with_changes(git_repo, {"src/app.py": "one\ntwo\n"})
+    task_row = {"labels": ["size:S"], "verified": True, "verification_iterations": 0}
+
+    real_collect = risk.collect_diff
+
+    def _collect_then_move(worktree, base_ref, head_ref="HEAD"):
+        files = real_collect(worktree, base_ref, head_ref)
+        # A concurrent push/commit lands while we hold the numstat.
+        (git_repo / "internal").mkdir(exist_ok=True)
+        (git_repo / "internal" / "sneaky.py").write_text("late\n", encoding="utf-8")
+        _git(["add", "."], git_repo)
+        _git(["commit", "-q", "-m", "raced in"], git_repo)
+        return files
+
+    monkeypatch.setattr(risk, "collect_diff", _collect_then_move)
+    risk.classify(task_row, git_repo, "main")
+
+    piped = classify_stub.stdin()
+    assert "diff --git a/src/app.py b/src/app.py" in piped
+    assert "sneaky.py" not in piped
+
+
+def test_resolve_ref_raises_for_an_unknown_ref(git_repo: Path):
+    with pytest.raises(risk.RiskDiffError):
+        risk.resolve_ref(git_repo, "no-such-ref")
 
 
 def test_collect_raw_diff_is_untruncated_and_unified(git_repo: Path):

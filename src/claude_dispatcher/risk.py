@@ -45,9 +45,21 @@ which paths are dangerous. When a classification is available
 touched financial path, or any gate-signal hit forces ``elevated``, OR'd over
 the rule verdict. That is one-directional by contract — the same contract
 ``classification`` states for panel gating: **path evidence may only ever raise
-to elevated, never lower to low.** When no classification is available (binary
-absent, non-zero exit, unparsable output) the verdict is exactly what the rules
-alone produced.
+to elevated, never lower to low.**
+
+**Failing closed.** ``low`` here means *auto-merge without human review*, so the
+two ways a classification can go missing are not interchangeable:
+
+  * the ``classify`` binary is **absent** — expected on a host without
+    claude-workflow installed. The verdict is exactly what the rules alone
+    produced, and the journal records that there was no table.
+  * the binary is **present but the invocation failed** — non-zero exit,
+    timeout, unparsable JSON, an unreadable diff. That is ``elevated``, with the
+    failure named in the reasons. A crashed binary or a broken rule table must
+    never be indistinguishable from never having had one, or a change
+    self-approves on the strength of a bug. This mirrors the existing
+    :class:`RiskDiffError` branch: if we cannot measure it, we cannot call it
+    low.
 """
 
 from __future__ import annotations
@@ -142,9 +154,11 @@ class RiskVerdict:
     which records why size was bypassed.
 
     ``classification_summary`` is ``cmd/classify``'s ``summary_line()`` when a
-    path classification was obtained, else None. It is recorded even when the
-    classification changed nothing, so the journal shows which rule table
-    produced the verdict (or that none was available).
+    path classification was obtained, ``"unavailable: <detail>"`` when the binary
+    was present but failed to produce one, and None when there was no binary at
+    all. It is recorded even when the classification changed nothing, so the
+    journal distinguishes "the table said low" from "the table broke" from
+    "there was no table".
     """
 
     level: str
@@ -281,7 +295,9 @@ def evaluate(
     verified: Any,
     verification_iterations: Any,
     config: RiskConfig = DEFAULT_RISK_CONFIG,
-    classification: classification_mod.Classification | None = None,
+    classification: classification_mod.Classification
+    | classification_mod.ClassifyResult
+    | None = None,
 ) -> RiskVerdict:
     """Apply the low-risk rule set to already-collected inputs.
 
@@ -295,10 +311,13 @@ def evaluate(
     (the fields VG-4 writes); first-pass verification requires ``verified`` to
     be exactly ``True`` and the iteration count to be exactly ``0``.
 
-    ``classification`` is optional path evidence from ``cmd/classify``. It is
-    applied *after* the rules, and only ever raises the verdict
-    (:func:`_apply_classification`); ``None`` — the case when the binary is
-    absent or failed — leaves the rule verdict untouched.
+    ``classification`` is optional path evidence from ``cmd/classify``: a
+    :class:`~claude_dispatcher.classification.Classification`, a
+    :class:`~claude_dispatcher.classification.ClassifyResult` (which also carries
+    *why* there is no classification), or ``None``. It is applied *after* the
+    rules and only ever raises the verdict (:func:`_apply_classification`).
+    ``None`` means "no path evidence, and no claim about why" and leaves the rule
+    verdict untouched — a ``ClassifyResult`` whose status is ``failed`` does not.
     """
     return _apply_classification(
         _evaluate_rules(
@@ -402,25 +421,68 @@ def _classification_reasons(
     return tuple(reasons)
 
 
+def _as_classify_result(
+    value: classification_mod.Classification
+    | classification_mod.ClassifyResult
+    | None,
+) -> classification_mod.ClassifyResult:
+    """Normalise ``evaluate``'s ``classification=`` input to a ClassifyResult.
+
+    A bare ``Classification`` is an answer; a bare ``None`` is "no evidence, no
+    claim about why" — deliberately the *absent* status, so the long-standing
+    ``classification=None`` contract (verdict unchanged) is preserved. Only a
+    caller that explicitly passes a ``failed`` ClassifyResult gets the
+    fail-closed branch.
+    """
+    if value is None:
+        return classification_mod.ClassifyResult(
+            status=classification_mod.CLASSIFY_ABSENT
+        )
+    if isinstance(value, classification_mod.ClassifyResult):
+        return value
+    return classification_mod.ClassifyResult(
+        classification=value, status=classification_mod.CLASSIFY_OK
+    )
+
+
 def _apply_classification(
-    verdict: RiskVerdict, cls: classification_mod.Classification | None
+    verdict: RiskVerdict,
+    cls: classification_mod.Classification
+    | classification_mod.ClassifyResult
+    | None,
 ) -> RiskVerdict:
     """OR path evidence over a rule verdict — one-directional, raise only.
 
     A classification that names no risky signal never downgrades an ``elevated``
-    verdict and never clears a reason; it only records its summary line. ``None``
-    (no classification obtained) returns the rule verdict unchanged, so a repo
-    without the binary or the rule table behaves exactly as it did before.
+    verdict and never clears a reason; it only records its summary line. An
+    *absent* binary (or a bare ``None``) returns the rule verdict unchanged, so a
+    host without ``classify`` behaves exactly as it did before.
+
+    A binary that was present and **failed** raises to ``elevated`` instead: on
+    this seam ``low`` means auto-merge, so degrading to the weaker rule set on a
+    crash, a broken rule table or a parser regression would let a change
+    self-approve on the strength of a bug.
 
     The docs-only carve-out is *not* exempt: it is a statement about size ("a
     large documentation change should never need elevated review"), not about
     surface, and path evidence outranks it in the raising direction. Its reason
     is kept alongside the path reasons so the journal shows both halves.
     """
-    if cls is None:
+    result = _as_classify_result(cls)
+
+    if result.failed:
+        detail = (result.detail or "classify produced no classification")[:300]
+        return RiskVerdict(
+            ELEVATED,
+            verdict.reasons + (f"path classification failed: {detail}",),
+            classification_summary=f"unavailable: {detail}",
+        )
+
+    if result.classification is None:
         return verdict
-    reasons = _classification_reasons(cls)
-    summary = cls.summary_line()
+
+    reasons = _classification_reasons(result.classification)
+    summary = result.classification.summary_line()
     if not reasons:
         return replace(verdict, classification_summary=summary)
     return RiskVerdict(
@@ -468,6 +530,43 @@ def _git_diff(
     return proc.stdout
 
 
+def resolve_ref(worktree: str | Path, ref: str) -> str:
+    """The commit SHA ``ref`` names right now, in ``worktree``.
+
+    The verdict reads the diff twice — numstat for the size/path rules, the
+    unified diff for ``cmd/classify`` — and both run against refs that a
+    concurrent push or checkout can move between the two calls. That would let
+    the size rules describe one commit while the path evidence describes another,
+    which is precisely the kind of split-brain the classifier exists to prevent.
+    :func:`classify` resolves each ref to a SHA once and reads only those.
+
+    Raises :class:`RiskDiffError` if the ref does not resolve — the same
+    fail-closed path as an unreadable diff.
+    """
+    argv = ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"]
+    try:
+        proc = subprocess.run(
+            argv,
+            cwd=str(worktree),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RiskDiffError(
+            f"git rev-parse failed to launch in {worktree}: {exc}"
+        ) from exc
+    sha = (proc.stdout or "").strip()
+    if proc.returncode != 0 or not sha:
+        raise RiskDiffError(
+            f"could not resolve ref {ref!r} in {worktree}: "
+            f"{(proc.stderr or '').strip() or 'no such commit'}"
+        )
+    return sha
+
+
 def collect_raw_diff(
     worktree: str | Path, base_ref: str, head_ref: str = "HEAD"
 ) -> str:
@@ -481,24 +580,37 @@ def collect_raw_diff(
 
 def path_classification(
     worktree: str | Path, base_ref: str, head_ref: str = "HEAD"
-) -> classification_mod.Classification | None:
-    """Classify the diff's paths via ``cmd/classify``, or None if unavailable.
+) -> classification_mod.ClassifyResult:
+    """Classify the diff's paths via ``cmd/classify``.
 
-    Never raises and never blocks: a missing binary, a git failure, a non-zero
-    exit or unparsable output all degrade to None, which leaves the rule verdict
-    exactly as it was. The binary lookup happens first so a repo without
-    ``classify`` installed does not pay for the extra diff.
+    Never raises: every outcome is a :class:`~claude_dispatcher.classification.
+    ClassifyResult`, and the caller decides what a non-answer means. The binary
+    lookup happens first so a host without ``classify`` installed does not pay
+    for the extra diff — and so an absent binary is distinguishable from a
+    present one that failed.
+
+    Once the binary *is* present, a git failure counts as a failure too: we were
+    supposed to get path evidence for this diff and we did not.
     """
     if classification_mod.classify_binary() is None:
-        return None
+        return classification_mod.ClassifyResult(
+            status=classification_mod.CLASSIFY_ABSENT,
+            detail="classify binary not installed",
+        )
     try:
         diff = collect_raw_diff(worktree, base_ref, head_ref)
-    except (RiskDiffError, subprocess.SubprocessError, OSError):
-        return None
+    except (RiskDiffError, subprocess.SubprocessError, OSError) as exc:
+        return classification_mod.ClassifyResult(
+            status=classification_mod.CLASSIFY_FAILED,
+            detail=f"could not read the diff to classify: {exc}",
+        )
     try:
-        return classification_mod.classify_diff(diff=diff, repo_root=worktree)
-    except Exception:  # pragma: no cover - classify_diff already degrades
-        return None
+        return classification_mod.classify_diff_result(diff=diff, repo_root=worktree)
+    except Exception as exc:  # classify_diff_result degrades, but never trust that
+        return classification_mod.ClassifyResult(
+            status=classification_mod.CLASSIFY_FAILED,
+            detail=f"classify raised {type(exc).__name__}: {exc}",
+        )
 
 
 def collect_diff(
@@ -565,8 +677,13 @@ def classify(
     prove low-risk without measuring the change.
 
     Path evidence from ``cmd/classify`` is folded in when available
-    (:func:`path_classification`); when it is not, the verdict is exactly the
-    rule set's.
+    (:func:`path_classification`). With no binary installed the verdict is
+    exactly the rule set's; with a binary that failed, it is ``elevated`` — see
+    the module docstring on failing closed.
+
+    Both diff reads run against SHAs resolved once up front, so a branch that
+    moves mid-verdict cannot have the rules judging one commit and the path
+    evidence another.
     """
     cfg = config if config is not None else load_risk_config(worktree)
 
@@ -575,8 +692,13 @@ def classify(
     verified = _row_get(task_row, "verified")
     verification_iterations = _row_get(task_row, "verification_iterations")
 
+    # Pin both ends to SHAs before reading anything, so the numstat the rules
+    # count and the unified diff cmd/classify sees describe the SAME commits even
+    # if the branch moves underneath us mid-verdict.
     try:
-        changed_files = collect_diff(worktree, base_ref, head_ref)
+        base_sha = resolve_ref(worktree, base_ref)
+        head_sha = resolve_ref(worktree, head_ref)
+        changed_files = collect_diff(worktree, base_sha, head_sha)
     except RiskDiffError as exc:
         return RiskVerdict(ELEVATED, (f"could not compute effective diff: {exc}",))
 
@@ -587,7 +709,7 @@ def classify(
         verified=verified,
         verification_iterations=verification_iterations,
         config=cfg,
-        classification=path_classification(worktree, base_ref, head_ref),
+        classification=path_classification(worktree, base_sha, head_sha),
     )
 
 

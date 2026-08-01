@@ -363,6 +363,27 @@ def test_elevated_classification_blocks_self_approval(
     assert "1" not in _merge_order(gh_log)
 
 
+def test_a_failing_classify_binary_blocks_self_approval(
+    repo: Path, classify_stub, monkeypatch
+) -> None:
+    """Fail closed: with the binary installed but crashing, a PR the rules call
+    low is NOT self-approved. A broken rule table must not restore the weaker
+    gating it was installed to strengthen."""
+    classify_stub.install({"risk": "low"}, exit_code=3)
+    _make_branch(repo, "feat-a", "a.py")
+    tasks = _write_tasks(repo, [
+        _row("A", pr_number=1, branch="feat-a", labels=["size:S", "area:x"]),
+    ])
+    gh_log = repo / "gh.log"
+    monkeypatch.setenv("FAKE_GH_LOG", str(gh_log))
+
+    result = me.merge_pass(_cfg(repo, tasks), notifier=notify_mod.NullNotifier())
+
+    assert result.awaiting_approval == ["A"]
+    assert _status(repo, "A") == "Awaiting Review"
+    assert "1" not in _merge_order(gh_log)
+
+
 def test_no_classification_leaves_the_ladder_untouched(repo: Path, monkeypatch) -> None:
     """No binary (the conftest default) → the low-risk PR self-approves exactly
     as before, and the journal records the absence."""

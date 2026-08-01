@@ -137,6 +137,83 @@ def test_classify_diff_degrades_to_none(monkeypatch, tmp_path, runner):
     assert classification.classify_diff(diff="diff --git a/x b/x\n", binary=str(fake_bin)) is None
 
 
+# --------------------------------------------------------------------------- #
+# classify_diff_result: WHY there is no classification (GO-1)
+#
+# classify_diff() collapses "no binary" and "the binary failed" into one None,
+# which is only safe for callers that can never relax a gate on None. Callers
+# that could self-approve need the difference.
+# --------------------------------------------------------------------------- #
+
+
+def test_result_reports_absent_when_the_binary_is_missing(monkeypatch):
+    monkeypatch.setattr(classification, "classify_binary", lambda: None)
+    r = classification.classify_diff_result(diff="diff --git a/x b/x\n")
+    assert r.status == classification.CLASSIFY_ABSENT
+    assert r.absent and not r.failed and not r.ok
+
+
+def test_result_reports_empty_rather_than_failed_on_an_empty_diff():
+    r = classification.classify_diff_result(diff="   \n")
+    assert r.status == classification.CLASSIFY_EMPTY
+    assert not r.failed
+
+
+@pytest.mark.parametrize(
+    "runner, needle",
+    [
+        (_fake_run(returncode=3), "exited 3"),
+        (_fake_run(stdout="not json at all"), "unparsable JSON"),
+        (_fake_run(exc=OSError("no such binary")), "invocation failed"),
+        (_fake_run(exc=subprocess.TimeoutExpired("classify", 60)), "invocation failed"),
+    ],
+)
+def test_result_reports_failed_when_a_present_binary_does_not_answer(
+    monkeypatch, tmp_path, runner, needle
+):
+    fake_bin = tmp_path / "classify"
+    fake_bin.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(subprocess, "run", runner)
+
+    r = classification.classify_diff_result(
+        diff="diff --git a/x b/x\n", binary=str(fake_bin)
+    )
+
+    assert r.status == classification.CLASSIFY_FAILED
+    assert r.failed and not r.ok and r.classification is None
+    assert needle in (r.detail or "")
+
+
+def test_result_reports_failed_on_json_that_is_not_a_classification(
+    monkeypatch, tmp_path
+):
+    """Exit 0, valid JSON, wrong shape — a rule-table or contract regression."""
+    fake_bin = tmp_path / "classify"
+    fake_bin.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(subprocess, "run", _fake_run(stdout='{"panel": {"seats": "?"}}'))
+
+    r = classification.classify_diff_result(
+        diff="diff --git a/x b/x\n", binary=str(fake_bin)
+    )
+
+    assert r.status == classification.CLASSIFY_FAILED
+    assert "unusable classify output" in (r.detail or "")
+
+
+def test_result_is_ok_on_a_good_answer(monkeypatch, tmp_path):
+    fake_bin = tmp_path / "classify"
+    fake_bin.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(subprocess, "run", _fake_run(stdout=json.dumps(WALLET_PAYLOAD)))
+
+    r = classification.classify_diff_result(
+        diff="diff --git a/x b/x\n", binary=str(fake_bin)
+    )
+
+    assert r.status == classification.CLASSIFY_OK
+    assert r.ok and not r.failed
+    assert r.classification.risk == "critical"
+
+
 def test_classify_binary_honours_env_override(monkeypatch, tmp_path):
     real = tmp_path / "classify"
     real.write_text("#!/bin/sh\n")
