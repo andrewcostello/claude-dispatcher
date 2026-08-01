@@ -36,6 +36,18 @@ The rule logic is split out as a pure function (:func:`evaluate`) that takes
 already-collected inputs, with :func:`classify` as the thin adapter that reads
 the task row and runs git. This keeps the rules unit-testable without a git
 repo, and confines the subprocess work to one small, separately-tested place.
+
+**Path evidence (GO-1).** This module answers a different question from
+``cmd/classify``: binary low-vs-elevated for auto-merge, not the four-tier
+review depth. It keeps its own rules — but it does not maintain its own idea of
+which paths are dangerous. When a classification is available
+(:mod:`claude_dispatcher.classification`), a ``high``/``critical`` tier, a
+touched financial path, or any gate-signal hit forces ``elevated``, OR'd over
+the rule verdict. That is one-directional by contract — the same contract
+``classification`` states for panel gating: **path evidence may only ever raise
+to elevated, never lower to low.** When no classification is available (binary
+absent, non-zero exit, unparsable output) the verdict is exactly what the rules
+alone produced.
 """
 
 from __future__ import annotations
@@ -43,13 +55,14 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Sequence
 
 from ruamel.yaml.error import YAMLError
 
+from claude_dispatcher import classification as classification_mod
 from claude_dispatcher import yaml_io
 
 CONFIG_FILENAME = ".dispatcher.yaml"
@@ -127,10 +140,16 @@ class RiskVerdict:
     caller — and a human reading the journal — sees the full picture). For a
     ``low`` verdict, ``reasons`` is empty except for the docs-only carve-out,
     which records why size was bypassed.
+
+    ``classification_summary`` is ``cmd/classify``'s ``summary_line()`` when a
+    path classification was obtained, else None. It is recorded even when the
+    classification changed nothing, so the journal shows which rule table
+    produced the verdict (or that none was available).
     """
 
     level: str
     reasons: tuple[str, ...] = field(default=())
+    classification_summary: str | None = None
 
     @property
     def is_low(self) -> bool:
@@ -262,6 +281,7 @@ def evaluate(
     verified: Any,
     verification_iterations: Any,
     config: RiskConfig = DEFAULT_RISK_CONFIG,
+    classification: classification_mod.Classification | None = None,
 ) -> RiskVerdict:
     """Apply the low-risk rule set to already-collected inputs.
 
@@ -274,7 +294,35 @@ def evaluate(
     ``verified`` / ``verification_iterations`` are read raw from the task row
     (the fields VG-4 writes); first-pass verification requires ``verified`` to
     be exactly ``True`` and the iteration count to be exactly ``0``.
+
+    ``classification`` is optional path evidence from ``cmd/classify``. It is
+    applied *after* the rules, and only ever raises the verdict
+    (:func:`_apply_classification`); ``None`` — the case when the binary is
+    absent or failed — leaves the rule verdict untouched.
     """
+    return _apply_classification(
+        _evaluate_rules(
+            size_label=size_label,
+            labels=labels,
+            changed_files=changed_files,
+            verified=verified,
+            verification_iterations=verification_iterations,
+            config=config,
+        ),
+        classification,
+    )
+
+
+def _evaluate_rules(
+    *,
+    size_label: str | None,
+    labels: Sequence[str],
+    changed_files: Sequence[FileDiff],
+    verified: Any,
+    verification_iterations: Any,
+    config: RiskConfig,
+) -> RiskVerdict:
+    """The size/label/path/diff/verification rule set, with no path evidence."""
     files = list(changed_files)
 
     # docs-only: *.md-only diffs are low-risk at any size. Requires at least one
@@ -326,32 +374,78 @@ def evaluate(
 
 
 # --------------------------------------------------------------------------- #
+# Path evidence (GO-1)
+# --------------------------------------------------------------------------- #
+#
+# ``cmd/classify`` already computes, from the project's own rule table, which
+# paths carry risk — the tier, whether money moves, and whether the changed
+# lines touch a gate/guard/flag. Rather than grow a second denylist here, this
+# module consumes that answer. The three signals below are the ones that bear on
+# "may the dispatcher self-approve this PR": a high/critical surface, money, or
+# a gate whose fail-open mode nobody has looked at.
+
+
+def _classification_reasons(
+    cls: classification_mod.Classification,
+) -> tuple[str, ...]:
+    """The path-evidence reasons that force ``elevated``, if any."""
+    reasons: list[str] = []
+    if cls.is_at_least("high"):
+        reasons.append(f"path-derived risk tier {cls.risk} (cmd/classify)")
+    if cls.financial_paths_touched:
+        reasons.append("path-derived: financial path touched (cmd/classify)")
+    if cls.gate_signals:
+        reasons.append(
+            "path-derived: gate/guard/flag signals in changed lines: "
+            + ", ".join(sorted(set(cls.gate_signals)))
+        )
+    return tuple(reasons)
+
+
+def _apply_classification(
+    verdict: RiskVerdict, cls: classification_mod.Classification | None
+) -> RiskVerdict:
+    """OR path evidence over a rule verdict — one-directional, raise only.
+
+    A classification that names no risky signal never downgrades an ``elevated``
+    verdict and never clears a reason; it only records its summary line. ``None``
+    (no classification obtained) returns the rule verdict unchanged, so a repo
+    without the binary or the rule table behaves exactly as it did before.
+
+    The docs-only carve-out is *not* exempt: it is a statement about size ("a
+    large documentation change should never need elevated review"), not about
+    surface, and path evidence outranks it in the raising direction. Its reason
+    is kept alongside the path reasons so the journal shows both halves.
+    """
+    if cls is None:
+        return verdict
+    reasons = _classification_reasons(cls)
+    summary = cls.summary_line()
+    if not reasons:
+        return replace(verdict, classification_summary=summary)
+    return RiskVerdict(
+        ELEVATED, verdict.reasons + reasons, classification_summary=summary
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Git plumbing
 # --------------------------------------------------------------------------- #
 
 
-def collect_diff(
-    worktree: str | Path, base_ref: str, head_ref: str = "HEAD"
-) -> list[FileDiff]:
-    """Per-file line churn of ``base_ref...head_ref`` run from ``worktree``.
+def _git_diff(
+    worktree: Path, args: Sequence[str], base_ref: str, head_ref: str
+) -> str:
+    """``git diff <args> base...head`` in ``worktree``, two-dot on failure.
 
-    Uses ``git diff --numstat --no-renames``: ``--no-renames`` keeps each line a
-    clean ``ins<TAB>del<TAB>path`` (a rename is reported as a delete plus an add
-    with full paths), so parsing never has to decode git's ``{old => new}``
-    rename syntax. The three-dot range (changes on the branch since its
-    merge-base) falls back to two-dot if the refs share no merge-base, mirroring
-    ``cross_family_reviewer``. Binary files (``-`` counts) contribute 0 lines.
-
-    ``head_ref`` defaults to ``HEAD`` (the worktree's checked-out tip — the
-    PRF-3 in-worktree path). The PRF-4 merge engine passes an explicit branch
-    ref so it can classify a task's PR branch from the repo root, where no
-    worktree is checked out on it.
+    Shared by the numstat count (:func:`collect_diff`) and the raw unified diff
+    fed to ``cmd/classify`` (:func:`collect_raw_diff`) so both use the same
+    range semantics and the same failure mode: :class:`RiskDiffError`.
     """
-    worktree = Path(worktree)
 
     def _run(spec: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            ["git", "diff", "--numstat", "--no-renames", spec],
+            ["git", "diff", *args, spec],
             cwd=str(worktree),
             capture_output=True,
             text=True,
@@ -371,9 +465,65 @@ def collect_diff(
             f"git diff {base_ref!r}...{head_ref!r} in {worktree} failed: "
             f"{(proc.stderr or '').strip()}"
         )
+    return proc.stdout
+
+
+def collect_raw_diff(
+    worktree: str | Path, base_ref: str, head_ref: str = "HEAD"
+) -> str:
+    """The unified diff of ``base_ref...head_ref`` — ``cmd/classify``'s input.
+
+    Untruncated on purpose: classification is a per-path question, and a
+    truncated diff would silently drop paths and therefore drop evidence.
+    """
+    return _git_diff(Path(worktree), ("--no-renames",), base_ref, head_ref)
+
+
+def path_classification(
+    worktree: str | Path, base_ref: str, head_ref: str = "HEAD"
+) -> classification_mod.Classification | None:
+    """Classify the diff's paths via ``cmd/classify``, or None if unavailable.
+
+    Never raises and never blocks: a missing binary, a git failure, a non-zero
+    exit or unparsable output all degrade to None, which leaves the rule verdict
+    exactly as it was. The binary lookup happens first so a repo without
+    ``classify`` installed does not pay for the extra diff.
+    """
+    if classification_mod.classify_binary() is None:
+        return None
+    try:
+        diff = collect_raw_diff(worktree, base_ref, head_ref)
+    except (RiskDiffError, subprocess.SubprocessError, OSError):
+        return None
+    try:
+        return classification_mod.classify_diff(diff=diff, repo_root=worktree)
+    except Exception:  # pragma: no cover - classify_diff already degrades
+        return None
+
+
+def collect_diff(
+    worktree: str | Path, base_ref: str, head_ref: str = "HEAD"
+) -> list[FileDiff]:
+    """Per-file line churn of ``base_ref...head_ref`` run from ``worktree``.
+
+    Uses ``git diff --numstat --no-renames``: ``--no-renames`` keeps each line a
+    clean ``ins<TAB>del<TAB>path`` (a rename is reported as a delete plus an add
+    with full paths), so parsing never has to decode git's ``{old => new}``
+    rename syntax. The three-dot range (changes on the branch since its
+    merge-base) falls back to two-dot if the refs share no merge-base, mirroring
+    ``cross_family_reviewer``. Binary files (``-`` counts) contribute 0 lines.
+
+    ``head_ref`` defaults to ``HEAD`` (the worktree's checked-out tip — the
+    PRF-3 in-worktree path). The PRF-4 merge engine passes an explicit branch
+    ref so it can classify a task's PR branch from the repo root, where no
+    worktree is checked out on it.
+    """
+    stdout = _git_diff(
+        Path(worktree), ("--numstat", "--no-renames"), base_ref, head_ref
+    )
 
     files: list[FileDiff] = []
-    for line in proc.stdout.splitlines():
+    for line in stdout.splitlines():
         if not line.strip():
             continue
         parts = line.split("\t")
@@ -413,6 +563,10 @@ def classify(
     already loaded the config can pass it to skip the re-read. If the diff
     cannot be computed we fail closed with an ``elevated`` verdict — we cannot
     prove low-risk without measuring the change.
+
+    Path evidence from ``cmd/classify`` is folded in when available
+    (:func:`path_classification`); when it is not, the verdict is exactly the
+    rule set's.
     """
     cfg = config if config is not None else load_risk_config(worktree)
 
@@ -433,6 +587,7 @@ def classify(
         verified=verified,
         verification_iterations=verification_iterations,
         config=cfg,
+        classification=path_classification(worktree, base_ref, head_ref),
     )
 
 

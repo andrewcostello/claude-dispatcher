@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from claude_dispatcher import classification as cls_mod
 from claude_dispatcher import risk
 from claude_dispatcher.risk import (
     DEFAULT_RISK_CONFIG,
@@ -442,3 +443,184 @@ def test_classify_fails_closed_on_bad_base_ref(git_repo: Path):
     verdict = risk.classify(task_row, git_repo, "no-such-ref")
     assert verdict.level == ELEVATED
     assert any("could not compute effective diff" in r for r in verdict.reasons)
+
+
+# --------------------------------------------------------------------------- #
+# Path evidence from cmd/classify (GO-1)
+#
+# The contract under test is one-directional: a classification may raise a
+# verdict to elevated and may never lower one to low, and an absent
+# classification must leave today's verdict byte-for-byte alone.
+# --------------------------------------------------------------------------- #
+
+
+LOW_CLASSIFICATION = cls_mod.Classification(risk="low")
+
+# Each of the three signals the task names, in isolation.
+ELEVATING_CLASSIFICATIONS = [
+    (cls_mod.Classification(risk="high"), "path-derived risk tier high"),
+    (cls_mod.Classification(risk="critical"), "path-derived risk tier critical"),
+    (
+        cls_mod.Classification(risk="low", financial_paths_touched=True),
+        "financial path touched",
+    ),
+    (
+        cls_mod.Classification(risk="low", gate_signals=("env-gate", "flag")),
+        "gate/guard/flag signals in changed lines: env-gate, flag",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "cls, needle", ELEVATING_CLASSIFICATIONS, ids=lambda v: getattr(v, "risk", v)
+)
+def test_elevated_classification_forces_elevated(cls, needle):
+    """A task every existing rule calls low goes elevated on path evidence."""
+    assert evaluate(**_low_kwargs()).level == LOW  # the rules alone say low
+
+    verdict = evaluate(**_low_kwargs(), classification=cls)
+    assert verdict.level == ELEVATED
+    assert any(needle in r for r in verdict.reasons), verdict.reasons
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        dict(size_label="XL", labels=["size:XL"]),
+        dict(labels=["size:S", "financial"]),
+        dict(changed_files=[_prod("internal/auth/token.go")]),
+        dict(verified=False),
+    ],
+)
+def test_low_classification_never_downgrades(overrides):
+    """Path evidence is raise-only: a clean classification cannot clear a rule."""
+    base = evaluate(**_low_kwargs(**overrides))
+    assert base.level == ELEVATED
+
+    verdict = evaluate(**_low_kwargs(**overrides), classification=LOW_CLASSIFICATION)
+    assert verdict.level == ELEVATED
+    assert verdict.reasons == base.reasons  # no reason dropped or rewritten
+
+
+def test_low_classification_leaves_a_low_verdict_low():
+    verdict = evaluate(**_low_kwargs(), classification=LOW_CLASSIFICATION)
+    assert verdict.level == LOW
+    assert verdict.reasons == ()
+    # ...but the table that judged it is still on the record.
+    assert verdict.classification_summary == "risk=low"
+
+
+def test_docs_only_carve_out_is_raised_by_path_evidence():
+    """docs-only is a statement about SIZE, not surface — path evidence outranks
+    it in the raising direction, and both halves stay in the reasons."""
+    docs = _low_kwargs(
+        size_label="XL",
+        labels=["size:XL"],
+        changed_files=[_prod("docs/finance/wallet.md", 900, 200)],
+    )
+    assert evaluate(**docs).level == LOW  # carve-out, today
+
+    verdict = evaluate(
+        **docs,
+        classification=cls_mod.Classification(risk="low", financial_paths_touched=True),
+    )
+    assert verdict.level == ELEVATED
+    assert any("docs-only" in r for r in verdict.reasons)
+    assert any("financial path touched" in r for r in verdict.reasons)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        dict(),                                                   # baseline low
+        dict(size_label="M", labels=["size:M"]),
+        dict(size_label=None, labels=["area:config"]),
+        dict(labels=["size:S", "security"]),
+        dict(changed_files=[_prod("db/migrations/001.sql")]),
+        dict(changed_files=[_prod("src/big.py", 150, 60)]),
+        dict(changed_files=[FileDiff("README.md", 400, 10)]),      # docs-only
+        dict(verified=False),
+        dict(verification_iterations=1),
+    ],
+)
+def test_classification_none_reproduces_todays_verdict(overrides):
+    """Passing no classification must be indistinguishable from not having the
+    parameter at all — level, reasons and summary alike."""
+    kwargs = _low_kwargs(**overrides)
+    today = evaluate(**kwargs)
+    assert evaluate(**kwargs, classification=None) == today
+    assert today.classification_summary is None
+
+
+def test_classify_consumes_the_binary_on_a_real_repo(git_repo: Path, classify_stub):
+    """End-to-end: risk.classify shells out to cmd/classify, pipes the real diff,
+    and folds the answer in."""
+    classify_stub.install({
+        "risk": "critical",
+        "financial_paths_touched": True,
+        "gate_signals": [{"signal": "env-gate"}],
+    })
+    _branch_with_changes(git_repo, {"src/app.py": "one\ntwo\n"})
+    task_row = {"labels": ["size:S"], "verified": True, "verification_iterations": 0}
+
+    verdict = risk.classify(task_row, git_repo, "main")
+
+    assert verdict.level == ELEVATED
+    assert any("path-derived risk tier critical" in r for r in verdict.reasons)
+    assert verdict.classification_summary == "risk=critical financial gate-signals=env-gate"
+    # The binary really received the unified diff, not a numstat or a path list.
+    assert "diff --git a/src/app.py b/src/app.py" in classify_stub.stdin()
+
+
+def test_classify_keeps_low_when_classification_is_clean(git_repo: Path, classify_stub):
+    classify_stub.install({"risk": "medium"})  # below the high floor
+    _branch_with_changes(git_repo, {"src/app.py": "one\ntwo\n"})
+    task_row = {"labels": ["size:S"], "verified": True, "verification_iterations": 0}
+
+    verdict = risk.classify(task_row, git_repo, "main")
+
+    assert verdict.level == LOW
+    assert verdict.classification_summary == "risk=medium"
+
+
+def test_classify_treats_a_failing_binary_as_no_classification(
+    git_repo: Path, classify_stub
+):
+    """A non-zero exit is degradation, not an exception: the verdict is exactly
+    what the rules alone produce."""
+    classify_stub.install({"risk": "critical"}, exit_code=3)
+    _branch_with_changes(git_repo, {"src/app.py": "one\ntwo\n"})
+    task_row = {"labels": ["size:S"], "verified": True, "verification_iterations": 0}
+
+    verdict = risk.classify(task_row, git_repo, "main")
+
+    assert verdict.level == LOW
+    assert verdict.reasons == ()
+    assert verdict.classification_summary is None
+
+
+def test_classify_without_the_binary_is_unchanged(git_repo: Path):
+    """The conftest default (no CLASSIFY_BIN) is the no-binary production case."""
+    _branch_with_changes(git_repo, {"src/app.py": "one\ntwo\n"})
+    task_row = {"labels": ["size:S"], "verified": True, "verification_iterations": 0}
+
+    verdict = risk.classify(task_row, git_repo, "main")
+
+    assert verdict == risk.RiskVerdict(LOW, ())
+    assert verdict.classification_summary is None
+
+
+def test_path_classification_swallows_a_bad_ref(git_repo: Path, classify_stub):
+    """A git failure inside the classification path returns None rather than
+    raising into the caller's verdict."""
+    classify_stub.install({"risk": "critical"})
+    _branch_with_changes(git_repo, {"src/app.py": "one\n"})
+    assert risk.path_classification(git_repo, "no-such-ref") is None
+
+
+def test_collect_raw_diff_is_untruncated_and_unified(git_repo: Path):
+    _branch_with_changes(git_repo, {"src/app.py": "one\ntwo\n", "docs/x.md": "d\n"})
+    diff = risk.collect_raw_diff(git_repo, "main")
+    assert "diff --git a/src/app.py b/src/app.py" in diff
+    assert "diff --git a/docs/x.md b/docs/x.md" in diff
+    assert "+two" in diff

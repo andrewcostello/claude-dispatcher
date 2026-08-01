@@ -315,6 +315,75 @@ def test_elevated_with_external_approval_merges(repo: Path, monkeypatch) -> None
 
 
 # --------------------------------------------------------------------------- #
+# Path classification in the ladder (GO-1)
+# --------------------------------------------------------------------------- #
+
+def test_pr_approved_records_the_classification_summary(
+    repo: Path, classify_stub, monkeypatch
+) -> None:
+    """When cmd/classify answered, the journal records which table produced the
+    verdict — so an audit can tell "the table said low" from "there was no
+    table"."""
+    classify_stub.install({"risk": "low"})
+    _make_branch(repo, "feat-a", "a.py")
+    tasks = _write_tasks(repo, [
+        _row("A", pr_number=1, branch="feat-a", labels=["size:S", "area:x"]),
+    ])
+    jpath = repo / "journal.jsonl"
+    journal = journal_mod.Journal.create(
+        jpath, tasks_yaml_path=tasks, reviewer_prompts_dir=repo, run_id="run-1")
+
+    me.merge_pass(_cfg(repo, tasks), journal=journal,
+                  notifier=notify_mod.NullNotifier())
+
+    approved = [e for e in journal_mod.read_events(jpath)
+                if e.event_type == "pr_approved"]
+    assert len(approved) == 1
+    assert approved[0].payload["risk_level"] == "low"
+    assert approved[0].payload["classification"] == "risk=low"
+
+
+def test_elevated_classification_blocks_self_approval(
+    repo: Path, classify_stub, monkeypatch
+) -> None:
+    """A PR the rules call low is held for external approval when the path
+    classification says the surface is high-risk."""
+    classify_stub.install({"risk": "high"})
+    _make_branch(repo, "feat-a", "a.py")
+    tasks = _write_tasks(repo, [
+        _row("A", pr_number=1, branch="feat-a", labels=["size:S", "area:x"]),
+    ])
+    gh_log = repo / "gh.log"
+    monkeypatch.setenv("FAKE_GH_LOG", str(gh_log))
+
+    result = me.merge_pass(_cfg(repo, tasks), notifier=notify_mod.NullNotifier())
+
+    assert result.awaiting_approval == ["A"]
+    assert _status(repo, "A") == "Awaiting Review"
+    assert "1" not in _merge_order(gh_log)
+
+
+def test_no_classification_leaves_the_ladder_untouched(repo: Path, monkeypatch) -> None:
+    """No binary (the conftest default) → the low-risk PR self-approves exactly
+    as before, and the journal records the absence."""
+    _make_branch(repo, "feat-a", "a.py")
+    tasks = _write_tasks(repo, [
+        _row("A", pr_number=1, branch="feat-a", labels=["size:S", "area:x"]),
+    ])
+    jpath = repo / "journal.jsonl"
+    journal = journal_mod.Journal.create(
+        jpath, tasks_yaml_path=tasks, reviewer_prompts_dir=repo, run_id="run-1")
+
+    me.merge_pass(_cfg(repo, tasks), journal=journal,
+                  notifier=notify_mod.NullNotifier())
+
+    assert _status(repo, "A") == "Merged"
+    approved = [e for e in journal_mod.read_events(jpath)
+                if e.event_type == "pr_approved"]
+    assert approved[0].payload["classification"] is None
+
+
+# --------------------------------------------------------------------------- #
 # Conflict path
 # --------------------------------------------------------------------------- #
 
