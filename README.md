@@ -53,7 +53,7 @@ dispatcher run <tasks-yaml> [options]
   --skip-design                              short-circuit Design Agent for Critical/High
   --skip-security-linter                    short-circuit Security Linter for Critical
   --reviewer-count {1,2,3}                  override per-tier reviewer count
-  --max-iterations N                        default: 2
+  --max-iterations N                        default: 4
   --verify-test-timeout SECONDS             default: 600 — wall-clock bound per execution of the .dispatcher.yaml `test:` command (mechanical gate)
   --max-verify-iterations N                 default: 2 — on LLM-verifier INCOMPLETE, re-spawn Tasker with the gap list, re-run the mechanical gate, re-verify, up to N times
   --skip-verification                        escape hatch — skip the post-Done LLM verifier entirely (mechanical gate still runs); the skip is journaled
@@ -653,11 +653,11 @@ The Tasker **never writes to the YAML directly** — the dispatcher copies field
 | `DISPATCHER_RUN_ID` | Present iff under the dispatcher. |
 | `TASK_KEY` | The task's YAML key. |
 | `SUMMARY_PATH` | Where the Tasker writes its summary. |
-| `MAX_ITERATIONS` | Default 2. |
+| `MAX_ITERATIONS` | Default 4 (iteration-protocol.md's ceiling). |
 | `SKIP_DESIGN` | Set when `--skip-design`. |
 | `SKIP_SECURITY_LINTER` | Set when `--skip-security-linter`. |
 | `REVIEWER_COUNT` | Set when `--reviewer-count`. |
-| `FINANCIAL_PATHS` | Glob list for the human PR gate. |
+| `FINANCIAL_PATHS` | Glob list for the human PR gate. Default mirrors the `financial: true` rules in the target repo's `.agent/risk-paths.json`; override with `--financial-paths`. |
 
 ### Summary file format
 

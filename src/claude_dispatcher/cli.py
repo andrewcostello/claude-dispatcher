@@ -26,11 +26,56 @@ from . import watch as watch_cmd
 from . import unblock as unblock_cmd
 
 
+# Fallback for the human PR gate's path-based check, used when no
+# classification is available. THE SOURCE OF TRUTH IS `.agent/risk-paths.json`
+# in the target repo — every rule carrying `"financial": true`. `cmd/classify`
+# computes `classification.financial_paths_touched` from that table; this list
+# only exists for runs where the binary is absent. Keep it in sync with the
+# `financial: true` rules (and with claude-workflow's `skills/pr-raise.md`
+# fallback block, which documents the same set).
+#
+# Corrected 2026-08-01 [GO-0]. The previous default named
+# `apps/finance-domain/{settlement,recovery,payout}/**` — none of which exist:
+# `apps/finance-domain/` holds only `paygate/` and `wallet/`. Settlement,
+# refunds and dispute reversal live under `apps/platform-domain/bay-session/`,
+# so the backstop was dead for every money path outside `wallet/`. Same bug was
+# fixed in pr-raise.md on 2026-07-31.
+#
+# Override per project with `--financial-paths` / `$FINANCIAL_PATHS`; a
+# duplicated list is a drift hazard, so prefer pointing classify at the
+# project's own risk-paths.json.
 DEFAULT_FINANCIAL_PATHS = ",".join([
+    # wallet-service, paygate — the money core and external money movement
     "apps/finance-domain/wallet/**",
-    "apps/finance-domain/settlement/**",
-    "apps/finance-domain/recovery/**",
-    "apps/finance-domain/payout/**",
+    "apps/finance-domain/paygate/**",
+    # shared-wallet-lib — used by every service
+    "libs/go/wallet/**",
+    # bet-placement — money in
+    "apps/platform-domain/bay-session/store/accept_bet*",
+    "apps/platform-domain/bay-session/store/wager*",
+    "apps/platform-domain/bay-session/store/arm_*",
+    "apps/platform-domain/bay-session/store/bet_amount_bounds*",
+    "apps/platform-domain/bay-session/store/bet_mutation_*",
+    "apps/platform-domain/bay-session/store/advantage_tier_caps*",
+    # bet-settlement — money out
+    "apps/platform-domain/bay-session/store/bet_settle*",
+    "apps/platform-domain/bay-session/store/*settlement*",
+    "apps/platform-domain/bay-session/store/sqlc/bet_settle*",
+    # bet-reversal-refund — operator-initiated money movement
+    "apps/platform-domain/bay-session/store/*refund*",
+    "apps/platform-domain/bay-session/store/admin_bet_dispute_reverse*",
+    "apps/platform-domain/bay-session/store/admin_bet_force_refund*",
+    "apps/platform-domain/bay-session/cmd/admin-bet/**",
+    # financial-recovery — replay/retry of financial operations
+    "apps/platform-domain/bay-session/cmd/*-recovery/**",
+    # payout tables — outcome-to-money mapping
+    "apps/platform-domain/core/dao/payout*",
+    "apps/platform-domain/core/model/payout*",
+    "apps/platform-domain/core/model/tournament_payout*",
+    "apps/platform-domain/core/service/tournament/*payout*",
+    "apps/game-domain/engine/dao/payout*",
+    "apps/game-domain/engine/model/payout*",
+    "apps/game-domain/station-state-computer/model/payout*",
 ])
 
 
@@ -106,7 +151,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override per-tier default reviewer count",
     )
-    run.add_argument("--max-iterations", type=int, default=2)
+    # 4 is iteration-protocol.md's ceiling. The old default of 2 conflated the
+    # iteration ceiling with the linter-cycle cap.
+    run.add_argument(
+        "--max-iterations",
+        type=int,
+        default=4,
+        help="Tasker iteration ceiling (default: 4, per iteration-protocol.md)",
+    )
     run.add_argument(
         "--lock-timeout-seconds",
         type=float,
