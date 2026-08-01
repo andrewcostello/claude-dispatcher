@@ -147,6 +147,17 @@ def build_parser() -> argparse.ArgumentParser:
                      help="max feature-review fix rounds before holding (default 3)")
     run.add_argument("--skip-security-linter", action="store_true")
     run.add_argument(
+        "--exclude-author-family",
+        action="store_true",
+        help=(
+            "Drop the implementing agent's own family from the review panel "
+            "(pre-2026-08-01 behaviour). Off by default: the PR-1353 bake-off "
+            "found claude is the only family that reliably catches a Critical, "
+            "and most tasks are claude-authored, so excluding it removed the "
+            "best detector from most reviews."
+        ),
+    )
+    run.add_argument(
         "--reviewer-count",
         type=int,
         choices=[1, 2, 3],

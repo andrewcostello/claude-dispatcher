@@ -114,6 +114,13 @@ class RunConfig:
     label_filter: list[tuple[str, str]]
     only_keys: list[str] | None
     gh_bin: str = "gh"
+    # Restore the pre-2026-08-01 behaviour of dropping the author's own family
+    # from the panel. Off by default: the PR-1353 bake-off found claude is the
+    # only family that reliably catches a Critical, and most tasks are
+    # claude-authored, so excluding it removed the best detector from the
+    # majority of reviews. Turn on if same-family agreement starts inflating
+    # corroborated blocks again.
+    exclude_author_family: bool = False
     # Run-level default implementer family (claude/codex/grok/gemini). A per-task
     # `agent:` in the YAML wins; otherwise every task routes to this family's
     # headless CLI instead of `claude --print`. None -> claude (the default).
@@ -1991,31 +1998,65 @@ def _run_cross_family_panel(
     else:
         _log(log_path, f"  {snap.key} panel: classification unavailable")
 
-    # Seat selection composes two rules that pull opposite directions:
-    #   * Cross-family review means a DIFFERENT family judges — the author's
-    #     own family self-reviewing is circular and drove false corroboration
-    #     blocks on gemini/codex-authored tasks, so exclude it by default.
-    #   * Reduced fleets (--no-claude, panel: single) can't afford the lost
-    #     seat — when exclusion would leave the panel un-corroboratable
-    #     (< 2 seats), re-seat the author's family and say so loudly.
+    # Seat selection.
+    #
+    # The author's family is SEATED by default (changed 2026-08-01). The old
+    # rule excluded it — "a DIFFERENT family judges" — on the grounds that
+    # self-review is circular and had driven false corroboration blocks on
+    # gemini/codex-authored tasks. Two things make that trade wrong now:
+    #
+    #   * The bake-off on PR-1353 found that of the available families, only
+    #     claude reliably catches a Critical; grok is a cheap supplementary
+    #     seat and codex was dropped. Since most tasks are claude-authored,
+    #     excluding the author family removed the only reliable detector from
+    #     the majority of reviews. That trades a false-POSITIVE problem for a
+    #     false-NEGATIVE one, and missed Criticals are the expensive direction.
+    #
+    #   * The problem it solved lives in the consensus math, not seat
+    #     selection. aggregate() corroborates by FAMILY, so the fix for
+    #     same-family agreement inflating a block belongs there — dropping the
+    #     seat entirely was a blunt instrument that also dropped its detection.
+    #
+    # A reviewer instance shares no context with the author instance: it sees
+    # the diff cold, with the reviewer role and none of the implementation
+    # reasoning. It is the same model, not the same mind — correlated blind
+    # spots are real, which is why the panel is multi-family at all, but that
+    # argues for ADDING families rather than subtracting the best one.
+    #
+    # --exclude-author-family restores the old behaviour if false corroboration
+    # returns. Note this whole block becomes moot at GO-2: cmd/reviewer has no
+    # author-family exclusion, so its five seats always include claude.
     all_seats = list(_panel_reviewer_factory(cfg))
     author_family = snap.agent or "claude"
-    reviewers = [r for r in all_seats if r.family != author_family]
-    if len(reviewers) < 2 and len(all_seats) > len(reviewers):
-        reviewers = all_seats
+    reviewers = list(all_seats)
+
+    if getattr(cfg, "exclude_author_family", False):
+        without_author = [r for r in all_seats if r.family != author_family]
+        if len(without_author) >= 2:
+            reviewers = without_author
+            _log(log_path,
+                 f"  {snap.key} panel: excluding author family "
+                 f"{author_family!r} (--exclude-author-family)")
+        else:
+            _log(log_path,
+                 f"  {snap.key} panel: seating author family {author_family!r} — "
+                 f"exclusion would leave only {len(without_author)} seat(s)")
+    elif any(r.family == author_family for r in all_seats):
         _log(log_path,
-             f"  {snap.key} panel: seating author family {author_family!r} — "
-             f"exclusion would leave only {len(all_seats) - 1} seat(s)")
+             f"  {snap.key} panel: author family {author_family!r} seated "
+             f"({len(reviewers)} seats)")
+
     levels = _resolved_quality(cfg, snap)
     if levels.panel == "single" and reviewers:
-        # One cheap second look: never the author's own family when any
-        # other seat exists; prefer codex among the rest.
+        # One cheap second look. Prefer the family most likely to catch a real
+        # defect: the PR-1353 bake-off put claude first and dropped codex, so
+        # the old codex-first preference is inverted. Author-family is no
+        # longer penalised — a single seat that misses the bug is worse than a
+        # single seat that shares the author's model.
+        rank = {"claude": 0, "grok": 1, "gemini": 2, "codex": 3}
         preferred = sorted(
             reviewers,
-            key=lambda r: (
-                1 if getattr(r, "family", None) == author_family else 0,
-                0 if getattr(r, "family", None) == "codex" else 1,
-            ),
+            key=lambda r: rank.get(getattr(r, "family", None) or "", 9),
         )
         reviewers = preferred[:1]
         _log(log_path,
@@ -4500,6 +4541,7 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
         reviewer_count=args.reviewer_count,
         skip_design=args.skip_design,
         skip_security_linter=args.skip_security_linter,
+        exclude_author_family=getattr(args, "exclude_author_family", False),
         financial_paths=args.financial_paths,
         claude_bin=args.claude_bin,
         worktree_base=Path(args.worktree_base) if args.worktree_base else None,

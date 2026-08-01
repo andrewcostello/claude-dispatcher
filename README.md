@@ -52,6 +52,7 @@ dispatcher run <tasks-yaml> [options]
   --only KEY1,KEY2                          dispatch only these task keys
   --skip-design                              short-circuit Design Agent for Critical/High
   --skip-security-linter                    short-circuit Security Linter for Critical
+  --exclude-author-family                   drop the implementing agent's own family from the panel (pre-2026-08-01 behaviour; off by default)
   --reviewer-count {1,2,3}                  override per-tier reviewer count
   --max-iterations N                        default: 4
   --verify-test-timeout SECONDS             default: 600 — wall-clock bound per execution of the .dispatcher.yaml `test:` command (mechanical gate)
