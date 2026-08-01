@@ -335,3 +335,67 @@ tasks:
     estimate: 8h
     labels: [size:M, area:orchestrator, risk:high, phase:go-integration]
     blockedBy: [GO-5]
+
+  - key: GO-7
+    summary: "Extract _run_task's 858-line pipeline into named stages"
+    description: |
+      orchestrator.py is 5054 lines, but the file size is not the problem. Of
+      its 96 top-level definitions, 74 are under 50 lines and exactly ONE
+      exceeds 200: _run_task, at 858 lines — 17% of the file in a single
+      function. Splitting the module would shuffle 95 well-sized functions
+      around while leaving the actual problem untouched.
+
+      _run_task is already a sequential pipeline and carries its own stage
+      markers:
+
+        setup
+          -> design stage
+          -> [cascade loop: spawn -> mechanical gate -> seal-inversion gate
+                             -> LLM verifier -> cross-family panel]
+          -> auto-integrate
+          -> status flip
+
+      Extract each stage into a function with an explicit signature and return
+      value; _run_task becomes the sequence that calls them. This is the same
+      graph/loop split the Go tools apply to the Tasker, applied here:
+      _run_task becomes the graph, the stages become the nodes.
+
+      ONE STAGE PER COMMIT. This is the load-bearing rule. A single large
+      mechanical refactor is the worst possible thing to put in front of a
+      review panel — at that diff volume reviewers cannot distinguish "moved"
+      from "moved and subtly altered", so review quality collapses exactly when
+      the diff is biggest. Six reviewable commits, not one unreviewable one.
+
+      Secondary benefit, and the reason this is worth doing beyond tidiness:
+      34 test files currently monkeypatch, because testing one stage means
+      driving an 858-line function so you patch your way to the part you care
+      about. Stages with explicit signatures can be called directly. That also
+      removes one of the four blockers on ever porting this repo to Go.
+
+      WHY THIS IS LAST: GO-2, GO-4 and GO-6 each REPLACE a stage of _run_task
+      with a call to a Go binary — the panel stage, the verification stage and
+      the iteration loop all shrink or disappear. Doing the extraction first
+      means rebasing a large mechanical refactor against three later changes to
+      the same function, in the file with the highest churn in the repo (61
+      commits and +6025/-967 lines in the last quarter). Start from whatever
+      _run_task looks like after GO-6 and re-scope then.
+
+      Do NOT split orchestrator.py into modules as part of this task. That is a
+      separate decision, it is not what makes the code hard to work with today,
+      and a file this interconnected likely has latent import cycles that want
+      their own investigation. Reassess after this lands.
+
+      Acceptance:
+        - _run_task under ~100 lines and reads as a sequence of named stages
+        - Each stage extracted in its own commit, individually reviewable
+        - Every extracted stage has at least one test that calls it DIRECTLY
+          rather than through the pipeline
+        - `pytest tests/ -q` green, no new skips, no behaviour change intended
+          — any behaviour change found during extraction is a separate finding,
+          reported not folded in
+        - Report the monkeypatch count in the touched test files before and
+          after; it should go down
+    type: Task
+    estimate: 8h
+    labels: [size:M, area:orchestrator, risk:high, phase:go-integration]
+    blockedBy: [GO-6]
