@@ -837,7 +837,15 @@ def test_path_classification_resolves_the_binary_once(monkeypatch, tmp_path):
                        timeout_seconds=60):
         seen["binary"] = binary
         return classification_mod.ClassifyResult(
-            classification=classification_mod.parse_classification({"risk": "high"}),
+            classification=classification_mod.parse_classification({
+                "risk": "high",
+                "financial_paths_touched": False,
+                "client_only": False,
+                "server_surface": True,
+                "migration": False,
+                "human_pr_gate": False,
+                "panel": {"reduced": False, "seats": 5},
+            }),
             status=classification_mod.CLASSIFY_OK,
         )
 
@@ -853,3 +861,34 @@ def test_path_classification_resolves_the_binary_once(monkeypatch, tmp_path):
         "will look it up again and the two lookups can disagree"
     )
     assert len(lookups) == 1, f"binary resolved {len(lookups)} times, want exactly 1"
+
+
+def test_policy_files_are_forbidden_paths():
+    """GO-1 round 3, claude seat: the authorization policy was not itself
+    behind the authorization gate.
+
+    On a host without cmd/classify (a SUPPORTED deployment — CLASSIFY_ABSENT
+    leaves the rule verdict untouched by design), a size-XS first-pass-verified
+    PR rewriting .dispatcher.yaml to `test: "true"` scored LOW and self-merged,
+    and every later verdict then ran under the doctored policy.
+
+    The project's own .agent/risk-paths.json already marks these high — but that
+    protection only exists when the binary is present, and this baseline is what
+    the design explicitly degrades to.
+    """
+    from claude_dispatcher import risk as risk_mod
+
+    forbidden = risk_mod.DEFAULT_RISK_CONFIG.forbidden_paths
+    for policy_file in (
+        ".dispatcher.yaml",
+        ".agent/risk-paths.json",
+        ".agent/gates.json",
+        ".agent/anything-added-later.json",
+    ):
+        assert risk_mod.matches_any_glob(policy_file, forbidden), (
+            f"{policy_file} is not a forbidden path — a low-risk PR could "
+            "rewrite the gate's own policy and self-approve"
+        )
+
+    # Ordinary source is still not forbidden; this must not become a blanket.
+    assert not risk_mod.matches_any_glob("src/claude_dispatcher/report.py", forbidden)

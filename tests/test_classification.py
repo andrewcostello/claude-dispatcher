@@ -21,6 +21,17 @@ from claude_dispatcher import cross_family_reviewer as cfr
 # --------------------------------------------------------------------------- #
 
 
+_GOOD = {
+    "risk": "low",
+    "financial_paths_touched": False,
+    "client_only": False,
+    "server_surface": True,
+    "migration": False,
+    "human_pr_gate": False,
+    "panel": {"reduced": False, "seats": 5},
+}
+
+
 WALLET_PAYLOAD = {
     "risk": "critical",
     "components": ["bet-settlement", "wallet"],
@@ -74,11 +85,17 @@ def test_parse_classification_rejects_an_unrecognised_tier():
 
 
 def test_parse_classification_accepts_a_minimal_but_real_payload():
-    """Strict about the tier, still tolerant about everything optional."""
-    c = classification.parse_classification({"risk": "low"})
+    """Strict about POLICY fields, still tolerant about descriptive ones.
+
+    "Minimal" no longer means risk-only: cmd/classify emits every policy-bearing
+    field unconditionally, so a payload without them is not classify output.
+    Descriptive extras (components, reasons, changed_files) stay optional.
+    """
+    c = classification.parse_classification(dict(_GOOD))
     assert c.risk == "low"
-    assert c.components == ()
-    assert c.requires_full_panel is True  # absent panel block still defaults to full
+    assert c.components == ()          # optional, absent is fine
+    assert c.risk_reasons == ()        # optional
+    assert c.requires_full_panel is True
 
 
 def test_a_meaningless_payload_fails_closed_end_to_end(monkeypatch, tmp_path):
@@ -103,9 +120,15 @@ def test_requires_full_panel_follows_the_reduced_flag():
     full = classification.parse_classification(WALLET_PAYLOAD)
     assert full.requires_full_panel is True
 
-    reduced = classification.parse_classification(
-        {"risk": "low", "panel": {"required": True, "seats": 1, "reduced": True}}
-    )
+    reduced = classification.parse_classification({
+        "risk": "low",
+        "financial_paths_touched": False,
+        "client_only": True,
+        "server_surface": False,
+        "migration": False,
+        "human_pr_gate": False,
+        "panel": {"required": True, "seats": 1, "reduced": True},
+    })
     assert reduced.requires_full_panel is False
 
 
@@ -271,9 +294,20 @@ def test_classify_binary_honours_env_override(monkeypatch, tmp_path):
 
 
 FULL = classification.parse_classification(WALLET_PAYLOAD)
-REDUCED = classification.parse_classification(
-    {"risk": "low", "panel": {"required": True, "seats": 1, "reduced": True}}
-)
+# A complete producer payload for the reduced-panel case. It used to omit every
+# policy-bearing field except risk and panel, and parsed fine — which is exactly
+# the permissiveness the round-3 findings closed. It now has to be a real
+# payload, and its collection-time failure was the first proof the validation
+# bites.
+REDUCED = classification.parse_classification({
+    "risk": "low",
+    "financial_paths_touched": False,
+    "client_only": True,
+    "server_surface": False,
+    "migration": False,
+    "human_pr_gate": False,
+    "panel": {"required": True, "seats": 1, "reduced": True},
+})
 
 
 def test_panel_required_unchanged_without_a_classification():
@@ -344,3 +378,80 @@ def test_review_prompt_says_so_when_classification_is_unavailable():
         base_branch="main",
     )
     assert "classification unavailable" in prompt
+
+
+# --------------------------------------------------------------------------- #
+# Wire-contract validation (GO-1 round 3, codex seat)
+# --------------------------------------------------------------------------- #
+#
+# Strictness that stops at `risk` is not strictness. The parser still coerced
+# every policy-bearing field, and bool("false") is True — so a producer emitting
+# a JSON string where a bool belongs silently INVERTED a gate.
+
+def test_a_healthy_producer_payload_still_parses():
+    c = classification.parse_classification(dict(_GOOD))
+    assert c.risk == "low"
+    assert c.requires_full_panel is True
+
+
+def test_the_codex_reproduction_is_rejected():
+    """Verbatim from the finding: the signal string filters to (), while
+    bool("false") makes panel_reduced True and suppresses the panel."""
+    bad = dict(_GOOD, gate_signals="env-gate", panel={"reduced": "false"})
+    with pytest.raises(ValueError, match="panel.reduced"):
+        classification.parse_classification(bad)
+
+
+@pytest.mark.parametrize("key", [
+    "financial_paths_touched", "client_only", "server_surface",
+    "migration", "human_pr_gate",
+])
+def test_a_missing_policy_bool_is_rejected(key):
+    bad = dict(_GOOD)
+    del bad[key]
+    with pytest.raises(ValueError, match=key):
+        classification.parse_classification(bad)
+
+
+@pytest.mark.parametrize("bogus", ["false", "true", 0, 1, None, [], {}])
+def test_a_non_boolean_policy_field_is_rejected(bogus):
+    """bool("false") is True; bool(0) is False. Coercion inverts gates."""
+    bad = dict(_GOOD, financial_paths_touched=bogus)
+    with pytest.raises(ValueError, match="financial_paths_touched"):
+        classification.parse_classification(bad)
+
+
+@pytest.mark.parametrize("panel", [
+    "reduced", {"seats": 5}, {"reduced": "false"}, {"reduced": None},
+    {"reduced": False, "seats": 0}, {"reduced": False, "seats": "5"},
+])
+def test_a_malformed_panel_block_is_rejected(panel):
+    with pytest.raises(ValueError, match="panel"):
+        classification.parse_classification(dict(_GOOD, panel=panel))
+
+
+def test_absent_gate_signals_means_none_but_a_bare_string_is_rejected():
+    """gate_signals is omitempty on the producer, so absent genuinely means
+    "no signals" — but a present bare string would filter to an empty tuple,
+    silently discarding every signal it named."""
+    assert classification.parse_classification(dict(_GOOD)).gate_signals == ()
+
+    with pytest.raises(ValueError, match="gate_signals"):
+        classification.parse_classification(dict(_GOOD, gate_signals="env-gate"))
+    with pytest.raises(ValueError, match="gate_signals"):
+        classification.parse_classification(dict(_GOOD, gate_signals=[{"nope": 1}]))
+
+
+def test_every_malformed_policy_field_reaches_the_caller_as_failed(monkeypatch, tmp_path):
+    """Validation is only useful if it arrives as CLASSIFY_FAILED — the status
+    whose whole job is to stop a gate relaxing."""
+    fake_bin = tmp_path / "classify"
+    fake_bin.write_text("#!/bin/sh\n")
+    payload = json.dumps(dict(_GOOD, panel={"reduced": "false"}))
+    monkeypatch.setattr(subprocess, "run", _fake_run(stdout=payload))
+
+    result = classification.classify_diff_result(
+        diff="diff --git a/x b/x\n", binary=str(fake_bin)
+    )
+    assert result.status == classification.CLASSIFY_FAILED
+    assert result.classification is None

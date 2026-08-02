@@ -80,9 +80,34 @@ def classify_stub(tmp_path: Path, monkeypatch):
         payload_path = tmp_path / "classify_stub.json"
         script = tmp_path / "classify_stub.py"
 
-        def install(self, payload: dict | None = None, *, exit_code: int = 0) -> Path:
-            self.payload_path.write_text(
-                json.dumps(payload or {}), encoding="utf-8")
+        #: The policy-bearing fields cmd/classify emits UNCONDITIONALLY. Tests
+        #: name only what they care about (usually just "risk"); the stub fills
+        #: the rest so it behaves like the real producer. Without this every
+        #: test payload is malformed under the strict parser and every verdict
+        #: comes back elevated — which is correct behaviour but tells you
+        #: nothing about the case under test.
+        PRODUCER_DEFAULTS = {
+            "financial_paths_touched": False,
+            "client_only": False,
+            "server_surface": True,
+            "migration": False,
+            "human_pr_gate": False,
+            "panel": {"reduced": False, "seats": 5},
+        }
+
+        def install(
+            self,
+            payload: dict | None = None,
+            *,
+            exit_code: int = 0,
+            raw: bool = False,
+        ) -> Path:
+            """Install the stub. `raw=True` writes the payload verbatim, for
+            tests that deliberately exercise a malformed producer contract."""
+            body = payload or {}
+            if not raw:
+                body = {**self.PRODUCER_DEFAULTS, **body}
+            self.payload_path.write_text(json.dumps(body), encoding="utf-8")
             self.script.write_text(
                 _CLASSIFY_STUB.format(
                     stdin_path=str(self.stdin_path),

@@ -1274,3 +1274,44 @@ def test_exclusion_never_drops_below_two_seats(repo: Path, monkeypatch) -> None:
     # Dropping claude would leave one seat, so the author family is re-seated.
     by_family = {r.family: r.call_count for r in revs}
     assert by_family == {"claude": 1, "gemini": 1}
+
+
+def test_panel_gate_forces_the_panel_when_classification_fails(monkeypatch, tmp_path):
+    """GO-1 round 3, claude seat — a regression the strict parser introduced.
+
+    Before the parser was strict, a malformed payload still produced a
+    Classification with panel_reduced=False, so requires_full_panel was True and
+    the panel was forced ON — an ACCIDENTAL fail-closed. Making the parser
+    strict turned that payload into a failure, and a failure that read as None
+    left the metadata "skip" standing. The hardening opened a hole at the one
+    seam it was meant to protect.
+
+    A failed classification must now FORCE the panel: we could not establish
+    that the diff is safe to skip, and metadata already said skip.
+    """
+    from claude_dispatcher import classification as classification_mod
+    from claude_dispatcher import orchestrator
+
+    failed = classification_mod.ClassifyResult(
+        status=classification_mod.CLASSIFY_FAILED, detail="unusable classify output"
+    )
+    assert failed.failed is True
+    assert failed.classification is None
+
+    # The gating predicate itself, at the other seam the finding named.
+    from claude_dispatcher import cross_family_reviewer as cfr_mod
+    assert cfr_mod.panel_required([], task_type="docs", classification=failed) is True, (
+        "a failed classification must force the panel, even for a docs-typed "
+        "task that metadata would skip"
+    )
+
+    # And a healthy reduced classification still permits the skip.
+    reduced = classification_mod.ClassifyResult(
+        classification=classification_mod.parse_classification({
+            "risk": "low", "financial_paths_touched": False, "client_only": True,
+            "server_surface": False, "migration": False, "human_pr_gate": False,
+            "panel": {"reduced": True, "seats": 1},
+        }),
+        status=classification_mod.CLASSIFY_OK,
+    )
+    assert cfr_mod.panel_required(["size:S"], classification=reduced) is False

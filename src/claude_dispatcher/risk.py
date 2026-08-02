@@ -126,6 +126,20 @@ class RiskConfig:
         "pyproject.toml",
         "Dockerfile*",
         "compose*.y*ml",
+        # The gate's own policy files. Without these, a size-XS first-pass-
+        # verified PR that rewrites .dispatcher.yaml (test: "true") or
+        # .agent/risk-paths.json scores LOW and self-approves — and every
+        # later verdict and mechanical verification then runs under the
+        # doctored policy. The authorization policy must itself be behind the
+        # authorization gate.
+        #
+        # The project's .agent/risk-paths.json already marks these high
+        # ("Editing either is editing the safety net"), but that protection
+        # only exists when cmd/classify is installed. This baseline is what
+        # the design explicitly degrades to on a no-binary host, so it has to
+        # mirror it. Found by the claude seat on GO-1 round 3.
+        ".dispatcher.yaml",
+        ".agent/**",
     )
     max_effective_diff_lines: int = 200
     test_globs: tuple[str, ...] = (

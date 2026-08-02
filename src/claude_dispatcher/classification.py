@@ -209,6 +209,65 @@ def _as_tuple(value) -> tuple[str, ...]:
     return tuple(str(v) for v in value)
 
 
+def _require_bool(payload: dict, key: str) -> bool:
+    """A policy-bearing boolean must actually BE a boolean.
+
+    Coercion is the bug: bool("false") is True, so a producer emitting a JSON
+    string where a bool belongs would invert the gate silently.
+    """
+    if key not in payload:
+        raise ValueError(
+            f"classify output has no '{key}' key — cmd/classify emits it "
+            "unconditionally, so its absence means this is not classify output "
+            "or the producer contract has regressed"
+        )
+    value = payload[key]
+    if not isinstance(value, bool):
+        raise ValueError(
+            f"'{key}' is {type(value).__name__} {value!r}, expected a JSON "
+            "boolean — coercing it would let the string \"false\" read as True"
+        )
+    return value
+
+
+def _require_panel(payload: dict) -> dict:
+    """The panel block decides whether the reduced carve-out applies."""
+    if "panel" not in payload:
+        raise ValueError("classify output has no 'panel' key")
+    panel = payload["panel"]
+    if not isinstance(panel, dict):
+        raise ValueError(f"'panel' is {type(panel).__name__}, expected an object")
+    if "reduced" not in panel or not isinstance(panel["reduced"], bool):
+        raise ValueError(
+            f"'panel.reduced' is {panel.get('reduced')!r}, expected a JSON boolean "
+            "— this field alone decides whether the full panel is required"
+        )
+    seats = panel.get("seats", 5)
+    if not isinstance(seats, int) or isinstance(seats, bool) or seats < 1:
+        raise ValueError(f"'panel.seats' is {seats!r}, expected a positive integer")
+    return {"reduced": panel["reduced"], "seats": seats, "reasons": panel.get("reasons")}
+
+
+def _require_signals(payload: dict) -> list:
+    """gate_signals is omitempty on the producer, so absent means none.
+
+    A PRESENT value must still have the right shape: a bare string would be
+    silently filtered to an empty tuple, discarding every signal it named.
+    """
+    if "gate_signals" not in payload or payload["gate_signals"] is None:
+        return []
+    signals = payload["gate_signals"]
+    if not isinstance(signals, list):
+        raise ValueError(
+            f"'gate_signals' is {type(signals).__name__}, expected a list — a "
+            "bare string would filter to no signals at all"
+        )
+    for entry in signals:
+        if not isinstance(entry, dict) or not entry.get("signal"):
+            raise ValueError(f"malformed gate_signals entry: {entry!r}")
+    return signals
+
+
 def parse_classification(payload: dict) -> Classification:
     """Build a :class:`Classification` from ``cmd/classify -json`` output.
 
@@ -234,19 +293,37 @@ def parse_classification(payload: dict) -> Classification:
     risk = str(payload["risk"]).lower()
     _rank(risk)  # raises on an unrecognised tier
 
-    panel = payload.get("panel") or {}
-    signals = payload.get("gate_signals") or []
+    # POLICY-BEARING FIELDS ARE VALIDATED, NOT COERCED.
+    #
+    # bool("false") is True. So is bool("0") and bool([]) is False — coercing
+    # whatever arrives means a producer regression that emits a JSON *string*
+    # where a bool belongs silently inverts a gate. The codex seat reproduced
+    # exactly that: {"panel": {"reduced": "false"}} made panel_reduced True and
+    # requires_full_panel False, suppressing the panel on a diff that needed it.
+    #
+    # cmd/classify emits every one of these unconditionally (no omitempty), so
+    # requiring them costs nothing against a healthy producer and catches a sick
+    # one. gate_signals IS omitempty — absent genuinely means "no signals" — so
+    # it is optional, but a present value must have the right shape.
+    financial = _require_bool(payload, "financial_paths_touched")
+    client_only = _require_bool(payload, "client_only")
+    server_surface = _require_bool(payload, "server_surface")
+    migration = _require_bool(payload, "migration")
+    human_gate = _require_bool(payload, "human_pr_gate")
+    panel = _require_panel(payload)
+    signals = _require_signals(payload)
+
     return Classification(
         risk=risk,
         components=_as_tuple(payload.get("components")),
-        financial_paths_touched=bool(payload.get("financial_paths_touched")),
-        client_only=bool(payload.get("client_only")),
-        server_surface=bool(payload.get("server_surface")),
-        migration=bool(payload.get("migration")),
-        human_pr_gate=bool(payload.get("human_pr_gate")),
+        financial_paths_touched=financial,
+        client_only=client_only,
+        server_surface=server_surface,
+        migration=migration,
+        human_pr_gate=human_gate,
         recheck_min_severity=str(payload.get("recheck_min_severity", "high")),
-        panel_seats=int(panel.get("seats", 5) or 5),
-        panel_reduced=bool(panel.get("reduced")),
+        panel_seats=panel["seats"],
+        panel_reduced=panel["reduced"],
         panel_reasons=_as_tuple(panel.get("reasons")),
         gate_signals=tuple(
             str(s.get("signal", "")) for s in signals if isinstance(s, dict) and s.get("signal")

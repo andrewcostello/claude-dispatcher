@@ -261,6 +261,12 @@ def panel_required(
     customer-facing wallet regression because the change was judged by how it was
     described rather than by what it touched.
     """
+    # A ClassifyResult that FAILED means we could not establish that this diff
+    # is safe to skip. Treat it like path evidence demanding the panel: absence
+    # of evidence is not evidence of absence. (Callers may also pass a bare
+    # Classification, which has no .failed.)
+    if getattr(classification, "failed", False):
+        return True
     if classification is not None and getattr(classification, "requires_full_panel", False):
         return True
 
