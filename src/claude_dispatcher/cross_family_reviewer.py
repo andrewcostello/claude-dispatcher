@@ -237,7 +237,7 @@ def is_small_leaf(labels: Iterable[str] | None) -> bool:
     return False
 
 
-def _classification_demands_panel(classification: object | None) -> bool:
+def classification_demands_panel(classification: object | None) -> bool:
     """Does this classification argument require the full panel?
 
     isinstance, not hasattr. The previous version matched on the SHAPE of the
@@ -334,7 +334,7 @@ def panel_required(
     # getattr-with-a-default on a union is duck typing standing in for a type
     # check, and the default is a silent implicit state. See
     # skills/explicit-state.md.
-    if _classification_demands_panel(classification):
+    if classification_demands_panel(classification):
         return True
 
     if task_type and task_type.lower() in _PANEL_SKIP_TYPES:

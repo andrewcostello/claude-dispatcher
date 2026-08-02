@@ -1429,3 +1429,48 @@ def test_panel_runs_when_the_gate_classification_fails(repo: Path, monkeypatch) 
         "the panel did not run: metadata said skip and the classification "
         "FAILED, so the skip was trusted — the exact fail-open this seals"
     )
+
+
+@pytest.mark.parametrize("bad_result_kwargs, expect_forced", [
+    ({"status": "future-status"}, True),
+    ({"status": "ok", "classification": None}, True),
+])
+def test_production_gate_fails_closed_on_an_unusable_classification(
+    repo: Path, monkeypatch, bad_result_kwargs, expect_forced
+) -> None:
+    """Seals the PRODUCTION seam against unrecognised/inconsistent states.
+
+    orchestrator._run_task inlined its own copy of the demands-panel predicate.
+    Hardening cfr.classification_demands_panel left that copy untouched, so
+    production still fell open: for these two results `.failed` is False and
+    `.classification` is None, so both inline arms missed and the metadata skip
+    stood (codex, sibling-surface trace, GO-1 round 5).
+
+    The duplication was the defect. Production now calls the one predicate, and
+    an unusable state fails CLOSED — the safety net may not break the run, but
+    it also may not resolve its own confusion into "skip the review".
+    """
+    from claude_dispatcher import classification as classification_mod
+
+    _seed_yaml(repo, _LOW_RISK_TASK_YAML)  # metadata says skip
+    _patch_spawn(monkeypatch)
+    revs = _set_reviewers(monkeypatch, [
+        ("claude", _APPROVE_OUTPUT),
+        ("gemini", _APPROVE_OUTPUT),
+        ("codex", _APPROVE_OUTPUT),
+    ])
+
+    monkeypatch.setattr(
+        classification_mod,
+        "classify_diff_result",
+        lambda **kw: classification_mod.ClassifyResult(**bad_result_kwargs),
+    )
+
+    rc = orchestrator.execute(_args(repo, key="PANEL-B", panel_mode="auto"))
+    assert rc == 0
+
+    ran = sum(r.call_count for r in revs) > 0
+    assert ran is expect_forced, (
+        f"ClassifyResult({bad_result_kwargs}) did not force the panel — an "
+        "unusable classifier state resolved into 'skip the review gate'"
+    )
