@@ -1329,11 +1329,67 @@ def test_panel_required_resolves_every_classification_shape():
 
 
 def test_panel_required_refuses_an_unknown_classification_shape():
-    """A new shape must fail loudly, not default to "no panel"."""
+    """A new shape must fail loudly, not default to "no panel".
+
+    The earlier version of this test used a STRING, which lacks both `.status`
+    and `.classification` and so never reached the structural branch that was
+    actually broken. It passed while three real shapes failed open — a seal that
+    tested the easy case. codex caught it (GO-1 round 4); the lookalike below is
+    the case that matters.
+    """
+    from types import SimpleNamespace
     from claude_dispatcher import cross_family_reviewer as cfr_mod
 
     with pytest.raises(TypeError, match="explicit-state"):
         cfr_mod.panel_required([], classification="not a classification")
+
+    # A structural lookalike: has .status and .classification, is not a
+    # ClassifyResult. hasattr-based dispatch accepted this and returned False.
+    with pytest.raises(TypeError, match="explicit-state"):
+        cfr_mod.panel_required(
+            [], task_type="docs",
+            classification=SimpleNamespace(status="failed", classification=None),
+        )
+
+
+def test_panel_required_rejects_inconsistent_classify_results():
+    """A canonical ClassifyResult can still be internally inconsistent, and both
+    forms previously resolved to "no panel" (codex, GO-1 round 4)."""
+    from claude_dispatcher import classification as classification_mod
+    from claude_dispatcher import cross_family_reviewer as cfr_mod
+
+    # A status this build does not know. Defaulting a future status to the
+    # permissive branch is exactly how the gate fails open.
+    with pytest.raises(ValueError, match="unrecognised status"):
+        cfr_mod.panel_required(
+            [], task_type="docs",
+            classification=classification_mod.ClassifyResult(status="future-status"),
+        )
+
+    # Claims success, carries nothing.
+    with pytest.raises(ValueError, match="CLASSIFY_OK but carries no"):
+        cfr_mod.panel_required(
+            [], task_type="docs",
+            classification=classification_mod.ClassifyResult(
+                status=classification_mod.CLASSIFY_OK, classification=None
+            ),
+        )
+
+
+def test_panel_required_handles_every_documented_status():
+    """Exhaustive over the status contract, so a new status added without
+    updating the predicate fails the suite rather than the gate."""
+    from claude_dispatcher import classification as classification_mod
+    from claude_dispatcher import cross_family_reviewer as cfr_mod
+
+    # ABSENT and EMPTY are genuinely "no evidence either way" — metadata
+    # decides. This must NOT become "always panel", which would be a different
+    # way of being useless.
+    for neutral in (classification_mod.CLASSIFY_ABSENT, classification_mod.CLASSIFY_EMPTY):
+        result = classification_mod.ClassifyResult(status=neutral)
+        assert cfr_mod.panel_required(["size:S"], classification=result) is False
+        # ...but they must not override a label that already demands the panel.
+        assert cfr_mod.panel_required(["risk:critical"], classification=result) is True
 
 
 def test_panel_runs_when_the_gate_classification_fails(repo: Path, monkeypatch) -> None:

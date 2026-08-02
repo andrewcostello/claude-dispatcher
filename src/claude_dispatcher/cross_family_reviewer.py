@@ -46,6 +46,8 @@ import re
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from . import classification as classification_mod
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -238,28 +240,54 @@ def is_small_leaf(labels: Iterable[str] | None) -> bool:
 def _classification_demands_panel(classification: object | None) -> bool:
     """Does this classification argument require the full panel?
 
-    Accepts the two shapes callers legitimately hold and resolves each
-    EXPLICITLY, so a new shape fails loudly rather than defaulting to "no":
+    isinstance, not hasattr. The previous version matched on the SHAPE of the
+    object — "has .status and .classification" — which is duck typing wearing a
+    type check's clothes, and it failed open three ways (codex seat, GO-1 round
+    4): a SimpleNamespace lookalike, a ClassifyResult with an unrecognised
+    status, and a ClassifyResult claiming OK while carrying no payload all
+    returned "panel not demanded". The unknown-shape seal missed it because it
+    used a string, which lacks both attributes and so never reached the
+    defective branch.
 
-      * ClassifyResult — failed means we could not establish the diff is safe to
-        skip, which demands the panel just as much as positive path evidence
-        does. Otherwise defer to the classification it carries.
-      * Classification — ask it directly.
-      * None — no evidence either way; metadata gating decides.
+    Every status is handled by name and an unrecognised one raises. See
+    skills/explicit-state.md: naming three states is not enough if a fourth can
+    arrive and be silently treated as the permissive one.
     """
     if classification is None:
         return False
 
-    # ClassifyResult: identified by the status contract, not by attribute
-    # sniffing on the value we are about to trust.
-    if hasattr(classification, "status") and hasattr(classification, "classification"):
-        if getattr(classification, "failed", False):
-            return True
-        inner = classification.classification
-        return inner is not None and inner.requires_full_panel
+    if isinstance(classification, classification_mod.Classification):
+        return classification.requires_full_panel
 
-    if hasattr(classification, "requires_full_panel"):
-        return bool(classification.requires_full_panel)
+    if isinstance(classification, classification_mod.ClassifyResult):
+        status = classification.status
+        inner = classification.classification
+
+        if status == classification_mod.CLASSIFY_FAILED:
+            # Could not establish the diff is safe to skip.
+            return True
+
+        if status == classification_mod.CLASSIFY_OK:
+            if inner is None:
+                raise ValueError(
+                    "ClassifyResult claims CLASSIFY_OK but carries no "
+                    "classification — an internally inconsistent result must not "
+                    "resolve to 'no panel' (skills/explicit-state.md)"
+                )
+            return inner.requires_full_panel
+
+        if status in (classification_mod.CLASSIFY_ABSENT, classification_mod.CLASSIFY_EMPTY):
+            # No classifier here, or nothing to classify. Genuinely no evidence
+            # either way — metadata gating decides, which is the documented
+            # degradation contract.
+            return False
+
+        raise ValueError(
+            f"ClassifyResult has unrecognised status {status!r}; expected one of "
+            f"{[classification_mod.CLASSIFY_OK, classification_mod.CLASSIFY_ABSENT, classification_mod.CLASSIFY_EMPTY, classification_mod.CLASSIFY_FAILED]}. "
+            "Refusing to guess — a new status defaulting to 'no panel' is how "
+            "this gate fails open."
+        )
 
     raise TypeError(
         f"panel_required got {type(classification).__name__} as `classification`; "
