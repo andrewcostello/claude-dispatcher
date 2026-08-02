@@ -69,10 +69,20 @@ CLASSIFY_FAILED = "failed"
 
 
 def _rank(risk: str) -> int:
+    """Ordinal of a risk tier. Raises on an unrecognised tier — deliberately.
+
+    This used to return 0 (the WEAKEST tier) for anything it did not
+    recognise: "", None -> "none", a typo, a future tier this build predates.
+    That turned every unknown into a confident "low", which is the exact shape
+    of a gate that stops checking without saying so. An unknown tier is a
+    failure to classify, and the caller must hear about it.
+    """
     try:
         return RISK_ORDER.index((risk or "").lower())
-    except ValueError:
-        return 0
+    except ValueError as exc:
+        raise ValueError(
+            f"unrecognised risk tier {risk!r} (expected one of {list(RISK_ORDER)})"
+        ) from exc
 
 
 @dataclass(frozen=True)
@@ -200,11 +210,34 @@ def _as_tuple(value) -> tuple[str, ...]:
 
 
 def parse_classification(payload: dict) -> Classification:
-    """Build a :class:`Classification` from ``cmd/classify -json`` output."""
+    """Build a :class:`Classification` from ``cmd/classify -json`` output.
+
+    STRICT BY DESIGN. This used to default a missing ``risk`` key to ``"low"``
+    and, via :func:`_rank`, treat any unrecognised tier as the weakest one. The
+    effect was that ``{}`` — well-formed, parseable, meaningless — produced a
+    confident "low risk" verdict that sailed past the fail-closed guard, because
+    the guard only fired when this function *raised*. Valid JSON that means
+    nothing is not a classification.
+
+    Raises ValueError on a payload that does not carry a usable risk tier. The
+    caller turns that into CLASSIFY_FAILED, which fails closed.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError(f"classify output is {type(payload).__name__}, expected an object")
+    if "risk" not in payload:
+        raise ValueError(
+            "classify output has no 'risk' key — this is not a classification, "
+            "and defaulting it to 'low' would manufacture a passing verdict "
+            "out of an absent one"
+        )
+
+    risk = str(payload["risk"]).lower()
+    _rank(risk)  # raises on an unrecognised tier
+
     panel = payload.get("panel") or {}
     signals = payload.get("gate_signals") or []
     return Classification(
-        risk=str(payload.get("risk", "low")).lower(),
+        risk=risk,
         components=_as_tuple(payload.get("components")),
         financial_paths_touched=bool(payload.get("financial_paths_touched")),
         client_only=bool(payload.get("client_only")),

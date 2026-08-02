@@ -51,11 +51,52 @@ def test_parse_classification_maps_every_field():
     assert c.unmatched_files == ("apps/new-thing/main.go",)
 
 
-def test_parse_classification_tolerates_a_sparse_payload():
-    c = classification.parse_classification({})
+def test_parse_classification_rejects_a_payload_with_no_risk():
+    """This test previously asserted the opposite, and the assertion WAS the bug.
+
+    `parse_classification({})` used to return risk="low" — a confident weakest
+    tier manufactured out of an empty object. Because the fail-closed guard in
+    classify_diff_result only fires when this function RAISES, valid-but-
+    meaningless JSON sailed straight past it into a "low risk, safe to
+    auto-merge" verdict. Found by the claude seat on GO-1 round 2.
+    """
+    with pytest.raises(ValueError, match="no 'risk' key"):
+        classification.parse_classification({})
+
+
+def test_parse_classification_rejects_an_unrecognised_tier():
+    """_rank used to return 0 — the WEAKEST tier — for anything unrecognised:
+    "", None, a typo, a future tier this build predates. Every unknown became a
+    confident "low"."""
+    for bad in ({"risk": ""}, {"risk": None}, {"risk": "lowish"}, {"risk": "sev1"}):
+        with pytest.raises(ValueError, match="unrecognised risk tier"):
+            classification.parse_classification(bad)
+
+
+def test_parse_classification_accepts_a_minimal_but_real_payload():
+    """Strict about the tier, still tolerant about everything optional."""
+    c = classification.parse_classification({"risk": "low"})
     assert c.risk == "low"
     assert c.components == ()
-    assert c.requires_full_panel is True  # absent panel block defaults to full
+    assert c.requires_full_panel is True  # absent panel block still defaults to full
+
+
+def test_a_meaningless_payload_fails_closed_end_to_end(monkeypatch, tmp_path):
+    """The property that matters: garbage in must not become a passing verdict.
+
+    Strictness in the parser is only useful if it reaches the caller as
+    CLASSIFY_FAILED — the status whose whole job is to stop a gate relaxing.
+    """
+    fake_bin = tmp_path / "classify"
+    fake_bin.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(subprocess, "run", _fake_run(stdout="{}"))
+
+    result = classification.classify_diff_result(
+        diff="diff --git a/x b/x\n", binary=str(fake_bin)
+    )
+    assert result.status == classification.CLASSIFY_FAILED
+    assert result.classification is None
+    assert "risk" in (result.detail or "")
 
 
 def test_requires_full_panel_follows_the_reduced_flag():

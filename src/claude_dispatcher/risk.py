@@ -591,8 +591,16 @@ def path_classification(
 
     Once the binary *is* present, a git failure counts as a failure too: we were
     supposed to get path evidence for this diff and we did not.
+
+    The resolved path is THREADED THROUGH to classify_diff_result rather than
+    letting it look the binary up a second time. Two lookups can disagree — a
+    deployment swapping the binary between them, $CLASSIFY_BIN changing, a
+    PATH edit — and the second one returning "absent" would silently downgrade
+    a failure into a degradation, which is the fail-open this whole boundary
+    exists to prevent. Resolve once, use that.
     """
-    if classification_mod.classify_binary() is None:
+    bin_path = classification_mod.classify_binary()
+    if bin_path is None:
         return classification_mod.ClassifyResult(
             status=classification_mod.CLASSIFY_ABSENT,
             detail="classify binary not installed",
@@ -605,7 +613,9 @@ def path_classification(
             detail=f"could not read the diff to classify: {exc}",
         )
     try:
-        return classification_mod.classify_diff_result(diff=diff, repo_root=worktree)
+        return classification_mod.classify_diff_result(
+            diff=diff, repo_root=worktree, binary=bin_path
+        )
     except Exception as exc:  # classify_diff_result degrades, but never trust that
         return classification_mod.ClassifyResult(
             status=classification_mod.CLASSIFY_FAILED,

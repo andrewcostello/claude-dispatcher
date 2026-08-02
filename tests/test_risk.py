@@ -801,3 +801,55 @@ def test_collect_raw_diff_is_untruncated_and_unified(git_repo: Path):
     assert "diff --git a/src/app.py b/src/app.py" in diff
     assert "diff --git a/docs/x.md b/docs/x.md" in diff
     assert "+two" in diff
+
+
+# --------------------------------------------------------------------------- #
+# The classification boundary must not have a second binary lookup
+# --------------------------------------------------------------------------- #
+
+
+def test_path_classification_resolves_the_binary_once(monkeypatch, tmp_path):
+    """Codex's GO-1 round-2 finding.
+
+    path_classification() used to call classify_binary() as a preflight and
+    then call classify_diff_result() WITHOUT the resolved path, causing a
+    second lookup. Two lookups can disagree — a deployment swapping the binary
+    between them, $CLASSIFY_BIN changing, a PATH edit — and the second one
+    returning "absent" silently downgrades a FAILURE into a DEGRADATION, which
+    is the exact fail-open this boundary exists to prevent.
+
+    Asserts the resolved path is threaded through, so there is no second lookup
+    to disagree with the first.
+    """
+    from claude_dispatcher import classification as classification_mod
+    from claude_dispatcher import risk as risk_mod
+
+    resolved = str(tmp_path / "classify")
+    lookups: list[str] = []
+
+    def _one_lookup() -> str:
+        lookups.append("called")
+        return resolved
+
+    seen: dict[str, object] = {}
+
+    def _fake_classify(*, diff, repo_root=None, config=None, binary=None,
+                       timeout_seconds=60):
+        seen["binary"] = binary
+        return classification_mod.ClassifyResult(
+            classification=classification_mod.parse_classification({"risk": "high"}),
+            status=classification_mod.CLASSIFY_OK,
+        )
+
+    monkeypatch.setattr(classification_mod, "classify_binary", _one_lookup)
+    monkeypatch.setattr(classification_mod, "classify_diff_result", _fake_classify)
+    monkeypatch.setattr(risk_mod, "collect_raw_diff", lambda *a, **k: "diff --git a/x b/x\n")
+
+    result = risk_mod.path_classification(tmp_path, "origin/main")
+
+    assert result.status == classification_mod.CLASSIFY_OK
+    assert seen["binary"] == resolved, (
+        "the resolved binary path was not threaded through — classify_diff_result "
+        "will look it up again and the two lookups can disagree"
+    )
+    assert len(lookups) == 1, f"binary resolved {len(lookups)} times, want exactly 1"
