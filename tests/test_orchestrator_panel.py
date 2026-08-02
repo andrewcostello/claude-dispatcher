@@ -1276,42 +1276,100 @@ def test_exclusion_never_drops_below_two_seats(repo: Path, monkeypatch) -> None:
     assert by_family == {"claude": 1, "gemini": 1}
 
 
-def test_panel_gate_forces_the_panel_when_classification_fails(monkeypatch, tmp_path):
-    """GO-1 round 3, claude seat — a regression the strict parser introduced.
+def _mk_classification(risk: str, reduced: bool):
+    from claude_dispatcher import classification as classification_mod
+    return classification_mod.parse_classification({
+        "risk": risk,
+        "financial_paths_touched": risk == "critical",
+        "client_only": False,
+        "server_surface": True,
+        "migration": False,
+        "human_pr_gate": risk == "critical",
+        "panel": {"reduced": reduced, "seats": 1 if reduced else 5},
+    })
 
-    Before the parser was strict, a malformed payload still produced a
-    Classification with panel_reduced=False, so requires_full_panel was True and
-    the panel was forced ON — an ACCIDENTAL fail-closed. Making the parser
-    strict turned that payload into a failure, and a failure that read as None
-    left the metadata "skip" standing. The hardening opened a hole at the one
-    seam it was meant to protect.
 
-    A failed classification must now FORCE the panel: we could not establish
-    that the diff is safe to skip, and metadata already said skip.
+def test_panel_required_resolves_every_classification_shape():
+    """The round-3 fix duck-typed a union and silently dropped evidence.
+
+    getattr(ClassifyResult, "requires_full_panel", False) is False — that
+    attribute lives on the NESTED Classification — so a SUCCESSFUL result for a
+    critical, financial, full-panel-required diff read as "skip the panel".
+    PR-1294 inverted on the new type, by the commit closing PR-1294's other
+    half. Each shape is now resolved explicitly (skills/explicit-state.md).
     """
     from claude_dispatcher import classification as classification_mod
-    from claude_dispatcher import orchestrator
-
-    failed = classification_mod.ClassifyResult(
-        status=classification_mod.CLASSIFY_FAILED, detail="unusable classify output"
-    )
-    assert failed.failed is True
-    assert failed.classification is None
-
-    # The gating predicate itself, at the other seam the finding named.
     from claude_dispatcher import cross_family_reviewer as cfr_mod
-    assert cfr_mod.panel_required([], task_type="docs", classification=failed) is True, (
-        "a failed classification must force the panel, even for a docs-typed "
-        "task that metadata would skip"
-    )
 
-    # And a healthy reduced classification still permits the skip.
-    reduced = classification_mod.ClassifyResult(
-        classification=classification_mod.parse_classification({
-            "risk": "low", "financial_paths_touched": False, "client_only": True,
-            "server_surface": False, "migration": False, "human_pr_gate": False,
-            "panel": {"reduced": True, "seats": 1},
-        }),
+    ok_full = classification_mod.ClassifyResult(
+        classification=_mk_classification("critical", reduced=False),
         status=classification_mod.CLASSIFY_OK,
     )
-    assert cfr_mod.panel_required(["size:S"], classification=reduced) is False
+    ok_reduced = classification_mod.ClassifyResult(
+        classification=_mk_classification("low", reduced=True),
+        status=classification_mod.CLASSIFY_OK,
+    )
+    failed = classification_mod.ClassifyResult(
+        status=classification_mod.CLASSIFY_FAILED, detail="unusable output"
+    )
+
+    # The regression: a docs-typed task metadata would skip, with path evidence
+    # saying critical+financial. Must run the panel.
+    assert cfr_mod.panel_required([], task_type="docs", classification=ok_full) is True
+    # A failure demands the panel for the same reason: no evidence of safety.
+    assert cfr_mod.panel_required([], task_type="docs", classification=failed) is True
+    # A bare Classification still works.
+    assert cfr_mod.panel_required(
+        [], task_type="docs", classification=_mk_classification("critical", False)
+    ) is True
+    # A healthy reduced classification still permits the skip — this must not
+    # become "always panel", which would be a different way of being useless.
+    assert cfr_mod.panel_required(["size:S"], classification=ok_reduced) is False
+    assert cfr_mod.panel_required(["size:S"], classification=None) is False
+
+
+def test_panel_required_refuses_an_unknown_classification_shape():
+    """A new shape must fail loudly, not default to "no panel"."""
+    from claude_dispatcher import cross_family_reviewer as cfr_mod
+
+    with pytest.raises(TypeError, match="explicit-state"):
+        cfr_mod.panel_required([], classification="not a classification")
+
+
+def test_panel_runs_when_the_gate_classification_fails(repo: Path, monkeypatch) -> None:
+    """Seals the PRODUCTION seam — orchestrator._run_task's forced-panel branch.
+
+    The previous version of this test called cfr.panel_required directly, which
+    production invokes only WITHOUT a classification (orchestrator.py:1972).
+    Reverting the orchestrator fix left that test green — a vacuous seal, caught
+    by the panel. This drives the orchestrator and asserts the panel actually
+    ran, so reverting the fix fails it.
+    """
+    from claude_dispatcher import classification as classification_mod
+
+    _seed_yaml(repo, _LOW_RISK_TASK_YAML)  # metadata says skip: small, unlabelled
+    _patch_spawn(monkeypatch)
+    revs = _set_reviewers(monkeypatch, [
+        ("claude", _APPROVE_OUTPUT),
+        ("gemini", _APPROVE_OUTPUT),
+        ("codex", _APPROVE_OUTPUT),
+    ])
+
+    # The classifier is installed but cannot answer — the state that used to
+    # collapse to None and leave the skip standing.
+    monkeypatch.setattr(
+        classification_mod,
+        "classify_diff_result",
+        lambda **kw: classification_mod.ClassifyResult(
+            status=classification_mod.CLASSIFY_FAILED,
+            detail="unusable classify output",
+        ),
+    )
+
+    rc = orchestrator.execute(_args(repo, key="PANEL-B", panel_mode="auto"))
+    assert rc == 0
+
+    assert sum(r.call_count for r in revs) > 0, (
+        "the panel did not run: metadata said skip and the classification "
+        "FAILED, so the skip was trusted — the exact fail-open this seals"
+    )

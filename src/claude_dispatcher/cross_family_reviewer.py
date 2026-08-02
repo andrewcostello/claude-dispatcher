@@ -235,6 +235,39 @@ def is_small_leaf(labels: Iterable[str] | None) -> bool:
     return False
 
 
+def _classification_demands_panel(classification: object | None) -> bool:
+    """Does this classification argument require the full panel?
+
+    Accepts the two shapes callers legitimately hold and resolves each
+    EXPLICITLY, so a new shape fails loudly rather than defaulting to "no":
+
+      * ClassifyResult — failed means we could not establish the diff is safe to
+        skip, which demands the panel just as much as positive path evidence
+        does. Otherwise defer to the classification it carries.
+      * Classification — ask it directly.
+      * None — no evidence either way; metadata gating decides.
+    """
+    if classification is None:
+        return False
+
+    # ClassifyResult: identified by the status contract, not by attribute
+    # sniffing on the value we are about to trust.
+    if hasattr(classification, "status") and hasattr(classification, "classification"):
+        if getattr(classification, "failed", False):
+            return True
+        inner = classification.classification
+        return inner is not None and inner.requires_full_panel
+
+    if hasattr(classification, "requires_full_panel"):
+        return bool(classification.requires_full_panel)
+
+    raise TypeError(
+        f"panel_required got {type(classification).__name__} as `classification`; "
+        "expected a Classification, a ClassifyResult, or None. Refusing to guess "
+        "— a wrong guess here silently skips the panel (skills/explicit-state.md)."
+    )
+
+
 def panel_required(
     labels: Iterable[str] | None,
     *,
@@ -261,13 +294,19 @@ def panel_required(
     customer-facing wallet regression because the change was judged by how it was
     described rather than by what it touched.
     """
-    # A ClassifyResult that FAILED means we could not establish that this diff
-    # is safe to skip. Treat it like path evidence demanding the panel: absence
-    # of evidence is not evidence of absence. (Callers may also pass a bare
-    # Classification, which has no .failed.)
-    if getattr(classification, "failed", False):
-        return True
-    if classification is not None and getattr(classification, "requires_full_panel", False):
+    # NORMALISE AT THE BOUNDARY — do not duck-type a union.
+    #
+    # This accepted either a Classification or a ClassifyResult and probed both
+    # with getattr(..., False). A ClassifyResult has no `requires_full_panel`
+    # (that lives on the nested Classification), so a SUCCESSFUL result for a
+    # critical, financial, full-panel-required diff silently read as False and
+    # returned "skip the panel" — PR-1294 inverted on the new type, introduced
+    # by the commit that was closing PR-1294's other half.
+    #
+    # getattr-with-a-default on a union is duck typing standing in for a type
+    # check, and the default is a silent implicit state. See
+    # skills/explicit-state.md.
+    if _classification_demands_panel(classification):
         return True
 
     if task_type and task_type.lower() in _PANEL_SKIP_TYPES:
