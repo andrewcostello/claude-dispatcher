@@ -177,8 +177,9 @@ class EventType(str, Enum):
     # feature branch:
     #   pr_approved — the approval ladder cleared a PR for merge. Payload:
     #     number, approver (dispatcher-agent for self-approved low-risk, or
-    #     external:<login>/external for a GitHub approval), risk_level, and the
-    #     classifier reasons.
+    #     external:<login>/external for a GitHub approval), risk_level, the
+    #     classifier reasons, and classification (cmd/classify's summary line
+    #     for the diff, or null when no path classification was available).
     #   pr_merged — the PR landed via `gh pr merge --merge`. Payload: number,
     #     merger (dispatcher-agent), approver, target (the feature branch), and
     #     feature_branch_sha (the feature-branch tip after the merge).

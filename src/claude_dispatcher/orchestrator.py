@@ -1502,11 +1502,56 @@ def _run_task(
             # ADD review, never remove it — PR 1294 shipped a customer-facing
             # wallet regression because the change was judged by how it was
             # described rather than by its surface.
-            _gate_cls = _panel_gate_classification(
+            _gate_result = _panel_gate_classification(
                 cfg=cfg, snap=snap, wt=wt, repo_root=repo_root,
                 base_sha_before=base_sha_before, log_path=log_path,
             )
-            if _gate_cls is not None and _gate_cls.requires_full_panel:
+            _gate_cls = _gate_result.classification
+
+            # ONE implementation of "does this classification demand the panel".
+            # This branch used to inline its own copy — `_gate_result.failed` or
+            # `_gate_cls is not None and _gate_cls.requires_full_panel` — which
+            # is the same predicate cfr.classification_demands_panel implements.
+            # Hardening the helper and leaving the copy meant PRODUCTION still
+            # fell open on an unrecognised or internally inconsistent status:
+            # .failed is False and .classification is None, so both arms miss
+            # and the skip stands. The duplication WAS the defect (codex,
+            # sibling-surface trace, GO-1 round 5).
+            #
+            # An unusable state raises rather than answering, and that must fail
+            # CLOSED here: the safety net may not break the run, but it also may
+            # not resolve its own confusion into "skip the review".
+            _panel_demanded = False
+            _unusable: str | None = None
+            try:
+                _panel_demanded = cfr_mod.classification_demands_panel(_gate_result)
+            except (TypeError, ValueError) as exc:
+                _unusable = f"{type(exc).__name__}: {exc}"
+
+            if _unusable is not None:
+                _should_panel = True
+                _log(log_path,
+                     f"  {snap.key} panel: classification state unusable "
+                     f"({_unusable}) — running the panel rather than trusting "
+                     f"the skip")
+                _emit_event(cfg, journal_mod.EventType.panel_started, {
+                    "forced_by": "classification_unusable",
+                    "detail": _unusable,
+                }, task_key=snap.key)
+            elif _gate_result.failed:
+                # We could not establish that this diff is safe to skip, and
+                # metadata already said skip. Absence of evidence is not
+                # evidence of absence: run the panel.
+                _should_panel = True
+                _log(log_path,
+                     f"  {snap.key} panel: metadata said skip and classification "
+                     f"FAILED ({_gate_result.detail}) — running the panel rather "
+                     f"than trusting the skip")
+                _emit_event(cfg, journal_mod.EventType.panel_started, {
+                    "forced_by": "classification_failed",
+                    "detail": _gate_result.detail,
+                }, task_key=snap.key)
+            elif _panel_demanded and _gate_cls is not None:
                 _should_panel = True
                 _log(log_path,
                      f"  {snap.key} panel: metadata said skip, but the diff "
@@ -1888,12 +1933,25 @@ def _panel_gate_classification(
     repo_root: Path,
     base_sha_before: str | None,
     log_path: Path,
-) -> "classification.Classification | None":
-    """Classify the task's diff for panel gating, or None if unavailable.
+) -> "classification.ClassifyResult":
+    """Classify the task's diff for panel gating.
 
     Only called when metadata gating already decided to SKIP the panel, so the
-    subprocess cost is paid exactly when it might change the answer. Any failure
-    returns None and leaves the existing decision intact.
+    subprocess cost is paid exactly when it might change the answer.
+
+    Returns a ClassifyResult rather than an Optional, because the difference
+    between "no classifier here" and "the classifier failed" decides whether the
+    panel runs. Collapsing both to None is how this seam regressed: with a
+    permissive parser, a malformed payload still produced a Classification with
+    panel_reduced=False, so requires_full_panel was True and the panel was
+    forced ON — an ACCIDENTAL fail-closed. Making the parser strict turned that
+    same payload into a failure, and a failure that reads as None leaves the
+    metadata "skip" standing. The hardening would have opened a hole at the one
+    seam it was supposed to protect (found by the claude seat, GO-1 round 3).
+
+    A failure now means FORCE THE PANEL: we could not establish that this diff
+    is safe to skip, and the whole point of this call is that the metadata
+    already said skip.
     """
     try:
         diff_base, diff_branch = _resolve_diff_bounds(
@@ -1902,10 +1960,13 @@ def _panel_gate_classification(
         diff = cfr_mod.collect_diff(
             repo_root=repo_root, base_branch=diff_base, branch=diff_branch,
         )
-        return classification.classify_diff(diff=diff, repo_root=repo_root)
+        return classification.classify_diff_result(diff=diff, repo_root=repo_root)
     except Exception as e:  # never let the safety net break the run
         _log(log_path, f"  {snap.key} panel gate: classification failed: {e}")
-        return None
+        return classification.ClassifyResult(
+            status=classification.CLASSIFY_FAILED,
+            detail=f"panel gate classification raised {type(e).__name__}: {e}",
+        )
 
 
 def _panel_should_run(cfg: RunConfig, snap: TaskSnapshot) -> bool:

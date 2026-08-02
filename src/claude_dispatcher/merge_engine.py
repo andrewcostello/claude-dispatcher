@@ -220,6 +220,12 @@ def _consider_one(
 
     # --- ladder step (a): approval ----------------------------------------
     verdict = _classify(cfg, row, str(branch), risk_cfg)
+    # Which rule table produced this verdict — recorded whether or not the
+    # classification changed it, so the audit trail distinguishes "the table
+    # said low" from "there was no table" (GO-1).
+    if verdict.classification_summary:
+        log(f"  merge: {task.key} path classification: "
+            f"{verdict.classification_summary}")
     if verdict.is_low:
         approver = DISPATCHER_APPROVER
         log(f"  merge: {task.key} risk=low — dispatcher self-approves "
@@ -253,6 +259,7 @@ def _consider_one(
         "approver": approver,
         "risk_level": verdict.level,
         "reasons": list(verdict.reasons),
+        "classification": verdict.classification_summary,
     }, task_key=task.key)
 
     # --- merge -------------------------------------------------------------

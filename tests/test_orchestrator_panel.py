@@ -1274,3 +1274,203 @@ def test_exclusion_never_drops_below_two_seats(repo: Path, monkeypatch) -> None:
     # Dropping claude would leave one seat, so the author family is re-seated.
     by_family = {r.family: r.call_count for r in revs}
     assert by_family == {"claude": 1, "gemini": 1}
+
+
+def _mk_classification(risk: str, reduced: bool):
+    from claude_dispatcher import classification as classification_mod
+    return classification_mod.parse_classification({
+        "risk": risk,
+        "financial_paths_touched": risk == "critical",
+        "client_only": False,
+        "server_surface": True,
+        "migration": False,
+        "human_pr_gate": risk == "critical",
+        "panel": {"reduced": reduced, "seats": 1 if reduced else 5},
+    })
+
+
+def test_panel_required_resolves_every_classification_shape():
+    """The round-3 fix duck-typed a union and silently dropped evidence.
+
+    getattr(ClassifyResult, "requires_full_panel", False) is False — that
+    attribute lives on the NESTED Classification — so a SUCCESSFUL result for a
+    critical, financial, full-panel-required diff read as "skip the panel".
+    PR-1294 inverted on the new type, by the commit closing PR-1294's other
+    half. Each shape is now resolved explicitly (skills/explicit-state.md).
+    """
+    from claude_dispatcher import classification as classification_mod
+    from claude_dispatcher import cross_family_reviewer as cfr_mod
+
+    ok_full = classification_mod.ClassifyResult(
+        classification=_mk_classification("critical", reduced=False),
+        status=classification_mod.CLASSIFY_OK,
+    )
+    ok_reduced = classification_mod.ClassifyResult(
+        classification=_mk_classification("low", reduced=True),
+        status=classification_mod.CLASSIFY_OK,
+    )
+    failed = classification_mod.ClassifyResult(
+        status=classification_mod.CLASSIFY_FAILED, detail="unusable output"
+    )
+
+    # The regression: a docs-typed task metadata would skip, with path evidence
+    # saying critical+financial. Must run the panel.
+    assert cfr_mod.panel_required([], task_type="docs", classification=ok_full) is True
+    # A failure demands the panel for the same reason: no evidence of safety.
+    assert cfr_mod.panel_required([], task_type="docs", classification=failed) is True
+    # A bare Classification still works.
+    assert cfr_mod.panel_required(
+        [], task_type="docs", classification=_mk_classification("critical", False)
+    ) is True
+    # A healthy reduced classification still permits the skip — this must not
+    # become "always panel", which would be a different way of being useless.
+    assert cfr_mod.panel_required(["size:S"], classification=ok_reduced) is False
+    assert cfr_mod.panel_required(["size:S"], classification=None) is False
+
+
+def test_panel_required_refuses_an_unknown_classification_shape():
+    """A new shape must fail loudly, not default to "no panel".
+
+    The earlier version of this test used a STRING, which lacks both `.status`
+    and `.classification` and so never reached the structural branch that was
+    actually broken. It passed while three real shapes failed open — a seal that
+    tested the easy case. codex caught it (GO-1 round 4); the lookalike below is
+    the case that matters.
+    """
+    from types import SimpleNamespace
+    from claude_dispatcher import cross_family_reviewer as cfr_mod
+
+    with pytest.raises(TypeError, match="explicit-state"):
+        cfr_mod.panel_required([], classification="not a classification")
+
+    # A structural lookalike: has .status and .classification, is not a
+    # ClassifyResult. hasattr-based dispatch accepted this and returned False.
+    with pytest.raises(TypeError, match="explicit-state"):
+        cfr_mod.panel_required(
+            [], task_type="docs",
+            classification=SimpleNamespace(status="failed", classification=None),
+        )
+
+
+def test_panel_required_rejects_inconsistent_classify_results():
+    """A canonical ClassifyResult can still be internally inconsistent, and both
+    forms previously resolved to "no panel" (codex, GO-1 round 4)."""
+    from claude_dispatcher import classification as classification_mod
+    from claude_dispatcher import cross_family_reviewer as cfr_mod
+
+    # A status this build does not know. Defaulting a future status to the
+    # permissive branch is exactly how the gate fails open.
+    with pytest.raises(ValueError, match="unrecognised status"):
+        cfr_mod.panel_required(
+            [], task_type="docs",
+            classification=classification_mod.ClassifyResult(status="future-status"),
+        )
+
+    # Claims success, carries nothing.
+    with pytest.raises(ValueError, match="CLASSIFY_OK but carries no"):
+        cfr_mod.panel_required(
+            [], task_type="docs",
+            classification=classification_mod.ClassifyResult(
+                status=classification_mod.CLASSIFY_OK, classification=None
+            ),
+        )
+
+
+def test_panel_required_handles_every_documented_status():
+    """Exhaustive over the status contract, so a new status added without
+    updating the predicate fails the suite rather than the gate."""
+    from claude_dispatcher import classification as classification_mod
+    from claude_dispatcher import cross_family_reviewer as cfr_mod
+
+    # ABSENT and EMPTY are genuinely "no evidence either way" — metadata
+    # decides. This must NOT become "always panel", which would be a different
+    # way of being useless.
+    for neutral in (classification_mod.CLASSIFY_ABSENT, classification_mod.CLASSIFY_EMPTY):
+        result = classification_mod.ClassifyResult(status=neutral)
+        assert cfr_mod.panel_required(["size:S"], classification=result) is False
+        # ...but they must not override a label that already demands the panel.
+        assert cfr_mod.panel_required(["risk:critical"], classification=result) is True
+
+
+def test_panel_runs_when_the_gate_classification_fails(repo: Path, monkeypatch) -> None:
+    """Seals the PRODUCTION seam — orchestrator._run_task's forced-panel branch.
+
+    The previous version of this test called cfr.panel_required directly, which
+    production invokes only WITHOUT a classification (orchestrator.py:1972).
+    Reverting the orchestrator fix left that test green — a vacuous seal, caught
+    by the panel. This drives the orchestrator and asserts the panel actually
+    ran, so reverting the fix fails it.
+    """
+    from claude_dispatcher import classification as classification_mod
+
+    _seed_yaml(repo, _LOW_RISK_TASK_YAML)  # metadata says skip: small, unlabelled
+    _patch_spawn(monkeypatch)
+    revs = _set_reviewers(monkeypatch, [
+        ("claude", _APPROVE_OUTPUT),
+        ("gemini", _APPROVE_OUTPUT),
+        ("codex", _APPROVE_OUTPUT),
+    ])
+
+    # The classifier is installed but cannot answer — the state that used to
+    # collapse to None and leave the skip standing.
+    monkeypatch.setattr(
+        classification_mod,
+        "classify_diff_result",
+        lambda **kw: classification_mod.ClassifyResult(
+            status=classification_mod.CLASSIFY_FAILED,
+            detail="unusable classify output",
+        ),
+    )
+
+    rc = orchestrator.execute(_args(repo, key="PANEL-B", panel_mode="auto"))
+    assert rc == 0
+
+    assert sum(r.call_count for r in revs) > 0, (
+        "the panel did not run: metadata said skip and the classification "
+        "FAILED, so the skip was trusted — the exact fail-open this seals"
+    )
+
+
+@pytest.mark.parametrize("bad_result_kwargs, expect_forced", [
+    ({"status": "future-status"}, True),
+    ({"status": "ok", "classification": None}, True),
+])
+def test_production_gate_fails_closed_on_an_unusable_classification(
+    repo: Path, monkeypatch, bad_result_kwargs, expect_forced
+) -> None:
+    """Seals the PRODUCTION seam against unrecognised/inconsistent states.
+
+    orchestrator._run_task inlined its own copy of the demands-panel predicate.
+    Hardening cfr.classification_demands_panel left that copy untouched, so
+    production still fell open: for these two results `.failed` is False and
+    `.classification` is None, so both inline arms missed and the metadata skip
+    stood (codex, sibling-surface trace, GO-1 round 5).
+
+    The duplication was the defect. Production now calls the one predicate, and
+    an unusable state fails CLOSED — the safety net may not break the run, but
+    it also may not resolve its own confusion into "skip the review".
+    """
+    from claude_dispatcher import classification as classification_mod
+
+    _seed_yaml(repo, _LOW_RISK_TASK_YAML)  # metadata says skip
+    _patch_spawn(monkeypatch)
+    revs = _set_reviewers(monkeypatch, [
+        ("claude", _APPROVE_OUTPUT),
+        ("gemini", _APPROVE_OUTPUT),
+        ("codex", _APPROVE_OUTPUT),
+    ])
+
+    monkeypatch.setattr(
+        classification_mod,
+        "classify_diff_result",
+        lambda **kw: classification_mod.ClassifyResult(**bad_result_kwargs),
+    )
+
+    rc = orchestrator.execute(_args(repo, key="PANEL-B", panel_mode="auto"))
+    assert rc == 0
+
+    ran = sum(r.call_count for r in revs) > 0
+    assert ran is expect_forced, (
+        f"ClassifyResult({bad_result_kwargs}) did not force the panel — an "
+        "unusable classifier state resolved into 'skip the review gate'"
+    )

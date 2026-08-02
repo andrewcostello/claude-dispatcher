@@ -46,6 +46,8 @@ import re
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from . import classification as classification_mod
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -235,6 +237,65 @@ def is_small_leaf(labels: Iterable[str] | None) -> bool:
     return False
 
 
+def classification_demands_panel(classification: object | None) -> bool:
+    """Does this classification argument require the full panel?
+
+    isinstance, not hasattr. The previous version matched on the SHAPE of the
+    object — "has .status and .classification" — which is duck typing wearing a
+    type check's clothes, and it failed open three ways (codex seat, GO-1 round
+    4): a SimpleNamespace lookalike, a ClassifyResult with an unrecognised
+    status, and a ClassifyResult claiming OK while carrying no payload all
+    returned "panel not demanded". The unknown-shape seal missed it because it
+    used a string, which lacks both attributes and so never reached the
+    defective branch.
+
+    Every status is handled by name and an unrecognised one raises. See
+    skills/explicit-state.md: naming three states is not enough if a fourth can
+    arrive and be silently treated as the permissive one.
+    """
+    if classification is None:
+        return False
+
+    if isinstance(classification, classification_mod.Classification):
+        return classification.requires_full_panel
+
+    if isinstance(classification, classification_mod.ClassifyResult):
+        status = classification.status
+        inner = classification.classification
+
+        if status == classification_mod.CLASSIFY_FAILED:
+            # Could not establish the diff is safe to skip.
+            return True
+
+        if status == classification_mod.CLASSIFY_OK:
+            if inner is None:
+                raise ValueError(
+                    "ClassifyResult claims CLASSIFY_OK but carries no "
+                    "classification — an internally inconsistent result must not "
+                    "resolve to 'no panel' (skills/explicit-state.md)"
+                )
+            return inner.requires_full_panel
+
+        if status in (classification_mod.CLASSIFY_ABSENT, classification_mod.CLASSIFY_EMPTY):
+            # No classifier here, or nothing to classify. Genuinely no evidence
+            # either way — metadata gating decides, which is the documented
+            # degradation contract.
+            return False
+
+        raise ValueError(
+            f"ClassifyResult has unrecognised status {status!r}; expected one of "
+            f"{[classification_mod.CLASSIFY_OK, classification_mod.CLASSIFY_ABSENT, classification_mod.CLASSIFY_EMPTY, classification_mod.CLASSIFY_FAILED]}. "
+            "Refusing to guess — a new status defaulting to 'no panel' is how "
+            "this gate fails open."
+        )
+
+    raise TypeError(
+        f"panel_required got {type(classification).__name__} as `classification`; "
+        "expected a Classification, a ClassifyResult, or None. Refusing to guess "
+        "— a wrong guess here silently skips the panel (skills/explicit-state.md)."
+    )
+
+
 def panel_required(
     labels: Iterable[str] | None,
     *,
@@ -261,7 +322,19 @@ def panel_required(
     customer-facing wallet regression because the change was judged by how it was
     described rather than by what it touched.
     """
-    if classification is not None and getattr(classification, "requires_full_panel", False):
+    # NORMALISE AT THE BOUNDARY — do not duck-type a union.
+    #
+    # This accepted either a Classification or a ClassifyResult and probed both
+    # with getattr(..., False). A ClassifyResult has no `requires_full_panel`
+    # (that lives on the nested Classification), so a SUCCESSFUL result for a
+    # critical, financial, full-panel-required diff silently read as False and
+    # returned "skip the panel" — PR-1294 inverted on the new type, introduced
+    # by the commit that was closing PR-1294's other half.
+    #
+    # getattr-with-a-default on a union is duck typing standing in for a type
+    # check, and the default is a silent implicit state. See
+    # skills/explicit-state.md.
+    if classification_demands_panel(classification):
         return True
 
     if task_type and task_type.lower() in _PANEL_SKIP_TYPES:
