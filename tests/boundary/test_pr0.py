@@ -420,6 +420,8 @@ class _LookalikeOutcome:
     pytest.param("single", id="single-designated-seat"),
 ])
 def test_aggregate_rows(generated, case):
+    # complexity-justified: exhaustive case switch over the closed
+    # parametrised row set — one arm per golden, no interacting branches.
     g = generated
     r = _roster(g)
     ok = g.SeatOutcome(g.SeatVerdict.APPROVE)
@@ -531,6 +533,8 @@ def test_boundary_error_maps_match_schema_element_wise(schemas, generated):
     """Per-code phase/retriability and the exit map are asserted against the
     schema row by row — a permuted assignment fails (panel finding: domain
     membership alone is satisfied by every permutation)."""
+    # complexity-justified: element-wise exhaustive seal plus its own
+    # permutation deny — linear assertions, no interacting paths.
     g = generated
     rows = {c["code"]: c for c in schemas["boundary_errors"]["codes"]}
     assert {c.name for c in g.BoundaryErrorCode} == set(rows)
@@ -755,6 +759,8 @@ def _scan_guarded(paths: list[Path], guarded: set[str],
     """Definitions and constructions of guarded names: bare-name calls,
     attribute-qualified calls (mod.Name(...)), and calls through import
     aliases (from x import Name as N; N(...))."""
+    # complexity-justified: dispatcher over AST node kinds/spellings — each
+    # branch is one construction spelling, sealed by its own deny fixture.
     hits = []
     for path in paths:
         if path in exempt:
@@ -827,6 +833,8 @@ def test_ast_allowlists_fail_closed(schemas, tmp_path, gate):
 # ─── architecture skeleton: dark mode ────────────────────────────────────────
 
 def _imports_boundary(tree: ast.AST) -> list[str]:
+    # complexity-justified: dispatcher over the closed set of import
+    # spellings — each branch is one spelling, sealed by its own deny row.
     hits = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):

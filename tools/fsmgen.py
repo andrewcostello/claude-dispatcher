@@ -99,6 +99,9 @@ def _require_ident(token: object, where: str) -> str:
 
 
 def _validate_schema_tokens(s: dict) -> None:
+    # complexity-justified: straight-line enumeration of every schema section
+    # that feeds an identifier into generated code — one branch per section,
+    # no interacting paths; splitting it would hide the coverage inventory.
     """No unvalidated schema token reaches exec() (panel finding)."""
     fsm, errors = s["lifecycle_fsm"], s["boundary_errors"]
     for sec in ("section_a", "section_b"):
@@ -1045,6 +1048,59 @@ _OBSERVE_EXPECTED = {"redelivery": "ObserveDeltaRedelivery",
                      "create": "ObserveDelta"}
 
 
+def _admit_hold_event(book: _HoldBook, base: str, event: object,
+                      ev: Mapping[str, object]):
+    """Resolve which hold an event addresses: the §6.0 apply order for
+    observe_delta (mis-tagged variants and contradicted hold_ids halt),
+    reference lookup for actor/reconcile events (unknown holds halt).
+    Returns (hid, cur, halt)."""
+    cls = type(event)
+    if cls.TRIGGER == "observe_delta":
+        resolution, hid = _resolve_observe_delta(book, base, event)
+        if cls.__name__ != _OBSERVE_EXPECTED[resolution]:
+            return None, None, _halt(
+                BoundaryErrorCode.ILLEGAL_TRANSITION,
+                f"apply order resolves {resolution!r} (hold {hid}) but "
+                f"the event is tagged {cls.__name__!r} "
+                f"(event_id {ev.get('event_id')!r})", ev)
+        if event.hold_id is not None and event.hold_id != hid:
+            return None, None, _halt(
+                BoundaryErrorCode.ILLEGAL_TRANSITION,
+                f"declared hold_id {event.hold_id!r} contradicts the "
+                f"derived/resolved {hid!r} "
+                f"(event_id {ev.get('event_id')!r})", ev)
+        return hid, book.holds.get(hid, GENESIS_B), None
+    hid = event.hold_id
+    cur = book.holds.get(hid)
+    if cur is None:
+        return None, None, _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION,
+            f"{cls.__name__!r} references unknown hold {hid!r} "
+            f"(event_id {ev.get('event_id')!r})", ev)
+    return hid, cur, None
+
+
+def _record_hold_outcome(book: _HoldBook, hid: str, event: object,
+                         cur: MachineStateB, new: MachineStateB) -> None:
+    """Bookkeeping after a legal step: creation registers the delta tuple
+    as open; a first-seen source_delivery_id is indexed; a transition INTO
+    RELEASED closes the delta and feeds occurrence_seq."""
+    if hid not in book.holds:
+        book.order.append(hid)
+        book.hold_delta[hid] = (event.ref, event.delta_old_oid,
+                                event.delta_new_oid)
+        book.open_by_delta[book.hold_delta[hid]] = hid
+    sdid = getattr(event, "source_delivery_id", None)
+    if sdid is not None and sdid not in book.delivery_index:
+        book.delivery_index[sdid] = hid
+        book.deliveries.setdefault(hid, []).append(sdid)
+    if cur.name is not SectionBState.RELEASED and new.name is SectionBState.RELEASED:
+        delta = book.hold_delta.get(hid)
+        book.open_by_delta.pop(delta, None)
+        book.terminal_count[delta] = book.terminal_count.get(delta, 0) + 1
+    book.holds[hid] = new
+
+
 def reduce_section_b(events: Sequence[Mapping[str, object]]) -> dict:
     """Reduce a hold_lifecycle stream into section-B states per
     (base_key, hold_id), implementing §6.0's observe_delta apply order and
@@ -1091,30 +1147,9 @@ def reduce_section_b(events: Sequence[Mapping[str, object]]) -> dict:
         if book is None:
             book = books[base] = _HoldBook()
             base_order.append(base)
-        cls = type(event)
-        if cls.TRIGGER == "observe_delta":
-            resolution, hid = _resolve_observe_delta(book, base, event)
-            if cls.__name__ != _OBSERVE_EXPECTED[resolution]:
-                return finish(_halt(
-                    BoundaryErrorCode.ILLEGAL_TRANSITION,
-                    f"apply order resolves {resolution!r} (hold {hid}) but "
-                    f"the event is tagged {cls.__name__!r} "
-                    f"(event_id {ev.get('event_id')!r})", ev))
-            if event.hold_id is not None and event.hold_id != hid:
-                return finish(_halt(
-                    BoundaryErrorCode.ILLEGAL_TRANSITION,
-                    f"declared hold_id {event.hold_id!r} contradicts the "
-                    f"derived/resolved {hid!r} "
-                    f"(event_id {ev.get('event_id')!r})", ev))
-            cur = book.holds.get(hid, GENESIS_B)
-        else:
-            hid = event.hold_id
-            cur = book.holds.get(hid)
-            if cur is None:
-                return finish(_halt(
-                    BoundaryErrorCode.ILLEGAL_TRANSITION,
-                    f"{cls.__name__!r} references unknown hold {hid!r} "
-                    f"(event_id {ev.get('event_id')!r})", ev))
+        hid, cur, halt = _admit_hold_event(book, base, event, ev)
+        if halt is not None:
+            return finish(halt)
         if event.from_state != cur.name.value:
             return finish(_halt(
                 BoundaryErrorCode.ILLEGAL_TRANSITION,
@@ -1125,20 +1160,7 @@ def reduce_section_b(events: Sequence[Mapping[str, object]]) -> dict:
             new = apply_section_b(cur, event)
         except IllegalTransitionError as exc:
             return finish(_halt(BoundaryErrorCode.ILLEGAL_TRANSITION, str(exc), ev))
-        if hid not in book.holds:
-            book.order.append(hid)
-            book.hold_delta[hid] = (event.ref, event.delta_old_oid,
-                                    event.delta_new_oid)
-            book.open_by_delta[book.hold_delta[hid]] = hid
-        sdid = getattr(event, "source_delivery_id", None)
-        if sdid is not None and sdid not in book.delivery_index:
-            book.delivery_index[sdid] = hid
-            book.deliveries.setdefault(hid, []).append(sdid)
-        if cur.name is not SectionBState.RELEASED and new.name is SectionBState.RELEASED:
-            delta = book.hold_delta.get(hid)
-            book.open_by_delta.pop(delta, None)
-            book.terminal_count[delta] = book.terminal_count.get(delta, 0) + 1
-        book.holds[hid] = new
+        _record_hold_outcome(book, hid, event, cur, new)
     return finish(None)
 
 
