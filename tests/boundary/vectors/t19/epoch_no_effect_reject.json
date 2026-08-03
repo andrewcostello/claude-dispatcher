@@ -1,0 +1,28 @@
+{
+  "machine": "epoch_fold",
+  "note": "a no-effect reject (E0\u2192E0) beside no advance \u2014 not a false fork",
+  "events": [
+    {
+      "event_id": "e1",
+      "base_key": "R1:refs/heads/main",
+      "epoch_before": "E0",
+      "epoch_after": "E0"
+    },
+    {
+      "event_id": "e2",
+      "base_key": "R1:refs/heads/main",
+      "epoch_before": "E0",
+      "epoch_after": "E0"
+    }
+  ],
+  "anchors": {
+    "R1:refs/heads/main": "E0"
+  },
+  "expected": {
+    "R1:refs/heads/main": {
+      "status": "ok",
+      "epoch": "E0",
+      "halt": null
+    }
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "machine": "section_b",
+  "note": "RELEASED(d) \u00d7 operator_reconcile(same d) \u2014 identity",
+  "events": [
+    {
+      "family": "hold_lifecycle",
+      "variant": "ObserveDelta",
+      "event_id": "h1",
+      "hold_id": "H1",
+      "base_key": "R1:refs/heads/main",
+      "from": "GENESIS",
+      "delta_old_oid": "o0",
+      "delta_new_oid": "o1",
+      "source_delivery_id": "d1"
+    },
+    {
+      "family": "hold_lifecycle",
+      "variant": "HoldReconcileAccept",
+      "event_id": "h2",
+      "hold_id": "H1",
+      "base_key": "R1:refs/heads/main",
+      "from": "HELD_FOREIGN",
+      "disposition": "ACCEPT_OURS"
+    },
+    {
+      "family": "hold_lifecycle",
+      "variant": "HoldReconcileReplayIdentity",
+      "event_id": "h3",
+      "hold_id": "H1",
+      "base_key": "R1:refs/heads/main",
+      "from": "RELEASED",
+      "disposition": "ACCEPT_OURS"
+    }
+  ],
+  "expected": {
+    "holds": {
+      "H1": {
+        "state": "RELEASED",
+        "disposition": "ACCEPT_OURS",
+        "deliveries": [
+          "d1"
+        ]
+      }
+    },
+    "halted": null
+  }
+}

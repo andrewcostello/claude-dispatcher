@@ -1,0 +1,35 @@
+{
+  "machine": "section_a",
+  "note": "kill -9 between the dual appends: hold-branch copy is canonical inside the crash window \u2014 one movement, one hold",
+  "events": [
+    {
+      "family": "effect_lifecycle",
+      "variant": "Prepare",
+      "event_id": "e1",
+      "movement_id": "m1",
+      "base_key": "R1:refs/heads/main",
+      "from": "GENESIS",
+      "branch": "state"
+    },
+    {
+      "family": "effect_lifecycle",
+      "variant": "MoveToHoldFromPrepared",
+      "event_id": "e2",
+      "movement_id": "m1",
+      "base_key": "R1:refs/heads/main",
+      "from": "PREPARED",
+      "branch": "hold"
+    }
+  ],
+  "expected": {
+    "movements": {
+      "m1": {
+        "state": "HELD",
+        "disposition": null,
+        "via_recovery_append": false
+      }
+    },
+    "recovery_appends": [],
+    "halted": null
+  }
+}

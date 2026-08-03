@@ -1,0 +1,31 @@
+{
+  "machine": "epoch_fold",
+  "note": "DENY: reused epoch / cycle \u21d2 halt",
+  "events": [
+    {
+      "event_id": "e1",
+      "base_key": "R1:refs/heads/main",
+      "epoch_before": "E0",
+      "epoch_after": "E1"
+    },
+    {
+      "event_id": "e2",
+      "base_key": "R1:refs/heads/main",
+      "epoch_before": "E1",
+      "epoch_after": "E0"
+    }
+  ],
+  "anchors": {
+    "R1:refs/heads/main": "E0"
+  },
+  "expected": {
+    "R1:refs/heads/main": {
+      "status": "halt",
+      "epoch": "E1",
+      "halt": {
+        "code": "EPOCH_FORK",
+        "detail": "R1:refs/heads/main: cycle/reused epoch E0"
+      }
+    }
+  }
+}

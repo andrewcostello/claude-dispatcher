@@ -1,0 +1,47 @@
+{
+  "machine": "section_b",
+  "note": "cold-start golden (round 19, claude B2): redelivered webhook after RELEASED \u2014 same source_delivery_id \u21d2 idempotent no-op, no re-park, no halt",
+  "events": [
+    {
+      "family": "hold_lifecycle",
+      "variant": "ObserveDelta",
+      "event_id": "h1",
+      "hold_id": "H1",
+      "base_key": "R1:refs/heads/main",
+      "from": "GENESIS",
+      "delta_old_oid": "o0",
+      "delta_new_oid": "o1",
+      "source_delivery_id": "d1"
+    },
+    {
+      "family": "hold_lifecycle",
+      "variant": "HoldReconcileAccept",
+      "event_id": "h2",
+      "hold_id": "H1",
+      "base_key": "R1:refs/heads/main",
+      "from": "HELD_FOREIGN",
+      "disposition": "ACCEPT_FOREIGN_ADVANCED"
+    },
+    {
+      "family": "hold_lifecycle",
+      "variant": "ObserveDeltaRedelivery",
+      "event_id": "h3",
+      "hold_id": "H1",
+      "base_key": "R1:refs/heads/main",
+      "from": "RELEASED",
+      "source_delivery_id": "d1"
+    }
+  ],
+  "expected": {
+    "holds": {
+      "H1": {
+        "state": "RELEASED",
+        "disposition": "ACCEPT_FOREIGN_ADVANCED",
+        "deliveries": [
+          "d1"
+        ]
+      }
+    },
+    "halted": null
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "machine": "section_b",
+  "note": "DENY: RELEASED(d) \u00d7 operator_reconcile(d\u2032 \u2260 d) \u21d2 ILLEGAL typed error",
+  "events": [
+    {
+      "family": "hold_lifecycle",
+      "variant": "ObserveDelta",
+      "event_id": "h1",
+      "hold_id": "H1",
+      "base_key": "R1:refs/heads/main",
+      "from": "GENESIS",
+      "delta_old_oid": "o0",
+      "delta_new_oid": "o1",
+      "source_delivery_id": "d1"
+    },
+    {
+      "family": "hold_lifecycle",
+      "variant": "HoldReconcileAccept",
+      "event_id": "h2",
+      "hold_id": "H1",
+      "base_key": "R1:refs/heads/main",
+      "from": "HELD_FOREIGN",
+      "disposition": "ACCEPT_OURS"
+    },
+    {
+      "family": "hold_lifecycle",
+      "variant": "HoldReconcileReplayIdentity",
+      "event_id": "h3",
+      "hold_id": "H1",
+      "base_key": "R1:refs/heads/main",
+      "from": "RELEASED",
+      "disposition": "ACCEPT_FOREIGN_ADVANCED"
+    }
+  ],
+  "expected": {
+    "halted": {
+      "code": "ILLEGAL_TRANSITION",
+      "detail": "ILLEGAL_TRANSITION: section_b: RELEASED \u00d7 HoldReconcileReplayIdentity \u2014 conflicting disposition ReconcileDisposition.ACCEPT_FOREIGN_ADVANCED vs ReconcileDisposition.ACCEPT_OURS"
+    }
+  }
+}

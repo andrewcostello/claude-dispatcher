@@ -1,0 +1,31 @@
+{
+  "machine": "section_a",
+  "note": "DENY: a durable stream carrying a memory-only transition (resume-submit after crash) is ILLEGAL",
+  "events": [
+    {
+      "family": "effect_lifecycle",
+      "variant": "Prepare",
+      "event_id": "e1",
+      "movement_id": "m1",
+      "base_key": "R1:refs/heads/main",
+      "from": "GENESIS",
+      "branch": "state"
+    },
+    {
+      "family": "effect_lifecycle",
+      "variant": "Submit",
+      "event_id": "e2",
+      "movement_id": "m1",
+      "base_key": "R1:refs/heads/main",
+      "from": "PREPARED",
+      "branch": "state",
+      "authorization_id": "auth1"
+    }
+  ],
+  "expected": {
+    "halted": {
+      "code": "ILLEGAL_TRANSITION",
+      "detail": "memory-only transition 'Submit' in the durable stream"
+    }
+  }
+}

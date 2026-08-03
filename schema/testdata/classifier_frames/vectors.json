@@ -1,0 +1,43 @@
+{
+  "_generated_by": "tools/fsmgen.py",
+  "frame_layout": "u32be outer_len | u8 version=1 | u64be policy_len | policy | u64be diff_len | diff",
+  "bounds": {
+    "policy_max_bytes": 1048576,
+    "diff_max_bytes": 10485760,
+    "producer_output_max_bytes": 2097152
+  },
+  "cases": [
+    {
+      "name": "valid_frame",
+      "file": "valid_frame.bin",
+      "expect": "accept",
+      "reason": null,
+      "sha256": "952e8cb756210a82bbc2108449c6e9064b93080439536da7be0aac165a9cde8b",
+      "bytes": 180
+    },
+    {
+      "name": "malformed_length",
+      "file": "malformed_length.bin",
+      "expect": "reject",
+      "reason": "policy_len exceeds the frame's remaining octets",
+      "sha256": "b2a267021407c0b7c574e6e3d93239d19be1bfb3fd0262be00dbede6b3d57076",
+      "bytes": 180
+    },
+    {
+      "name": "truncation",
+      "file": "truncation.bin",
+      "expect": "reject",
+      "reason": "frame cut short mid-diff",
+      "sha256": "06fc4acc2aac10a3bb57026d4c247ce3f810a124701d8eb94630f23f565ea9af",
+      "bytes": 173
+    },
+    {
+      "name": "trailing_data",
+      "file": "trailing_data.bin",
+      "expect": "reject",
+      "reason": "bytes after the last declared field",
+      "sha256": "c43176a19a0702ec8652cb42396c73daaf6827c2aa355c24d94d3d7ecb583588",
+      "bytes": 185
+    }
+  ]
+}

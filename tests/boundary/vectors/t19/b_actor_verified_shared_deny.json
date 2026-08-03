@@ -1,0 +1,36 @@
+{
+  "machine": "section_b",
+  "note": "DENY: under SHARED, never \u2014 actor_verified_match is SEPARATED-only (\u00a76.0)",
+  "events": [
+    {
+      "family": "hold_lifecycle",
+      "variant": "ObserveDelta",
+      "event_id": "h1",
+      "hold_id": "H1",
+      "base_key": "R1:refs/heads/main",
+      "from": "GENESIS",
+      "delta_old_oid": "o0",
+      "delta_new_oid": "o1",
+      "source_delivery_id": "d1"
+    },
+    {
+      "family": "hold_lifecycle",
+      "variant": "ActorVerifiedAuto",
+      "event_id": "h2",
+      "hold_id": "H1",
+      "base_key": "R1:refs/heads/main",
+      "from": "HELD_FOREIGN",
+      "actor_node_id": "N_op",
+      "matched_subject_digest": "s1",
+      "actor_verification": "VERIFIED_API",
+      "mode": "SHARED",
+      "disposition": "ACTOR_VERIFIED_AUTO"
+    }
+  ],
+  "expected": {
+    "halted": {
+      "code": "ILLEGAL_TRANSITION",
+      "detail": "ILLEGAL_TRANSITION: section_b: HELD_FOREIGN \u00d7 ActorVerifiedAuto \u2014 ACTOR_VERIFIED_AUTO requires SEPARATED; under SHARED, never"
+    }
+  }
+}

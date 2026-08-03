@@ -1,0 +1,41 @@
+{
+  "machine": "section_b",
+  "note": "round-20 row: NEW source_delivery_id, same delta tuple, open hold \u2014 delivery recorded, state unchanged",
+  "events": [
+    {
+      "family": "hold_lifecycle",
+      "variant": "ObserveDelta",
+      "event_id": "h1",
+      "hold_id": "H1",
+      "base_key": "R1:refs/heads/main",
+      "from": "GENESIS",
+      "delta_old_oid": "o0",
+      "delta_new_oid": "o1",
+      "source_delivery_id": "d1"
+    },
+    {
+      "family": "hold_lifecycle",
+      "variant": "ObserveDeltaNewDeliveryOnOpenHold",
+      "event_id": "h2",
+      "hold_id": "H1",
+      "base_key": "R1:refs/heads/main",
+      "from": "HELD_FOREIGN",
+      "source_delivery_id": "d2",
+      "delta_old_oid": "o0",
+      "delta_new_oid": "o1"
+    }
+  ],
+  "expected": {
+    "holds": {
+      "H1": {
+        "state": "HELD_FOREIGN",
+        "disposition": null,
+        "deliveries": [
+          "d1",
+          "d2"
+        ]
+      }
+    },
+    "halted": null
+  }
+}

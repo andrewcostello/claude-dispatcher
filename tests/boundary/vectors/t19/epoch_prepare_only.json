@@ -1,0 +1,22 @@
+{
+  "machine": "epoch_fold",
+  "note": "no-effect PREPARED(E0\u2192E0) pairs are not edges \u2014 anchor stays the tail",
+  "events": [
+    {
+      "event_id": "e1",
+      "base_key": "R1:refs/heads/main",
+      "epoch_before": "E0",
+      "epoch_after": "E0"
+    }
+  ],
+  "anchors": {
+    "R1:refs/heads/main": "E0"
+  },
+  "expected": {
+    "R1:refs/heads/main": {
+      "status": "ok",
+      "epoch": "E0",
+      "halt": null
+    }
+  }
+}

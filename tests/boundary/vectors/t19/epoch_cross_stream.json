@@ -1,0 +1,30 @@
+{
+  "machine": "epoch_fold",
+  "note": "sequential advances across BOTH durable streams (section A then section B release) chain to one tail",
+  "events": [
+    {
+      "event_id": "e1",
+      "base_key": "R1:refs/heads/main",
+      "epoch_before": "E0",
+      "epoch_after": "E1",
+      "stream": "effect_lifecycle"
+    },
+    {
+      "event_id": "h1",
+      "base_key": "R1:refs/heads/main",
+      "epoch_before": "E1",
+      "epoch_after": "E2",
+      "stream": "hold_lifecycle"
+    }
+  ],
+  "anchors": {
+    "R1:refs/heads/main": "E0"
+  },
+  "expected": {
+    "R1:refs/heads/main": {
+      "status": "ok",
+      "epoch": "E2",
+      "halt": null
+    }
+  }
+}

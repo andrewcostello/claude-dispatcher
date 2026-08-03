@@ -1,0 +1,30 @@
+{
+  "machine": "epoch_fold",
+  "note": "carrier copies of one advance share an event_id \u2014 dedup, no fork",
+  "events": [
+    {
+      "event_id": "e1",
+      "base_key": "R1:refs/heads/main",
+      "epoch_before": "E0",
+      "epoch_after": "E1",
+      "branch": "hold"
+    },
+    {
+      "event_id": "e1",
+      "base_key": "R1:refs/heads/main",
+      "epoch_before": "E0",
+      "epoch_after": "E1",
+      "branch": "state"
+    }
+  ],
+  "anchors": {
+    "R1:refs/heads/main": "E0"
+  },
+  "expected": {
+    "R1:refs/heads/main": {
+      "status": "ok",
+      "epoch": "E1",
+      "halt": null
+    }
+  }
+}
