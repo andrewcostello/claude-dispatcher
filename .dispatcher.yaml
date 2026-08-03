@@ -19,6 +19,9 @@ test: |
     PY=python3
   fi
   PYTHONPATH=src "$PY" -m pytest tests/ -q --tb=line
+  # PR0 (classification→gating boundary): the design doc's own lint is part
+  # of the mechanical gate — pytest tests/ already covers tests/boundary.
+  "$PY" tools/t26_lint.py
 
 # Cross-family panel: probationary advisory seats (VG-5).
 panel:

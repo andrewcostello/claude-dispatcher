@@ -101,6 +101,17 @@
       "risk": "high"
     },
     {
+      "id": "generated-safety-truth",
+      "note": "The classification→gating boundary's generated truth (design v20 §12; implementation plan PR0). schema/ is the machine-readable source every FSM/§9/panel/error type is generated from; tools/fsmgen.py writes those types and tools/t26_lint.py is the design doc's own CI lint. A quiet edit to any of these rewrites the safety model itself — the catch-all below would have tiered them medium (plan review, grok M9), so this rule sits BEFORE it.",
+      "paths": [
+        "src/claude_dispatcher/boundary/**",
+        "schema/**",
+        "tools/fsmgen.py",
+        "tools/t26_lint.py"
+      ],
+      "risk": "critical"
+    },
+    {
       "id": "dispatcher-support",
       "note": "Reporting, notification and status surfaces. Wrong output misleads a human but does not itself ship code. The trailing catch-all keeps any new module in this package at medium rather than the fail-closed tier.",
       "paths": [
