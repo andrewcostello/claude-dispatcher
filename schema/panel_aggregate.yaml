@@ -1,0 +1,79 @@
+# Panel aggregate — the machine-readable transcription of design §5.1.
+#
+# Source of truth: docs/plans/2026-08-02-classification-gating-design.md (v20)
+# §5.1 (roster, required_seats, the closed blocking predicate, aggregate
+# semantics). tools/fsmgen.py generates required_seats / blocking / aggregate
+# in src/claude_dispatcher/boundary/generated/ from this file — "a schema
+# nothing checks against is prose lint one level up" (plan review, claude
+# M-panel). The generated functions are the ONLY implementation; PR5's
+# panel_runner consumes them.
+
+schema_version: 1
+design_doc: docs/plans/2026-08-02-classification-gating-design.md
+
+# PanelIntensity is an IntEnum so max-join works (design §5.1).
+panel_intensity: {SKIP: 0, SINGLE: 1, FULL: 2}
+strategy: [ALL_PARALLEL, PROGRESSIVE]
+# Strategy affects SCHEDULING only, never the evidence bar: APPROVED at an
+# intensity requires that intensity's full roster verdict set under either
+# strategy. PROGRESSIVE may short-circuit only to BLOCKED; it can never
+# approve early. An unavailable seat ⇒ INCOMPLETE, never skipped.
+
+roster_snapshot:
+  # RosterSnapshot as carried on PanelPlan (design §5.1).
+  required: [manifest_digest, roster_version, roster_digest, ordered_seat_ids,
+             designated_single_id]
+  # Canonical roster-digest preimage (design §5.1, round 16 claude: the digest
+  # must bind the one seat SINGLE depends on).
+  roster_digest_preimage:
+    parts: [roster_version, ordered_seat_ids, designated_single_id]
+    join: "\n"
+    hash: SHA-256
+  # Run-level roster changes are channel-(c), ADD-ONLY: may add seats, never
+  # remove/replace/weaken; redesignating the SINGLE seat is "weaken" and
+  # rejected (round 14, claude m7).
+  mutation_rule: additive_only
+
+required_seats:
+  # required_seats(FULL) = all roster seats;
+  # required_seats(SINGLE) = {designated_single_id}.
+  FULL: all_roster_seats
+  SINGLE: [designated_single_id]
+  # SKIP demands no seats: it is demandable only in LEGACY mode or for
+  # ClassifyEmpty (§5.2); PanelSatisfaction.NOT_REQUIRED covers exactly those.
+  SKIP: []
+
+seat_outcome:
+  verdict_domain: [APPROVE, BLOCK]        # closed — unknown verdict ⇒ parse failure
+  severity_domain: [CRITICAL, HIGH, MEDIUM, LOW]  # closed — unknown ⇒ parse failure
+
+blocking_predicate:
+  # blocking(outcome) ⟺ outcome.verdict == BLOCK
+  #                    ∨ ∃ finding: finding.severity ∈ {CRITICAL, HIGH}
+  verdict_blocks: [BLOCK]
+  severity_blocks: [CRITICAL, HIGH]
+  # An unknown severity or verdict is a parse failure ⇒ INCOMPLETE (round 13,
+  # grok: "blocking finding" undefined re-opened the fork the roster exists
+  # to end).
+  unknown_value: parse_failure
+
+aggregate:
+  # aggregate(intensity, roster, outcomes) is total over
+  # required_seats(intensity).
+  result_domain: [APPROVED, BLOCKED, INCOMPLETE]
+  # Seat results are accepted only when keyed (subject_digest, attempt_id)
+  # equal to the plan's — two attempts on an identical subject must not
+  # interleave (rounds 17–18); the caller filters before this aggregate.
+  seat_result_key: [subject_digest, attempt_id]
+  rules:
+    # Order is normative for the generated function. "Any seat reporting a
+    # blocking finding ⇒ BLOCKED" is unconditional in §5.1, so a blocking
+    # finding among the parseable outcomes decides even when another required
+    # seat is missing — both results deny, BLOCKED carries the finding.
+    - any_required_seat_outcome_blocking: BLOCKED
+    - outcome_keys_not_exactly_required_seats: INCOMPLETE  # no duplicates, no missing, no extras
+    - any_required_seat_unavailable_or_unparseable: INCOMPLETE  # never skipped
+    - otherwise: APPROVED
+  # The corroboration requirement is retired; where the two baselines
+  # disagree, the stricter algebra wins (quality-over-cost; SMG-3966 priced
+  # this).

@@ -1,0 +1,487 @@
+# Lifecycle FSM — the machine-readable transcription of design §6.0 + §9.
+#
+# Source of truth: docs/plans/2026-08-02-classification-gating-design.md (v20)
+#   §6.0  both state×event tables (section A = dispatcher-initiated effect
+#         machine; section B = foreign door-0 hold machine), durability
+#         partition, projection-machine derivation rule, epoch-fold algorithm,
+#         ReconcileDisposition payload algebra.
+#   §9    discriminated-union event schemas — one variant per legal transition
+#         row — with per-variant required payloads.
+#
+# tools/fsmgen.py generates src/claude_dispatcher/boundary/generated/ from this
+# file. The `display` strings are the design doc's own table cells VERBATIM
+# (markdown emphasis included) — docs/generated/lifecycle_tables.md is emitted
+# from them and CI diffs it against the design's inline tables, so this file
+# cannot drift from the doc without a red build.
+#
+# Per design §12: PR0 lands this artifact BEFORE any feature code; the §6.0
+# tables and §9 unions are generated from it, never hand-written again.
+
+schema_version: 1
+design_doc: docs/plans/2026-08-02-classification-gating-design.md
+
+# ─── Section A: dispatcher-initiated effect lifecycle (design §6.0, table 2) ──
+section_a:
+  stream: effect_lifecycle
+  scope: dispatcher-initiated movements only  # foreign movements are section B
+  # "—" in the design table; creation rows use the explicit initial value
+  # `from: GENESIS` (§9).
+  initial_pseudo_state: GENESIS
+  states: [PREPARED, SUBMITTED, EFFECT_OBSERVED, REJECTED_NO_EFFECT,
+           OUTCOME_UNKNOWN, HELD, EXPLAINED, RECONCILED]
+  terminal_states: [EXPLAINED, RECONCILED]
+  # Event alphabet (trigger_event values on the wire — §6.0/§9).
+  events: [prepare, submit, submit_outcome_unknown, crash_recovery,
+           later_observation, move_to_hold, observe_effect, observe_reject,
+           timeout_unknown, match_in_memory, operator_reconcile]
+  table_header: ["State", "Event", "Next", "`expected_base_oid` effect"]
+  rows:
+    - id: prepare
+      from: GENESIS
+      event: prepare
+      to: PREPARED
+      display: ["—", "`prepare(movement_id, subject)`", "PREPARED", "—"]
+    - id: submit
+      from: PREPARED
+      event: submit
+      to: SUBMITTED
+      display: ["PREPARED", "`submit`", "SUBMITTED", "—"]
+    - id: submit_outcome_unknown
+      from: PREPARED
+      event: submit_outcome_unknown
+      to: OUTCOME_UNKNOWN
+      display: ["PREPARED", "`submit_outcome_unknown` (transport failed before any outcome existed)", "OUTCOME_UNKNOWN", "—"]
+    - id: prepared_to_held
+      from: PREPARED
+      event: [crash_recovery, later_observation, move_to_hold]
+      to: HELD
+      display: ["PREPARED", "`crash_recovery` / `later_observation` / `move_to_hold`", "HELD", "—"]
+    - id: observe_effect_matched
+      from: SUBMITTED
+      event: observe_effect
+      guard: parent_pair_match
+      to: EFFECT_OBSERVED
+      display: ["SUBMITTED", "`observe_effect(new_oid)` ∧ parent pair == (base_oid, head_oid)", "EFFECT_OBSERVED", "—"]
+    - id: observe_effect_mismatch
+      from: SUBMITTED
+      event: observe_effect
+      guard: parent_pair_mismatch
+      to: HELD
+      display: ["SUBMITTED", "`observe_effect(new_oid)` ∧ parent-pair mismatch", "HELD", "—"]
+    - id: observe_reject
+      from: SUBMITTED
+      event: observe_reject
+      to: REJECTED_NO_EFFECT
+      display: ["SUBMITTED", "`observe_reject`", "REJECTED_NO_EFFECT", "—"]
+    - id: timeout_unknown
+      from: SUBMITTED
+      event: timeout_unknown
+      to: OUTCOME_UNKNOWN
+      display: ["SUBMITTED", "`timeout_unknown`", "OUTCOME_UNKNOWN", "—"]
+    - id: submitted_to_held
+      from: SUBMITTED
+      event: [crash_recovery, later_observation]
+      to: HELD
+      display: ["SUBMITTED", "`crash_recovery` / `later_observation`", "HELD", "—"]
+    - id: explained
+      from: EFFECT_OBSERVED
+      event: match_in_memory
+      to: EXPLAINED
+      expected_base_oid_effect: assign_new_oid
+      display: ["EFFECT_OBSERVED", "`match_in_memory(movement_id)`", "EXPLAINED", "`:= new_oid`"]
+    - id: reject_explained
+      from: REJECTED_NO_EFFECT
+      event: match_in_memory
+      to: EXPLAINED
+      display: ["REJECTED_NO_EFFECT", "`match_in_memory(movement_id)` (cause recorded)", "EXPLAINED — never silently terminal", "—"]
+    - id: unknown_to_held
+      from: OUTCOME_UNKNOWN
+      event: [later_observation, crash_recovery]
+      to: HELD
+      display: ["OUTCOME_UNKNOWN", "`later_observation` / `crash_recovery`", "HELD", "—"]
+    - id: reconcile_accept
+      from: HELD
+      event: operator_reconcile
+      guard: accepting_disposition
+      to: RECONCILED
+      expected_base_oid_effect: per_disposition
+      display: ["HELD", "`operator_reconcile(accepting disposition)`", "RECONCILED(d)", "per disposition"]
+    - id: reconcile_reject_restore_hold
+      from: HELD
+      event: operator_reconcile
+      guard: reject_restore_hold
+      to: HELD
+      display: ["HELD", "`operator_reconcile(REJECT_RESTORE_HOLD)`", "**HELD** (assessment recorded; further reconcile legal)", "none"]
+    - id: reconcile_replay_identity
+      from: RECONCILED
+      event: operator_reconcile
+      guard: same_disposition
+      to: RECONCILED
+      display: ["RECONCILED(d)", "`operator_reconcile(d)` — same d", "RECONCILED(d) — identity (idempotent replay)", "none"]
+    - id: reconcile_conflict_illegal
+      from: RECONCILED
+      event: operator_reconcile
+      guard: different_disposition
+      to: ILLEGAL
+      display: ["RECONCILED(d)", "`operator_reconcile(d′ ≠ d)`", "ILLEGAL ⇒ typed error", "—"]
+    - id: terminal_default_illegal
+      from: [EXPLAINED, RECONCILED]
+      event: any_other
+      to: ILLEGAL
+      display: ["EXPLAINED · RECONCILED", "any other event", "terminal — ILLEGAL", "—"]
+    - id: default_illegal
+      from: any_other
+      event: any_other
+      to: ILLEGAL
+      display: ["**any other (state × event) pair**", "—", "**ILLEGAL ⇒ typed error, journalled — never a silent no-op**", "—"]
+
+  # Durability is an exclusive partition (design §6.0, round-11 grok).
+  durability:
+    durable_state_branch: [PREPARED, EXPLAINED, RECONCILED]
+    memory_only: [SUBMITTED, EFFECT_OBSERVED, REJECTED_NO_EFFECT, OUTCOME_UNKNOWN]
+    hold_branch: [HELD]
+    state_branch_ref: refs/heads/dispatcher/state
+    hold_branch_ref: refs/heads/dispatcher/integrity-hold
+    # Dual-append rule (round 13, claude; round 14): on any transition to HELD
+    # the durable event is appended hold-branch-FIRST, then to the state
+    # branch, identical bytes, one event_id. The hold-branch copy is canonical
+    # inside the cross-branch crash window; the state-branch twin is
+    # deduplicated by event_id. Duplicate event_ids MUST carry byte-identical
+    # canonical payloads; divergence is an integrity violation ⇒ halt that
+    # base (BoundaryError EVENT_PAYLOAD_DIVERGENT).
+    dual_append:
+      order: [hold_branch, state_branch]
+      canonical_in_crash_window: hold_branch
+      dedup_key: event_id
+      divergent_payload: halt   # EVENT_PAYLOAD_DIVERGENT
+
+  # The durable reduce runs the PROJECTION machine, not the live table
+  # (round 14, codex): durable states + composed edges, generated from this
+  # same artifact. Derivation rule: durable states are the pseudo-initial plus
+  # the non-memory-only states; projection edges are the live table's paths
+  # composed through memory-only states; live from/to fields are preserved for
+  # audit and validated against the composed paths.
+  projection:
+    durable_states: [GENESIS, PREPARED, HELD, EXPLAINED, RECONCILED]
+    derivation: compose_through_memory_only_states
+    # Open PREPARED with no hold and no terminal at cold start: the recovering
+    # process dual-appends {trigger_event: crash_recovery, from: PREPARED,
+    # to: HELD} — resume-submit is ILLEGAL (round 15, grok).
+    open_prepared_recovery:
+      trigger_event: crash_recovery
+      from: PREPARED
+      to: HELD
+      resume_submit: ILLEGAL
+
+  # Epoch fold (design §6.0 recovery step 3) — a total algorithm.
+  epoch_fold:
+    partition_key: base_key            # {repo_node_id, target_ref}
+    anchor_event: protocol_genesis     # per-base epoch anchor
+    # Edges are only epoch-ADVANCING transitions; no-effect pairs are not
+    # edges (round 16, codex: PREPARED(E→E) beside EXPLAINED(E→N) presented a
+    # false fork).
+    edge_predicate: epoch_before != epoch_after
+    dedup_key: event_id                # deduplicate carrier copies first
+    walk: from_genesis_anchor_consuming_unused_edges
+    step_rules:
+      one_candidate_successor: advance
+      zero_candidates_no_unused_edges: valid_tail
+      zero_candidates_with_unused_edges: halt_gap      # EPOCH_GAP
+      multiple_candidates: halt_fork                   # EPOCH_FORK
+      cycle_or_reused_epoch: halt_cycle                # EPOCH_FORK class: reused epoch
+    halt_means: effects stop for that base pending re-genesis
+    # The epoch is never re-seeded from a live ref read without an explicit
+    # disposition.
+
+# ─── Section B: foreign door-0 hold machine (design §6.0, table 1) ───────────
+section_b:
+  stream: hold_lifecycle
+  scope: foreign movements — agent pushes, operator pushes from other
+    terminals, unexplained deltas — never part of reduce(effect_lifecycle)
+  initial_pseudo_state: GENESIS
+  states: [HELD_FOREIGN, RELEASED, STANDING]
+  terminal_states: [RELEASED]
+  # STANDING = an operator-acknowledged persistent hold — excluded from age
+  # alarms, counted toward the >5-open-holds admission halt, re-enterable.
+  events: [observe_delta, actor_verified_match, operator_reconcile]
+  table_header: ["State", "Event", "Next", "epoch effect"]
+  rows:
+    - id: observe_delta_create
+      from: GENESIS
+      event: observe_delta
+      guard: new_delivery_new_delta
+      to: HELD_FOREIGN
+      display: ["—", "`observe_delta`", "HELD_FOREIGN (created)", "none"]
+    - id: observe_delta_redelivery_noop
+      from: [HELD_FOREIGN, RELEASED, STANDING]
+      event: observe_delta
+      guard: same_source_delivery_id
+      to: unchanged
+      display: ["*any state incl. RELEASED/STANDING*", "`observe_delta` (same `source_delivery_id`)", "unchanged — idempotent no-op", "none"]
+    - id: observe_delta_new_delivery_open_hold
+      from: [HELD_FOREIGN, STANDING]
+      event: observe_delta
+      guard: new_delivery_same_open_delta
+      to: unchanged
+      display: ["HELD_FOREIGN · STANDING", "`observe_delta` (NEW `source_delivery_id`, same delta tuple)", "unchanged — delivery recorded on the open hold", "none"]
+    - id: actor_verified_match
+      from: HELD_FOREIGN
+      event: actor_verified_match
+      guard: separated_and_verified_api
+      to: RELEASED
+      disposition: ACTOR_VERIFIED_AUTO
+      epoch_effect: as_accept_ours
+      display: ["HELD_FOREIGN", "`actor_verified_match(subject, actor_node_id)` — SEPARATED + `VERIFIED_API` only", "RELEASED(`ACTOR_VERIFIED_AUTO`)", "as ACCEPT_OURS"]
+    - id: hold_reconcile_accept
+      from: HELD_FOREIGN
+      event: operator_reconcile
+      guard: accepting_disposition
+      to: RELEASED
+      epoch_effect: per_disposition
+      display: ["HELD_FOREIGN", "`operator_reconcile(accepting d)`", "RELEASED(d)", "per d"]
+    - id: hold_reconcile_reject_restore_hold
+      from: HELD_FOREIGN
+      event: operator_reconcile
+      guard: reject_restore_hold
+      to: HELD_FOREIGN
+      display: ["HELD_FOREIGN", "`operator_reconcile(REJECT_RESTORE_HOLD)`", "HELD_FOREIGN (assessment recorded)", "none"]
+    - id: hold_reconcile_standing
+      from: HELD_FOREIGN
+      event: operator_reconcile
+      guard: standing_disposition
+      to: STANDING
+      display: ["HELD_FOREIGN", "`operator_reconcile(STANDING)`", "STANDING", "none"]
+    - id: standing_reenter
+      from: STANDING
+      event: operator_reconcile
+      to: as_held_foreign_rows   # re-enterable — dispatch re-uses the HELD_FOREIGN rows
+      epoch_effect: per_disposition
+      display: ["STANDING", "`operator_reconcile(d)`", "as the HELD_FOREIGN rows — re-enterable", "per d"]
+    - id: hold_reconcile_replay_identity
+      from: RELEASED
+      event: operator_reconcile
+      guard: same_disposition
+      to: RELEASED
+      display: ["RELEASED(d)", "`operator_reconcile(d)` — same d", "RELEASED(d) — identity (idempotent replay)", "none"]
+    - id: hold_reconcile_conflict_illegal
+      from: RELEASED
+      event: operator_reconcile
+      guard: different_disposition
+      to: ILLEGAL
+      display: ["RELEASED(d)", "`operator_reconcile(d′ ≠ d)`", "ILLEGAL ⇒ typed error", "—"]
+    - id: released_terminal
+      from: RELEASED
+      event: none
+      to: terminal
+      display: ["RELEASED", "—", "terminal", "—"]
+    - id: default_illegal_b
+      from: any_other
+      event: any_other
+      to: ILLEGAL
+      display: ["**any other (state × event) pair**", "—", "**ILLEGAL ⇒ typed error, journalled**", "—"]
+
+  # hold_id derivation (design §6.0, rounds 17–20).
+  hold_id:
+    derivation: "SHA-256(base_key ‖ ref ‖ delta_old_oid ‖ delta_new_oid ‖ occurrence_seq)"
+    # occurrence_seq = count of prior TERMINAL (released) holds with the same
+    # delta tuple in the reduced stream — an OPEN hold absorbs new deliveries
+    # of its delta rather than deriving a colliding ID (round 20, claude M1).
+    occurrence_seq: count_of_prior_terminal_holds_same_delta_tuple
+    delta_tuple: [base_key, ref, delta_old_oid, delta_new_oid]
+    # Apply order for observe_delta (round 20, grok m5):
+    apply_order:
+      - lookup_by_source_delivery_id       # → the no-op row
+      - lookup_open_hold_for_delta_tuple   # → record the delivery on it
+      - derive_hold_id_via_occurrence_seq  # → create
+    # The SAME source_delivery_id maps to the same hold_id REGARDLESS of hold
+    # state — a redelivery of an already-dispositioned delta is an idempotent
+    # no-op, never a re-park (round 18, claude).
+
+# ─── ReconcileDisposition payload algebra (design §6.0) ──────────────────────
+reconcile_dispositions:
+  accepting: [ACCEPT_OURS, ACCEPT_FOREIGN_ADVANCED, ACTOR_VERIFIED_AUTO]
+  members:
+    - name: ACCEPT_OURS
+      payload: [new_oid]
+      # new_oid comes only from the hold's observed-effect OID or a fresh §8
+      # ref read confirmed on screen, never CLI free text (round 11, grok).
+      new_oid_source: [observed_effect_oid, fresh_ref_read_confirmed_on_screen]
+      effect: "expected_base_oid := new_oid; hold released"
+    - name: ACCEPT_FOREIGN_ADVANCED
+      payload: []
+      effect: "re-seed expected_base_oid from a fresh §8 ref read; hold released"
+    - name: REJECT_RESTORE_HOLD
+      payload: []
+      effect: "stays HELD — a recorded assessment with further reconcile legal"
+    - name: ACTOR_VERIFIED_AUTO
+      payload: [new_oid]
+      section_b_only: true
+      requires: [SEPARATED, VERIFIED_API]
+      effect: "as ACCEPT_OURS"
+    - name: STANDING
+      payload: []
+      section_b_only: true
+      effect: >-
+        operator-acknowledged persistent hold: excluded from age alarms,
+        counted toward the >5-open-holds admission halt, re-enterable
+  replay_rule: >-
+    An accepting disposition re-applied to RECONCILED(d)/RELEASED(d) with the
+    same d is identity; a conflicting d′ is a typed error.
+
+# ─── §9 event unions: one variant per legal transition row ───────────────────
+events:
+  # Common envelope on EVERY event (§9). schema_major/schema_minor are
+  # separate wire fields so the unknown-major halt is decidable without
+  # parsing a version string. Unknown MAJOR at cold start halts that base;
+  # unknown VALUES of known enum fields halt identically (round 18, codex).
+  envelope:
+    required: [schema_major, schema_minor, event_id, ts, run_id, trace_id, protocol_epoch]
+    optional: [subject_digest, movement_id, attempt_id, authorization_id]
+  evolution:
+    minors: additive-only; unknown minor fields ignored-and-logged
+    unknown_major_at_cold_start: halt effects for that base pending operator decision
+    unknown_enum_value: halt like unknown variants
+    deploy_order: readers deploy before writers
+    rollback_preflight: >-
+      reduces the streams and refuses if any appended event's major exceeds
+      the target binary's supported set (BoundaryError ROLLBACK_UNSUPPORTED_MAJOR)
+
+  # base_key = {repo_node_id, target_ref} is required on every lifecycle,
+  # hold, and authorization event; reducers, locks and counters partition by
+  # it. protocol_genesis and the roster/membership declarations carry
+  # run-level facts and are exempt (round 14, claude m5).
+  base_key:
+    fields: [repo_node_id, target_ref]
+    required_on: [effect_lifecycle, hold_lifecycle, authorization_granted]
+    exempt: [protocol_genesis, merge_unit_declared, merge_unit_member_added,
+             panel_roster_declared, panel_roster_augmented]
+
+  shared_objects:
+    ClassifierAuthority:
+      union:
+        RequiredClassifier: {required: [config_sha256, producer_digest, contract]}
+        LegacyNoClassifier: {required: []}   # constructible ONLY by the LEGACY factory
+      fence_rule: exact variant equality
+    AuthorityFingerprint:
+      required: [protocol_epoch, base_epoch, subject_digest, roster_digest, classifier]
+      classifier_type: ClassifierAuthority
+      subject_digest_preimage:
+        # Canonical preimage — exact tag bytes, UTF-8 lines, newline-joined,
+        # SHA-256 (design §9, rounds 17–18).
+        lines:
+          - "repo=<node_id>"
+          - "target=pr:<pr_node_id>:<target_ref> (PR subjects — BOTH fields) | target=ref:<target_ref> (direct-ref subjects)"
+          - "base=<oid>"
+          - "head=<oid>"
+          - "diff=<lowercase-hex sha256>"
+          - "classifier=required:<config_sha256>:<producer_digest>:<contract> | classifier=legacy"
+          - "unit=<digest> | unit=none"
+        join: "\n"
+        hash: SHA-256
+
+  # `from` is a Python keyword — generated dataclasses carry it as
+  # `from_state` (and `to` as `to_state`); the wire names stay `from`/`to`.
+  field_name_map: {from: from_state, to: to_state}
+
+  unions:
+    effect_lifecycle:
+      # Emitted on every section-A transition; the T19 section-A reduce input
+      # is this stream and nothing else. Field list (union of variant fields,
+      # for reading only — §9): movement_id, base_key, trigger_event, from,
+      # to, authority, epoch_before, epoch_after, new_oid?, disposition?,
+      # hold_effect, authorization_id?, actor_context, credential_mode,
+      # reason?
+      common_required: [movement_id, base_key, trigger_event, from, to,
+                        authority, epoch_before, epoch_after, hold_effect,
+                        actor_context, credential_mode]
+      common_optional: [reason]
+      # authorization_id requiredness is defined per-variant in §9 and nowhere
+      # else: required on prepare, submit, observe_effect, observe_reject;
+      # absent on reconcile and crash variants. §9 is silent on the remaining
+      # variants; this schema records them as optional.
+      variants:
+        - {name: Prepare,                    row: prepare,                     trigger: prepare,               required: [authorization_id]}
+        - {name: Submit,                     row: submit,                      trigger: submit,                required: [authorization_id]}
+        - {name: SubmitOutcomeUnknown,       row: submit_outcome_unknown,      trigger: submit_outcome_unknown, required: []}
+        - {name: CrashRecoveryFromPrepared,  row: prepared_to_held,            trigger: crash_recovery,        required: [], forbidden: [authorization_id]}
+        - {name: LaterObservationFromPrepared, row: prepared_to_held,          trigger: later_observation,     required: []}
+        - {name: MoveToHoldFromPrepared,     row: prepared_to_held,            trigger: move_to_hold,          required: []}
+        - {name: ObserveEffectMatched,       row: observe_effect_matched,      trigger: observe_effect,        required: [authorization_id, new_oid]}
+        - {name: ObserveEffectParentMismatch, row: observe_effect_mismatch,    trigger: observe_effect,        required: [authorization_id, new_oid]}
+        - {name: ObserveReject,              row: observe_reject,              trigger: observe_reject,        required: [authorization_id]}
+        - {name: TimeoutUnknown,             row: timeout_unknown,             trigger: timeout_unknown,       required: []}
+        - {name: CrashRecoveryFromSubmitted, row: submitted_to_held,           trigger: crash_recovery,        required: [], forbidden: [authorization_id]}
+        - {name: LaterObservationFromSubmitted, row: submitted_to_held,        trigger: later_observation,     required: []}
+        - {name: Explained,                  row: explained,                   trigger: match_in_memory,       required: [new_oid]}
+        - {name: RejectExplained,            row: reject_explained,            trigger: match_in_memory,       required: []}
+        - {name: LaterObservationFromOutcomeUnknown, row: unknown_to_held,     trigger: later_observation,     required: []}
+        - {name: CrashRecoveryFromOutcomeUnknown, row: unknown_to_held,        trigger: crash_recovery,        required: [], forbidden: [authorization_id]}
+        - {name: ReconcileAccept,            row: reconcile_accept,            trigger: operator_reconcile,    required: [disposition], forbidden: [authorization_id]}
+        - {name: ReconcileRejectRestoreHold, row: reconcile_reject_restore_hold, trigger: operator_reconcile,  required: [disposition], forbidden: [authorization_id]}
+        - {name: ReconcileReplayIdentity,    row: reconcile_replay_identity,   trigger: operator_reconcile,    required: [disposition], forbidden: [authorization_id]}
+
+    hold_lifecycle:
+      # One event per section-B TRANSITION — the section-B carrier and reduce
+      # input. Field list (union of variant fields, for reading only — §9):
+      # hold_id, base_key, trigger_event, from, to, disposition?,
+      # epoch_before, epoch_after, delta_old_oid?, delta_new_oid?, ref, mode,
+      # actor_node_id?, actor_verification, source_delivery_id?,
+      # matched_subject_digest?, matched_movement_id?, actor_display
+      common_required: [hold_id, base_key, trigger_event, from, to,
+                        epoch_before, epoch_after, ref, mode,
+                        actor_verification, actor_display]
+      common_optional: [delta_old_oid, delta_new_oid, source_delivery_id,
+                        actor_node_id, matched_subject_digest,
+                        matched_movement_id, disposition]
+      # authorization_id is ABSENT on observe_delta — a foreign movement is
+      # unauthorized by definition (round 18, codex).
+      variants:
+        - {name: ObserveDelta,               row: observe_delta_create,        trigger: observe_delta,         required: [delta_old_oid, delta_new_oid], forbidden: [authorization_id]}
+        - {name: ObserveDeltaRedelivery,     row: observe_delta_redelivery_noop, trigger: observe_delta,       required: [source_delivery_id], forbidden: [authorization_id]}
+        - {name: ObserveDeltaNewDeliveryOnOpenHold, row: observe_delta_new_delivery_open_hold, trigger: observe_delta, required: [source_delivery_id, delta_old_oid, delta_new_oid], forbidden: [authorization_id]}
+        # ActorVerifiedAuto requires VERIFIED_API + actor_node_id +
+        # matched_subject_digest (§9); constructible only from VERIFIED_API
+        # evidence, SEPARATED only.
+        - {name: ActorVerifiedAuto,          row: actor_verified_match,        trigger: actor_verified_match,  required: [actor_node_id, matched_subject_digest], fixed: {actor_verification: VERIFIED_API, disposition: ACTOR_VERIFIED_AUTO}}
+        - {name: HoldReconcileAccept,        row: hold_reconcile_accept,       trigger: operator_reconcile,    required: [disposition]}
+        - {name: HoldReconcileRejectRestoreHold, row: hold_reconcile_reject_restore_hold, trigger: operator_reconcile, required: [disposition]}
+        - {name: HoldReconcileStanding,      row: hold_reconcile_standing,     trigger: operator_reconcile,    required: [disposition], fixed: {disposition: STANDING}}
+        - {name: HoldReconcileReplayIdentity, row: hold_reconcile_replay_identity, trigger: operator_reconcile, required: [disposition]}
+
+    classification_evaluated:
+      # Split per round 20 (claude m3 + grok m1): the direct forensic record
+      # of a REQUIRED evidence failure carries its context itself.
+      variants:
+        - {name: CompleteClassification,   required: [subject, authority, outcome_kind, duration_ms]}
+        - {name: IncompleteClassification, required: [candidate, context, evidence_failure, outcome_kind, duration_ms]}
+      context_type: "AttemptContext{protocol_epoch, classifier, roster_digest}"
+
+  singles:
+    panel_decided:        {required: [demanded, effective, strategy, roster_version, contributions], optional: [suppression]}
+    merge_planned:        {required: [subject, plan_kind, verdict, reasons, satisfaction], plan_kind_domain: [MERGEABLE, UNMERGEABLE]}
+    approval_evaluated:   {required: [review_id, actor_node_id, commit_oid, base_oid, in_set, assurance, outcome], note: diagnostic, non-authoritative — evaluation is not a grant}
+    authorization_granted:
+      required: [authorization_id, base_key, authority, kind, assurance, evidence_ref, actor]
+      kind_domain: [AUTO_LOW, GITHUB_APPROVAL, LIVE_CONSENT]
+      assurance_domain: [OPERATOR_ATTESTED, HUMAN_IDENTITY_ENFORCED, NOT_APPLICABLE]
+      note: the sole authorization record; AUTO_LOW carries NOT_APPLICABLE
+    consent:              {required: [subject, evidence_mode, assurance], optional: [suppressed], evidence_mode_domain: [LIVE, RERUN, ACCEPTED_UNVERIFIED]}
+    protocol_genesis:     {required: [protocol_epoch, credential_mode, protection_mode, classifier, roster_digest, approver_set_digest, per_base_epoch_anchors]}
+    merge_unit_declared:  {required: [unit_id, ordered_member_keys, unit_digest]}
+    merge_unit_member_added: {required: [unit_id, member_key]}
+    protocol_epoch_advanced: {required: [old, new]}
+    panel_roster_declared: {required: [roster_version, ordered_seat_ids, designated_single_id, roster_digest]}
+    panel_roster_augmented: {required: [added_seat_ids, new_roster_digest]}
+    seat_result:
+      required: [roster_digest, subject_digest, attempt_id, seat_id, verdict, findings_digest]
+      note: the aggregate accepts only seat results keyed (subject_digest, attempt_id) equal to the plan's
+
+# Auxiliary closed enums referenced by the unions. HoldEffect's value domain
+# is not spelled out in §9 (the field appears in the effect_lifecycle list);
+# PR0 closes it here as schema constants — PR4 implements against these.
+enums:
+  ActorVerification: [VERIFIED_API, DISPLAY_ONLY]
+  CredentialMode: [SHARED, SEPARATED]
+  ProtectionMode: [PREVENT, DETECT]
+  HoldEffect: [NONE, CREATED, RELEASED, RETAINED]
+  Assurance: [OPERATOR_ATTESTED, HUMAN_IDENTITY_ENFORCED, NOT_APPLICABLE]

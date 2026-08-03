@@ -1,0 +1,52 @@
+# AST allowlists — T8 (construction) and T9 (interpretation), design §3.2/G2.
+#
+# T8: Classification / ClassifyOutcome variants are constructible only in the
+#     parse module. T9: every side-effecting entrypoint consumes the plan —
+#     MergePlan/PanelPlan interpretation happens only at the named call sites.
+#
+# The module paths below are FUTURE paths (PR2/PR3/PR5 deliverables). The CI
+# test over this file FAILS CLOSED while they are absent (plan review, grok
+# B3): absence of an allowlisted module is expected pre-PR2 and recorded as a
+# skip, but any OTHER module defining or constructing a guarded name is a
+# hard failure — the gate is live from PR0, not from PR2.
+
+schema_version: 1
+design_doc: docs/plans/2026-08-02-classification-gating-design.md
+
+t8_construction:
+  # Guarded names: the §3.1 sealed sum and the §3.2 validated payload.
+  guarded_names: [Classification, ClassifyOutcome, ClassifyOk, ClassifyAbsent,
+                  ClassifyEmpty, ClassifyFailed]
+  # Sole legal construction site: the parse module (PR2).
+  allowed_modules:
+    - src/claude_dispatcher/boundary/wire.py
+  # The generated-types module DEFINES nothing in this set (they are §3.1/
+  # §3.2 hand-sealed fixtures per plan §1's carve-out), but it is named here
+  # so the definition scan has one authoritative home list.
+  generated_module: src/claude_dispatcher/boundary/generated/__init__.py
+  # Pre-v2 legacy modules, exempt with rationale: classification.py is the
+  # LEGACY-mode mirror path (design §7 — "LEGACY is pre-v2 semantics
+  # wholesale"); its `Classification` dataclass is the v1 run-state mirror,
+  # not the §3.2 generated type. It is deleted/retired at the PR6 cut-over;
+  # until then the exemption is scoped to exactly this file.
+  legacy_exemptions:
+    - src/claude_dispatcher/classification.py
+
+t9_interpretation:
+  # Plan-consumption call sites: doors match on the MergePlan sum; the panel
+  # runner consumes PanelPlan only (plan PR5, grok M11).
+  guarded_names: [MergePlan, Mergeable, Unmergeable, PanelPlan]
+  allowed_modules:
+    - src/claude_dispatcher/boundary/doors.py
+    - src/claude_dispatcher/boundary/panel_runner.py
+    - src/claude_dispatcher/boundary/authority_channels.py
+  legacy_exemptions: []
+
+# Architecture test (dark mode — plan §1, grok M1): boundary/ is importable
+# from tests only until PR6. door_entrypoints is the allowlist of production
+# modules permitted to import claude_dispatcher.boundary — EMPTY until the
+# PR6 cut-over fills it (grok M15). The test passes while empty but fails on
+# any production (non-test) import of the package.
+architecture:
+  package: claude_dispatcher.boundary
+  door_entrypoints: []

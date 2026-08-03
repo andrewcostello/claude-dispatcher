@@ -1,0 +1,138 @@
+# BoundaryError — the closed v1 universe, verbatim from implementation plan
+# §0.2 (docs/plans/2026-08-03-classification-gating-implementation-plan.md;
+# claude M3, grok M8).
+#
+# BoundaryError{code, phase, retriability: RETRIABLE|TERMINAL|OPERATOR,
+# operator_action}. phase ∈ {PREFLIGHT, CLASSIFY, PANEL, AUTHORIZE, EFFECT,
+# RECOVER, ROLLBACK} (closed). Unknown code at any consumer ⇒ TERMINAL.
+# CLI exit map 0/2/3/4 = ok/TERMINAL/RETRIABLE/OPERATOR. Every code carries a
+# metric name (code→metric map generated with the type).
+#
+# tools/fsmgen.py generates the enum + all maps from this file; PR2 seals a
+# T1-style exhaustiveness test binding codes ↔ CLI ↔ metrics.
+#
+# The plan closes the code list, the phase domain, the retriability domain
+# and the exit map; the per-code phase/retriability/operator_action
+# assignments below are PR0 contract constants (this schema is the contract
+# package both repos pin — plan §1).
+
+schema_version: 1
+plan_doc: docs/plans/2026-08-03-classification-gating-implementation-plan.md
+
+phases: [PREFLIGHT, CLASSIFY, PANEL, AUTHORIZE, EFFECT, RECOVER, ROLLBACK]
+retriability: [RETRIABLE, TERMINAL, OPERATOR]
+
+cli_exit_map:
+  ok: 0
+  TERMINAL: 2
+  RETRIABLE: 3
+  OPERATOR: 4
+
+unknown_code_rule: unknown code at any consumer ⇒ TERMINAL
+
+metric_name_pattern: "boundary_error_{code_lower}_total"
+
+codes:
+  - code: CLASSIFY_FAILED
+    parameter: kind          # FailureKind — design §3.4
+    phase: CLASSIFY
+    retriability: RETRIABLE
+    operator_action: >-
+      inspect FailureKind; repair the named channel and reclassify, or accept
+      the HUMAN_REQUIRED verdict the lattice already assigned
+  - code: FENCE_MISMATCH
+    phase: EFFECT
+    retriability: RETRIABLE
+    operator_action: none — the process discards the authorization and recomputes
+  - code: EPOCH_GAP
+    phase: RECOVER
+    retriability: OPERATOR
+    operator_action: effects halted for the base; operator re-genesis
+  - code: EPOCH_FORK
+    phase: RECOVER
+    retriability: OPERATOR
+    operator_action: effects halted for the base; operator re-genesis
+  - code: CHAIN_BROKEN
+    phase: RECOVER
+    retriability: OPERATOR
+    operator_action: >-
+      corrupt or non-fast-forward carrier history — halt effects, operator
+      re-genesis (drill fixture)
+  - code: CAS_CONFLICT
+    phase: EFFECT
+    retriability: RETRIABLE
+    operator_action: >-
+      none for the append retry; a same-base conflict at the effect boundary
+      discards and recomputes
+  - code: ILLEGAL_TRANSITION
+    phase: EFFECT
+    retriability: TERMINAL
+    operator_action: journalled typed error — inspect the movement/hold history
+  - code: CARRIER_UNPROTECTED
+    phase: PREFLIGHT
+    retriability: OPERATOR
+    operator_action: >-
+      apply the no-delete/no-force ruleset to the state/hold branch; an
+      unprotected fresh branch is a refusal, not a window
+  - code: CARRIER_UNREADABLE
+    phase: RECOVER
+    retriability: OPERATOR
+    operator_action: halt effects; restore carrier access, then explicit re-genesis
+  - code: HOLD_ADMISSION_CEILING
+    phase: EFFECT
+    retriability: OPERATOR
+    operator_action: ">5 open holds on the base — reconcile before new admissions"
+  - code: WEBHOOK_EVIDENCE_UNAVAILABLE
+    phase: RECOVER
+    retriability: OPERATOR
+    operator_action: >-
+      hold stays HELD — never downgraded to display evidence; reconcile live
+      or repair the webhook channel
+  - code: ROSTER_INCOHERENT
+    phase: PANEL
+    retriability: TERMINAL
+    operator_action: >-
+      plan/roster digest equalities failed — re-declare the roster over
+      channel (c) and recompute the plan
+  - code: UNMERGEABLE_CONSENT_ATTEMPT
+    phase: AUTHORIZE
+    retriability: TERMINAL
+    operator_action: >-
+      an Unmergeable plan is not consent-satisfiable — follow the named
+      repair (repair channels and reclassify, or nothing to merge)
+  - code: ROLLBACK_UNSUPPORTED_MAJOR
+    phase: ROLLBACK
+    retriability: OPERATOR
+    operator_action: >-
+      appended events carry a major beyond the target binary — drain and
+      reconcile on the current binary before downgrade
+  - code: BINARY_DIGEST_MISMATCH
+    phase: PREFLIGHT
+    retriability: OPERATOR
+    operator_action: >-
+      producer executable does not match the release-manifest/genesis digest —
+      restore the pinned binary or take explicit LEGACY
+  - code: SCHEMA_MAJOR_UNKNOWN
+    phase: RECOVER
+    retriability: OPERATOR
+    operator_action: >-
+      unknown event major at cold start — effects halted for the base pending
+      operator decision; never act from a stale epoch
+  - code: EVENT_PAYLOAD_DIVERGENT
+    phase: RECOVER
+    retriability: OPERATOR
+    operator_action: >-
+      duplicate event_id with non-byte-identical payloads — integrity
+      violation; halt that base
+  - code: RECOVERY_CEILING
+    phase: RECOVER
+    retriability: OPERATOR
+    operator_action: >-
+      event count/reduce time beyond the admission ceiling — halt new
+      admissions pending the checkpoint RFC or manual re-genesis
+  - code: UNIT_MEMBERSHIP_MUTATION
+    phase: AUTHORIZE
+    retriability: TERMINAL
+    operator_action: >-
+      member removal/reassignment is a typed error — derived state discarded;
+      re-genesis of the unit required
