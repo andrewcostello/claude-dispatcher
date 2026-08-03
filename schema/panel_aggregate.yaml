@@ -24,11 +24,19 @@ roster_snapshot:
   required: [manifest_digest, roster_version, roster_digest, ordered_seat_ids,
              designated_single_id]
   # Canonical roster-digest preimage (design §5.1, round 16 claude: the digest
-  # must bind the one seat SINGLE depends on).
+  # must bind the one seat SINGLE depends on). Newline-joining is injective
+  # only over newline-free components, so every component is VALIDATED
+  # newline-free — reject, never coerce (panel finding: a seat id containing
+  # a newline collides two distinct rosters).
   roster_digest_preimage:
     parts: [roster_version, ordered_seat_ids, designated_single_id]
     join: "\n"
     hash: SHA-256
+    components_must_be_newline_free: true
+  # The constructor VERIFIES roster_digest against the canonical digest of
+  # its own fields — a snapshot carrying an arbitrary digest string is
+  # unconstructible (panel finding).
+  constructor_verifies_digest: true
   # Run-level roster changes are channel-(c), ADD-ONLY: may add seats, never
   # remove/replace/weaken; redesignating the SINGLE seat is "weaken" and
   # rejected (round 14, claude m7).
@@ -60,20 +68,36 @@ blocking_predicate:
 aggregate:
   # aggregate(intensity, roster, outcomes) is total over
   # required_seats(intensity).
-  result_domain: [APPROVED, BLOCKED, INCOMPLETE]
+  # NOT_APPLICABLE exists so a zero-seat evaluation can NEVER read as
+  # approval (panel finding; explicit-state: "did nothing" must be
+  # distinguishable from "succeeded"). §5.2/§6.2: SKIP's satisfaction is
+  # PanelSatisfaction.NOT_REQUIRED — panel approval is never the value a
+  # zero-seat aggregate produces.
+  result_domain: [APPROVED, BLOCKED, INCOMPLETE, NOT_APPLICABLE]
   # Seat results are accepted only when keyed (subject_digest, attempt_id)
   # equal to the plan's — two attempts on an identical subject must not
-  # interleave (rounds 17–18); the caller filters before this aggregate.
+  # interleave (rounds 17–18). The filter is GENERATED
+  # (aggregate_seat_results over SeatResultRecord), not left to the caller:
+  # a non-matching or conflicting-duplicate record never reaches the
+  # aggregate, and the dropped seat surfaces as INCOMPLETE.
   seat_result_key: [subject_digest, attempt_id]
   rules:
     # Order is normative for the generated function. "Any seat reporting a
     # blocking finding ⇒ BLOCKED" is unconditional in §5.1, so a blocking
     # finding among the parseable outcomes decides even when another required
     # seat is missing — both results deny, BLOCKED carries the finding.
+    - required_seats_empty: NOT_APPLICABLE   # SKIP — evaluated nothing, approves nothing
     - any_required_seat_outcome_blocking: BLOCKED
     - outcome_keys_not_exactly_required_seats: INCOMPLETE  # no duplicates, no missing, no extras
     - any_required_seat_unavailable_or_unparseable: INCOMPLETE  # never skipped
     - otherwise: APPROVED
+  # Outcome union is closed and dispatched exhaustively: SeatOutcome |
+  # UnparseableOutcome. Anything else — a structural lookalike, a raw-string
+  # verdict, None — raises a typed error; it is a caller bug, never counted
+  # as approval (explicit-state: isinstance, never duck-typing; raise on the
+  # unknown arm).
+  outcome_union: [SeatOutcome, UnparseableOutcome]
+  unknown_outcome_type: raise_typed_error
   # The corroboration requirement is retired; where the two baselines
   # disagree, the stricter algebra wins (quality-over-cost; SMG-3966 priced
   # this).

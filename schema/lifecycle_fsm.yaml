@@ -167,11 +167,30 @@ section_a:
     # Open PREPARED with no hold and no terminal at cold start: the recovering
     # process dual-appends {trigger_event: crash_recovery, from: PREPARED,
     # to: HELD} — resume-submit is ILLEGAL (round 15, grok).
+    # The recovery append's event_id is DERIVED, not minted (panel finding:
+    # two concurrent cold starts must converge through the duplicate-event_id
+    # dedup instead of permanently halting the base): tagged newline-joined
+    # preimage, SHA-256, components newline-free.
     open_prepared_recovery:
       trigger_event: crash_recovery
       from: PREPARED
       to: HELD
       resume_submit: ILLEGAL
+      event_id_preimage:
+        lines: ["recovery=crash_recovery", "base=<base_key>",
+                "movement=<movement_id>"]
+        join: "\n"
+        hash: SHA-256
+
+  # Recovery admission ceiling (design §6.0: 10k events / 30s reduce —
+  # tunable numbers, non-negotiable obligation). The event-count half is
+  # enforced by every generated reducer/fold; the elapsed-reduce-time half is
+  # a PR4 obligation (a wall clock in a deterministic reducer is not
+  # testable here and the count bound already caps the work).
+  recovery_ceiling:
+    events: 10000
+    reduce_seconds: 30
+    reduce_seconds_enforced_in: PR4
 
   # Epoch fold (design §6.0 recovery step 3) — a total algorithm.
   epoch_fold:
@@ -257,6 +276,15 @@ section_b:
       to: as_held_foreign_rows   # re-enterable — dispatch re-uses the HELD_FOREIGN rows
       epoch_effect: per_disposition
       display: ["STANDING", "`operator_reconcile(d)`", "as the HELD_FOREIGN rows — re-enterable", "per d"]
+      # Resolved reading (flagged for author confirmation in the PR0 review):
+      # "as the HELD_FOREIGN rows" is taken LITERALLY, so
+      # STANDING × REJECT_RESTORE_HOLD lands on the HELD_FOREIGN row's Next —
+      # HELD_FOREIGN — i.e. a rejected reconcile assessment drops the
+      # STANDING designation and the hold re-enters age alarms. The
+      # alternative (stay STANDING, preserve the alarm exclusion) is
+      # defensible; whichever the author ratifies, this key is the single
+      # place to change and the b_standing_reject_restore golden pins it.
+      standing_reject_restore_resolves_to: HELD_FOREIGN
     - id: hold_reconcile_replay_identity
       from: RELEASED
       event: operator_reconcile
@@ -280,26 +308,53 @@ section_b:
       to: ILLEGAL
       display: ["**any other (state × event) pair**", "—", "**ILLEGAL ⇒ typed error, journalled**", "—"]
 
-  # hold_id derivation (design §6.0, rounds 17–20).
+  # hold_id derivation (design §6.0, rounds 17–20). GENERATED as
+  # derive_hold_id(); reduce_section_b implements apply_order for real.
   hold_id:
-    derivation: "SHA-256(base_key ‖ ref ‖ delta_old_oid ‖ delta_new_oid ‖ occurrence_seq)"
+    # The design states the derivation as a ‖-concatenation; an unframed
+    # concatenation of variable-length fields is non-injective, so the
+    # canonical preimage is TAGGED NEWLINE-JOINED LINES (matching
+    # subject_digest_preimage), with every component validated newline-free
+    # — validate, never coerce (panel finding; injectivity restored by
+    # validation, the design doc text unchanged).
+    preimage:
+      lines: ["base=<base_key>", "ref=<ref>", "old=<delta_old_oid>",
+              "new=<delta_new_oid>", "seq=<occurrence_seq>"]
+      join: "\n"
+      hash: SHA-256
+      components_must_be_newline_free: true
     # occurrence_seq = count of prior TERMINAL (released) holds with the same
     # delta tuple in the reduced stream — an OPEN hold absorbs new deliveries
     # of its delta rather than deriving a colliding ID (round 20, claude M1).
     occurrence_seq: count_of_prior_terminal_holds_same_delta_tuple
     delta_tuple: [base_key, ref, delta_old_oid, delta_new_oid]
-    # Apply order for observe_delta (round 20, grok m5):
+    # Apply order for observe_delta (round 20, grok m5) — the REDUCER resolves
+    # the hold, and an event whose variant tag contradicts the resolution is
+    # an integrity halt (fail closed on mis-tagged writers):
     apply_order:
       - lookup_by_source_delivery_id       # → the no-op row
       - lookup_open_hold_for_delta_tuple   # → record the delivery on it
       - derive_hold_id_via_occurrence_seq  # → create
     # The SAME source_delivery_id maps to the same hold_id REGARDLESS of hold
     # state — a redelivery of an already-dispositioned delta is an idempotent
-    # no-op, never a re-park (round 18, claude).
+    # no-op, never a re-park (round 18, claude). A genuinely NEW delivery of
+    # a delta whose holds are all terminal derives the next occurrence and
+    # parks again.
+    # hold_id is therefore OPTIONAL on observe_delta events (the reducer
+    # derives it; if present it must equal the derivation) and REQUIRED on
+    # actor_verified_match / operator_reconcile events (they reference an
+    # existing hold; an unknown reference halts).
 
 # ─── ReconcileDisposition payload algebra (design §6.0) ──────────────────────
 reconcile_dispositions:
+  # `accepting` is the epoch-semantics set (an accepting disposition releases
+  # and advances). `operator_accepting` is the strict subset an
+  # operator_reconcile event may CARRY: ACTOR_VERIFIED_AUTO is section-B only
+  # and constructible exclusively through the actor_verified_match event with
+  # VERIFIED_API evidence under SEPARATED — an operator cannot mint it
+  # (§6.0/§9; panel finding: HoldReconcileAccept must not be a side door).
   accepting: [ACCEPT_OURS, ACCEPT_FOREIGN_ADVANCED, ACTOR_VERIFIED_AUTO]
+  operator_accepting: [ACCEPT_OURS, ACCEPT_FOREIGN_ADVANCED]
   members:
     - name: ACCEPT_OURS
       payload: [new_oid]
@@ -334,6 +389,9 @@ events:
   # separate wire fields so the unknown-major halt is decidable without
   # parsing a version string. Unknown MAJOR at cold start halts that base;
   # unknown VALUES of known enum fields halt identically (round 18, codex).
+  # The envelope's required fields are GENERATED as leading required fields
+  # on every event dataclass (panel finding: an event type with no ts/
+  # event_id/run_id/trace_id is a state change with no audit attribution).
   envelope:
     required: [schema_major, schema_minor, event_id, ts, run_id, trace_id, protocol_epoch]
     optional: [subject_digest, movement_id, attempt_id, authorization_id]
@@ -345,6 +403,22 @@ events:
     rollback_preflight: >-
       reduces the streams and refuses if any appended event's major exceeds
       the target binary's supported set (BoundaryError ROLLBACK_UNSUPPORTED_MAJOR)
+  # Typed halt codes for wire-schema violations (the fail-closed regime the
+  # generated reducers enforce; validate, never coerce):
+  #   unknown variant / unknown enum VALUE / missing REQUIRED field /
+  #   FORBIDDEN field present            ⇒ SCHEMA_MAJOR_UNKNOWN
+  #     (§9 groups these: "an unknown transition variant or unknown major at
+  #      cold start halts that base — and an unknown VALUE of a known enum
+  #      field halts identically"; a missing required field is the same
+  #      schema-violation class)
+  #   duplicate event_id, divergent payload ⇒ EVENT_PAYLOAD_DIVERGENT
+  #   pair outside the tables / guard breach ⇒ ILLEGAL_TRANSITION
+  #   event count beyond recovery_ceiling    ⇒ RECOVERY_CEILING
+  wire_violation_codes:
+    schema_violation: SCHEMA_MAJOR_UNKNOWN
+    divergent_duplicate: EVENT_PAYLOAD_DIVERGENT
+    illegal_pair: ILLEGAL_TRANSITION
+    ceiling: RECOVERY_CEILING
 
   # base_key = {repo_node_id, target_ref} is required on every lifecycle,
   # hold, and authorization event; reducers, locks and counters partition by
@@ -427,12 +501,17 @@ events:
       # epoch_before, epoch_after, delta_old_oid?, delta_new_oid?, ref, mode,
       # actor_node_id?, actor_verification, source_delivery_id?,
       # matched_subject_digest?, matched_movement_id?, actor_display
-      common_required: [hold_id, base_key, trigger_event, from, to,
+      # hold_id sits in common_optional because §6.0's apply order makes the
+      # REDUCER the authority for observe_delta hold resolution (derive /
+      # lookup); the reconcile/actor variants list it required — they
+      # reference an existing hold. See section_b.hold_id above.
+      common_required: [base_key, trigger_event, from, to,
                         epoch_before, epoch_after, ref, mode,
                         actor_verification, actor_display]
-      common_optional: [delta_old_oid, delta_new_oid, source_delivery_id,
-                        actor_node_id, matched_subject_digest,
-                        matched_movement_id, disposition]
+      common_optional: [hold_id, delta_old_oid, delta_new_oid,
+                        source_delivery_id, actor_node_id,
+                        matched_subject_digest, matched_movement_id,
+                        disposition]
       # authorization_id is ABSENT on observe_delta — a foreign movement is
       # unauthorized by definition (round 18, codex).
       variants:
@@ -442,13 +521,15 @@ events:
         # ActorVerifiedAuto requires VERIFIED_API + actor_node_id +
         # matched_subject_digest (§9); constructible only from VERIFIED_API
         # evidence, SEPARATED only.
-        - {name: ActorVerifiedAuto,          row: actor_verified_match,        trigger: actor_verified_match,  required: [actor_node_id, matched_subject_digest], fixed: {actor_verification: VERIFIED_API, disposition: ACTOR_VERIFIED_AUTO}}
+        - {name: ActorVerifiedAuto,          row: actor_verified_match,        trigger: actor_verified_match,  required: [hold_id, actor_node_id, matched_subject_digest], fixed: {actor_verification: VERIFIED_API, disposition: ACTOR_VERIFIED_AUTO}}
         # extra_from: STANDING is re-enterable — its operator_reconcile row
         # dispatches "as the HELD_FOREIGN rows" (§6.0 section-B table).
-        - {name: HoldReconcileAccept,        row: hold_reconcile_accept,       trigger: operator_reconcile,    required: [disposition], extra_from: [STANDING]}
-        - {name: HoldReconcileRejectRestoreHold, row: hold_reconcile_reject_restore_hold, trigger: operator_reconcile, required: [disposition], extra_from: [STANDING]}
-        - {name: HoldReconcileStanding,      row: hold_reconcile_standing,     trigger: operator_reconcile,    required: [disposition], fixed: {disposition: STANDING}, extra_from: [STANDING]}
-        - {name: HoldReconcileReplayIdentity, row: hold_reconcile_replay_identity, trigger: operator_reconcile, required: [disposition]}
+        # operator_reconcile variants carry only operator_accepting
+        # dispositions (ACTOR_VERIFIED_AUTO is unmintable by an operator).
+        - {name: HoldReconcileAccept,        row: hold_reconcile_accept,       trigger: operator_reconcile,    required: [hold_id, disposition], extra_from: [STANDING]}
+        - {name: HoldReconcileRejectRestoreHold, row: hold_reconcile_reject_restore_hold, trigger: operator_reconcile, required: [hold_id, disposition], extra_from: [STANDING]}
+        - {name: HoldReconcileStanding,      row: hold_reconcile_standing,     trigger: operator_reconcile,    required: [hold_id, disposition], fixed: {disposition: STANDING}, extra_from: [STANDING]}
+        - {name: HoldReconcileReplayIdentity, row: hold_reconcile_replay_identity, trigger: operator_reconcile, required: [hold_id, disposition]}
 
     classification_evaluated:
       # Split per round 20 (claude m3 + grok m1): the direct forensic record

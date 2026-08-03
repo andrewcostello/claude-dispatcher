@@ -115,9 +115,15 @@ codes:
   - code: SCHEMA_MAJOR_UNKNOWN
     phase: RECOVER
     retriability: OPERATOR
+    # This code covers the whole §9 wire-schema violation class: §9 groups
+    # "an unknown transition variant or unknown major at cold start halts
+    # that base — and an unknown VALUE of a known enum field halts
+    # identically"; a missing REQUIRED field or a present FORBIDDEN field is
+    # the same class (the event does not satisfy its §9 schema).
     operator_action: >-
-      unknown event major at cold start — effects halted for the base pending
-      operator decision; never act from a stale epoch
+      event does not satisfy its §9 schema (unknown major, unknown variant,
+      unknown enum value, or missing/forbidden field) — effects halted for
+      the base pending operator decision; never act from a stale epoch
   - code: EVENT_PAYLOAD_DIVERGENT
     phase: RECOVER
     retriability: OPERATOR
