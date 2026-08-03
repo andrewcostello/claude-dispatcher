@@ -1,4 +1,4 @@
-# Classification → Gating Boundary: Implementation Plan (v2)
+# Classification → Gating Boundary: Implementation Plan (v2.1)
 
 **Input:** design v20 + round-20 dispositions (`docs/plans/2026-08-02-classification-gating-design.md` @ 9c8d517) — §12 PASSED.
 **Plan v1 → v2:** revised against the plan-level review (claude 2 BLOCKING + 4 MAJOR, grok 3 BLOCKING + 15 MAJOR/minor; codex quota-dead). Convergent core: v1 assigned the producer half of §8 and NO PR built the dispatcher half — the design's central mechanism would have arrived inside the cut-over PR. v2 gives it PR3. Full disposition table in §5.
@@ -35,6 +35,12 @@ Design §11's round-6 row deferred 21 MAJORs (claude 4 · grok 8 · codex 9) to 
 - **Generated types are the sole source** (grok B2): PR0 artifacts define every FSM/§9/panel/error type; PR2+ may add only (a) the §3.1 `ClassifyOutcome` T15 fixture verbatim, (b) `parse_classification` + equation checks, (c) thin adapters. An import-boundary CI test fails on any redefinition of a generated name.
 - **Dark mode** (grok M1): `boundary/` is importable from tests only until PR6; the architecture test (skeleton in PR0, allowlist empty) fails on production imports. PR6 is the sole wiring PR and fills the door-entrypoint allowlist (grok M15).
 - **Per-PR seal table**: every PR description carries `{T#, test path, revert-falsify command}` rows; the revert-falsification requirement is per-seal, not a preamble (grok M15).
+- **Execution protocol per PR (operator directive, 2026-08-03) — scaffold → failing seals → parallel body-fill → immutable tests:**
+  1. **Scaffold phase**: every function lands first as a typed signature — request/response shapes from the PR0 generated types — with a contract docstring and a `raise NotImplementedError` body. (Go PRs: stubs returning typed errors.) The scaffold commit is reviewed for CONTRACT fidelity to the design before any body exists.
+  2. **Test phase**: the seal tests for every scaffolded function are written against the stubs and committed FAILING (red), mapped to their T-obligations, before any body work begins. A test that passes against a stub is vacuous by definition and rejected.
+  3. **Body fan-out**: function/module bodies are routed to separate agents in parallel, each scoped to its module. **Body agents may not modify any test, scaffold signature, schema, or generated file** — enforced mechanically: body branches with a non-empty `git diff -- tests/ schema/ '**/generated/**'` (or changed signatures) are rejected at integration, not trusted on report.
+  4. **Test-dispute escalation**: a body agent that believes a test is wrong STOPS on that function and files the dispute (test, expected-vs-design citation, proposed fix). A SEPARATE reviewer agent adjudicates against the design doc; if the test is genuinely wrong it is fixed in its own commit with the design citation, and that fix passes review before body work resumes. The body agent never touches the test either way.
+  This is the mechanical form of the vacuous-seal rule: the seal's author and the seal's satisfier are never the same agent, and the seal cannot be weakened by the party it constrains.
 - **Cross-repo contract**: `schema/` is a versioned contract package; every schema either repo tests against is digest-cross-checked in both CIs with a single source-commit pin; each repo's CI records the peer SHA (grok M3/M10).
 
 ## 2. PR sequence
