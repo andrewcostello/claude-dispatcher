@@ -1,15 +1,15 @@
 """Shared fixtures for the boundary (PR0) seals.
 
 T6 (design §12 harness rules): every parametrised seal in tests/boundary
-must carry at least one deny row. The convention enforced here is the id
-prefix ``deny-`` on pytest.param ids; ``test_pr0.test_t6_every_parametrized
-_module_has_a_deny_case`` walks this directory's ASTs and fails any
-parametrised module without one.
+must carry at least one deny row. The check runs over the COLLECTED pytest
+items' real param ids (see ``test_pr0.test_t6_every_parametrized_seal_has_a
+_deny_row``) — collection-time introspection, not a substring scan, so
+dynamically-built param lists are covered too. The convention is an id
+starting with ``deny``.
 """
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
@@ -18,10 +18,9 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SCHEMA_DIR = REPO_ROOT / "schema"
-VECTORS_DIR = REPO_ROOT / "tests/boundary/vectors/t19"
 
 # The dispatcher package is normally importable via PYTHONPATH=src (see
-# .dispatcher.yaml's test command); keep worktree runs working regardless.
+# scripts/test.sh); keep worktree runs working regardless.
 _SRC = str(REPO_ROOT / "src")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
@@ -41,10 +40,3 @@ def schemas() -> dict:
 def generated():
     from claude_dispatcher.boundary import generated as g
     return g
-
-
-def load_vectors() -> dict[str, dict]:
-    out = {}
-    for path in sorted(VECTORS_DIR.glob("*.json")):
-        out[path.stem] = json.loads(path.read_text(encoding="utf-8"))
-    return out

@@ -1,27 +1,17 @@
 # Per-repo dispatcher config (schema introduced in VG-1).
 # test: shell command run inside a task worktree; exit 0 = green.
 #
-# Resolve a Python that has pytest (main checkout .venv preferred). Worktrees
-# share the same git root metadata but usually lack their own .venv, so we
-# walk a few known locations + DISPATCHER_TEST_PYTHON.
+# One definition of the mechanical gate: scripts/test.sh (also what
+# `make test` runs, so the two cannot drift). It resolves the interpreter
+# (DISPATCHER_TEST_PYTHON → $ROOT/.venv → python3), runs pytest tests/
+# (which includes tests/boundary), and runs tools/t26_lint.py — with the
+# pinned-baseline citation half enabled whenever the claude-workflow peer
+# checkout is resolvable ($CLAUDE_WORKFLOW_REPO or the sibling directory);
+# worktrees without a peer still run every doc-local check. The
+# citations-required form is `make verify-t26` / CI.
+#
 test: |
-  set -e
-  ROOT="$(git rev-parse --show-toplevel)"
-  if [ -n "${DISPATCHER_TEST_PYTHON:-}" ] && [ -x "${DISPATCHER_TEST_PYTHON}" ]; then
-    PY="${DISPATCHER_TEST_PYTHON}"
-  elif [ -x "$ROOT/.venv/bin/python" ]; then
-    PY="$ROOT/.venv/bin/python"
-  elif [ -x /Users/andrewcostello/Projects/claude-dispatcher/.venv/bin/python ]; then
-    PY=/Users/andrewcostello/Projects/claude-dispatcher/.venv/bin/python
-  elif [ -x /home/andrew/Project/claude-dispatcher/.venv/bin/python ]; then
-    PY=/home/andrew/Project/claude-dispatcher/.venv/bin/python
-  else
-    PY=python3
-  fi
-  PYTHONPATH=src "$PY" -m pytest tests/ -q --tb=line
-  # PR0 (classification→gating boundary): the design doc's own lint is part
-  # of the mechanical gate — pytest tests/ already covers tests/boundary.
-  "$PY" tools/t26_lint.py
+  exec bash "$(git rev-parse --show-toplevel)/scripts/test.sh"
 
 # Cross-family panel: probationary advisory seats (VG-5).
 panel:
