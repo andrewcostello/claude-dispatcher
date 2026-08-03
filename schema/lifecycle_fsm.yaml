@@ -443,9 +443,11 @@ events:
         # matched_subject_digest (§9); constructible only from VERIFIED_API
         # evidence, SEPARATED only.
         - {name: ActorVerifiedAuto,          row: actor_verified_match,        trigger: actor_verified_match,  required: [actor_node_id, matched_subject_digest], fixed: {actor_verification: VERIFIED_API, disposition: ACTOR_VERIFIED_AUTO}}
-        - {name: HoldReconcileAccept,        row: hold_reconcile_accept,       trigger: operator_reconcile,    required: [disposition]}
-        - {name: HoldReconcileRejectRestoreHold, row: hold_reconcile_reject_restore_hold, trigger: operator_reconcile, required: [disposition]}
-        - {name: HoldReconcileStanding,      row: hold_reconcile_standing,     trigger: operator_reconcile,    required: [disposition], fixed: {disposition: STANDING}}
+        # extra_from: STANDING is re-enterable — its operator_reconcile row
+        # dispatches "as the HELD_FOREIGN rows" (§6.0 section-B table).
+        - {name: HoldReconcileAccept,        row: hold_reconcile_accept,       trigger: operator_reconcile,    required: [disposition], extra_from: [STANDING]}
+        - {name: HoldReconcileRejectRestoreHold, row: hold_reconcile_reject_restore_hold, trigger: operator_reconcile, required: [disposition], extra_from: [STANDING]}
+        - {name: HoldReconcileStanding,      row: hold_reconcile_standing,     trigger: operator_reconcile,    required: [disposition], fixed: {disposition: STANDING}, extra_from: [STANDING]}
         - {name: HoldReconcileReplayIdentity, row: hold_reconcile_replay_identity, trigger: operator_reconcile, required: [disposition]}
 
     classification_evaluated:
