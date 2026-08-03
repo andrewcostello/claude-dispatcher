@@ -47,14 +47,22 @@ RETIRED = ["AuthoritySnapshot", "LegacyNoConfig", "MOVED_TO_HOLD",
            "integrity_hold", "FOREIGN_OBSERVED", "AuthorizedBaseTransition",
            "request_id"]
 
-# A line is an annotation when it carries one of these (task-fixed
-# heuristic: the sentence that retires a name necessarily names it).
-ANNOTATION_RE = re.compile(r"retired|SUPERSEDED|deleted|disposition|prior versions",
-                           re.IGNORECASE)
-# Statement-of-absence exemption: "no `request_id`" (§3.3) names the
-# identifier precisely to say the wire does not carry it — an annotation of
-# absence, not a live mechanism. Only a directly negated mention qualifies.
-NEGATED_RE = r"(?:no|never a|without)\s+`?%s`?"
+# Exemptions are OCCURRENCE-level and anchored to specific retirement
+# patterns — never to domain vocabulary. "disposition" and "deleted" are
+# ordinary §6.0/§9 words, so their presence on a line proves nothing (panel
+# finding: a retired name returning to a live-mechanism line was silently
+# exempt whenever the line also used a domain word). An occurrence is an
+# annotation when it is:
+#   (a) inside a review-round parenthetical "(round N, seat: …)" — a quote
+#       of what an OLD version said;
+#   (b) within a short window of the words "retired"/"retires" or a
+#       "[SUPERSEDED …]" marker on the same line — the sentence that retires
+#       a name necessarily names it;
+#   (c) a directly negated mention ("no `request_id`") — a statement of
+#       absence, not a live mechanism.
+ANNOTATION_WINDOW = 160
+ANNOTATION_NEAR_RE = re.compile(r"retire[sd]?|\[SUPERSEDED", re.IGNORECASE)
+NEGATED_RE = r"(?:no|never a?|without)\s+`?%s`?"
 
 MUTATIONS = ["createCommitOnBranch", "updateRefs", "createRef"]
 
@@ -155,18 +163,35 @@ def check_section_refs(doc: Doc, errors: list[str]) -> None:
                 errors.append(f"§-ref: line {i}: §{ref} unresolved")
 
 
+def _round_paren_spans(line: str) -> list[tuple[int, int]]:
+    """Spans of "(round N, …)" / "(Round N, …)" parentheticals, one level of
+    nesting allowed — historical quotes of prior versions."""
+    return [m.span() for m in ROUND_PAREN.finditer(line)]
+
+
+def _occurrence_exempt(line: str, name: str, start: int, end: int) -> bool:
+    for a, b in _round_paren_spans(line):
+        if a <= start and end <= b:
+            return True
+    lo, hi = max(0, start - ANNOTATION_WINDOW), min(len(line), end + ANNOTATION_WINDOW)
+    if ANNOTATION_NEAR_RE.search(line[lo:hi]):
+        return True
+    prefix = line[max(0, start - 24):start]
+    return bool(re.search(NEGATED_RE % re.escape(name) + r"$",
+                          prefix + line[start:end]))
+
+
 def check_retired(doc: Doc, errors: list[str]) -> None:
-    """(3) retired identifiers only in §11/header/annotation lines."""
+    """(3) retired identifiers only in §11/header or inside a retirement
+    annotation — occurrence-level, anchored to retirement patterns, immune
+    to domain words like 'disposition'/'deleted' on the same line."""
     for i, sec, line in doc.normative():
         for name in RETIRED:
-            if not re.search(r"\b" + name + r"\b", line):
-                continue
-            if ANNOTATION_RE.search(line):
-                continue
-            if re.search(NEGATED_RE % re.escape(name), line):
-                continue  # statement of absence — not a live mechanism
-            errors.append(f"retired-name: line {i} (§{sec}): `{name}` outside "
-                          f"§11/version-history/annotation")
+            for m in re.finditer(r"\b" + name + r"\b", line):
+                if _occurrence_exempt(line, name, m.start(), m.end()):
+                    continue
+                errors.append(f"retired-name: line {i} (§{sec}): `{name}` "
+                              f"outside §11/version-history/annotation")
 
 
 def check_mutations(doc: Doc, errors: list[str]) -> None:
@@ -207,18 +232,31 @@ def check_field_lists(doc: Doc, errors: list[str]) -> None:
 
 # ─── citations at the pinned baselines ───────────────────────────────────────
 
+# Peer-repo resolution: $CLAUDE_WORKFLOW_REPO, else the sibling checkout.
+# No machine-specific absolute paths (panel finding) — the failure message
+# names exactly what was tried and which variable to set.
+_WORKFLOW_CANDIDATES = ["$CLAUDE_WORKFLOW_REPO", "../claude-workflow (sibling)"]
+
+
 def find_workflow_repo() -> Path | None:
     for cand in (os.environ.get("CLAUDE_WORKFLOW_REPO"),
-                 str(REPO_ROOT.parent / "claude-workflow"),
-                 "/home/andrew/Project/claude-workflow"):
+                 str(REPO_ROOT.parent / "claude-workflow")):
         if cand and (Path(cand) / ".git").exists():
             return Path(cand)
     return None
 
 
+GIT_TIMEOUT_SECONDS = 30  # repo convention: every git subprocess is bounded
+
+
 def git_show(repo: Path, sha: str, path: str) -> str | None:
-    proc = subprocess.run(["git", "-C", str(repo), "show", f"{sha}:{path}"],
-                          capture_output=True, text=True)
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), "show", f"{sha}:{path}"],
+            capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+    except subprocess.TimeoutExpired:
+        return None  # surfaces as an unresolvable citation — fail, not hang
     return proc.stdout if proc.returncode == 0 else None
 
 
@@ -251,8 +289,11 @@ def check_citations(doc: Doc, errors: list[str]) -> None:
     disp_sha, wf_sha = pins
     wf_repo = find_workflow_repo()
     if wf_repo is None:
-        errors.append("citations: claude-workflow checkout not found "
-                      "(set CLAUDE_WORKFLOW_REPO); citations unverifiable = stale")
+        errors.append(
+            "citations: peer checkout ABSENT — claude-workflow citations are "
+            f"unverifiable (tried: {', '.join(_WORKFLOW_CANDIDATES)}; set "
+            "CLAUDE_WORKFLOW_REPO, or run with --no-citations in "
+            "environments without the peer checkout)")
         return
     cache: dict[tuple[str, str], str | None] = {}
 
@@ -313,7 +354,11 @@ def check_plan_tmap(doc: Doc, errors: list[str]) -> None:
         nums = [int(n) for n in re.findall(r"\bT(\d+)\b", cells[0])]
         if not nums:
             continue
-        if "retired" in cells[1].lower():
+        # Retired rows carry `—` in the anchor column BY DEFINITION (§10's
+        # own rule) — matching on the marker, never on the word "retired"
+        # in a Title cell, so a live obligation whose title happens to use
+        # the word cannot be silently excluded (panel finding).
+        if cells[2] == "—":
             continue
         non_retired.update(nums)
     plan_text = PLAN.read_text(encoding="utf-8")
@@ -328,7 +373,15 @@ def check_plan_tmap(doc: Doc, errors: list[str]) -> None:
                       f"§3: {['T%d' % n for n in missing]}")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--no-citations", action="store_true",
+                    help="skip the pinned-baseline citation check (for "
+                         "environments without the claude-workflow peer "
+                         "checkout, e.g. dispatched-task worktrees; the full "
+                         "check runs in `make verify-t26` and CI)")
+    args = ap.parse_args(argv)
     doc = Doc(DESIGN)
     errors: list[str] = []
     check_t_index(doc, errors)
@@ -337,16 +390,21 @@ def main() -> int:
     check_mutations(doc, errors)
     check_supersession(doc, errors)
     check_field_lists(doc, errors)
-    check_citations(doc, errors)
+    if args.no_citations:
+        print("t26_lint: SKIPPED [citations] — peer-checkout check disabled "
+              "by --no-citations (doc-local checks still enforced)")
+    else:
+        check_citations(doc, errors)
     check_plan_tmap(doc, errors)
     if errors:
         for e in errors:
-            print(f"t26_lint: FAIL: {e}", file=sys.stderr)
+            print(f"t26_lint: FAIL [{e.split(':', 1)[0]}]: {e}", file=sys.stderr)
         print(f"t26_lint: {len(errors)} violation(s)", file=sys.stderr)
         return 1
-    print("t26_lint: all checks green (T-index, §-refs, retired names, "
-          "mutation-once, supersession, field-list-once, citations @ pins, "
-          "plan §3 T-map)")
+    checks = ("T-index, §-refs, retired names, mutation-once, supersession, "
+              "field-list-once, plan §3 T-map"
+              + ("" if args.no_citations else ", citations @ pins"))
+    print(f"t26_lint: all checks green ({checks})")
     return 0
 
 
