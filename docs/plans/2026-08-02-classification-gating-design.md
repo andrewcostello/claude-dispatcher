@@ -383,7 +383,7 @@ Three consecutive rounds of drift came from this section restating obligations i
 | DETECT repo gaining financial rules mid-run (codex) | §8 mode-escalation halt on policy-epoch roll |
 | LEGACY vs "never consulted" contradiction (codex) | §4.4 REQUIRED-scoped wording |
 | Registry snippet dataclass ordering (codex, minor-blocking) | implementation note added to §3.1: seal flag set post-definitions, registry via `__init_subclass__` on the plain base **[completed r10: the snippet itself is now executable — v9's still read the module global pre-assignment]** |
-| MAJORs (claude 4·grok 8·codex 9) | to be dispositioned in the implementation plan per §12 — pass-gating items above only |
+| MAJORs (claude 4·grok 8·codex 9) | to be dispositioned in the implementation plan per §12 — pass-gating items above only **[CLOSED by the implementation plan's §0.5 ledger, 2026-08-03: absorption-by-construction across rounds 7–20 + accepted residual]** |
 
 ### Round-7 disposition table
 
