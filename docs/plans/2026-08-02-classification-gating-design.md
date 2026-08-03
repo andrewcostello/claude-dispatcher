@@ -19,7 +19,7 @@
 **Prior versions:** 12 — revises v11 against round 11 (claude 1 / grok 2 / codex 8 BLOCKING). The convergent finding: policy bytes got a protected channel in v11 and the **diff did not** — the pinned classifier already reads the diff on stdin (main.go:192,486), so `-risk-paths -` left two authoritative streams contending for one descriptor and the diff falling back to an agent-writable file. One framed stdin request now carries both inputs with dual digest echo. v11's own edits produced three contradictions, all fixed with exclusive partitions and one named append protocol: `EXPLAINED` dual durability; `REJECT_RESTORE_HOLD` terminal-with-hold-retained; the hold carrier left on the compare-less `updateRef`. Also: approvals bind the full subject (base-epoch invalidation); failures that cannot construct a subject are typed `Unmergeable` and effect-ineligible; section B is its own closed machine with durable node-ID evidence; the v1 read-set is generated from the consumers' ASTs (v11's hand list was wrong — it omitted `recheck_min_severity`); `PROGRESSIVE` has total semantics.
 **Status:** DRAFT — awaiting round-20 review. No code until §12 pass.
 **Scope:** `cmd/classify` output → risk/auto-merge → panel gating → every base-moving effect, including the spawn.
-**Review baseline for citations:** `claude-dispatcher@86c6904b`, `claude-workflow@2dcecfd2` (T26 checks citations against these).
+**Review baseline for citations:** `claude-dispatcher@88cec333`, `claude-workflow@2dcecfd2` (T26 checks citations against these).
 
 ---
 
