@@ -2,7 +2,7 @@
 
 **Input:** design v20 + round-20 dispositions (`docs/plans/2026-08-02-classification-gating-design.md` @ 9c8d517) — §12 PASSED.
 **Plan v1 → v2:** revised against the plan-level review (claude 2 BLOCKING + 4 MAJOR, grok 3 BLOCKING + 15 MAJOR/minor; codex quota-dead). Convergent core: v1 assigned the producer half of §8 and NO PR built the dispatcher half — the design's central mechanism would have arrived inside the cut-over PR. v2 gives it PR3. Full disposition table in §5.
-**Baselines:** `claude-dispatcher@9c8d517`, `claude-workflow@2dcecfd2`. PR0's first commit re-pins the design's T26 citation baselines to plan-time SHAs (grok m1).
+**Baselines:** `claude-dispatcher@9c8d517`, `claude-workflow@2dcecfd2`. PR0's first commit re-pins the design's T26 citation baselines to PR0-time HEADs (adjudicated: the build directive superseded this line's original "plan-time SHAs"; pinned `claude-dispatcher@88cec333`, citations verified there).
 
 ---
 
