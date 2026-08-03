@@ -3,38 +3,72 @@
   "note": "DENY: duplicate event_id with non-byte-identical payloads is an integrity violation \u21d2 halt that base",
   "events": [
     {
+      "schema_major": 1,
+      "schema_minor": 0,
+      "event_id": "e1",
+      "ts": "1970-01-01T00:00:00Z",
+      "run_id": "run-1",
+      "trace_id": "trace-1",
+      "protocol_epoch": "E0",
       "family": "effect_lifecycle",
       "variant": "Prepare",
-      "event_id": "e1",
       "movement_id": "m1",
       "base_key": "R1:refs/heads/main",
       "from": "GENESIS",
-      "branch": "state"
+      "to": "PREPARED",
+      "authority": "fp-1",
+      "epoch_before": "E0",
+      "epoch_after": "E0",
+      "hold_effect": "NONE",
+      "actor_context": "dispatcher",
+      "credential_mode": "SHARED",
+      "branch": "state",
+      "authorization_id": "auth-1"
     },
     {
+      "schema_major": 1,
+      "schema_minor": 0,
+      "event_id": "e2",
+      "ts": "1970-01-01T00:00:00Z",
+      "run_id": "run-1",
+      "trace_id": "trace-1",
+      "protocol_epoch": "E0",
       "family": "effect_lifecycle",
       "variant": "MoveToHoldFromPrepared",
-      "event_id": "e2",
       "movement_id": "m1",
       "base_key": "R1:refs/heads/main",
       "from": "PREPARED",
+      "to": "HELD",
+      "authority": "fp-1",
+      "epoch_before": "E0",
+      "epoch_after": "E0",
+      "hold_effect": "NONE",
+      "actor_context": "dispatcher",
+      "credential_mode": "SHARED",
       "branch": "hold"
     },
     {
+      "schema_major": 1,
+      "schema_minor": 0,
+      "event_id": "e2",
+      "ts": "1970-01-01T00:00:00Z",
+      "run_id": "run-1",
+      "trace_id": "trace-1",
+      "protocol_epoch": "E0",
       "family": "effect_lifecycle",
       "variant": "MoveToHoldFromPrepared",
-      "event_id": "e2",
       "movement_id": "m1",
       "base_key": "R1:refs/heads/main",
       "from": "PREPARED",
+      "to": "HELD",
+      "authority": "fp-1",
+      "epoch_before": "E0",
+      "epoch_after": "E0",
+      "hold_effect": "NONE",
+      "actor_context": "dispatcher",
+      "credential_mode": "SHARED",
       "branch": "state",
       "reason": "tampered"
     }
-  ],
-  "expected": {
-    "halted": {
-      "code": "EVENT_PAYLOAD_DIVERGENT",
-      "detail": "event_id e2 has divergent payloads"
-    }
-  }
+  ]
 }

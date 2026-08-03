@@ -6,11 +6,25 @@
     "diff_max_bytes": 10485760,
     "producer_output_max_bytes": 2097152
   },
+  "reject_reasons": [
+    "TRUNCATED_OUTER_LEN",
+    "OUTER_LEN_MISMATCH",
+    "EMPTY_BODY",
+    "UNKNOWN_VERSION",
+    "TRUNCATED_POLICY_LEN",
+    "POLICY_BOUND_EXCEEDED",
+    "POLICY_LEN_MISMATCH",
+    "TRUNCATED_DIFF_LEN",
+    "DIFF_BOUND_EXCEEDED",
+    "DIFF_LEN_MISMATCH",
+    "TRAILING_BYTES"
+  ],
   "cases": [
     {
       "name": "valid_frame",
       "file": "valid_frame.bin",
       "expect": "accept",
+      "reason_code": null,
       "reason": null,
       "sha256": "952e8cb756210a82bbc2108449c6e9064b93080439536da7be0aac165a9cde8b",
       "bytes": 180
@@ -19,6 +33,7 @@
       "name": "malformed_length",
       "file": "malformed_length.bin",
       "expect": "reject",
+      "reason_code": "POLICY_LEN_MISMATCH",
       "reason": "policy_len exceeds the frame's remaining octets",
       "sha256": "b2a267021407c0b7c574e6e3d93239d19be1bfb3fd0262be00dbede6b3d57076",
       "bytes": 180
@@ -27,6 +42,7 @@
       "name": "truncation",
       "file": "truncation.bin",
       "expect": "reject",
+      "reason_code": "OUTER_LEN_MISMATCH",
       "reason": "frame cut short mid-diff",
       "sha256": "06fc4acc2aac10a3bb57026d4c247ce3f810a124701d8eb94630f23f565ea9af",
       "bytes": 173
@@ -35,9 +51,82 @@
       "name": "trailing_data",
       "file": "trailing_data.bin",
       "expect": "reject",
+      "reason_code": "OUTER_LEN_MISMATCH",
       "reason": "bytes after the last declared field",
       "sha256": "c43176a19a0702ec8652cb42396c73daaf6827c2aa355c24d94d3d7ecb583588",
       "bytes": 185
+    },
+    {
+      "name": "empty_frame",
+      "file": "empty_frame.bin",
+      "expect": "reject",
+      "reason_code": "EMPTY_BODY",
+      "reason": "outer_len declares an empty body \u2014 no version octet",
+      "sha256": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+      "bytes": 4
+    },
+    {
+      "name": "short_outer_len",
+      "file": "short_outer_len.bin",
+      "expect": "reject",
+      "reason_code": "TRUNCATED_OUTER_LEN",
+      "reason": "fewer than 4 octets on the wire",
+      "sha256": "96a296d224f285c67bee93c30f8a309157f0daa35dc5b87e410b78630a09cfc7",
+      "bytes": 2
+    },
+    {
+      "name": "cut_in_policy_len",
+      "file": "cut_in_policy_len.bin",
+      "expect": "reject",
+      "reason_code": "TRUNCATED_POLICY_LEN",
+      "reason": "frame ends inside the policy_len field itself",
+      "sha256": "40a8d858602de33c6a95e976908be7f07db66f6154366eb31c2249d1d6f30455",
+      "bytes": 9
+    },
+    {
+      "name": "cut_in_diff_len",
+      "file": "cut_in_diff_len.bin",
+      "expect": "reject",
+      "reason_code": "TRUNCATED_DIFF_LEN",
+      "reason": "frame ends inside the diff_len field itself",
+      "sha256": "801a0d13c9cd1fc920cc8a6f4482eae99c9a86dde21bfeedbc44cb9bd16f04ee",
+      "bytes": 76
+    },
+    {
+      "name": "bad_version",
+      "file": "bad_version.bin",
+      "expect": "reject",
+      "reason_code": "UNKNOWN_VERSION",
+      "reason": "version octet is 2",
+      "sha256": "735f332159b4961e7b438a86046555a74ac7b61fa090e9aca218afd15fecb3cc",
+      "bytes": 180
+    },
+    {
+      "name": "inner_diff_truncation",
+      "file": "inner_diff_truncation.bin",
+      "expect": "reject",
+      "reason_code": "DIFF_LEN_MISMATCH",
+      "reason": "diff_len exceeds the remaining octets with a consistent outer_len",
+      "sha256": "070ca24919377154a49bb6b9c50d1d0b1e46596d78142e9fe5571fe99ab35eb4",
+      "bytes": 180
+    },
+    {
+      "name": "policy_over_bound",
+      "file": "policy_over_bound.bin",
+      "expect": "reject",
+      "reason_code": "POLICY_BOUND_EXCEEDED",
+      "reason": "declared policy_len of 2 MiB exceeds the 1 MiB bound \u2014 rejected before materialization",
+      "sha256": "c60b23cf9a8cbd79bbf68f043d164d2bac5f76c85904264f080d6c26166561a5",
+      "bytes": 180
+    },
+    {
+      "name": "diff_over_bound",
+      "file": "diff_over_bound.bin",
+      "expect": "reject",
+      "reason_code": "DIFF_BOUND_EXCEEDED",
+      "reason": "declared diff_len of 11 MiB exceeds the 10 MiB bound \u2014 rejected before materialization",
+      "sha256": "4b37f1f2a75c10040a5d016e31ad4359e1e78e23f76cf94dd61d26e26d5581a2",
+      "bytes": 180
     }
   ]
 }

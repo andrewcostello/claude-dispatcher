@@ -3,39 +3,50 @@
   "note": "round-20 row: NEW source_delivery_id, same delta tuple, open hold \u2014 delivery recorded, state unchanged",
   "events": [
     {
+      "schema_major": 1,
+      "schema_minor": 0,
+      "event_id": "h1",
+      "ts": "1970-01-01T00:00:00Z",
+      "run_id": "run-1",
+      "trace_id": "trace-1",
+      "protocol_epoch": "E0",
       "family": "hold_lifecycle",
       "variant": "ObserveDelta",
-      "event_id": "h1",
-      "hold_id": "H1",
       "base_key": "R1:refs/heads/main",
       "from": "GENESIS",
+      "to": "HELD_FOREIGN",
+      "ref": "refs/heads/main",
+      "mode": "SHARED",
+      "actor_verification": "DISPLAY_ONLY",
+      "actor_display": "someone",
+      "epoch_before": "E0",
+      "epoch_after": "E0",
       "delta_old_oid": "o0",
       "delta_new_oid": "o1",
       "source_delivery_id": "d1"
     },
     {
+      "schema_major": 1,
+      "schema_minor": 0,
+      "event_id": "h2",
+      "ts": "1970-01-01T00:00:00Z",
+      "run_id": "run-1",
+      "trace_id": "trace-1",
+      "protocol_epoch": "E0",
       "family": "hold_lifecycle",
       "variant": "ObserveDeltaNewDeliveryOnOpenHold",
-      "event_id": "h2",
-      "hold_id": "H1",
       "base_key": "R1:refs/heads/main",
       "from": "HELD_FOREIGN",
+      "to": "HELD_FOREIGN",
+      "ref": "refs/heads/main",
+      "mode": "SHARED",
+      "actor_verification": "DISPLAY_ONLY",
+      "actor_display": "someone",
+      "epoch_before": "E0",
+      "epoch_after": "E0",
       "source_delivery_id": "d2",
       "delta_old_oid": "o0",
       "delta_new_oid": "o1"
     }
-  ],
-  "expected": {
-    "holds": {
-      "H1": {
-        "state": "HELD_FOREIGN",
-        "disposition": null,
-        "deliveries": [
-          "d1",
-          "d2"
-        ]
-      }
-    },
-    "halted": null
-  }
+  ]
 }

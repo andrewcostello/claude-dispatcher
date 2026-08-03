@@ -3,7 +3,13 @@
   "note": "no-effect PREPARED(E0\u2192E0) pairs are not edges \u2014 anchor stays the tail",
   "events": [
     {
+      "schema_major": 1,
+      "schema_minor": 0,
       "event_id": "e1",
+      "ts": "1970-01-01T00:00:00Z",
+      "run_id": "run-1",
+      "trace_id": "trace-1",
+      "protocol_epoch": "E0",
       "base_key": "R1:refs/heads/main",
       "epoch_before": "E0",
       "epoch_after": "E0"
@@ -11,12 +17,5 @@
   ],
   "anchors": {
     "R1:refs/heads/main": "E0"
-  },
-  "expected": {
-    "R1:refs/heads/main": {
-      "status": "ok",
-      "epoch": "E0",
-      "halt": null
-    }
   }
 }

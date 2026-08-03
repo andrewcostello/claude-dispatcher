@@ -1,0 +1,29 @@
+{
+  "machine": "section_b",
+  "note": "DENY: unknown VALUE of actor_verification halts like an unknown variant (\u00a79)",
+  "events": [
+    {
+      "schema_major": 1,
+      "schema_minor": 0,
+      "event_id": "h1",
+      "ts": "1970-01-01T00:00:00Z",
+      "run_id": "run-1",
+      "trace_id": "trace-1",
+      "protocol_epoch": "E0",
+      "family": "hold_lifecycle",
+      "variant": "ObserveDelta",
+      "base_key": "R1:refs/heads/main",
+      "from": "GENESIS",
+      "to": "HELD_FOREIGN",
+      "ref": "refs/heads/main",
+      "mode": "SHARED",
+      "actor_verification": "TOTALLY_BOGUS",
+      "actor_display": "someone",
+      "epoch_before": "E0",
+      "epoch_after": "E0",
+      "delta_old_oid": "o0",
+      "delta_new_oid": "o1",
+      "source_delivery_id": "d1"
+    }
+  ]
+}

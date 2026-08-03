@@ -2,6 +2,7 @@
 
 Source: `schema/lifecycle_fsm.yaml`. One variant per legal
 transition row; per-variant required payloads as §9 states.
+Every generated event type carries the common envelope.
 
 ## Common envelope
 
@@ -35,18 +36,18 @@ Union of variant fields (reading view): `movement_id, base_key, trigger_event, f
 
 ## `hold_lifecycle`
 
-Union of variant fields (reading view): `hold_id, base_key, trigger_event, from, to, epoch_before, epoch_after, ref, mode, actor_verification, actor_display, delta_old_oid, delta_new_oid, source_delivery_id, actor_node_id, matched_subject_digest, matched_movement_id, disposition`
+Union of variant fields (reading view): `base_key, trigger_event, from, to, epoch_before, epoch_after, ref, mode, actor_verification, actor_display, hold_id, delta_old_oid, delta_new_oid, source_delivery_id, actor_node_id, matched_subject_digest, matched_movement_id, disposition`
 
 | Variant | Row | Trigger | Extra required | Forbidden |
 |---|---|---|---|---|
 | ObserveDelta | observe_delta_create | observe_delta | delta_old_oid, delta_new_oid | authorization_id |
 | ObserveDeltaRedelivery | observe_delta_redelivery_noop | observe_delta | source_delivery_id | authorization_id |
 | ObserveDeltaNewDeliveryOnOpenHold | observe_delta_new_delivery_open_hold | observe_delta | source_delivery_id, delta_old_oid, delta_new_oid | authorization_id |
-| ActorVerifiedAuto | actor_verified_match | actor_verified_match | actor_node_id, matched_subject_digest | — |
-| HoldReconcileAccept | hold_reconcile_accept | operator_reconcile | disposition | — |
-| HoldReconcileRejectRestoreHold | hold_reconcile_reject_restore_hold | operator_reconcile | disposition | — |
-| HoldReconcileStanding | hold_reconcile_standing | operator_reconcile | disposition | — |
-| HoldReconcileReplayIdentity | hold_reconcile_replay_identity | operator_reconcile | disposition | — |
+| ActorVerifiedAuto | actor_verified_match | actor_verified_match | hold_id, actor_node_id, matched_subject_digest | — |
+| HoldReconcileAccept | hold_reconcile_accept | operator_reconcile | hold_id, disposition | — |
+| HoldReconcileRejectRestoreHold | hold_reconcile_reject_restore_hold | operator_reconcile | hold_id, disposition | — |
+| HoldReconcileStanding | hold_reconcile_standing | operator_reconcile | hold_id, disposition | — |
+| HoldReconcileReplayIdentity | hold_reconcile_replay_identity | operator_reconcile | hold_id, disposition | — |
 
 ## `classification_evaluated`
 

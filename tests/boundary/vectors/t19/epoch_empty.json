@@ -4,12 +4,5 @@
   "events": [],
   "anchors": {
     "R1:refs/heads/main": "E0"
-  },
-  "expected": {
-    "R1:refs/heads/main": {
-      "status": "ok",
-      "epoch": "E0",
-      "halt": null
-    }
   }
 }

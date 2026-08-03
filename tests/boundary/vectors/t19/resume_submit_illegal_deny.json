@@ -3,29 +3,50 @@
   "note": "DENY: a durable stream carrying a memory-only transition (resume-submit after crash) is ILLEGAL",
   "events": [
     {
+      "schema_major": 1,
+      "schema_minor": 0,
+      "event_id": "e1",
+      "ts": "1970-01-01T00:00:00Z",
+      "run_id": "run-1",
+      "trace_id": "trace-1",
+      "protocol_epoch": "E0",
       "family": "effect_lifecycle",
       "variant": "Prepare",
-      "event_id": "e1",
       "movement_id": "m1",
       "base_key": "R1:refs/heads/main",
       "from": "GENESIS",
-      "branch": "state"
+      "to": "PREPARED",
+      "authority": "fp-1",
+      "epoch_before": "E0",
+      "epoch_after": "E0",
+      "hold_effect": "NONE",
+      "actor_context": "dispatcher",
+      "credential_mode": "SHARED",
+      "branch": "state",
+      "authorization_id": "auth-1"
     },
     {
+      "schema_major": 1,
+      "schema_minor": 0,
+      "event_id": "e2",
+      "ts": "1970-01-01T00:00:00Z",
+      "run_id": "run-1",
+      "trace_id": "trace-1",
+      "protocol_epoch": "E0",
       "family": "effect_lifecycle",
       "variant": "Submit",
-      "event_id": "e2",
       "movement_id": "m1",
       "base_key": "R1:refs/heads/main",
       "from": "PREPARED",
+      "to": "SUBMITTED",
+      "authority": "fp-1",
+      "epoch_before": "E0",
+      "epoch_after": "E0",
+      "hold_effect": "NONE",
+      "actor_context": "dispatcher",
+      "credential_mode": "SHARED",
       "branch": "state",
-      "authorization_id": "auth1"
+      "authorization_id": "auth-1"
     }
-  ],
-  "expected": {
-    "halted": {
-      "code": "ILLEGAL_TRANSITION",
-      "detail": "memory-only transition 'Submit' in the durable stream"
-    }
-  }
+  ]
 }
