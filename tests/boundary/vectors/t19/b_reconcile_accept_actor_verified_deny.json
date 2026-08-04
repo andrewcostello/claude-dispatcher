@@ -51,5 +51,6 @@
       "disposition": "ACTOR_VERIFIED_AUTO",
       "actor_node_id": "N-operator"
     }
-  ]
+  ],
+  "anchors": {}
 }

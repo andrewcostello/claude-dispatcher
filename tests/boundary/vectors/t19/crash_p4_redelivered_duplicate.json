@@ -118,5 +118,7 @@
       "credential_mode": "SHARED",
       "branch": "state"
     }
-  ]
+  ],
+  "credential_mode": "SHARED",
+  "anchors": {}
 }

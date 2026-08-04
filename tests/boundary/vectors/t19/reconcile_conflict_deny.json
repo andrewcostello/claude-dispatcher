@@ -121,5 +121,7 @@
       "disposition": "ACCEPT_OURS",
       "new_oid": "ff23d36839489dc45d7ed2ee9ab33c66ed408c42"
     }
-  ]
+  ],
+  "credential_mode": "SHARED",
+  "anchors": {}
 }

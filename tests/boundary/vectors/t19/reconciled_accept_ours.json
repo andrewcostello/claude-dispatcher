@@ -97,5 +97,7 @@
       "disposition": "ACCEPT_OURS",
       "new_oid": "e4ee7dd94f1947d59785469928061968cb72e0fd"
     }
-  ]
+  ],
+  "credential_mode": "SHARED",
+  "anchors": {}
 }

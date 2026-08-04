@@ -96,5 +96,7 @@
       "branch": "state",
       "disposition": "ACCEPT_OURS"
     }
-  ]
+  ],
+  "credential_mode": "SHARED",
+  "anchors": {}
 }

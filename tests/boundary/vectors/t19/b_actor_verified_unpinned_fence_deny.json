@@ -53,5 +53,6 @@
       "source_delivery_id": "d1",
       "disposition": "ACTOR_VERIFIED_AUTO"
     }
-  ]
+  ],
+  "anchors": {}
 }

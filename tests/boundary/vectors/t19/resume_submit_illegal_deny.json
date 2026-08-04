@@ -50,5 +50,7 @@
       "branch": "state",
       "authorization_id": "auth-1"
     }
-  ]
+  ],
+  "credential_mode": "SHARED",
+  "anchors": {}
 }

@@ -18,5 +18,6 @@
   ],
   "anchors": {
     "R1:refs/heads/main": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7"
-  }
+  },
+  "credential_mode": "SHARED"
 }

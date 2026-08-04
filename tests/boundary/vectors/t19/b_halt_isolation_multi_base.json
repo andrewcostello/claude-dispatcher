@@ -75,5 +75,6 @@
       "delta_new_oid": "p2",
       "source_delivery_id": "e2"
     }
-  ]
+  ],
+  "anchors": {}
 }

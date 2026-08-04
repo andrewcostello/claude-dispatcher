@@ -75,5 +75,6 @@
       "disposition": "ACCEPT_OURS",
       "actor_node_id": "N-operator"
     }
-  ]
+  ],
+  "anchors": {}
 }

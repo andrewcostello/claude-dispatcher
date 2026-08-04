@@ -49,5 +49,7 @@
       "credential_mode": "SHARED",
       "branch": "hold"
     }
-  ]
+  ],
+  "credential_mode": "SHARED",
+  "anchors": {}
 }

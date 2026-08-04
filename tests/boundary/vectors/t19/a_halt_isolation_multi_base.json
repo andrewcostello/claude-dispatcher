@@ -74,5 +74,7 @@
       "branch": "state",
       "new_oid": "6d90afe7ccb06434083ec691ed631325a7f4e533"
     }
-  ]
+  ],
+  "credential_mode": "SHARED",
+  "anchors": {}
 }

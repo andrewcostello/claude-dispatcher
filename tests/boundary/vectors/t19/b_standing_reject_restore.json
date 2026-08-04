@@ -75,5 +75,6 @@
       "disposition": "REJECT_RESTORE_HOLD",
       "actor_node_id": "N-operator"
     }
-  ]
+  ],
+  "anchors": {}
 }

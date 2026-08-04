@@ -73,5 +73,7 @@
       "branch": "state",
       "reason": "tampered"
     }
-  ]
+  ],
+  "credential_mode": "SHARED",
+  "anchors": {}
 }

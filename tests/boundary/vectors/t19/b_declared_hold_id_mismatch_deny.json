@@ -28,5 +28,6 @@
       "source_delivery_id": "d1",
       "hold_id": "declared-wrong"
     }
-  ]
+  ],
+  "anchors": {}
 }

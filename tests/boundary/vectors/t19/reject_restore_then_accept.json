@@ -120,5 +120,7 @@
       "branch": "state",
       "disposition": "ACCEPT_FOREIGN_ADVANCED"
     }
-  ]
+  ],
+  "credential_mode": "SHARED",
+  "anchors": {}
 }

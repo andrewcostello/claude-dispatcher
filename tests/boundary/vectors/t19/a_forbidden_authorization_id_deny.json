@@ -74,5 +74,7 @@
       "branch": "state",
       "authorization_id": "SMUGGLED"
     }
-  ]
+  ],
+  "credential_mode": "SHARED",
+  "anchors": {}
 }

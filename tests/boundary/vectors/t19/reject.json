@@ -50,5 +50,7 @@
       "branch": "state",
       "reason": "ruleset refused the merge"
     }
-  ]
+  ],
+  "credential_mode": "SHARED",
+  "anchors": {}
 }

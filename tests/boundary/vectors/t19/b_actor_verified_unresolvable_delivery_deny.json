@@ -53,5 +53,6 @@
       "source_delivery_id": "never-seen",
       "disposition": "ACTOR_VERIFIED_AUTO"
     }
-  ]
+  ],
+  "anchors": {}
 }

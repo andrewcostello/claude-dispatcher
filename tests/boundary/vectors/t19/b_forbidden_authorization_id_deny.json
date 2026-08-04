@@ -52,5 +52,6 @@
       "authorization_id": "SMUGGLED",
       "actor_node_id": "N-operator"
     }
-  ]
+  ],
+  "anchors": {}
 }
