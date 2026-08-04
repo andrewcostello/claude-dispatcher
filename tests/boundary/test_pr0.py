@@ -696,61 +696,57 @@ def _ceiling_events(generated, n: int, base: str = "B1") -> list[dict]:
     return [{"event_id": f"e{i}", "base_key": base} for i in range(n)]
 
 
-@pytest.mark.parametrize("case", [
-    pytest.param("exactly-n", id="exactly-n-is-admitted"),
-    pytest.param("n-plus-one", id="deny-n-plus-one-halts"),
-    pytest.param("per-base", id="deny-ceiling-is-per-base"),
-    pytest.param("fold-empty-anchors", id="deny-fold-empty-anchors-still-halts"),
-    pytest.param("fold-partial-anchors", id="deny-fold-partial-anchors-halts-both"),
-])
-def test_recovery_ceiling(generated, case):
-    """RECOVERY_CEILING's event-count half, per base_key (elapsed-time is
-    PR4). In-memory histories: the halt is a function of the event COUNT, so
-    a 10k-event JSON corpus would add noise, not fidelity."""
+def test_ceiling_exactly_n_is_admitted(generated):
+    """Boundary: exactly N events is admitted (they then fail their own
+    schema checks, but never with RECOVERY_CEILING)."""
+    g, n = generated, generated.RECOVERY_CEILING_EVENTS
+    for result in (g.reduce_section_a(_ceiling_events(g, n)),
+                   g.reduce_section_b(_ceiling_events(g, n))):
+        assert "RECOVERY_CEILING" not in {h["code"] for h in result["halts"].values()}
+    assert g.fold_epochs(_ceiling_events(g, n), {"B1": "E0"})["B1"]["halt"] is None
+
+
+def test_ceiling_n_plus_one_halts(generated):
+    """deny: one event past the ceiling halts all three consumers."""
+    g, n = generated, generated.RECOVERY_CEILING_EVENTS
+    for result in (g.reduce_section_a(_ceiling_events(g, n + 1)),
+                   g.reduce_section_b(_ceiling_events(g, n + 1))):
+        assert result["halts"]["B1"]["code"] == "RECOVERY_CEILING"
+    fold = g.fold_epochs(_ceiling_events(g, n + 1), {"B1": "E0"})
+    assert fold["B1"]["halt"]["code"] == "RECOVERY_CEILING"
+
+
+def test_ceiling_is_counted_per_base(generated):
+    """deny: one busy base must never halt a quiet one."""
+    g, n = generated, generated.RECOVERY_CEILING_EVENTS
+    events = _ceiling_events(g, n + 1, "BUSY") + _ceiling_events(g, 3, "QUIET")
+    for result in (g.reduce_section_a(events), g.reduce_section_b(events)):
+        assert result["halts"]["BUSY"]["code"] == "RECOVERY_CEILING"
+        assert result["halts"].get("QUIET", {}).get("code") != "RECOVERY_CEILING"
+    fold = g.fold_epochs(events, {"BUSY": "E0", "QUIET": "E0"})
+    assert fold["BUSY"]["halt"]["code"] == "RECOVERY_CEILING"
+    assert fold["QUIET"]["halt"] is None
+
+
+def test_ceiling_with_empty_anchors_still_halts(generated):
+    """deny: a ceiling breach with NO anchors must be an explicit halt — {}
+    would read as a clean, empty fold."""
     g = generated
-    n = g.RECOVERY_CEILING_EVENTS
-    if case == "exactly-n":
-        # boundary: exactly N is admitted (the events then fail their own
-        # schema checks, but never with RECOVERY_CEILING).
-        for result in (g.reduce_section_a(_ceiling_events(g, n)),
-                       g.reduce_section_b(_ceiling_events(g, n))):
-            codes = {h["code"] for h in result["halts"].values()}
-            assert "RECOVERY_CEILING" not in codes
-        fold = g.fold_epochs(_ceiling_events(g, n), {"B1": "E0"})
-        assert fold["B1"]["halt"] is None
-    elif case == "n-plus-one":
-        for result in (g.reduce_section_a(_ceiling_events(g, n + 1)),
-                       g.reduce_section_b(_ceiling_events(g, n + 1))):
-            assert result["halts"]["B1"]["code"] == "RECOVERY_CEILING"
-        fold = g.fold_epochs(_ceiling_events(g, n + 1), {"B1": "E0"})
-        assert fold["B1"]["halt"]["code"] == "RECOVERY_CEILING"
-    elif case == "per-base":
-        # one busy base must not halt a quiet one
-        events = _ceiling_events(g, n + 1, "BUSY") + _ceiling_events(g, 3, "QUIET")
-        for result in (g.reduce_section_a(events), g.reduce_section_b(events)):
-            assert result["halts"]["BUSY"]["code"] == "RECOVERY_CEILING"
-            assert "QUIET" not in result["halts"] or \
-                result["halts"]["QUIET"]["code"] != "RECOVERY_CEILING"
-        fold = g.fold_epochs(events, {"BUSY": "E0", "QUIET": "E0"})
-        assert fold["BUSY"]["halt"]["code"] == "RECOVERY_CEILING"
-        assert fold["QUIET"]["halt"] is None
-    elif case == "fold-empty-anchors":
-        # a ceiling breach with NO anchors must still be an explicit halt —
-        # {} would read as a clean, empty fold.
-        fold = g.fold_epochs(_ceiling_events(g, n + 1), {})
-        assert fold, "empty result: a ceiling breach read as 'nothing to fold'"
-        assert fold["B1"]["status"] == "halt"
-        assert fold["B1"]["halt"]["code"] == "RECOVERY_CEILING"
-    elif case == "fold-partial-anchors":
-        # OTHER carries real EDGES but no anchor: the ceiling breach on BUSY
-        # must not make it vanish — an edge-bearing base is always reported.
-        other = [{"event_id": "o1", "base_key": "OTHER",
-                  "epoch_before": "E0", "epoch_after": "E1"}]
-        fold = g.fold_epochs(_ceiling_events(g, n + 1, "BUSY") + other,
-                             {"BUSY": "E0"})
-        assert fold["BUSY"]["halt"]["code"] == "RECOVERY_CEILING"
-        assert fold["OTHER"]["halt"]["code"] == "EPOCH_GAP", \
-            "an edge-bearing base was dropped on the ceiling path"
+    fold = g.fold_epochs(_ceiling_events(g, g.RECOVERY_CEILING_EVENTS + 1), {})
+    assert fold, "empty result: a ceiling breach read as 'nothing to fold'"
+    assert fold["B1"]["status"] == "halt"
+    assert fold["B1"]["halt"]["code"] == "RECOVERY_CEILING"
+
+
+def test_ceiling_with_partial_anchors_keeps_edge_bearing_bases(generated):
+    """deny: an edge-bearing base must not vanish on the ceiling path."""
+    g, n = generated, generated.RECOVERY_CEILING_EVENTS
+    other = [{"event_id": "o1", "base_key": "OTHER",
+              "epoch_before": "E0", "epoch_after": "E1"}]
+    fold = g.fold_epochs(_ceiling_events(g, n + 1, "BUSY") + other,
+                         {"BUSY": "E0"})
+    assert fold["BUSY"]["halt"]["code"] == "RECOVERY_CEILING"
+    assert fold["OTHER"]["halt"]["code"] == "EPOCH_GAP"
 
 
 def test_derivations_pinned_goldens(generated):
@@ -788,67 +784,88 @@ class _LookalikeOutcome:
     findings = ()
 
 
-@pytest.mark.parametrize("case", [
-    pytest.param("approved", id="full-all-approve"),
-    pytest.param("block-verdict", id="deny-blocking-verdict"),
-    pytest.param("high-finding", id="deny-high-finding-blocks"),
-    pytest.param("block-beats-missing-seat", id="deny-block-beats-missing-seat"),
-    pytest.param("missing-seat", id="deny-missing-seat-incomplete"),
-    pytest.param("extra-seat", id="deny-extra-seat-incomplete"),
-    pytest.param("unparseable", id="deny-unparseable-incomplete"),
-    pytest.param("lookalike-raises", id="deny-lookalike-raises"),
-    pytest.param("none-raises", id="deny-none-raises"),
-    pytest.param("skip-not-approved", id="deny-skip-is-not-approval"),
-    pytest.param("single", id="single-designated-seat"),
-])
-def test_aggregate_rows(generated, case):
-    # complexity-justified: exhaustive case switch over the closed
-    # parametrised row set — one arm per golden, no interacting branches.
-    g = generated
-    r = _roster(g)
-    ok = g.SeatOutcome(g.SeatVerdict.APPROVE)
-    full = {s: ok for s in r.ordered_seat_ids}
-    result = g.PanelAggregateResult
+def _seats_all_approve(g, roster):
+    return {s: g.SeatOutcome(g.SeatVerdict.APPROVE) for s in roster.ordered_seat_ids}
+
+
+def _mutate(g, roster, case: str):
+    """Build the outcome map for one aggregate scenario. Returns (intensity,
+    outcomes) — assertion-only bodies keep the seal a table, not logic."""
+    out = _seats_all_approve(g, roster)
+    full = g.PanelIntensity.FULL
     if case == "approved":
-        assert g.aggregate(g.PanelIntensity.FULL, r, full) is result.APPROVED
-    elif case == "block-verdict":
-        full["grok"] = g.SeatOutcome(g.SeatVerdict.BLOCK)
-        assert g.aggregate(g.PanelIntensity.FULL, r, full) is result.BLOCKED
+        return full, out
+    if case == "block-verdict":
+        out["grok"] = g.SeatOutcome(g.SeatVerdict.BLOCK)
     elif case == "high-finding":
-        full["grok"] = g.SeatOutcome(g.SeatVerdict.APPROVE,
-                                     (g.Finding(g.Severity.HIGH),))
-        assert g.aggregate(g.PanelIntensity.FULL, r, full) is result.BLOCKED
+        out["grok"] = g.SeatOutcome(g.SeatVerdict.APPROVE,
+                                    (g.Finding(g.Severity.HIGH),))
     elif case == "block-beats-missing-seat":
-        # normative rule ORDER: a blocking finding decides even when another
-        # required seat is missing — both deny, BLOCKED carries the finding.
-        full["grok"] = g.SeatOutcome(g.SeatVerdict.BLOCK)
-        del full["codex"]
-        assert g.aggregate(g.PanelIntensity.FULL, r, full) is result.BLOCKED
+        out["grok"] = g.SeatOutcome(g.SeatVerdict.BLOCK)
+        del out["codex"]
     elif case == "missing-seat":
-        del full["codex"]
-        assert g.aggregate(g.PanelIntensity.FULL, r, full) is result.INCOMPLETE
+        del out["codex"]
     elif case == "extra-seat":
-        full["gemini"] = ok
-        assert g.aggregate(g.PanelIntensity.FULL, r, full) is result.INCOMPLETE
+        out["gemini"] = g.SeatOutcome(g.SeatVerdict.APPROVE)
     elif case == "unparseable":
-        full["codex"] = g.UnparseableOutcome("severity: CATASTROPHIC")
-        assert g.aggregate(g.PanelIntensity.FULL, r, full) is result.INCOMPLETE
+        out["codex"] = g.UnparseableOutcome("severity: CATASTROPHIC")
     elif case == "lookalike-raises":
-        full["codex"] = _LookalikeOutcome()
-        with pytest.raises(TypeError):
-            g.aggregate(g.PanelIntensity.FULL, r, full)
+        out["codex"] = _LookalikeOutcome()
     elif case == "none-raises":
-        full["codex"] = None
-        with pytest.raises(TypeError):
-            g.aggregate(g.PanelIntensity.FULL, r, full)
+        out["codex"] = None
     elif case == "skip-not-approved":
-        # a zero-seat evaluation must never read as approval (§5.2: SKIP's
-        # satisfaction is NOT_REQUIRED, not panel approval).
-        assert g.aggregate(g.PanelIntensity.SKIP, r, {}) is result.NOT_APPLICABLE
+        return g.PanelIntensity.SKIP, {}
     elif case == "single":
-        assert g.required_seats(g.PanelIntensity.SINGLE, r) == ("claude",)
-        assert g.aggregate(g.PanelIntensity.SINGLE, r,
-                           {"claude": ok}) is result.APPROVED
+        return g.PanelIntensity.SINGLE, {"claude": g.SeatOutcome(g.SeatVerdict.APPROVE)}
+    return full, out
+
+
+# (case, expected result name) — expected "RAISES" means the closed union
+# rejects the outcome type rather than counting it.
+_AGGREGATE_ROWS = [
+    ("approved", "APPROVED", "full-all-approve"),
+    ("block-verdict", "BLOCKED", "deny-blocking-verdict"),
+    ("high-finding", "BLOCKED", "deny-high-finding-blocks"),
+    ("block-beats-missing-seat", "BLOCKED", "deny-block-beats-missing-seat"),
+    ("missing-seat", "INCOMPLETE", "deny-missing-seat-incomplete"),
+    ("extra-seat", "INCOMPLETE", "deny-extra-seat-incomplete"),
+    ("unparseable", "INCOMPLETE", "deny-unparseable-incomplete"),
+    ("lookalike-raises", "RAISES", "deny-lookalike-raises"),
+    ("none-raises", "RAISES", "deny-none-raises"),
+    ("skip-not-approved", "NOT_APPLICABLE", "deny-skip-is-not-approval"),
+    ("single", "APPROVED", "single-designated-seat"),
+]
+
+
+@pytest.mark.parametrize("case,expected", [
+    pytest.param(c, e, id=i) for c, e, i in _AGGREGATE_ROWS
+])
+def test_aggregate_rows(generated, case, expected):
+    """§5.1's aggregate as a TABLE: each row names a scenario and the result
+    it must produce; the body is assertion-only (panel round 2 — an 11-arm
+    if/elif dispatcher hides which assertion ran)."""
+    g = generated
+    roster = _roster(g)
+    intensity, outcomes = _mutate(g, roster, case)
+    if expected == "RAISES":
+        with pytest.raises(TypeError):
+            g.aggregate(intensity, roster, outcomes)
+        return
+    assert g.aggregate(intensity, roster, outcomes) is \
+        getattr(g.PanelAggregateResult, expected)
+
+
+@pytest.mark.parametrize("bad", [
+    pytest.param(2, id="deny-raw-int-matching-FULL"),
+    pytest.param("FULL", id="deny-string-intensity"),
+    pytest.param(None, id="deny-none-intensity"),
+])
+def test_required_seats_rejects_non_members(generated, bad):
+    """PanelIntensity is an IntEnum, so a raw 2 compares equal to FULL — a
+    non-member must raise, never fall through to the permissive zero-seat
+    arm that aggregate maps to NOT_APPLICABLE (panel round 2, finding 4)."""
+    with pytest.raises(TypeError):
+        generated.required_seats(bad, _roster(generated))
 
 
 def test_required_seats_full_is_whole_roster(generated):
@@ -934,8 +951,6 @@ def test_boundary_error_maps_match_schema_element_wise(schemas, generated):
     """Per-code phase/retriability and the exit map are asserted against the
     schema row by row — a permuted assignment fails (panel finding: domain
     membership alone is satisfied by every permutation)."""
-    # complexity-justified: element-wise exhaustive seal plus its own
-    # permutation deny — linear assertions, no interacting paths.
     g = generated
     rows = {c["code"]: c for c in schemas["boundary_errors"]["codes"]}
     assert {c.name for c in g.BoundaryErrorCode} == set(rows)
@@ -951,13 +966,19 @@ def test_boundary_error_maps_match_schema_element_wise(schemas, generated):
         assert err.metric == f"boundary_error_{code.value.lower()}_total"
     assert {p.name for p in g.ErrorPhase} == set(schemas["boundary_errors"]["phases"])
     assert g.CLI_EXIT_OK == 0
-    # deny: the element-wise comparison actually fires on a permuted copy
-    permuted = {c: dict(rows[c]) for c in rows}
-    permuted["EPOCH_GAP"]["retriability"] = rows["ILLEGAL_TRANSITION"]["retriability"]
-    permuted["ILLEGAL_TRANSITION"]["retriability"] = rows["EPOCH_GAP"]["retriability"]
+
+
+def test_boundary_error_seal_detects_a_permutation(schemas, generated):
+    """deny: the element-wise comparison is not vacuous — swapping two
+    codes' retriability in a copy of the schema is detected."""
+    g = generated
+    rows = {c["code"]: dict(c) for c in schemas["boundary_errors"]["codes"]}
+    a, b = "EPOCH_GAP", "ILLEGAL_TRANSITION"
+    rows[a]["retriability"], rows[b]["retriability"] = \
+        rows[b]["retriability"], rows[a]["retriability"]
     mismatches = [c for c in g.BoundaryErrorCode
                   if g.BoundaryError(c).retriability.name
-                  != permuted[c.name]["retriability"]]
+                  != rows[c.name]["retriability"]]
     assert mismatches, "element-wise seal is vacuous — permutation undetected"
 
 
@@ -1189,37 +1210,43 @@ def _production_modules() -> list[Path]:
     return sorted((REPO_ROOT / "src/claude_dispatcher").rglob("*.py"))
 
 
+def _guarded_aliases(tree: ast.AST, guarded: set[str]) -> dict[str, str]:
+    """Local names bound to a guarded name by `from x import Name as N`."""
+    return {a.asname or a.name: a.name
+            for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+            for a in node.names if a.name in guarded}
+
+
+def _guarded_hit(node: ast.AST, guarded: set[str],
+                 aliases: dict[str, str]) -> str | None:
+    """One node's verdict: a definition, a construction (bare-name, aliased
+    or attribute-qualified), or None."""
+    if isinstance(node, ast.ClassDef) and node.name in guarded:
+        return f"defines {node.name}"
+    if not isinstance(node, ast.Call):
+        return None
+    fn = node.func
+    if isinstance(fn, ast.Name) and (fn.id in guarded or fn.id in aliases):
+        return f"constructs {aliases.get(fn.id, fn.id)}"
+    if isinstance(fn, ast.Attribute) and fn.attr in guarded:
+        return f"constructs {fn.attr} (attribute-qualified)"
+    return None
+
+
 def _scan_guarded(paths: list[Path], guarded: set[str],
                   exempt: set[Path]) -> list[str]:
-    """Definitions and constructions of guarded names: bare-name calls,
-    attribute-qualified calls (mod.Name(...)), and calls through import
-    aliases (from x import Name as N; N(...))."""
-    # complexity-justified: dispatcher over AST node kinds/spellings — each
-    # branch is one construction spelling, sealed by its own deny fixture.
+    """Definitions and constructions of guarded names, in every spelling."""
     hits = []
     for path in paths:
         if path in exempt:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        aliases: dict[str, str] = {}
+        aliases = _guarded_aliases(tree, guarded)
         for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom):
-                for a in node.names:
-                    if a.name in guarded:
-                        aliases[a.asname or a.name] = a.name
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ClassDef) and node.name in guarded:
-                hits.append(f"{path}:{node.lineno} defines {node.name}")
-            elif isinstance(node, ast.Call):
-                fn = node.func
-                if isinstance(fn, ast.Name) and (fn.id in guarded or fn.id in aliases):
-                    hits.append(f"{path}:{node.lineno} constructs "
-                                f"{aliases.get(fn.id, fn.id)}")
-                elif isinstance(fn, ast.Attribute) and fn.attr in guarded:
-                    hits.append(f"{path}:{node.lineno} constructs {fn.attr} "
-                                f"(attribute-qualified)")
+            verdict = _guarded_hit(node, guarded, aliases)
+            if verdict:
+                hits.append(f"{path}:{node.lineno} {verdict}")
     return hits
-
 
 _ROGUE_SPELLINGS = {
     "bare-name": "from claude_dispatcher.boundary.wire import parse\n"
@@ -1273,28 +1300,35 @@ def test_ast_allowlists_fail_closed(schemas, tmp_path, gate):
 
 # ─── architecture skeleton: dark mode ────────────────────────────────────────
 
+def _plain_import_hits(node: ast.Import) -> list[str]:
+    return [a.name for a in node.names
+            if a.name.startswith("claude_dispatcher.boundary")]
+
+
+def _from_import_hits(node: ast.ImportFrom) -> list[str]:
+    mod = node.module or ""
+    names = {a.name for a in node.names}
+    if mod.startswith("claude_dispatcher.boundary"):
+        return [mod]
+    if mod == "claude_dispatcher" and "boundary" in names:
+        return ["claude_dispatcher.boundary"]
+    if node.level and (mod == "boundary" or mod.startswith("boundary.")):
+        return [f".{mod}"]
+    if node.level and not mod and "boundary" in names:
+        return [".boundary"]
+    return []
+
+
 def _imports_boundary(tree: ast.AST) -> list[str]:
-    # complexity-justified: dispatcher over the closed set of import
-    # spellings — each branch is one spelling, sealed by its own deny row.
-    hits = []
+    """Every spelling of an import of claude_dispatcher.boundary — one
+    helper per import FORM, each sealed by its own deny row."""
+    hits: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            hits += [a.name for a in node.names
-                     if a.name.startswith("claude_dispatcher.boundary")]
+            hits += _plain_import_hits(node)
         elif isinstance(node, ast.ImportFrom):
-            mod = node.module or ""
-            if mod.startswith("claude_dispatcher.boundary"):
-                hits.append(mod)
-            elif mod == "claude_dispatcher":
-                hits += [f"claude_dispatcher.{a.name}" for a in node.names
-                         if a.name == "boundary"]
-            if node.level and (mod == "boundary" or mod.startswith("boundary.")):
-                hits.append(f".{mod}")
-            if node.level and mod == "" and any(a.name == "boundary"
-                                                for a in node.names):
-                hits.append(".boundary")
+            hits += _from_import_hits(node)
     return hits
-
 
 _IMPORT_SPELLINGS = {
     "absolute": "import claude_dispatcher.boundary\n",

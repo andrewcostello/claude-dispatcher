@@ -334,17 +334,13 @@ def resolve_py(repo: Path, sha: str, path: str) -> tuple[str, str] | None:
     return None
 
 
-def check_citations(doc: Doc, errors: list[str]) -> None:
-    """(6) file:line citations resolve at the pinned baselines; symbol
-    checks where the doc cites symbols. Historical sections (§11, the
-    version-history header) cite lines against OLD baselines by definition
-    and are exempt — the same scoping §12 gives the retired-name rule.
-
-    Peer absence and an unresolvable pin are reported as THEMSELVES, once,
-    never as N stale-citation lines."""
+def _citation_context(doc: Doc, errors: list[str]):
+    """(dispatcher_sha, workflow_sha, workflow_repo) or None when the check
+    cannot run — peer absence and an unresolvable pin are each reported as
+    THEMSELVES, once, never as N stale-citation lines."""
     pins = parse_pins(doc, errors)
     if pins is None:
-        return
+        return None
     disp_sha, wf_sha = pins
     wf_repo = find_workflow_repo()
     if wf_repo is None:
@@ -353,16 +349,20 @@ def check_citations(doc: Doc, errors: list[str]) -> None:
             f"unverifiable (tried: {', '.join(_WORKFLOW_CANDIDATES)}; set "
             "CLAUDE_WORKFLOW_REPO, or pass --no-citations in environments "
             "without the peer checkout)")
-        return
+        return None
     pin_problems = [p for p in (pin_resolves(REPO_ROOT, disp_sha),
                                 pin_resolves(wf_repo, wf_sha)) if p]
     if pin_problems:
         errors.extend(f"citations: {p}" for p in pin_problems)
-        return                      # one accurate error, not N misreports
+        return None
+    return disp_sha, wf_sha, wf_repo
+
+
+def _content_resolver(disp_sha: str, wf_sha: str, wf_repo: Path):
+    """path → (real_path, text) on success, or an error REASON string."""
     cache: dict[str, tuple[str, str] | str] = {}
 
     def content_for(path: str) -> tuple[str, str] | str:
-        """(real_path, text) on success, or an error REASON string."""
         if path in cache:
             return cache[path]
         if path.endswith(".go"):
@@ -376,6 +376,10 @@ def check_citations(doc: Doc, errors: list[str]) -> None:
         cache[path] = got
         return got
 
+    return content_for
+
+
+def _check_line_citations(doc: Doc, content_for, errors: list[str]) -> None:
     for i, sec, line in doc.normative():
         for m in CITATION_RE.finditer(line):
             path, linespec = m.group("path"), m.group("lines")
@@ -389,6 +393,10 @@ def check_citations(doc: Doc, errors: list[str]) -> None:
             if maxline > nlines:
                 errors.append(f"citations: line {i} (§{sec}): {real}:{maxline} "
                               f"beyond EOF ({nlines} lines at pin)")
+
+
+def _check_symbol_citations(disp_sha: str, wf_sha: str, wf_repo: Path,
+                            errors: list[str]) -> None:
     for repo_name, path, symbols in SYMBOL_CHECKS:
         repo, sha = ((wf_repo, wf_sha) if repo_name == "workflow"
                      else (REPO_ROOT, disp_sha))
@@ -400,6 +408,20 @@ def check_citations(doc: Doc, errors: list[str]) -> None:
         for sym in symbols:
             if sym not in res.text:
                 errors.append(f"citations: symbol `{sym}` not found in {path} at pin")
+
+
+def check_citations(doc: Doc, errors: list[str]) -> None:
+    """(6) file:line citations resolve at the pinned baselines; symbol
+    checks where the doc cites symbols. Historical sections (§11, the
+    version-history header) cite lines against OLD baselines by definition
+    and are exempt — the same scoping §12 gives the retired-name rule."""
+    ctx = _citation_context(doc, errors)
+    if ctx is None:
+        return
+    disp_sha, wf_sha, wf_repo = ctx
+    _check_line_citations(doc, _content_resolver(disp_sha, wf_sha, wf_repo),
+                          errors)
+    _check_symbol_citations(disp_sha, wf_sha, wf_repo, errors)
 
 
 def check_plan_tmap(doc: Doc, errors: list[str]) -> None:

@@ -286,6 +286,11 @@ HOLD_BRANCH: frozenset[str] = frozenset(('HELD',))
 STATE_BRANCH_REF: str = "refs/heads/dispatcher/state"
 HOLD_BRANCH_REF: str = "refs/heads/dispatcher/integrity-hold"
 
+# Recovery admission ceiling (§6.0 provisional bounds; the elapsed-
+# time half is a PR4 obligation — see schema recovery_ceiling).
+RECOVERY_CEILING_EVENTS: int = 10000
+RECOVERY_CEILING_REDUCE_SECONDS: int = 30
+
 # The v1 wire supports exactly these schema majors; anything else halts
 # as SCHEMA_MAJOR_UNKNOWN — the named §9 halt, range-checked at intake.
 SUPPORTED_SCHEMA_MAJORS: frozenset[int] = frozenset((1,))
@@ -294,11 +299,6 @@ SUPPORTED_SCHEMA_MAJORS: frozenset[int] = frozenset((1,))
 # standing_reject_restore_resolves_to (the single place to change if
 # the author ratifies the other reading).
 STANDING_REJECT_RESTORE_TARGET_NAME: str = 'HELD_FOREIGN'
-
-# Recovery admission ceiling (§6.0 provisional bounds; the elapsed-
-# time half is a PR4 obligation — see schema recovery_ceiling).
-RECOVERY_CEILING_EVENTS: int = 10000
-RECOVERY_CEILING_REDUCE_SECONDS: int = 30
 
 # Projection machine (round 14, codex): durable states + composed edges,
 # derived from the live table by composing through memory-only states.

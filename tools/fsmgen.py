@@ -141,7 +141,7 @@ def _validate_machine_tokens(fsm: dict) -> None:
             _require_ident(m, f"enums.{name}")
 
 
-def _validate_event_tokens(fsm: dict) -> None:
+def _validate_union_tokens(fsm: dict) -> None:
     for fam, spec in fsm["events"]["unions"].items():
         _require_ident(fam, "unions")
         for v in spec["variants"]:
@@ -157,6 +157,9 @@ def _validate_event_tokens(fsm: dict) -> None:
             for k, val in v.get("fixed", {}).items():
                 _require_ident(k, f"unions.{fam}.{v['name']}.fixed key")
                 _require_ident(val, f"unions.{fam}.{v['name']}.fixed value")
+
+
+def _validate_single_tokens(fsm: dict) -> None:
     for name, spec in fsm["events"]["singles"].items():
         _require_ident(name, "singles")
         _check_keys(spec, "single", f"singles.{name}")
@@ -174,6 +177,9 @@ def _validate_event_tokens(fsm: dict) -> None:
                 _require_ident(lhs, f"singles.{name}.pair lhs")
                 for member in rhs:
                     _require_ident(member, f"singles.{name}.pair rhs")
+
+
+def _validate_envelope_tokens(fsm: dict) -> None:
     env = fsm["events"]["envelope"]
     for f in [*env["required"], *env["optional"]]:
         _require_ident(f, "envelope")
@@ -184,6 +190,12 @@ def _validate_event_tokens(fsm: dict) -> None:
         _require_ident(f, "reducer_family_filter.values")
     for k, v in fsm["events"]["field_name_map"].items():
         _require_ident(v, f"field_name_map[{k!r}]")
+
+
+def _validate_event_tokens(fsm: dict) -> None:
+    _validate_union_tokens(fsm)
+    _validate_single_tokens(fsm)
+    _validate_envelope_tokens(fsm)
 
 
 def _validate_shared_object_tokens(fsm: dict) -> None:
@@ -364,12 +376,12 @@ def emit_errors(errors: dict) -> list[str]:
     return L
 
 
-def emit_machine_constants(fsm: dict, reachable: dict, proj_edges: list) -> list[str]:
-    L: list[str] = ["# ─── machine states, events, dispositions ───────────────────────────", ""]
+def _emit_state_and_disposition_enums(fsm: dict) -> list[str]:
+    L: list[str] = []
     w = L.append
-    a, b = fsm["section_a"], fsm["section_b"]
     disp = fsm["reconcile_dispositions"]
-    for enum_name, sec in (("SectionAState", a), ("SectionBState", b)):
+    for enum_name, sec in (("SectionAState", fsm["section_a"]),
+                           ("SectionBState", fsm["section_b"])):
         w(f"class {enum_name}(Enum):")
         for st in [sec["initial_pseudo_state"], *sec["states"]]:
             w(f"    {st} = \"{st}\"")
@@ -393,6 +405,13 @@ def emit_machine_constants(fsm: dict, reachable: dict, proj_edges: list) -> list
         for m in members:
             w(f"    {m} = \"{m}\"")
         w("")
+    return L
+
+
+def _emit_durability_and_ceiling(fsm: dict) -> list[str]:
+    L: list[str] = []
+    w = L.append
+    a, b = fsm["section_a"], fsm["section_b"]
     w(f"SECTION_A_EVENTS: tuple[str, ...] = {tuple(a['events'])!r}")
     w(f"SECTION_B_EVENTS: tuple[str, ...] = {tuple(b['events'])!r}")
     w(f"SECTION_A_TERMINAL: frozenset[str] = frozenset({tuple(a['terminal_states'])!r})")
@@ -406,16 +425,22 @@ def emit_machine_constants(fsm: dict, reachable: dict, proj_edges: list) -> list
     w(f"STATE_BRANCH_REF: str = {json.dumps(str(dur['state_branch_ref']))}")
     w(f"HOLD_BRANCH_REF: str = {json.dumps(str(dur['hold_branch_ref']))}")
     w("")
+    ceiling = a["recovery_ceiling"]
+    w("# Recovery admission ceiling (§6.0 provisional bounds; the elapsed-")
+    w("# time half is a PR4 obligation — see schema recovery_ceiling).")
+    w(f"RECOVERY_CEILING_EVENTS: int = {int(ceiling['events'])}")
+    w(f"RECOVERY_CEILING_REDUCE_SECONDS: int = {int(ceiling['reduce_seconds'])}")
+    w("")
     env = fsm["events"]["envelope"]
     w("# The v1 wire supports exactly these schema majors; anything else halts")
     w("# as SCHEMA_MAJOR_UNKNOWN — the named §9 halt, range-checked at intake.")
     w(f"SUPPORTED_SCHEMA_MAJORS: frozenset[int] = frozenset({tuple(int(m) for m in env['supported_majors'])!r})")
     w("")
-    b_rows_by_id = {r['id']: r for r in b['rows']}
+    b_rows_by_id = {r["id"]: r for r in b["rows"]}
     standing_target = _require_ident(
-        str(b_rows_by_id['standing_reenter']['standing_reject_restore_resolves_to']),
-        'standing_reject_restore_resolves_to')
-    if standing_target not in b['states']:
+        str(b_rows_by_id["standing_reenter"]["standing_reject_restore_resolves_to"]),
+        "standing_reject_restore_resolves_to")
+    if standing_target not in b["states"]:
         raise SchemaError(f"standing_reject_restore_resolves_to names unknown "
                           f"state {standing_target!r}")
     w("# STANDING × REJECT_RESTORE_HOLD resolution — driven by the schema key")
@@ -423,16 +448,17 @@ def emit_machine_constants(fsm: dict, reachable: dict, proj_edges: list) -> list
     w("# the author ratifies the other reading).")
     w(f"STANDING_REJECT_RESTORE_TARGET_NAME: str = {standing_target!r}")
     w("")
-    ceiling = a["recovery_ceiling"]
-    w("# Recovery admission ceiling (§6.0 provisional bounds; the elapsed-")
-    w("# time half is a PR4 obligation — see schema recovery_ceiling).")
-    w(f"RECOVERY_CEILING_EVENTS: int = {int(ceiling['events'])}")
-    w(f"RECOVERY_CEILING_REDUCE_SECONDS: int = {int(ceiling['reduce_seconds'])}")
-    w("")
+    return L
+
+
+def _emit_projection_and_rows(fsm: dict, reachable: dict,
+                              proj_edges: list) -> list[str]:
+    L: list[str] = []
+    w = L.append
     w("# Projection machine (round 14, codex): durable states + composed edges,")
     w("# derived from the live table by composing through memory-only states.")
     w(f"PROJECTION_DURABLE_STATES: tuple[str, ...] = "
-      f"{tuple(a['projection']['durable_states'])!r}")
+      f"{tuple(fsm['section_a']['projection']['durable_states'])!r}")
     w("PROJECTION_EDGES: frozenset[tuple[str, str]] = frozenset({")
     for e in proj_edges:
         w(f"    ({e[0]!r}, {e[1]!r}),")
@@ -446,9 +472,8 @@ def emit_machine_constants(fsm: dict, reachable: dict, proj_edges: list) -> list
     w("")
     for sec_key, table_name in (("section_a", "SECTION_A_ROWS"),
                                 ("section_b", "SECTION_B_ROWS")):
-        sec = fsm[sec_key]
         w(f"{table_name}: tuple[Mapping[str, object], ...] = (")
-        for row in sec["rows"]:
+        for row in fsm[sec_key]["rows"]:
             w("    {" + ", ".join([
                 f"'id': {row['id']!r}",
                 f"'from': {tuple(as_list(row['from']))!r}",
@@ -464,6 +489,13 @@ def emit_machine_constants(fsm: dict, reachable: dict, proj_edges: list) -> list
     w(f"FIELD_NAME_MAP: Mapping[str, str] = {dict(fsm['events']['field_name_map'])!r}")
     w("")
     return L
+
+
+def emit_machine_constants(fsm: dict, reachable: dict, proj_edges: list) -> list[str]:
+    return (["# ─── machine states, events, dispositions ───────────────────────────", ""]
+            + _emit_state_and_disposition_enums(fsm)
+            + _emit_durability_and_ceiling(fsm)
+            + _emit_projection_and_rows(fsm, reachable, proj_edges))
 
 
 def _variant_field_sets(fsm: dict, spec: dict, v: dict) -> tuple[list[str], list[str], list[str]]:
@@ -2180,7 +2212,11 @@ def _load_triggers(fsm: dict) -> None:
 
 
 def _ev(variant: str, eid: str, mid: str, frm: str, to: str,
-        base: str = BASE1, branch: str = "state", **extra) -> dict:
+        **extra) -> dict:
+    """One effect_lifecycle wire event. `base`/`branch` ride in **extra so
+    the signature stays under the parameter bound; they are popped here."""
+    base = extra.pop("base", BASE1)
+    branch = extra.pop("branch", "state")
     d = _env(eid)
     d.update({"family": "effect_lifecycle", "variant": variant,
               "trigger_event": _A_TRIGGERS.get(variant, "prepare"),
