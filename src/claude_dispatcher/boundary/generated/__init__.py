@@ -6,8 +6,9 @@ state machines, event unions, panel aggregate and error universe
 
     python tools/fsmgen.py
 
-CI runs `python tools/fsmgen.py --check` — hand edits here are a red
-build by construction."""
+The repo gate (scripts/test.sh → tests/boundary) and
+`.github/workflows/verify.yml` both run `fsmgen --check`, so a hand
+edit here is a red build by construction."""
 
 from __future__ import annotations
 
