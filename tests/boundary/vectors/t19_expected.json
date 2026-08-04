@@ -15,7 +15,8 @@
     "not contract) \u2014 plus deny vectors additionally assert the named fields",
     "in the halt detail, so a vector pins its RULE and not merely its code.",
     "Section-B resolution notes are compared by CONTENT (code, resolution, tagged variant, hold_id) \u2014 a count alone let a note naming the WRONG door-0 resolution pass.",
-    "The corpus is TWO regions: the generated tree and vectors/t19/handwritten/ (the test author's, which fsmgen never writes). This oracle judges both identically."
+    "The corpus is TWO regions: the generated tree and vectors/t19/handwritten/ (the test author's, which fsmgen never writes). This oracle judges both identically.",
+    "A base whose FIRST event halts has no machine state at all \u2014 an empty {base: {}} claims a book that was never created, which is a different fact (S2: a refused event mutates nothing)."
   ],
   "vectors": {
     "a_accept_ours_without_new_oid_deny": {
@@ -665,7 +666,45 @@
       },
       "resolution_notes": {}
     },
+    "b_actor_verified_no_parked_subject_deny": {
+      "holds": {
+        "R1:refs/heads/main": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
+            "state": "HELD_FOREIGN",
+            "disposition": null,
+            "deliveries": [
+              "d1"
+            ]
+          }
+        }
+      },
+      "halts": {
+        "R1:refs/heads/main": {
+          "code": "ILLEGAL_TRANSITION"
+        }
+      },
+      "resolution_notes": {}
+    },
     "b_actor_verified_shared_run_deny": {
+      "holds": {
+        "R1:refs/heads/main": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
+            "state": "HELD_FOREIGN",
+            "disposition": null,
+            "deliveries": [
+              "d1"
+            ]
+          }
+        }
+      },
+      "halts": {
+        "R1:refs/heads/main": {
+          "code": "ILLEGAL_TRANSITION"
+        }
+      },
+      "resolution_notes": {}
+    },
+    "b_actor_verified_unknown_parked_subject_deny": {
       "holds": {
         "R1:refs/heads/main": {
           "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
@@ -841,9 +880,7 @@
       }
     },
     "b_declared_hold_id_mismatch_deny": {
-      "holds": {
-        "R1:refs/heads/main": {}
-      },
+      "holds": {},
       "halts": {
         "R1:refs/heads/main": {
           "code": "ILLEGAL_TRANSITION"
@@ -985,9 +1022,7 @@
       "resolution_notes": {}
     },
     "b_mode_disagrees_with_run_deny": {
-      "holds": {
-        "R1:refs/heads/main": {}
-      },
+      "holds": {},
       "halts": {
         "R1:refs/heads/main": {
           "code": "ILLEGAL_TRANSITION"
@@ -1012,9 +1047,7 @@
       "resolution_notes": {}
     },
     "b_none_effect_row_advances_deny": {
-      "holds": {
-        "R1:refs/heads/main": {}
-      },
+      "holds": {},
       "halts": {
         "R1:refs/heads/main": {
           "code": "ILLEGAL_TRANSITION"

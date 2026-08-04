@@ -2588,7 +2588,11 @@ _DENY_RULE_MARKERS = {
     "b_replayed_conflicting_reconcile_deny": ["conflicting d"],
     "b_from_state_contradicts_reduced_deny":
         ["audit from", "contradicts the reduced state"],
-    "b_missing_event_id_deny": ["missing required envelope field 'event_id'"],
+    # the envelope check no longer has its own sentence: an absent event_id
+    # is refused by the SAME required-field rule as any other §9 field, which
+    # is the point (one rule, not a per-field message).
+    "b_missing_event_id_deny": ["required field 'event_id' absent",
+                                "never defaulted"],
     "epoch_missing_base_key_deny": ["required field 'base_key' absent"],
     "epoch_single_carrying_epoch_deny":
         ["not reduced by any lifecycle machine", "never advance the fence"],
@@ -2619,6 +2623,13 @@ _DENY_RULE_MARKERS = {
     "epoch_no_effect_twin_divergent_deny": ["divergent payloads"],
     "epoch_no_effect_twin_divergent_reverse_deny": ["divergent payloads"],
     "epoch_cross_base_divergent_deny": ["divergent payloads"],
+    # §6.0's auto-release gate is a CONJUNCTION; its second conjunct is a
+    # KNOWN PARKED SUBJECT, and absence is a refusal ("anything else stays
+    # held"), never a pass.
+    "b_actor_verified_no_parked_subject_deny":
+        ["carries no matched_movement_id", "CONJUNCTI"],
+    "b_actor_verified_unknown_parked_subject_deny":
+        ["names no parked movement on this base"],
     # hand-authored region (tests/boundary/vectors/t19/handwritten/)
     "b_actor_verified_minted_twin_deny": ["audit from", "contradicts the reduced state"],
     "epoch_unanchored_base_deny": ["no protocol_genesis anchor",
@@ -3072,9 +3083,12 @@ def test_aggregate_rows(generated, case, expected):
     roster = _roster(g)
     intensity, outcomes = _mutate(g, roster, case)
     if expected == "RAISES":
+        # the raise moved to `classify_outcome`, which runs over EVERY
+        # outcome BEFORE intensity is consulted — that relocation is S3's
+        # fix, so the seal names the new site's sentence.
         with pytest.raises(TypeError,
-                           match=r"unknown outcome type .* outside the "
-                                 r"closed union"):
+                           match=r"unknown seat-outcome type .* never counted, "
+                                 r"in either direction"):
             g.aggregate(intensity, roster, outcomes)
         return
     assert g.aggregate(intensity, roster, outcomes) is \
@@ -3520,10 +3534,20 @@ def test_schema_declared_preimages_bind_to_the_code(schemas, generated):
     # holding a seat result carrying a blocking verdict: seats had run, one
     # blocked, and the verdict was swallowed.
     order = [next(iter(rule)) for rule in schemas["panel_aggregate"]["aggregate"]["rules"]]
-    assert order[0] == "any_seat_outcome_blocking", (
-        f"blocking is no longer the FIRST rule (order: {order}) — a "
-        f"zero-seat or missing-seat arm can swallow a blocking verdict")
-    assert order[1] == "required_seats_empty"
+    # S3 moved SCOPE out of the individual rules and into a classification
+    # step that runs over EVERY outcome before intensity is consulted, so the
+    # two EVIDENCE arms read only that classification and both come first.
+    # Both escapes were the same shape: `any_seat_outcome_blocking` was
+    # widened after SMG-3966 and the unparseable rule was not, so SKIP +
+    # unparseable returned a gate-satisfying NOT_APPLICABLE.
+    assert order[0] == "any_outcome_classified_blocked", (
+        f"a blocking classification is no longer the FIRST rule (order: "
+        f"{order}) — a zero-seat or missing-seat arm can swallow it")
+    assert order[1] == "any_outcome_classified_incomplete", (
+        f"a parse failure no longer decides before intensity (order: {order})"
+        f" — SKIP + unparseable would reach the gate-satisfying "
+        f"NOT_APPLICABLE, the second escape of this class")
+    assert order[2] == "required_seats_empty"
     r = _roster(g)
     # zero required seats and NO outcome at all: nothing blocked, so the
     # zero-seat rule still governs.
@@ -3888,6 +3912,11 @@ def test_environment_matrix_degraded_mode(tmp_path, monkeypatch):
     # sibling peer exists).
     shutil.copytree(REPO_ROOT / "tools", isolated / "tools")
     shutil.copytree(REPO_ROOT / "docs/plans", isolated / "docs/plans")
+    # t26_lint now enforces the CI gate's POSTURE from the linter, so the
+    # workflow is an input: without it the child fails `ci posture` and the
+    # degraded arm would look broken for a reason that has nothing to do
+    # with the peer. Copying it is what makes this probe about peer absence.
+    shutil.copytree(REPO_ROOT / ".github", isolated / ".github")
     env = {k: v for k, v in os.environ.items() if k != "CLAUDE_WORKFLOW_REPO"}
     assert not (isolated.parent / "claude-workflow").exists()
     probe = subprocess.run(
@@ -4473,7 +4502,10 @@ def _staged_scan(fsmgen, tmp_path, monkeypatch, region: Path) -> None:
 
 
 _WELL_FORMED_VECTOR = json.dumps(
-    {"machine": "section_a", "note": "probe", "events": []})
+    {"machine": "section_a", "note": "probe", "events": [],
+     # every vector declares the RUN's mode now, for all three machines: a
+     # harness that supplied only half the context is what S1 deleted.
+     "credential_mode": "SHARED", "anchors": {}})
 
 
 def test_the_stray_scan_skips_the_author_region(tmp_path, monkeypatch):
@@ -4544,11 +4576,18 @@ def test_the_stray_scan_does_not_recurse(tmp_path, monkeypatch):
                  "needs a non-empty `note`", id="deny-handwritten-no-note"),
     pytest.param('{"machine": "section_a", "note": "x", "events": {}}',
                  "`events` must be a list", id="deny-handwritten-events-not-a-list"),
-    pytest.param('{"machine": "section_b", "note": "x", "events": []}',
-                 "declare the RUN's credential_mode",
-                 id="deny-handwritten-section-b-without-run-mode"),
-    pytest.param('{"machine": "epoch_fold", "note": "x", "events": []}',
-                 "need an `anchors` map", id="deny-handwritten-fold-without-anchors"),
+    # the run mode is required on EVERY vector now, not section_b's alone:
+    # the fence walk and the mode gate are the same walk, so a vector that
+    # declares half the context makes the harness invent the other half.
+    pytest.param('{"machine": "section_a", "note": "x", "events": []}',
+                 "every vector declares the RUN's",
+                 id="deny-handwritten-without-run-mode"),
+    # anchors are optional (an absent map is the named "no anchor" state) but
+    # may not be some other shape.
+    pytest.param('{"machine": "epoch_fold", "note": "x", "events": [],'
+                 ' "credential_mode": "SHARED", "anchors": ["B1"]}',
+                 "must be a map of base_key",
+                 id="deny-handwritten-anchors-not-a-map"),
 ])
 def test_handwritten_vector_wellformedness_is_enforced(tmp_path, monkeypatch,
                                                        planted, expect):
