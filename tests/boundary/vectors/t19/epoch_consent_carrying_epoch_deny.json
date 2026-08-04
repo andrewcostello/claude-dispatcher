@@ -1,0 +1,22 @@
+{
+  "machine": "epoch_fold",
+  "note": "DENY: the same for a consent record \u2014 the family, not the shape, is what decides whether a record may carry a fence edge",
+  "events": [
+    {
+      "schema_major": 1,
+      "schema_minor": 0,
+      "event_id": "c1",
+      "ts": "1970-01-01T00:00:00Z",
+      "run_id": "run-1",
+      "trace_id": "trace-1",
+      "protocol_epoch": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
+      "family": "consent",
+      "base_key": "R1:refs/heads/main",
+      "epoch_before": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
+      "epoch_after": "ea6981003aa1b8c7c811c3becb6ab8d9a56f2fb9"
+    }
+  ],
+  "anchors": {
+    "R1:refs/heads/main": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7"
+  }
+}

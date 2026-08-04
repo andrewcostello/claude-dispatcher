@@ -9,13 +9,24 @@
       "ts": "1970-01-01T00:00:00Z",
       "run_id": "run-1",
       "trace_id": "trace-1",
-      "protocol_epoch": "E0",
-      "epoch_before": "E0",
-      "epoch_after": "E1",
-      "family": "effect_lifecycle"
+      "protocol_epoch": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
+      "family": "effect_lifecycle",
+      "variant": "Explained",
+      "trigger_event": "match_in_memory",
+      "movement_id": "m-e1",
+      "from": "EFFECT_OBSERVED",
+      "to": "EXPLAINED",
+      "authority": "fp-1",
+      "epoch_before": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
+      "epoch_after": "07460df10583e94e946fbaccc6e1e861aabd5e23",
+      "hold_effect": "NONE",
+      "actor_context": "dispatcher",
+      "credential_mode": "SHARED",
+      "branch": "state",
+      "new_oid": "07460df10583e94e946fbaccc6e1e861aabd5e23"
     }
   ],
   "anchors": {
-    "R1:refs/heads/main": "E0"
+    "R1:refs/heads/main": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7"
   }
 }

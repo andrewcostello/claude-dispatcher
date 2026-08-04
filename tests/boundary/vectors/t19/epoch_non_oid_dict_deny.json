@@ -1,6 +1,6 @@
 {
-  "machine": "section_a",
-  "note": "kill -9 before the hold-branch append: dangling PREPARED \u2014 coalesce recovers exactly one HELD, never a second submit",
+  "machine": "epoch_fold",
+  "note": "DENY: a dict epoch_after is not an object id \u2014 the fence is compared for equality and is never str()-coerced",
   "events": [
     {
       "schema_major": 1,
@@ -11,20 +11,25 @@
       "trace_id": "trace-1",
       "protocol_epoch": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
       "family": "effect_lifecycle",
-      "variant": "Prepare",
-      "trigger_event": "prepare",
-      "movement_id": "m1",
+      "variant": "Explained",
+      "trigger_event": "match_in_memory",
+      "movement_id": "m-e1",
       "base_key": "R1:refs/heads/main",
-      "from": "GENESIS",
-      "to": "PREPARED",
+      "from": "EFFECT_OBSERVED",
+      "to": "EXPLAINED",
       "authority": "fp-1",
       "epoch_before": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
-      "epoch_after": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
+      "epoch_after": {
+        "weird": true
+      },
       "hold_effect": "NONE",
       "actor_context": "dispatcher",
       "credential_mode": "SHARED",
       "branch": "state",
-      "authorization_id": "auth-1"
+      "new_oid": "07460df10583e94e946fbaccc6e1e861aabd5e23"
     }
-  ]
+  ],
+  "anchors": {
+    "R1:refs/heads/main": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7"
+  }
 }

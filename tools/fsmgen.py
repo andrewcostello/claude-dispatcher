@@ -75,6 +75,11 @@ DESIGN_DOC = REPO_ROOT / "docs/plans/2026-08-02-classification-gating-design.md"
 # load, never reach exec() (panel finding).
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+# The closed epoch-effect domain — the four arms _check_epoch_algebra
+# implements. A schema row naming anything else is a load-time error.
+EPOCH_EFFECTS = frozenset({"none", "assign_new_oid", "per_disposition",
+                           "as_accept_ours"})
+
 # Wire fields carried as generated enums / ints; everything else is str.
 ENUM_FIELD_TYPES = {
     "disposition": "ReconcileDisposition",
@@ -135,6 +140,11 @@ def _validate_row_tokens(fsm: dict, sec: str) -> None:
         for key in ("epoch_effect", "expected_base_oid_effect", "hold_effect"):
             if key in row:
                 _require_ident(row[key], f"{sec}.rows.{row['id']}.{key}")
+        for key in ("epoch_effect", "expected_base_oid_effect"):
+            if key in row and row[key] not in EPOCH_EFFECTS:
+                raise SchemaError(
+                    f"{sec}.rows.{row['id']}.{key}: {row[key]!r} is outside "
+                    f"the closed epoch-effect domain {sorted(EPOCH_EFFECTS)}")
         for f in as_list(row["from"]):
             _require_ident(f, f"{sec}.rows.{row['id']}.from")
             if f not in states and f not in pseudo:
@@ -486,6 +496,10 @@ def _emit_durability_and_ceiling(fsm: dict) -> list[str]:
     if standing_target not in b["states"]:
         raise SchemaError(f"standing_reject_restore_resolves_to names unknown "
                           f"state {standing_target!r}")
+    w("# The epoch-effect domain is CLOSED: _check_epoch_algebra halts on")
+    w("# anything outside it rather than falling through to 'no algebra'.")
+    w(f"EPOCH_EFFECT_VALUES: frozenset[str] = frozenset({tuple(sorted(EPOCH_EFFECTS))!r})")
+    w("")
     w("# STANDING × REJECT_RESTORE_HOLD resolution — driven by the schema key")
     w("# standing_reject_restore_resolves_to (the single place to change if")
     w("# the author ratifies the other reading).")
@@ -905,6 +919,7 @@ _INT_WIRE_FIELDS = frozenset({"schema_major", "schema_minor", "duration_ms"})
 
 # Audit timestamps are RFC 3339 UTC — offset-bearing so records are orderable
 # across hosts; anything else is a schema violation.
+_OID_RE = re.compile(r"^[0-9a-f]{40}$")
 _TS_RE = re.compile(
     r"^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$")
 
@@ -1424,28 +1439,63 @@ def _ceiling_halts(events: Sequence[Mapping[str, object]]) -> dict[str, dict]:
             if n > RECOVERY_CEILING_EVENTS}
 
 
-def _intake(dedup: _Dedup, ev: Mapping[str, object], family: str,
-            variants: Mapping[str, type], base_halts: dict[str, dict]):
-    """Shared reducer intake: family filter (§6.0 — 'each reduce filters by
-    event schema name'; missing family is a schema violation, the OTHER
-    family is filtered, not halted), dedup, fail-closed construction.
-    Returns the typed event, or None when the event was consumed (dup /
-    other family / halt recorded)."""
-    base_hint = str(ev.get("base_key") or "")
-    halted = base_hint in base_halts
+# ─── ONE intake, three consumers ────────────────────────────────────────────
+# Every recurring fail-open in review has been the FOLD diverging from the
+# reducers, so envelope + family classification lives in exactly one place
+# and all three call it (panel round 4).
+
+def _classify_event(ev: Mapping[str, object]) -> tuple[Optional[str], Optional[dict]]:
+    """(family, halt): the envelope checks every consumer shares — supported
+    schema_major, and a family that is present, non-empty and inside the
+    closed domain. Returns the family on success."""
+    major = ev.get("schema_major")
+    if isinstance(major, bool) or not isinstance(major, int):
+        return None, _halt(
+            BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+            f"event has a non-integer schema_major "
+            f"(event_id {ev.get('event_id')!r})", ev)
+    if major not in SUPPORTED_SCHEMA_MAJORS:
+        return None, _halt(
+            BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+            f"schema_major {major} outside the supported set "
+            f"{sorted(SUPPORTED_SCHEMA_MAJORS)} — an unknown major must "
+            f"never advance the fence (event_id {ev.get('event_id')!r})", ev)
     fam = ev.get("family")
     if not isinstance(fam, str) or fam == "":
-        base_halts.setdefault(base_hint, _halt(
+        return None, _halt(
             BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
-            f"event missing required field 'family' — the reduce filters by "
-            f"event schema name (§6.0) (event_id {ev.get('event_id')!r})", ev))
-        return None
+            f"event missing required field 'family' — every consumer filters "
+            f"by event schema name (§6.0) "
+            f"(event_id {ev.get('event_id')!r})", ev)
     if fam not in FAMILY_VALUES:
-        base_halts.setdefault(base_hint, _halt(
+        return None, _halt(
             BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
             f"unknown family {fam!r} outside the closed domain — an unknown "
             f"enum value halts like an unknown variant (§9) "
-            f"(event_id {ev.get('event_id')!r})", ev))
+            f"(event_id {ev.get('event_id')!r})", ev)
+    return fam, None
+
+
+def _variants_for(family: str) -> Optional[Mapping[str, type]]:
+    """The variant table for a REDUCED-BY family, else None (a §9 single)."""
+    if family == "effect_lifecycle":
+        return EFFECT_VARIANTS
+    if family == "hold_lifecycle":
+        return HOLD_VARIANTS
+    return None
+
+
+def _intake(dedup: _Dedup, ev: Mapping[str, object], family: str,
+            variants: Mapping[str, type], base_halts: dict[str, dict]):
+    """Shared reducer intake: the common envelope/family classification, the
+    §6.0 family filter (the OTHER family is filtered, not halted), dedup,
+    fail-closed construction. Returns the typed event, or None when the
+    event was consumed (dup / other family / halt recorded)."""
+    base_hint = str(ev.get("base_key") or "")
+    halted = base_hint in base_halts
+    fam, halt = _classify_event(ev)
+    if halt is not None:
+        base_halts.setdefault(base_hint, halt)
         return None
     if fam != family:
         # A legitimate OTHER record on the shared carrier (the peer
@@ -1530,7 +1580,10 @@ def _check_epoch_algebra(cls: type, event: object, where: str,
             return halt(f"ACCEPT_OURS pins the fence to its new_oid payload "
                         f"{getattr(event, 'new_oid', None)!r}, got {after!r}")
         return None
-    return None
+    # closed domain: an epoch effect this checker does not implement must
+    # never be treated as "no algebra" (panel round 4).
+    return halt(f"unknown epoch effect — the domain is closed "
+                f"({sorted(EPOCH_EFFECT_VALUES)})")
 
 
 def _check_assign_new_oid(event: object, advanced: bool, after: str,
@@ -1813,7 +1866,24 @@ def _check_auto_release_gates(book: _HoldBook, base: str, hid: str,
             f"SEPARATED (protocol_genesis.credential_mode); this run is "
             f"{run_mode.value} — under SHARED, never "
             f"(event_id {ev.get('event_id')!r})", ev)
-    return _check_actor_verified(book, base, hid, event, ev)
+    halt = _check_actor_verified(book, base, hid, event, ev)
+    if halt is not None:
+        return halt
+    # §6.0: ACTOR_VERIFIED_AUTO's epoch effect is "as ACCEPT_OURS"
+    # (expected_base_oid := new_oid), and the payload comes only from the
+    # observed effect OID — never free text. §9 gives hold_lifecycle no
+    # new_oid field, so the observed OID for a foreign movement IS the
+    # hold's own recorded delta_new_oid. Anything else is a writer choosing
+    # the fence on the one operator-less release path (panel round 4).
+    _, _, observed = book.hold_delta[hid]
+    if event.epoch_after != observed:
+        return _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION,
+            f"hold {hid}: ACTOR_VERIFIED_AUTO must set the fence to the "
+            f"hold's own observed delta_new_oid {observed!r}, got "
+            f"{event.epoch_after!r} — the epoch payload is never writer "
+            f"free text (§6.0) (event_id {ev.get('event_id')!r})", ev)
+    return None
 
 
 def _check_actor_verified(book: _HoldBook, base: str, hid: str, event: object,
@@ -2038,39 +2108,60 @@ def _collect_epoch_edges(events: Sequence[Mapping[str, object]],
     return edges_by_base
 
 
+def _valid_oid(value: object) -> bool:
+    """Epoch values ARE object ids: lowercase 40-hex. The fence is compared
+    for equality at the §6.0 authority check, so it is never str()-coerced
+    from a dict, an int, or free text (panel round 4)."""
+    return isinstance(value, str) and _OID_RE.match(value) is not None
+
+
 def _validate_fold_event(ev: Mapping[str, object]) -> Optional[dict]:
-    """The §9 schema checks the fold shares with the reducers: supported
-    major, closed family domain, and (for lifecycle events) full variant
-    validation. Returns a halt payload or None."""
-    major = ev.get("schema_major")
-    if isinstance(major, bool) or not isinstance(major, int):
-        return _halt(BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
-                     f"epoch edge has a non-integer schema_major "
-                     f"(event_id {ev.get('event_id')!r})", ev)
-    if major not in SUPPORTED_SCHEMA_MAJORS:
-        return _halt(BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
-                     f"epoch edge schema_major {major} outside the supported "
-                     f"set {sorted(SUPPORTED_SCHEMA_MAJORS)} — an unknown "
-                     f"major must never advance the fence "
-                     f"(event_id {ev.get('event_id')!r})", ev)
-    fam = ev.get("family")
-    if not isinstance(fam, str) or fam == "":
-        return _halt(BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
-                     f"epoch edge missing required field 'family' "
-                     f"(event_id {ev.get('event_id')!r})", ev)
-    if fam not in FAMILY_VALUES:
-        return _halt(BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
-                     f"epoch edge has unknown family {fam!r} outside the "
-                     f"closed domain (event_id {ev.get('event_id')!r})", ev)
-    variants = (EFFECT_VARIANTS if fam == "effect_lifecycle"
-                else HOLD_VARIANTS if fam == "hold_lifecycle" else None)
-    if variants is not None and ev.get("variant") is not None:
-        try:
-            build_wire_event(variants, ev)
-        except WireViolation as exc:
-            return _halt(exc.code, exc.detail, ev)
-        except ValueError as exc:
-            return _halt(BoundaryErrorCode.ILLEGAL_TRANSITION, str(exc), ev)
+    """The fold runs the SAME classification as the reducers (one intake),
+    then the rules specific to being a fence consumer:
+
+      * only the REDUCED-BY families may carry epoch edges at all — a §9
+        single presenting epoch_before/epoch_after is a typed halt, not a
+        silent skip. Neither reducer authenticates those records (both
+        filter them), so nothing else would object;
+      * a reduced-by family MUST carry a variant — an absent one is the
+        unknown-variant halt build_wire_event already rules;
+      * epoch values are validated OID-shaped, never coerced.
+    """
+    fam, halt = _classify_event(ev)
+    if halt is not None:
+        return halt
+    variants = _variants_for(fam)
+    has_epoch = ev.get("epoch_before") is not None or ev.get("epoch_after") is not None
+    if variants is None:
+        if has_epoch:
+            return _halt(
+                BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+                f"family {fam!r} is not reduced by any lifecycle machine "
+                f"(REDUCED_BY_FAMILIES = {sorted(REDUCED_BY_FAMILIES)}) yet "
+                f"carries epoch fields — nothing authenticates this record, "
+                f"so it must never advance the fence "
+                f"(event_id {ev.get('event_id')!r})", ev)
+        return None                      # a legitimate §9 single: no edge
+    if ev.get("variant") is None:
+        return _halt(
+            BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+            f"{fam} record with no variant — unknown variants halt (§9); "
+            f"the fold applies the same rule as the reducers "
+            f"(event_id {ev.get('event_id')!r})", ev)
+    for field in ("epoch_before", "epoch_after"):
+        value = ev.get(field)
+        if value is not None and not _valid_oid(value):
+            return _halt(
+                BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+                f"{field} {_short(value)} is not an object id (lowercase "
+                f"40-hex) — the fence is compared for equality and is never "
+                f"coerced (event_id {ev.get('event_id')!r})", ev)
+    try:
+        build_wire_event(variants, ev)
+    except WireViolation as exc:
+        return _halt(exc.code, exc.detail, ev)
+    except ValueError as exc:
+        return _halt(BoundaryErrorCode.ILLEGAL_TRANSITION, str(exc), ev)
     return None
 
 
@@ -2598,9 +2689,13 @@ def build_frames_index(s: dict, frames: dict[str, bytes]) -> str:
 
 # ─── T19 vector inputs (histories only — expectations are hand-written) ─────
 
+# The foreign delta's object ids — real oids, since the auto-release fence
+# is pinned to delta_new_oid.
 BASE1 = "R1:refs/heads/main"
 BASE2 = "R2:refs/heads/main"
 REF1 = "refs/heads/main"
+DELTA_OLD = "0" * 40
+DELTA_NEW = "1" * 40
 
 
 def _hold_id_for(base: str, ref: str, old: str, new: str, seq: int) -> str:
@@ -2626,10 +2721,17 @@ def _recovery_id_for(base: str, movement_id: str) -> str:
     return hashlib.sha256(preimage.encode("utf-8")).hexdigest()
 
 
+def _oid(label: str) -> str:
+    """A deterministic OID-shaped (lowercase 40-hex) value for a readable
+    label — epochs and object ids ARE oids, and the fold validates the shape
+    (panel round 4)."""
+    return hashlib.sha1(label.encode("utf-8")).hexdigest()   # noqa: S324
+
+
 def _env(eid: str) -> dict:
     return {"schema_major": 1, "schema_minor": 0, "event_id": eid,
             "ts": "1970-01-01T00:00:00Z", "run_id": "run-1",
-            "trace_id": "trace-1", "protocol_epoch": "E0"}
+            "trace_id": "trace-1", "protocol_epoch": _oid("E0")}
 
 
 # trigger_event is derived from the variant's own row so a vector never
@@ -2673,13 +2775,13 @@ def _epoch_after_for(variant: str, extra: dict, before: str,
     if effect == "assign_new_oid":
         return str(extra.get("new_oid", before))
     if effect == "as_accept_ours":
-        return str(extra.get("new_oid", f"{before}-advanced"))
+        return str(extra.get("new_oid", _oid(before + "-advanced")))
     if effect == "per_disposition":
         if disposition in ("ACCEPT_OURS", "ACCEPT_FOREIGN_ADVANCED",
                            "ACTOR_VERIFIED_AUTO"):
             # accepting dispositions advance; ACCEPT_OURS pins to its
             # new_oid payload where the family carries one (section A).
-            return str(extra.get("new_oid", f"{before}-advanced"))
+            return str(extra.get("new_oid", _oid(before + "-advanced")))
     return before
 
 
@@ -2693,8 +2795,8 @@ def _ev(variant: str, eid: str, mid: str, frm: str, to: str,
     d.update({"family": "effect_lifecycle", "variant": variant,
               "trigger_event": _A_TRIGGERS.get(variant, "prepare"),
               "movement_id": mid, "base_key": base, "from": frm, "to": to,
-              "authority": "fp-1", "epoch_before": "E0",
-              "epoch_after": _epoch_after_for(variant, extra, "E0",
+              "authority": "fp-1", "epoch_before": _oid("E0"),
+              "epoch_after": _epoch_after_for(variant, extra, _oid("E0"),
                                               _A_EPOCH_EFFECTS),
               "hold_effect": _A_HOLD_EFFECTS.get(variant, "NONE"),
               "actor_context": "dispatcher",
@@ -2710,8 +2812,8 @@ def _hev(variant: str, eid: str, frm: str, to: str, base: str = BASE1,
               "trigger_event": _B_TRIGGERS.get(variant, "observe_delta"),
               "base_key": base, "from": frm, "to": to, "ref": REF1,
               "mode": "SHARED", "actor_verification": "DISPLAY_ONLY",
-              "actor_display": "someone", "epoch_before": "E0",
-              "epoch_after": _epoch_after_for(variant, extra, "E0",
+              "actor_display": "someone", "epoch_before": _oid("E0"),
+              "epoch_after": _epoch_after_for(variant, extra, _oid("E0"),
                                               _B_EPOCH_EFFECTS)})
     d.update(extra)
     return d
@@ -2740,9 +2842,19 @@ def _single_ev(event_name: str, eid: str, base: str = BASE1, **extra) -> dict:
 
 
 def _edge(eid: str, eb: str, ea: str, base: str = BASE1, **extra) -> dict:
-    d = _env(eid)
-    d.update({"base_key": base, "epoch_before": eb, "epoch_after": ea,
-              "family": "effect_lifecycle"})
+    """A REAL effect_lifecycle event carrying the epoch pair — the fold now
+    authenticates its inputs exactly as the reducers do, so a bare
+    {epoch_before, epoch_after} dict is no longer an edge (panel round 4).
+    An advancing edge is an `Explained` (whose declared effect pins the
+    fence to the observed new_oid); a no-effect pair is a `Prepare`."""
+    movement = extra.pop("movement_id", f"m-{eid}")
+    if eb == ea:
+        d = _ev("Prepare", eid, movement, "GENESIS", "PREPARED", base=base,
+                authorization_id=f"auth-{eid}")
+    else:
+        d = _ev("Explained", eid, movement, "EFFECT_OBSERVED", "EXPLAINED",
+                base=base, new_oid=ea)
+    d["epoch_before"], d["epoch_after"] = eb, ea
     d.update(extra)
     return d
 
@@ -2760,7 +2872,7 @@ def _section_a_vectors() -> dict[str, dict]:
 
     a("success", "prepare → (submit/observe_effect in memory) → EXPLAINED terminal",
       [prep, _ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "EXPLAINED",
-                 new_oid="oid-new")])
+                 new_oid=_oid("oid-new"))])
     a("reject", "REJECTED_NO_EFFECT explained — never silently terminal",
       [prep, _ev("RejectExplained", "e2", "m1", "REJECTED_NO_EFFECT", "EXPLAINED",
                  reason="ruleset refused the merge")])
@@ -2806,7 +2918,7 @@ def _section_a_vectors() -> dict[str, dict]:
       "HELD × operator_reconcile(ACCEPT_OURS) → RECONCILED(d)",
       [prep, hold_copy, state_copy,
        _ev("ReconcileAccept", "e3", "m1", "HELD", "RECONCILED",
-           disposition="ACCEPT_OURS", new_oid="oid-accepted")])
+           disposition="ACCEPT_OURS", new_oid=_oid("oid-accepted"))])
     a("reject_restore_then_accept",
       "REJECT_RESTORE_HOLD stays HELD (assessment recorded); a later "
       "accepting reconcile is legal",
@@ -2828,7 +2940,7 @@ def _section_a_vectors() -> dict[str, dict]:
        _ev("ReconcileAccept", "e3", "m1", "HELD", "RECONCILED",
            disposition="ACCEPT_FOREIGN_ADVANCED"),
        _ev("ReconcileReplayIdentity", "e4", "m1", "RECONCILED", "RECONCILED",
-           disposition="ACCEPT_OURS", new_oid="oid-other")])
+           disposition="ACCEPT_OURS", new_oid=_oid("oid-other"))])
     a("resume_submit_illegal_deny",
       "DENY: a durable stream carrying a memory-only transition "
       "(resume-submit after crash) is ILLEGAL",
@@ -2852,19 +2964,19 @@ def _section_a_vectors() -> dict[str, dict]:
     a("a_unknown_enum_value_deny",
       "DENY: unknown VALUE of a known enum field halts identically (§9)",
       [prep, _ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "EXPLAINED",
-                 new_oid="oid-new", credential_mode="NOT_A_MODE")])
+                 new_oid=_oid("oid-new"), credential_mode="NOT_A_MODE")])
     a("a_section_b_disposition_deny",
       "DENY: ACTOR_VERIFIED_AUTO is section-B only — a section-A "
       "operator_reconcile cannot mint it",
       [prep, hold_copy, state_copy,
        _ev("ReconcileAccept", "e3", "m1", "HELD", "RECONCILED",
-           disposition="ACTOR_VERIFIED_AUTO", new_oid="oid-x")])
+           disposition="ACTOR_VERIFIED_AUTO", new_oid=_oid("oid-x"))])
     a("a_multi_base",
       "base_key partitions the reduce: one base's terminal never explains "
       "another base's dangling PREPARED",
       [prep,
        _ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "EXPLAINED",
-           new_oid="oid-new"),
+           new_oid=_oid("oid-new")),
        _ev("Prepare", "e3", "m2", "GENESIS", "PREPARED", base=BASE2,
            authorization_id="auth-2")])
     a("a_recovery_converges",
@@ -2883,7 +2995,7 @@ def _section_a_vectors() -> dict[str, dict]:
       "DENY: schema_major outside the supported set halts — the named §9 "
       "unknown-major halt, range-checked at intake",
       [prep, dict(_ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "EXPLAINED",
-                      new_oid="oid-new"), schema_major=2)])
+                      new_oid=_oid("oid-new")), schema_major=2)])
     a("a_major_zero_deny",
       "DENY: schema_major 0 is outside the supported set",
       [dict(prep, schema_major=0)])
@@ -2894,11 +3006,11 @@ def _section_a_vectors() -> dict[str, dict]:
       "DENY: §9-REQUIRED audit field `to` absent ⇒ schema halt",
       [prep, {k: val for k, val in
               _ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "EXPLAINED",
-                  new_oid="oid-new").items() if k != "to"}])
+                  new_oid=_oid("oid-new")).items() if k != "to"}])
     a("a_to_contradiction_deny",
       "DENY: audit `to` contradicting the row's target ⇒ schema halt",
       [prep, _ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "HELD",
-                 new_oid="oid-new")])
+                 new_oid=_oid("oid-new"))])
     a("a_trigger_variant_mismatch_deny",
       "DENY: trigger_event contradicting the variant's row trigger — a "
       "mis-tagged writer must not smuggle a crash variant's exemptions",
@@ -2914,7 +3026,7 @@ def _section_a_vectors() -> dict[str, dict]:
       "with no `family` cannot be filtered and halts its base",
       [prep, {k: val for k, val in
               _ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "EXPLAINED",
-                  new_oid="oid-new").items() if k != "family"}])
+                  new_oid=_oid("oid-new")).items() if k != "family"}])
     a("a_bad_ts_deny",
       "DENY: ts outside RFC 3339 UTC — the audit trail's only time anchor "
       "must be orderable across hosts",
@@ -2922,15 +3034,15 @@ def _section_a_vectors() -> dict[str, dict]:
     a("a_none_effect_row_advances_deny",
       "DENY: a row declaring no epoch effect cannot advance the base epoch "
       "— per-row epoch algebra is enforced, not decorative",
-      [dict(prep, epoch_after="E1")])
+      [dict(prep, epoch_after=_oid("E1"))])
     a("a_mixed_family_filtered",
       "the hold branch carries BOTH families (§6.0): a hold_lifecycle event "
       "in this stream is FILTERED by schema name, never halted",
       [prep,
        _hev("ObserveDelta", "h9", "GENESIS", "HELD_FOREIGN",
-            delta_old_oid="o0", delta_new_oid="o1", source_delivery_id="dX"),
+            delta_old_oid=DELTA_OLD, delta_new_oid=DELTA_NEW, source_delivery_id="dX"),
        _ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "EXPLAINED",
-           new_oid="oid-new")])
+           new_oid=_oid("oid-new"))])
     a("a_singles_on_a_shared_carrier_are_filtered",
       "panel round 3 CRITICAL: legitimate §9 SINGLES on the shared carrier "
       "(protocol_genesis, seat_result) carry their own schema name as "
@@ -2939,27 +3051,27 @@ def _section_a_vectors() -> dict[str, dict]:
       [_single_ev("protocol_genesis", "s1"), prep,
        _single_ev("seat_result", "s2"),
        _ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "EXPLAINED",
-           new_oid="oid-new")])
+           new_oid=_oid("oid-new"))])
     a("a_unknown_family_deny",
       "DENY: a family outside the closed domain halts — an unknown enum "
       "VALUE halts like an unknown variant (§9), never a silent drop",
       [prep, _ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "EXPLAINED",
-                 new_oid="oid-new", family="checkpoint_lifecycle")])
+                 new_oid=_oid("oid-new"), family="checkpoint_lifecycle")])
     a("a_empty_family_deny",
       "DENY: an empty family is absent, not 'the other stream'",
       [prep, _ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "EXPLAINED",
-                 new_oid="oid-new", family="")])
+                 new_oid=_oid("oid-new"), family="")])
     a("a_case_typo_family_deny",
       "DENY: a case-typo family (Effect_Lifecycle) is outside the domain — "
       "a corrupt tag must not absorb a durable terminal as success",
       [prep, _ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "EXPLAINED",
-                 new_oid="oid-new", family="Effect_Lifecycle")])
+                 new_oid=_oid("oid-new"), family="Effect_Lifecycle")])
     a("a_family_mistag_terminal_deny",
       "DENY: a durable TERMINAL mis-tagged with the peer family must halt, "
       "never be dropped — a silent drop rewrites EXPLAINED to HELD at the "
       "next cold start and bypasses the conflicting-disposition halt",
       [prep, _ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "EXPLAINED",
-                 new_oid="oid-new", family="hold_lifecycle")])
+                 new_oid=_oid("oid-new"), family="hold_lifecycle")])
     a("a_out_of_range_ts_deny",
       "DENY (panel round 3): a SHAPE-valid but impossible instant "
       "(2026-13-45T99:99:99Z) is not a timestamp — ts is semantically "
@@ -2970,12 +3082,12 @@ def _section_a_vectors() -> dict[str, dict]:
       "`:= new_oid`, so the fence MUST be set to the observed new_oid — an "
       "advance to any other value is refused",
       [prep, _ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "EXPLAINED",
-                 new_oid="oid-new", epoch_after="SOMETHING-ELSE")])
+                 new_oid=_oid("oid-new"), epoch_after=_oid("SOMETHING-ELSE"))])
     a("a_advancing_row_that_does_not_advance_deny",
       "DENY: the positive half of the algebra — a row declaring an advance "
       "that leaves the fence unchanged is refused",
       [prep, _ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "EXPLAINED",
-                 new_oid="oid-new", epoch_after="E0")])
+                 new_oid=_oid("oid-new"), epoch_after=_oid("E0"))])
     a("a_accept_ours_without_new_oid_deny",
       "DENY (panel round 3): ACCEPT_OURS(new_oid) is §6.0's payload "
       "algebra — the disposition is unconstructible without its payload",
@@ -2986,7 +3098,7 @@ def _section_a_vectors() -> dict[str, dict]:
            branch="state"),
        {k: val for k, val in
         _ev("ReconcileAccept", "e3", "m1", "HELD", "RECONCILED",
-            disposition="ACCEPT_OURS", new_oid="oid-accepted").items()
+            disposition="ACCEPT_OURS", new_oid=_oid("oid-accepted")).items()
         if k != "new_oid"}])
     a("a_unknown_minor_and_field_tolerated",
       "ACCEPT (§9 evolution, reader-first rollout): a HIGHER schema_minor "
@@ -2994,7 +3106,7 @@ def _section_a_vectors() -> dict[str, dict]:
       "not halt, or a writer deploying ahead of a reader breaks the base",
       [dict(prep, schema_minor=9, some_future_field="ignored"),
        _ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "EXPLAINED",
-           new_oid="oid-new", schema_minor=9)])
+           new_oid=_oid("oid-new"), schema_minor=9)])
     a("a_replayed_accepting_reconcile_is_identity",
       "IDEMPOTENCE (§6.0): an accepting disposition re-applied to "
       "RECONCILED with the SAME d is identity, not a state-precondition "
@@ -3010,7 +3122,7 @@ def _section_a_vectors() -> dict[str, dict]:
        _ev("ReconcileAccept", "e3", "m1", "HELD", "RECONCILED",
            disposition="ACCEPT_FOREIGN_ADVANCED"),
        _ev("ReconcileAccept", "e4", "m1", "HELD", "RECONCILED",
-           disposition="ACCEPT_OURS", new_oid="oid-x")])
+           disposition="ACCEPT_OURS", new_oid=_oid("oid-x"))])
     a("a_halt_isolation_after_halt",
       "halt isolation ORDERING: a base halts FIRST, then a healthy base's "
       "events arrive — they must still reduce and still earn their "
@@ -3031,14 +3143,14 @@ def _section_a_vectors() -> dict[str, dict]:
        _ev("Prepare", "e3", "m2", "GENESIS", "PREPARED", base=BASE2,
            authorization_id="auth-2"),
        dict(_ev("Explained", "e4", "m2", "EFFECT_OBSERVED", "EXPLAINED",
-                base=BASE2, new_oid="oid-x"), schema_major=7)])
+                base=BASE2, new_oid=_oid("oid-x")), schema_major=7)])
     return v
 
 
 def _section_b_vectors() -> dict[str, dict]:
-    h0 = _hold_id_for(BASE1, REF1, "o0", "o1", 0)
+    h0 = _hold_id_for(BASE1, REF1, DELTA_OLD, DELTA_NEW, 0)
     obs = _hev("ObserveDelta", "h1", "GENESIS", "HELD_FOREIGN",
-               delta_old_oid="o0", delta_new_oid="o1", source_delivery_id="d1")
+               delta_old_oid=DELTA_OLD, delta_new_oid=DELTA_NEW, source_delivery_id="d1")
 
     def release(eid: str, frm: str = "HELD_FOREIGN",
                 disposition: str = "ACCEPT_FOREIGN_ADVANCED") -> dict:
@@ -3069,14 +3181,14 @@ def _section_b_vectors() -> dict[str, dict]:
       "delivery recorded, state unchanged",
       [obs,
        _hev("ObserveDeltaNewDeliveryOnOpenHold", "h2", "HELD_FOREIGN",
-            "HELD_FOREIGN", source_delivery_id="d2", delta_old_oid="o0",
-            delta_new_oid="o1")])
+            "HELD_FOREIGN", source_delivery_id="d2", delta_old_oid=DELTA_OLD,
+            delta_new_oid=DELTA_NEW)])
     b("b_repark_after_released",
       "a genuinely NEW delivery of the same delta after RELEASED derives "
       "occurrence_seq+1 and parks a NEW hold — door 0 keeps its record",
       [obs, release("h2"),
        _hev("ObserveDelta", "h3", "GENESIS", "HELD_FOREIGN",
-            delta_old_oid="o0", delta_new_oid="o1", source_delivery_id="d2")])
+            delta_old_oid=DELTA_OLD, delta_new_oid=DELTA_NEW, source_delivery_id="d2")])
     b("b_concurrent_tag_resolved_to_new_hold",
       "CONCURRENCY (panel round 3): a writer tagged a redelivery from a "
       "read a concurrent writer invalidated — the delivery id is unseen, "
@@ -3092,15 +3204,15 @@ def _section_b_vectors() -> dict[str, dict]:
       "redelivery no-op; resolved and journalled, not halted",
       [obs,
        _hev("ObserveDeltaNewDeliveryOnOpenHold", "h2", "HELD_FOREIGN",
-            "HELD_FOREIGN", source_delivery_id="d1", delta_old_oid="o0",
-            delta_new_oid="o1")])
+            "HELD_FOREIGN", source_delivery_id="d1", delta_old_oid=DELTA_OLD,
+            delta_new_oid=DELTA_NEW)])
     b("b_concurrent_duplicate_creations",
       "CONCURRENCY: two independently-issued observe_delta creations for "
       "ONE delta — the second resolves onto the open hold rather than "
       "minting a colliding id",
       [obs,
        _hev("ObserveDelta", "h2", "GENESIS", "HELD_FOREIGN",
-            delta_old_oid="o0", delta_new_oid="o1", source_delivery_id="d2")])
+            delta_old_oid=DELTA_OLD, delta_new_oid=DELTA_NEW, source_delivery_id="d2")])
     b("b_replayed_accepting_reconcile_is_identity",
       "IDEMPOTENCE (§6.0): an accepting disposition re-applied with the "
       "SAME d is identity — a writer that read HELD_FOREIGN cannot know to "
@@ -3112,7 +3224,7 @@ def _section_b_vectors() -> dict[str, dict]:
       "DENY: only a CONFLICTING d′ halts",
       [obs, release("h2", disposition="ACCEPT_OURS"),
        release("h3", disposition="ACCEPT_FOREIGN_ADVANCED")])
-    matched = _matched_delta_digest_for(BASE1, REF1, "o0", "o1")
+    matched = _matched_delta_digest_for(BASE1, REF1, DELTA_OLD, DELTA_NEW)
 
     def ava(eid: str, **over) -> dict:
         kwargs = dict(hold_id=h0, actor_node_id="N-op",
@@ -3121,8 +3233,12 @@ def _section_b_vectors() -> dict[str, dict]:
                       actor_verification="VERIFIED_API", mode="SEPARATED",
                       disposition="ACTOR_VERIFIED_AUTO")
         kwargs.update(over)
-        return _hev("ActorVerifiedAuto", eid, "HELD_FOREIGN", "RELEASED",
-                    **kwargs)
+        ev = _hev("ActorVerifiedAuto", eid, "HELD_FOREIGN", "RELEASED",
+                  **kwargs)
+        # §6.0: the auto-release fence IS the hold's observed delta_new_oid.
+        if "epoch_after" not in over:
+            ev["epoch_after"] = DELTA_NEW
+        return ev
 
     b("b_actor_verified_auto_separated",
       "a SEPARATED RUN + VERIFIED_API + node id + a delivery recorded ON "
@@ -3140,13 +3256,21 @@ def _section_b_vectors() -> dict[str, dict]:
       "with the run's credential mode is a typed halt — credential mode is "
       "run context, never event payload",
       [dict(obs, mode="SEPARATED")], credential_mode="SHARED")
+    b("b_actor_verified_unpinned_fence_deny",
+      "DENY (panel round 4): the ONLY operator-less release must not choose "
+      "the fence — §6.0's 'as ACCEPT_OURS' means expected_base_oid := the "
+      "observed new_oid, which for a foreign movement is the hold's own "
+      "recorded delta_new_oid. An attacker-chosen epoch_after halts",
+      [dict(obs, mode="SEPARATED"),
+       ava("h2", epoch_after=_oid("ATTACKER-CHOSEN-OID"))],
+      credential_mode="SEPARATED")
     b("b_actor_verified_wrong_delta_digest_deny",
       "DENY (panel round 2 CRITICAL): matched_subject_digest that does not "
       "derive from the HOLD'S OWN recorded delta is self-asserted evidence "
       "— refused, not honoured",
       [dict(obs, mode="SEPARATED"),
        ava("h2", matched_subject_digest=_matched_delta_digest_for(
-           BASE1, REF1, "o0", "SOMETHING-ELSE"))], credential_mode="SEPARATED")
+           BASE1, REF1, DELTA_OLD, "9" * 40))], credential_mode="SEPARATED")
     b("b_actor_verified_unresolvable_delivery_deny",
       "DENY (panel round 2 CRITICAL): a source_delivery_id that resolves to "
       "no delivery recorded on this hold cannot clear the auto-release gate",
@@ -3163,7 +3287,7 @@ def _section_b_vectors() -> dict[str, dict]:
       "attributable identity (actor_display is presentation, never "
       "predicate input)",
       [_hev("ObserveDelta", "h1", "GENESIS", "HELD_FOREIGN",
-            delta_old_oid="o0", delta_new_oid="o1", source_delivery_id="d1",
+            delta_old_oid=DELTA_OLD, delta_new_oid=DELTA_NEW, source_delivery_id="d1",
             actor_verification="VERIFIED_API")])
     b("b_display_only_needs_no_actor_node_id",
       "the allow row for the same rule: DISPLAY_ONLY evidence carries no "
@@ -3245,7 +3369,7 @@ def _section_b_vectors() -> dict[str, dict]:
       "DENY: unknown VALUE of actor_verification halts like an unknown "
       "variant (§9)",
       [_hev("ObserveDelta", "h1", "GENESIS", "HELD_FOREIGN",
-            delta_old_oid="o0", delta_new_oid="o1", source_delivery_id="d1",
+            delta_old_oid=DELTA_OLD, delta_new_oid=DELTA_NEW, source_delivery_id="d1",
             actor_verification="TOTALLY_BOGUS")])
     b("b_reconcile_unknown_hold_deny",
       "DENY: a reconcile referencing a hold_id the stream never created "
@@ -3257,14 +3381,14 @@ def _section_b_vectors() -> dict[str, dict]:
       "DENY: an observe_delta declaring a hold_id that contradicts the "
       "§6.0 derivation halts — the derivation is the authority",
       [_hev("ObserveDelta", "h1", "GENESIS", "HELD_FOREIGN",
-            delta_old_oid="o0", delta_new_oid="o1", source_delivery_id="d1",
+            delta_old_oid=DELTA_OLD, delta_new_oid=DELTA_NEW, source_delivery_id="d1",
             hold_id="declared-wrong")])
     b("b_redelivery_delta_contradiction_deny",
       "DENY: a redelivery whose DECLARED delta contradicts the hold its "
       "source_delivery_id resolves to is never absorbed as a no-op",
       [obs,
        _hev("ObserveDeltaRedelivery", "h2", "HELD_FOREIGN", "HELD_FOREIGN",
-            source_delivery_id="d1", delta_old_oid="o0",
+            source_delivery_id="d1", delta_old_oid=DELTA_OLD,
             delta_new_oid="TOTALLY-DIFFERENT")])
     b("b_redelivery_stale_from_state",
       "the redelivery no-op is STATE-INDEPENDENT by design: a writer that "
@@ -3285,7 +3409,7 @@ def _section_b_vectors() -> dict[str, dict]:
     b("b_none_effect_row_advances_deny",
       "DENY: the section-B creation row declares `epoch effect: none` — an "
       "observe_delta cannot advance the base epoch",
-      [dict(obs, epoch_after="E1")])
+      [dict(obs, epoch_after=_oid("E1"))])
     b("b_family_mistag_deny",
       "DENY: a foreign-hold observation mis-tagged `effect_lifecycle` must "
       "halt — a silent drop leaves the base unparked: no hold, no "
@@ -3314,7 +3438,7 @@ def _section_b_vectors() -> dict[str, dict]:
 
 
 def _epoch_vectors() -> dict[str, dict]:
-    anchors1 = {BASE1: "E0"}
+    anchors1 = {BASE1: _oid("E0")}
     v: dict[str, dict] = {}
 
     def e(name: str, note: str, events: list[dict], anchors: dict) -> None:
@@ -3324,76 +3448,108 @@ def _epoch_vectors() -> dict[str, dict]:
     e("epoch_empty", "empty history: the anchor is the valid tail", [], anchors1)
     e("epoch_prepare_only",
       "no-effect PREPARED(E0→E0) pairs are not edges — anchor stays the tail",
-      [_edge("e1", "E0", "E0")], anchors1)
+      [_edge("e1", _oid("E0"), _oid("E0"))], anchors1)
     e("epoch_no_effect_reject",
       "a no-effect reject (E0→E0) beside no advance — not a false fork",
-      [_edge("e1", "E0", "E0"), _edge("e2", "E0", "E0")], anchors1)
+      [_edge("e1", _oid("E0"), _oid("E0")), _edge("e2", _oid("E0"), _oid("E0"))], anchors1)
     e("epoch_cross_stream",
       "sequential advances across BOTH durable streams chain to one tail",
-      [_edge("e1", "E0", "E1", stream="effect_lifecycle"),
-       _edge("h1", "E1", "E2", stream="hold_lifecycle")], anchors1)
+      [_edge("e1", _oid("E0"), _oid("E1"), stream="effect_lifecycle"),
+       _edge("h1", _oid("E1"), _oid("E2"), stream="hold_lifecycle")], anchors1)
     e("epoch_gap",
       "DENY: an advance whose epoch_before nothing produced — unused edge "
       "remains ⇒ gap ⇒ halt",
-      [_edge("e1", "E1", "E2")], anchors1)
+      [_edge("e1", _oid("E1"), _oid("E2"))], anchors1)
     e("epoch_fork",
       "DENY: two candidate successors from one epoch ⇒ fork ⇒ halt",
-      [_edge("e1", "E0", "E1"), _edge("e2", "E0", "E2")], anchors1)
+      [_edge("e1", _oid("E0"), _oid("E1")), _edge("e2", _oid("E0"), _oid("E2"))], anchors1)
     e("epoch_cycle", "DENY: reused epoch / cycle ⇒ halt",
-      [_edge("e1", "E0", "E1"), _edge("e2", "E1", "E0")], anchors1)
+      [_edge("e1", _oid("E0"), _oid("E1")), _edge("e2", _oid("E1"), _oid("E0"))], anchors1)
     e("epoch_dual_append_copies",
       "carrier copies of one advance share an event_id — dedup, no fork",
-      [_edge("e1", "E0", "E1", branch="hold"),
-       _edge("e1", "E0", "E1", branch="state")], anchors1)
+      [_edge("e1", _oid("E0"), _oid("E1"), branch="hold"),
+       _edge("e1", _oid("E0"), _oid("E1"), branch="state")], anchors1)
     e("epoch_dup_divergent_deny",
       "DENY: a reused event_id with a DIFFERENT epoch payload is an "
       "integrity violation ⇒ EVENT_PAYLOAD_DIVERGENT, never a silent dedup",
-      [_edge("e1", "E0", "E1"), _edge("e1", "E1", "E2")], anchors1)
+      [_edge("e1", _oid("E0"), _oid("E1")), _edge("e1", _oid("E1"), _oid("E2"))], anchors1)
     e("epoch_unanchored_base_deny",
       "DENY: a base with epoch edges but no protocol_genesis anchor is a "
       "typed halt, never silently dropped",
-      [_edge("e1", "E0", "E1"), _edge("x1", "E0", "E1", base=BASE2)], anchors1)
+      [_edge("e1", _oid("E0"), _oid("E1")), _edge("x1", _oid("E0"), _oid("E1"), base=BASE2)], anchors1)
+    e("epoch_single_carrying_epoch_deny",
+      "DENY (panel round 4): a §9 SINGLE (seat_result) presenting epoch "
+      "fields must halt — both reducers FILTER singles, so nothing else "
+      "authenticates the record, and the fold must never advance the fence "
+      "from it",
+      [dict(_single_ev("seat_result", "s1"),
+            epoch_before=_oid("E0"), epoch_after=_oid("ATTACKER"))], anchors1)
+    e("epoch_consent_carrying_epoch_deny",
+      "DENY: the same for a consent record — the family, not the shape, is "
+      "what decides whether a record may carry a fence edge",
+      [{"schema_major": 1, "schema_minor": 0, "event_id": "c1",
+        "ts": "1970-01-01T00:00:00Z", "run_id": "run-1",
+        "trace_id": "trace-1", "protocol_epoch": _oid("E0"),
+        "family": "consent", "base_key": BASE1,
+        "epoch_before": _oid("E0"), "epoch_after": _oid("ATTACKER")}],
+      anchors1)
+    e("epoch_lifecycle_without_variant_deny",
+      "DENY: a lifecycle-family record with NO variant halts in the fold "
+      "exactly as it does in the reducers",
+      [{"schema_major": 1, "schema_minor": 0, "event_id": "n1",
+        "ts": "1970-01-01T00:00:00Z", "run_id": "run-1",
+        "trace_id": "trace-1", "protocol_epoch": _oid("E0"),
+        "family": "effect_lifecycle", "base_key": BASE1,
+        "epoch_before": _oid("E0"), "epoch_after": _oid("E1")}], anchors1)
+    e("epoch_non_oid_dict_deny",
+      "DENY: a dict epoch_after is not an object id — the fence is compared "
+      "for equality and is never str()-coerced",
+      [dict(_edge("e1", _oid("E0"), _oid("E1")),
+            epoch_after={"weird": True})], anchors1)
+    e("epoch_non_oid_int_deny",
+      "DENY: an integer epoch_after is not an object id either",
+      [dict(_edge("e1", _oid("E0"), _oid("E1")), epoch_after=123)], anchors1)
     e("epoch_missing_base_key_deny",
       "DENY: an epoch edge with no base_key cannot be partitioned — the "
       "fold refuses rather than folding it into an arbitrary base",
-      [{k: val for k, val in _edge("e1", "E0", "E1").items()
+      [{k: val for k, val in _edge("e1", _oid("E0"), _oid("E1")).items()
         if k != "base_key"}], anchors1)
     e("epoch_unknown_major_deny",
       "DENY (panel round 3): the fold is the THIRD consumer of the durable "
       "stream and its output IS the fence epoch — an unknown-major event "
       "must never advance it",
-      [dict(_edge("e1", "E0", "E1"), schema_major=7)], anchors1)
+      [dict(_edge("e1", _oid("E0"), _oid("E1")), schema_major=7)], anchors1)
     e("epoch_unknown_family_deny",
       "DENY: the fold runs the same closed-family check as the reducers",
-      [dict(_edge("e1", "E0", "E1"), family="checkpoint_lifecycle")], anchors1)
+      [dict(_edge("e1", _oid("E0"), _oid("E1")), family="checkpoint_lifecycle")], anchors1)
     e("epoch_cross_base_divergent_after_halt_deny",
       "DENY (panel round 3): a base pre-halted by a schema violation must "
       "still REGISTER its events in dedup — otherwise a divergent twin on "
       "a HEALTHY base later in the stream reads as first-seen and advances "
       "that base's fence from a reused id",
-      [dict(_edge("x0", "E0", "E1", base=BASE2), schema_major=7),
-       _edge("e1", "E0", "E1", base=BASE2),
-       _edge("e1", "E0", "E9")],
-      {BASE1: "E0", BASE2: "E0"})
+      [dict(_edge("x0", _oid("E0"), _oid("E1"), base=BASE2), schema_major=7),
+       _edge("e1", _oid("E0"), _oid("E1"), base=BASE2),
+       _edge("e1", _oid("E0"), _oid("E9"))],
+      {BASE1: _oid("E0"), BASE2: _oid("E0")})
     e("epoch_multi_base",
       "the fold partitions by base_key: one base's clean chain, another's "
       "fork — independent results",
-      [_edge("e1", "E0", "E1"),
-       _edge("x1", "E0", "E1", base=BASE2), _edge("x2", "E0", "E2", base=BASE2)],
-      {BASE1: "E0", BASE2: "E0"})
+      [_edge("e1", _oid("E0"), _oid("E1")),
+       _edge("x1", _oid("E0"), _oid("E1"), base=BASE2), _edge("x2", _oid("E0"), _oid("E2"), base=BASE2)],
+      {BASE1: _oid("E0"), BASE2: _oid("E0")})
     e("epoch_no_effect_twin_divergent_deny",
       "DENY: a NO-EFFECT copy and an advancing copy sharing one event_id — "
       "dedup registers before the no-effect filter, so the divergence halts "
       "instead of the advance slipping in as a legitimate edge",
-      [_edge("e1", "E0", "E0"), _edge("e1", "E0", "E1")], anchors1)
+      [_edge("e1", _oid("E0"), _oid("E0")), _edge("e1", _oid("E0"), _oid("E1"))], anchors1)
     e("epoch_no_effect_twin_divergent_reverse_deny",
       "DENY: the same pair in the opposite arrival order halts identically",
-      [_edge("e1", "E0", "E1"), _edge("e1", "E0", "E0")], anchors1)
+      [_edge("e1", _oid("E0"), _oid("E1")), _edge("e1", _oid("E0"), _oid("E0"))], anchors1)
     e("epoch_cross_base_divergent_deny",
       "DENY: one event_id reused across two bases with divergent payloads "
       "halts BOTH bases — never order-dependent",
-      [_edge("e1", "E0", "E1"), _edge("e1", "E0", "E2", base=BASE2)],
-      {BASE1: "E0", BASE2: "E0"})
+      [_edge("e1", _oid("E0"), _oid("E1")), _edge("e1", _oid("E0"), _oid("E2"), base=BASE2)],
+      {BASE1: _oid("E0"), BASE2: _oid("E0")})
     # The RECOVERY_CEILING histories (breach with empty anchors, breach with
     # partial anchors, and the exactly-N boundary) are exercised in-memory by
     # tests/boundary/test_pr0.py::test_recovery_ceiling_* — a 10k-event JSON

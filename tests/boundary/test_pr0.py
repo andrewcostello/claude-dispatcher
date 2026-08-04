@@ -956,7 +956,18 @@ _DENY_RULE_MARKERS = {
     "b_from_state_contradicts_reduced_deny":
         ["audit from", "contradicts the reduced state"],
     "b_missing_event_id_deny": ["missing required envelope field 'event_id'"],
-    "epoch_missing_base_key_deny": ["missing base_key"],
+    "epoch_missing_base_key_deny": ["required field 'base_key' absent"],
+    "epoch_single_carrying_epoch_deny":
+        ["not reduced by any lifecycle machine", "never advance the fence"],
+    "epoch_consent_carrying_epoch_deny":
+        ["not reduced by any lifecycle machine"],
+    "epoch_lifecycle_without_variant_deny":
+        ["no variant", "unknown variants halt"],
+    "epoch_non_oid_dict_deny": ["is not an object id", "never coerced"],
+    "epoch_non_oid_int_deny": ["is not an object id"],
+    "b_actor_verified_unpinned_fence_deny":
+        ["must set the fence to the hold's own observed delta_new_oid",
+         "never writer free text"],
     "b_auto_release_closed_after_reject_restore_deny":
         ["operator REJECTED", "stays closed"],
     "a_replayed_conflicting_reconcile_deny": ["conflicting d"],
@@ -1061,12 +1072,24 @@ def test_t19_vector_inventory():
     assert len({n for n in names if "deny" in n}) >= 12, "T19 needs deny rows (T6)"
 
 
+def _edge_event(eid: str, base: str) -> dict:
+    """A real advancing effect_lifecycle event — the fold authenticates its
+    inputs, so an edge is a full event, not a {before, after} pair."""
+    vec = _VECTORS["epoch_cross_stream"]
+    template = dict(vec["events"][0])
+    template.update({"event_id": eid, "base_key": base})
+    return template
+
+
 def _ceiling_events(generated, n: int, base: str = "B1") -> list[dict]:
     """Minimally SCHEMA-VALID events (the fold now runs the same §9 checks
     as the reducers, so a bare dict would halt as a schema violation and
     mask what the ceiling tests are actually asserting)."""
+    # Valid §9 SINGLE records carrying no epoch fields: every consumer
+    # accepts them (the reducers filter, the fold finds no edge), so these
+    # tests isolate the CEILING rather than tripping another check.
     return [{"event_id": f"{base}-e{i}", "base_key": base, "schema_major": 1,
-             "schema_minor": 0, "family": "effect_lifecycle"}
+             "schema_minor": 0, "family": "seat_result"}
             for i in range(n)]
 
 
@@ -1115,9 +1138,7 @@ def test_ceiling_with_empty_anchors_still_halts(generated):
 def test_ceiling_with_partial_anchors_keeps_edge_bearing_bases(generated):
     """deny: an edge-bearing base must not vanish on the ceiling path."""
     g, n = generated, generated.RECOVERY_CEILING_EVENTS
-    other = [{"event_id": "o1", "base_key": "OTHER", "schema_major": 1,
-              "schema_minor": 0, "family": "effect_lifecycle",
-              "epoch_before": "E0", "epoch_after": "E1"}]
+    other = [_edge_event("o1", "OTHER")]
     fold = g.fold_epochs(_ceiling_events(g, n + 1, "BUSY") + other,
                          {"BUSY": "E0"})
     assert fold["BUSY"]["halt"]["code"] == "RECOVERY_CEILING"
@@ -1131,7 +1152,7 @@ def test_ceiling_counts_deduplicated_events(generated):
     protocol absorbs)."""
     g, n = generated, generated.RECOVERY_CEILING_EVENTS
     one = {"event_id": "same", "base_key": "B1", "schema_major": 1,
-           "schema_minor": 0, "family": "effect_lifecycle"}
+           "schema_minor": 0, "family": "seat_result"}
     copies = [dict(one) for _ in range(n + 1)]
     assert "RECOVERY_CEILING" not in {
         h["code"] for h in g.reduce_section_a(copies)["halts"].values()}

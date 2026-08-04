@@ -553,7 +553,7 @@
     "b_actor_verified_auto_separated": {
       "holds": {
         "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
             "state": "RELEASED",
             "disposition": "ACTOR_VERIFIED_AUTO",
             "deliveries": [
@@ -568,7 +568,26 @@
     "b_actor_verified_shared_run_deny": {
       "holds": {
         "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
+            "state": "HELD_FOREIGN",
+            "disposition": null,
+            "deliveries": [
+              "d1"
+            ]
+          }
+        }
+      },
+      "halts": {
+        "R1:refs/heads/main": {
+          "code": "ILLEGAL_TRANSITION"
+        }
+      },
+      "resolution_notes": {}
+    },
+    "b_actor_verified_unpinned_fence_deny": {
+      "holds": {
+        "R1:refs/heads/main": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
             "state": "HELD_FOREIGN",
             "disposition": null,
             "deliveries": [
@@ -587,7 +606,7 @@
     "b_actor_verified_unresolvable_delivery_deny": {
       "holds": {
         "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
             "state": "HELD_FOREIGN",
             "disposition": null,
             "deliveries": [
@@ -606,7 +625,7 @@
     "b_actor_verified_wrong_delta_digest_deny": {
       "holds": {
         "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
             "state": "HELD_FOREIGN",
             "disposition": null,
             "deliveries": [
@@ -625,7 +644,7 @@
     "b_auto_release_closed_after_reject_restore_deny": {
       "holds": {
         "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
             "state": "HELD_FOREIGN",
             "disposition": null,
             "deliveries": [
@@ -644,7 +663,7 @@
     "b_concurrent_duplicate_creations": {
       "holds": {
         "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
             "state": "HELD_FOREIGN",
             "disposition": null,
             "deliveries": [
@@ -662,7 +681,7 @@
     "b_concurrent_tag_resolved_to_new_hold": {
       "holds": {
         "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
             "state": "RELEASED",
             "disposition": "ACCEPT_FOREIGN_ADVANCED",
             "deliveries": [
@@ -686,7 +705,7 @@
     "b_concurrent_tag_resolved_to_redelivery": {
       "holds": {
         "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
             "state": "HELD_FOREIGN",
             "disposition": null,
             "deliveries": [
@@ -714,7 +733,7 @@
     "b_display_only_needs_no_actor_node_id": {
       "holds": {
         "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
             "state": "HELD_FOREIGN",
             "disposition": null,
             "deliveries": [
@@ -738,7 +757,7 @@
     "b_forbidden_authorization_id_deny": {
       "holds": {
         "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
             "state": "HELD_FOREIGN",
             "disposition": null,
             "deliveries": [
@@ -757,7 +776,7 @@
     "b_foreign_hold_created": {
       "holds": {
         "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
             "state": "HELD_FOREIGN",
             "disposition": null,
             "deliveries": [
@@ -772,7 +791,7 @@
     "b_from_state_contradicts_reduced_deny": {
       "holds": {
         "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
             "state": "HELD_FOREIGN",
             "disposition": null,
             "deliveries": [
@@ -791,7 +810,7 @@
     "b_halt_isolation_after_halt": {
       "holds": {
         "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
             "state": "HELD_FOREIGN",
             "disposition": null,
             "deliveries": [
@@ -810,7 +829,7 @@
     "b_halt_isolation_multi_base": {
       "holds": {
         "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
             "state": "HELD_FOREIGN",
             "disposition": null,
             "deliveries": [
@@ -858,7 +877,7 @@
     "b_new_delivery_on_open_hold": {
       "holds": {
         "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
             "state": "HELD_FOREIGN",
             "disposition": null,
             "deliveries": [
@@ -885,7 +904,7 @@
     "b_reconcile_accept_actor_verified_deny": {
       "holds": {
         "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
             "state": "HELD_FOREIGN",
             "disposition": null,
             "deliveries": [
@@ -904,7 +923,7 @@
     "b_reconcile_unknown_hold_deny": {
       "holds": {
         "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
             "state": "HELD_FOREIGN",
             "disposition": null,
             "deliveries": [
@@ -923,7 +942,7 @@
     "b_redelivery_after_released": {
       "holds": {
         "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
             "state": "RELEASED",
             "disposition": "ACCEPT_FOREIGN_ADVANCED",
             "deliveries": [
@@ -938,7 +957,7 @@
     "b_redelivery_delta_contradiction_deny": {
       "holds": {
         "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
             "state": "HELD_FOREIGN",
             "disposition": null,
             "deliveries": [
@@ -957,7 +976,7 @@
     "b_redelivery_stale_from_state": {
       "holds": {
         "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
             "state": "RELEASED",
             "disposition": "ACCEPT_OURS",
             "deliveries": [
@@ -972,7 +991,7 @@
     "b_reject_restore_hold": {
       "holds": {
         "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
             "state": "RELEASED",
             "disposition": "ACCEPT_FOREIGN_ADVANCED",
             "deliveries": [
@@ -987,7 +1006,7 @@
     "b_release_conflict_deny": {
       "holds": {
         "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
             "state": "RELEASED",
             "disposition": "ACCEPT_OURS",
             "deliveries": [
@@ -1006,7 +1025,7 @@
     "b_release_replay_identity": {
       "holds": {
         "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
             "state": "RELEASED",
             "disposition": "ACCEPT_OURS",
             "deliveries": [
@@ -1021,14 +1040,14 @@
     "b_repark_after_released": {
       "holds": {
         "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
             "state": "RELEASED",
             "disposition": "ACCEPT_FOREIGN_ADVANCED",
             "deliveries": [
               "d1"
             ]
           },
-          "235c8073efe91962169b278e8c9cb7c562f4afc69695f9eb916835a35dd5bccc": {
+          "935725e1551c6b9295b953bb818b54dc086ac9668ed2d9831d5cb82fadb5cc90": {
             "state": "HELD_FOREIGN",
             "disposition": null,
             "deliveries": [
@@ -1043,7 +1062,7 @@
     "b_replayed_accepting_reconcile_is_identity": {
       "holds": {
         "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
             "state": "RELEASED",
             "disposition": "ACCEPT_OURS",
             "deliveries": [
@@ -1058,7 +1077,7 @@
     "b_replayed_actor_verified_match": {
       "holds": {
         "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
             "state": "RELEASED",
             "disposition": "ACTOR_VERIFIED_AUTO",
             "deliveries": [
@@ -1073,7 +1092,7 @@
     "b_replayed_conflicting_reconcile_deny": {
       "holds": {
         "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
             "state": "RELEASED",
             "disposition": "ACCEPT_OURS",
             "deliveries": [
@@ -1092,7 +1111,7 @@
     "b_standing_reenter": {
       "holds": {
         "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
             "state": "RELEASED",
             "disposition": "ACCEPT_OURS",
             "deliveries": [
@@ -1107,7 +1126,7 @@
     "b_standing_reject_restore": {
       "holds": {
         "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
             "state": "HELD_FOREIGN",
             "disposition": null,
             "deliveries": [
@@ -1122,7 +1141,7 @@
     "b_standing_standing": {
       "holds": {
         "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
             "state": "STANDING",
             "disposition": null,
             "deliveries": [
@@ -1239,17 +1258,26 @@
         }
       }
     },
+    "epoch_consent_carrying_epoch_deny": {
+      "R1:refs/heads/main": {
+        "status": "halt",
+        "epoch": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
+        "halt": {
+          "code": "SCHEMA_MAJOR_UNKNOWN"
+        }
+      }
+    },
     "epoch_cross_base_divergent_after_halt_deny": {
       "R1:refs/heads/main": {
         "status": "halt",
-        "epoch": "E0",
+        "epoch": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
         "halt": {
           "code": "EVENT_PAYLOAD_DIVERGENT"
         }
       },
       "R2:refs/heads/main": {
         "status": "halt",
-        "epoch": "E0",
+        "epoch": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
         "halt": {
           "code": "SCHEMA_MAJOR_UNKNOWN"
         }
@@ -1258,14 +1286,14 @@
     "epoch_cross_base_divergent_deny": {
       "R1:refs/heads/main": {
         "status": "halt",
-        "epoch": "E0",
+        "epoch": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
         "halt": {
           "code": "EVENT_PAYLOAD_DIVERGENT"
         }
       },
       "R2:refs/heads/main": {
         "status": "halt",
-        "epoch": "E0",
+        "epoch": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
         "halt": {
           "code": "EVENT_PAYLOAD_DIVERGENT"
         }
@@ -1274,14 +1302,14 @@
     "epoch_cross_stream": {
       "R1:refs/heads/main": {
         "status": "ok",
-        "epoch": "E2",
+        "epoch": "16d509a7146781ec37fe7fba349b58e79ee2f65b",
         "halt": null
       }
     },
     "epoch_cycle": {
       "R1:refs/heads/main": {
         "status": "halt",
-        "epoch": "E1",
+        "epoch": "07460df10583e94e946fbaccc6e1e861aabd5e23",
         "halt": {
           "code": "EPOCH_FORK"
         }
@@ -1290,14 +1318,14 @@
     "epoch_dual_append_copies": {
       "R1:refs/heads/main": {
         "status": "ok",
-        "epoch": "E1",
+        "epoch": "07460df10583e94e946fbaccc6e1e861aabd5e23",
         "halt": null
       }
     },
     "epoch_dup_divergent_deny": {
       "R1:refs/heads/main": {
         "status": "halt",
-        "epoch": "E0",
+        "epoch": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
         "halt": {
           "code": "EVENT_PAYLOAD_DIVERGENT"
         }
@@ -1306,14 +1334,14 @@
     "epoch_empty": {
       "R1:refs/heads/main": {
         "status": "ok",
-        "epoch": "E0",
+        "epoch": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
         "halt": null
       }
     },
     "epoch_fork": {
       "R1:refs/heads/main": {
         "status": "halt",
-        "epoch": "E0",
+        "epoch": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
         "halt": {
           "code": "EPOCH_FORK"
         }
@@ -1322,9 +1350,18 @@
     "epoch_gap": {
       "R1:refs/heads/main": {
         "status": "halt",
-        "epoch": "E0",
+        "epoch": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
         "halt": {
           "code": "EPOCH_GAP"
+        }
+      }
+    },
+    "epoch_lifecycle_without_variant_deny": {
+      "R1:refs/heads/main": {
+        "status": "halt",
+        "epoch": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
+        "halt": {
+          "code": "SCHEMA_MAJOR_UNKNOWN"
         }
       }
     },
@@ -1338,19 +1375,19 @@
       },
       "R1:refs/heads/main": {
         "status": "ok",
-        "epoch": "E0",
+        "epoch": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
         "halt": null
       }
     },
     "epoch_multi_base": {
       "R1:refs/heads/main": {
         "status": "ok",
-        "epoch": "E1",
+        "epoch": "07460df10583e94e946fbaccc6e1e861aabd5e23",
         "halt": null
       },
       "R2:refs/heads/main": {
         "status": "halt",
-        "epoch": "E0",
+        "epoch": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
         "halt": {
           "code": "EPOCH_FORK"
         }
@@ -1359,14 +1396,14 @@
     "epoch_no_effect_reject": {
       "R1:refs/heads/main": {
         "status": "ok",
-        "epoch": "E0",
+        "epoch": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
         "halt": null
       }
     },
     "epoch_no_effect_twin_divergent_deny": {
       "R1:refs/heads/main": {
         "status": "halt",
-        "epoch": "E0",
+        "epoch": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
         "halt": {
           "code": "EVENT_PAYLOAD_DIVERGENT"
         }
@@ -1375,23 +1412,50 @@
     "epoch_no_effect_twin_divergent_reverse_deny": {
       "R1:refs/heads/main": {
         "status": "halt",
-        "epoch": "E0",
+        "epoch": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
         "halt": {
           "code": "EVENT_PAYLOAD_DIVERGENT"
+        }
+      }
+    },
+    "epoch_non_oid_dict_deny": {
+      "R1:refs/heads/main": {
+        "status": "halt",
+        "epoch": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
+        "halt": {
+          "code": "SCHEMA_MAJOR_UNKNOWN"
+        }
+      }
+    },
+    "epoch_non_oid_int_deny": {
+      "R1:refs/heads/main": {
+        "status": "halt",
+        "epoch": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
+        "halt": {
+          "code": "SCHEMA_MAJOR_UNKNOWN"
         }
       }
     },
     "epoch_prepare_only": {
       "R1:refs/heads/main": {
         "status": "ok",
-        "epoch": "E0",
+        "epoch": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
         "halt": null
+      }
+    },
+    "epoch_single_carrying_epoch_deny": {
+      "R1:refs/heads/main": {
+        "status": "halt",
+        "epoch": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
+        "halt": {
+          "code": "SCHEMA_MAJOR_UNKNOWN"
+        }
       }
     },
     "epoch_unanchored_base_deny": {
       "R1:refs/heads/main": {
         "status": "ok",
-        "epoch": "E1",
+        "epoch": "07460df10583e94e946fbaccc6e1e861aabd5e23",
         "halt": null
       },
       "R2:refs/heads/main": {
@@ -1405,7 +1469,7 @@
     "epoch_unknown_family_deny": {
       "R1:refs/heads/main": {
         "status": "halt",
-        "epoch": "E0",
+        "epoch": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
         "halt": {
           "code": "SCHEMA_MAJOR_UNKNOWN"
         }
@@ -1414,7 +1478,7 @@
     "epoch_unknown_major_deny": {
       "R1:refs/heads/main": {
         "status": "halt",
-        "epoch": "E0",
+        "epoch": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
         "halt": {
           "code": "SCHEMA_MAJOR_UNKNOWN"
         }

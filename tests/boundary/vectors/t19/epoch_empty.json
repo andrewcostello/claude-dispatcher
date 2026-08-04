@@ -3,6 +3,6 @@
   "note": "empty history: the anchor is the valid tail",
   "events": [],
   "anchors": {
-    "R1:refs/heads/main": "E0"
+    "R1:refs/heads/main": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7"
   }
 }

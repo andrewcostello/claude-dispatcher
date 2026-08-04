@@ -297,6 +297,10 @@ RECOVERY_CEILING_REDUCE_SECONDS: int = 30
 # as SCHEMA_MAJOR_UNKNOWN — the named §9 halt, range-checked at intake.
 SUPPORTED_SCHEMA_MAJORS: frozenset[int] = frozenset((1,))
 
+# The epoch-effect domain is CLOSED: _check_epoch_algebra halts on
+# anything outside it rather than falling through to 'no algebra'.
+EPOCH_EFFECT_VALUES: frozenset[str] = frozenset(('as_accept_ours', 'assign_new_oid', 'none', 'per_disposition'))
+
 # STANDING × REJECT_RESTORE_HOLD resolution — driven by the schema key
 # standing_reject_restore_resolves_to (the single place to change if
 # the author ratifies the other reading).
@@ -396,6 +400,7 @@ _INT_WIRE_FIELDS = frozenset({"schema_major", "schema_minor", "duration_ms"})
 
 # Audit timestamps are RFC 3339 UTC — offset-bearing so records are orderable
 # across hosts; anything else is a schema violation.
+_OID_RE = re.compile(r"^[0-9a-f]{40}$")
 _TS_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$")
 
@@ -2811,28 +2816,63 @@ def _ceiling_halts(events: Sequence[Mapping[str, object]]) -> dict[str, dict]:
             if n > RECOVERY_CEILING_EVENTS}
 
 
-def _intake(dedup: _Dedup, ev: Mapping[str, object], family: str,
-            variants: Mapping[str, type], base_halts: dict[str, dict]):
-    """Shared reducer intake: family filter (§6.0 — 'each reduce filters by
-    event schema name'; missing family is a schema violation, the OTHER
-    family is filtered, not halted), dedup, fail-closed construction.
-    Returns the typed event, or None when the event was consumed (dup /
-    other family / halt recorded)."""
-    base_hint = str(ev.get("base_key") or "")
-    halted = base_hint in base_halts
+# ─── ONE intake, three consumers ────────────────────────────────────────────
+# Every recurring fail-open in review has been the FOLD diverging from the
+# reducers, so envelope + family classification lives in exactly one place
+# and all three call it (panel round 4).
+
+def _classify_event(ev: Mapping[str, object]) -> tuple[Optional[str], Optional[dict]]:
+    """(family, halt): the envelope checks every consumer shares — supported
+    schema_major, and a family that is present, non-empty and inside the
+    closed domain. Returns the family on success."""
+    major = ev.get("schema_major")
+    if isinstance(major, bool) or not isinstance(major, int):
+        return None, _halt(
+            BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+            f"event has a non-integer schema_major "
+            f"(event_id {ev.get('event_id')!r})", ev)
+    if major not in SUPPORTED_SCHEMA_MAJORS:
+        return None, _halt(
+            BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+            f"schema_major {major} outside the supported set "
+            f"{sorted(SUPPORTED_SCHEMA_MAJORS)} — an unknown major must "
+            f"never advance the fence (event_id {ev.get('event_id')!r})", ev)
     fam = ev.get("family")
     if not isinstance(fam, str) or fam == "":
-        base_halts.setdefault(base_hint, _halt(
+        return None, _halt(
             BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
-            f"event missing required field 'family' — the reduce filters by "
-            f"event schema name (§6.0) (event_id {ev.get('event_id')!r})", ev))
-        return None
+            f"event missing required field 'family' — every consumer filters "
+            f"by event schema name (§6.0) "
+            f"(event_id {ev.get('event_id')!r})", ev)
     if fam not in FAMILY_VALUES:
-        base_halts.setdefault(base_hint, _halt(
+        return None, _halt(
             BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
             f"unknown family {fam!r} outside the closed domain — an unknown "
             f"enum value halts like an unknown variant (§9) "
-            f"(event_id {ev.get('event_id')!r})", ev))
+            f"(event_id {ev.get('event_id')!r})", ev)
+    return fam, None
+
+
+def _variants_for(family: str) -> Optional[Mapping[str, type]]:
+    """The variant table for a REDUCED-BY family, else None (a §9 single)."""
+    if family == "effect_lifecycle":
+        return EFFECT_VARIANTS
+    if family == "hold_lifecycle":
+        return HOLD_VARIANTS
+    return None
+
+
+def _intake(dedup: _Dedup, ev: Mapping[str, object], family: str,
+            variants: Mapping[str, type], base_halts: dict[str, dict]):
+    """Shared reducer intake: the common envelope/family classification, the
+    §6.0 family filter (the OTHER family is filtered, not halted), dedup,
+    fail-closed construction. Returns the typed event, or None when the
+    event was consumed (dup / other family / halt recorded)."""
+    base_hint = str(ev.get("base_key") or "")
+    halted = base_hint in base_halts
+    fam, halt = _classify_event(ev)
+    if halt is not None:
+        base_halts.setdefault(base_hint, halt)
         return None
     if fam != family:
         # A legitimate OTHER record on the shared carrier (the peer
@@ -2917,7 +2957,10 @@ def _check_epoch_algebra(cls: type, event: object, where: str,
             return halt(f"ACCEPT_OURS pins the fence to its new_oid payload "
                         f"{getattr(event, 'new_oid', None)!r}, got {after!r}")
         return None
-    return None
+    # closed domain: an epoch effect this checker does not implement must
+    # never be treated as "no algebra" (panel round 4).
+    return halt(f"unknown epoch effect — the domain is closed "
+                f"({sorted(EPOCH_EFFECT_VALUES)})")
 
 
 def _check_assign_new_oid(event: object, advanced: bool, after: str,
@@ -3200,7 +3243,24 @@ def _check_auto_release_gates(book: _HoldBook, base: str, hid: str,
             f"SEPARATED (protocol_genesis.credential_mode); this run is "
             f"{run_mode.value} — under SHARED, never "
             f"(event_id {ev.get('event_id')!r})", ev)
-    return _check_actor_verified(book, base, hid, event, ev)
+    halt = _check_actor_verified(book, base, hid, event, ev)
+    if halt is not None:
+        return halt
+    # §6.0: ACTOR_VERIFIED_AUTO's epoch effect is "as ACCEPT_OURS"
+    # (expected_base_oid := new_oid), and the payload comes only from the
+    # observed effect OID — never free text. §9 gives hold_lifecycle no
+    # new_oid field, so the observed OID for a foreign movement IS the
+    # hold's own recorded delta_new_oid. Anything else is a writer choosing
+    # the fence on the one operator-less release path (panel round 4).
+    _, _, observed = book.hold_delta[hid]
+    if event.epoch_after != observed:
+        return _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION,
+            f"hold {hid}: ACTOR_VERIFIED_AUTO must set the fence to the "
+            f"hold's own observed delta_new_oid {observed!r}, got "
+            f"{event.epoch_after!r} — the epoch payload is never writer "
+            f"free text (§6.0) (event_id {ev.get('event_id')!r})", ev)
+    return None
 
 
 def _check_actor_verified(book: _HoldBook, base: str, hid: str, event: object,
@@ -3425,39 +3485,60 @@ def _collect_epoch_edges(events: Sequence[Mapping[str, object]],
     return edges_by_base
 
 
+def _valid_oid(value: object) -> bool:
+    """Epoch values ARE object ids: lowercase 40-hex. The fence is compared
+    for equality at the §6.0 authority check, so it is never str()-coerced
+    from a dict, an int, or free text (panel round 4)."""
+    return isinstance(value, str) and _OID_RE.match(value) is not None
+
+
 def _validate_fold_event(ev: Mapping[str, object]) -> Optional[dict]:
-    """The §9 schema checks the fold shares with the reducers: supported
-    major, closed family domain, and (for lifecycle events) full variant
-    validation. Returns a halt payload or None."""
-    major = ev.get("schema_major")
-    if isinstance(major, bool) or not isinstance(major, int):
-        return _halt(BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
-                     f"epoch edge has a non-integer schema_major "
-                     f"(event_id {ev.get('event_id')!r})", ev)
-    if major not in SUPPORTED_SCHEMA_MAJORS:
-        return _halt(BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
-                     f"epoch edge schema_major {major} outside the supported "
-                     f"set {sorted(SUPPORTED_SCHEMA_MAJORS)} — an unknown "
-                     f"major must never advance the fence "
-                     f"(event_id {ev.get('event_id')!r})", ev)
-    fam = ev.get("family")
-    if not isinstance(fam, str) or fam == "":
-        return _halt(BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
-                     f"epoch edge missing required field 'family' "
-                     f"(event_id {ev.get('event_id')!r})", ev)
-    if fam not in FAMILY_VALUES:
-        return _halt(BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
-                     f"epoch edge has unknown family {fam!r} outside the "
-                     f"closed domain (event_id {ev.get('event_id')!r})", ev)
-    variants = (EFFECT_VARIANTS if fam == "effect_lifecycle"
-                else HOLD_VARIANTS if fam == "hold_lifecycle" else None)
-    if variants is not None and ev.get("variant") is not None:
-        try:
-            build_wire_event(variants, ev)
-        except WireViolation as exc:
-            return _halt(exc.code, exc.detail, ev)
-        except ValueError as exc:
-            return _halt(BoundaryErrorCode.ILLEGAL_TRANSITION, str(exc), ev)
+    """The fold runs the SAME classification as the reducers (one intake),
+    then the rules specific to being a fence consumer:
+
+      * only the REDUCED-BY families may carry epoch edges at all — a §9
+        single presenting epoch_before/epoch_after is a typed halt, not a
+        silent skip. Neither reducer authenticates those records (both
+        filter them), so nothing else would object;
+      * a reduced-by family MUST carry a variant — an absent one is the
+        unknown-variant halt build_wire_event already rules;
+      * epoch values are validated OID-shaped, never coerced.
+    """
+    fam, halt = _classify_event(ev)
+    if halt is not None:
+        return halt
+    variants = _variants_for(fam)
+    has_epoch = ev.get("epoch_before") is not None or ev.get("epoch_after") is not None
+    if variants is None:
+        if has_epoch:
+            return _halt(
+                BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+                f"family {fam!r} is not reduced by any lifecycle machine "
+                f"(REDUCED_BY_FAMILIES = {sorted(REDUCED_BY_FAMILIES)}) yet "
+                f"carries epoch fields — nothing authenticates this record, "
+                f"so it must never advance the fence "
+                f"(event_id {ev.get('event_id')!r})", ev)
+        return None                      # a legitimate §9 single: no edge
+    if ev.get("variant") is None:
+        return _halt(
+            BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+            f"{fam} record with no variant — unknown variants halt (§9); "
+            f"the fold applies the same rule as the reducers "
+            f"(event_id {ev.get('event_id')!r})", ev)
+    for field in ("epoch_before", "epoch_after"):
+        value = ev.get(field)
+        if value is not None and not _valid_oid(value):
+            return _halt(
+                BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+                f"{field} {_short(value)} is not an object id (lowercase "
+                f"40-hex) — the fence is compared for equality and is never "
+                f"coerced (event_id {ev.get('event_id')!r})", ev)
+    try:
+        build_wire_event(variants, ev)
+    except WireViolation as exc:
+        return _halt(exc.code, exc.detail, ev)
+    except ValueError as exc:
+        return _halt(BoundaryErrorCode.ILLEGAL_TRANSITION, str(exc), ev)
     return None
 
 
