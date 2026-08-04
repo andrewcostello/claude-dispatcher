@@ -1690,51 +1690,13 @@ def _variants_for(family: str) -> Optional[Mapping[str, type]]:
     return None
 
 
-def _intake(dedup: _Dedup, ev: Mapping[str, object], family: str,
-            variants: Mapping[str, type], base_halts: dict[str, dict]):
-    """Shared reducer intake: the common envelope/family classification, the
-    §6.0 family filter (the OTHER family is filtered, not halted), dedup,
-    fail-closed construction. Returns the typed event, or None when the
-    event was consumed (dup / other family / halt recorded)."""
-    base_hint = str(ev.get("base_key") or "")
-    halted = base_hint in base_halts
-    fam, halt = _classify_event(ev)
-    if halt is not None:
-        base_halts.setdefault(base_hint, halt)
-        return None
-    if fam != family:
-        # A legitimate OTHER record on the shared carrier (the peer
-        # lifecycle family, or any §9 single) is FILTERED. But an event
-        # whose VARIANT belongs to this machine while its tag claims
-        # another family is a mis-tagged writer, not another stream — a
-        # silent drop there rewrites a durable terminal at the next cold
-        # start and bypasses the conflicting-disposition halt.
-        cls = variants.get(str(ev.get("variant")))
-        if cls is not None:
-            base_halts.setdefault(base_hint, _halt(
-                BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
-                f"family {fam!r} contradicts variant {cls.__name__!r}, whose "
-                f"own schema name is {cls.FAMILY!r} — mis-tagged writer, "
-                f"never filtered (event_id {ev.get('event_id')!r})", ev))
-        return None
-    try:
-        # dedup runs for EVERY event, halted base or not: skipping
-        # registration would let a divergent twin on a HEALTHY base later in
-        # the stream read as first-seen (panel round 3 — order dependence).
-        seen = dedup.check(ev, base_hint)
-        if halted or seen == "dup":
-            return None  # halted base: register only; dup: absorbed
-        return build_wire_event(variants, ev)
-    except _DivergentDuplicate as exc:
-        for b in exc.bases:
-            base_halts.setdefault(b, exc.halt)
-    except WireViolation as exc:
-        base_halts.setdefault(base_hint, _halt(exc.code, exc.detail, ev))
-    except ValueError as exc:
-        base_halts.setdefault(base_hint, _halt(
-            BoundaryErrorCode.ILLEGAL_TRANSITION, str(exc), ev))
-    return None
-
+# `_intake` was deleted here (panel iteration 8, defect 2). Since the
+# iteration-6 unification it had ZERO callers while duplicating 38
+# statements of the live `_ReduceState.consume` intake — root cause B in
+# this design's own terms: a future editor patching the dead copy changes
+# nothing while looking correct. The live intake is `_ReduceState.consume`,
+# and the checks it shares with every consumer are `_classify_event`,
+# `_check_variant_tagging` and `build_wire_event`.
 
 def _check_epoch_algebra(cls: type, event: object, where: str,
                          ev: Mapping[str, object]) -> Optional[dict]:
@@ -2020,16 +1982,26 @@ class _ReduceState:
                 continue
             edges = self.edges.get(base, [])
             anchor = self.anchors.get(base)
-            if base in self.anchors and anchor is None:
-                # An anchor map that NAMES a base with no value is malformed
-                # input, not an absent anchor: every other malformed input on
-                # this path is a typed halt, so this one is too (it used to
-                # crash with a bare ValueError from min(), or vanish).
+            if base in self.anchors and not _valid_oid(anchor):
+                # An anchor map that NAMES a base must carry a real object id.
+                # The anchor becomes this base's `epoch` on the ok path, and
+                # that value IS AuthorityFingerprint.base_epoch — the thing
+                # §6.0's authority check compares. Validating only for null
+                # left free text and non-strings flowing straight into the
+                # fence, which is exactly the shape a PR4 caller building
+                # anchors from protocol_genesis produces. Same rule as an
+                # edge fence: lowercase 40-hex, never coerced.
+                missing = anchor is None
                 out[base] = {"status": "halt", "epoch": None, "halt": _halt(
                     BoundaryErrorCode.EPOCH_GAP,
-                    f"{base}: the anchor map names this base with no "
-                    f"protocol_genesis epoch — a missing anchor VALUE is "
-                    f"malformed input, never an absent anchor")}
+                    f"{base}: the anchor map names this base with "
+                    + (f"no protocol_genesis epoch — a missing anchor VALUE "
+                       f"is malformed input, never an absent anchor"
+                       if missing else
+                       f"a protocol_genesis epoch that is not an object id: "
+                       f"{_short(anchor)} of type "
+                       f"{type(anchor).__name__} — the anchor becomes the "
+                       f"compared fence and is never coerced"))}
                 continue
             if anchor is None:
                 if not edges:
