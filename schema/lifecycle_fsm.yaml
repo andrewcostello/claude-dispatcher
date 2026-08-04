@@ -666,6 +666,16 @@ events:
         credential_mode_source: run_context
         credential_mode_context_key: credential_mode
         provenance_wired_in: PR4
+        # CUT-OVER BLOCKER: this deferral must NOT survive PR6. Until the
+        # webhook verification protocol lands, ACTOR_VERIFIED_AUTO rests on
+        # evidence a writer of the hold branch could compute — consistent,
+        # but not attributable. PR6's gate list must refuse cut-over while
+        # this key is still true (panel round 4, finding 3).
+        blocks_pr6_cutover: true
+        blocks_pr6_cutover_reason: >-
+          auto-release evidence is self-derivable until §6.0's configured-
+          webhook verification (hook_id / delivery_guid / repository_id)
+          is implemented and the design §9 field list amended to carry it
         # The durable fields §6.0's webhook protocol persists. Adding them
         # to the wire requires amending design §9's field list first (see
         # the NOTE above); PR4 does both together.

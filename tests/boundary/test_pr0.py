@@ -110,6 +110,42 @@ def test_doc_equals_artifact_comparison_fires(tmp_path, monkeypatch, case):
         f"{case}: detected drift does not name {needle!r}: {problems}")
 
 
+def test_ci_citations_job_hard_fails_on_a_missing_peer(schemas):
+    """The claim "CI always requires the peer" must not outrun its
+    enforcement: the citations job may not soft-fail (panel round 4)."""
+    import yaml as _yaml
+    wf = _yaml.safe_load((REPO_ROOT / ".github/workflows/verify.yml").read_text())
+    citations = wf["jobs"]["citations"]["steps"]
+    peer_step = next(s for s in citations
+                     if "checkout" in str(s.get("uses", ""))
+                     and "claude-workflow" in str(s.get("with", {})))
+    assert not peer_step.get("continue-on-error"), (
+        "the peer checkout soft-fails, so the citations-REQUIRED half never "
+        "runs — the job would pass green having checked nothing")
+    assert any("--probe-peer" in str(s.get("run", "")) for s in citations), (
+        "the citations job does not assert the peer actually resolved")
+    assert any("make verify" in str(s.get("run", "")) for s in citations)
+    assert not any(s.get("if", "").strip().endswith("!= 'success'")
+                   for s in citations), "a skip-and-warn path remains"
+    # and the doc-local arm runs unconditionally in the other job
+    gate = wf["jobs"]["gate"]["steps"]
+    assert any("scripts/test.sh" in str(s.get("run", "")) for s in gate)
+
+
+def test_auto_release_deferral_is_a_recorded_cutover_blocker(schemas):
+    """The PR4 provenance obligation must not be forgettable: it is recorded
+    as a PR6 cut-over blocker in the schema (panel round 4, finding 3)."""
+    ev = schemas["lifecycle_fsm"]["events"]["unions"]["hold_lifecycle"][
+        "actor_verified_evidence"]
+    assert ev["blocks_pr6_cutover"] is True
+    assert ev["provenance_wired_in"] == "PR4"
+    assert "self-derivable" in ev["blocks_pr6_cutover_reason"]
+    assert ev["provenance_fields_pending_design_amendment"] == [
+        "hook_id", "delivery_guid", "repository_id"]
+    # the PR0-enforceable half is named as CONSISTENCY, never provenance
+    assert "consistency_checks_enforced_in_pr0" in ev
+
+
 def test_ast_gate_schema_lists_cannot_be_silently_emptied(schemas):
     """Both AST gates take their teeth from schema lists nothing asserted:
     emptying `guarded_names`, or adding a module to `door_entrypoints`,
@@ -1300,6 +1336,52 @@ def test_blocking_predicate_exhaustive(generated):
         g.SeatOutcome("BLOCK")
 
 
+def test_aggregate_dispatch_is_generated_from_the_schema_rules(schemas, generated):
+    """§5.1's rule ORDER is now GENERATED from panel_aggregate.yaml's rules
+    list, not hand-written beside it (panel round 4, finding 6). The
+    generated table must match the schema entry for entry."""
+    g = generated
+    rules = schemas["panel_aggregate"]["aggregate"]["rules"]
+    assert len(g.AGGREGATE_RULES) == len(rules)
+    for (name_result, (_, result)) in zip(rules, g.AGGREGATE_RULES):
+        (name, want), = name_result.items()
+        assert result.name == want, f"{name}: generated {result.name}, schema {want}"
+
+
+def test_flipping_the_schema_rule_order_flips_the_behaviour(tmp_path, monkeypatch):
+    """The `standing_reject_restore_resolves_to` standard applied here: swap
+    the BLOCKED and INCOMPLETE-on-missing-seat rules in a COPY of the
+    schema, regenerate, and the same inputs must produce the other answer.
+    If this passes with the order unchanged, the dispatch is not derived."""
+    fsmgen = _fsmgen()
+    schemas = fsmgen.load_schemas()
+    rules = schemas["panel_aggregate"]["aggregate"]["rules"]
+    blocking_i = next(i for i, r in enumerate(rules)
+                      if "any_required_seat_outcome_blocking" in r)
+    missing_i = next(i for i, r in enumerate(rules)
+                     if "outcome_keys_not_exactly_required_seats" in r)
+    rules[blocking_i], rules[missing_i] = rules[missing_i], rules[blocking_i]
+    flipped = fsmgen.module_from_source(fsmgen.build_generated_module(schemas))
+    seats = ("claude", "grok", "codex")
+    roster = flipped.RosterSnapshot(
+        manifest_digest="md", roster_version="v1",
+        roster_digest=flipped.roster_digest("v1", seats, "claude"),
+        ordered_seat_ids=seats, designated_single_id="claude")
+    # a blocking seat AND a missing seat: which rule fires is the order
+    outcomes = {"claude": flipped.SeatOutcome(flipped.SeatVerdict.APPROVE),
+                "grok": flipped.SeatOutcome(flipped.SeatVerdict.BLOCK)}
+    got = flipped.aggregate(flipped.PanelIntensity.FULL, roster, outcomes)
+    assert got is flipped.PanelAggregateResult.INCOMPLETE, (
+        "swapping the schema's rule order did not change the behaviour — "
+        "the dispatch is not generated from the rules list")
+    # and the committed order still yields BLOCKED
+    from claude_dispatcher.boundary import generated as real
+    real_outcomes = {"claude": real.SeatOutcome(real.SeatVerdict.APPROVE),
+                     "grok": real.SeatOutcome(real.SeatVerdict.BLOCK)}
+    assert real.aggregate(real.PanelIntensity.FULL, _roster(real),
+                          real_outcomes) is real.PanelAggregateResult.BLOCKED
+
+
 def test_roster_snapshot_stores_an_immutable_seat_tuple(generated):
     """The digest binds ordered_seat_ids, so the field must be immutable —
     a list would let a caller mutate the roster out from under a verified
@@ -1374,6 +1456,17 @@ def test_subject_digest_and_classifier_authority(generated):
         g.subject_digest(repo_node_id="R\nrepo=evil", target="ref:x",
                          base_oid="b", head_oid="h", diff_sha256="d",
                          classifier=req)
+    # deny: the INNER colon separator gets the same treatment — otherwise
+    # target_pr("A:B", "c") and target_pr("A", "B:c") share one preimage.
+    with pytest.raises(ValueError):
+        g.target_pr("A:B", "c")
+    with pytest.raises(ValueError):
+        g.target_pr("A", "B:c")
+    with pytest.raises(ValueError):
+        g.target_ref("refs:heads/main")
+    with pytest.raises(ValueError):
+        g.RequiredClassifier(config_sha256="cfg:x", producer_digest="p",
+                             contract="2")
     with pytest.raises(ValueError):        # deny: fingerprint needs the union
         g.AuthorityFingerprint(protocol_epoch="E0", base_epoch="E0",
                                subject_digest="s", roster_digest="r",

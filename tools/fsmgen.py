@@ -811,6 +811,33 @@ def emit_panel(panel: dict) -> list[str]:
       + ", ".join("Severity." + v for v in blocking["severity_blocks"]) + "})")
     w("")
     w(PANEL_RUNTIME)
+    w("")
+    w("# ─── §5.1 aggregate rules, GENERATED from schema aggregate.rules ────")
+    w("# One entry per schema rule, in the schema's own order: flipping the")
+    w("# order in panel_aggregate.yaml flips aggregate()'s behaviour.")
+    w("_AGGREGATE_PREDICATES: Mapping[str, object] = {")
+    w("    'required_seats_empty':")
+    w("        lambda required, outcomes: not required,")
+    w("    'any_required_seat_outcome_blocking':")
+    w("        lambda required, outcomes: any(")
+    w("            blocking(outcomes[s]) for s in required if s in outcomes),")
+    w("    'outcome_keys_not_exactly_required_seats':")
+    w("        lambda required, outcomes: set(outcomes) != set(required),")
+    w("    'any_required_seat_unavailable_or_unparseable':")
+    w("        lambda required, outcomes: any(")
+    w("            isinstance(outcomes[s], UnparseableOutcome)")
+    w("            for s in required if s in outcomes),")
+    w("    'otherwise': lambda required, outcomes: True,")
+    w("}")
+    w("")
+    w("AGGREGATE_RULES: tuple = (")
+    for rule in panel["aggregate"]["rules"]:
+        (name, result), = rule.items()
+        _require_ident(name, "aggregate.rules name")
+        _require_ident(result, "aggregate.rules result")
+        w(f"    (_AGGREGATE_PREDICATES[{name!r}], PanelAggregateResult.{result}),")
+    w(")")
+    w("")
     return L
 
 
@@ -1197,6 +1224,17 @@ def apply_section_b(state: MachineStateB, event: object) -> MachineStateB:
 
 # ─── derivations (schema-pinned preimages; components newline-free) ─────────
 
+def _reject_separator(where: str, sep: str, **components: str) -> None:
+    """A join is injective only over components free of its separator — the
+    same rule _preimage applies to newlines, applied to the INNER
+    colon-joined lines."""
+    for name, value in components.items():
+        if sep in str(value):
+            raise ValueError(
+                f"{where}: {name}={value!r} contains the {sep!r} separator — "
+                f"two distinct subjects would share one preimage")
+
+
 def _preimage(lines: Sequence[str]) -> str:
     """Tagged newline-joined preimage; injective only over newline-free
     components, so a newline in any component is rejected, never coerced."""
@@ -1249,6 +1287,12 @@ class RequiredClassifier:
     config_sha256: str
     producer_digest: str
     contract: str
+
+    def __post_init__(self) -> None:
+        _reject_separator("RequiredClassifier", ":",
+                          config_sha256=self.config_sha256,
+                          producer_digest=self.producer_digest,
+                          contract=self.contract)
 
     def line(self) -> str:
         return f"required:{self.config_sha256}:{self.producer_digest}:{self.contract}"
@@ -1317,11 +1361,17 @@ def subject_digest(components: Optional[SubjectComponents] = None, /,
 
 
 def target_pr(pr_node_id: str, target_ref: str) -> str:
-    """PR subjects carry BOTH fields — a retarget changes the digest."""
+    """PR subjects carry BOTH fields — a retarget changes the digest. The
+    INNER separator gets the same treatment the outer one does: a component
+    containing ':' would make target_pr('A:B','c') and target_pr('A','B:c')
+    byte-identical, i.e. one digest for two subjects (panel round 4)."""
+    _reject_separator("target_pr", ":", pr_node_id=pr_node_id,
+                      target_ref=target_ref)
     return f"pr:{pr_node_id}:{target_ref}"
 
 
 def target_ref(ref: str) -> str:
+    _reject_separator("target_ref", ":", ref=ref)
     return f"ref:{ref}"
 
 
@@ -2351,15 +2401,14 @@ def aggregate(intensity: PanelIntensity, roster: RosterSnapshot,
             raise TypeError(
                 f"aggregate(): seat {seat!r} carries unknown outcome type "
                 f"{type(outcome).__name__} — outside the closed union")
-    if not required:
-        return PanelAggregateResult.NOT_APPLICABLE
-    if any(blocking(outcomes[s]) for s in required if s in outcomes):
-        return PanelAggregateResult.BLOCKED
-    if set(outcomes.keys()) != set(required):
-        return PanelAggregateResult.INCOMPLETE
-    if any(isinstance(outcomes[s], UnparseableOutcome) for s in required):
-        return PanelAggregateResult.INCOMPLETE
-    return PanelAggregateResult.APPROVED
+    # The dispatch below is GENERATED from schema aggregate.rules, IN THE
+    # SCHEMA'S ORDER — flipping the schema flips the behaviour (panel round
+    # 4: the order had been sealed only by a name-order assertion).
+    for predicate, result in AGGREGATE_RULES:
+        if predicate(required, outcomes):
+            return result
+    raise AssertionError("aggregate(): the rule list is not total — the "
+                         "schema's final `otherwise` rule is missing")
 
 
 def aggregate_seat_results(intensity: PanelIntensity, roster: RosterSnapshot,

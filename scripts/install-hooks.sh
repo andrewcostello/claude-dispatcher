@@ -9,7 +9,11 @@
 # script existed there was no mechanism behind that claim (panel round 3).
 set -e
 ROOT="$(git rev-parse --show-toplevel)"
-HOOK="$ROOT/.git/hooks/pre-push"
+# git rev-parse --git-path resolves the real hooks directory for BOTH a
+# main clone and a linked worktree (where .git is a FILE, not a directory —
+# the same layout t26_lint handles for peer detection).
+HOOK="$(git rev-parse --git-path hooks/pre-push)"
+mkdir -p "$(dirname "$HOOK")"
 
 cat > "$HOOK" <<'HOOK_BODY'
 #!/usr/bin/env bash

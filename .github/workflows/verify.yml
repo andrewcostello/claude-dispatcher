@@ -48,10 +48,13 @@ jobs:
         with:
           fetch-depth: 0          # citations resolve against a pinned SHA
           path: claude-dispatcher
+      # NO continue-on-error: this job's whole purpose is the
+      # citations-REQUIRED half. If the peer cannot be checked out, the job
+      # FAILS — the claim "CI always requires the peer" must not outrun its
+      # enforcement (panel round 4). The doc-local checks still run
+      # unconditionally in the `gate` job above.
       - name: Check out the peer repo beside it
         uses: actions/checkout@v4
-        continue-on-error: true
-        id: peer
         with:
           repository: ${{ github.repository_owner }}/claude-workflow
           fetch-depth: 0
@@ -62,15 +65,13 @@ jobs:
       - name: Install
         working-directory: claude-dispatcher
         run: python -m pip install --upgrade pip && pip install -e ".[dev]"
+      - name: Assert the peer really did resolve (citations are REQUIRED here)
+        working-directory: claude-dispatcher
+        env:
+          CLAUDE_WORKFLOW_REPO: ${{ github.workspace }}/claude-workflow
+        run: python tools/t26_lint.py --probe-peer
       - name: make verify (boundary seals + citations-REQUIRED T26)
-        if: steps.peer.outcome == 'success'
         working-directory: claude-dispatcher
         env:
           CLAUDE_WORKFLOW_REPO: ${{ github.workspace }}/claude-workflow
         run: make verify
-      - name: Report a skipped citation check honestly
-        if: steps.peer.outcome != 'success'
-        run: |
-          echo "::warning::claude-workflow peer checkout unavailable —" \
-               "the citation half of T26 did NOT run. The gate job still" \
-               "enforced every doc-local check."
