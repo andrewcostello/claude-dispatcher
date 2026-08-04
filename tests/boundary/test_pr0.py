@@ -15,15 +15,29 @@ Every seal here exists to make a specific drift class a red build:
   (scripts/test.sh) and .github/workflows/verify.yml, with planted-violation
   deny rows through the REAL Doc constructor.
 - T8/T9 fail-closed AST gates covering bare-name, attribute-qualified and
-  import-aliased constructions; dark-mode detector covering every import
-  spelling; each with deny fixtures.
+  import-aliased constructions; dark-mode detector covering every STATIC
+  import spelling (dynamic `importlib.import_module`/`__import__` string
+  forms are an accepted, recorded scope limit — see
+  ``test_architecture_boundary_dark_mode``); each with deny fixtures.
 - T6: every parametrised seal carries a deny row — checked over the
   COLLECTED items' real param ids.
+
+Every deny in this file names the RULE it seals, never merely the exception
+type: `pytest.raises(..., match=...)` for constructor guards, the
+`_DENY_RULE_MARKERS` substrings for wire halts. A bare
+`pytest.raises(ValueError)` is a vacuous seal — the `_mk_*` helpers build
+many fields at once, so a row can raise for a guard other than the one
+under test and still look green.
+
+Each repaired seal records, in a comment, the MUTATION of the generated
+module that turns it red (seal-repair pass, 2026-08-03). A seal with no
+such mutation is either testing nothing or testing something else.
 """
 
 from __future__ import annotations
 
 import ast
+import copy
 import hashlib
 import json
 import os
@@ -34,9 +48,9 @@ import warnings
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-SCHEMA_DIR = REPO_ROOT / "schema"
 VECTORS_DIR = REPO_ROOT / "tests/boundary/vectors/t19"
 EXPECTED_PATH = REPO_ROOT / "tests/boundary/vectors/t19_expected.json"
 BOUNDARY_DIR = REPO_ROOT / "tests/boundary"
@@ -60,7 +74,11 @@ _EXPECTED = json.loads(EXPECTED_PATH.read_text(encoding="utf-8"))["vectors"]
 # Parametrize decorators run at collection time, before fixtures exist, so
 # the generated module is imported once here for the param lists. Tests
 # still take the `generated` fixture for the assertions themselves.
-sys.path.insert(0, str(REPO_ROOT / "src"))
+# conftest.py already performs this insert; guard it so `src` cannot land on
+# sys.path twice when this module is imported directly.
+_SRC = str(REPO_ROOT / "src")
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
 from claude_dispatcher.boundary import generated as _GEN  # noqa: E402
 
 
@@ -110,26 +128,61 @@ def test_doc_equals_artifact_comparison_fires(tmp_path, monkeypatch, case):
         f"{case}: detected drift does not name {needle!r}: {problems}")
 
 
-def test_ci_citations_job_hard_fails_on_a_missing_peer(schemas):
+def _workflow() -> dict:
+    return yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/verify.yml").read_text(encoding="utf-8"))
+
+
+def test_ci_citations_job_hard_fails_on_a_missing_peer():
     """The claim "CI always requires the peer" must not outrun its
-    enforcement: the citations job may not soft-fail (panel round 4)."""
-    import yaml as _yaml
-    wf = _yaml.safe_load((REPO_ROOT / ".github/workflows/verify.yml").read_text())
-    citations = wf["jobs"]["citations"]["steps"]
-    peer_step = next(s for s in citations
-                     if "checkout" in str(s.get("uses", ""))
-                     and "claude-workflow" in str(s.get("with", {})))
-    assert not peer_step.get("continue-on-error"), (
-        "the peer checkout soft-fails, so the citations-REQUIRED half never "
-        "runs — the job would pass green having checked nothing")
+    enforcement: the citations job may not soft-fail (panel round 4).
+
+    The claim is JOB-wide, so the seal is job-wide: previously it read only
+    the peer-checkout step's continue-on-error, so `continue-on-error: true`
+    on the `make verify` step — or on the job mapping itself — kept it green
+    while the citations-REQUIRED half stopped gating.
+
+    MUTATION (verify.yml, not committed): add `continue-on-error: true` to
+    the "make verify" step ⇒ red; add it to `jobs.citations` ⇒ red; add
+    `if: ${{ needs.gate.result != 'success' }}` to any citations step ⇒ red;
+    delete the peer-checkout step ⇒ red with a sentence, not StopIteration.
+    """
+    wf = _workflow()
+    job = wf["jobs"]["citations"]
+    citations = job["steps"]
+    # the JOB mapping itself must not soft-fail or be conditionally skipped
+    assert not job.get("continue-on-error"), (
+        "jobs.citations.continue-on-error soft-fails the whole job — the "
+        "citations-REQUIRED half would report success having checked nothing")
+    assert "if" not in job, (
+        f"jobs.citations carries a job-level `if:` ({job.get('if')!r}) — the "
+        f"peer-present arm must run unconditionally")
+    # …and no STEP may soft-fail: the `make verify` step is the one that
+    # actually enforces citations.
+    soft = [s.get("name", s.get("uses", "?")) for s in citations
+            if s.get("continue-on-error")]
+    assert not soft, f"citations steps soft-fail: {soft}"
+    peer_step = next((s for s in citations
+                      if "checkout" in str(s.get("uses", ""))
+                      and "claude-workflow" in str(s.get("with", {}))), None)
+    assert peer_step is not None, (
+        "verify.yml's citations job no longer checks out the claude-workflow "
+        "peer — the citations-REQUIRED arm has nothing to resolve against")
     assert any("--probe-peer" in str(s.get("run", "")) for s in citations), (
         "the citations job does not assert the peer actually resolved")
-    assert any("make verify" in str(s.get("run", "")) for s in citations)
-    assert not any(s.get("if", "").strip().endswith("!= 'success'")
-                   for s in citations), "a skip-and-warn path remains"
+    assert any("make verify" in str(s.get("run", "")) for s in citations), (
+        "the citations job no longer runs `make verify` — the "
+        "citations-REQUIRED T26 form is what this job exists for")
+    # skip-and-warn, in EITHER spelling: a bare `x != 'success'` and the
+    # `${{ ... != 'success' }}` expression form (which ends in `}}`, so an
+    # endswith() check could never see it).
+    warn = [s.get("if") for s in citations if "!= 'success'" in str(s.get("if", ""))]
+    assert not warn, f"a skip-and-warn path remains: {warn}"
     # and the doc-local arm runs unconditionally in the other job
     gate = wf["jobs"]["gate"]["steps"]
-    assert any("scripts/test.sh" in str(s.get("run", "")) for s in gate)
+    assert any("scripts/test.sh" in str(s.get("run", "")) for s in gate), (
+        "the gate job no longer runs scripts/test.sh — the peer-ABSENT arm "
+        "of the environment matrix is unexercised in CI")
 
 
 def test_auto_release_deferral_is_a_recorded_cutover_blocker(schemas):
@@ -149,34 +202,53 @@ def test_auto_release_deferral_is_a_recorded_cutover_blocker(schemas):
 def test_ast_gate_schema_lists_cannot_be_silently_emptied(schemas):
     """Both AST gates take their teeth from schema lists nothing asserted:
     emptying `guarded_names`, or adding a module to `door_entrypoints`,
-    left them trivially green (panel round 3, finding 34)."""
+    left them trivially green (panel round 3, finding 34).
+
+    EMPTYING was sealed; WIDENING was not — `allowed_modules` was asserted
+    only truthy and `legacy_exemptions` not at all, so appending a path to
+    either silently exempted that file from the T8/T9 gate. Every list is
+    now pinned element-wise, in order, so widening requires deliberately
+    editing this seal.
+
+    MUTATION (schema/ast_allowlists.yaml, not committed): append
+    `src/claude_dispatcher/orchestrator.py` to t8_construction.
+    allowed_modules ⇒ red; append any path to t8's legacy_exemptions ⇒ red;
+    add a path to t9's legacy_exemptions ⇒ red; append to door_entrypoints
+    ⇒ red (already sealed).
+    """
     allow = schemas["ast_allowlists"]
-    t8 = set(allow["t8_construction"]["guarded_names"])
+    t8 = allow["t8_construction"]
     # the §3.1 closed sum and the §3.2 validated payload — the names the
     # design closes construction over.
-    assert t8 == {"Classification", "ClassifyOutcome", "ClassifyOk",
-                  "ClassifyAbsent", "ClassifyEmpty", "ClassifyFailed"}
-    t9 = set(allow["t9_interpretation"]["guarded_names"])
-    assert t9 == {"MergePlan", "Mergeable", "Unmergeable", "PanelPlan"}
-    for gate in ("t8_construction", "t9_interpretation"):
-        assert allow[gate]["allowed_modules"], f"{gate}: allowlist emptied"
+    assert set(t8["guarded_names"]) == {"Classification", "ClassifyOutcome",
+                                        "ClassifyOk", "ClassifyAbsent",
+                                        "ClassifyEmpty", "ClassifyFailed"}
+    t9 = allow["t9_interpretation"]
+    assert set(t9["guarded_names"]) == {"MergePlan", "Mergeable",
+                                        "Unmergeable", "PanelPlan"}
+    # element-wise, not merely non-empty: the SOLE legal construction site
+    # is the PR2 parse module.
+    assert t8["allowed_modules"] == ["src/claude_dispatcher/boundary/wire.py"]
+    assert t9["allowed_modules"] == [
+        "src/claude_dispatcher/boundary/doors.py",
+        "src/claude_dispatcher/boundary/panel_runner.py",
+        "src/claude_dispatcher/boundary/authority_channels.py"]
+    # the ONE legacy exemption, scoped to exactly the file the schema's own
+    # prose promises it is scoped to (and retired at PR6).
+    assert t8["legacy_exemptions"] == ["src/claude_dispatcher/classification.py"], (
+        "t8 legacy_exemptions widened — the schema's prose promises the "
+        "exemption is scoped to exactly classification.py and retired at PR6")
+    assert t9["legacy_exemptions"] == [], (
+        "t9 has no legacy mirror path; an exemption here exempts a plan "
+        "consumption site from the T9 gate")
     # dark mode: the door allowlist stays EMPTY until PR6 fills it
     assert allow["architecture"]["door_entrypoints"] == [], (
         "door_entrypoints is non-empty — dark mode ends at PR6, not before")
     assert allow["architecture"]["package"] == "claude_dispatcher.boundary"
 
 
-@pytest.mark.parametrize("event_name", [
-    # every row carries its own in-test deny (an out-of-domain value per
-    # declared domain), so the id marks it as such for T6.
-    pytest.param(n, id=f"deny-domain-{n}") for n in sorted(_GEN.SINGLE_EVENTS)
-])
-def test_every_single_event_constructs(generated, schemas, event_name):
-    """8 of 14 §9 singles were never constructed while the docstring claimed
-    all were sealed (panel round 3, finding 33). Every one is now built from
-    its REQUIRED set, and every declared domain gets a deny."""
-    g = generated
-    cls = g.SINGLE_EVENTS[event_name]
+def _single_payload(g, cls) -> tuple[dict, dict]:
+    """(envelope, payload) for one §9 single, built from its REQUIRED set."""
     env = {"schema_major": 1, "schema_minor": 0, "event_id": "e1",
            "ts": "1970-01-01T00:00:00Z", "run_id": "r", "trace_id": "t",
            "protocol_epoch": "E0", "family": cls.FAMILY}
@@ -188,16 +260,80 @@ def test_every_single_event_constructs(generated, schemas, event_name):
     payload = {f: typed.get(f, f) for f in cls.REQUIRED if f not in env}
     for field, domain in cls.DOMAINS.items():
         payload[field] = domain[0]
-    pairs = getattr(cls, "PAIR_RULES", {})
-    for key, rule in pairs.items():
+    for key, rule in getattr(cls, "PAIR_RULES", {}).items():
         allowed = rule["allowed"].get(payload.get(key))
         if allowed:
             payload[rule["field"]] = allowed[0]
+    return env, payload
+
+
+@pytest.mark.parametrize("event_name", [
+    # Every row carries denies that run for EVERY single, not only the six
+    # with a declared domain, so the `deny-` id T6 reads is earned rather
+    # than merely asserted.
+    pytest.param(n, id=f"deny-single-{n}") for n in sorted(_GEN.SINGLE_EVENTS)
+])
+def test_every_single_event_constructs(generated, event_name):
+    """8 of 14 §9 singles were never constructed while the docstring claimed
+    all were sealed (panel round 3, finding 33). Every one is built from its
+    REQUIRED set here.
+
+    The DENY half used to be `for field in cls.DOMAINS: raises(...)` — for
+    the 8 singles whose DOMAINS is empty that loop body never ran, so those
+    rows asserted only that construction succeeds while carrying a `deny-`
+    id T6's name-based checker accepted. The gate was satisfied by
+    labelling. Every row now runs five denies that exist on every single:
+    the family mis-tag guard, both `_validate_field_value` int arms, its
+    ts arm and its non-empty-str arm — plus one per declared domain and one
+    per enum-typed REQUIRED field.
+
+    MUTATIONS (src/claude_dispatcher/boundary/generated/__init__.py, each
+    reverted): delete the per-single `family ... contradicts its schema
+    name` raise ⇒ red on all 14 rows (this is the guard finding 3 reported
+    as dead on every single); `_validate_field_value` int arm →
+    `if False:` ⇒ red; its schema_major-range arm → `if False:` ⇒ red; its
+    ts arm → `if False:` ⇒ red; the non-empty-str arm → `if False:` ⇒ red;
+    a single's `outside the closed domain` raise ⇒ red on that row.
+    """
+    g = generated
+    cls = g.SINGLE_EVENTS[event_name]
+    env, payload = _single_payload(g, cls)
     built = cls(**env, **payload)
     assert built.family == cls.FAMILY
+
+    # deny: a family tag that contradicts the event's own schema name. This
+    # is the §9 guard that halted a base when a single carried the wrong
+    # family; before this row nothing in the suite constructed one.
+    other_family = next(f for f in sorted(g.FAMILY_VALUES) if f != cls.FAMILY)
+    with pytest.raises(ValueError, match="contradicts its schema name"):
+        cls(**dict(env, family=other_family), **payload)
+    # deny: schema_major is an int, never coerced from its wire spelling
+    with pytest.raises(ValueError, match=r"schema_major must be an int"):
+        cls(**dict(env, schema_major="1"), **payload)
+    # deny: an unsupported major halts (§9) rather than being tolerated
+    with pytest.raises(ValueError, match="outside the supported set"):
+        cls(**dict(env, schema_major=99), **payload)
+    # deny: ts is an RFC 3339 UTC instant, checked semantically
+    with pytest.raises(ValueError, match="not an RFC 3339 UTC instant"):
+        cls(**dict(env, ts="1970-13-45T99:00:00Z"), **payload)
+    # deny: a REQUIRED str field is non-empty — "" is absence in disguise
+    with pytest.raises(ValueError, match="must be a non-empty str"):
+        cls(**dict(env, event_id=""), **payload)
+    # deny: one out-of-domain value per declared closed domain
     for field in cls.DOMAINS:
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="outside the closed domain"):
             cls(**env, **dict(payload, **{field: "NOT_IN_DOMAIN"}))
+    # deny: an enum-typed REQUIRED field never coerces its raw wire string
+    # (protocol_genesis's credential_mode/protection_mode are the run-context
+    # enums the whole §0.3 gate turns on).
+    for field in cls.REQUIRED:
+        enum_t = g._ENUM_WIRE_FIELDS.get(field)
+        if enum_t is None:
+            continue
+        raw = payload[field].value
+        with pytest.raises(ValueError,
+                           match=f"must be a {enum_t.__name__} instance"):
+            cls(**env, **dict(payload, **{field: raw}))
 
 
 def test_generated_paths_git_clean():
@@ -222,27 +358,72 @@ def _fsmgen():
     return fsmgen
 
 
-def test_oracle_is_not_an_fsmgen_output():
+def _oracle_independence_problems(outputs, vectors) -> list[str]:
+    """The independent-oracle predicate, in ONE place so the deny arm below
+    exercises the same code the allow arm relies on: fsmgen must not emit
+    the hand-written oracle, and no generated vector may carry its own
+    expectation."""
+    problems = [f"fsmgen writes the oracle {p}" for p in outputs
+                if p == EXPECTED_PATH]
+    problems += [f"{name}: vector carries its own 'expected' key"
+                 for name, vec in vectors.items() if "expected" in vec]
+    return problems
+
+
+def test_oracle_is_not_an_fsmgen_output(monkeypatch):
     """The independent-oracle rule, sealed against fsmgen's REAL output set
     (panel round 2: the previous seal inspected a 1.8KB slice of the source
-    and could not detect generation at all). Three assertions:
-      1. the oracle path is not in build_outputs() — a content-level fact,
-         not a substring guess;
-      2. no generated vector carries an 'expected' key;
-      3. the seal itself is falsifiable — a simulated output set CONTAINING
-         the oracle is detected by the same membership predicate."""
+    and could not detect generation at all).
+
+    The old third assertion — `simulated[EXPECTED_PATH] = b"{}"; assert
+    EXPECTED_PATH in simulated` — was a statement about Python's dict, true
+    regardless of fsmgen, build_outputs or any repo state, so it could not
+    demonstrate the real assertion was non-vacuous. The predicate now lives
+    in `_oracle_independence_problems`, driven here by BOTH arms:
+      1. fsmgen's real output set produces no problems;
+      2. a build_outputs run whose vector emitter is monkeypatched to emit
+         the oracle path DOES produce one — real fsmgen code, real emitter,
+         a genuine falsification.
+
+    MUTATION (tests only — the predicate is the test's): make
+    `_oracle_independence_problems` return [] ⇒ the deny arm goes red.
+    MUTATION (tools/fsmgen.py, not committed): have build_t19_vectors emit a
+    vector named `t19_expected` under VECTORS_DIR.parent ⇒ arm 1 goes red.
+    """
     fsmgen = _fsmgen()
-    outputs = fsmgen.build_outputs(fsmgen.load_schemas())
-    assert EXPECTED_PATH not in outputs, (
-        "fsmgen writes the oracle — the T19 goldens would be self-sealing")
-    for name, vec in _VECTORS.items():
-        assert "expected" not in vec, (
-            f"{name}: vectors are inputs only — expectations live in the "
-            f"hand-written oracle")
-    # deny: the predicate fires when the oracle IS in the output set.
-    simulated = dict(outputs)
-    simulated[EXPECTED_PATH] = b"{}"
-    assert EXPECTED_PATH in simulated, "oracle-independence seal is vacuous"
+    schemas = fsmgen.load_schemas()
+    outputs = fsmgen.build_outputs(schemas)
+    assert not _oracle_independence_problems(outputs, _VECTORS), (
+        "fsmgen writes the oracle, or a vector carries its own expectation "
+        "— the T19 goldens would be self-sealing")
+
+    # deny: run the REAL build_outputs with the vector emitter widened to
+    # emit the oracle's own path, and assert the same predicate fires.
+    real_build = fsmgen.build_t19_vectors
+    oracle_name = EXPECTED_PATH.stem                      # "t19_expected"
+
+    def _emits_the_oracle(fsm):
+        vecs = dict(real_build(fsm))
+        vecs[oracle_name] = {"machine": "section_a", "events": [],
+                             "expected": {"movements": {}}}
+        return vecs
+
+    # EXPECTED_PATH is VECTORS_DIR's PARENT/t19_expected.json: point the
+    # emitter's output dir there so the widened emitter writes exactly the
+    # oracle path, and the real build_outputs assembles the rogue set.
+    monkeypatch.setattr(fsmgen, "VECTORS_DIR", EXPECTED_PATH.parent)
+    monkeypatch.setattr(fsmgen, "build_t19_vectors", _emits_the_oracle)
+    rogue_outputs = fsmgen.build_outputs(schemas)
+    rogue_vectors = _emits_the_oracle(schemas["lifecycle_fsm"])
+    assert EXPECTED_PATH in rogue_outputs, (
+        "the falsification fixture did not put the oracle in the output set")
+    problems = _oracle_independence_problems(rogue_outputs, rogue_vectors)
+    assert any("writes the oracle" in p for p in problems), (
+        "the oracle-independence predicate does not fire on an output set "
+        f"that DOES contain the oracle — the seal is vacuous: {problems}")
+    assert any("'expected' key" in p for p in problems), (
+        "the vector-expectation predicate does not fire on a vector that "
+        f"carries its own expectation — that half is vacuous: {problems}")
 
 
 def test_fsmgen_check_flags_a_generated_oracle(tmp_path, monkeypatch):
