@@ -63,6 +63,16 @@ PINNED_HOLD_ID_SEQ0 = "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8
 PINNED_RECOVERY_ID_M1 = "dd693323dd35ceed8d6339ba871ea2784b81410d51ef5e9940c2dfc883e808c6"
 
 
+def _envelope_kwargs() -> dict:
+    """§9's common envelope, in ONE place. It was hand-rolled at six sites
+    and the copies had already drifted (trace_id was "tr" at one, "t" at
+    two, "trace-1" at three — three spellings of one concept), so adding an
+    envelope field meant editing six literals."""
+    return dict(schema_major=1, schema_minor=0, event_id="e1",
+                ts="1970-01-01T00:00:00Z", run_id="run-1",
+                trace_id="trace-1", protocol_epoch="E0")
+
+
 def load_vectors() -> dict[str, dict]:
     return {p.stem: json.loads(p.read_text(encoding="utf-8"))
             for p in sorted(VECTORS_DIR.glob("*.json"))}
@@ -249,9 +259,7 @@ def test_ast_gate_schema_lists_cannot_be_silently_emptied(schemas):
 
 def _single_payload(g, cls) -> tuple[dict, dict]:
     """(envelope, payload) for one §9 single, built from its REQUIRED set."""
-    env = {"schema_major": 1, "schema_minor": 0, "event_id": "e1",
-           "ts": "1970-01-01T00:00:00Z", "run_id": "r", "trace_id": "t",
-           "protocol_epoch": "E0", "family": cls.FAMILY}
+    env = dict(_envelope_kwargs(), family=cls.FAMILY)
     typed = {"duration_ms": 1,
              "credential_mode": g.CredentialMode.SHARED,
              "protection_mode": g.ProtectionMode.PREVENT,
@@ -566,19 +574,19 @@ def test_singles_exhaustive_and_domain_validated(schemas, generated):
     for v in schemas["lifecycle_fsm"]["events"]["unions"][
             "classification_evaluated"]["variants"]:
         assert f"classification_evaluated/{v['name']}" in generated.SINGLE_EVENTS
-    env = dict(schema_major=1, schema_minor=0, event_id="e1",
-               ts="1970-01-01T00:00:00Z", run_id="r", trace_id="tr",
-               protocol_epoch="E0", family="authorization_granted")
+    env = dict(_envelope_kwargs(), family="authorization_granted")
     ag = generated.SINGLE_EVENTS["authorization_granted"]
     ok = ag(**env, authorization_id="a1", base_key="b", authority="fp",
             kind="AUTO_LOW", assurance="NOT_APPLICABLE", evidence_ref="ev",
             actor="dispatcher")
     assert ok.kind == "AUTO_LOW"
-    with pytest.raises(ValueError):
+    # deny: unknown kind outside the closed domain
+    with pytest.raises(ValueError, match=r"kind: unknown value 'VIBES'"):
         ag(**env, authorization_id="a1", base_key="b", authority="fp",
            kind="VIBES", assurance="NOT_APPLICABLE", evidence_ref="ev",
-           actor="dispatcher")  # deny: unknown kind outside the closed domain
-    with pytest.raises(ValueError):
+           actor="dispatcher")
+    # deny: an empty REQUIRED str is absence in disguise
+    with pytest.raises(ValueError, match=r"assurance must be a non-empty str"):
         ag(**env, authorization_id="a1", base_key="b", authority="fp",
            kind="AUTO_LOW", assurance="", evidence_ref="ev", actor="d")
 
@@ -668,16 +676,17 @@ def test_authorization_granted_kind_assurance_pairs(generated, kind, assurance, 
     value on an automatic grant — the (kind, assurance) pair rule is
     generated from the schema, not left as prose (panel round 2)."""
     ag = generated.SINGLE_EVENTS["authorization_granted"]
-    env = dict(schema_major=1, schema_minor=0, event_id="e1",
-               ts="1970-01-01T00:00:00Z", run_id="r", trace_id="t",
-               protocol_epoch="E0", family="authorization_granted")
+    env = dict(_envelope_kwargs(), family="authorization_granted")
     build = lambda: ag(  # noqa: E731
         **env, authorization_id="a1", base_key="b", authority="fp",
         kind=kind, assurance=assurance, evidence_ref="ev", actor="dispatcher")
     if ok:
         assert build().assurance == assurance
     else:
-        with pytest.raises(ValueError):
+        # pin the PAIR rule: an automatic grant asserting a human-assurance
+        # value must be refused BY that rule, not by an unrelated guard.
+        with pytest.raises(ValueError,
+                           match=rf"kind={kind!r} admits assurance"):
             build()
 
 
@@ -702,9 +711,7 @@ def test_singles_closed_domains_reject_unknown_values(schemas, generated,
     spec = schemas["lifecycle_fsm"]["events"]["singles"][event]
     cls = generated.SINGLE_EVENTS[event]
     assert f"{field}_domain" in spec, f"{event}.{field} has no declared domain"
-    env = dict(schema_major=1, schema_minor=0, event_id="e1",
-               ts="1970-01-01T00:00:00Z", run_id="r", trace_id="t",
-               protocol_epoch="E0", family=event)
+    env = dict(_envelope_kwargs(), family=event)
     payload = {f: f for f in spec["required"]}
     for dom_key, members in spec.items():
         if dom_key.endswith("_domain"):
@@ -712,7 +719,9 @@ def test_singles_closed_domains_reject_unknown_values(schemas, generated,
     if event == "authorization_granted":
         payload["assurance"] = "NOT_APPLICABLE"
     payload[field] = bad
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError,
+                       match=rf"{field}: unknown value {bad!r} outside the "
+                             rf"closed domain"):
         cls(**env, **payload)
     del payload[field]
     assert cls.DOMAINS.get(field), f"{event}.{field} domain not generated"
@@ -731,12 +740,6 @@ def test_durability_partition_is_exclusive_and_total(schemas, generated):
 
 # ─── typed event construction helpers ────────────────────────────────────────
 
-def _envelope_kwargs():
-    return dict(schema_major=1, schema_minor=0, event_id="e1",
-                ts="1970-01-01T00:00:00Z", run_id="run-1",
-                trace_id="trace-1", protocol_epoch="E0")
-
-
 # FIXED values in the schema are enum members on the generated dataclass.
 _ENUM_BY_FIELD = {
     "actor_verification": _GEN.ActorVerification,
@@ -753,9 +756,7 @@ def _wire_effect(generated, variant: str, eid: str, mid: str, frm: str,
     with every §9-required field present."""
     cls = generated.EFFECT_VARIANTS[variant]
     to = frm if cls.TO_STATE == "unchanged" else cls.TO_STATE
-    ev = {"schema_major": 1, "schema_minor": 0, "event_id": eid,
-          "ts": "1970-01-01T00:00:00Z", "run_id": "run-1",
-          "trace_id": "trace-1", "protocol_epoch": "E0",
+    ev = {**_envelope_kwargs(), "event_id": eid,
           "family": cls.FAMILY, "variant": variant,
           "trigger_event": cls.TRIGGER, "movement_id": mid, "base_key": base,
           "from": frm, "to": to, "authority": "fp-1", "epoch_before": "E0",
@@ -899,7 +900,10 @@ def test_actor_verified_auto_evidence_guards(generated, case):
 def test_actor_verified_fixed_values_match_the_schema(schemas, generated):
     """Emptying the schema's `fixed:` must be red, not silently permissive."""
     variants = schemas["lifecycle_fsm"]["events"]["unions"]["hold_lifecycle"]["variants"]
-    spec = next(v for v in variants if v["name"] == "ActorVerifiedAuto")
+    spec = next((v for v in variants if v["name"] == "ActorVerifiedAuto"), None)
+    assert spec is not None, (
+        "the schema no longer declares an ActorVerifiedAuto hold_lifecycle "
+        "variant — the only operator-less release path has vanished")
     assert spec["fixed"] == {"actor_verification": "VERIFIED_API",
                              "disposition": "ACTOR_VERIFIED_AUTO"}
     assert dict(generated.HOLD_VARIANTS["ActorVerifiedAuto"].FIXED) == spec["fixed"]
@@ -1346,9 +1350,12 @@ def test_enum_wire_fields_are_never_coerced_from_a_raw_string(generated):
 def test_section_a_illegal_pairs_raise(generated, state, variant):
     ev = _mk_effect(generated, variant)
     st = generated.MachineStateA(generated.SectionAState[state])
-    with pytest.raises(generated.IllegalTransitionError) as exc:
+    with pytest.raises(generated.IllegalTransitionError,
+                       match=rf"section_a: {state} × {variant}") as exc:
         generated.apply_section_a(st, ev)
     assert exc.value.error.code is generated.BoundaryErrorCode.ILLEGAL_TRANSITION
+    # the pair, not merely the code: (state, event) is what the row denies
+    assert (exc.value.state, exc.value.event) == (state, variant)
 
 
 def _legal_pairs(variants: dict) -> list[tuple[str, str]]:
@@ -1377,7 +1384,11 @@ def test_section_a_apply_dispatch(generated, pair):
             FROM_STATES = ("GENESIS",)
             TO_STATE = "PREPARED"
             TRIGGER = "prepare"
-        with pytest.raises(generated.IllegalTransitionError):
+        # the dispatch is by IDENTITY, not by shape or name: a lookalike
+        # is refused as an unknown variant, not applied.
+        with pytest.raises(generated.IllegalTransitionError,
+                           match=r"section_a: GENESIS × Prepare — unknown "
+                                 r"event variant halts"):
             generated.apply_section_a(st, Prepare())
         return
     cls = generated.EFFECT_VARIANTS[variant]
@@ -1405,7 +1416,9 @@ def test_section_b_apply_dispatch(generated, pair):
             FROM_STATES = ("HELD_FOREIGN",)
             TO_STATE = "HELD_FOREIGN"
             TRIGGER = "observe_delta"
-        with pytest.raises(generated.IllegalTransitionError):
+        with pytest.raises(generated.IllegalTransitionError,
+                           match=r"section_b: HELD_FOREIGN × ObserveDelta — "
+                                 r"unknown event variant halts"):
             generated.apply_section_b(st, ObserveDelta())
         return
     cls = generated.HOLD_VARIANTS[variant]
@@ -1445,9 +1458,11 @@ def test_section_b_illegal_pairs_raise(generated, state, variant):
     # the event is well-formed; only the (state × event) PAIR is illegal.
     ev = _mk_hold(generated, variant, **over)
     st = generated.MachineStateB(generated.SectionBState[state])
-    with pytest.raises(generated.IllegalTransitionError) as exc:
+    with pytest.raises(generated.IllegalTransitionError,
+                       match=rf"section_b: {state} × {variant}") as exc:
         generated.apply_section_b(st, ev)
     assert exc.value.error.code is generated.BoundaryErrorCode.ILLEGAL_TRANSITION
+    assert (exc.value.state, exc.value.event) == (state, variant)
 
 
 # ─── T19 goldens against the hand-written oracle ─────────────────────────────
@@ -1685,12 +1700,20 @@ def _ceiling_events(generated, n: int, base: str = "B1") -> list[dict]:
 
 
 def test_ceiling_exactly_n_is_admitted(generated):
-    """Boundary: exactly N events is admitted (they then fail their own
-    schema checks, but never with RECOVERY_CEILING)."""
+    """Boundary: exactly N events is admitted.
+
+    The docstring used to add "(they then fail their own schema checks, but
+    never with RECOVERY_CEILING)". They fail nothing: `_ceiling_events`
+    emits schema-VALID §9 singles carrying no epoch fields, which is
+    precisely why they isolate the ceiling — the reducers filter them at the
+    family check and the fold finds no edge. The row now asserts the
+    stronger fact it actually holds: NO halts at all.
+    """
     g, n = generated, generated.RECOVERY_CEILING_EVENTS
     for result in (g.reduce_section_a(_ceiling_events(g, n)),
                    g.reduce_section_b(_ceiling_events(g, n))):
-        assert "RECOVERY_CEILING" not in {h["code"] for h in result["halts"].values()}
+        assert result["halts"] == {}, (
+            f"exactly N was not admitted cleanly: {result['halts']}")
     assert g.fold_epochs(_ceiling_events(g, n), {"B1": "E0"})["B1"]["halt"] is None
 
 
@@ -1710,7 +1733,12 @@ def test_ceiling_is_counted_per_base(generated):
     events = _ceiling_events(g, n + 1, "BUSY") + _ceiling_events(g, 3, "QUIET")
     for result in (g.reduce_section_a(events), g.reduce_section_b(events)):
         assert result["halts"]["BUSY"]["code"] == "RECOVERY_CEILING"
-        assert result["halts"].get("QUIET", {}).get("code") != "RECOVERY_CEILING"
+        # "must never halt a quiet one" — NOT halt, not merely "not halted
+        # with this one code". A shared-dedup or misattributed error that
+        # halted QUIET for any other reason satisfied the old assertion.
+        # (The fold arm below already got this right.)
+        assert "QUIET" not in result["halts"], (
+            f"a busy base halted a quiet one: {result['halts'].get('QUIET')}")
     fold = g.fold_epochs(events, {"BUSY": "E0", "QUIET": "E0"})
     assert fold["BUSY"]["halt"]["code"] == "RECOVERY_CEILING"
     assert fold["QUIET"]["halt"] is None
@@ -1762,9 +1790,11 @@ def test_derivations_pinned_goldens(generated):
         PINNED_RECOVERY_ID_M1
     assert g.roster_digest("v1", ["claude", "grok", "codex"], "claude") == \
         PINNED_ROSTER_DIGEST
-    with pytest.raises(ValueError):  # deny: newline breaks injectivity
+    # deny: a newline in a newline-joined preimage breaks injectivity
+    with pytest.raises(ValueError, match=r"newline in preimage component"):
         g.derive_hold_id("base\nref=evil", "r", "o0", "o1", 0)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError,
+                       match=r"newline in roster preimage component"):
         g.roster_digest("v1", ["claude\ngrok"], "claude\ngrok")
 
 
@@ -1850,7 +1880,9 @@ def test_aggregate_rows(generated, case, expected):
     roster = _roster(g)
     intensity, outcomes = _mutate(g, roster, case)
     if expected == "RAISES":
-        with pytest.raises(TypeError):
+        with pytest.raises(TypeError,
+                           match=r"unknown outcome type .* outside the "
+                                 r"closed union"):
             g.aggregate(intensity, roster, outcomes)
         return
     assert g.aggregate(intensity, roster, outcomes) is \
@@ -1866,7 +1898,9 @@ def test_required_seats_rejects_non_members(generated, bad):
     """PanelIntensity is an IntEnum, so a raw 2 compares equal to FULL — a
     non-member must raise, never fall through to the permissive zero-seat
     arm that aggregate maps to NOT_APPLICABLE (panel round 2, finding 4)."""
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError,
+                       match=r"is not a PanelIntensity member — the "
+                             r"intensity domain is closed"):
         generated.required_seats(bad, _roster(generated))
 
 
@@ -1885,9 +1919,13 @@ def test_blocking_predicate_exhaustive(generated):
     assert not g.blocking(g.SeatOutcome(g.SeatVerdict.APPROVE,
                                         (g.Finding(g.Severity.MEDIUM),)))
     assert not g.blocking(g.UnparseableOutcome("x"))  # parse failure ≠ block
-    with pytest.raises(TypeError):  # deny: lookalike is not a member
+    # deny: a structural lookalike is not a member of the closed union
+    with pytest.raises(TypeError,
+                       match=r"unknown seat-outcome type _LookalikeOutcome"):
         g.blocking(_LookalikeOutcome())
-    with pytest.raises(ValueError):  # deny: raw-string verdict never parses
+    # deny: a raw-string verdict never parses into the closed domain
+    with pytest.raises(ValueError,
+                       match=r"verdict must be a SeatVerdict"):
         g.SeatOutcome("BLOCK")
 
 
@@ -1944,10 +1982,16 @@ def test_flipping_the_schema_rule_order_flips_the_behaviour(tmp_path, monkeypatc
     fsmgen = _fsmgen()
     schemas = fsmgen.load_schemas()
     rules = schemas["panel_aggregate"]["aggregate"]["rules"]
-    blocking_i = next(i for i, r in enumerate(rules)
-                      if "any_required_seat_outcome_blocking" in r)
-    missing_i = next(i for i, r in enumerate(rules)
-                     if "outcome_keys_not_exactly_required_seats" in r)
+    blocking_i = next((i for i, r in enumerate(rules)
+                       if "any_required_seat_outcome_blocking" in r), None)
+    missing_i = next((i for i, r in enumerate(rules)
+                      if "outcome_keys_not_exactly_required_seats" in r), None)
+    assert blocking_i is not None, (
+        "panel_aggregate.yaml no longer declares the "
+        "any_required_seat_outcome_blocking rule §5.1 makes unconditional")
+    assert missing_i is not None, (
+        "panel_aggregate.yaml no longer declares the "
+        "outcome_keys_not_exactly_required_seats rule")
     rules[blocking_i], rules[missing_i] = rules[missing_i], rules[blocking_i]
     flipped = fsmgen.module_from_source(fsmgen.build_generated_module(schemas))
     seats = ("claude", "grok", "codex")
@@ -1985,7 +2029,9 @@ def test_roster_snapshot_stores_an_immutable_seat_tuple(generated):
     seats.append("gemini")                        # mutate the original
     assert snap.ordered_seat_ids == ("claude", "grok", "codex"), \
         "the snapshot aliased a caller-owned mutable sequence"
-    with pytest.raises((AttributeError, TypeError)):   # deny: frozen
+    # deny: frozen — the digest binds the field, so it may not be rebound
+    with pytest.raises((AttributeError, TypeError),
+                       match=r"cannot assign to field 'ordered_seat_ids'"):
         snap.ordered_seat_ids = ("x",)
 
 
@@ -2007,61 +2053,150 @@ def test_seat_outcome_stores_an_immutable_findings_tuple(generated):
         g.PanelAggregateResult.BLOCKED
 
 
-def test_subject_digest_and_classifier_authority(generated):
-    """subject_digest()/target_pr()/target_ref()/ClassifierAuthority had zero
-    tests (panel round 3, finding 16). Pinned against independently computed
-    SHA-256s over §9's canonical preimage."""
+# ─── §9 subject digest / classifier authority, as two TABLES ────────────────
+#
+# This was one 55-line function covering six API surfaces with ~20
+# assertions and seven `pytest.raises` blocks — the only >50-line function
+# in the diff. The first failure masked the other twenty and the test id
+# localised nothing. Split, in the shape `_AGGREGATE_ROWS` established 160
+# lines earlier: one table of (input → expected value) and one of
+# (input → expected rejection).
+
+def _req_classifier(g):
+    return g.RequiredClassifier(config_sha256="cfg", producer_digest="prod",
+                                contract="2")
+
+
+def _preimage_digest(*lines: str) -> str:
+    """§9's canonical preimage, computed here rather than by the function
+    under test — an independent second implementation, not a call."""
+    return hashlib.sha256("\n".join(lines).encode()).hexdigest()
+
+
+_SUBJECT_VALUE_ROWS = [
+    ("classifier-line-required", "required:cfg:prod:2"),
+    ("classifier-line-legacy", "legacy"),
+    ("target-pr", "pr:PR_1:refs/heads/main"),
+    ("target-ref", "ref:refs/heads/main"),
+    ("digest-pr-no-unit", None),          # compared against _preimage_digest
+    ("digest-ref-with-unit", None),
+    ("digest-retarget-differs", None),
+    ("fingerprint-keeps-the-union", None),
+]
+
+
+@pytest.mark.parametrize("case,want", [
+    pytest.param(c, w, id=c) for c, w in _SUBJECT_VALUE_ROWS
+] + [pytest.param("deny-digest-is-not-the-retarget", None,
+                  id="deny-retarget-changes-the-digest")])
+def test_subject_digest_values(generated, case, want):
+    """subject_digest()/target_pr()/target_ref()/ClassifierAuthority had
+    zero tests (panel round 3, finding 16). Pinned against independently
+    computed SHA-256s over §9's canonical preimage.
+
+    MUTATION: reorder any component of subject_digest's preimage, or drop
+    the `unit=` line ⇒ the digest rows go red.
+    """
     g = generated
-    req = g.RequiredClassifier(config_sha256="cfg", producer_digest="prod",
-                               contract="2")
-    assert req.line() == "classifier=required:cfg:prod:2".split("=", 1)[1]
-    assert g.LegacyNoClassifier().line() == "legacy"
-    assert g.target_pr("PR_1", "refs/heads/main") == "pr:PR_1:refs/heads/main"
-    assert g.target_ref("refs/heads/main") == "ref:refs/heads/main"
-    want_pr = hashlib.sha256("\n".join([
-        "repo=R_1", "target=pr:PR_1:refs/heads/main", "base=b0", "head=h0",
-        "diff=d0", "classifier=required:cfg:prod:2", "unit=none"]).encode()
-    ).hexdigest()
-    assert g.subject_digest(
-        repo_node_id="R_1", target=g.target_pr("PR_1", "refs/heads/main"),
-        base_oid="b0", head_oid="h0", diff_sha256="d0", classifier=req) == want_pr
-    want_ref_unit = hashlib.sha256("\n".join([
-        "repo=R_1", "target=ref:refs/heads/main", "base=b0", "head=h0",
-        "diff=d0", "classifier=legacy", "unit=u1"]).encode()).hexdigest()
-    assert g.subject_digest(
-        repo_node_id="R_1", target=g.target_ref("refs/heads/main"),
-        base_oid="b0", head_oid="h0", diff_sha256="d0",
-        classifier=g.LegacyNoClassifier(), unit_digest="u1") == want_ref_unit
-    # a retarget of the same PR at the same OIDs changes the digest (§9)
-    assert g.subject_digest(
-        repo_node_id="R_1", target=g.target_pr("PR_1", "refs/heads/release"),
-        base_oid="b0", head_oid="h0", diff_sha256="d0",
-        classifier=req) != want_pr
-    with pytest.raises(ValueError):        # deny: not a ClassifierAuthority
-        g.subject_digest(repo_node_id="R", target="ref:x", base_oid="b",
-                         head_oid="h", diff_sha256="d", classifier="required:x")
-    with pytest.raises(ValueError):        # deny: newline breaks injectivity
-        g.subject_digest(repo_node_id="R\nrepo=evil", target="ref:x",
-                         base_oid="b", head_oid="h", diff_sha256="d",
-                         classifier=req)
-    # deny: the INNER colon separator gets the same treatment — otherwise
-    # target_pr("A:B", "c") and target_pr("A", "B:c") share one preimage.
-    with pytest.raises(ValueError):
-        g.target_pr("A:B", "c")
-    with pytest.raises(ValueError):
-        g.target_pr("A", "B:c")
-    with pytest.raises(ValueError):
-        g.target_ref("refs:heads/main")
-    with pytest.raises(ValueError):
-        g.RequiredClassifier(config_sha256="cfg:x", producer_digest="p",
-                             contract="2")
-    with pytest.raises(ValueError):        # deny: fingerprint needs the union
-        g.AuthorityFingerprint(protocol_epoch="E0", base_epoch="E0",
-                               subject_digest="s", roster_digest="r",
-                               classifier="not-a-variant")
-    assert g.AuthorityFingerprint(protocol_epoch="E0", base_epoch="E0",
-                                  subject_digest="s", roster_digest="r",
-                                  classifier=req).classifier is req
+    req = _req_classifier(g)
+    if case == "classifier-line-required":
+        assert req.line() == want
+    elif case == "classifier-line-legacy":
+        assert g.LegacyNoClassifier().line() == want
+    elif case == "target-pr":
+        assert g.target_pr("PR_1", "refs/heads/main") == want
+    elif case == "target-ref":
+        assert g.target_ref("refs/heads/main") == want
+    elif case == "digest-pr-no-unit":
+        assert g.subject_digest(
+            repo_node_id="R_1", target=g.target_pr("PR_1", "refs/heads/main"),
+            base_oid="b0", head_oid="h0", diff_sha256="d0",
+            classifier=req) == _preimage_digest(
+                "repo=R_1", "target=pr:PR_1:refs/heads/main", "base=b0",
+                "head=h0", "diff=d0", "classifier=required:cfg:prod:2",
+                "unit=none")
+    elif case == "digest-ref-with-unit":
+        assert g.subject_digest(
+            repo_node_id="R_1", target=g.target_ref("refs/heads/main"),
+            base_oid="b0", head_oid="h0", diff_sha256="d0",
+            classifier=g.LegacyNoClassifier(),
+            unit_digest="u1") == _preimage_digest(
+                "repo=R_1", "target=ref:refs/heads/main", "base=b0",
+                "head=h0", "diff=d0", "classifier=legacy", "unit=u1")
+    elif case in ("digest-retarget-differs", "deny-digest-is-not-the-retarget"):
+        # §9: a retarget of the SAME PR at the SAME OIDs is a different
+        # subject — the digest must move.
+        base = dict(repo_node_id="R_1", base_oid="b0", head_oid="h0",
+                    diff_sha256="d0", classifier=req)
+        main = g.subject_digest(target=g.target_pr("PR_1", "refs/heads/main"),
+                                **base)
+        release = g.subject_digest(
+            target=g.target_pr("PR_1", "refs/heads/release"), **base)
+        assert main != release, (
+            "retargeting a PR left the subject digest unchanged — two "
+            "distinct review subjects share one key")
+    else:
+        assert g.AuthorityFingerprint(
+            protocol_epoch="E0", base_epoch="E0", subject_digest="s",
+            roster_digest="r", classifier=req).classifier is req
+
+
+_SEP = r"contains the ':' separator"
+
+
+@pytest.mark.parametrize("case,match", [
+    pytest.param("classifier-not-a-variant",
+                 r"classifier must be a ClassifierAuthority variant",
+                 id="deny-subject-digest-classifier-is-not-a-variant"),
+    pytest.param("newline-in-component", r"newline in preimage component",
+                 id="deny-subject-digest-newline"),
+    pytest.param("colon-in-pr-node-id", rf"pr_node_id='A:B' {_SEP}",
+                 id="deny-colon-in-pr-node-id"),
+    pytest.param("colon-in-target-ref", rf"target_ref='B:c' {_SEP}",
+                 id="deny-colon-in-target-ref-of-target-pr"),
+    pytest.param("colon-in-ref", rf"ref='refs:heads/main' {_SEP}",
+                 id="deny-colon-in-target-ref"),
+    pytest.param("colon-in-config-sha", rf"config_sha256='cfg:x' {_SEP}",
+                 id="deny-colon-in-required-classifier"),
+    pytest.param("fingerprint-classifier-not-a-variant",
+                 r"classifier must be a ClassifierAuthority variant",
+                 id="deny-fingerprint-classifier-is-a-string"),
+])
+def test_subject_digest_rejections(generated, case, match):
+    """One row per §9 rejection rule, each naming the rule it seals. The
+    inner ':' separator gets the same injectivity treatment as the newline:
+    without it target_pr("A:B", "c") and target_pr("A", "B:c") share one
+    preimage, so two distinct subjects would collide.
+
+    MUTATION: delete the ':' check from target_pr ⇒ the two colon-in-target
+    rows go red; delete the newline check from the preimage builder ⇒ the
+    newline row goes red; make subject_digest accept a str classifier ⇒ the
+    first row goes red.
+    """
+    g = generated
+    req = _req_classifier(g)
+    with pytest.raises(ValueError, match=match):
+        if case == "classifier-not-a-variant":
+            g.subject_digest(repo_node_id="R", target="ref:x", base_oid="b",
+                             head_oid="h", diff_sha256="d",
+                             classifier="required:x")
+        elif case == "newline-in-component":
+            g.subject_digest(repo_node_id="R\nrepo=evil", target="ref:x",
+                             base_oid="b", head_oid="h", diff_sha256="d",
+                             classifier=req)
+        elif case == "colon-in-pr-node-id":
+            g.target_pr("A:B", "c")
+        elif case == "colon-in-target-ref":
+            g.target_pr("A", "B:c")
+        elif case == "colon-in-ref":
+            g.target_ref("refs:heads/main")
+        elif case == "colon-in-config-sha":
+            g.RequiredClassifier(config_sha256="cfg:x", producer_digest="p",
+                                 contract="2")
+        else:
+            g.AuthorityFingerprint(protocol_epoch="E0", base_epoch="E0",
+                                   subject_digest="s", roster_digest="r",
+                                   classifier="not-a-variant")
 
 
 def test_schema_declared_preimages_bind_to_the_code(schemas, generated):
@@ -2372,7 +2507,8 @@ _FRAME_CASES = json.loads((FRAMES_DIR / "vectors.json").read_text())["cases"]
 ])
 def test_classifier_frame_vectors(schemas, case):
     proto = schemas["classifier_protocol"]
-    entry = next(c for c in _FRAME_CASES if c["name"] == case)
+    entry = next((c for c in _FRAME_CASES if c["name"] == case), None)
+    assert entry is not None, f"frame vector {case!r} vanished from the index"
     blob = (FRAMES_DIR / entry["file"]).read_bytes()
     assert hashlib.sha256(blob).hexdigest() == entry["sha256"]
     if entry["expect"] == "accept":
@@ -2482,12 +2618,25 @@ def test_environment_matrix_peer_present():
 def test_t26_lint_green_on_checked_in_docs():
     """Green in EITHER environment: the seal consumes the same peer
     predicate scripts/test.sh does, so a dispatched worktree without the
-    peer checkout is not reddened by a gate documented as peer-optional."""
+    peer checkout is not reddened by a gate documented as peer-optional.
+
+    The downgrade to --no-citations used to be SILENT: `_run` captures the
+    child's "DEGRADED / citations SKIPPED" stderr and pytest prints nothing
+    for a passing test, so a degraded run was byte-identical in output to a
+    full-coverage one. It now warns, the way the AST gate's degraded arm
+    already does (the repo runs with -ra, so warnings reach the summary).
+    """
     lint = _lint()
-    args = ["tools/t26_lint.py"] if lint.peer_available() \
+    peer = lint.peer_available()
+    args = ["tools/t26_lint.py"] if peer \
         else ["tools/t26_lint.py", "--no-citations"]
     proc = _run(args)
     assert proc.returncode == 0, f"t26_lint failed:\n{proc.stdout}{proc.stderr}"
+    if not peer:
+        warnings.warn(
+            "t26 seal DEGRADED — no claude-workflow peer checkout, so the "
+            "citations half of the doc lint was not exercised here (CI's "
+            "citations job covers that arm)", stacklevel=2)
 
 
 def _planted_doc(lint, tmp_path: Path, mutate) -> object:
@@ -2505,41 +2654,41 @@ _ANCHOR = "## 5. Panel decision"
 @pytest.mark.parametrize("check_name,planted_line,expect", [
     pytest.param("check_retired",
                  "The machine uses AuthoritySnapshot here.",
-                 "retired-name: line 152 (§5): `AuthoritySnapshot`",
+                 "retired-name: line {line} (§5): `AuthoritySnapshot`",
                  id="deny-retired-live-use"),
     pytest.param("check_retired",
                  "The deleted disposition path uses MOVED_TO_HOLD as a live"
                  " mechanism.",
-                 "retired-name: line 152 (§5): `MOVED_TO_HOLD`",
+                 "retired-name: line {line} (§5): `MOVED_TO_HOLD`",
                  id="deny-retired-hides-behind-domain-words"),
     pytest.param("check_retired",
                  "Every disposition here is deleted after FOREIGN_OBSERVED"
                  " fires in the reduce.",
-                 "retired-name: line 152 (§5): `FOREIGN_OBSERVED`",
+                 "retired-name: line {line} (§5): `FOREIGN_OBSERVED`",
                  id="deny-retired-foreign-observed-domain-words"),
     pytest.param("check_retired",
                  "A deleted disposition writes integrity_hold events on"
                  " every transition.",
-                 "retired-name: line 152 (§5): `integrity_hold`",
+                 "retired-name: line {line} (§5): `integrity_hold`",
                  id="deny-retired-integrity-hold-domain-words"),
     pytest.param("check_retired",
                  "The wire carries request_id on each deleted disposition"
                  " row.",
-                 "retired-name: line 152 (§5): `request_id`",
+                 "retired-name: line {line} (§5): `request_id`",
                  id="deny-retired-request-id-domain-words"),
     pytest.param("check_section_refs", "See §99.9 for details.",
-                 "§-ref: line 152: §99.9 unresolved",
+                 "§-ref: line {line}: §99.9 unresolved",
                  id="deny-unresolved-section-ref"),
     pytest.param("check_mutations",
                  "Appends use `createCommitOnBranch` again.",
                  "mutation-once: `createCommitOnBranch` bound 2 times",
                  id="deny-second-mutation-binding"),
     pytest.param("check_t_index", "T99 seals this.",
-                 "T-index: T99 (cited at line 152) has 0 §10 rows",
+                 "T-index: T99 (cited at line {line}) has 0 §10 rows",
                  id="deny-t-without-index-row"),
     pytest.param("check_field_lists",
                  "`seat_result{roster_digest}` again.",
-                 "field-list-once: `seat_result{...}` appears 2 times",
+                 "field-list-once: `seat_result{{...}}` appears 2 times",
                  id="deny-second-field-list"),
     pytest.param("check_citations",
                  "See orchestrator.py:999999 for the branch.",
@@ -2553,22 +2702,71 @@ def test_t26_lint_planted_violations_fire(tmp_path, check_name, planted_line,
     including retired names hiding behind the domain words 'disposition'
     and 'deleted'. The assertion names the SPECIFIC violation, so an
     environment error (or an unrelated check firing) cannot masquerade as
-    the plant being caught (panel round 2, finding 39)."""
+    the plant being caught (panel round 2, finding 39).
+
+    Two repairs (seal-repair pass):
+
+    (1) The expectations embedded the ABSOLUTE line number 152, derived
+    from where `## 5. Panel decision` happens to sit in a 635-line doc.
+    Any insertion above §5 turned all ten rows red with a message reading
+    "the lint stopped catching X" rather than "the doc moved". The number
+    is now COMPUTED from the planted text's own index in the copy, so the
+    rows keep the specificity finding 39 asked for and survive doc edits.
+    MUTATION: insert a line anywhere above §5 in the design doc ⇒ still
+    green (it used to go red); delete the retired-name check's line-number
+    component ⇒ red.
+
+    (2) The `check_citations` row was the only one that did not consult
+    `lint.peer_available()`. Without the claude-workflow peer,
+    check_citations returns after appending only the "peer checkout
+    ABSENT" diagnostic, so `assert errors` passed but the specific-message
+    assertion failed — taking the whole `pytest tests/` run down in the
+    peer-ABSENT environment this PR documents, pins, and runs as CI's
+    `gate` job (and which every dispatched worktree sees). The row now
+    asserts the ABSENT diagnostic in that arm, so BOTH arms of the
+    environment matrix exercise the check.
+    MUTATION: make `check_citations` return without appending anything
+    when the peer is absent ⇒ red in the peer-absent arm.
+    """
     lint = _lint()
-    doc = _planted_doc(lint, tmp_path,
-                       lambda text: text.replace(
-                           _ANCHOR, _ANCHOR + "\n" + planted_line))
+    planted_text = None
+
+    def _plant(text: str) -> str:
+        nonlocal planted_text
+        planted_text = text.replace(_ANCHOR, _ANCHOR + "\n" + planted_line)
+        return planted_text
+
+    doc = _planted_doc(lint, tmp_path, _plant)
+    # 1-based line number of the planted line in the COPY the check reads.
+    lines = planted_text.splitlines()
+    line_no = lines.index(planted_line) + 1
+    assert lines[line_no - 2] == _ANCHOR, (
+        "the plant did not land immediately after the §5 anchor")
+    want = expect.format(line=line_no)
+
     errors: list[str] = []
     getattr(lint, check_name)(doc, errors)
     assert errors, f"{check_name} is vacuous — planted violation not flagged"
-    assert any(expect in e for e in errors), (
+    if check_name == "check_citations" and not lint.peer_available():
+        # peer-ABSENT arm: the check cannot resolve a citation at all, so
+        # what it MUST do is say so — never pass silently, and never redden
+        # a documented first-class environment.
+        assert any("ABSENT" in e for e in errors), (
+            "with the peer absent, check_citations neither resolved the "
+            f"citation nor reported the absence: {errors}")
+        warnings.warn(
+            "t26 planted-violation seal DEGRADED — no claude-workflow peer, "
+            "so the citations half asserts only the ABSENT diagnostic",
+            stacklevel=2)
+        return
+    assert any(want in e for e in errors), (
         f"{check_name} fired, but not for the planted violation.\n"
-        f"expected a message containing: {expect!r}\ngot: {errors}")
+        f"expected a message containing: {want!r}\ngot: {errors}")
     # the clean doc must NOT produce this violation — proving the plant, and
     # not the document itself, is what the check reacted to.
     clean: list[str] = []
     getattr(lint, check_name)(lint.Doc(lint.DESIGN), clean)
-    assert not any(expect in e for e in clean), (
+    assert not any(want in e for e in clean), (
         f"{check_name}: the checked-in doc already trips this message")
 
 
@@ -2594,8 +2792,44 @@ def test_t26_lint_supersession_and_plan_tmap_falsified(tmp_path, monkeypatch):
 
 # ─── T8/T9 fail-closed AST gates ─────────────────────────────────────────────
 
+# Shipped python OUTSIDE the package is production too: tools/ already
+# imports claude_dispatcher (tools/retroactive_sweep.py, tools/
+# cross_family_panel.py), so a pre-PR6 `from claude_dispatcher.boundary
+# import generated` there — or a construction of a guarded name — was
+# invisible to both AST gates while the seals' docstrings said "any
+# production import". scripts/ is included on the same reasoning.
+_SCANNED_ROOTS = ("src/claude_dispatcher", "tools", "scripts")
+
+
 def _production_modules() -> list[Path]:
-    return sorted((REPO_ROOT / "src/claude_dispatcher").rglob("*.py"))
+    """Every shipped .py the T8/T9 and dark-mode gates scan. tests/ is
+    excluded by construction (the boundary package is test-importable until
+    PR6); tools/fsmgen.py is NOT excluded — it names the generated path as a
+    STRING, which no AST scanner here matches."""
+    mods: list[Path] = []
+    for root in _SCANNED_ROOTS:
+        base = REPO_ROOT / root
+        if base.is_dir():
+            mods += base.rglob("*.py")
+    return sorted(mods)
+
+
+def test_the_ast_gates_scan_the_whole_shipped_surface():
+    """deny: the scanned-path set is itself a seal. Narrowing it back to
+    src/claude_dispatcher (as it was) silently exempts tools/ and scripts/
+    from both AST gates.
+
+    MUTATION: drop "tools" from _SCANNED_ROOTS ⇒ red.
+    """
+    scanned = _production_modules()
+    roots = {str(REPO_ROOT / r) for r in _SCANNED_ROOTS}
+    assert roots == {str(REPO_ROOT / "src/claude_dispatcher"),
+                     str(REPO_ROOT / "tools"), str(REPO_ROOT / "scripts")}
+    for root in ("src/claude_dispatcher", "tools"):
+        assert any((REPO_ROOT / root) in m.parents for m in scanned), (
+            f"{root}/ is shipped python but no module under it is scanned")
+    assert not any("/tests/" in str(m) for m in scanned), (
+        "tests/ is inside the scan — boundary/ is test-importable until PR6")
 
 
 def _guarded_aliases(tree: ast.AST, guarded: set[str]) -> dict[str, str]:
@@ -2688,15 +2922,25 @@ def test_ast_allowlists_fail_closed(schemas, tmp_path, gate):
 
 # ─── architecture skeleton: dark mode ────────────────────────────────────────
 
+_BOUNDARY_PKG = "claude_dispatcher.boundary"
+
+
+def _is_boundary_module(name: str) -> bool:
+    """The package itself or a submodule of it — NOT a sibling whose name
+    merely starts with the same characters (`claude_dispatcher.boundary_
+    breaker` is a different package, and flagging it would make the gate
+    report a violation that does not exist)."""
+    return name == _BOUNDARY_PKG or name.startswith(_BOUNDARY_PKG + ".")
+
+
 def _plain_import_hits(node: ast.Import) -> list[str]:
-    return [a.name for a in node.names
-            if a.name.startswith("claude_dispatcher.boundary")]
+    return [a.name for a in node.names if _is_boundary_module(a.name)]
 
 
 def _from_import_hits(node: ast.ImportFrom) -> list[str]:
     mod = node.module or ""
     names = {a.name for a in node.names}
-    if mod.startswith("claude_dispatcher.boundary"):
+    if _is_boundary_module(mod):
         return [mod]
     if mod == "claude_dispatcher" and "boundary" in names:
         return ["claude_dispatcher.boundary"]
@@ -2729,21 +2973,59 @@ _IMPORT_SPELLINGS = {
 }
 
 
+# Spellings the detector must NOT flag. A false positive is not a harmless
+# extra: it reports a dark-mode violation that does not exist, and the fix
+# for it is to weaken the detector.
+_INNOCENT_SPELLINGS = {
+    "sibling-package": "import claude_dispatcher.boundary_breaker\n",
+    "sibling-from": "from claude_dispatcher.boundary_breaker import x\n",
+    "unrelated": "from claude_dispatcher import risk\n",
+    "boundary-named-attribute": "x = obj.boundary\n",
+}
+
+
 @pytest.mark.parametrize("case", [
     pytest.param("live", id="no-production-import-while-allowlist-empty"),
     *[pytest.param(f"deny:{s}", id=f"deny-detector-sees-{s}")
       for s in sorted(_IMPORT_SPELLINGS)],
+    *[pytest.param(f"innocent:{s}", id=f"deny-detector-ignores-{s}")
+      for s in sorted(_INNOCENT_SPELLINGS)],
 ])
 def test_architecture_boundary_dark_mode(schemas, case):
     """boundary/ is importable from tests only until PR6; the door
-    allowlist is empty and this harness fails on any production import, in
-    any spelling (plan §1 — dark mode; PR6 fills the allowlist)."""
+    allowlist is empty and this harness fails on any production import.
+
+    SCOPE, stated because the module docstring used to claim "every import
+    spelling": the detector reads STATIC import syntax — the seven forms in
+    `_IMPORT_SPELLINGS`, each with its own deny row. A dynamic
+    `importlib.import_module("claude_dispatcher.boundary")` or
+    `__import__(...)` is NOT detected. That is the accepted limit recorded
+    in schema/ast_allowlists.yaml's architecture block: the threat is
+    honest misconfiguration, not evasion (§0.1 puts a determined local
+    actor out of scope), and PR6 removes the question by filling
+    door_entrypoints.
+
+    The prefix test was `startswith("claude_dispatcher.boundary")`, which
+    also flags a sibling package named `claude_dispatcher.boundary_breaker`
+    — the `innocent:` rows pin that it does not.
+
+    MUTATION: `_is_boundary_module` → `name.startswith(_BOUNDARY_PKG)`
+    ⇒ the sibling-package rows go red; → `return False` ⇒ all seven
+    `deny-detector-sees-*` rows go red.
+    """
     arch = schemas["ast_allowlists"]["architecture"]
     if case.startswith("deny:"):
         spelling = case.split(":", 1)[1]
         tree = ast.parse(_IMPORT_SPELLINGS[spelling])
         assert _imports_boundary(tree), (
             f"architecture detector is vacuous for the {spelling} spelling")
+        return
+    if case.startswith("innocent:"):
+        spelling = case.split(":", 1)[1]
+        tree = ast.parse(_INNOCENT_SPELLINGS[spelling])
+        assert not _imports_boundary(tree), (
+            f"architecture detector FALSELY flags the {spelling} spelling — "
+            f"a violation that does not exist")
         return
     allowlist = {REPO_ROOT / m for m in arch["door_entrypoints"]}
     boundary_pkg = REPO_ROOT / "src/claude_dispatcher/boundary"
@@ -2772,14 +3054,29 @@ def _seals_missing_deny(seal_ids: dict[tuple[str, str], list[str]]) -> list[str]
 def test_t6_every_parametrized_seal_has_a_deny_row(request):
     """Collection-time T6: walk the ACTUAL collected items' param ids —
     dynamically built param lists included — and fail any parametrised seal
-    in tests/boundary without a deny row (design §12 harness rules)."""
+    in tests/boundary without a deny row.
+
+    Design §12 states the rule UNSCOPED ("every parametrised seal includes
+    ≥1 deny row (T6)"); this checker enforces it over tests/boundary,
+    including subpackages — the boundary seals PR0 owns. Widening it to the
+    whole suite (ten non-boundary modules carry @parametrize) is deferred;
+    the plan lists T6 as "PR0, permanent".
+    """
+    # The checker reads the whole COLLECTED session, so any partial
+    # selection (-k / -m / --deselect / an explicit nodeid) makes its input
+    # a fragment: `pytest -k "t6_every_parametrized or required_seats_full"`
+    # used to FAIL with "assert {}" — the wrong reason entirely. A filtered
+    # run skips; a full run keeps the hard failure.
+    opt = request.config.option
+    filtered = bool(getattr(opt, "keyword", "") or getattr(opt, "markexpr", "")
+                    or getattr(opt, "deselect", None)
+                    or getattr(opt, "last_failed", False))
     seal_ids: dict[tuple[str, str], list[str]] = {}
     for item in request.session.items:
         if not isinstance(item, pytest.Function):
             continue
         fspath = Path(str(item.fspath))
-        # design §12 states the rule over tests/boundary AS A WHOLE — a seal
-        # placed in a subpackage must not escape it (panel round 2).
+        # a seal placed in a subpackage must not escape the check
         if BOUNDARY_DIR not in fspath.parents:
             continue
         callspec = getattr(item, "callspec", None)
@@ -2787,6 +3084,10 @@ def test_t6_every_parametrized_seal_has_a_deny_row(request):
             continue
         seal_ids.setdefault((fspath.name, item.originalname),
                             []).append(callspec.id)
+    if filtered:
+        pytest.skip("T6 reads the whole collected session; this run is "
+                    "filtered (-k/-m/--deselect/--lf) so its input is a "
+                    "fragment — run the full suite for the T6 gate")
     assert seal_ids, "T6: no parametrised seals collected — checker misfiring"
     missing = _seals_missing_deny(seal_ids)
     assert not missing, ("T6 (design §12): parametrised seals without a deny "
