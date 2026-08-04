@@ -2490,6 +2490,15 @@ def _edge_history(prefix: str, base: str) -> list[dict]:
                  movement_id=mid)]
 
 
+# Test-owned ANCHORS. A protocol_genesis anchor becomes the base's harvested
+# fence — AuthorityFingerprint.base_epoch — so the fold validates its SHAPE
+# (lowercase 40-hex), not merely its nullity. These fixtures carried "E0",
+# which the fold now refuses; naming them stops the placeholder creeping
+# back and makes it obvious that an anchor is an OBJECT ID, not a label.
+ANCHOR_A = "0" * 40
+ANCHOR_B = "1" * 40
+
+
 def _ceiling_events(generated, n: int, base: str = "B1") -> list[dict]:
     """Minimally SCHEMA-VALID events (the fold now runs the same §9 checks
     as the reducers, so a bare dict would halt as a schema violation and
@@ -2500,6 +2509,105 @@ def _ceiling_events(generated, n: int, base: str = "B1") -> list[dict]:
     return [{"event_id": f"{base}-e{i}", "base_key": base, "schema_major": 1,
              "schema_minor": 0, "family": "seat_result"}
             for i in range(n)]
+
+
+@pytest.mark.parametrize("anchor,expect", [
+    pytest.param("a" * 40, None, id="valid-lowercase-40-hex"),
+    pytest.param(None, "no protocol_genesis epoch",
+                 id="deny-anchor-is-none"),
+    pytest.param("not-an-oid", "of type str", id="deny-anchor-is-free-text"),
+    pytest.param("", "of type str", id="deny-anchor-is-empty"),
+    pytest.param("A" * 40, "of type str", id="deny-anchor-is-uppercase-hex"),
+    pytest.param("a" * 39, "of type str", id="deny-anchor-is-39-hex"),
+    pytest.param(7, "of type int", id="deny-anchor-is-an-int"),
+    pytest.param(True, "of type bool", id="deny-anchor-is-a-bool"),
+    pytest.param(1.5, "of type float", id="deny-anchor-is-a-float"),
+])
+def test_anchor_shape_at_the_fence(generated, anchor, expect):
+    """A protocol_genesis anchor BECOMES the base's harvested fence on the ok
+    path, and that value IS `AuthorityFingerprint.base_epoch` — the thing
+    §6.0's authority check compares byte-for-byte. So the anchor obeys the
+    same shape rule as an edge fence: lowercase 40-hex, validated, never
+    coerced. Anything else is malformed input and halts EPOCH_GAP.
+
+    I reported this hole in the previous pass and deliberately did NOT seal
+    it: with the bug live, the only assertions available were "ok with free
+    text" (ratifying it) or a red test. It is fixed, so it is sealed.
+
+    Uppercase 40-hex is refused ON PURPOSE: the fence is compared for
+    equality, so `A…` and `a…` are two different fences for one commit, and
+    accepting both would make the comparison depend on which writer wrote.
+
+    This rule is UNSEALED without this test — measured, not assumed:
+    reverting `not _valid_oid(anchor)` to `anchor is None` in
+    `_ReduceState._walk_epochs` leaves the whole boundary suite GREEN (0
+    failures, with the three generated-integrity seals deselected since any
+    edit to the generated module trips those). The two ceiling fixtures that
+    were red merely tripped over the fix; they did not seal it.
+
+    MUTATION: `if base in self.anchors and not _valid_oid(anchor):` →
+    `... and anchor is None:` ⇒ every deny row except deny-anchor-is-none
+    goes red.
+    MUTATION: drop the `missing` branch so the None case reports the
+    not-an-object-id wording ⇒ deny-anchor-is-none goes red.
+    """
+    g = generated
+    entry = g.fold_epochs([], {"B1": anchor})["B1"]
+    if expect is None:
+        assert entry["status"] == "ok", entry
+        assert entry["halt"] is None
+        assert entry["epoch"] == anchor
+        return
+    assert entry["status"] == "halt", (
+        f"anchor {anchor!r} was accepted as a fence — it would flow into "
+        f"AuthorityFingerprint.base_epoch uncoerced")
+    assert entry["epoch"] is None, (
+        "a refused anchor must not be presented as the harvested fence")
+    halt = entry["halt"]
+    assert halt["code"] == "EPOCH_GAP", halt
+    # the detail names the BASE and the offending value/type — the 3am test
+    assert halt["detail"].startswith("B1: "), halt["detail"]
+    assert expect in halt["detail"], halt["detail"]
+    if anchor is not None:
+        assert "is not an object id" in halt["detail"], halt["detail"]
+        assert "never coerced" in halt["detail"], halt["detail"]
+
+
+def test_ceiling_halt_wins_over_anchor_shape(generated):
+    """The ORDERING the ceiling fixtures rely on, asserted deliberately
+    instead of relied on accidentally: a base carrying BOTH a recovery-
+    ceiling breach AND a malformed anchor reports the CEILING.
+
+    That is the right precedence — the ceiling is the operator-actionable
+    cause (too much history for one base), and a base whose reduce was
+    refused outright has no fence to validate. But it also MASKS anchor
+    validation, which is exactly why three ceiling fixtures carried the
+    invalid anchor "E0" and passed: `test_ceiling_n_plus_one_halts`,
+    `test_ceiling_is_counted_per_base`'s BUSY arm and
+    `test_ceiling_with_partial_anchors_keeps_edge_bearing_bases`. Every one
+    now uses a real object id, and this seal owns the masking.
+
+    MUTATION: move the `if base in self.halts:` arm of `_walk_epochs` BELOW
+    the anchor-shape arm ⇒ red (the base would report the anchor complaint
+    and the ceiling breach would be invisible).
+    """
+    g = generated
+    n = g.RECOVERY_CEILING_EVENTS
+    breached = _ceiling_events(g, n + 1, "BUSY")
+    entry = g.fold_epochs(breached, {"BUSY": "E0"})["BUSY"]
+    assert entry["status"] == "halt"
+    assert entry["halt"]["code"] == "RECOVERY_CEILING", (
+        f"the anchor complaint pre-empted the ceiling breach: {entry['halt']}")
+    assert "is not an object id" not in entry["halt"]["detail"]
+    # …and with a VALID anchor the same base reports the same cause, so the
+    # ceiling result does not depend on the anchor at all.
+    assert g.fold_epochs(breached, {"BUSY": ANCHOR_A})["BUSY"]["halt"]["code"] \
+        == "RECOVERY_CEILING"
+    # …while a healthy base with the SAME malformed anchor does report it —
+    # proof the masking is the halt's doing, not a dropped check.
+    quiet = g.fold_epochs(_ceiling_events(g, 3, "QUIET"), {"QUIET": "E0"})
+    assert quiet["QUIET"]["halt"]["code"] == "EPOCH_GAP"
+    assert "is not an object id" in quiet["QUIET"]["halt"]["detail"]
 
 
 def test_ceiling_exactly_n_is_admitted(generated):
@@ -2517,7 +2625,13 @@ def test_ceiling_exactly_n_is_admitted(generated):
                    g.reduce_section_b(_ceiling_events(g, n))):
         assert result["halts"] == {}, (
             f"exactly N was not admitted cleanly: {result['halts']}")
-    assert g.fold_epochs(_ceiling_events(g, n), {"B1": "E0"})["B1"]["halt"] is None
+    # the fold arm is the ONLY one of the ceiling seals whose anchor is
+    # actually examined (no per-base halt masks it), so it is the one that
+    # needs a real object id — see test_ceiling_halt_wins_over_anchor_shape
+    # for why the others passed while carrying "E0".
+    fold = g.fold_epochs(_ceiling_events(g, n), {"B1": ANCHOR_A})["B1"]
+    assert fold["halt"] is None, fold["halt"]
+    assert fold["status"] == "ok" and fold["epoch"] == ANCHOR_A
 
 
 def test_ceiling_n_plus_one_halts(generated):
@@ -2526,7 +2640,7 @@ def test_ceiling_n_plus_one_halts(generated):
     for result in (g.reduce_section_a(_ceiling_events(g, n + 1)),
                    g.reduce_section_b(_ceiling_events(g, n + 1))):
         assert result["halts"]["B1"]["code"] == "RECOVERY_CEILING"
-    fold = g.fold_epochs(_ceiling_events(g, n + 1), {"B1": "E0"})
+    fold = g.fold_epochs(_ceiling_events(g, n + 1), {"B1": ANCHOR_A})
     assert fold["B1"]["halt"]["code"] == "RECOVERY_CEILING"
 
 
@@ -2542,9 +2656,13 @@ def test_ceiling_is_counted_per_base(generated):
         # (The fold arm below already got this right.)
         assert "QUIET" not in result["halts"], (
             f"a busy base halted a quiet one: {result['halts'].get('QUIET')}")
-    fold = g.fold_epochs(events, {"BUSY": "E0", "QUIET": "E0"})
+    # DISTINCT anchors: one shared value could not tell "each base kept its
+    # own fence" from "both read the same one".
+    fold = g.fold_epochs(events, {"BUSY": ANCHOR_A, "QUIET": ANCHOR_B})
     assert fold["BUSY"]["halt"]["code"] == "RECOVERY_CEILING"
-    assert fold["QUIET"]["halt"] is None
+    assert fold["QUIET"]["halt"] is None, fold["QUIET"]["halt"]
+    assert fold["QUIET"]["epoch"] == ANCHOR_B, (
+        "the quiet base did not harvest its OWN anchor")
 
 
 def test_ceiling_with_empty_anchors_still_halts(generated):
@@ -2562,7 +2680,7 @@ def test_ceiling_with_partial_anchors_keeps_edge_bearing_bases(generated):
     g, n = generated, generated.RECOVERY_CEILING_EVENTS
     other = _edge_history("o1", "OTHER")
     fold = g.fold_epochs(_ceiling_events(g, n + 1, "BUSY") + other,
-                         {"BUSY": "E0"})
+                         {"BUSY": ANCHOR_A})
     assert fold["BUSY"]["halt"]["code"] == "RECOVERY_CEILING"
     assert fold["OTHER"]["halt"]["code"] == "EPOCH_GAP"
 
@@ -4006,14 +4124,15 @@ def test_the_handwritten_vector_region_is_the_test_authors(schemas):
       (1) add any output path under handwritten/ to build_outputs ⇒ red.
       (3) `check_handwritten_vectors` returns [] ⇒ red (and every row of
           the well-formedness table below goes red).
-      (2) takes a COMPOSITE mutation, recorded honestly: the region is
-          protected by TWO independent facts — the stray scan's glob is
-          non-recursive AND it skips HANDWRITTEN_DIR explicitly. Removing
-          either alone leaves the other holding (both verified GREEN, so
-          neither is a seal on its own); `glob` → `rglob` together with
-          dropping the skip ⇒ red, reporting both hand-authored vectors as
-          stray. The redundancy is the point, and this seal is what would
-          catch the day it stops being redundant.
+      (2) is the END property over the REAL committed tree, and it takes a
+          COMPOSITE mutation because the region is protected by TWO
+          independent mechanisms: the stray scan's glob is non-recursive AND
+          it skips HANDWRITTEN_DIR explicitly. Removing either alone leaves
+          the other holding, so `glob`→`rglob` TOGETHER WITH dropping the
+          skip ⇒ red here. Each mechanism now has its OWN seal that binds on
+          a SINGLE mutation — see the two seals immediately below — so the
+          coupling is no longer an excuse for an unfalsifiable claim; this
+          row remains as the end-to-end statement over the real tree.
     """
     fsmgen = _fsmgen()
     assert HANDWRITTEN_DIR.is_dir(), (
@@ -4034,6 +4153,89 @@ def test_the_handwritten_vector_region_is_the_test_authors(schemas):
     #     leave the working tree dirty — panel round 3, finding 50.)
     assert not fsmgen.check_handwritten_vectors(), (
         "a committed hand-authored vector is malformed")
+
+
+def _staged_scan(fsmgen, tmp_path, monkeypatch, region: Path) -> None:
+    """Point the generator's stray scan at a staged vectors tree with an
+    EMPTY output set, so every file it finds there is a stray candidate and
+    nothing else can explain a drift report. `region` is where
+    HANDWRITTEN_DIR points for this probe.
+
+    White-box on purpose: these two seals isolate the generator's two
+    protections of the author region ONE AT A TIME, which the end-property
+    seal above cannot do (either mechanism alone suffices, so neither is
+    falsifiable through the real tree)."""
+    staged = tmp_path / "t19"
+    staged.mkdir(exist_ok=True)
+    monkeypatch.setattr(fsmgen, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(fsmgen, "VECTORS_DIR", staged)
+    monkeypatch.setattr(fsmgen, "HANDWRITTEN_DIR", region)
+    for attr in ("DOCS_DIR", "FRAMES_DIR"):
+        empty = tmp_path / attr.lower()
+        empty.mkdir(exist_ok=True)
+        monkeypatch.setattr(fsmgen, attr, empty)
+
+
+_WELL_FORMED_VECTOR = json.dumps(
+    {"machine": "section_a", "note": "probe", "events": []})
+
+
+def test_the_stray_scan_skips_the_author_region(tmp_path, monkeypatch):
+    """MECHANISM 1 of 2, isolated: the stray scan's explicit
+    `HANDWRITTEN_DIR in p.parents or p == HANDWRITTEN_DIR` skip.
+
+    The scanned directory IS the region for this probe, so the file is found
+    by the scan's own (non-recursive) glob and ONLY the skip can keep it out
+    of the drift list. Nothing else is in play: the output set is empty, so
+    every file present is otherwise a stray.
+
+    MUTATION (single): delete the `HANDWRITTEN_DIR in p.parents or p ==
+    HANDWRITTEN_DIR: continue` arm from `check_outputs` ⇒ red.
+    """
+    fsmgen = _fsmgen()
+    staged = tmp_path / "t19"
+    staged.mkdir()
+    _staged_scan(fsmgen, tmp_path, monkeypatch, region=staged)
+    (staged / "authored.json").write_text(_WELL_FORMED_VECTOR, encoding="utf-8")
+    drift = fsmgen.check_outputs({})
+    assert not drift, (
+        f"the stray scan reports the author's own region as drift: {drift}")
+    # …and the same scan DOES report a stray that is not in the region, so
+    # the probe is not simply blind.
+    monkeypatch.setattr(fsmgen, "HANDWRITTEN_DIR", tmp_path / "elsewhere")
+    assert any("authored.json" in d for d in fsmgen.check_outputs({})), (
+        "the staged scan cannot see the file at all — this probe would pass "
+        "for the wrong reason")
+
+
+def test_the_stray_scan_does_not_recurse(tmp_path, monkeypatch):
+    """MECHANISM 2 of 2, isolated: the stray scan globs each generated
+    directory NON-recursively, so a nested directory under the vectors tree
+    is outside it. That is what keeps `handwritten/`'s CONTENTS out of the
+    scan even before the skip is consulted.
+
+    HANDWRITTEN_DIR points somewhere else entirely here, so the skip cannot
+    be what saves the nested file — only the non-recursive glob can.
+
+    MUTATION (single): `directory.glob(pattern)` → `directory.rglob(pattern)`
+    in `check_outputs` ⇒ red.
+    """
+    fsmgen = _fsmgen()
+    staged = tmp_path / "t19"
+    staged.mkdir()
+    _staged_scan(fsmgen, tmp_path, monkeypatch, region=tmp_path / "elsewhere")
+    nested = staged / "nested"
+    nested.mkdir()
+    (nested / "authored.json").write_text(_WELL_FORMED_VECTOR, encoding="utf-8")
+    drift = fsmgen.check_outputs({})
+    assert not drift, (
+        f"the stray scan recursed into a nested directory: {drift}")
+    # control: a file at the TOP level of the scanned tree IS a stray, so
+    # the scan is running at all.
+    (staged / "top.json").write_text(_WELL_FORMED_VECTOR, encoding="utf-8")
+    assert any("top.json" in d for d in fsmgen.check_outputs({})), (
+        "the staged scan reports nothing at all — this probe would pass for "
+        "the wrong reason")
 
 
 @pytest.mark.parametrize("planted,expect", [
