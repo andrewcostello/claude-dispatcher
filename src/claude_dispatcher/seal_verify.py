@@ -45,6 +45,25 @@ _TEST_PATH = re.compile(
 _SEAL_LABELS = frozenset({"type:fix", "seal-check", "kind:fix"})
 
 
+def is_test_path(path: str) -> bool:
+    """Does this repo consider ``path`` one of "the tests"?
+
+    The public face of :data:`_TEST_PATH`, including the leading-slash
+    normalisation the pattern's `^`-anchored alternatives need, so that every
+    consumer asks the question the same way. ``path`` is posix, as git emits.
+
+    There is exactly one matcher for this question and it is here: the build
+    protocol's role gate (``role_protocol.evaluate_changed_paths``, deciding
+    which paths a bodies/scaffold agent may not touch) calls this rather than
+    keeping a second list. Two disagreeing notions of "is this a test file"
+    is invariant 5's failure mode, and it was live: six of this pattern's
+    alternatives were uncovered by the role table's globs, so a body agent
+    could add ``web/__tests__/app.js`` — a seal by this module's reckoning —
+    and the role gate reported CLEAN (implementation-plan D1 P2 rulings).
+    """
+    return bool(_TEST_PATH.search("/" + path))
+
+
 def applies(task_key: str, labels: list[str] | None) -> bool:
     """Should the seal-inversion gate run for this task at all?
 
@@ -83,7 +102,7 @@ def partition_changed(
         if len(parts) < 2:
             continue
         status, path = parts[0][:1], parts[-1]
-        (tests if _TEST_PATH.search("/" + path) else non_tests).append(
+        (tests if is_test_path(path) else non_tests).append(
             (status, path))
     return tests, non_tests
 

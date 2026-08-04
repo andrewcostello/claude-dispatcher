@@ -1,9 +1,10 @@
 """The P1/P2/P3/P4 build-protocol: task roles, immutable paths, phase order.
 
-**SCAFFOLD (unit D1, phase P1). Every function here raises
-NotImplementedError; the docstrings are the contract. P2 writes the seals
-against these signatures, P3 writes the bodies. Nothing in this module is
-wired into a caller yet — see "Wiring, and what is NOT enforced today".**
+**Unit D1. P1 wrote these signatures and their contract docstrings, P2 wrote
+the seals against them, P3 (this pass) wrote the bodies and the wiring. The
+docstrings remain the contract; where a 2026-08-04 operator ruling overrode
+one, the ruling is named at that spot. See "Wiring, and what is enforced
+today" for the call sites that exist and the ones that do not.**
 
 Why this module exists
 ----------------------
@@ -89,27 +90,36 @@ So:
      sites go through :func:`check_branch` — one public entrypoint per
      decision (invariant 1); none of them re-derive the rule.
 
-Wiring, and what is NOT enforced today
---------------------------------------
-Nothing in this module has a caller yet, and no claim is made that it does
-(invariant 7). P3 must wire, in the same commit that implements each body:
+Wiring, and what is enforced today
+----------------------------------
+Wired by P3 (invariant 7 — each claim here has its call site):
 
-  * `plan.load_tasks` → call :func:`validate` after `_validate_blocked_by`
-    and raise `plan.ValidationError` on `.errors` (the cross-row rules must
-    run over the whole list, never per row).
-  * `plan.runnable_now` → consult :func:`dispatch_satisfied_statuses` instead
-    of the module-level `_DISPATCH_SATISFIED_*` sets. Until then, phase order
-    rests on the required `blockedBy` edge plus today's Done-or-later rule —
-    which in `pr` mode is **weaker than the plan requires** (see that
-    function).
-  * `orchestrator.execute` → :func:`agent_correlation_warnings` alongside the
-    preflight warnings, and :func:`check_branch` after the implementer
-    returns and before the PR is raised.
-  * `repo_config.load` → parse a `roles:` section via
-    :func:`role_policy_from_mapping`. Today an unrecognised `roles:` key
-    lands in `RepoConfig.unknown_keys` and is **ignored**, so no repo may add
-    one until that lands; a repo that adds one now gets the compiled-in
-    defaults and no warning that its additions were dropped.
+  * `plan.load_tasks` → calls :func:`validate` after `_validate_blocked_by`
+    and raises `plan.ValidationError` on `.errors`, so a worklist that fails
+    role validation never partially plans. The cross-row rules run over the
+    whole list, never per row.
+  * `plan.runnable_now` → consults :func:`dispatch_satisfied_statuses` per
+    `blockedBy` edge instead of the module-level `_DISPATCH_SATISFIED_*`
+    sets, which is what makes the seals→bodies narrowing real in `pr` mode.
+  * `orchestrator.run` → :func:`agent_correlation_warnings` alongside the
+    preflight warnings (printed and replayed into run.log).
+  * `repo_config.load` → validates a `roles:` section via
+    :func:`role_policy_from_mapping`, so an invalid or narrowing section is a
+    load failure rather than a line dropped into `RepoConfig.unknown_keys`.
+    It deliberately does not *use* the parsed policy: `load` reads the
+    working tree, and the gating path takes its policy from the protected
+    base (:func:`load_role_policy_from_base`, invariant 6).
+  * `scripts/check_body_branch.sh` → execs :func:`main`, so CI, PR time and
+    any hand invocation go through :func:`check_branch`.
+
+**NOT wired, stated rather than implied:** the post-implementer call the P1
+rulings name as the point that actually saves a build cycle —
+:func:`check_branch` inside the orchestrator's task loop, right after the
+implementer returns and before verify — has no call site yet. Until it does,
+a role's diff is checked at PR time and in CI only, which is one build cycle
+later than the plan wants. That hook changes task-loop control flow and has
+no seal in this unit; it is named here so nobody reads this module as
+already providing it.
 
 Notes for the seal author (P2)
 ------------------------------
@@ -137,6 +147,9 @@ Notes for the seal author (P2)
 
 from __future__ import annotations
 
+import ast
+import dataclasses
+import sys
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -200,6 +213,32 @@ DISPUTED_PATHS_FIELD = "disputed_paths"
 
 #: The ``.dispatcher.yaml`` section this module reads (base-pinned).
 CONFIG_SECTION = "roles"
+
+#: The ``matched_glob`` a violation carries when the rule is ALLOW_ONLY_GLOBS
+#: and the path matched **none** of the allowed globs. There is no glob that
+#: "says so" for an allowlist miss, and the two alternatives are both worse: a
+#: magic string invites callers to compare against a literal, and a nullable
+#: field makes every consumer handle None (D1 P2 ruling — "a named state, not a
+#: magic string and not a nullable"). Deliberately not glob-shaped, so it can
+#: never be mistaken for a pattern or accidentally match a path.
+ALLOWLIST_MISS = "<allowlist miss: path is outside the role's writable set>"
+
+#: The ``matched_glob`` a violation carries when the path was denied by
+#: ``seal_verify.is_test_path`` rather than by a glob — see
+#: :data:`TEST_PATH_DELEGATED_ROLES`. Also the marker whose PRESENCE in a
+#: rule's ``globs`` turns that delegation on, so the delegation is a property
+#: of the rule (data), not of the role (a hardcode a caller-supplied policy
+#: could not switch off).
+SEAL_VERIFY_TEST_PATHS = "<seal_verify.is_test_path: this repo's test files>"
+
+#: The roles whose deny set includes ``seal_verify``'s test-path predicate.
+#: D1 P2 ruling: the role gate does not keep its own notion of what a test
+#: file is. Six of eleven ``seal_verify._TEST_PATH`` alternatives were
+#: uncovered by the globs below — ``handler_test.js``, singular ``test/`` at
+#: root and nested, ``__tests__/``, ``spec/``, ``fixtures/`` — so a body agent
+#: could add a file `seal_verify` already treats as a seal and this gate said
+#: CLEAN. One matcher, one fact.
+TEST_PATH_DELEGATED_ROLES: tuple[Role, ...] = (Role.SCAFFOLD, Role.BODIES)
 
 
 class RoleProtocolError(ValueError):
@@ -270,31 +309,37 @@ class RoleRule:
 # The compiled-in default table. Every entry is effectively a floor, because
 # neither config nor a per-task override may remove one.
 #
+# This tuple holds GLOBS ONLY. The test-file category is not in it as a
+# concept — it is delegated to `seal_verify.is_test_path` — but the specific
+# test-shaped globs below stay, because they are what makes a violation report
+# name the pattern that forbade the path (``**/tests/**`` rather than "the
+# predicate"), and because each is pinned by its own mutation-resistance seal.
+# The delegation marker is added by `built_in_policy`, not here: it is not a
+# glob, so it has no probe path and belongs to no row of the glob table.
+#
 # Deviations from the operator's proposed defaults, and why:
 #
 #   * ``**/tests/**`` rather than ``tests/**``, and the test-shaped-filename
 #     globs alongside it: a body agent that adds ``src/foo_test.go`` or edits
 #     ``**/testdata/**`` has written its own seal just as surely as one that
-#     edits ``tests/``, and ``seal_verify._TEST_PATH`` already counts those as
-#     tests. Path-shape only — no keyword matching.
-#   * ``**/.dispatcher.yaml`` is denied to SEALS, BODIES and ADJUDICATE: the
-#     role policy itself is configured there, so a role that could edit it
-#     could widen its own permissions. It is deliberately NOT denied to
-#     SCAFFOLD, which is the phase where a unit's override is legitimately
-#     declared and which is reviewed for contract fidelity by a human before
-#     any seal exists. Flagged for the operator: this is the one place a role
-#     can touch its own policy, and it is a considered choice, not an
-#     oversight.
-#   * ``**/generated/**`` is denied to BODIES and SEALS per §2a, but NOT to
-#     SCAFFOLD. A unit whose deliverable IS the generator (A3/A4's ``fsmgen``)
-#     must be able to commit regenerated output, and because overrides can
-#     only ADD, a default deny could never be lifted for it. See the report:
-#     BODIES tasks in a generator unit are currently undrivable by design, and
-#     closing that needs a plan amendment (or a regenerate-and-diff check
-#     replacing the path deny), not a per-task override.
-#   * SEALS is also denied ``**/generated/**`` (generated types are the sole
-#     source — a seal that hand-edits them is sealing a fiction) and
-#     ``**/roles/*.md`` + ``**/reviewer_prompts/**`` + ``**/verifier_prompts/**``
+#     edits ``tests/``. Path-shape only — no keyword matching. Everything
+#     `seal_verify` calls a test and these globs miss is caught by the
+#     delegation (:data:`TEST_PATH_DELEGATED_ROLES`).
+#   * ``**/.dispatcher.yaml`` is denied to ALL FOUR authorable roles, scaffold
+#     included (2026-08-04 P1 ruling, overriding P1's own contrary note here).
+#     A unit's per-task override lives in its task row, so no role ever needs
+#     to edit the policy file, and a role that can edit the file configuring
+#     its own permissions is the self-widening shape this unit exists to
+#     remove.
+#   * ``**/generated/**`` appears NOWHERE (2026-08-04 P1 ruling, overriding
+#     P1's SEALS/BODIES entries). The property wanted is not "bodies never
+#     touch generated files" but "generated files equal generator output",
+#     which the regenerate-and-diff gate owns for every role in every unit.
+#     Denying the path made generator units (A3/A4's ``fsmgen``, whose bodies
+#     legitimately commit regenerated output) undrivable, and ADD-only
+#     overrides gave no escape. Any unit with generated output carries that
+#     gate in its seals instead.
+#   * ``**/roles/*.md`` + ``**/reviewer_prompts/**`` + ``**/verifier_prompts/**``
 #     for BODIES and SEALS: those are machine-read instructions that the review
 #     gate executes, so editing them edits the reviewer that is about to judge
 #     the change.
@@ -311,6 +356,7 @@ DEFAULT_ROLE_RULES: tuple[RoleRule, ...] = (
             "**/*.spec.*",
             "**/testdata/**",
             "**/conftest.py",
+            "**/.dispatcher.yaml",
         ),
         rationale=(
             "P1 must not write the seals it will be judged by; a scaffold "
@@ -324,7 +370,6 @@ DEFAULT_ROLE_RULES: tuple[RoleRule, ...] = (
         globs=(
             "**/src/**",
             "**/schema/**",
-            "**/generated/**",
             "**/.dispatcher.yaml",
             "**/roles/*.md",
             "**/reviewer_prompts/**",
@@ -349,7 +394,6 @@ DEFAULT_ROLE_RULES: tuple[RoleRule, ...] = (
             "**/testdata/**",
             "**/conftest.py",
             "**/schema/**",
-            "**/generated/**",
             "**/.dispatcher.yaml",
             "**/roles/*.md",
             "**/reviewer_prompts/**",
@@ -357,8 +401,8 @@ DEFAULT_ROLE_RULES: tuple[RoleRule, ...] = (
         ),
         rationale=(
             "P3 makes the seals pass by implementing them, never by editing "
-            "them (plan §2a); the schema and generated files are the sole "
-            "source and the role policy is not the body agent's to widen"
+            "them (plan §2a); the schema is the sole source and the role "
+            "policy is not the body agent's to widen"
         ),
     ),
     RoleRule(
@@ -401,13 +445,25 @@ class PolicySource(Enum):
     BASE_PINNED_CONFIG
         A `roles:` section was read out of ``base_ref``'s object store and its
         additions are merged in.
+    CONFIG_MAPPING
+        A `roles:` mapping was parsed by :func:`role_policy_from_mapping` and
+        the caller has not said where it came from. Its own member rather than
+        a borrowed BASE_PINNED_CONFIG (D1 P2 ruling): the pure parser cannot
+        know whether its input was base-pinned, and labelling it
+        base-pinned would make an unpinned policy *report* as pinned — the
+        provenance claim invariant 6 rests on. :func:`load_role_policy_from_base`
+        re-stamps it to BASE_PINNED_CONFIG because it is the function that
+        did the pinning.
 
     There is deliberately no ``WORKING_TREE`` member: nothing on the gating
     path reads its parameters from the branch under review (invariant 6).
+    `repo_config.load` parses a working-tree `roles:` section only to refuse
+    an invalid one, and never hands the result to a gate.
     """
 
     BUILT_IN_DEFAULTS = "built_in_defaults"
     BASE_PINNED_CONFIG = "base_pinned_config"
+    CONFIG_MAPPING = "config_mapping"
 
 
 @dataclass(frozen=True)
@@ -430,7 +486,14 @@ class RolePolicy:
         role — including for a Role member added later without updating the
         table. The absent entry must never be treated as UNRESTRICTED.
         """
-        raise NotImplementedError
+        for rule in self.rules:
+            if rule.role is role:
+                return rule
+        raise RoleProtocolError(
+            f"this policy ({self.source.value}) has no rule for role "
+            f"{role.value!r}; a missing entry is a bug in the table, never "
+            "'no restrictions'"
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -456,6 +519,98 @@ class TaskRoleSpec:
     added_immutable_globs: tuple[str, ...] = ()
     disputed_paths: tuple[str, ...] = ()
     declared_agent: str | None = None
+
+
+# --------------------------------------------------------------------------- #
+# Private helpers (no decisions of their own — every rule they serve is stated
+# in the public function that calls them)
+# --------------------------------------------------------------------------- #
+
+#: Characters that join two role names into one string. Whitespace is checked
+#: separately (any whitespace, not just a literal space).
+_ROLE_SEPARATORS = (",", "+", "/", "|", "\\", ";", "&")
+
+#: Prefixes and infixes that make an ``immutable_paths:`` entry a NEGATION in
+#: shape. There is no subtraction syntax to reject, so this is the failure the
+#: schema actually permits an author to write.
+_NEGATION_PREFIXES = ("!", "-", "^", "~")
+_NEGATION_INFIXES = (":",)
+
+
+def _authorable_values() -> str:
+    return ", ".join(sorted(role.value for role in AUTHORABLE_ROLES))
+
+
+def _default_kind(role: Role) -> RuleKind:
+    """The compiled-in :class:`RuleKind` for ``role``.
+
+    The kind is a property of the protocol, not of a policy: config may add
+    globs but may never turn a DENY role into an ALLOW_ONLY one. Read off
+    :data:`DEFAULT_ROLE_RULES` so per-row validation (which has no policy in
+    hand) and policy construction cannot disagree about it.
+    """
+    for rule in DEFAULT_ROLE_RULES:
+        if rule.role is role:
+            return rule.kind
+    raise RoleProtocolError(
+        f"no compiled-in rule for role {role.value!r}: DEFAULT_ROLE_RULES must "
+        "carry one entry per Role member"
+    )
+
+
+def _dedup(globs: Sequence[str]) -> tuple[str, ...]:
+    """``globs`` with later duplicates dropped, order preserved."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for glob in globs:
+        if glob not in seen:
+            seen.add(glob)
+            out.append(glob)
+    return tuple(out)
+
+
+def _string_list(
+    value: object, *, task_key: str, field_name: str
+) -> tuple[str, ...]:
+    """``value`` as a tuple of non-blank strings, or raise.
+
+    A bare string is an error rather than a one-element list: a one-element
+    list is cheap to write, and a string that looks like a list is exactly how
+    a policy line gets silently dropped.
+    """
+    if isinstance(value, str) or not isinstance(value, (list, tuple)):
+        raise RoleProtocolError(
+            f"task {task_key} has {field_name}: {value!r}; it must be a list "
+            "of non-blank path globs (a bare string is not a one-element list)"
+        )
+    out: list[str] = []
+    for entry in value:
+        if isinstance(entry, bool) or not isinstance(entry, str) or not entry.strip():
+            raise RoleProtocolError(
+                f"task {task_key} has {field_name} entry {entry!r}; every "
+                "entry must be a non-blank string"
+            )
+        out.append(entry)
+    return tuple(out)
+
+
+def _reject_negation_shape(entry: str, *, where: str) -> None:
+    """Raise when ``entry`` is shaped like a removal.
+
+    ``immutable_paths:`` has no negation form by design, so the expressible
+    failure is an entry that LOOKS like one. Accepting it as a literal filename
+    would let an agent believe it had been granted an exemption it never had.
+    """
+    text = entry.strip()
+    if text.startswith(_NEGATION_PREFIXES) or any(
+        infix in text for infix in _NEGATION_INFIXES
+    ):
+        raise RoleProtocolError(
+            f"{where}: {entry!r} is shaped like a removal. An override may "
+            "only ADD immutable paths — a narrowing policy is the "
+            "self-weakening shape this protocol exists to refuse, and it is "
+            "an error rather than a path with an odd name"
+        )
 
 
 def parse_role_field(row: Mapping[str, object], *, task_key: str) -> Role:
@@ -486,7 +641,68 @@ def parse_role_field(row: Mapping[str, object], *, task_key: str) -> Role:
 
     Pure function of ``row``; never reads the filesystem or git.
     """
-    raise NotImplementedError
+    present = [alias for alias in ROLE_FIELD_ALIASES if alias in row]
+    if not present:
+        return Role.LEGACY
+    if len(present) > 1:
+        raise RoleProtocolError(
+            f"task {task_key} sets {' and '.join(sorted(present))}; use only "
+            f"{ROLE_FIELD_CANONICAL!r} — one fact, one place, even when the "
+            "values agree"
+        )
+    field_name = present[0]
+    value = row[field_name]
+
+    if isinstance(value, (list, tuple, set, frozenset, dict, Mapping)):
+        raise RoleProtocolError(
+            f"task {task_key} has {field_name}: {value!r}; a task carrying "
+            "two roles is a typed error, not a coercion, and a one-element "
+            f"list is not the shape of the contract either. Legal values: "
+            f"{_authorable_values()}"
+        )
+    if value is None:
+        raise RoleProtocolError(
+            f"task {task_key} has {field_name}: with no value. The key was "
+            "written, so it meant something; presence-with-null must not "
+            f"default to the permissive state. Legal values: "
+            f"{_authorable_values()}"
+        )
+    if isinstance(value, bool) or not isinstance(value, str):
+        raise RoleProtocolError(
+            f"task {task_key} has {field_name}: {value!r} "
+            f"({type(value).__name__}); legal values: {_authorable_values()}"
+        )
+
+    text = value.strip()
+    if not text:
+        raise RoleProtocolError(
+            f"task {task_key} has a blank {field_name}:; legal values: "
+            f"{_authorable_values()}"
+        )
+    if any(sep in text for sep in _ROLE_SEPARATORS) or any(
+        ch.isspace() for ch in text
+    ):
+        raise RoleProtocolError(
+            f"task {task_key} has {field_name}: {value!r}, which names more "
+            f"than one role; one task holds one role. Legal values: "
+            f"{_authorable_values()}"
+        )
+
+    lowered = text.lower()
+    if lowered == Role.LEGACY.value:
+        raise RoleProtocolError(
+            f"task {task_key} spells {field_name}: {value!r}. LEGACY is "
+            "derived from an ABSENT role key and can never be authored — "
+            "spelling it would be an opt-out of the protocol. Legal values: "
+            f"{_authorable_values()}"
+        )
+    for role in AUTHORABLE_ROLES:
+        if role.value == lowered:
+            return role
+    raise RoleProtocolError(
+        f"task {task_key} has unknown {field_name}: {value!r}; legal values: "
+        f"{_authorable_values()}"
+    )
 
 
 def parse_task_role_spec(
@@ -515,7 +731,74 @@ def parse_task_role_spec(
 
     Raises :class:`RoleProtocolError` on the first violation. Pure.
     """
-    raise NotImplementedError
+    role = parse_role_field(row, task_key=task_key)
+    kind = _default_kind(role)
+
+    added: tuple[str, ...] = ()
+    if IMMUTABLE_OVERRIDE_FIELD in row:
+        if kind is not RuleKind.DENY_GLOBS:
+            raise RoleProtocolError(
+                f"task {task_key} is role {role.value!r} ({kind.value}) and "
+                f"carries {IMMUTABLE_OVERRIDE_FIELD}:; adding denied paths has "
+                "no meaning for a role that is not deny-based — ADJUDICATE's "
+                f"writable set is {DISPUTED_PATHS_FIELD}: and a role-less "
+                "(legacy) row has no immutable paths at all"
+            )
+        added = _string_list(
+            row[IMMUTABLE_OVERRIDE_FIELD],
+            task_key=task_key,
+            field_name=IMMUTABLE_OVERRIDE_FIELD,
+        )
+
+    disputed: tuple[str, ...] = ()
+    if role is Role.ADJUDICATE:
+        if DISPUTED_PATHS_FIELD not in row:
+            raise RoleProtocolError(
+                f"task {task_key} is role 'adjudicate' and has no "
+                f"{DISPUTED_PATHS_FIELD}:. It is REQUIRED: an absent list "
+                "means 'nothing', never 'anything', and an adjudicator with "
+                "no named artifact has nothing to rule on"
+            )
+        disputed = _string_list(
+            row[DISPUTED_PATHS_FIELD],
+            task_key=task_key,
+            field_name=DISPUTED_PATHS_FIELD,
+        )
+        if not disputed:
+            raise RoleProtocolError(
+                f"task {task_key} has an empty {DISPUTED_PATHS_FIELD}:; an "
+                "adjudicate task rules on at least one artifact"
+            )
+        for entry in disputed:
+            if entry.strip() in FORBIDDEN_DISPUTED_GLOBS:
+                raise RoleProtocolError(
+                    f"task {task_key} has {DISPUTED_PATHS_FIELD} entry "
+                    f"{entry!r}; a wildcard adjudication is not an "
+                    "adjudication — it converts allow-only into unrestricted "
+                    "with extra steps"
+                )
+    elif DISPUTED_PATHS_FIELD in row:
+        raise RoleProtocolError(
+            f"task {task_key} is role {role.value!r} and carries "
+            f"{DISPUTED_PATHS_FIELD}:, which is forbidden on every role but "
+            "'adjudicate' (including a role-less legacy row): a writable set "
+            "is only meaningful where the rule is allow-only"
+        )
+
+    agent_val = row.get("agent")
+    declared_agent: str | None = None
+    if isinstance(agent_val, str) and agent_val.strip():
+        # Verbatim, and NOT re-validated against plan.KNOWN_AGENTS: that check
+        # lives in plan.load_tasks. Two validators of one fact would diverge.
+        declared_agent = agent_val
+
+    return TaskRoleSpec(
+        task_key=task_key,
+        role=role,
+        added_immutable_globs=added,
+        disputed_paths=disputed,
+        declared_agent=declared_agent,
+    )
 
 
 def validate_rule(rule: RoleRule) -> None:
@@ -528,7 +811,44 @@ def validate_rule(rule: RoleRule) -> None:
     carrying globs is a contradiction, and silently honouring either half
     would be a guess. Dispatch over :class:`RuleKind` is total.
     """
-    raise NotImplementedError
+    role_name = getattr(rule.role, "value", rule.role)
+    for glob in rule.globs:
+        if not isinstance(glob, str) or not glob.strip():
+            raise RoleProtocolError(
+                f"rule for {role_name} carries a blank glob {glob!r}; a blank "
+                "pattern protects nothing while looking like protection"
+            )
+
+    if rule.kind is RuleKind.DENY_GLOBS:
+        if not rule.globs:
+            raise RoleProtocolError(
+                f"rule for {role_name} is deny-based with no globs; an "
+                "emptied deny list reads as a pass without doing anything"
+            )
+        return
+    if rule.kind is RuleKind.ALLOW_ONLY_GLOBS:
+        # Empty is legal ONLY here: the static table entry's writable set
+        # arrives per task via `disputed_paths:`.
+        for glob in rule.globs:
+            if glob.strip() in FORBIDDEN_DISPUTED_GLOBS:
+                raise RoleProtocolError(
+                    f"rule for {role_name} allows {glob!r}; a wildcard "
+                    "allow-only set is an unrestricted rule with extra steps"
+                )
+        return
+    if rule.kind is RuleKind.UNRESTRICTED:
+        if rule.globs:
+            raise RoleProtocolError(
+                f"rule for {role_name} claims to be unrestricted while "
+                f"carrying globs {rule.globs!r}; honouring either half would "
+                "be a guess about which the author meant"
+            )
+        return
+    raise RoleProtocolError(
+        f"rule for {role_name} has unknown kind {rule.kind!r}; a new RuleKind "
+        "must be handled everywhere it is dispatched, not fall through to the "
+        "permissive branch"
+    )
 
 
 def validate_override(
@@ -547,7 +867,35 @@ def validate_override(
     path literally named ``!tests/**``. Silently treating it as an odd
     filename would let an agent believe it had been granted an exemption.
     """
-    raise NotImplementedError
+    if not spec.added_immutable_globs:
+        return
+    rule = policy.rule_for(spec.role)
+    if rule.kind is not RuleKind.DENY_GLOBS:
+        raise RoleProtocolError(
+            f"task {spec.task_key} is role {spec.role.value!r} "
+            f"({rule.kind.value}) and carries added immutable globs; only a "
+            "deny-based role has a deny set to add to"
+        )
+    for entry in spec.added_immutable_globs:
+        if not entry.strip():
+            raise RoleProtocolError(
+                f"task {spec.task_key} adds a blank immutable glob"
+            )
+        _reject_negation_shape(
+            entry, where=f"task {spec.task_key} {IMMUTABLE_OVERRIDE_FIELD}"
+        )
+    # Stated over the protected set rather than the literal list: every path
+    # the role could not write under `policy` must still be unwritable after
+    # the override applies. It holds by construction because `effective_rule`
+    # unions, and it is asserted here anyway so a future `effective_rule` that
+    # replaced instead of unioning could not pass silently.
+    effective = _dedup((*rule.globs, *spec.added_immutable_globs))
+    lost = [glob for glob in rule.globs if glob not in effective]
+    if lost:
+        raise RoleProtocolError(
+            f"task {spec.task_key}'s override would drop {lost!r} from the "
+            "role's protected set; an override may only ADD"
+        )
 
 
 def effective_rule(spec: TaskRoleSpec, policy: RolePolicy) -> RoleRule:
@@ -566,7 +914,21 @@ def effective_rule(spec: TaskRoleSpec, policy: RolePolicy) -> RoleRule:
     Calls :func:`validate_override` first, so an illegal override cannot
     produce a rule at all (validate before apply — invariant 2).
     """
-    raise NotImplementedError
+    validate_override(spec, policy)
+    rule = policy.rule_for(spec.role)
+
+    if rule.kind is RuleKind.DENY_GLOBS:
+        return dataclasses.replace(
+            rule, globs=_dedup((*rule.globs, *spec.added_immutable_globs))
+        )
+    if rule.kind is RuleKind.ALLOW_ONLY_GLOBS:
+        return dataclasses.replace(rule, globs=tuple(spec.disputed_paths))
+    if rule.kind is RuleKind.UNRESTRICTED:
+        return rule
+    raise RoleProtocolError(
+        f"task {spec.task_key}: cannot build an effective rule for unknown "
+        f"kind {rule.kind!r}"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -785,8 +1147,28 @@ def built_in_policy() -> RolePolicy:
     Source :data:`PolicySource.BUILT_IN_DEFAULTS`, ``base_ref`` None. Runs
     :func:`validate_rule` over every entry, so a malformed compiled-in table
     fails loudly at first use instead of silently under-protecting.
+
+    Adds one thing the tuple does not carry: :data:`SEAL_VERIFY_TEST_PATHS` is
+    appended to the deny set of every role in
+    :data:`TEST_PATH_DELEGATED_ROLES`. It lives here rather than in
+    :data:`DEFAULT_ROLE_RULES` because that tuple is the glob table — every
+    entry in it is a pattern with a fixture path pinning it — and the
+    delegation marker is not a pattern at all. Appended LAST so a glob-matched
+    violation always reports the specific glob.
     """
-    raise NotImplementedError
+    rules: list[RoleRule] = []
+    for rule in DEFAULT_ROLE_RULES:
+        if rule.role in TEST_PATH_DELEGATED_ROLES:
+            rule = dataclasses.replace(
+                rule, globs=_dedup((*rule.globs, SEAL_VERIFY_TEST_PATHS))
+            )
+        validate_rule(rule)
+        rules.append(rule)
+    return RolePolicy(
+        rules=tuple(rules),
+        source=PolicySource.BUILT_IN_DEFAULTS,
+        base_ref=None,
+    )
 
 
 def role_policy_from_mapping(section: object) -> RolePolicy:
@@ -823,8 +1205,83 @@ def role_policy_from_mapping(section: object) -> RolePolicy:
 
     Pure function of ``section``. The git read is
     :func:`load_role_policy_from_base`.
+
+    A parsed mapping is stamped :data:`PolicySource.CONFIG_MAPPING`, not
+    BASE_PINNED_CONFIG: this function cannot know where its input came from,
+    and the function that pinned it is the one entitled to say so.
     """
-    raise NotImplementedError
+    if section is None:
+        return built_in_policy()
+    if isinstance(section, bool) or not isinstance(section, Mapping):
+        raise RoleProtocolError(
+            f"the {CONFIG_SECTION!r} section must be a mapping of role -> "
+            f"options, got {type(section).__name__}: {section!r}"
+        )
+
+    additions: dict[Role, tuple[str, ...]] = {}
+    for raw_key, raw_value in section.items():
+        key = str(raw_key).strip().lower() if isinstance(raw_key, str) else raw_key
+        role = next(
+            (r for r in AUTHORABLE_ROLES if r.value == key), None
+        )
+        if role is None:
+            raise RoleProtocolError(
+                f"{CONFIG_SECTION}: has key {raw_key!r}, which is not an "
+                f"authorable role ({_authorable_values()}). A typo must not "
+                "silently drop the protection the repo asked for, and "
+                "'legacy' may not be given a policy at all — that would "
+                "change pre-protocol tasks' behaviour"
+            )
+        if isinstance(raw_value, bool) or not isinstance(raw_value, Mapping):
+            raise RoleProtocolError(
+                f"{CONFIG_SECTION}.{key} must be a mapping with an "
+                f"{IMMUTABLE_OVERRIDE_FIELD!r} key, got "
+                f"{type(raw_value).__name__}: {raw_value!r}"
+            )
+        unknown = sorted(
+            str(k) for k in raw_value if str(k) != IMMUTABLE_OVERRIDE_FIELD
+        )
+        if unknown:
+            raise RoleProtocolError(
+                f"{CONFIG_SECTION}.{key} has unknown key(s) "
+                f"{', '.join(unknown)}; the only key is "
+                f"{IMMUTABLE_OVERRIDE_FIELD!r}. Tolerating unknown keys here "
+                "would silently drop a protection the repo asked for"
+            )
+        if IMMUTABLE_OVERRIDE_FIELD not in raw_value:
+            continue
+        if _default_kind(role) is not RuleKind.DENY_GLOBS:
+            raise RoleProtocolError(
+                f"{CONFIG_SECTION}.{key} sets {IMMUTABLE_OVERRIDE_FIELD}:, "
+                f"which has no meaning for a "
+                f"{_default_kind(role).value} role"
+            )
+        entries = _string_list(
+            raw_value[IMMUTABLE_OVERRIDE_FIELD],
+            task_key=f"{CONFIG_SECTION}.{key}",
+            field_name=IMMUTABLE_OVERRIDE_FIELD,
+        )
+        for entry in entries:
+            _reject_negation_shape(
+                entry, where=f"{CONFIG_SECTION}.{key}.{IMMUTABLE_OVERRIDE_FIELD}"
+            )
+        additions[role] = entries
+
+    defaults = built_in_policy()
+    rules: list[RoleRule] = []
+    for rule in defaults.rules:
+        extra = additions.get(rule.role, ())
+        if extra:
+            rule = dataclasses.replace(
+                rule, globs=_dedup((*rule.globs, *extra))
+            )
+        validate_rule(rule)
+        rules.append(rule)
+    return RolePolicy(
+        rules=tuple(rules),
+        source=PolicySource.CONFIG_MAPPING,
+        base_ref=None,
+    )
 
 
 def load_role_policy_from_base(
@@ -858,8 +1315,48 @@ def load_role_policy_from_base(
     refactor ``risk.py`` to delegate to it in the same commit. Two readers of
     one file's gate policy is invariant 5's failure mode, and they would
     diverge on exactly the interesting cases (symlink, submodule, non-UTF-8).
+
+    **P3 note on that composition.** ``fix/authority-doc-carveout`` has NOT
+    merged into `main` as of this implementation, so
+    ``risk.load_risk_config_from_base`` does not exist on this branch and there
+    is nothing to refactor yet; ``risk.py`` is left untouched.
+    ``repo_config.blob_text_at`` is the one git blob reader and
+    ``repo_config.load_text_at_base`` is its config-shaped face (this
+    function's and, after the carveout merges, the ``risk:`` loader's).
     """
-    raise NotImplementedError
+    from ruamel.yaml.error import YAMLError
+
+    from . import repo_config as repo_config_mod
+    from . import yaml_io
+
+    # Attribute lookup on the module, never a from-import: the ONE reader must
+    # be substitutable at its own name, which is what lets a seal prove this
+    # function contains no second private git read.
+    text = repo_config_mod.load_text_at_base(repo_root, base_ref)
+    if text is None or not text.strip():
+        return built_in_policy()
+
+    try:
+        doc = yaml_io.loads(text)
+    except YAMLError as exc:
+        raise repo_config_mod.RepoConfigError(
+            f"malformed YAML in {repo_config_mod.CONFIG_FILENAME} at "
+            f"{base_ref}: {exc}"
+        ) from exc
+    if doc is None:
+        return built_in_policy()
+    if not isinstance(doc, Mapping):
+        raise repo_config_mod.RepoConfigError(
+            f"root of {repo_config_mod.CONFIG_FILENAME} at {base_ref} must be "
+            f"a mapping, got {type(doc).__name__}"
+        )
+    if CONFIG_SECTION not in doc or doc.get(CONFIG_SECTION) is None:
+        return built_in_policy()
+
+    policy = role_policy_from_mapping(doc.get(CONFIG_SECTION))
+    return dataclasses.replace(
+        policy, source=PolicySource.BASE_PINNED_CONFIG, base_ref=base_ref
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -893,11 +1390,27 @@ class DiffVerdict(Enum):
 
 @dataclass(frozen=True)
 class PathViolation:
-    """One changed path the role may not touch, and the glob that says so."""
+    """One changed path the role may not touch, and the glob that says so.
+
+    ``matched_glob`` is the first glob that matched, or
+    :data:`SEAL_VERIFY_TEST_PATHS` when the path was denied by the delegated
+    test-path predicate, or :data:`ALLOWLIST_MISS` when the rule is
+    allow-only and the path matched nothing — a named state in every case,
+    never None and never a magic literal.
+
+    ``rationale`` is the violated rule's own rationale, copied in here at
+    construction time (2026-08-04 P2 ruling). ``main`` is required to print
+    *why* a path is not the role's to touch, and it has only the
+    :class:`RoleDiffResult` to print from; making a caller re-derive the rule
+    would put a second policy read on the reporting path, which is how the two
+    reads drift apart. It defaults to empty so a caller that constructs a
+    violation for a test or a report is not forced to invent policy text.
+    """
 
     path: str
     matched_glob: str
     rule_kind: RuleKind
+    rationale: str = ""
 
 
 class SignatureCheckStatus(Enum):
@@ -975,8 +1488,19 @@ def first_matching_glob(path: str, patterns: Sequence[str]) -> str | None:
     semantics — anchored, ``**/`` matching zero or more segments — are defined
     once, in ``risk.py``, and both gates must agree. ``path`` is posix form,
     as git emits.
+
+    Purely a glob question: the non-glob markers a rule may carry
+    (:data:`SEAL_VERIFY_TEST_PATHS`) are passed to ``risk.matches_any_glob``
+    like any other pattern and match nothing, because they contain no
+    wildcard. Their meaning is applied by :func:`evaluate_changed_paths`, so
+    this function stays the one place glob semantics live and nothing else.
     """
-    raise NotImplementedError
+    from . import risk as risk_mod
+
+    for pattern in patterns:
+        if risk_mod.matches_any_glob(path, (pattern,)):
+            return pattern
+    return None
 
 
 def evaluate_changed_paths(
@@ -997,8 +1521,66 @@ def evaluate_changed_paths(
     Pure. Order follows ``changed_paths``; one violation per path, carrying
     the FIRST matching glob so a mutation that removes a single glob reddens
     exactly one seal.
+
+    One addition the P1 contract does not state and the 2026-08-04 P2 ruling
+    does: when the rule carries :data:`SEAL_VERIFY_TEST_PATHS`, a path no glob
+    matched is put to ``seal_verify.is_test_path`` — the repo's ONE matcher for
+    "is this a test file" — and denied if it answers yes, with
+    :data:`SEAL_VERIFY_TEST_PATHS` as the ``matched_glob``. Globs are tried
+    first so a violation names the specific pattern when there is one.
     """
-    raise NotImplementedError
+    if rule.kind is RuleKind.UNRESTRICTED:
+        return ()
+
+    if rule.kind is RuleKind.DENY_GLOBS:
+        patterns = tuple(
+            glob for glob in rule.globs if glob != SEAL_VERIFY_TEST_PATHS
+        )
+        delegate = SEAL_VERIFY_TEST_PATHS in rule.globs
+        violations: list[PathViolation] = []
+        for path in changed_paths:
+            matched = first_matching_glob(path, patterns)
+            if matched is None and delegate and _is_test_path(path):
+                matched = SEAL_VERIFY_TEST_PATHS
+            if matched is not None:
+                violations.append(
+                    PathViolation(
+                        path=path,
+                        matched_glob=matched,
+                        rule_kind=rule.kind,
+                        rationale=rule.rationale,
+                    )
+                )
+        return tuple(violations)
+
+    if rule.kind is RuleKind.ALLOW_ONLY_GLOBS:
+        return tuple(
+            PathViolation(
+                path=path,
+                matched_glob=ALLOWLIST_MISS,
+                rule_kind=rule.kind,
+                rationale=rule.rationale,
+            )
+            for path in changed_paths
+            if first_matching_glob(path, rule.globs) is None
+        )
+
+    raise RoleProtocolError(
+        f"cannot evaluate changed paths for unknown rule kind {rule.kind!r}; a "
+        "kind that falls out of the bottom would report every diff as clean"
+    )
+
+
+def _is_test_path(path: str) -> bool:
+    """``seal_verify``'s test-path predicate, imported at the call site.
+
+    Function-local import: ``seal_verify`` pulls in ``mechanical_verify`` and
+    subprocess machinery this module otherwise has no need of, and the gate
+    path must not grow imports it does not use.
+    """
+    from . import seal_verify as seal_verify_mod
+
+    return seal_verify_mod.is_test_path(path)
 
 
 def compare_signatures(

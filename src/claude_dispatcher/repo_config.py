@@ -24,8 +24,10 @@ skipped; notes flow through return values, never logging.
 
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from ruamel.yaml.error import YAMLError
 
@@ -252,4 +254,173 @@ def load_text_at_base(repo_root: str | Path, base_ref: str) -> str | None:
     Consumers: :func:`role_protocol.load_role_policy_from_base` today; the
     ``risk:`` loader after the carveout merge.
     """
-    raise NotImplementedError
+    try:
+        return blob_text_at(repo_root, base_ref, CONFIG_FILENAME)
+    except BaseConfigError:
+        raise
+    except Exception as exc:  # pragma: no cover - defensive; blob_text_at maps
+        raise BaseConfigError(
+            f"cannot read {CONFIG_FILENAME} at {base_ref}: {exc}"
+        ) from exc
+
+
+# --------------------------------------------------------------------------- #
+# The one git blob reader (invariant 5)
+# --------------------------------------------------------------------------- #
+#
+# `load_text_at_base` above is the one reader of THIS file's policy;
+# `blob_text_at` is the one reader of ANY path out of a ref's object store, and
+# both go through it so the interesting cases — symlink, submodule, non-UTF-8,
+# unresolvable ref — cannot be answered two different ways.
+# `role_protocol.file_text_at` (the signature gate's reader) delegates here too.
+#
+# Two git reads, in this order:
+#
+#   1. `git ls-tree -z <ref>: -- <path>` — the AUTHORITATIVE answer. rc 0 with
+#      no output means the tree genuinely does not contain the path (None); an
+#      entry gives the mode, and any mode other than a regular-file blob
+#      (symlink 120000, gitlink 160000, tree) is refused rather than read as
+#      text. The tree-ish is spelled `<ref>:` rather than `<ref>` so the argv
+#      carries the same `<ref>:<path>`-shaped token the blob read does, which
+#      keeps injectable `run` seams that model only object-store reads able to
+#      answer it.
+#   2. `git cat-file blob <ref>:<path>` — the content. Reached when step 1
+#      itself could not be answered (an unresolvable ref, or an injected seam
+#      that models only blob reads). A failure here is classified by git's own
+#      message: "does not exist in" is the absent-from-tree state (None);
+#      anything else — invalid object name, bad file (a gitlink), a broken
+#      repository — raises. Absence is never inferred from a failure whose
+#      cause is unknown.
+#
+# Bytes are decoded STRICTLY: a non-UTF-8 blob raises rather than returning
+# mojibake or None, because both of those read as "the policy says nothing".
+
+_GIT_TIMEOUT_SECONDS = 30
+
+#: git's message when a path is not in the named tree. The one failure that
+#: means "absent" rather than "unreadable".
+_GIT_ABSENT_MARKERS = ("does not exist in", "does not exist in the")
+
+
+def _run_git(
+    cmd: list[str],
+    cwd: str,
+    run: Callable[..., object] | None,
+) -> tuple[int, bytes | str, str]:
+    """`(returncode, stdout, stderr)` for one git command.
+
+    ``run`` is the injectable subprocess seam (``push_verify``'s convention).
+    Its result may be a ``CompletedProcess`` or a ``(rc, out, err)`` triple —
+    both are accepted, because the seam's shape is the caller's choice and
+    neither reading is more correct. Raises whatever the seam raises; callers
+    map that to their own error type.
+    """
+    if run is None:
+        proc = subprocess.run(
+            cmd, cwd=cwd, capture_output=True, timeout=_GIT_TIMEOUT_SECONDS
+        )
+        stderr = proc.stderr or b""
+        return (
+            proc.returncode,
+            proc.stdout or b"",
+            stderr.decode("utf-8", "replace"),
+        )
+    result = run(
+        cmd,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=_GIT_TIMEOUT_SECONDS,
+    )
+    if hasattr(result, "returncode"):
+        rc = int(getattr(result, "returncode"))
+        out = getattr(result, "stdout", "") or ""
+        err = getattr(result, "stderr", "") or ""
+        return rc, out, str(err)
+    if isinstance(result, tuple) and len(result) >= 2:
+        rc = int(result[0])
+        out = result[1] or ""
+        err = str(result[2]) if len(result) > 2 and result[2] else ""
+        return rc, out, err
+    raise BaseConfigError(
+        f"injected git seam returned an unusable result: {type(result).__name__}"
+    )
+
+
+def _as_text(stdout: bytes | str, ref: str, path: str) -> str:
+    if isinstance(stdout, str):
+        return stdout
+    try:
+        return stdout.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise BaseConfigError(
+            f"{path} at {ref} is not valid UTF-8: {exc}"
+        ) from exc
+
+
+def blob_text_at(
+    repo_root: str | Path,
+    ref: str,
+    path: str,
+    *,
+    run: Callable[..., object] | None = None,
+) -> str | None:
+    """One path's UTF-8 text out of ``ref``'s object store, or None when
+    ``ref``'s tree does not contain it.
+
+    Never touches the working copy. Raises :class:`BaseConfigError` when the
+    ref does not resolve, the entry is not a regular-file blob (symlink,
+    submodule, directory), git fails or times out, or the bytes are not UTF-8 —
+    "I could not read it" is never reported as "it is not there".
+    """
+    root = str(repo_root)
+    try:
+        rc, out, err = _run_git(
+            ["git", "ls-tree", "-z", f"{ref}:", "--", path], root, run
+        )
+    except BaseConfigError:
+        raise
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise BaseConfigError(f"cannot list {path} at {ref}: {exc}") from exc
+    if rc == 0:
+        entries = [
+            entry
+            for entry in _as_text(out, ref, path).split("\0")
+            if entry.strip()
+        ]
+        if not entries:
+            return None
+        if len(entries) > 1:
+            raise BaseConfigError(
+                f"{path} at {ref} resolves to {len(entries)} tree entries"
+            )
+        meta, _tab, _name = entries[0].partition("\t")
+        fields = meta.split()
+        if len(fields) < 3:
+            raise BaseConfigError(
+                f"unparseable tree entry for {path} at {ref}: {entries[0]!r}"
+            )
+        mode, obj_type = fields[0], fields[1]
+        if obj_type != "blob" or mode not in ("100644", "100755"):
+            raise BaseConfigError(
+                f"{path} at {ref} is a {obj_type} with mode {mode}, not a "
+                "regular file — a symlink or submodule is a redirect to "
+                "somewhere this ref does not govern"
+            )
+
+    try:
+        rc, out, err = _run_git(
+            ["git", "cat-file", "blob", f"{ref}:{path}"], root, run
+        )
+    except BaseConfigError:
+        raise
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise BaseConfigError(f"cannot read {path} at {ref}: {exc}") from exc
+    if rc != 0:
+        lowered = err.lower()
+        if any(marker in lowered for marker in _GIT_ABSENT_MARKERS):
+            return None
+        raise BaseConfigError(
+            f"cannot read {path} at {ref} (git exit {rc}): {err.strip()}"
+        )
+    return _as_text(out, ref, path)
