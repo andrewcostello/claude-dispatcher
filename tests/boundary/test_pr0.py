@@ -110,6 +110,50 @@ if _SRC not in sys.path:
 from claude_dispatcher.boundary import generated as _GEN  # noqa: E402
 
 
+# ─── the ONE public entrypoint, bound once ───────────────────────────────────
+#
+# `reduce_section_a`, `reduce_section_b` and `fold_epochs` are DELETED, not
+# renamed. They were documented as projections but were CALLABLE with events,
+# and two of them could not express the run context — so each was a second
+# walk over the same bytes with a fabricated SHARED run, which is the
+# divergence four review rounds kept rediscovering. Every seal in this file
+# now goes through `_boundary()`, so no seal can reintroduce a second walk,
+# and every projection is selected OUT OF the one result.
+
+
+def _run_context(generated, *, mode: str = "SHARED", anchors=None):
+    """A RunContext. `mode` is REQUIRED by the type (None raises rather than
+    reading as SHARED), and an empty `anchors` is the NAMED state "this run
+    has no protocol_genesis anchor", which fails closed."""
+    return generated.RunContext(
+        credential_mode=generated.CredentialMode[mode],
+        anchors={} if anchors is None else anchors)
+
+
+def _boundary(generated, events, *, mode: str = "SHARED", anchors=None) -> dict:
+    """THE single pass. Returns the whole reduced state."""
+    return generated.reduce_boundary(
+        events, _run_context(generated, mode=mode, anchors=anchors))
+
+
+def _machine_view(generated, result, machine: str):
+    """One machine's view OUT OF an already-computed result, selected from the
+    module's OWN closed key map — never a second walk, and never a key list
+    this file invented. `test_machine_projection_is_a_selection_not_a_walk`
+    keeps this statement and the module's private `_project_machine`
+    coupled."""
+    keys = generated._MACHINE_PROJECTIONS[machine]
+    return result[keys[0]] if len(keys) == 1 else {k: result[k] for k in keys}
+
+
+def _epochs(generated, events, *, mode: str = "SHARED", anchors=None):
+    """The fence view: what `fold_epochs` used to return, projected out of
+    the one pass instead of walked a second time."""
+    return _machine_view(
+        generated, _boundary(generated, events, mode=mode, anchors=anchors),
+        "epoch_fold")
+
+
 def _run(args: list[str], timeout: int = 180) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, *args], cwd=REPO_ROOT,
                           capture_output=True, text=True, timeout=timeout)
@@ -708,7 +752,7 @@ def test_projection_frontier_violation_is_the_only_failure(generated):
     # only the FRONTIER check can reject this.
     bad = _wire_effect(generated, "Explained", "e3", "m1", "EFFECT_OBSERVED",
                        new_oid="oid-new")
-    got = generated.reduce_section_a([prep, to_held, bad])
+    got = _boundary(generated, [prep, to_held, bad])
     halt = got["halts"]["R1:refs/heads/main"]
     assert halt["code"] == "ILLEGAL_TRANSITION"
     assert "unreachable from durable state" in halt["detail"]
@@ -1027,7 +1071,7 @@ def test_auto_release_under_a_separated_run_releases(generated):
     arms below would pass on a stream that never releases at all."""
     g = generated
     vec = _VECTORS["b_actor_verified_auto_separated"]
-    released = g.reduce_section_b(vec["events"], g.CredentialMode.SEPARATED)
+    released = _boundary(g, vec["events"], mode="SEPARATED")
     assert not released["halts"], released["halts"]
     assert {d["state"] for h in released["holds"].values()
             for d in h.values()} == {"RELEASED"}
@@ -1035,20 +1079,23 @@ def test_auto_release_under_a_separated_run_releases(generated):
 
 @pytest.mark.parametrize("mode_name", [
     pytest.param("SHARED", id="deny-shared-run-refuses-auto-release"),
-    pytest.param(None, id="deny-absent-context-defaults-closed"),
 ])
 def test_layer2_event_mode_disagreeing_with_the_run_halts(generated, mode_name):
-    """LAYER 2, alone: an event declaring SEPARATED under a SHARED (or
-    absent, §0.3 ⇒ SHARED) run is refused by the mode-disagreement check in
-    `_step_section_b`, by its own wording.
+    """LAYER 2, alone: an event declaring SEPARATED under a SHARED run is
+    refused by the mode-disagreement check in `_step_section_b`, by its own
+    wording.
+
+    The `None` row moved to
+    `test_run_context_refuses_an_absent_credential_mode`: an absent mode is
+    no longer READ as SHARED, it is refused at the type boundary, which is a
+    stronger fact than "defaults closed" and needs its own seal.
 
     MUTATION: `if event.mode is not run_mode:` → `if False:` in
-    _step_section_b ⇒ red (both rows).
+    _step_section_b ⇒ red.
     """
     g = generated
-    mode = None if mode_name is None else g.CredentialMode[mode_name]
     vec = _VECTORS["b_actor_verified_auto_separated"]
-    got = g.reduce_section_b(vec["events"], mode)
+    got = _boundary(g, vec["events"], mode=mode_name)
     assert got["halts"], f"mode={mode_name}: auto-release was not refused"
     detail = " ".join(h["detail"] for h in got["halts"].values())
     assert "credential mode is run context" in detail, detail
@@ -1058,6 +1105,126 @@ def test_layer2_event_mode_disagreeing_with_the_run_halts(generated, mode_name):
     assert "requires the RUN to be SEPARATED" not in detail, (
         "layer 3 fired here — the layer attribution in this file's comments "
         "is stale; re-derive which site refuses before editing this seal")
+
+
+@pytest.mark.parametrize("mode,match", [
+    pytest.param(None, r"must be a CredentialMode member",
+                 id="deny-run-mode-absent"),
+    pytest.param("SEPARATED", r"must be a CredentialMode member",
+                 id="deny-run-mode-is-a-raw-string"),
+    pytest.param(2, r"must be a CredentialMode member",
+                 id="deny-run-mode-is-an-int"),
+])
+def test_run_context_refuses_an_absent_credential_mode(generated, mode, match):
+    """§0.3's "absent or unprobeable ⇒ SHARED, never a soft SEPARATED" is a
+    rule for the PREFLIGHT that builds the context. Inside the reduce it
+    would mean "the caller said nothing", and the run's mode decides whether
+    the only operator-less release of a foreign hold is open — so absence is
+    REFUSED at the type boundary rather than defaulted.
+
+    Previously `credential_mode` was a per-function keyword defaulting to
+    None ⇒ SHARED, and two of the three entrypoints did not accept it at
+    all: the same bytes produced two verdicts. There is now no signature
+    through which the mode can be omitted.
+
+    MUTATION: `if not isinstance(self.credential_mode, CredentialMode)` →
+    `if False:` in RunContext.__post_init__ ⇒ red on all three rows.
+    """
+    with pytest.raises(ValueError, match=match):
+        generated.RunContext(credential_mode=mode)
+
+
+def test_reduce_boundary_refuses_anything_but_a_run_context(generated):
+    """deny: the entrypoint takes a RunContext, not a bare mode or a dict —
+    the run's mode and its anchors travel together because separating them
+    is what let one of them be fabricated.
+
+    MUTATION: `if not isinstance(run_context, RunContext)` → `if False:`
+    in _ReduceState.__init__ ⇒ red.
+    """
+    g = generated
+    for bad in (g.CredentialMode.SHARED, {"credential_mode": "SHARED"}, None):
+        with pytest.raises(TypeError, match=r"requires a RunContext"):
+            g.reduce_boundary([], bad)
+
+
+def test_run_context_anchors_are_an_immutable_named_state(generated):
+    """The empty anchor map is a NAMED state — "this run has no
+    protocol_genesis anchor" — and it fails closed: a base with
+    epoch-advancing edges and no anchor takes an EPOCH_GAP halt rather than
+    resolving to anything. It can therefore carry a default where the
+    credential mode cannot: SHARED-as-default is permissive on the run-mode
+    gate; an absent anchor is permissive on nothing.
+
+    MUTATIONS: drop the `MappingProxyType(dict(...))` copy ⇒ the aliasing
+    row goes red (a caller could move the fence's origin after the context
+    was built); make an anchorless base resolve to its first edge instead of
+    halting ⇒ the fail-closed row goes red.
+    """
+    g = generated
+    mutable = {"B1": "a" * 40}
+    ctx = g.RunContext(credential_mode=g.CredentialMode.SHARED,
+                       anchors=mutable)
+    mutable["B1"] = "b" * 40                    # move it afterwards
+    assert ctx.anchors["B1"] == "a" * 40, (
+        "RunContext aliased a caller-owned anchor map — the fence's origin "
+        "could change after the context was constructed")
+    with pytest.raises(TypeError):
+        ctx.anchors["B1"] = "c" * 40
+    # the default: named, and fail-closed on an edge-bearing base
+    assert g.RunContext(credential_mode=g.CredentialMode.SHARED).anchors == {}
+    history = _edge_history("noanchor", "R1:refs/heads/main")
+    epochs = _epochs(g, history)                # no anchors at all
+    entry = epochs["R1:refs/heads/main"]
+    assert entry["status"] == "halt", (
+        "an edge-bearing base with no anchor resolved to something — the "
+        "empty anchor map is not fail-closed")
+    assert entry["halt"]["code"] == "EPOCH_GAP"
+    assert "no protocol_genesis anchor" in entry["halt"]["detail"]
+    with pytest.raises(ValueError, match=r"anchors must be a mapping"):
+        g.RunContext(credential_mode=g.CredentialMode.SHARED, anchors=["B1"])
+
+
+def test_machine_projection_is_a_selection_not_a_walk(generated):
+    """`_project_machine` selects a view OUT OF an already-computed result.
+    It cannot be handed events — a function that cannot be handed events
+    cannot walk them, which is the structural half of S1's fix.
+
+    This also couples THIS FILE's `_machine_view` to the module's own
+    `_MACHINE_PROJECTIONS`: the two statements of "what a machine's view is"
+    must agree, or one of them is a private reimplementation that can drift
+    exactly the way the three deleted entrypoints did.
+
+    MUTATIONS: add a fourth key to a machine's projection tuple without
+    updating the module ⇒ red; make `_project_machine` accept an unknown
+    machine instead of raising ⇒ the closed-set row goes red; delete a key
+    from `_MACHINE_PROJECTIONS` ⇒ red.
+    """
+    g = generated
+    assert set(g._MACHINE_PROJECTIONS) == {"section_a", "section_b",
+                                           "epoch_fold"}, (
+        "the machine set is CLOSED — a fourth projection is a fourth walk "
+        "waiting to happen")
+    result = _boundary(g, [], anchors={"B1": "a" * 40})
+    for machine in g._MACHINE_PROJECTIONS:
+        assert g._project_machine(result, machine) == \
+            _machine_view(g, result, machine), (
+            f"{machine}: this file's projection and the module's disagree")
+    # every projected key really is a key of the one result
+    for keys in g._MACHINE_PROJECTIONS.values():
+        for key in keys:
+            assert key in result, f"{key} is not part of the reduced state"
+    # the whole reduced state is exactly the union — no key is unprojectable
+    projected = {k for keys in g._MACHINE_PROJECTIONS.values() for k in keys}
+    assert projected == set(result), (
+        f"reduced-state keys no machine can project: "
+        f"{sorted(set(result) - projected)}")
+    with pytest.raises(KeyError, match=r"unknown boundary machine"):
+        g._project_machine(result, "section_c")
+    # …and it is not callable with events: handing it a stream is a KeyError
+    # on the machine name or a missing result key, never a reduce.
+    with pytest.raises((KeyError, TypeError)):
+        g._project_machine([], "section_a")
 
 
 def test_layer1_constructor_pins_separated_on_the_auto_release(generated):
@@ -1273,7 +1440,7 @@ def test_epoch_per_disposition_accepting_must_advance(generated):
     ev = _wire_effect(g, "ReconcileAccept", "e1", "m1", cls.FROM_STATES[0],
                       disposition="ACCEPT_FOREIGN_ADVANCED",
                       epoch_before="E0", epoch_after="E0")
-    halt = g.reduce_section_a([ev])["halts"]["R1:refs/heads/main"]
+    halt = _boundary(g, [ev])["halts"]["R1:refs/heads/main"]
     assert halt["code"] == "ILLEGAL_TRANSITION"
     assert "an accepting disposition advances the epoch" in halt["detail"]
     assert "this event did not" in halt["detail"], halt["detail"]
@@ -1292,7 +1459,7 @@ def test_epoch_accept_ours_pins_the_fence_to_its_own_new_oid(generated):
     ev = _wire_effect(g, "ReconcileAccept", "e1", "m1", cls.FROM_STATES[0],
                       disposition="ACCEPT_OURS", new_oid="oid-new",
                       epoch_before="E0", epoch_after="E1")
-    halt = g.reduce_section_a([ev])["halts"]["R1:refs/heads/main"]
+    halt = _boundary(g, [ev])["halts"]["R1:refs/heads/main"]
     assert halt["code"] == "ILLEGAL_TRANSITION"
     assert "ACCEPT_OURS pins the fence to its new_oid payload" in halt["detail"]
     assert "'oid-new'" in halt["detail"], halt["detail"]
@@ -1311,7 +1478,7 @@ def test_epoch_as_accept_ours_must_advance(generated):
     auto = vec["events"][-1]
     assert auto["variant"] == "ActorVerifiedAuto"
     auto["epoch_after"] = auto["epoch_before"]        # declared, not made
-    got = g.reduce_section_b(vec["events"], g.CredentialMode.SEPARATED)
+    got = _boundary(g, vec["events"], mode="SEPARATED")
     halt = got["halts"]["R1:refs/heads/main"]
     assert halt["code"] == "ILLEGAL_TRANSITION"
     assert "(as_accept_ours)" in halt["detail"], halt["detail"]
@@ -1494,7 +1661,7 @@ def test_reducers_halt_on_a_non_integer_schema_major(generated, major, match):
     """
     g = generated
     ev = dict(_wire_ok(g), schema_major=major)
-    halt = g.reduce_section_a([ev])["halts"]["R1:refs/heads/main"]
+    halt = _boundary(g, [ev])["halts"]["R1:refs/heads/main"]
     assert halt["code"] == "SCHEMA_MAJOR_UNKNOWN"
     assert "non-integer schema_major" in halt["detail"], halt["detail"]
 
@@ -1584,7 +1751,7 @@ def test_divergent_duplicate_halts_every_base_it_touched(generated):
     on `base_hint` only (instead of every base in `exc.bases`) ⇒ red.
     """
     g = generated
-    got = g.reduce_section_a(_divergent_pair(g, "B1", "B2"))
+    got = _boundary(g, _divergent_pair(g, "B1", "B2"))
     for base in ("B1", "B2"):
         assert base in got["halts"], (
             f"{base} did not halt on a divergent duplicate: {got['halts']}")
@@ -1606,7 +1773,7 @@ def test_dedup_registers_even_on_an_already_halted_base(generated):
                                 base="B1", authorization_id="auth-1"),
                    variant="TotallyNovelEvent")
     first, second = _divergent_pair(g, "B1", "B2")
-    got = g.reduce_section_a([halting, first, second])
+    got = _boundary(g, [halting, first, second])
     assert got["halts"]["B1"]["code"] == "SCHEMA_MAJOR_UNKNOWN"
     assert "B2" in got["halts"], (
         "the divergent copy on a healthy base was read as first-seen — "
@@ -1697,7 +1864,7 @@ def test_concurrent_auto_release_duplicates_converge(schemas, generated):
     auto["event_id"] = derived
     twin = dict(auto, ts="1999-12-31T23:59:59Z", run_id="run-2",
                 trace_id="trace-2")
-    got = g.reduce_section_b(vec["events"] + [twin], g.CredentialMode.SEPARATED)
+    got = _boundary(g, vec["events"] + [twin], mode="SEPARATED")
     assert got["halts"] == {}, (
         f"a concurrent duplicate of a correct auto-release halted the base: "
         f"{got['halts']}")
@@ -1723,7 +1890,7 @@ def test_a_non_derived_auto_release_twin_still_halts(generated):
     vec = copy.deepcopy(_VECTORS["b_actor_verified_auto_separated"])
     auto = vec["events"][-1]
     twin = dict(auto, event_id="minted-by-hand", ts="1999-12-31T23:59:59Z")
-    got = g.reduce_section_b(vec["events"] + [twin], g.CredentialMode.SEPARATED)
+    got = _boundary(g, vec["events"] + [twin], mode="SEPARATED")
     assert got["halts"], "a hand-minted duplicate release was admitted"
     detail = " ".join(h["detail"] for h in got["halts"].values())
     assert "contradicts the reduced state" in detail, detail
@@ -1750,7 +1917,7 @@ def test_recovery_append_payload_converges_on_every_issuer_field(schemas,
     g = generated
     prepared = _wire_effect(g, "Prepare", "e1", "m1", "GENESIS",
                             authorization_id="auth-1")
-    plan = g.reduce_section_a([prepared])["recovery_appends"]
+    plan = _boundary(g, [prepared])["recovery_appends"]
     assert len(plan) == 1
     append = plan[0]
     issuer = list(append["issuer_supplied"])
@@ -1786,7 +1953,7 @@ def test_recovery_append_payload_converges_on_every_issuer_field(schemas,
     # the append's audit `from` is PREPARED, so the stream carries the
     # movement's own history first — this is a cold start reading its own
     # durable trace, then two processes appending the recovery.
-    got = g.reduce_section_a([prepared, first, second])
+    got = _boundary(g, [prepared, first, second])
     assert got["halts"] == {}, (
         f"two recovering processes that agree on the declared core did not "
         f"converge: {got['halts']}")
@@ -1812,7 +1979,7 @@ def test_derived_twins_that_disagree_on_the_CORE_still_halt(schemas, generated):
     assert set(g.CANONICAL_CORE_FOR_DERIVED_IDS) == core
     prepared = _wire_effect(g, "Prepare", "e1", "m1", "GENESIS",
                             authorization_id="auth-1")
-    append = g.reduce_section_a([prepared])["recovery_appends"][0]
+    append = _boundary(g, [prepared])["recovery_appends"][0]
     base = {k: v for k, v in append.items() if k != "issuer_supplied"}
     base.update({"ts": "1970-01-01T00:00:00Z", "run_id": "r",
                  "trace_id": "t", "protocol_epoch": "E0", "authority": "fp",
@@ -1823,7 +1990,7 @@ def test_derived_twins_that_disagree_on_the_CORE_still_halt(schemas, generated):
     assert "from" in core
     twin = dict(base, **{"from": "SUBMITTED", "to": "HELD",
                          "variant": "CrashRecoveryFromSubmitted"})
-    got = g.reduce_section_a([prepared, base, twin])
+    got = _boundary(g, [prepared, base, twin])
     assert got["halts"], "twins disagreeing inside the comparison core converged"
     assert got["halts"]["R1:refs/heads/main"]["code"] == "EVENT_PAYLOAD_DIVERGENT"
 
@@ -1857,7 +2024,7 @@ def test_identity_replay_contributes_no_epoch_edge(generated):
     # the chain from the anchor is walked to its tail with nothing left over.
     anchor = replay["events"][0]["epoch_before"]
     base = replay["events"][0]["base_key"]
-    fold = g.fold_epochs(replay["events"], {base: anchor})
+    fold = _epochs(g, replay["events"], anchors={base: anchor})
     assert fold[base]["halt"] is None, (
         f"an identity replay contributed an edge: {fold[base]['halt']}")
     assert fold[base]["status"] == "ok"
@@ -1865,7 +2032,7 @@ def test_identity_replay_contributes_no_epoch_edge(generated):
     # replay contributed nothing rather than contributing a self-loop.
     without = [e for e in replay["events"]
                if e.get("variant") != "ReconcileReplayIdentity"]
-    assert g.fold_epochs(without, {base: anchor})[base]["epoch"] == \
+    assert _epochs(g, without, anchors={base: anchor})[base]["epoch"] == \
         fold[base]["epoch"], "the replay changed the harvested fence"
 
 
@@ -1901,7 +2068,7 @@ def test_fence_shape_at_harvest(generated, name):
     """
     g = generated
     vec = _VECTORS[name]
-    fold = g.fold_epochs(vec["events"], vec["anchors"])
+    fold = _epochs(g, vec["events"], anchors=vec["anchors"])
     assert fold != {} or not vec["events"], (
         "a non-empty history folded to nothing — 'no bases' and 'nothing to "
         "fold' must be distinguishable")
@@ -1949,15 +2116,14 @@ def test_an_advancing_edge_may_not_carry_a_non_oid_fence(generated, field):
     else:
         # epoch_before is free text while the advance itself stays legal
         bad["epoch_after"] = advancing["epoch_after"]
-    halt = g.reduce_section_a([opening, bad])["halts"]["R1:refs/heads/main"]
+    halt = _boundary(g, [opening, bad])["halts"]["R1:refs/heads/main"]
     assert halt["code"] == "SCHEMA_MAJOR_UNKNOWN", halt
     assert f"{field} 'not-an-oid' is not an object id" in halt["detail"], (
         halt["detail"])
     assert "never coerced" in halt["detail"]
     # the fold shares the one pass, so it halts identically rather than
     # harvesting the free text as a fence
-    fold = g.fold_epochs([opening, bad],
-                         {"R1:refs/heads/main": opening["epoch_before"]})
+    fold = _epochs(g, [opening, bad], anchors={"R1:refs/heads/main": opening["epoch_before"]})
     entry = fold["R1:refs/heads/main"]
     assert entry["status"] == "halt", entry
     assert entry["halt"]["code"] == "SCHEMA_MAJOR_UNKNOWN"
@@ -2018,7 +2184,7 @@ def test_a_none_anchor_is_a_typed_halt_not_a_crash(generated):
     reading a typed halt.
     """
     g = generated
-    fold = g.fold_epochs([], {"B1": None})
+    fold = _epochs(g, [], anchors={"B1": None})
     assert fold, "a malformed anchor read as 'nothing to fold'"
     assert fold["B1"]["status"] == "halt"
     assert fold["B1"]["halt"]["code"] in {c.value for c in g.BoundaryErrorCode}
@@ -2026,7 +2192,7 @@ def test_a_none_anchor_is_a_typed_halt_not_a_crash(generated):
         fold["B1"]["halt"]["detail"])
     # …and it must not be readable as an ABSENT anchor: an absent base is
     # simply not in the result at all.
-    assert g.fold_epochs([], {}) == {}
+    assert _epochs(g, [], anchors={}) == {}
 
 
 _OID_HEX = set("0123456789abcdef")
@@ -2091,7 +2257,7 @@ def test_matched_subject_digest_has_an_independent_oracle(schemas, generated):
     forged = copy.deepcopy(vec)
     forged["events"][-1]["matched_subject_digest"] = hashlib.sha256(
         "\n".join(built[:-1] + ["subject-new=" + "9" * 40]).encode()).hexdigest()
-    got = g.reduce_section_b(forged["events"], g.CredentialMode.SEPARATED)
+    got = _boundary(g, forged["events"], mode="SEPARATED")
     assert got["halts"], "a release bound to a different delta was admitted"
     detail = " ".join(h["detail"] for h in got["halts"].values())
     assert "matched_subject_digest" in detail and \
@@ -2267,14 +2433,17 @@ def _project_result(machine: str, got: dict) -> dict:
 
 
 def _reduce(generated, vec: dict) -> dict:
-    if vec["machine"] == "section_a":
-        return generated.reduce_section_a(vec["events"])
-    if vec["machine"] == "section_b":
-        # credential_mode is RUN context (protocol_genesis), supplied by the
-        # caller — never read from the events.
-        mode = generated.CredentialMode[vec["credential_mode"]]
-        return generated.reduce_section_b(vec["events"], mode)
-    return generated.fold_epochs(vec["events"], vec["anchors"])
+    """The vector's OWN declared run context, through the ONE entrypoint,
+    then projected to the machine the vector names.
+
+    Every vector now carries BOTH `credential_mode` and `anchors`, for all
+    three machines — because there is one walk, so the run's mode is not
+    section B's private business and the anchors are not the fold's. The old
+    driver called a different function per machine and invented a run for
+    two of them; that is precisely the second walk S1 deleted."""
+    result = _boundary(generated, vec["events"],
+                       mode=vec["credential_mode"], anchors=vec["anchors"])
+    return _machine_view(generated, result, vec["machine"])
 
 
 def _all_halt_details(machine: str, got: dict) -> str:
@@ -2552,7 +2721,7 @@ def test_anchor_shape_at_the_fence(generated, anchor, expect):
     not-an-object-id wording ⇒ deny-anchor-is-none goes red.
     """
     g = generated
-    entry = g.fold_epochs([], {"B1": anchor})["B1"]
+    entry = _epochs(g, [], anchors={"B1": anchor})["B1"]
     if expect is None:
         assert entry["status"] == "ok", entry
         assert entry["halt"] is None
@@ -2594,18 +2763,18 @@ def test_ceiling_halt_wins_over_anchor_shape(generated):
     g = generated
     n = g.RECOVERY_CEILING_EVENTS
     breached = _ceiling_events(g, n + 1, "BUSY")
-    entry = g.fold_epochs(breached, {"BUSY": "E0"})["BUSY"]
+    entry = _epochs(g, breached, anchors={"BUSY": "E0"})["BUSY"]
     assert entry["status"] == "halt"
     assert entry["halt"]["code"] == "RECOVERY_CEILING", (
         f"the anchor complaint pre-empted the ceiling breach: {entry['halt']}")
     assert "is not an object id" not in entry["halt"]["detail"]
     # …and with a VALID anchor the same base reports the same cause, so the
     # ceiling result does not depend on the anchor at all.
-    assert g.fold_epochs(breached, {"BUSY": ANCHOR_A})["BUSY"]["halt"]["code"] \
+    assert _epochs(g, breached, anchors={"BUSY": ANCHOR_A})["BUSY"]["halt"]["code"] \
         == "RECOVERY_CEILING"
     # …while a healthy base with the SAME malformed anchor does report it —
     # proof the masking is the halt's doing, not a dropped check.
-    quiet = g.fold_epochs(_ceiling_events(g, 3, "QUIET"), {"QUIET": "E0"})
+    quiet = _epochs(g, _ceiling_events(g, 3, "QUIET"), anchors={"QUIET": "E0"})
     assert quiet["QUIET"]["halt"]["code"] == "EPOCH_GAP"
     assert "is not an object id" in quiet["QUIET"]["halt"]["detail"]
 
@@ -2621,15 +2790,15 @@ def test_ceiling_exactly_n_is_admitted(generated):
     stronger fact it actually holds: NO halts at all.
     """
     g, n = generated, generated.RECOVERY_CEILING_EVENTS
-    for result in (g.reduce_section_a(_ceiling_events(g, n)),
-                   g.reduce_section_b(_ceiling_events(g, n))):
+    for result in (_boundary(g, _ceiling_events(g, n)),
+                   _boundary(g, _ceiling_events(g, n))):
         assert result["halts"] == {}, (
             f"exactly N was not admitted cleanly: {result['halts']}")
     # the fold arm is the ONLY one of the ceiling seals whose anchor is
     # actually examined (no per-base halt masks it), so it is the one that
     # needs a real object id — see test_ceiling_halt_wins_over_anchor_shape
     # for why the others passed while carrying "E0".
-    fold = g.fold_epochs(_ceiling_events(g, n), {"B1": ANCHOR_A})["B1"]
+    fold = _epochs(g, _ceiling_events(g, n), anchors={"B1": ANCHOR_A})["B1"]
     assert fold["halt"] is None, fold["halt"]
     assert fold["status"] == "ok" and fold["epoch"] == ANCHOR_A
 
@@ -2637,10 +2806,10 @@ def test_ceiling_exactly_n_is_admitted(generated):
 def test_ceiling_n_plus_one_halts(generated):
     """deny: one event past the ceiling halts all three consumers."""
     g, n = generated, generated.RECOVERY_CEILING_EVENTS
-    for result in (g.reduce_section_a(_ceiling_events(g, n + 1)),
-                   g.reduce_section_b(_ceiling_events(g, n + 1))):
+    for result in (_boundary(g, _ceiling_events(g, n + 1)),
+                   _boundary(g, _ceiling_events(g, n + 1))):
         assert result["halts"]["B1"]["code"] == "RECOVERY_CEILING"
-    fold = g.fold_epochs(_ceiling_events(g, n + 1), {"B1": ANCHOR_A})
+    fold = _epochs(g, _ceiling_events(g, n + 1), anchors={"B1": ANCHOR_A})
     assert fold["B1"]["halt"]["code"] == "RECOVERY_CEILING"
 
 
@@ -2648,7 +2817,7 @@ def test_ceiling_is_counted_per_base(generated):
     """deny: one busy base must never halt a quiet one."""
     g, n = generated, generated.RECOVERY_CEILING_EVENTS
     events = _ceiling_events(g, n + 1, "BUSY") + _ceiling_events(g, 3, "QUIET")
-    for result in (g.reduce_section_a(events), g.reduce_section_b(events)):
+    for result in (_boundary(g, events), _boundary(g, events)):
         assert result["halts"]["BUSY"]["code"] == "RECOVERY_CEILING"
         # "must never halt a quiet one" — NOT halt, not merely "not halted
         # with this one code". A shared-dedup or misattributed error that
@@ -2658,7 +2827,7 @@ def test_ceiling_is_counted_per_base(generated):
             f"a busy base halted a quiet one: {result['halts'].get('QUIET')}")
     # DISTINCT anchors: one shared value could not tell "each base kept its
     # own fence" from "both read the same one".
-    fold = g.fold_epochs(events, {"BUSY": ANCHOR_A, "QUIET": ANCHOR_B})
+    fold = _epochs(g, events, anchors={"BUSY": ANCHOR_A, "QUIET": ANCHOR_B})
     assert fold["BUSY"]["halt"]["code"] == "RECOVERY_CEILING"
     assert fold["QUIET"]["halt"] is None, fold["QUIET"]["halt"]
     assert fold["QUIET"]["epoch"] == ANCHOR_B, (
@@ -2669,7 +2838,7 @@ def test_ceiling_with_empty_anchors_still_halts(generated):
     """deny: a ceiling breach with NO anchors must be an explicit halt — {}
     would read as a clean, empty fold."""
     g = generated
-    fold = g.fold_epochs(_ceiling_events(g, g.RECOVERY_CEILING_EVENTS + 1), {})
+    fold = _epochs(g, _ceiling_events(g, g.RECOVERY_CEILING_EVENTS + 1), anchors={})
     assert fold, "empty result: a ceiling breach read as 'nothing to fold'"
     assert fold["B1"]["status"] == "halt"
     assert fold["B1"]["halt"]["code"] == "RECOVERY_CEILING"
@@ -2679,8 +2848,7 @@ def test_ceiling_with_partial_anchors_keeps_edge_bearing_bases(generated):
     """deny: an edge-bearing base must not vanish on the ceiling path."""
     g, n = generated, generated.RECOVERY_CEILING_EVENTS
     other = _edge_history("o1", "OTHER")
-    fold = g.fold_epochs(_ceiling_events(g, n + 1, "BUSY") + other,
-                         {"BUSY": ANCHOR_A})
+    fold = _epochs(g, _ceiling_events(g, n + 1, "BUSY") + other, anchors={"BUSY": ANCHOR_A})
     assert fold["BUSY"]["halt"]["code"] == "RECOVERY_CEILING"
     assert fold["OTHER"]["halt"]["code"] == "EPOCH_GAP"
 
@@ -2695,9 +2863,9 @@ def test_ceiling_counts_deduplicated_events(generated):
            "schema_minor": 0, "family": "seat_result"}
     copies = [dict(one) for _ in range(n + 1)]
     assert "RECOVERY_CEILING" not in {
-        h["code"] for h in g.reduce_section_a(copies)["halts"].values()}
+        h["code"] for h in _boundary(g, copies)["halts"].values()}
     distinct = _ceiling_events(g, n + 1)
-    assert g.reduce_section_a(distinct)["halts"]["B1"]["code"] == "RECOVERY_CEILING"
+    assert _boundary(g, distinct)["halts"]["B1"]["code"] == "RECOVERY_CEILING"
 
 
 def test_derivations_pinned_goldens(generated):
@@ -2891,7 +3059,7 @@ def test_unknown_epoch_effect_is_closed_at_both_ends(generated):
         assert halt["code"] == "ILLEGAL_TRANSITION"
         assert "domain is closed" in halt["detail"]
         # …and the same fact through the PUBLIC reducer, not only the helper
-        got = live.reduce_section_a([wire])
+        got = _boundary(live, [wire])
         base_halt = got["halts"]["R1:refs/heads/main"]
         assert base_halt["code"] == "ILLEGAL_TRANSITION"
         assert "domain is closed" in base_halt["detail"], base_halt["detail"]
