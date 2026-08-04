@@ -18,6 +18,7 @@ import json
 import re
 from dataclasses import dataclass
 from enum import Enum, IntEnum
+from types import MappingProxyType
 from typing import ClassVar, Mapping, Optional, Sequence
 
 # ─── errors (plan §0.2 closed universe) ─────────────────────────────
@@ -3224,10 +3225,92 @@ def _fmt_a(st: MachineStateA, via_recovery: bool = False) -> dict:
             "via_recovery_append": via_recovery}
 
 
-def reduce_boundary(events: Sequence[Mapping[str, object]], *,
-                    anchors: Optional[Mapping[str, str]] = None,
-                    credential_mode: Optional[CredentialMode] = None) -> dict:
-    """THE single pass over a durable stream.
+# The one "no anchors" value: a named, genuinely immutable constant rather
+# than a mutable default argument.
+_NO_ANCHORS: Mapping[str, str] = MappingProxyType({})
+
+
+@dataclass(frozen=True)
+class RunContext:
+    """The run-scoped facts a reduce needs that the STREAM does not carry:
+    the credential mode from `protocol_genesis`, and the per-base
+    protocol-epoch anchors the fence walk starts from.
+
+    Both are REQUIRED, in ONE object, on ONE entrypoint — because the
+    alternative shape has now failed four times on this exact seam.
+    `credential_mode` used to be a per-function keyword defaulting to None ⇒
+    SHARED, and two of the three entrypoints did not accept it at all, so
+    the SAME BYTES produced two verdicts: reduce_section_b(SEPARATED) halted
+    a hold_lifecycle event whose declared mode disagreed with the run, while
+    fold_epochs — running the same walk as SHARED — took that same event as
+    an epoch-ADVANCING edge and returned the advanced fence, which IS
+    AuthorityFingerprint.base_epoch. No value of the event's `mode`
+    satisfied both consumers. Each round added the parameter to one more
+    function; that is a patch, not a fix. There is now no signature through
+    which the run's mode can be omitted, and None is refused rather than
+    read as SHARED (invariant 4: absence is a named state, and SHARED is not
+    the name of "nobody said")."""
+
+    credential_mode: CredentialMode
+    # The empty mapping is a NAMED state, not a fabrication: "this run has no
+    # protocol_genesis anchor". It fails CLOSED — a base with epoch-advancing
+    # edges and no anchor takes an EPOCH_GAP halt rather than resolving to
+    # anything — which is why it can carry a default where credential_mode
+    # cannot. SHARED as a default is permissive on the run-mode gate; an
+    # absent anchor is permissive on nothing.
+    anchors: Mapping[str, str] = _NO_ANCHORS
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.credential_mode, CredentialMode):
+            raise ValueError(
+                f"RunContext.credential_mode must be a CredentialMode member, "
+                f"got {_short(self.credential_mode)} — the RUN's mode comes "
+                f"from protocol_genesis and is never defaulted, never "
+                f"inferred from event payload, and never coerced")
+        if not isinstance(self.anchors, Mapping):
+            raise ValueError(
+                f"RunContext.anchors must be a mapping of base_key → "
+                f"protocol_genesis epoch, got {_short(self.anchors)} "
+                f"(an empty mapping is how a run states it has none)")
+        # immutable COPY (twin of the RosterSnapshot / SeatOutcome fix): a
+        # caller-owned dict would let the fence's origin change AFTER the
+        # context was constructed.
+        object.__setattr__(self, "anchors",
+                           MappingProxyType(dict(self.anchors)))
+
+
+# The three machines a caller can project out of the one result, and the
+# result keys each is made of. A one-key projection IS that key's value (the
+# fold has always been the epochs mapping itself). The set is CLOSED.
+_MACHINE_PROJECTIONS: Mapping[str, tuple[str, ...]] = {
+    "section_a": ("movements", "recovery_appends", "halts"),
+    "section_b": ("holds", "halts", "resolution_notes"),
+    "epoch_fold": ("epochs",),
+}
+
+
+def _project_machine(result: Mapping[str, object], machine: str) -> object:
+    """Select one machine's view OUT OF an already-computed reduce result.
+
+    Private, and it takes the RESULT rather than the events: the public
+    surface is reduce_boundary alone. reduce_section_a / reduce_section_b /
+    fold_epochs were documented as projections but were CALLABLE with events,
+    and two of them could not express the run context — so each was a second
+    walk over the same bytes with a fabricated run, which is the divergence
+    four rounds kept rediscovering. A function that cannot be handed events
+    cannot walk them."""
+    keys = _MACHINE_PROJECTIONS.get(machine)
+    if keys is None:
+        raise KeyError(f"unknown boundary machine {machine!r} — the set is "
+                       f"closed ({sorted(_MACHINE_PROJECTIONS)})")
+    if len(keys) == 1:
+        return result[keys[0]]
+    return {k: result[k] for k in keys}
+
+
+def reduce_boundary(events: Sequence[Mapping[str, object]],
+                    run_context: RunContext) -> dict:
+    """THE single pass over a durable stream, and the ONE public entrypoint.
 
     Four consecutive review rounds found the same root cause: a second,
     independent walk (the epoch fold) drifting from the reducers —
@@ -3242,13 +3325,22 @@ def reduce_boundary(events: Sequence[Mapping[str, object]], *,
     (design §12's single-Apply chokepoint, one level up from the iteration-5
     intake unification).
 
-    reduce_section_a / reduce_section_b / fold_epochs are projections of
-    this result, never second walks.
-
     Returns {movements, holds, recovery_appends, epochs, halts,
-    resolution_notes}. Halts are per base_key and typed; the first cause is
-    reported and later ones are counted in `suppressed`."""
-    ctx = _ReduceState(anchors or {}, credential_mode)
+    resolution_notes} — the whole reduced state, from which _project_machine
+    selects a machine's view. There is no other public callable, and
+    `run_context` is positional and required.
+
+    TWO DISTINCT FACTS, both in the result, and a consumer needs both:
+      * `halts[base]` — this base's EVENTS could not be reduced (schema
+        violation, illegal transition, divergent duplicate, ceiling). Effects
+        stop for the base.
+      * `epochs[base]["status"]` — whether this base's FENCE resolved. A
+        stream can reduce perfectly and still have an unanchored, forked or
+        cyclic fence, which is a §6.0 "halt effects pending re-genesis" for
+        the fence's consumer specifically. They are not merged because they
+        are not the same claim: a section-A machine projection is legitimately
+        consumable with no anchor at all."""
+    ctx = _ReduceState(run_context)
     ctx.seed_ceiling_halts(events)
     for ev in events:
         ctx.consume(ev)
@@ -3259,11 +3351,20 @@ class _ReduceState:
     """The one walk's accumulator: per-base halts, both machines' state, and
     the epoch edges harvested from events that passed every check."""
 
-    def __init__(self, anchors: Mapping[str, str],
-                 credential_mode: Optional[CredentialMode]) -> None:
-        self.anchors = anchors
-        # §0.3: absent/unprobeable ⇒ SHARED, never a soft SEPARATED.
-        self.run_mode = credential_mode or CredentialMode.SHARED
+    def __init__(self, run_context: RunContext) -> None:
+        if not isinstance(run_context, RunContext):
+            raise TypeError(
+                f"reduce_boundary() requires a RunContext, got "
+                f"{type(run_context).__name__} — the run's credential mode "
+                f"and epoch anchors are not optional and are not inferable "
+                f"from the stream")
+        self.run_context = run_context
+        self.anchors = run_context.anchors
+        # The RUN's mode, validated by RunContext. §0.3's "absent or
+        # unprobeable ⇒ SHARED, never a soft SEPARATED" is a rule for the
+        # PREFLIGHT that builds the context; here it would mean "the caller
+        # said nothing", which is refused instead of defaulted.
+        self.run_mode = run_context.credential_mode
         self.dedup = _Dedup()
         self.halts: dict[str, dict] = {}
         self.movements: dict[str, dict[str, MachineStateA]] = {}
@@ -3595,15 +3696,6 @@ def _copy_hold_book(book: Optional["_HoldBook"]) -> "_HoldBook":
     fresh.resolution_notes = list(book.resolution_notes)
     fresh.reject_restored = set(book.reject_restored)
     return fresh
-
-
-def reduce_section_a(events: Sequence[Mapping[str, object]]) -> dict:
-    """Section-A projection of the ONE pass (reduce_boundary) — never a
-    second walk. Shape: {movements, recovery_appends, halts}."""
-    result = reduce_boundary(events)
-    return {"movements": result["movements"],
-            "recovery_appends": result["recovery_appends"],
-            "halts": result["halts"]}
 
 
 def _step_section_a(movements, order, base: str, mid: str, event: object,
@@ -3992,17 +4084,6 @@ def _record_hold_outcome(book: _HoldBook, hid: str, event: object,
     book.holds[hid] = new
 
 
-def reduce_section_b(events: Sequence[Mapping[str, object]],
-                     credential_mode: Optional[CredentialMode] = None) -> dict:
-    """Section-B projection of the ONE pass (reduce_boundary) — never a
-    second walk. `credential_mode` is the RUN's mode (protocol_genesis),
-    passed as context and never taken from event payload. Shape:
-    {holds, halts, resolution_notes}."""
-    result = reduce_boundary(events, credential_mode=credential_mode)
-    return {"holds": result["holds"], "halts": result["halts"],
-            "resolution_notes": result["resolution_notes"]}
-
-
 def _step_section_b(book: _HoldBook, base: str, event: object,
                     ev: Mapping[str, object], run_mode: CredentialMode,
                     known_movements: frozenset = frozenset()) -> Optional[dict]:
@@ -4053,21 +4134,6 @@ def _step_section_b(book: _HoldBook, base: str, event: object,
         book.reject_restored.add(hid)
     _record_hold_outcome(book, hid, event, cur, new)
     return None
-
-
-def fold_epochs(events: Sequence[Mapping[str, object]],
-                anchors: Mapping[str, str]) -> dict:
-    """§6.0's recovery-step-(3) epoch fold, as a THIN ACCESSOR over the one
-    reduced state — not a second walk (panel round 6's structural fix).
-
-    Every edge it walks came from an event that passed the same
-    classification, dedup, typed construction, transition rules and per-row
-    epoch algebra the reducers applied, in the same pass. An identity
-    replay contributes no edge, so §6.0's blessed idempotent reconcile is a
-    no-op here exactly as it is to the machines. Halt isolation, the
-    recovery ceiling and the halt taxonomy are likewise shared, because
-    they happen once."""
-    return reduce_boundary(events, anchors=anchors)["epochs"]
 
 
 def _walk_epoch_chain(base: str, anchor: str,

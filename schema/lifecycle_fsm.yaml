@@ -422,7 +422,7 @@ section_b:
       display: ["**any other (state × event) pair**", "—", "**ILLEGAL ⇒ typed error, journalled**", "—"]
 
   # hold_id derivation (design §6.0, rounds 17–20). GENERATED as
-  # derive_hold_id(); reduce_section_b implements apply_order for real.
+  # derive_hold_id(); the reducer implements apply_order for real.
   hold_id:
     # The design states the derivation as a ‖-concatenation; an unframed
     # concatenation of variable-length fields is non-injective, so the
