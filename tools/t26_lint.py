@@ -21,6 +21,13 @@ Checks (exit nonzero on any violation):
      cites symbols
   7. the implementation plan's §3 T-map covers every non-retired T
   8. each §9 event field list appears normatively once (field-list-once)
+  9. the CI workflow actually fires (`on:` includes pull_request and
+     push to "**") and EVERY job hard-fails — no job/step
+     continue-on-error, no job-level `if:`, no failure-tolerant step
+     condition — plus each matrix arm still runs the invocation that
+     defines it. Checked over jobs.* rather than a named pair: the seal
+     that owned this claim was written job-wide for `citations` and left
+     the `gate` job, which runs the whole suite, soft-failable.
 
 Baselines come from the doc header's "Review baseline for citations" line.
 The claude-workflow peer checkout is resolved by ONE predicate —
@@ -459,6 +466,119 @@ def check_plan_tmap(doc: Doc, errors: list[str]) -> None:
                       f"§3: {['T%d' % n for n in missing]}")
 
 
+WORKFLOW = REPO_ROOT / ".github/workflows/verify.yml"
+
+# A step `if:` that re-enables the step after a failure, or runs it
+# regardless. Any of these turns a gate into a notification.
+_SOFT_IF = ("!= 'success'", '!= "success"', "always()", "failure()",
+            "success() ||", "|| success()", "cancelled()")
+
+
+def check_ci_posture(errors: list[str]) -> None:
+    """(8) the workflow that enforces every "runs in CI" claim in the
+    boundary artifacts must actually run, and must hard-fail.
+
+    JOB-WIDE AND EVERY-JOB, deliberately. The pytest seal that owns this
+    claim was written job-wide for `citations` and left `gate` — the arm that
+    runs the entire suite — checked only for the presence of a string, so
+    `continue-on-error: true` or `if: false` on `gate` disabled every seal in
+    the A-stream while the anti-soft-fail seal reported success. That is the
+    sibling-surface escape class: a correct fix whose twin surface silently
+    diverges. This check therefore iterates jobs.* rather than naming any
+    job, so a job added later is covered on the day it is added.
+
+    The trigger set is checked for the same reason: narrowing `on:` to
+    workflow_dispatch stops both jobs from running on any PR, and every
+    claim about CI enforcement becomes false with nothing able to tell."""
+    if not WORKFLOW.exists():
+        errors.append(f"ci posture: {WORKFLOW.relative_to(REPO_ROOT)} is "
+                      f"absent — the artifacts' 'runs in CI' claims have no "
+                      f"mechanism")
+        return
+    try:
+        import yaml
+    except ImportError:                                  # pragma: no cover
+        errors.append("ci posture: pyyaml unavailable, cannot inspect the "
+                      "workflow — refusing to report a gate as checked")
+        return
+    wf = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    if not isinstance(wf, dict):
+        errors.append("ci posture: workflow is not a mapping")
+        return
+    # PyYAML parses the bare key `on` as the boolean True unless it is
+    # quoted, so BOTH spellings must be accepted — reading only "on" would
+    # make this check silently vacuous on the file as written.
+    triggers = wf.get("on", wf.get(True))
+    if not isinstance(triggers, dict):
+        errors.append(f"ci posture: `on:` is {triggers!r}, not a mapping of "
+                      f"triggers — a workflow that does not fire on a pull "
+                      f"request enforces nothing")
+    else:
+        if "pull_request" not in triggers:
+            errors.append("ci posture: `on:` has no `pull_request` trigger — "
+                          "the gate would never run on a PR, so every seal "
+                          "could stay green while nothing was enforced")
+        push = triggers.get("push")
+        branches = push.get("branches") if isinstance(push, dict) else None
+        if branches != ["**"]:
+            errors.append(f"ci posture: `on.push.branches` is {branches!r}, "
+                          f"expected ['**'] — a branch-restricted push "
+                          f"trigger leaves feature branches unchecked")
+    jobs = wf.get("jobs")
+    if not isinstance(jobs, dict) or not jobs:
+        errors.append("ci posture: the workflow declares no jobs")
+        return
+    for name, job in sorted(jobs.items()):
+        if not isinstance(job, dict):
+            errors.append(f"ci posture: job {name!r} is not a mapping")
+            continue
+        if job.get("continue-on-error"):
+            errors.append(f"ci posture: job {name!r} sets continue-on-error — "
+                          f"a soft-failing gate is a notification")
+        if "if" in job:
+            errors.append(f"ci posture: job {name!r} carries a job-level `if:` "
+                          f"({job['if']!r}) — a conditionally-skipped gate "
+                          f"reports success by skipping")
+        for i, step in enumerate(job.get("steps") or []):
+            if not isinstance(step, dict):
+                continue
+            label = step.get("name") or step.get("uses") or f"step {i}"
+            if step.get("continue-on-error"):
+                errors.append(f"ci posture: job {name!r} step {label!r} sets "
+                              f"continue-on-error")
+            cond = str(step.get("if", ""))
+            for token in _SOFT_IF:
+                if token in cond:
+                    errors.append(f"ci posture: job {name!r} step {label!r} "
+                                  f"has if: {cond!r} containing {token!r} — "
+                                  f"it runs or survives regardless of failure")
+    # The two matrix arms the environment predicate exists to separate. Named
+    # here because their ABSENCE is the failure: without the peer-absent
+    # assertion the `gate` arm can quietly become a second peer-present run,
+    # and without `make verify` the citations arm stops requiring citations.
+    def _runs(job_name: str) -> str:
+        job = jobs.get(job_name) or {}
+        return "\n".join(str(s.get("run", ""))
+                         for s in (job.get("steps") or [])
+                         if isinstance(s, dict))
+
+    for job_name, needle, why in (
+            ("gate", "scripts/test.sh",
+             "the one mechanical gate is not invoked"),
+            ("gate", "--probe-peer",
+             "the peer-absent arm does not assert the peer is absent, so it "
+             "can silently become a second peer-present run"),
+            ("citations", "make verify",
+             "the citations-REQUIRED form is not invoked"),
+            ("citations", "--probe-peer",
+             "the peer-present arm does not assert the peer resolved")):
+        if job_name not in jobs:
+            errors.append(f"ci posture: job {job_name!r} is missing")
+        elif needle not in _runs(job_name):
+            errors.append(f"ci posture: job {job_name!r} never runs "
+                          f"{needle!r} — {why}")
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     ap = argparse.ArgumentParser(description=__doc__)
@@ -489,6 +609,7 @@ def main(argv: list[str] | None = None) -> int:
     check_mutations(doc, errors)
     check_supersession(doc, errors)
     check_field_lists(doc, errors)
+    check_ci_posture(errors)
     if args.no_citations:
         # stderr + unbuffered: the degraded announcement must survive CI log
         # capture and pytest's stdout capture (panel round 2).
@@ -505,7 +626,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"t26_lint: {len(errors)} violation(s)", file=sys.stderr)
         return 1
     checks = ("T-index, §-refs, retired names, mutation-once, supersession, "
-              "field-list-once, plan §3 T-map"
+              "field-list-once, CI posture, plan §3 T-map"
               + ("" if args.no_citations else ", citations @ pins"))
     print(f"t26_lint: all checks green ({checks})")
     return 0
