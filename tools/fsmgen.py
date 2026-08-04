@@ -67,6 +67,14 @@ SCHEMA_DIR = REPO_ROOT / "schema"
 GENERATED_PY = REPO_ROOT / "src/claude_dispatcher/boundary/generated/__init__.py"
 DOCS_DIR = REPO_ROOT / "docs/generated"
 VECTORS_DIR = REPO_ROOT / "tests/boundary/vectors/t19"
+# THE HAND-AUTHORED REGION. fsmgen generates the whole vectors tree and
+# --check's stray scan makes it exact, which meant a test author could not
+# add a T19 deny vector without editing this generator — so every panel fix
+# phrased as "add a deny vector" became an implementation change and broke
+# the author/checker separation. This subtree is owned by the TEST AUTHOR:
+# never written or deleted here, tolerated by the stray scan, and still
+# validated for well-formedness so a malformed one fails the gate too.
+HANDWRITTEN_DIR = VECTORS_DIR / "handwritten"
 FRAMES_DIR = REPO_ROOT / "schema/testdata/classifier_frames"
 DESIGN_DOC = REPO_ROOT / "docs/plans/2026-08-02-classification-gating-design.md"
 
@@ -2177,11 +2185,25 @@ def _admit_hold_event(book: _HoldBook, base: str, event: object,
             # authority for this resolution (section_b.hold_id.apply_order),
             # so apply the derived answer and journal the disagreement
             # rather than halting the base (panel round 3).
-            resolution_note = (
-                f"apply order resolved {resolution!r} (hold {hid}); the "
-                f"event was tagged {cls.__name__!r} — the reducer's "
-                f"derivation is authoritative "
-                f"(event_id {ev.get('event_id')!r})")
+            # STRUCTURED, not free text: a note compared by COUNT alone
+            # lets a note naming the WRONG resolution pass (three
+            # concurrency vectors projected identically). It also gives the
+            # journal a code, a metric and run/trace correlation, which a
+            # prose sentence could not.
+            resolution_note = {
+                "code": "DOOR0_APPLY_ORDER_OVERRIDE",
+                "resolution": resolution,
+                "tagged": cls.__name__,
+                "hold_id": hid,
+                "event_id": ev.get("event_id"),
+                "metric": "door0_apply_order_override_total",
+                "run_id": ev.get("run_id"),
+                "trace_id": ev.get("trace_id"),
+                "detail": (f"apply order resolved {resolution!r} (hold "
+                           f"{hid}); the event was tagged {cls.__name__!r} "
+                           f"— the reducer's derivation is authoritative "
+                           f"(event_id {ev.get('event_id')!r})"),
+            }
         else:
             resolution_note = None
         if event.hold_id is not None and event.hold_id != hid:
@@ -3914,8 +3936,44 @@ def build_outputs(s: dict) -> dict[Path, bytes]:
     return out
 
 
+def check_handwritten_vectors() -> list[str]:
+    """Well-formedness of the TEST AUTHOR's vectors. This never writes or
+    rewrites them — it only refuses a malformed one, so the author gets the
+    same fast failure the generated corpus gets."""
+    problems: list[str] = []
+    if not HANDWRITTEN_DIR.exists():
+        return problems
+    for path in sorted(HANDWRITTEN_DIR.glob("*.json")):
+        rel = path.relative_to(REPO_ROOT)
+        try:
+            vec = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            problems.append(f"{rel}: not valid JSON ({exc})")
+            continue
+        if not isinstance(vec, dict):
+            problems.append(f"{rel}: top level must be an object")
+            continue
+        machine = vec.get("machine")
+        if machine not in ("section_a", "section_b", "epoch_fold"):
+            problems.append(f"{rel}: machine must be one of section_a, "
+                            f"section_b, epoch_fold (got {machine!r})")
+            continue
+        if not isinstance(vec.get("note"), str) or not vec["note"].strip():
+            problems.append(f"{rel}: needs a non-empty `note` saying what "
+                            f"property it seals")
+        if not isinstance(vec.get("events"), list):
+            problems.append(f"{rel}: `events` must be a list")
+        if machine == "section_b" and vec.get("credential_mode") not in (
+                "SHARED", "SEPARATED"):
+            problems.append(f"{rel}: section_b vectors declare the RUN's "
+                            f"credential_mode (SHARED | SEPARATED)")
+        if machine == "epoch_fold" and not isinstance(vec.get("anchors"), dict):
+            problems.append(f"{rel}: epoch_fold vectors need an `anchors` map")
+    return problems
+
+
 def check_outputs(outputs: dict[Path, bytes]) -> list[str]:
-    drift = []
+    drift = list(check_handwritten_vectors())
     for path, blob in sorted(outputs.items()):
         if not path.exists():
             drift.append(f"missing: {path.relative_to(REPO_ROOT)}")
@@ -3934,6 +3992,8 @@ def check_outputs(outputs: dict[Path, bytes]) -> list[str]:
             continue
         want = {p.name for p in outputs if p.parent == directory}
         for p in sorted(directory.glob(pattern)):
+            if HANDWRITTEN_DIR in p.parents or p == HANDWRITTEN_DIR:
+                continue          # the test author's region, never ours
             if p.is_file() and p.name not in want:
                 drift.append(f"stray: {p.relative_to(REPO_ROOT)}")
     return drift
