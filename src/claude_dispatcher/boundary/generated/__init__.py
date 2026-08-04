@@ -357,6 +357,13 @@ SECTION_B_ROWS: tuple[Mapping[str, object], ...] = (
     {'id': 'default_illegal_b', 'from': ('any_other',), 'event': ('any_other',), 'to': 'ILLEGAL', 'guard': None},
 )
 
+# `family` is the event's schema name — a CLOSED domain over every
+# record the protocol defines. Absent/empty/unknown halts; a family
+# in the domain but not reduced by this machine is FILTERED.
+FAMILY_FIELD: str = 'family'
+FAMILY_VALUES: frozenset[str] = frozenset(('effect_lifecycle', 'hold_lifecycle', 'classification_evaluated', 'panel_decided', 'merge_planned', 'approval_evaluated', 'authorization_granted', 'consent', 'protocol_genesis', 'merge_unit_declared', 'merge_unit_member_added', 'protocol_epoch_advanced', 'panel_roster_declared', 'panel_roster_augmented', 'seat_result'))
+REDUCED_BY_FAMILIES: frozenset[str] = frozenset(('effect_lifecycle', 'hold_lifecycle'))
+
 ENVELOPE_REQUIRED: tuple[str, ...] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch')
 ENVELOPE_OPTIONAL: tuple[str, ...] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id')
 FIELD_NAME_MAP: Mapping[str, str] = {'from': 'from_state', 'to': 'to_state'}
@@ -412,6 +419,10 @@ def _validate_row_audit_fields(event: object) -> None:
     if event.from_state not in cls.FROM_STATES:
         raise ValueError(
             f"{name}.from_state {event.from_state!r} not in {cls.FROM_STATES!r}")
+    if event.family != cls.FAMILY:
+        raise ValueError(
+            f"{name}.family {event.family!r} contradicts the variant's own "
+            f"schema name {cls.FAMILY!r} — a mis-tagged writer halts")
     if event.trigger_event != cls.TRIGGER:
         raise ValueError(
             f"{name}.trigger_event {event.trigger_event!r} contradicts the "
@@ -490,6 +501,11 @@ def build_wire_event(variants: Mapping[str, type], ev: Mapping[str, object]) -> 
             f"unknown event variant {variant!r} "
             f"(event_id {ev.get('event_id')!r}) — unknown variants halt (§9)")
     name = cls.__name__
+    if ev.get("family") != cls.FAMILY:
+        raise WireViolation(
+            f"{name}: family {ev.get('family')!r} contradicts the variant's "
+            f"own schema name {cls.FAMILY!r} "
+            f"(event_id {ev.get('event_id')!r}) — mis-tagged writer")
     kwargs: dict = {}
     for f in cls.REQUIRED:
         value = ev.get(f)
@@ -529,7 +545,7 @@ class Prepare:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('GENESIS',)
     TO_STATE: ClassVar[str] = 'PREPARED'
     EPOCH_EFFECT: ClassVar[str] = 'none'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'authorization_id')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'authorization_id')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -541,6 +557,7 @@ class Prepare:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     movement_id: str
     base_key: str
     trigger_event: str
@@ -571,7 +588,7 @@ class Submit:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('PREPARED',)
     TO_STATE: ClassVar[str] = 'SUBMITTED'
     EPOCH_EFFECT: ClassVar[str] = 'none'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'authorization_id')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'authorization_id')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -583,6 +600,7 @@ class Submit:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     movement_id: str
     base_key: str
     trigger_event: str
@@ -613,7 +631,7 @@ class SubmitOutcomeUnknown:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('PREPARED',)
     TO_STATE: ClassVar[str] = 'OUTCOME_UNKNOWN'
     EPOCH_EFFECT: ClassVar[str] = 'none'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -625,6 +643,7 @@ class SubmitOutcomeUnknown:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     movement_id: str
     base_key: str
     trigger_event: str
@@ -655,7 +674,7 @@ class CrashRecoveryFromPrepared:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('PREPARED',)
     TO_STATE: ClassVar[str] = 'HELD'
     EPOCH_EFFECT: ClassVar[str] = 'none'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -667,6 +686,7 @@ class CrashRecoveryFromPrepared:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     movement_id: str
     base_key: str
     trigger_event: str
@@ -696,7 +716,7 @@ class LaterObservationFromPrepared:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('PREPARED',)
     TO_STATE: ClassVar[str] = 'HELD'
     EPOCH_EFFECT: ClassVar[str] = 'none'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -708,6 +728,7 @@ class LaterObservationFromPrepared:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     movement_id: str
     base_key: str
     trigger_event: str
@@ -738,7 +759,7 @@ class MoveToHoldFromPrepared:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('PREPARED',)
     TO_STATE: ClassVar[str] = 'HELD'
     EPOCH_EFFECT: ClassVar[str] = 'none'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -750,6 +771,7 @@ class MoveToHoldFromPrepared:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     movement_id: str
     base_key: str
     trigger_event: str
@@ -780,7 +802,7 @@ class ObserveEffectMatched:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('SUBMITTED',)
     TO_STATE: ClassVar[str] = 'EFFECT_OBSERVED'
     EPOCH_EFFECT: ClassVar[str] = 'none'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'authorization_id', 'new_oid')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'authorization_id', 'new_oid')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -792,6 +814,7 @@ class ObserveEffectMatched:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     movement_id: str
     base_key: str
     trigger_event: str
@@ -823,7 +846,7 @@ class ObserveEffectParentMismatch:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('SUBMITTED',)
     TO_STATE: ClassVar[str] = 'HELD'
     EPOCH_EFFECT: ClassVar[str] = 'none'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'authorization_id', 'new_oid')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'authorization_id', 'new_oid')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -835,6 +858,7 @@ class ObserveEffectParentMismatch:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     movement_id: str
     base_key: str
     trigger_event: str
@@ -866,7 +890,7 @@ class ObserveReject:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('SUBMITTED',)
     TO_STATE: ClassVar[str] = 'REJECTED_NO_EFFECT'
     EPOCH_EFFECT: ClassVar[str] = 'none'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'authorization_id')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'authorization_id')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -878,6 +902,7 @@ class ObserveReject:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     movement_id: str
     base_key: str
     trigger_event: str
@@ -908,7 +933,7 @@ class TimeoutUnknown:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('SUBMITTED',)
     TO_STATE: ClassVar[str] = 'OUTCOME_UNKNOWN'
     EPOCH_EFFECT: ClassVar[str] = 'none'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -920,6 +945,7 @@ class TimeoutUnknown:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     movement_id: str
     base_key: str
     trigger_event: str
@@ -950,7 +976,7 @@ class CrashRecoveryFromSubmitted:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('SUBMITTED',)
     TO_STATE: ClassVar[str] = 'HELD'
     EPOCH_EFFECT: ClassVar[str] = 'none'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -962,6 +988,7 @@ class CrashRecoveryFromSubmitted:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     movement_id: str
     base_key: str
     trigger_event: str
@@ -991,7 +1018,7 @@ class LaterObservationFromSubmitted:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('SUBMITTED',)
     TO_STATE: ClassVar[str] = 'HELD'
     EPOCH_EFFECT: ClassVar[str] = 'none'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -1003,6 +1030,7 @@ class LaterObservationFromSubmitted:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     movement_id: str
     base_key: str
     trigger_event: str
@@ -1033,7 +1061,7 @@ class Explained:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('EFFECT_OBSERVED',)
     TO_STATE: ClassVar[str] = 'EXPLAINED'
     EPOCH_EFFECT: ClassVar[str] = 'assign_new_oid'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'new_oid')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'new_oid')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -1045,6 +1073,7 @@ class Explained:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     movement_id: str
     base_key: str
     trigger_event: str
@@ -1076,7 +1105,7 @@ class RejectExplained:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('REJECTED_NO_EFFECT',)
     TO_STATE: ClassVar[str] = 'EXPLAINED'
     EPOCH_EFFECT: ClassVar[str] = 'none'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -1088,6 +1117,7 @@ class RejectExplained:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     movement_id: str
     base_key: str
     trigger_event: str
@@ -1118,7 +1148,7 @@ class LaterObservationFromOutcomeUnknown:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('OUTCOME_UNKNOWN',)
     TO_STATE: ClassVar[str] = 'HELD'
     EPOCH_EFFECT: ClassVar[str] = 'none'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -1130,6 +1160,7 @@ class LaterObservationFromOutcomeUnknown:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     movement_id: str
     base_key: str
     trigger_event: str
@@ -1160,7 +1191,7 @@ class CrashRecoveryFromOutcomeUnknown:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('OUTCOME_UNKNOWN',)
     TO_STATE: ClassVar[str] = 'HELD'
     EPOCH_EFFECT: ClassVar[str] = 'none'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -1172,6 +1203,7 @@ class CrashRecoveryFromOutcomeUnknown:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     movement_id: str
     base_key: str
     trigger_event: str
@@ -1201,7 +1233,7 @@ class ReconcileAccept:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('HELD',)
     TO_STATE: ClassVar[str] = 'RECONCILED'
     EPOCH_EFFECT: ClassVar[str] = 'per_disposition'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'disposition')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'disposition')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -1213,6 +1245,7 @@ class ReconcileAccept:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     movement_id: str
     base_key: str
     trigger_event: str
@@ -1249,7 +1282,7 @@ class ReconcileRejectRestoreHold:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('HELD',)
     TO_STATE: ClassVar[str] = 'HELD'
     EPOCH_EFFECT: ClassVar[str] = 'none'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'disposition')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'disposition')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -1261,6 +1294,7 @@ class ReconcileRejectRestoreHold:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     movement_id: str
     base_key: str
     trigger_event: str
@@ -1293,7 +1327,7 @@ class ReconcileReplayIdentity:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('RECONCILED',)
     TO_STATE: ClassVar[str] = 'RECONCILED'
     EPOCH_EFFECT: ClassVar[str] = 'none'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'disposition')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'disposition')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -1305,6 +1339,7 @@ class ReconcileReplayIdentity:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     movement_id: str
     base_key: str
     trigger_event: str
@@ -1339,7 +1374,7 @@ class ObserveDelta:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('GENESIS',)
     TO_STATE: ClassVar[str] = 'HELD_FOREIGN'
     EPOCH_EFFECT: ClassVar[str] = 'none'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'delta_old_oid', 'delta_new_oid')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'delta_old_oid', 'delta_new_oid')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'hold_id', 'source_delivery_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id', 'disposition')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -1351,6 +1386,7 @@ class ObserveDelta:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     base_key: str
     trigger_event: str
     from_state: str
@@ -1387,7 +1423,7 @@ class ObserveDeltaRedelivery:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('HELD_FOREIGN', 'RELEASED', 'STANDING')
     TO_STATE: ClassVar[str] = 'unchanged'
     EPOCH_EFFECT: ClassVar[str] = 'none'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'source_delivery_id')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'source_delivery_id')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'hold_id', 'delta_old_oid', 'delta_new_oid', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id', 'disposition')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -1399,6 +1435,7 @@ class ObserveDeltaRedelivery:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     base_key: str
     trigger_event: str
     from_state: str
@@ -1435,7 +1472,7 @@ class ObserveDeltaNewDeliveryOnOpenHold:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('HELD_FOREIGN', 'STANDING')
     TO_STATE: ClassVar[str] = 'unchanged'
     EPOCH_EFFECT: ClassVar[str] = 'none'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'source_delivery_id', 'delta_old_oid', 'delta_new_oid')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'source_delivery_id', 'delta_old_oid', 'delta_new_oid')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'hold_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id', 'disposition')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -1447,6 +1484,7 @@ class ObserveDeltaNewDeliveryOnOpenHold:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     base_key: str
     trigger_event: str
     from_state: str
@@ -1483,7 +1521,7 @@ class ActorVerifiedAuto:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('HELD_FOREIGN',)
     TO_STATE: ClassVar[str] = 'RELEASED'
     EPOCH_EFFECT: ClassVar[str] = 'as_accept_ours'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'actor_node_id', 'matched_subject_digest', 'source_delivery_id')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'actor_node_id', 'matched_subject_digest', 'source_delivery_id')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'delta_old_oid', 'delta_new_oid', 'matched_movement_id', 'disposition')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {'actor_verification': 'VERIFIED_API', 'disposition': 'ACTOR_VERIFIED_AUTO'}
@@ -1495,6 +1533,7 @@ class ActorVerifiedAuto:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     base_key: str
     trigger_event: str
     from_state: str
@@ -1540,7 +1579,7 @@ class HoldReconcileAccept:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('HELD_FOREIGN', 'STANDING')
     TO_STATE: ClassVar[str] = 'RELEASED'
     EPOCH_EFFECT: ClassVar[str] = 'per_disposition'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'disposition')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'disposition')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'delta_old_oid', 'delta_new_oid', 'source_delivery_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -1552,6 +1591,7 @@ class HoldReconcileAccept:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     base_key: str
     trigger_event: str
     from_state: str
@@ -1594,7 +1634,7 @@ class HoldReconcileRejectRestoreHold:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('HELD_FOREIGN', 'STANDING')
     TO_STATE: ClassVar[str] = 'HELD_FOREIGN'
     EPOCH_EFFECT: ClassVar[str] = 'none'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'disposition')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'disposition')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'delta_old_oid', 'delta_new_oid', 'source_delivery_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -1606,6 +1646,7 @@ class HoldReconcileRejectRestoreHold:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     base_key: str
     trigger_event: str
     from_state: str
@@ -1644,7 +1685,7 @@ class HoldReconcileStanding:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('HELD_FOREIGN', 'STANDING')
     TO_STATE: ClassVar[str] = 'STANDING'
     EPOCH_EFFECT: ClassVar[str] = 'none'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'disposition')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'disposition')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'delta_old_oid', 'delta_new_oid', 'source_delivery_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {'disposition': 'STANDING'}
@@ -1656,6 +1697,7 @@ class HoldReconcileStanding:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     base_key: str
     trigger_event: str
     from_state: str
@@ -1694,7 +1736,7 @@ class HoldReconcileReplayIdentity:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('RELEASED',)
     TO_STATE: ClassVar[str] = 'RELEASED'
     EPOCH_EFFECT: ClassVar[str] = 'none'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'disposition')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'disposition')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'delta_old_oid', 'delta_new_oid', 'source_delivery_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -1706,6 +1748,7 @@ class HoldReconcileReplayIdentity:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     base_key: str
     trigger_event: str
     from_state: str
@@ -1775,7 +1818,8 @@ class PanelDecided:
     """§9 `panel_decided` event."""
 
     EVENT: ClassVar[str] = "panel_decided"
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'demanded', 'effective', 'strategy', 'roster_version', 'contributions')
+    FAMILY: ClassVar[str] = "panel_decided"
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'demanded', 'effective', 'strategy', 'roster_version', 'contributions')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id', 'suppression')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {'demanded': ('SKIP', 'SINGLE', 'FULL'), 'effective': ('SKIP', 'SINGLE', 'FULL'), 'strategy': ('ALL_PARALLEL', 'PROGRESSIVE')}
@@ -1788,6 +1832,7 @@ class PanelDecided:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     demanded: str
     effective: str
     strategy: str
@@ -1801,6 +1846,9 @@ class PanelDecided:
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        if self.family != self.FAMILY:
+            raise ValueError(f"PanelDecided.family {self.family!r} "
+                             f"contradicts its schema name {self.FAMILY!r}")
         if self.demanded not in self.DOMAINS['demanded']:
             raise ValueError(f"PanelDecided.demanded: unknown value "
                              f"{self.demanded!r} outside the closed domain")
@@ -1816,7 +1864,8 @@ class MergePlanned:
     """§9 `merge_planned` event."""
 
     EVENT: ClassVar[str] = "merge_planned"
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'subject', 'plan_kind', 'verdict', 'reasons', 'satisfaction')
+    FAMILY: ClassVar[str] = "merge_planned"
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'subject', 'plan_kind', 'verdict', 'reasons', 'satisfaction')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {'plan_kind': ('MERGEABLE', 'UNMERGEABLE'), 'verdict': ('LOW', 'ELEVATED', 'HUMAN_REQUIRED')}
@@ -1829,6 +1878,7 @@ class MergePlanned:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     subject: str
     plan_kind: str
     verdict: str
@@ -1841,6 +1891,9 @@ class MergePlanned:
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        if self.family != self.FAMILY:
+            raise ValueError(f"MergePlanned.family {self.family!r} "
+                             f"contradicts its schema name {self.FAMILY!r}")
         if self.plan_kind not in self.DOMAINS['plan_kind']:
             raise ValueError(f"MergePlanned.plan_kind: unknown value "
                              f"{self.plan_kind!r} outside the closed domain")
@@ -1853,7 +1906,8 @@ class ApprovalEvaluated:
     """§9 `approval_evaluated` event."""
 
     EVENT: ClassVar[str] = "approval_evaluated"
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'review_id', 'actor_node_id', 'commit_oid', 'base_oid', 'in_set', 'assurance', 'outcome')
+    FAMILY: ClassVar[str] = "approval_evaluated"
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'review_id', 'actor_node_id', 'commit_oid', 'base_oid', 'in_set', 'assurance', 'outcome')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {'assurance': ('OPERATOR_ATTESTED', 'HUMAN_IDENTITY_ENFORCED', 'NOT_APPLICABLE')}
@@ -1866,6 +1920,7 @@ class ApprovalEvaluated:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     review_id: str
     actor_node_id: str
     commit_oid: str
@@ -1880,6 +1935,9 @@ class ApprovalEvaluated:
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        if self.family != self.FAMILY:
+            raise ValueError(f"ApprovalEvaluated.family {self.family!r} "
+                             f"contradicts its schema name {self.FAMILY!r}")
         if self.assurance not in self.DOMAINS['assurance']:
             raise ValueError(f"ApprovalEvaluated.assurance: unknown value "
                              f"{self.assurance!r} outside the closed domain")
@@ -1889,7 +1947,8 @@ class AuthorizationGranted:
     """§9 `authorization_granted` event."""
 
     EVENT: ClassVar[str] = "authorization_granted"
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'authorization_id', 'base_key', 'authority', 'kind', 'assurance', 'evidence_ref', 'actor')
+    FAMILY: ClassVar[str] = "authorization_granted"
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'authorization_id', 'base_key', 'authority', 'kind', 'assurance', 'evidence_ref', 'actor')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {'kind': ('AUTO_LOW', 'GITHUB_APPROVAL', 'LIVE_CONSENT'), 'assurance': ('OPERATOR_ATTESTED', 'HUMAN_IDENTITY_ENFORCED', 'NOT_APPLICABLE')}
@@ -1902,6 +1961,7 @@ class AuthorizationGranted:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     authorization_id: str
     base_key: str
     authority: str
@@ -1915,6 +1975,9 @@ class AuthorizationGranted:
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        if self.family != self.FAMILY:
+            raise ValueError(f"AuthorizationGranted.family {self.family!r} "
+                             f"contradicts its schema name {self.FAMILY!r}")
         if self.kind not in self.DOMAINS['kind']:
             raise ValueError(f"AuthorizationGranted.kind: unknown value "
                              f"{self.kind!r} outside the closed domain")
@@ -1932,7 +1995,8 @@ class Consent:
     """§9 `consent` event."""
 
     EVENT: ClassVar[str] = "consent"
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'subject', 'evidence_mode', 'assurance')
+    FAMILY: ClassVar[str] = "consent"
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'subject', 'evidence_mode', 'assurance')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id', 'suppressed')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {'evidence_mode': ('LIVE', 'RERUN', 'ACCEPTED_UNVERIFIED'), 'assurance': ('OPERATOR_ATTESTED', 'HUMAN_IDENTITY_ENFORCED')}
@@ -1945,6 +2009,7 @@ class Consent:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     subject: str
     evidence_mode: str
     assurance: str
@@ -1956,6 +2021,9 @@ class Consent:
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        if self.family != self.FAMILY:
+            raise ValueError(f"Consent.family {self.family!r} "
+                             f"contradicts its schema name {self.FAMILY!r}")
         if self.evidence_mode not in self.DOMAINS['evidence_mode']:
             raise ValueError(f"Consent.evidence_mode: unknown value "
                              f"{self.evidence_mode!r} outside the closed domain")
@@ -1968,7 +2036,8 @@ class ProtocolGenesis:
     """§9 `protocol_genesis` event."""
 
     EVENT: ClassVar[str] = "protocol_genesis"
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'credential_mode', 'protection_mode', 'classifier', 'roster_digest', 'approver_set_digest', 'per_base_epoch_anchors')
+    FAMILY: ClassVar[str] = "protocol_genesis"
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'credential_mode', 'protection_mode', 'classifier', 'roster_digest', 'approver_set_digest', 'per_base_epoch_anchors')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {}
@@ -1981,6 +2050,7 @@ class ProtocolGenesis:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     credential_mode: CredentialMode
     protection_mode: ProtectionMode
     classifier: str
@@ -1994,13 +2064,17 @@ class ProtocolGenesis:
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        if self.family != self.FAMILY:
+            raise ValueError(f"ProtocolGenesis.family {self.family!r} "
+                             f"contradicts its schema name {self.FAMILY!r}")
 
 @dataclass(frozen=True)
 class MergeUnitDeclared:
     """§9 `merge_unit_declared` event."""
 
     EVENT: ClassVar[str] = "merge_unit_declared"
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'unit_id', 'ordered_member_keys', 'unit_digest')
+    FAMILY: ClassVar[str] = "merge_unit_declared"
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'unit_id', 'ordered_member_keys', 'unit_digest')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {}
@@ -2013,6 +2087,7 @@ class MergeUnitDeclared:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     unit_id: str
     ordered_member_keys: str
     unit_digest: str
@@ -2023,13 +2098,17 @@ class MergeUnitDeclared:
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        if self.family != self.FAMILY:
+            raise ValueError(f"MergeUnitDeclared.family {self.family!r} "
+                             f"contradicts its schema name {self.FAMILY!r}")
 
 @dataclass(frozen=True)
 class MergeUnitMemberAdded:
     """§9 `merge_unit_member_added` event."""
 
     EVENT: ClassVar[str] = "merge_unit_member_added"
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'unit_id', 'member_key')
+    FAMILY: ClassVar[str] = "merge_unit_member_added"
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'unit_id', 'member_key')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {}
@@ -2042,6 +2121,7 @@ class MergeUnitMemberAdded:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     unit_id: str
     member_key: str
     subject_digest: Optional[str] = None
@@ -2051,13 +2131,17 @@ class MergeUnitMemberAdded:
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        if self.family != self.FAMILY:
+            raise ValueError(f"MergeUnitMemberAdded.family {self.family!r} "
+                             f"contradicts its schema name {self.FAMILY!r}")
 
 @dataclass(frozen=True)
 class ProtocolEpochAdvanced:
     """§9 `protocol_epoch_advanced` event."""
 
     EVENT: ClassVar[str] = "protocol_epoch_advanced"
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'old', 'new')
+    FAMILY: ClassVar[str] = "protocol_epoch_advanced"
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'old', 'new')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {}
@@ -2070,6 +2154,7 @@ class ProtocolEpochAdvanced:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     old: str
     new: str
     subject_digest: Optional[str] = None
@@ -2079,13 +2164,17 @@ class ProtocolEpochAdvanced:
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        if self.family != self.FAMILY:
+            raise ValueError(f"ProtocolEpochAdvanced.family {self.family!r} "
+                             f"contradicts its schema name {self.FAMILY!r}")
 
 @dataclass(frozen=True)
 class PanelRosterDeclared:
     """§9 `panel_roster_declared` event."""
 
     EVENT: ClassVar[str] = "panel_roster_declared"
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'roster_version', 'ordered_seat_ids', 'designated_single_id', 'roster_digest')
+    FAMILY: ClassVar[str] = "panel_roster_declared"
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'roster_version', 'ordered_seat_ids', 'designated_single_id', 'roster_digest')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {}
@@ -2098,6 +2187,7 @@ class PanelRosterDeclared:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     roster_version: str
     ordered_seat_ids: str
     designated_single_id: str
@@ -2109,13 +2199,17 @@ class PanelRosterDeclared:
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        if self.family != self.FAMILY:
+            raise ValueError(f"PanelRosterDeclared.family {self.family!r} "
+                             f"contradicts its schema name {self.FAMILY!r}")
 
 @dataclass(frozen=True)
 class PanelRosterAugmented:
     """§9 `panel_roster_augmented` event."""
 
     EVENT: ClassVar[str] = "panel_roster_augmented"
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'added_seat_ids', 'new_roster_digest')
+    FAMILY: ClassVar[str] = "panel_roster_augmented"
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'added_seat_ids', 'new_roster_digest')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {}
@@ -2128,6 +2222,7 @@ class PanelRosterAugmented:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     added_seat_ids: str
     new_roster_digest: str
     subject_digest: Optional[str] = None
@@ -2137,13 +2232,17 @@ class PanelRosterAugmented:
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        if self.family != self.FAMILY:
+            raise ValueError(f"PanelRosterAugmented.family {self.family!r} "
+                             f"contradicts its schema name {self.FAMILY!r}")
 
 @dataclass(frozen=True)
 class SeatResult:
     """§9 `seat_result` event."""
 
     EVENT: ClassVar[str] = "seat_result"
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'roster_digest', 'subject_digest', 'attempt_id', 'seat_id', 'verdict', 'findings_digest')
+    FAMILY: ClassVar[str] = "seat_result"
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'roster_digest', 'subject_digest', 'attempt_id', 'seat_id', 'verdict', 'findings_digest')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('movement_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {'verdict': ('APPROVE', 'BLOCK')}
@@ -2156,6 +2255,7 @@ class SeatResult:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     roster_digest: str
     subject_digest: str
     attempt_id: str
@@ -2167,6 +2267,9 @@ class SeatResult:
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        if self.family != self.FAMILY:
+            raise ValueError(f"SeatResult.family {self.family!r} "
+                             f"contradicts its schema name {self.FAMILY!r}")
         if self.verdict not in self.DOMAINS['verdict']:
             raise ValueError(f"SeatResult.verdict: unknown value "
                              f"{self.verdict!r} outside the closed domain")
@@ -2176,7 +2279,8 @@ class CompleteClassification:
     """§9 `classification_evaluated/CompleteClassification` event."""
 
     EVENT: ClassVar[str] = "classification_evaluated/CompleteClassification"
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'subject', 'authority', 'outcome_kind', 'duration_ms')
+    FAMILY: ClassVar[str] = "classification_evaluated"
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'subject', 'authority', 'outcome_kind', 'duration_ms')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {}
@@ -2189,6 +2293,7 @@ class CompleteClassification:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     subject: str
     authority: str
     outcome_kind: str
@@ -2200,13 +2305,17 @@ class CompleteClassification:
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        if self.family != self.FAMILY:
+            raise ValueError(f"CompleteClassification.family {self.family!r} "
+                             f"contradicts its schema name {self.FAMILY!r}")
 
 @dataclass(frozen=True)
 class IncompleteClassification:
     """§9 `classification_evaluated/IncompleteClassification` event."""
 
     EVENT: ClassVar[str] = "classification_evaluated/IncompleteClassification"
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'candidate', 'context', 'evidence_failure', 'outcome_kind', 'duration_ms')
+    FAMILY: ClassVar[str] = "classification_evaluated"
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'candidate', 'context', 'evidence_failure', 'outcome_kind', 'duration_ms')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {}
@@ -2219,6 +2328,7 @@ class IncompleteClassification:
     run_id: str
     trace_id: str
     protocol_epoch: str
+    family: str
     candidate: str
     context: str
     evidence_failure: str
@@ -2231,6 +2341,9 @@ class IncompleteClassification:
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        if self.family != self.FAMILY:
+            raise ValueError(f"IncompleteClassification.family {self.family!r} "
+                             f"contradicts its schema name {self.FAMILY!r}")
 
 SINGLE_EVENTS: Mapping[str, type] = {
     "panel_decided": PanelDecided,
@@ -2541,14 +2654,34 @@ def _intake(dedup: _Dedup, ev: Mapping[str, object], family: str,
     if base_hint in base_halts:
         return None  # base already halted — isolation, not suppression
     fam = ev.get("family")
-    if fam is None:
+    if not isinstance(fam, str) or fam == "":
         base_halts.setdefault(base_hint, _halt(
             BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
             f"event missing required field 'family' — the reduce filters by "
             f"event schema name (§6.0) (event_id {ev.get('event_id')!r})", ev))
         return None
+    if fam not in FAMILY_VALUES:
+        base_halts.setdefault(base_hint, _halt(
+            BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+            f"unknown family {fam!r} outside the closed domain — an unknown "
+            f"enum value halts like an unknown variant (§9) "
+            f"(event_id {ev.get('event_id')!r})", ev))
+        return None
     if fam != family:
-        return None  # the other stream's events on a shared carrier
+        # A legitimate OTHER record on the shared carrier (the peer
+        # lifecycle family, or any §9 single) is FILTERED. But an event
+        # whose VARIANT belongs to this machine while its tag claims
+        # another family is a mis-tagged writer, not another stream — a
+        # silent drop there rewrites a durable terminal at the next cold
+        # start and bypasses the conflicting-disposition halt.
+        cls = variants.get(str(ev.get("variant")))
+        if cls is not None:
+            base_halts.setdefault(base_hint, _halt(
+                BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+                f"family {fam!r} contradicts variant {cls.__name__!r}, whose "
+                f"own schema name is {cls.FAMILY!r} — mis-tagged writer, "
+                f"never filtered (event_id {ev.get('event_id')!r})", ev))
+        return None
     try:
         if dedup.check(ev, base_hint) == "dup":
             return None  # dual-append twin / redelivered copy

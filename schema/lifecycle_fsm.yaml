@@ -405,9 +405,24 @@ events:
   # reduce filters by event schema name". The wire field `family` is that
   # schema name: REQUIRED at reducer intake, filtered (not halted) on
   # mismatch, halted when absent.
+  # `family` IS the event's schema name, and it is a generated envelope
+  # field on EVERY event type — the two lifecycle unions AND all §9 singles
+  # (panel round 3 CRITICAL: singles carried no family, so a legitimate
+  # protocol_genesis on a shared carrier halted the base). The domain is
+  # CLOSED over every schema name the protocol defines; `reduced_by` names
+  # the two families a reducer consumes — everything else is another
+  # record on the shared carrier and is FILTERED, never halted.
+  # Absent, empty, or outside the domain ⇒ typed halt; a value that
+  # contradicts the variant's own FAMILY ⇒ typed halt (mis-tagged writer).
   reducer_family_filter:
     field: family
-    values: [effect_lifecycle, hold_lifecycle]
+    reduced_by: [effect_lifecycle, hold_lifecycle]
+    values: [effect_lifecycle, hold_lifecycle, classification_evaluated,
+             panel_decided, merge_planned, approval_evaluated,
+             authorization_granted, consent, protocol_genesis,
+             merge_unit_declared, merge_unit_member_added,
+             protocol_epoch_advanced, panel_roster_declared,
+             panel_roster_augmented, seat_result]
   evolution:
     minors: additive-only; unknown minor fields ignored-and-logged
     unknown_major_at_cold_start: halt effects for that base pending operator decision

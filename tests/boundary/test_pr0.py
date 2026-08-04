@@ -181,6 +181,25 @@ def test_every_event_type_carries_the_envelope(schemas, generated):
             f"missing from REQUIRED")
 
 
+def test_family_is_a_generated_field_on_every_event_type(schemas, generated):
+    """panel round 3 CRITICAL: `family` is the event's schema name and must
+    be a REQUIRED generated field on EVERY event type — the two lifecycle
+    unions AND all §9 singles. A single without it halted its own base."""
+    fam_spec = schemas["lifecycle_fsm"]["events"]["reducer_family_filter"]
+    assert set(generated.FAMILY_VALUES) == set(fam_spec["values"])
+    assert set(generated.REDUCED_BY_FAMILIES) == set(fam_spec["reduced_by"])
+    all_types = {**generated.EFFECT_VARIANTS, **generated.HOLD_VARIANTS,
+                 **generated.SINGLE_EVENTS}
+    for name, cls in all_types.items():
+        assert "family" in cls.REQUIRED, f"{name}: family is not required"
+        assert cls.FAMILY in generated.FAMILY_VALUES, (
+            f"{name}: FAMILY {cls.FAMILY!r} outside the closed domain")
+    # every declared family value is claimed by at least one generated type
+    claimed = {cls.FAMILY for cls in all_types.values()}
+    assert claimed == set(generated.FAMILY_VALUES), (
+        f"declared-but-unclaimed: {sorted(set(generated.FAMILY_VALUES) - claimed)}")
+
+
 def test_singles_exhaustive_and_domain_validated(schemas, generated):
     """Every §9 single (incl. authorization_granted, the sole authorization
     record) is a generated, sealed type with its closed domains enforced."""
@@ -192,7 +211,7 @@ def test_singles_exhaustive_and_domain_validated(schemas, generated):
         assert f"classification_evaluated/{v['name']}" in generated.SINGLE_EVENTS
     env = dict(schema_major=1, schema_minor=0, event_id="e1",
                ts="1970-01-01T00:00:00Z", run_id="r", trace_id="tr",
-               protocol_epoch="E0")
+               protocol_epoch="E0", family="authorization_granted")
     ag = generated.SINGLE_EVENTS["authorization_granted"]
     ok = ag(**env, authorization_id="a1", base_key="b", authority="fp",
             kind="AUTO_LOW", assurance="NOT_APPLICABLE", evidence_ref="ev",
@@ -294,7 +313,7 @@ def test_authorization_granted_kind_assurance_pairs(generated, kind, assurance, 
     ag = generated.SINGLE_EVENTS["authorization_granted"]
     env = dict(schema_major=1, schema_minor=0, event_id="e1",
                ts="1970-01-01T00:00:00Z", run_id="r", trace_id="t",
-               protocol_epoch="E0")
+               protocol_epoch="E0", family="authorization_granted")
     build = lambda: ag(  # noqa: E731
         **env, authorization_id="a1", base_key="b", authority="fp",
         kind=kind, assurance=assurance, evidence_ref="ev", actor="dispatcher")
@@ -328,7 +347,7 @@ def test_singles_closed_domains_reject_unknown_values(schemas, generated,
     assert f"{field}_domain" in spec, f"{event}.{field} has no declared domain"
     env = dict(schema_major=1, schema_minor=0, event_id="e1",
                ts="1970-01-01T00:00:00Z", run_id="r", trace_id="t",
-               protocol_epoch="E0")
+               protocol_epoch="E0", family=event)
     payload = {f: f for f in spec["required"]}
     for dom_key, members in spec.items():
         if dom_key.endswith("_domain"):
@@ -380,7 +399,7 @@ def _wire_effect(generated, variant: str, eid: str, mid: str, frm: str,
     ev = {"schema_major": 1, "schema_minor": 0, "event_id": eid,
           "ts": "1970-01-01T00:00:00Z", "run_id": "run-1",
           "trace_id": "trace-1", "protocol_epoch": "E0",
-          "family": "effect_lifecycle", "variant": variant,
+          "family": cls.FAMILY, "variant": variant,
           "trigger_event": cls.TRIGGER, "movement_id": mid, "base_key": base,
           "from": frm, "to": to, "authority": "fp-1", "epoch_before": "E0",
           "epoch_after": "E0", "hold_effect": "NONE",
@@ -414,6 +433,7 @@ def _finish_audit(cls, kwargs: dict, over: dict) -> dict:
                       else _ENUM_BY_FIELD[field])
             kwargs[field] = enum_t[value]
     kwargs.update(over)
+    kwargs.setdefault("family", cls.FAMILY)
     kwargs.setdefault("from_state", cls.FROM_STATES[0])
     kwargs.setdefault("trigger_event", cls.TRIGGER)
     kwargs.setdefault("to_state", kwargs["from_state"]
@@ -648,6 +668,12 @@ _DENY_RULE_MARKERS = {
     "a_trigger_variant_mismatch_deny": ["trigger_event", "mis-tagged"],
     "a_missing_trigger_deny": ["required field", "trigger_event"],
     "a_missing_family_deny": ["family", "filters by"],
+    "a_unknown_family_deny": ["unknown family", "closed domain"],
+    "a_empty_family_deny": ["missing required field 'family'"],
+    "a_case_typo_family_deny": ["unknown family", "closed domain"],
+    "a_family_mistag_terminal_deny": ["contradicts variant", "mis-tagged writer"],
+    "b_family_mistag_deny": ["contradicts variant", "mis-tagged writer"],
+    "b_unknown_family_deny": ["unknown family", "closed domain"],
     "a_bad_ts_deny": ["ts", "RFC 3339"],
     "a_none_effect_row_advances_deny": ["no epoch effect", "advances"],
     "dual_append_divergent_payload_deny": ["divergent payloads", "integrity"],

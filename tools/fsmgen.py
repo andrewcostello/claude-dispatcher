@@ -483,6 +483,14 @@ def _emit_projection_and_rows(fsm: dict, reachable: dict,
             ]) + "},")
         w(")")
         w("")
+    fam = fsm["events"]["reducer_family_filter"]
+    w("# `family` is the event's schema name — a CLOSED domain over every")
+    w("# record the protocol defines. Absent/empty/unknown halts; a family")
+    w("# in the domain but not reduced by this machine is FILTERED.")
+    w(f"FAMILY_FIELD: str = {fam['field']!r}")
+    w(f"FAMILY_VALUES: frozenset[str] = frozenset({tuple(fam['values'])!r})")
+    w(f"REDUCED_BY_FAMILIES: frozenset[str] = frozenset({tuple(fam['reduced_by'])!r})")
+    w("")
     env = fsm["events"]["envelope"]
     w(f"ENVELOPE_REQUIRED: tuple[str, ...] = {tuple(env['required'])!r}")
     w(f"ENVELOPE_OPTIONAL: tuple[str, ...] = {tuple(env['optional'])!r}")
@@ -504,7 +512,10 @@ def _variant_field_sets(fsm: dict, spec: dict, v: dict) -> tuple[list[str], list
     §9-required trigger_event/from/to are REAL required wire fields
     (validated against the row, never stripped — panel round 2)."""
     env = fsm["events"]["envelope"]
-    fam_req = list(spec["common_required"])
+    # `family` is a generated envelope field on EVERY event type; on the
+    # union variants it must equal the variant's own FAMILY (a contradiction
+    # is a mis-tagged writer, not another stream).
+    fam_req = ["family", *spec["common_required"]]
     fam_opt = list(spec.get("common_optional", []))
     var_req = list(v.get("required", []))
     forbidden = list(v.get("forbidden", []))
@@ -619,10 +630,13 @@ def emit_singles(fsm: dict) -> tuple[dict[str, str], list[str]]:
 
     def one(event_name: str, cls_name: str, required: list[str],
             optional: list[str], domains: dict[str, list[str]],
-            pair_rules: dict) -> None:
+            pair_rules: dict, family_name: str) -> None:
         classes[event_name] = cls_name
         req: list[str] = []
-        for f in [*env["required"], *required]:
+        # `family` is a generated envelope field on EVERY event type: its
+        # value is the event's own schema name, so a reducer can filter a
+        # legitimate single off a shared carrier instead of halting.
+        for f in [*env["required"], "family", *required]:
             if f not in req:
                 req.append(f)
         opt = [f for f in [*env["optional"], *optional] if f not in req]
@@ -631,6 +645,7 @@ def emit_singles(fsm: dict) -> tuple[dict[str, str], list[str]]:
         w(f'    """§9 `{event_name}` event."""')
         w("")
         w(f"    EVENT: ClassVar[str] = \"{event_name}\"")
+        w(f"    FAMILY: ClassVar[str] = \"{family_name}\"")
         w(f"    REQUIRED: ClassVar[tuple[str, ...]] = {tuple(req)!r}")
         w(f"    OPTIONAL: ClassVar[tuple[str, ...]] = {tuple(opt)!r}")
         w("    FORBIDDEN: ClassVar[tuple[str, ...]] = ()")
@@ -651,6 +666,9 @@ def emit_singles(fsm: dict) -> tuple[dict[str, str], list[str]]:
         w("")
         w("    def __post_init__(self) -> None:")
         w("        _validate_event_fields(self)")
+        w("        if self.family != self.FAMILY:")
+        w(f"            raise ValueError(f\"{cls_name}.family {{self.family!r}} \"")
+        w("                             f\"contradicts its schema name {self.FAMILY!r}\")")
         for f in domains:
             w(f"        if self.{f} not in self.DOMAINS[{f!r}]:")
             w(f"            raise ValueError(f\"{cls_name}.{f}: unknown value \"")
@@ -669,10 +687,10 @@ def emit_singles(fsm: dict) -> tuple[dict[str, str], list[str]]:
                    for key, val in spec.items() if key.endswith("_domain")}
         one(event_name, camel(event_name), list(spec["required"]),
             list(spec.get("optional", [])), domains,
-            dict(spec.get("field_pair_rules", {})))
+            dict(spec.get("field_pair_rules", {})), event_name)
     for v in fsm["events"]["unions"]["classification_evaluated"]["variants"]:
         one(f"classification_evaluated/{v['name']}", v["name"],
-            list(v["required"]), [], {}, {})
+            list(v["required"]), [], {}, {}, "classification_evaluated")
     w("SINGLE_EVENTS: Mapping[str, type] = {")
     for event_name, cls_name in classes.items():
         w(f"    \"{event_name}\": {cls_name},")
@@ -848,6 +866,10 @@ def _validate_row_audit_fields(event: object) -> None:
     if event.from_state not in cls.FROM_STATES:
         raise ValueError(
             f"{name}.from_state {event.from_state!r} not in {cls.FROM_STATES!r}")
+    if event.family != cls.FAMILY:
+        raise ValueError(
+            f"{name}.family {event.family!r} contradicts the variant's own "
+            f"schema name {cls.FAMILY!r} — a mis-tagged writer halts")
     if event.trigger_event != cls.TRIGGER:
         raise ValueError(
             f"{name}.trigger_event {event.trigger_event!r} contradicts the "
@@ -926,6 +948,11 @@ def build_wire_event(variants: Mapping[str, type], ev: Mapping[str, object]) -> 
             f"unknown event variant {variant!r} "
             f"(event_id {ev.get('event_id')!r}) — unknown variants halt (§9)")
     name = cls.__name__
+    if ev.get("family") != cls.FAMILY:
+        raise WireViolation(
+            f"{name}: family {ev.get('family')!r} contradicts the variant's "
+            f"own schema name {cls.FAMILY!r} "
+            f"(event_id {ev.get('event_id')!r}) — mis-tagged writer")
     kwargs: dict = {}
     for f in cls.REQUIRED:
         value = ev.get(f)
@@ -1248,14 +1275,34 @@ def _intake(dedup: _Dedup, ev: Mapping[str, object], family: str,
     if base_hint in base_halts:
         return None  # base already halted — isolation, not suppression
     fam = ev.get("family")
-    if fam is None:
+    if not isinstance(fam, str) or fam == "":
         base_halts.setdefault(base_hint, _halt(
             BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
             f"event missing required field 'family' — the reduce filters by "
             f"event schema name (§6.0) (event_id {ev.get('event_id')!r})", ev))
         return None
+    if fam not in FAMILY_VALUES:
+        base_halts.setdefault(base_hint, _halt(
+            BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+            f"unknown family {fam!r} outside the closed domain — an unknown "
+            f"enum value halts like an unknown variant (§9) "
+            f"(event_id {ev.get('event_id')!r})", ev))
+        return None
     if fam != family:
-        return None  # the other stream's events on a shared carrier
+        # A legitimate OTHER record on the shared carrier (the peer
+        # lifecycle family, or any §9 single) is FILTERED. But an event
+        # whose VARIANT belongs to this machine while its tag claims
+        # another family is a mis-tagged writer, not another stream — a
+        # silent drop there rewrites a durable terminal at the next cold
+        # start and bypasses the conflicting-disposition halt.
+        cls = variants.get(str(ev.get("variant")))
+        if cls is not None:
+            base_halts.setdefault(base_hint, _halt(
+                BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+                f"family {fam!r} contradicts variant {cls.__name__!r}, whose "
+                f"own schema name is {cls.FAMILY!r} — mis-tagged writer, "
+                f"never filtered (event_id {ev.get('event_id')!r})", ev))
+        return None
     try:
         if dedup.check(ev, base_hint) == "dup":
             return None  # dual-append twin / redelivered copy
@@ -2241,6 +2288,28 @@ def _hev(variant: str, eid: str, frm: str, to: str, base: str = BASE1,
     return d
 
 
+_SINGLE_PAYLOADS = {
+    "protocol_genesis": {
+        "protocol_epoch": "E0", "credential_mode": "SHARED",
+        "protection_mode": "PREVENT", "classifier": "required:c:p:2",
+        "roster_digest": "rd", "approver_set_digest": "ad",
+        "per_base_epoch_anchors": "R1:refs/heads/main=E0"},
+    "seat_result": {
+        "roster_digest": "rd", "subject_digest": "sd", "attempt_id": "a1",
+        "seat_id": "claude", "verdict": "APPROVE", "findings_digest": "fd"},
+}
+
+
+def _single_ev(event_name: str, eid: str, base: str = BASE1, **extra) -> dict:
+    """A legitimate §9 SINGLE on the shared carrier — its `family` is its
+    own schema name, so a lifecycle reducer filters it rather than halting."""
+    d = _env(eid)
+    d.update({"family": event_name, "base_key": base})
+    d.update(_SINGLE_PAYLOADS[event_name])
+    d.update(extra)
+    return d
+
+
 def _edge(eid: str, eb: str, ea: str, base: str = BASE1, **extra) -> dict:
     d = _env(eid)
     d.update({"base_key": base, "epoch_before": eb, "epoch_after": ea,
@@ -2433,6 +2502,35 @@ def _section_a_vectors() -> dict[str, dict]:
             delta_old_oid="o0", delta_new_oid="o1", source_delivery_id="dX"),
        _ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "EXPLAINED",
            new_oid="oid-new")])
+    a("a_singles_on_a_shared_carrier_are_filtered",
+      "panel round 3 CRITICAL: legitimate §9 SINGLES on the shared carrier "
+      "(protocol_genesis, seat_result) carry their own schema name as "
+      "`family` and are FILTERED — they must never halt the base, and the "
+      "real effect_lifecycle pair around them must still reduce",
+      [_single_ev("protocol_genesis", "s1"), prep,
+       _single_ev("seat_result", "s2"),
+       _ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "EXPLAINED",
+           new_oid="oid-new")])
+    a("a_unknown_family_deny",
+      "DENY: a family outside the closed domain halts — an unknown enum "
+      "VALUE halts like an unknown variant (§9), never a silent drop",
+      [prep, _ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "EXPLAINED",
+                 new_oid="oid-new", family="checkpoint_lifecycle")])
+    a("a_empty_family_deny",
+      "DENY: an empty family is absent, not 'the other stream'",
+      [prep, _ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "EXPLAINED",
+                 new_oid="oid-new", family="")])
+    a("a_case_typo_family_deny",
+      "DENY: a case-typo family (Effect_Lifecycle) is outside the domain — "
+      "a corrupt tag must not absorb a durable terminal as success",
+      [prep, _ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "EXPLAINED",
+                 new_oid="oid-new", family="Effect_Lifecycle")])
+    a("a_family_mistag_terminal_deny",
+      "DENY: a durable TERMINAL mis-tagged with the peer family must halt, "
+      "never be dropped — a silent drop rewrites EXPLAINED to HELD at the "
+      "next cold start and bypasses the conflicting-disposition halt",
+      [prep, _ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "EXPLAINED",
+                 new_oid="oid-new", family="hold_lifecycle")])
     a("a_halt_isolation_after_halt",
       "halt isolation ORDERING: a base halts FIRST, then a healthy base's "
       "events arrive — they must still reduce and still earn their "
@@ -2634,6 +2732,14 @@ def _section_b_vectors() -> dict[str, dict]:
       "DENY: the section-B creation row declares `epoch effect: none` — an "
       "observe_delta cannot advance the base epoch",
       [dict(obs, epoch_after="E1")])
+    b("b_family_mistag_deny",
+      "DENY: a foreign-hold observation mis-tagged `effect_lifecycle` must "
+      "halt — a silent drop leaves the base unparked: no hold, no "
+      "admission pressure, no operator reconcile demanded",
+      [dict(obs, family="effect_lifecycle")])
+    b("b_unknown_family_deny",
+      "DENY: a family outside the closed domain halts in section B too",
+      [dict(obs, family="checkpoint_lifecycle")])
     b("b_halt_isolation_after_halt",
       "halt isolation ORDERING (section B): one base halts first, a later "
       "healthy base still reduces its holds",

@@ -25,6 +25,57 @@
         }
       }
     },
+    "a_case_typo_family_deny": {
+      "movements": {
+        "R1:refs/heads/main": {
+          "m1": {
+            "state": "PREPARED",
+            "disposition": null,
+            "via_recovery_append": false
+          }
+        }
+      },
+      "recovery_appends": [],
+      "halts": {
+        "R1:refs/heads/main": {
+          "code": "SCHEMA_MAJOR_UNKNOWN"
+        }
+      }
+    },
+    "a_empty_family_deny": {
+      "movements": {
+        "R1:refs/heads/main": {
+          "m1": {
+            "state": "PREPARED",
+            "disposition": null,
+            "via_recovery_append": false
+          }
+        }
+      },
+      "recovery_appends": [],
+      "halts": {
+        "R1:refs/heads/main": {
+          "code": "SCHEMA_MAJOR_UNKNOWN"
+        }
+      }
+    },
+    "a_family_mistag_terminal_deny": {
+      "movements": {
+        "R1:refs/heads/main": {
+          "m1": {
+            "state": "PREPARED",
+            "disposition": null,
+            "via_recovery_append": false
+          }
+        }
+      },
+      "recovery_appends": [],
+      "halts": {
+        "R1:refs/heads/main": {
+          "code": "SCHEMA_MAJOR_UNKNOWN"
+        }
+      }
+    },
     "a_forbidden_authorization_id_deny": {
       "movements": {
         "R1:refs/heads/main": {
@@ -281,6 +332,19 @@
         }
       }
     },
+    "a_singles_on_a_shared_carrier_are_filtered": {
+      "movements": {
+        "R1:refs/heads/main": {
+          "m1": {
+            "state": "EXPLAINED",
+            "disposition": null,
+            "via_recovery_append": false
+          }
+        }
+      },
+      "recovery_appends": [],
+      "halts": {}
+    },
     "a_to_contradiction_deny": {
       "movements": {
         "R1:refs/heads/main": {
@@ -316,6 +380,23 @@
       }
     },
     "a_unknown_enum_value_deny": {
+      "movements": {
+        "R1:refs/heads/main": {
+          "m1": {
+            "state": "PREPARED",
+            "disposition": null,
+            "via_recovery_append": false
+          }
+        }
+      },
+      "recovery_appends": [],
+      "halts": {
+        "R1:refs/heads/main": {
+          "code": "SCHEMA_MAJOR_UNKNOWN"
+        }
+      }
+    },
+    "a_unknown_family_deny": {
       "movements": {
         "R1:refs/heads/main": {
           "m1": {
@@ -441,6 +522,14 @@
       "halts": {
         "R1:refs/heads/main": {
           "code": "ILLEGAL_TRANSITION"
+        }
+      }
+    },
+    "b_family_mistag_deny": {
+      "holds": {},
+      "halts": {
+        "R1:refs/heads/main": {
+          "code": "SCHEMA_MAJOR_UNKNOWN"
         }
       }
     },
@@ -774,6 +863,14 @@
       "halts": {}
     },
     "b_unknown_actor_verification_deny": {
+      "holds": {},
+      "halts": {
+        "R1:refs/heads/main": {
+          "code": "SCHEMA_MAJOR_UNKNOWN"
+        }
+      }
+    },
+    "b_unknown_family_deny": {
       "holds": {},
       "halts": {
         "R1:refs/heads/main": {
