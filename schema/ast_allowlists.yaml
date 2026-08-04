@@ -4,11 +4,19 @@
 #     parse module. T9: every side-effecting entrypoint consumes the plan —
 #     MergePlan/PanelPlan interpretation happens only at the named call sites.
 #
-# The module paths below are FUTURE paths (PR2/PR3/PR5 deliverables). The CI
-# test over this file FAILS CLOSED while they are absent (plan review, grok
-# B3): absence of an allowlisted module is expected pre-PR2 and recorded as a
-# skip, but any OTHER module defining or constructing a guarded name is a
-# hard failure — the gate is live from PR0, not from PR2.
+# The module paths below are FUTURE paths (PR2/PR3/PR5 deliverables).
+#
+# ONE story about the pre-PR2 behaviour (panel round 3 found the plan, this
+# comment and the implementation giving three different ones):
+#   * the gate is LIVE from PR0 — any module other than the allowlisted ones
+#     defining or constructing a guarded name is a HARD FAILURE now;
+#   * while the allowlisted modules are simply ABSENT (the expected state
+#     before PR2), the gate PASSES and emits a warning naming them — it is
+#     visible in pytest's summary and in CI logs, not a silent skip;
+#   * it never "fails because they are absent": absence is expected, a
+#     guarded name in the wrong place is not.
+# tests/boundary/test_pr0.py::test_ast_allowlists_fail_closed implements
+# exactly this, and the implementation plan §2's PR0 line says the same.
 
 schema_version: 1
 design_doc: docs/plans/2026-08-02-classification-gating-design.md

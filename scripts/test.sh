@@ -15,14 +15,16 @@ set -e
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 PY="$(bash scripts/python.sh)"
+echo "test.sh: interpreter $PY ($("$PY" --version 2>&1))"
 
 PYTHONPATH=src "$PY" -m pytest tests/ -q --tb=line
 
 if "$PY" tools/t26_lint.py --probe-peer >/dev/null 2>&1; then
   "$PY" tools/t26_lint.py
 else
+  # --probe-peer exits 1 for exactly one reason: the peer is unresolvable.
   echo "test.sh: claude-workflow peer checkout absent — running t26_lint in" \
        "degraded mode (doc-local checks only; set CLAUDE_WORKFLOW_REPO for" \
-       "the full check)" >&2
+       "the full check). CI's citations job covers the other arm." >&2
   "$PY" tools/t26_lint.py --no-citations
 fi

@@ -11,8 +11,9 @@
 # tools/fsmgen.py generates src/claude_dispatcher/boundary/generated/ from this
 # file. The `display` strings are the design doc's own table cells VERBATIM
 # (markdown emphasis included) — docs/generated/lifecycle_tables.md is emitted
-# from them and CI diffs it against the design's inline tables, so this file
-# cannot drift from the doc without a red build.
+# from them and fsmgen's doc==artifact comparison diffs it against the
+# design's inline tables on every run — run by the repo gate
+# (scripts/test.sh → tests/boundary) and by .github/workflows/verify.yml.
 #
 # Per design §12: PR0 lands this artifact BEFORE any feature code; the §6.0
 # tables and §9 unions are generated from it, never hand-written again.

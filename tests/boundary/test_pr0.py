@@ -11,7 +11,8 @@ Every seal here exists to make a specific drift class a red build:
   red even after regeneration (independent-oracle rule).
 - fail-closed wire: missing REQUIRED / forbidden-present / unknown enum
   value / unknown variant ⇒ typed halts, never coercion (explicit-state).
-- t26_lint: the design doc's own lint, wired as CI, with planted-violation
+- t26_lint: the design doc's own lint, run by the repo gate
+  (scripts/test.sh) and .github/workflows/verify.yml, with planted-violation
   deny rows through the REAL Doc constructor.
 - T8/T9 fail-closed AST gates covering bare-name, attribute-qualified and
   import-aliased constructions; dark-mode detector covering every import
