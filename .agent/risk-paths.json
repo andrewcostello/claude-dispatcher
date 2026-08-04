@@ -102,14 +102,15 @@
     },
     {
       "id": "generated-safety-truth",
-      "note": "The classification→gating boundary's generated truth (design v20 §12; implementation plan PR0). schema/ is the machine-readable source every FSM/§9/panel/error type is generated from; tools/fsmgen.py writes those types; tools/t26_lint.py is the design doc's own CI lint; and the two plan documents are the Source of truth those schemas transcribe — a quiet edit to any of them rewrites the safety model itself, so none is presentation. Risk is the MAX over matched rules, so this rule raises these paths to critical regardless of the docs-and-meta and dispatcher-support rules that also match them (plan review, grok M9).",
+      "note": "The classification→gating boundary's generated truth (design v20 §12; implementation plan PR0). schema/ is the machine-readable source every FSM/§9/panel/error type is generated from; tools/fsmgen.py writes those types; tools/t26_lint.py is the design doc's own CI lint; and the two plan documents are the Source of truth those schemas transcribe; and tests/boundary/vectors/t19_expected.json is the hand-written oracle every reducer golden is judged against — weakening it silently un-seals the FSM — a quiet edit to any of them rewrites the safety model itself, so none is presentation. Risk is the MAX over matched rules, so this rule raises these paths to critical regardless of the docs-and-meta and dispatcher-support rules that also match them (plan review, grok M9).",
       "paths": [
         "src/claude_dispatcher/boundary/**",
         "schema/**",
         "tools/fsmgen.py",
         "tools/t26_lint.py",
         "docs/plans/2026-08-02-classification-gating-design.md",
-        "docs/plans/2026-08-03-classification-gating-implementation-plan.md"
+        "docs/plans/2026-08-03-classification-gating-implementation-plan.md",
+        "tests/boundary/vectors/t19_expected.json"
       ],
       "risk": "critical"
     },

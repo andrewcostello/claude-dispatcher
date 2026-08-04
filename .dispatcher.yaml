@@ -2,13 +2,16 @@
 # test: shell command run inside a task worktree; exit 0 = green.
 #
 # One definition of the mechanical gate: scripts/test.sh (also what
-# `make test` runs, so the two cannot drift). It resolves the interpreter
-# (DISPATCHER_TEST_PYTHON → $ROOT/.venv → python3), runs pytest tests/
-# (which includes tests/boundary), and runs tools/t26_lint.py — with the
-# pinned-baseline citation half enabled whenever the claude-workflow peer
-# checkout is resolvable ($CLAUDE_WORKFLOW_REPO or the sibling directory);
-# worktrees without a peer still run every doc-local check. The
-# citations-required form is `make verify-t26` / CI.
+# `make test` runs, so the two cannot drift). The interpreter comes from
+# scripts/python.sh — the single resolution ladder, exactly
+# DISPATCHER_TEST_PYTHON → $ROOT/.venv → python3, with NO per-developer
+# absolute paths (a host whose checkout lives elsewhere exports
+# DISPATCHER_TEST_PYTHON). test.sh runs pytest tests/ (which includes
+# tests/boundary) and then tools/t26_lint.py, deciding the citation half
+# with t26_lint's own --probe-peer predicate: peer present ⇒ full checks;
+# peer absent (dispatched worktree) ⇒ degraded mode that still enforces
+# every doc-local check and announces itself on stderr, never a hard fail.
+# The citations-required form is `make verify-t26` / CI.
 #
 test: |
   exec bash "$(git rev-parse --show-toplevel)/scripts/test.sh"
