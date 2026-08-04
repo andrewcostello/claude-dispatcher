@@ -195,6 +195,38 @@ def test_ci_citations_job_hard_fails_on_a_missing_peer():
         "of the environment matrix is unexercised in CI")
 
 
+def test_boundary_paths_stay_in_the_critical_risk_tier():
+    """Plan §0/§2 requires the boundary surface to classify as CRITICAL
+    risk, which is what routes a change here through the full panel. The
+    rule lived in .agent/risk-paths.json with nothing asserting it: quietly
+    dropping a path — or downgrading the rule to "high" — would leave the
+    whole suite green while the code that decides whether review happens
+    stopped demanding review of itself.
+
+    MUTATION (.agent/risk-paths.json, not committed): change
+    generated-safety-truth's risk to "high" ⇒ red; delete "schema/**" or
+    "tools/fsmgen.py" from its paths ⇒ red.
+    """
+    spec = json.loads((REPO_ROOT / ".agent/risk-paths.json")
+                      .read_text(encoding="utf-8"))
+    rule = next((r for r in spec["rules"]
+                 if r.get("id") == "generated-safety-truth"), None)
+    assert rule is not None, (
+        ".agent/risk-paths.json no longer carries the generated-safety-truth "
+        "rule — the boundary would take unmatched_risk instead of critical")
+    assert rule["risk"] == "critical", (
+        f"the boundary risk tier was downgraded to {rule['risk']!r}")
+    required = {"src/claude_dispatcher/boundary/**", "schema/**",
+                "tools/fsmgen.py", "tools/t26_lint.py",
+                "tests/boundary/vectors/t19_expected.json",
+                "tests/boundary/**"}
+    missing = required - set(rule["paths"])
+    assert not missing, f"dropped from the critical rule: {sorted(missing)}"
+    # risk is the MAX over matched rules, so no rule may be marked
+    # presentation-only for these paths.
+    assert not rule.get("presentational")
+
+
 def test_auto_release_deferral_is_a_recorded_cutover_blocker(schemas):
     """The PR4 provenance obligation must not be forgettable: it is recorded
     as a PR6 cut-over blocker in the schema (panel round 4, finding 3)."""
@@ -702,6 +734,12 @@ def test_authorization_granted_kind_assurance_pairs(generated, kind, assurance, 
                  id="deny-consent-evidence-mode"),
     pytest.param("consent", "assurance", "NOT_APPLICABLE",
                  id="deny-consent-not-applicable"),
+    # the branch below special-cased authorization_granted while the table
+    # carried no such row, so it could never execute. The row is added
+    # rather than the branch deleted: `kind` is the §9 authorization
+    # record's own closed domain and belongs in this table.
+    pytest.param("authorization_granted", "kind", "VIBES",
+                 id="deny-authorization-kind"),
 ])
 def test_singles_closed_domains_reject_unknown_values(schemas, generated,
                                                       event, field, bad):
@@ -1338,6 +1376,248 @@ def test_enum_wire_fields_are_never_coerced_from_a_raw_string(generated):
         _mk_effect(generated, "Prepare", credential_mode="SHARED")
 
 
+# ─── the WIRE path: build_wire_event's own fail-closed arms ──────────────────
+#
+# Coverage reported the wire twins of the constructor checks as never
+# executed: build_wire_event's family contradiction, and _convert_wire_value
+# 's int / schema_major-range / non-empty-str / ts arms. They are
+# unreachable through the REDUCERS — `_intake` calls `_classify_event`
+# first, which pre-empts the major and family checks — but build_wire_event
+# is a public generated entry point, so they are reachable and sealed here
+# directly rather than left as dead code nobody can tell is dead.
+
+def _wire_ok(generated) -> dict:
+    return _wire_effect(generated, "Prepare", "e1", "m1", "GENESIS",
+                        authorization_id="auth-1")
+
+
+@pytest.mark.parametrize("over,match", [
+    pytest.param({"variant": "TotallyNovelEvent"},
+                 r"unknown event variant 'TotallyNovelEvent'",
+                 id="deny-wire-unknown-variant"),
+    pytest.param({"family": "hold_lifecycle"},
+                 r"family 'hold_lifecycle' contradicts the variant's own "
+                 r"schema name",
+                 id="deny-wire-family-contradicts-variant"),
+    pytest.param({"authority": None}, r"required field 'authority' absent",
+                 id="deny-wire-missing-required"),
+    pytest.param({"credential_mode": "TELEPATHY"},
+                 r"unknown value 'TELEPATHY' for closed enum",
+                 id="deny-wire-unknown-enum-value"),
+    pytest.param({"schema_major": "1"}, r"schema_major: must be an int",
+                 id="deny-wire-major-not-an-int"),
+    pytest.param({"schema_major": True}, r"schema_major: must be an int",
+                 id="deny-wire-major-is-a-bool"),
+    pytest.param({"schema_major": 99}, r"99 outside the supported set",
+                 id="deny-wire-unsupported-major"),
+    pytest.param({"schema_minor": "0"}, r"schema_minor: must be an int",
+                 id="deny-wire-minor-not-an-int"),
+    pytest.param({"authority": ""}, r"authority: must be a non-empty str",
+                 id="deny-wire-empty-required-str"),
+    pytest.param({"authority": 7}, r"authority: must be a non-empty str",
+                 id="deny-wire-required-str-is-an-int"),
+    pytest.param({"ts": "1970-13-45T99:00:00Z"},
+                 r"is not an RFC 3339 UTC instant",
+                 id="deny-wire-ts-is-not-an-instant"),
+    pytest.param({"trigger_event": "submit"},
+                 r"contradicts the variant's row trigger",
+                 id="deny-wire-trigger-mis-tagged"),
+    pytest.param({"to": "HELD"}, r"audit 'to' 'HELD' contradicts the row's",
+                 id="deny-wire-to-contradicts-the-row"),
+])
+def test_build_wire_event_is_fail_closed(generated, over, match):
+    """§9: missing REQUIRED / forbidden-present / unknown enum value /
+    unknown variant / unsupported major ⇒ a typed WireViolation, never
+    coercion and never a default.
+
+    MUTATIONS (generated, each reverted): `_convert_wire_value`'s int arm →
+    `return value` ⇒ the three int rows go red; its major-range arm →
+    `pass` ⇒ the unsupported-major row goes red; its non-empty-str arm →
+    `pass` ⇒ two rows go red; its ts arm → `pass` ⇒ one row; build_wire_
+    event's `ev.get("family") != cls.FAMILY` → `if False:` ⇒ the family row
+    goes red (that guard had NO test — `_intake` pre-empts it).
+    """
+    g = generated
+    ev = dict(_wire_ok(g))
+    for key, value in over.items():
+        if value is None:
+            ev.pop(key, None)
+        else:
+            ev[key] = value
+    with pytest.raises(g.WireViolation, match=match) as exc:
+        g.build_wire_event(g.EFFECT_VARIANTS, ev)
+    # a WireViolation carries the SCHEMA_MAJOR_UNKNOWN code by contract:
+    # §9 halts an unknown variant and an unknown enum value identically to
+    # an unknown major.
+    assert exc.value.code is g.BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN
+
+
+def test_build_wire_event_rejects_a_forbidden_field(generated):
+    """deny: a FORBIDDEN field present is a schema violation — the §9
+    authorization_id may not ride on a reconcile row.
+
+    MUTATION: delete the FORBIDDEN loop from build_wire_event ⇒ red.
+    """
+    g = generated
+    cls = g.EFFECT_VARIANTS["ReconcileAccept"]
+    ev = _wire_effect(g, "ReconcileAccept", "e1", "m1", cls.FROM_STATES[0],
+                      disposition="ACCEPT_FOREIGN_ADVANCED",
+                      epoch_before="E0", epoch_after="E1",
+                      authorization_id="auth-1")
+    with pytest.raises(g.WireViolation,
+                       match=r"forbidden field 'authorization_id' present"):
+        g.build_wire_event(g.EFFECT_VARIANTS, ev)
+
+
+# ─── §9 audit fields, validated against the variant's own row ────────────────
+
+@pytest.mark.parametrize("over,match", [
+    pytest.param({"from_state": "RECONCILED"}, r"from_state 'RECONCILED' not in",
+                 id="deny-audit-from-outside-from-states"),
+    pytest.param({"family": "hold_lifecycle"},
+                 r"family 'hold_lifecycle' contradicts the variant's own "
+                 r"schema name",
+                 id="deny-audit-family-contradicts-variant"),
+    pytest.param({"trigger_event": "submit"},
+                 r"trigger_event 'submit' contradicts the row's trigger",
+                 id="deny-audit-trigger-contradicts-row"),
+    pytest.param({"to_state": "HELD"}, r"to 'HELD' contradicts the row's",
+                 id="deny-audit-to-contradicts-row"),
+])
+def test_row_audit_fields_are_validated_at_construction(generated, over, match):
+    """The CONSTRUCTOR twins of the wire audit checks (coverage reported all
+    four as never executed): §9's from/family/trigger_event/to are real
+    fields validated against the variant's row, so a typed event built in
+    process cannot contradict the row it claims.
+
+    MUTATION: any one of the four raises in `_validate_row_audit_fields` →
+    `pass` ⇒ exactly its row goes red.
+    """
+    with pytest.raises(ValueError, match=match):
+        _mk_effect(generated, "Prepare", **over)
+
+
+def test_hold_effect_must_match_the_rows_declared_effect(generated):
+    """The fifth audit guard: a row that declares a hold effect pins it, so
+    an event may not claim a different one.
+
+    MUTATION: delete the ROW_HOLD_EFFECT comparison ⇒ red.
+    """
+    g = generated
+    cls = g.EFFECT_VARIANTS["MoveToHoldFromPrepared"]
+    assert getattr(cls, "ROW_HOLD_EFFECT", None) is not None, (
+        "this seal needs a row that declares a hold effect")
+    other = next(e for e in g.HoldEffect if e.value != cls.ROW_HOLD_EFFECT)
+    with pytest.raises(ValueError,
+                       match=r"contradicts the row's declared effect"):
+        _mk_effect(g, "MoveToHoldFromPrepared", hold_effect=other)
+
+
+# ─── cross-base duplicate propagation, through the REDUCERS' intake ─────────
+#
+# `_Dedup` is shared by both reducers AND the fold, but the two
+# order-dependence properties it exists for were covered only by FOLD
+# vectors — and the reducers register through a different call site
+# (`_intake`) than the fold (`_collect_epoch_edges`), so a regression in
+# `_intake` reddened nothing.
+
+def _divergent_pair(g, base_a: str, base_b: str) -> list[dict]:
+    """One event_id on two bases with DIVERGENT payloads."""
+    first = _wire_effect(g, "Prepare", "dup", "m1", "GENESIS", base=base_a,
+                         authorization_id="auth-1")
+    second = dict(first, base_key=base_b, authority="fp-DIFFERENT")
+    return [first, second]
+
+
+def test_divergent_duplicate_halts_every_base_it_touched(generated):
+    """A divergent copy of one event_id halts EVERY base it appeared on —
+    not merely the one it arrived on second. Integrity, not last-writer.
+
+    MUTATION: in `_intake`, catch `_DivergentDuplicate` and record the halt
+    on `base_hint` only (instead of every base in `exc.bases`) ⇒ red.
+    """
+    g = generated
+    got = g.reduce_section_a(_divergent_pair(g, "B1", "B2"))
+    for base in ("B1", "B2"):
+        assert base in got["halts"], (
+            f"{base} did not halt on a divergent duplicate: {got['halts']}")
+        assert got["halts"][base]["code"] == "EVENT_PAYLOAD_DIVERGENT"
+
+
+def test_dedup_registers_even_on_an_already_halted_base(generated):
+    """The first copy lands on a base that is ALREADY halted; a divergent
+    copy then arrives on a healthy base. If registration were skipped for
+    halted bases, the second copy would read as first-seen and the healthy
+    base would accept a payload the protocol has already contradicted.
+
+    MUTATION: in `_intake`, move `dedup.check(...)` inside `if not halted:`
+    ⇒ red.
+    """
+    g = generated
+    # halt B1 first: an unknown variant is a §9 schema violation.
+    halting = dict(_wire_effect(g, "Prepare", "e0", "m0", "GENESIS",
+                                base="B1", authorization_id="auth-1"),
+                   variant="TotallyNovelEvent")
+    first, second = _divergent_pair(g, "B1", "B2")
+    got = g.reduce_section_a([halting, first, second])
+    assert got["halts"]["B1"]["code"] == "SCHEMA_MAJOR_UNKNOWN"
+    assert "B2" in got["halts"], (
+        "the divergent copy on a healthy base was read as first-seen — "
+        "dedup registration is order-dependent")
+    assert got["halts"]["B2"]["code"] == "EVENT_PAYLOAD_DIVERGENT"
+
+
+# ─── derived ids: what convergence actually covers ──────────────────────────
+
+def test_derived_recovery_id_convergence_scope(generated):
+    """The derived recovery event_id exists so "two concurrent cold starts
+    converge instead of permanently halting the base". It covers the ID;
+    it does NOT cover the payload.
+
+    `a_recovery_converges` varies only ts/run_id/trace_id — exactly and
+    only the fields `_canonical` drops for derived ids — so the fixture
+    cannot exhibit the failure it is cited for. The convergence claim is
+    therefore pinned here to its REAL scope, so widening or narrowing it is
+    a deliberate edit:
+
+      * the recovery plan `_finish_section_a` emits SIX fields; every other
+        §9-REQUIRED field (authority, actor_context, credential_mode,
+        protocol_epoch, epoch_before/after) is left to the issuer;
+      * `CANONICAL_EXCLUDES_FOR_DERIVED_IDS` is exactly {ts, run_id,
+        trace_id}, so a disagreement in any of those issuer-supplied fields
+        is EVENT_PAYLOAD_DIVERGENT — the permanent halt the derived id was
+        introduced to prevent.
+
+    This is a SCOPE seal, not an approval: the gap is reported as an
+    implementation finding (making the recovery append fully derived, or
+    justifying a wider exclude set in the schema, is an implementation
+    change this test author may not make).
+
+    MUTATION: add a field to CANONICAL_EXCLUDES_FOR_DERIVED_IDS ⇒ red; add
+    a field to the `_finish_section_a` plan ⇒ red.
+    """
+    g = generated
+    assert set(g.CANONICAL_EXCLUDES_FOR_DERIVED_IDS) == {"ts", "run_id",
+                                                         "trace_id"}
+    assert set(g.DERIVED_ID_KINDS) == {"crash_recovery"}, (
+        "actor_verified_match is still not a derived-id kind — see the "
+        "concurrent-auto-release finding")
+    prepared = _wire_effect(g, "Prepare", "e1", "m1", "GENESIS",
+                            authorization_id="auth-1")
+    plan = g.reduce_section_a([prepared])["recovery_appends"]
+    assert len(plan) == 1
+    assert set(plan[0]) == {"event_id", "movement_id", "base_key",
+                            "trigger_event", "from", "to"}, (
+        "the recovery plan's field set changed — re-derive what two "
+        "concurrent cold starts can actually agree on before editing this")
+    # the §9 REQUIRED set of the row the plan describes is far larger, and
+    # every field outside the plan is issuer-supplied.
+    required = set(g.EFFECT_VARIANTS["CrashRecoveryFromPrepared"].REQUIRED)
+    issuer_supplied = required - set(plan[0]) - {"from", "to"}
+    assert issuer_supplied >= {"authority", "actor_context", "credential_mode",
+                               "protocol_epoch", "epoch_before", "epoch_after"}
+
+
 # ─── apply(): legal and illegal pairs ────────────────────────────────────────
 
 @pytest.mark.parametrize("state,variant", [
@@ -1933,8 +2213,21 @@ def test_unknown_epoch_effect_is_closed_at_both_ends(generated):
     """An epoch effect outside the four implemented arms must not read as
     "no algebra" (panel round 4, finding 5). Closed at BOTH ends:
       1. schema load rejects a row declaring one;
-      2. the runtime checker halts rather than falling through — tested
-         directly, since (1) makes it unreachable from a valid schema."""
+      2. the runtime checker halts rather than falling through.
+
+    The runtime half used to drive `_check_epoch_algebra` with two locally
+    declared stand-in classes (`_NovelRow`, `_Ev`) that encoded a narrower
+    contract than the real types they impersonated. It now runs against a
+    REAL generated module — built by fsmgen through `module_from_source`,
+    the same route `test_flipping_the_schema_rule_order_flips_the_behaviour`
+    uses — with one variant's EPOCH_EFFECT rebound to an unknown value, and
+    it asserts PUBLIC behaviour: `reduce_section_a` halts.
+
+    MUTATION: replace `_check_epoch_algebra`'s final `return halt(...)` with
+    `return None` ⇒ red (an unknown effect would read as "no algebra").
+    MUTATION: delete the closed-epoch-effect check from
+    `_validate_schema_tokens` ⇒ the schema half goes red.
+    """
     fsmgen = _fsmgen()
     schemas = fsmgen.load_schemas()
     schemas["lifecycle_fsm"]["section_a"]["rows"][0]["epoch_effect"] = "novel_effect"
@@ -1942,24 +2235,30 @@ def test_unknown_epoch_effect_is_closed_at_both_ends(generated):
         fsmgen._validate_schema_tokens(schemas)
     assert "closed epoch-effect domain" in str(exc.value)
 
-    g = generated
-
-    class _NovelRow:                      # a row the checker does not know
-        ROW = "novel_row"
-        EPOCH_EFFECT = "novel_effect"
-        REQUIRED = ("epoch_before", "epoch_after")
-        OPTIONAL = ()
-
-    class _Ev:
-        epoch_before = "a" * 40
-        epoch_after = "b" * 40
-        disposition = None
-        new_oid = None
-
-    halt = g._check_epoch_algebra(_NovelRow, _Ev(), "where", {"event_id": "e"})
-    assert halt is not None, "unknown epoch effect fell through as no-op"
-    assert halt["code"] == "ILLEGAL_TRANSITION"
-    assert "domain is closed" in halt["detail"]
+    # (2) the runtime half, on a real generated module.
+    live = fsmgen.module_from_source(
+        fsmgen.build_generated_module(fsmgen.load_schemas()))
+    cls = live.EFFECT_VARIANTS["Prepare"]
+    assert cls.EPOCH_EFFECT in live.EPOCH_EFFECT_VALUES
+    cls.EPOCH_EFFECT = "novel_effect"          # a row the checker cannot know
+    try:
+        wire = _wire_effect(live, "Prepare", "e1", "m1", "GENESIS",
+                            authorization_id="auth-1")
+        event = live.build_wire_event(live.EFFECT_VARIANTS, wire)
+        halt = live._check_epoch_algebra(cls, event, "where", {"event_id": "e"})
+        assert halt is not None, "unknown epoch effect fell through as no-op"
+        assert halt["code"] == "ILLEGAL_TRANSITION"
+        assert "domain is closed" in halt["detail"]
+        # …and the same fact through the PUBLIC reducer, not only the helper
+        got = live.reduce_section_a([wire])
+        base_halt = got["halts"]["R1:refs/heads/main"]
+        assert base_halt["code"] == "ILLEGAL_TRANSITION"
+        assert "domain is closed" in base_halt["detail"], base_halt["detail"]
+    finally:
+        cls.EPOCH_EFFECT = "none"
+    # the committed module is untouched by the probe above
+    assert set(generated.EPOCH_EFFECT_VALUES) == {
+        "none", "assign_new_oid", "per_disposition", "as_accept_ours"}
 
 
 def test_aggregate_dispatch_is_generated_from_the_schema_rules(schemas, generated):
@@ -1972,6 +2271,33 @@ def test_aggregate_dispatch_is_generated_from_the_schema_rules(schemas, generate
     for (name_result, (_, result)) in zip(rules, g.AGGREGATE_RULES):
         (name, want), = name_result.items()
         assert result.name == want, f"{name}: generated {result.name}, schema {want}"
+
+
+def test_aggregate_rule_list_is_total(generated):
+    """§5.1's dispatch ends in a raising totality check, not an implicit
+    None: a rules list without the final `otherwise` arm must be a loud
+    AssertionError, never "no result".
+
+    MUTATION: drop the final ('otherwise', APPROVED) entry from
+    AGGREGATE_RULES ⇒ this row goes red on the real aggregate.
+    """
+    g = generated
+    assert g.AGGREGATE_RULES[-1][1] is g.PanelAggregateResult.APPROVED
+    assert g.AGGREGATE_RULES[-1][0]((), {}) is True, (
+        "the final rule is not unconditional — the dispatch is not total")
+    # deny: with the otherwise arm removed the dispatch must RAISE, not
+    # return None. Driven on a copy of the module's own rule tuple.
+    saved = g.AGGREGATE_RULES
+    try:
+        g.AGGREGATE_RULES = saved[:-1]
+        r = _roster(g)
+        with pytest.raises(AssertionError, match=r"rule list is not total"):
+            g.aggregate(g.PanelIntensity.FULL, r, _seats_all_approve(g, r))
+    finally:
+        g.AGGREGATE_RULES = saved
+    assert g.aggregate(g.PanelIntensity.FULL, _roster(g),
+                       _seats_all_approve(g, _roster(g))) is \
+        g.PanelAggregateResult.APPROVED
 
 
 def test_flipping_the_schema_rule_order_flips_the_behaviour(tmp_path, monkeypatch):
