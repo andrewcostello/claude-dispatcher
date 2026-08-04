@@ -52,6 +52,24 @@ Stated once because each was learned by shipping its violation. A unit that brea
 - **Cross-repo**: `schema/` is a versioned contract package; every schema either repo tests against is digest-cross-checked in both CIs at one pinned source commit.
 - **Agent hygiene** (learned the hard way): commit whenever green and never batch — a session limit or dropped connection then costs one chunk, not a session; every agent uses a **private scratch directory** (a shared one was overwritten mid-run by a concurrent agent); never run an agent in a checkout another agent is writing.
 
+## 2a. Phases inside a unit, and who drives
+
+Every unit decomposes into **three mandatory phases plus one conditional**, because the protocol's value comes from different parties owning them. This is the granularity a task runner needs, and the granularity a human handoff needs:
+
+| Phase | Owner constraint | Artifact | Done when |
+|---|---|---|---|
+| **P1 scaffold** | any author | typed signatures from the generated types + contract docstrings + `NotImplementedError` bodies | reviewed for contract fidelity to the design, before any body exists |
+| **P2 seals** | **must differ from P1's author** | failing seal tests mapped to their T-obligations, incl. composition seals (crash histories, `reduce == state`, property-based) and state-unmutated assertions | committed RED; a seal that passes against a stub is vacuous and rejected |
+| **P3 bodies** | module grain, parallel, **must differ from P2's author** | implementations only | suite green; `scripts/check_body_branch.sh` shows no diff under `tests/ schema/ **/generated/**` and no changed signature |
+| **P4 adjudicate** | **must differ from P1–P3** | ruling on a disputed test or frozen signature, with its design citation | fix lands in its own reviewed commit; repeat dispute on the same artifact escalates to the operator |
+
+**Who drives, and in what order.** The dispatcher is not yet a safe or capable driver for these units, on two grounds that are both fixable and are themselves scheduled below:
+
+1. **Self-gating.** Most units repair the gate path the dispatcher would be gating them with. Two live fail-opens remain in that path (§4a), and a third is fixed but unmerged. A dispatcher must not be the authority over its own repair — so hand-driven agents run until the gate path is trustworthy: close the A-stream → merge the base-pinning fix → land **B1/B2** (which closes §4a.1) → from **C1** onward the dispatcher drives.
+2. **The protocol is not expressible.** Verified against the current task schema: `depends_on`/`blocked_by` exists (so unit ordering is fine) and `agent:` selects a model — but there is **no role and no immutable-paths concept**, so "seal author ≠ scaffold author" and "body agents may not touch tests" would be honour-system. Honour-system is precisely what produced 24 vacuous seals. **D1 supplies it.**
+
+The panel/recheck/merge machinery is already good and stays the dispatcher's job throughout; what is missing is the build-side role protocol, not review.
+
 ## 3. Units
 
 Dependencies are strict: a unit may not begin before its predecessors merge. Sizes are diff targets.
@@ -65,6 +83,13 @@ Dependencies are strict: a unit may not begin before its predecessors merge. Siz
 | **A4** | `fsmgen` → `apply()` transition relation for both machines + T19 **artifact-fidelity** goldens against the hand-written oracle | T19 transition rows, oracle-independence, T6, T8/T9 fail-closed, dark-mode gate | 2.5k |
 
 **A-stream status:** built as one 20.7k unit on `feat/PR0-generated-truth` before this restructuring and reviewed in five slices at near-full coverage. It ships as A1–A4 combined **once** its 5 CRITICALs, its vacuous seals and its CI findings are closed; its operational semantics are booked to Stream C (§4b). No future unit ships at that size.
+
+### Stream D — make the units machine-drivable (`claude-dispatcher`)
+| Unit | Deliverable | Seals | ~size |
+|---|---|---|---|
+| **D1** | task-schema support for the §2a protocol: `role: scaffold\|seals\|bodies\|adjudicate`; `immutable_paths:` per role; a preflight refusal when a unit's seals-phase agent equals its scaffold-phase agent; `scripts/check_body_branch.sh` wired at PR time and in CI | role/immutability rejection rows (a bodies task touching `tests/**` fails preflight AND at PR time); same-author refusal; a unit whose phases are out of order fails to plan | 1.5k |
+
+Ordering: D1 lands before the dispatcher drives any unit. It does not block hand-driven work, so A-stream, the base-pinning merge and B1/B2 may proceed in parallel with it.
 
 ### Stream B — the classifier boundary (mechanism + caller in the same unit)
 | Unit | Deliverable | Seals | ~size |
