@@ -1152,6 +1152,16 @@ def _convert_wire_value(cls_name: str, f: str, value: object) -> object:
                 f"{cls_name}.schema_major: {value} outside the supported set "
                 f"{sorted(SUPPORTED_SCHEMA_MAJORS)} — unknown major halts (§9)")
         return value
+    _check_wire_string(cls_name, f, value)
+    return value
+
+
+def _check_wire_string(cls_name: str, f: str, value: object) -> None:
+    """The string-field rules, in one place so every consumer applies them
+    once: an OID field must be a string at all; no field may be empty; no
+    field may carry a newline (digest preimages are newline-joined, and a
+    newline escaping here used to reach _preimage as a bare ValueError that
+    took the whole walk down); ts must be a real RFC 3339 UTC instant."""
     if f in _OID_WIRE_FIELDS and not isinstance(value, str):
         raise WireViolation(
             f"{cls_name}.{f}: {_short(value)} is not an object id — the "
@@ -1160,15 +1170,12 @@ def _convert_wire_value(cls_name: str, f: str, value: object) -> object:
         raise WireViolation(f"{cls_name}.{f}: must be a non-empty str, "
                             f"got {_short(value)}")
     if "\\n" in value:
-        # a newline escaping here reached _preimage as a bare ValueError and
-        # took the whole walk down with it (panel round 6) — typed, per-base.
         raise WireViolation(
             f"{cls_name}.{f}: contains a newline — digest preimages are "
             f"newline-joined, so the component is non-injective")
     if f == "ts" and not _valid_ts(value):
         raise WireViolation(f"{cls_name}.ts: {_short(value)} is not an "
                             f"RFC 3339 UTC instant")
-    return value
 
 
 def build_wire_event(variants: Mapping[str, type], ev: Mapping[str, object]) -> object:
@@ -1644,6 +1651,30 @@ def _classify_event(ev: Mapping[str, object]) -> tuple[Optional[str], Optional[d
     return fam, None
 
 
+def _check_variant_tagging(fam: str, variants: Mapping[str, type],
+                           ev: Mapping[str, object]) -> Optional[dict]:
+    """A reduced-by record must name a variant, and that variant must belong
+    to the family it claims — a variant from the OTHER family is a
+    mis-tagged writer, never a peer record to filter past."""
+    variant = ev.get("variant")
+    if variant is None:
+        return _halt(
+            BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+            f"{fam} record with no variant — unknown variants halt (§9); "
+            f"every consumer applies the same rule "
+            f"(event_id {ev.get('event_id')!r})", ev)
+    if str(variant) not in variants:
+        peer = _peer_variants(fam).get(str(variant))
+        if peer is not None:
+            return _halt(
+                BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+                f"family {fam!r} contradicts variant {peer.__name__!r}, "
+                f"whose own schema name is {peer.FAMILY!r} — mis-tagged "
+                f"writer, never filtered "
+                f"(event_id {ev.get('event_id')!r})", ev)
+    return None
+
+
 def _peer_variants(family: str) -> Mapping[str, type]:
     """The OTHER lifecycle family's variant table — used only to tell a
     mis-tagged writer from a legitimate peer record."""
@@ -1872,24 +1903,10 @@ class _ReduceState:
         #   * a reduced-by record with no variant halts as an unknown one;
         #   * an epoch field must be an object id — the fence is never
         #     coerced, whatever its type.
-        variant = ev.get("variant")
-        if variant is None:
-            self.record_halt(base_hint, _halt(
-                BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
-                f"{fam} record with no variant — unknown variants halt (§9); "
-                f"every consumer applies the same rule "
-                f"(event_id {ev.get('event_id')!r})", ev))
+        pre = _check_variant_tagging(fam, variants, ev)
+        if pre is not None:
+            self.record_halt(base_hint, pre)
             return
-        if str(variant) not in variants:
-            peer = _peer_variants(fam).get(str(variant))
-            if peer is not None:
-                self.record_halt(base_hint, _halt(
-                    BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
-                    f"family {fam!r} contradicts variant "
-                    f"{peer.__name__!r}, whose own schema name is "
-                    f"{peer.FAMILY!r} — mis-tagged writer, never filtered "
-                    f"(event_id {ev.get('event_id')!r})", ev))
-                return
         try:
             seen = self.dedup.check(ev, base_hint)
         except _DivergentDuplicate as exc:
@@ -2251,6 +2268,22 @@ def _check_delta_against_hold(book: _HoldBook, hid: str, event: object,
 _IDENTITY_REPLAY: dict = {"__identity_replay__": True}
 
 
+def _check_hold_admission(book: _HoldBook, base: str, hid: str,
+                          ev: Mapping[str, object]) -> Optional[dict]:
+    """§6.0's admission bound, generated from the schema rather than left as
+    prose in an operator_action string: more than N OPEN holds on a base
+    halts NEW admissions until an operator reconciles. Existing holds still
+    take their transitions — this bounds ADMISSION, not recovery."""
+    if hid not in book.holds and \
+            len(book.open_by_delta) >= OPEN_HOLD_ADMISSION_CEILING:
+        return _halt(
+            BoundaryErrorCode.HOLD_ADMISSION_CEILING,
+            f"{base}: {len(book.open_by_delta)} open holds already — new "
+            f"admissions halt at {OPEN_HOLD_ADMISSION_CEILING} until an "
+            f"operator reconciles (event_id {ev.get('event_id')!r})", ev)
+    return None
+
+
 def _check_hold_preconditions(hid: str, cur: MachineStateB, event: object,
                               ev: Mapping[str, object],
                               note: Optional[str]) -> Optional[dict]:
@@ -2411,16 +2444,9 @@ def _step_section_b(book: _HoldBook, base: str, event: object,
         return halt
     if note is not None:
         book.resolution_notes.append(note)
-    # §6.0's admission bound, generated from the schema rather than left as
-    # prose in an operator_action string: more than N OPEN holds on a base
-    # halts NEW admissions until an operator reconciles. Existing holds
-    # still take their transitions — this bounds ADMISSION, not recovery.
-    if hid not in book.holds and len(book.open_by_delta) >= OPEN_HOLD_ADMISSION_CEILING:
-        return _halt(
-            BoundaryErrorCode.HOLD_ADMISSION_CEILING,
-            f"{base}: {len(book.open_by_delta)} open holds already — new "
-            f"admissions halt at {OPEN_HOLD_ADMISSION_CEILING} until an "
-            f"operator reconciles (event_id {ev.get('event_id')!r})", ev)
+    admission = _check_hold_admission(book, base, hid, ev)
+    if admission is not None:
+        return admission
     # The `unchanged` no-op rows are state-independent by design — their
     # audit `from` is already constrained to FROM_STATES at construction;
     # every state-changing row must name the reduced state exactly.
