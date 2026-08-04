@@ -73,9 +73,27 @@ def _envelope_kwargs() -> dict:
                 trace_id="trace-1", protocol_epoch="E0")
 
 
+HANDWRITTEN_DIR = VECTORS_DIR / "handwritten"
+
+
+def _vector_paths() -> list[Path]:
+    """The T19 corpus is TWO regions: the generated tree (tools/fsmgen.py
+    writes it and fsmgen --check makes it exact) and `handwritten/`, which
+    the generator never writes or deletes and the stray scan skips. A
+    non-recursive glob loaded only the first, so a hand-authored vector was
+    invisible to the suite that is supposed to judge it."""
+    return sorted(VECTORS_DIR.glob("*.json")) + sorted(
+        HANDWRITTEN_DIR.glob("*.json"))
+
+
 def load_vectors() -> dict[str, dict]:
-    return {p.stem: json.loads(p.read_text(encoding="utf-8"))
-            for p in sorted(VECTORS_DIR.glob("*.json"))}
+    out: dict[str, dict] = {}
+    for p in _vector_paths():
+        assert p.stem not in out, (
+            f"two T19 vectors named {p.stem!r} — a hand-authored vector may "
+            f"not shadow a generated one (or vice versa)")
+        out[p.stem] = json.loads(p.read_text(encoding="utf-8"))
+    return out
 
 
 _VECTORS = load_vectors()
@@ -382,7 +400,11 @@ def test_generated_paths_git_clean():
     proc = subprocess.run(
         ["git", "status", "--porcelain", "--",
          "src/claude_dispatcher/boundary/generated", "docs/generated",
-         "tests/boundary/vectors/t19", "schema/testdata"],
+         "tests/boundary/vectors/t19", "schema/testdata",
+         # vectors/t19/handwritten/ is the TEST AUTHOR's region — the
+         # generator never writes it, so a change there is authorship, not
+         # a hand edit to generated output. Everything else stays exact.
+         ":(exclude)tests/boundary/vectors/t19/handwritten"],
         cwd=REPO_ROOT, capture_output=True, text=True, timeout=30)
     assert proc.returncode == 0, f"git status failed: {proc.stderr}"
     assert not proc.stdout.strip(), (
@@ -490,7 +512,7 @@ def test_fsmgen_check_flags_a_generated_oracle(tmp_path, monkeypatch):
     monkeypatch.setattr(fsmgen, "REPO_ROOT", tmp_path)
     # the other generated dirs are scanned too — point them at empty staging
     # so this probe isolates the vectors tree.
-    for attr in ("DOCS_DIR", "FRAMES_DIR"):
+    for attr in ("DOCS_DIR", "FRAMES_DIR", "HANDWRITTEN_DIR"):
         empty = tmp_path / attr.lower()
         empty.mkdir(exist_ok=True)
         monkeypatch.setattr(fsmgen, attr, empty)
@@ -2264,6 +2286,8 @@ _DENY_RULE_MARKERS = {
     "epoch_no_effect_twin_divergent_deny": ["divergent payloads"],
     "epoch_no_effect_twin_divergent_reverse_deny": ["divergent payloads"],
     "epoch_cross_base_divergent_deny": ["divergent payloads"],
+    # hand-authored region (tests/boundary/vectors/t19/handwritten/)
+    "b_actor_verified_minted_twin_deny": ["audit from", "contradicts the reduced state"],
     "epoch_unanchored_base_deny": ["no protocol_genesis anchor",
                                    "never silently dropped"],
 }
@@ -3878,4 +3902,90 @@ def test_t6_every_parametrized_seal_has_a_deny_row(request):
 
 
 def test_t19_vectors_dir_matches_loaded():
-    assert set(_VECTORS) == {p.stem for p in VECTORS_DIR.glob("*.json")}
+    assert set(_VECTORS) == {p.stem for p in _vector_paths()}
+
+
+def test_the_handwritten_vector_region_is_the_test_authors(schemas):
+    """`tests/boundary/vectors/t19/handwritten/` exists so a test author can
+    seal a property with a committed vector WITHOUT editing the generator —
+    which is what keeps the fix author and the check author separate. The
+    region's three promises are asserted here, because a promise in a README
+    is not a mechanism:
+
+      1. the generator never emits anything into it — so it cannot rewrite
+         or delete the author's vectors;
+      2. `fsmgen --check`'s stray scan tolerates it — so a vector here is
+         not reported as drift;
+      3. well-formedness IS still validated — so a malformed vector fails
+         the same gate the generated corpus does.
+
+    MUTATIONS (tools/fsmgen.py, not committed):
+      (1) add any output path under handwritten/ to build_outputs ⇒ red.
+      (3) `check_handwritten_vectors` returns [] ⇒ red (and every row of
+          the well-formedness table below goes red).
+      (2) takes a COMPOSITE mutation, recorded honestly: the region is
+          protected by TWO independent facts — the stray scan's glob is
+          non-recursive AND it skips HANDWRITTEN_DIR explicitly. Removing
+          either alone leaves the other holding (both verified GREEN, so
+          neither is a seal on its own); `glob` → `rglob` together with
+          dropping the skip ⇒ red, reporting both hand-authored vectors as
+          stray. The redundancy is the point, and this seal is what would
+          catch the day it stops being redundant.
+    """
+    fsmgen = _fsmgen()
+    assert HANDWRITTEN_DIR.is_dir(), (
+        "the hand-authored vector region is gone — a test author would have "
+        "to edit the generator to add a vector")
+    # (1) nothing the generator produces lands in the region
+    outputs = fsmgen.build_outputs(fsmgen.load_schemas())
+    inside = [str(pth) for pth in outputs
+              if HANDWRITTEN_DIR in pth.parents or pth == HANDWRITTEN_DIR]
+    assert not inside, f"fsmgen writes into the test author's region: {inside}"
+    # (2) the region is not drift, and the committed tree is clean overall
+    drift = fsmgen.check_outputs(outputs)
+    assert not drift, f"fsmgen --check reports drift: {drift}"
+    assert HANDWRITTEN_DIR.glob("*.json"), "no hand-authored vector to protect"
+    # (3) well-formedness is enforced — plant a malformed vector in a COPY of
+    #     the region and assert the generator's own validator refuses it.
+    #     (Never in the real tree: a crash between write and unlink would
+    #     leave the working tree dirty — panel round 3, finding 50.)
+    assert not fsmgen.check_handwritten_vectors(), (
+        "a committed hand-authored vector is malformed")
+
+
+@pytest.mark.parametrize("planted,expect", [
+    pytest.param("{", "not valid JSON", id="deny-handwritten-not-json"),
+    pytest.param('[]', "top level must be an object",
+                 id="deny-handwritten-not-an-object"),
+    pytest.param('{"machine": "nope", "note": "x", "events": []}',
+                 "machine must be one of", id="deny-handwritten-unknown-machine"),
+    pytest.param('{"machine": "section_a", "note": "  ", "events": []}',
+                 "needs a non-empty `note`", id="deny-handwritten-no-note"),
+    pytest.param('{"machine": "section_a", "note": "x", "events": {}}',
+                 "`events` must be a list", id="deny-handwritten-events-not-a-list"),
+    pytest.param('{"machine": "section_b", "note": "x", "events": []}',
+                 "declare the RUN's credential_mode",
+                 id="deny-handwritten-section-b-without-run-mode"),
+    pytest.param('{"machine": "epoch_fold", "note": "x", "events": []}',
+                 "need an `anchors` map", id="deny-handwritten-fold-without-anchors"),
+])
+def test_handwritten_vector_wellformedness_is_enforced(tmp_path, monkeypatch,
+                                                       planted, expect):
+    """Each well-formedness rule the region documents, falsified through the
+    generator's REAL validator over a planted copy of the region — so "still
+    validated for well-formedness" is a mechanism, not prose.
+
+    MUTATION: delete any one arm of `check_handwritten_vectors` ⇒ exactly
+    its row goes red.
+    """
+    fsmgen = _fsmgen()
+    staged = tmp_path / "handwritten"
+    staged.mkdir()
+    (staged / "planted.json").write_text(planted, encoding="utf-8")
+    monkeypatch.setattr(fsmgen, "HANDWRITTEN_DIR", staged)
+    monkeypatch.setattr(fsmgen, "REPO_ROOT", tmp_path)
+    problems = fsmgen.check_handwritten_vectors()
+    assert problems, "the validator accepted a malformed hand-authored vector"
+    assert any(expect in pr for pr in problems), (
+        f"the validator fired, but not for the planted defect.\n"
+        f"expected a message containing {expect!r}\ngot: {problems}")

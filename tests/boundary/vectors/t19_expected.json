@@ -14,7 +14,8 @@
     "halts compared per base_key on the CODE (detail strings are diagnostics,",
     "not contract) \u2014 plus deny vectors additionally assert the named fields",
     "in the halt detail, so a vector pins its RULE and not merely its code.",
-    "Section-B resolution notes are compared by CONTENT (code, resolution, tagged variant, hold_id) \u2014 a count alone let a note naming the WRONG door-0 resolution pass."
+    "Section-B resolution notes are compared by CONTENT (code, resolution, tagged variant, hold_id) \u2014 a count alone let a note naming the WRONG door-0 resolution pass.",
+    "The corpus is TWO regions: the generated tree and vectors/t19/handwritten/ (the test author's, which fsmgen never writes). This oracle judges both identically."
   ],
   "vectors": {
     "a_accept_ours_without_new_oid_deny": {
@@ -615,6 +616,21 @@
         }
       }
     },
+    "b_actor_verified_auto_converges": {
+      "holds": {
+        "R1:refs/heads/main": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
+            "state": "RELEASED",
+            "disposition": "ACTOR_VERIFIED_AUTO",
+            "deliveries": [
+              "d1"
+            ]
+          }
+        }
+      },
+      "halts": {},
+      "resolution_notes": {}
+    },
     "b_actor_verified_auto_separated": {
       "holds": {
         "R1:refs/heads/main": {
@@ -628,6 +644,25 @@
         }
       },
       "halts": {},
+      "resolution_notes": {}
+    },
+    "b_actor_verified_minted_twin_deny": {
+      "holds": {
+        "R1:refs/heads/main": {
+          "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b": {
+            "state": "RELEASED",
+            "disposition": "ACTOR_VERIFIED_AUTO",
+            "deliveries": [
+              "d1"
+            ]
+          }
+        }
+      },
+      "halts": {
+        "R1:refs/heads/main": {
+          "code": "ILLEGAL_TRANSITION"
+        }
+      },
       "resolution_notes": {}
     },
     "b_actor_verified_shared_run_deny": {
