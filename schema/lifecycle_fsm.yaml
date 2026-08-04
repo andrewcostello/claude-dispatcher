@@ -302,15 +302,26 @@ section_b:
       to: as_held_foreign_rows   # re-enterable — dispatch re-uses the HELD_FOREIGN rows
       epoch_effect: per_disposition
       display: ["STANDING", "`operator_reconcile(d)`", "as the HELD_FOREIGN rows — re-enterable", "per d"]
-      # Resolved reading (flagged for author confirmation in the PR0 review):
-      # "as the HELD_FOREIGN rows" is taken LITERALLY, so
-      # STANDING × REJECT_RESTORE_HOLD lands on the HELD_FOREIGN row's Next —
-      # HELD_FOREIGN — i.e. a rejected reconcile assessment drops the
-      # STANDING designation and the hold re-enters age alarms. The
-      # alternative (stay STANDING, preserve the alarm exclusion) is
-      # defensible; whichever the author ratifies, this key is the single
-      # place to change and the b_standing_reject_restore golden pins it.
+      # ── UNRATIFIED: STANDING × REJECT_RESTORE_HOLD ────────────────────
+      # Design §6.0's section-B table says only "as the HELD_FOREIGN rows",
+      # which is ambiguous for this pair. TWO consequences, not one:
+      #   (1) alarm scope — HELD_FOREIGN re-enters age alarms; STANDING is
+      #       an operator-acknowledged persistent hold excluded from them;
+      #   (2) AUTHORIZATION — HELD_FOREIGN is the ONLY state from which
+      #       actor_verified_match can fire, so landing there RE-OPENS the
+      #       non-operator ACTOR_VERIFIED_AUTO path on a hold an operator
+      #       has just explicitly refused to release.
+      # PR0 implements the STRICTLY SAFER reading (panel round 3
+      # directive): the hold lands in HELD_FOREIGN for alarm purposes but
+      # `auto_release_after_reject_restore: false` closes the auto-release
+      # path until an operator disposition intervenes — a rejected
+      # assessment must not become an automatic release.
+      # AWAITING OPERATOR RATIFICATION of which reading is normative; both
+      # are recorded here, and this key plus the flag below are the single
+      # place to change (the generator reads both).
       standing_reject_restore_resolves_to: HELD_FOREIGN
+      standing_reject_restore_alternative: STANDING
+      auto_release_after_reject_restore: false
     - id: hold_reconcile_replay_identity
       from: RELEASED
       event: operator_reconcile

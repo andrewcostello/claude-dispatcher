@@ -78,6 +78,91 @@ def test_fsmgen_output_committed_and_diff_clean():
         f"fsmgen --check failed:\n{proc.stdout}{proc.stderr}")
 
 
+@pytest.mark.parametrize("case", [
+    pytest.param("table-cell", id="deny-doc-table-cell-drift"),
+    pytest.param("union-field", id="deny-doc-union-field-drift"),
+])
+def test_doc_equals_artifact_comparison_fires(tmp_path, monkeypatch, case):
+    """The doc==artifact comparison is credited with catching schema/design
+    divergence but was never falsified by a committed test (panel round 3,
+    finding 38). Plant drift in a COPY of the design doc and assert the
+    comparator names it — and that the clean doc does not."""
+    fsmgen = _fsmgen()
+    schemas = fsmgen.load_schemas()
+    text = fsmgen.DESIGN_DOC.read_text(encoding="utf-8")
+    if case == "table-cell":
+        planted = text.replace("| — | `observe_delta` | HELD_FOREIGN (created) | none |",
+                               "| — | `observe_delta` | RELEASED (created) | none |", 1)
+        compare, needle = fsmgen.compare_tables_with_design, "section_b"
+    else:
+        planted = text.replace("`protocol_epoch_advanced{old, new}`",
+                               "`protocol_epoch_advanced{old, new, extra}`", 1)
+        compare, needle = fsmgen.compare_unions_with_design, "protocol_epoch_advanced"
+    assert planted != text, f"{case}: the planted text was not found"
+    doc = tmp_path / "design.md"
+    doc.write_text(planted, encoding="utf-8")
+    assert not compare(schemas), "the clean doc already reports drift"
+    monkeypatch.setattr(fsmgen, "DESIGN_DOC", doc)
+    problems = compare(schemas)
+    assert problems, f"{case}: planted drift not detected"
+    assert any(needle in p for p in problems), (
+        f"{case}: detected drift does not name {needle!r}: {problems}")
+
+
+def test_ast_gate_schema_lists_cannot_be_silently_emptied(schemas):
+    """Both AST gates take their teeth from schema lists nothing asserted:
+    emptying `guarded_names`, or adding a module to `door_entrypoints`,
+    left them trivially green (panel round 3, finding 34)."""
+    allow = schemas["ast_allowlists"]
+    t8 = set(allow["t8_construction"]["guarded_names"])
+    # the §3.1 closed sum and the §3.2 validated payload — the names the
+    # design closes construction over.
+    assert t8 == {"Classification", "ClassifyOutcome", "ClassifyOk",
+                  "ClassifyAbsent", "ClassifyEmpty", "ClassifyFailed"}
+    t9 = set(allow["t9_interpretation"]["guarded_names"])
+    assert t9 == {"MergePlan", "Mergeable", "Unmergeable", "PanelPlan"}
+    for gate in ("t8_construction", "t9_interpretation"):
+        assert allow[gate]["allowed_modules"], f"{gate}: allowlist emptied"
+    # dark mode: the door allowlist stays EMPTY until PR6 fills it
+    assert allow["architecture"]["door_entrypoints"] == [], (
+        "door_entrypoints is non-empty — dark mode ends at PR6, not before")
+    assert allow["architecture"]["package"] == "claude_dispatcher.boundary"
+
+
+@pytest.mark.parametrize("event_name", [
+    # every row carries its own in-test deny (an out-of-domain value per
+    # declared domain), so the id marks it as such for T6.
+    pytest.param(n, id=f"deny-domain-{n}") for n in sorted(_GEN.SINGLE_EVENTS)
+])
+def test_every_single_event_constructs(generated, schemas, event_name):
+    """8 of 14 §9 singles were never constructed while the docstring claimed
+    all were sealed (panel round 3, finding 33). Every one is now built from
+    its REQUIRED set, and every declared domain gets a deny."""
+    g = generated
+    cls = g.SINGLE_EVENTS[event_name]
+    env = {"schema_major": 1, "schema_minor": 0, "event_id": "e1",
+           "ts": "1970-01-01T00:00:00Z", "run_id": "r", "trace_id": "t",
+           "protocol_epoch": "E0", "family": cls.FAMILY}
+    typed = {"duration_ms": 1,
+             "credential_mode": g.CredentialMode.SHARED,
+             "protection_mode": g.ProtectionMode.PREVENT,
+             "actor_verification": g.ActorVerification.VERIFIED_API,
+             "hold_effect": g.HoldEffect.NONE}
+    payload = {f: typed.get(f, f) for f in cls.REQUIRED if f not in env}
+    for field, domain in cls.DOMAINS.items():
+        payload[field] = domain[0]
+    pairs = getattr(cls, "PAIR_RULES", {})
+    for key, rule in pairs.items():
+        allowed = rule["allowed"].get(payload.get(key))
+        if allowed:
+            payload[rule["field"]] = allowed[0]
+    built = cls(**env, **payload)
+    assert built.family == cls.FAMILY
+    for field in cls.DOMAINS:
+        with pytest.raises(ValueError):
+            cls(**env, **dict(payload, **{field: "NOT_IN_DOMAIN"}))
+
+
 def test_generated_paths_git_clean():
     """`git status --porcelain` (not `git diff`) so a STAGED hand edit and an
     untracked stray in a generated path are caught too (panel round 2)."""
@@ -840,6 +925,8 @@ _DENY_RULE_MARKERS = {
         ["source_delivery_id", "not a delivery recorded on"],
     "b_reconcile_accept_actor_verified_deny": ["operator-accepting"],
     "b_replayed_conflicting_reconcile_deny": ["conflicting d"],
+    "b_auto_release_closed_after_reject_restore_deny":
+        ["operator REJECTED", "stays closed"],
     "a_replayed_conflicting_reconcile_deny": ["conflicting d"],
     "epoch_cross_base_divergent_after_halt_deny": ["divergent payloads"],
     "b_redelivery_delta_contradiction_deny": ["contradicts the hold's recorded delta"],
@@ -1177,6 +1264,112 @@ def test_roster_snapshot_stores_an_immutable_seat_tuple(generated):
         "the snapshot aliased a caller-owned mutable sequence"
     with pytest.raises((AttributeError, TypeError)):   # deny: frozen
         snap.ordered_seat_ids = ("x",)
+
+
+def test_seat_outcome_stores_an_immutable_findings_tuple(generated):
+    """Twin of the RosterSnapshot fix: a caller-owned list would let a
+    blocking finding disappear after construction, turning BLOCKED into
+    APPROVED (panel round 3, finding 19)."""
+    g = generated
+    findings = [g.Finding(g.Severity.CRITICAL)]
+    outcome = g.SeatOutcome(g.SeatVerdict.APPROVE, findings)
+    assert isinstance(outcome.findings, tuple)
+    findings.clear()                      # mutate the original
+    assert len(outcome.findings) == 1, "the outcome aliased a mutable list"
+    assert g.blocking(outcome), "a blocking finding vanished after construction"
+    r = _roster(g)
+    seats = {s: g.SeatOutcome(g.SeatVerdict.APPROVE) for s in r.ordered_seat_ids}
+    seats["grok"] = outcome
+    assert g.aggregate(g.PanelIntensity.FULL, r, seats) is \
+        g.PanelAggregateResult.BLOCKED
+
+
+def test_subject_digest_and_classifier_authority(generated):
+    """subject_digest()/target_pr()/target_ref()/ClassifierAuthority had zero
+    tests (panel round 3, finding 16). Pinned against independently computed
+    SHA-256s over §9's canonical preimage."""
+    g = generated
+    req = g.RequiredClassifier(config_sha256="cfg", producer_digest="prod",
+                               contract="2")
+    assert req.line() == "classifier=required:cfg:prod:2".split("=", 1)[1]
+    assert g.LegacyNoClassifier().line() == "legacy"
+    assert g.target_pr("PR_1", "refs/heads/main") == "pr:PR_1:refs/heads/main"
+    assert g.target_ref("refs/heads/main") == "ref:refs/heads/main"
+    want_pr = hashlib.sha256("\n".join([
+        "repo=R_1", "target=pr:PR_1:refs/heads/main", "base=b0", "head=h0",
+        "diff=d0", "classifier=required:cfg:prod:2", "unit=none"]).encode()
+    ).hexdigest()
+    assert g.subject_digest(
+        repo_node_id="R_1", target=g.target_pr("PR_1", "refs/heads/main"),
+        base_oid="b0", head_oid="h0", diff_sha256="d0", classifier=req) == want_pr
+    want_ref_unit = hashlib.sha256("\n".join([
+        "repo=R_1", "target=ref:refs/heads/main", "base=b0", "head=h0",
+        "diff=d0", "classifier=legacy", "unit=u1"]).encode()).hexdigest()
+    assert g.subject_digest(
+        repo_node_id="R_1", target=g.target_ref("refs/heads/main"),
+        base_oid="b0", head_oid="h0", diff_sha256="d0",
+        classifier=g.LegacyNoClassifier(), unit_digest="u1") == want_ref_unit
+    # a retarget of the same PR at the same OIDs changes the digest (§9)
+    assert g.subject_digest(
+        repo_node_id="R_1", target=g.target_pr("PR_1", "refs/heads/release"),
+        base_oid="b0", head_oid="h0", diff_sha256="d0",
+        classifier=req) != want_pr
+    with pytest.raises(ValueError):        # deny: not a ClassifierAuthority
+        g.subject_digest(repo_node_id="R", target="ref:x", base_oid="b",
+                         head_oid="h", diff_sha256="d", classifier="required:x")
+    with pytest.raises(ValueError):        # deny: newline breaks injectivity
+        g.subject_digest(repo_node_id="R\nrepo=evil", target="ref:x",
+                         base_oid="b", head_oid="h", diff_sha256="d",
+                         classifier=req)
+    with pytest.raises(ValueError):        # deny: fingerprint needs the union
+        g.AuthorityFingerprint(protocol_epoch="E0", base_epoch="E0",
+                               subject_digest="s", roster_digest="r",
+                               classifier="not-a-variant")
+    assert g.AuthorityFingerprint(protocol_epoch="E0", base_epoch="E0",
+                                  subject_digest="s", roster_digest="r",
+                                  classifier=req).classifier is req
+
+
+def test_schema_declared_preimages_bind_to_the_code(schemas, generated):
+    """The schemas CLAIM the derivations are generated from them; this seal
+    makes the claim checkable — build each preimage from the schema's own
+    line list and assert the generated function agrees (panel round 3,
+    finding 14). Flipping a schema line list turns this red."""
+    g = generated
+    fsm = schemas["lifecycle_fsm"]
+    hold_lines = fsm["section_b"]["hold_id"]["preimage"]["lines"]
+    values = {"<base_key>": "B", "<ref>": "R", "<delta_old_oid>": "o0",
+              "<delta_new_oid>": "o1", "<occurrence_seq>": "3"}
+    built = []
+    for line in hold_lines:
+        tag, _, placeholder = line.partition("=")
+        built.append(f"{tag}={values[placeholder]}")
+    assert g.derive_hold_id("B", "R", "o0", "o1", 3) == \
+        hashlib.sha256("\n".join(built).encode()).hexdigest()
+    rec = fsm["section_a"]["projection"]["open_prepared_recovery"]["event_id_preimage"]["lines"]
+    built = []
+    for line in rec:
+        tag, _, placeholder = line.partition("=")
+        built.append(f"{tag}=" + {"<base_key>": "B", "<movement_id>": "m1"}
+                     .get(placeholder, placeholder))
+    assert g.derive_recovery_event_id("B", "m1") == \
+        hashlib.sha256("\n".join(built).encode()).hexdigest()
+    roster = schemas["panel_aggregate"]["roster_snapshot"]["roster_digest_preimage"]
+    assert roster["parts"] == ["roster_version", "ordered_seat_ids",
+                               "designated_single_id"]
+    assert roster["join"] == "\n" and roster["hash"] == "SHA-256"
+    assert g.roster_digest("v", ["a", "b"], "a") == \
+        hashlib.sha256("v\na\nb\na".encode()).hexdigest()
+    # §5.1 semantics: the aggregate's declared rule ORDER is what runs
+    order = [next(iter(rule)) for rule in schemas["panel_aggregate"]["aggregate"]["rules"]]
+    assert order[0] == "required_seats_empty"
+    assert order[1] == "any_required_seat_outcome_blocking"
+    r = _roster(g)
+    assert g.aggregate(g.PanelIntensity.SKIP, r, {}) is \
+        g.PanelAggregateResult.NOT_APPLICABLE          # rule 1 wins
+    blocking_and_missing = {"claude": g.SeatOutcome(g.SeatVerdict.BLOCK)}
+    assert g.aggregate(g.PanelIntensity.FULL, r, blocking_and_missing) is \
+        g.PanelAggregateResult.BLOCKED                 # rule 2 beats rule 3
 
 
 def test_roster_snapshot_verifies_its_own_digest(generated):

@@ -622,6 +622,25 @@
       },
       "resolution_notes": {}
     },
+    "b_auto_release_closed_after_reject_restore_deny": {
+      "holds": {
+        "R1:refs/heads/main": {
+          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+            "state": "HELD_FOREIGN",
+            "disposition": null,
+            "deliveries": [
+              "d1"
+            ]
+          }
+        }
+      },
+      "halts": {
+        "R1:refs/heads/main": {
+          "code": "ILLEGAL_TRANSITION"
+        }
+      },
+      "resolution_notes": {}
+    },
     "b_concurrent_duplicate_creations": {
       "holds": {
         "R1:refs/heads/main": {

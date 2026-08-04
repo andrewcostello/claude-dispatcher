@@ -108,7 +108,9 @@ _ALLOWED_KEYS = {
     "vector_case": {"name", "file", "expect", "reason", "reason_code"},
     "row": {"id", "from", "event", "to", "guard", "display", "disposition",
             "epoch_effect", "expected_base_oid_effect", "hold_effect",
-            "standing_reject_restore_resolves_to"},
+            "standing_reject_restore_resolves_to",
+            "standing_reject_restore_alternative",
+            "auto_release_after_reject_restore"},
 }
 
 
@@ -485,6 +487,14 @@ def _emit_durability_and_ceiling(fsm: dict) -> list[str]:
     w("# standing_reject_restore_resolves_to (the single place to change if")
     w("# the author ratifies the other reading).")
     w(f"STANDING_REJECT_RESTORE_TARGET_NAME: str = {standing_target!r}")
+    row = b_rows_by_id["standing_reenter"]
+    w(f"STANDING_REJECT_RESTORE_ALTERNATIVE: str = "
+      f"{_require_ident(str(row['standing_reject_restore_alternative']), 'alt')!r}")
+    w("# UNRATIFIED trade-off (schema): landing in HELD_FOREIGN would re-open")
+    w("# the non-operator ACTOR_VERIFIED_AUTO path on a hold an operator just")
+    w("# refused to release. PR0 takes the strictly safer reading.")
+    w(f"AUTO_RELEASE_AFTER_REJECT_RESTORE: bool = "
+      f"{bool(row['auto_release_after_reject_restore'])!r}")
     w("")
     return L
 
@@ -1632,6 +1642,9 @@ class _HoldBook:
         # writer/reducer disagreements the reducer resolved (journalled,
         # never a halt — door 0 is inherently concurrent)
         self.resolution_notes: list[str] = []
+        # holds whose release an operator explicitly REFUSED — the
+        # non-operator auto-release path stays closed on them.
+        self.reject_restored: set = set()
 
 
 def _resolve_observe_delta(book: _HoldBook, base: str, event: object) -> tuple[str, str]:
@@ -1873,6 +1886,14 @@ def _step_section_b(book: _HoldBook, base: str, event: object,
             f"operator_reconcile({event.disposition}) — conflicting d′ "
             f"(event_id {ev.get('event_id')!r})", ev)
     if isinstance(event, ActorVerifiedAuto):
+        if (not AUTO_RELEASE_AFTER_REJECT_RESTORE
+                and hid in book.reject_restored):
+            return _halt(
+                BoundaryErrorCode.ILLEGAL_TRANSITION,
+                f"hold {hid}: an operator REJECTED this hold's release "
+                f"(REJECT_RESTORE_HOLD); the non-operator auto-release path "
+                f"stays closed until an operator disposition "
+                f"(event_id {ev.get('event_id')!r})", ev)
         if run_mode is not CredentialMode.SEPARATED:
             return _halt(
                 BoundaryErrorCode.ILLEGAL_TRANSITION,
@@ -1893,6 +1914,8 @@ def _step_section_b(book: _HoldBook, base: str, event: object,
             new = apply_section_b(cur, event)
         except IllegalTransitionError as exc:
             return _halt(BoundaryErrorCode.ILLEGAL_TRANSITION, str(exc), ev)
+    if isinstance(event, HoldReconcileRejectRestoreHold):
+        book.reject_restored.add(hid)
     _record_hold_outcome(book, hid, event, cur, new)
     return None
 
@@ -2102,6 +2125,11 @@ class SeatOutcome:
         if not isinstance(self.verdict, SeatVerdict):
             raise ValueError(f"SeatOutcome.verdict must be a SeatVerdict, "
                              f"got {self.verdict!r}")
+        # immutable COPY (twin of the RosterSnapshot fix): a caller-owned
+        # list would let a blocking CRITICAL/HIGH finding disappear AFTER
+        # construction, turning BLOCKED into APPROVED.
+        if not isinstance(self.findings, tuple):
+            object.__setattr__(self, "findings", tuple(self.findings))
         if not all(isinstance(f, Finding) for f in self.findings):
             raise ValueError("SeatOutcome.findings must be Finding instances")
 
@@ -3102,6 +3130,19 @@ def _section_b_vectors() -> dict[str, dict]:
             hold_id=h0, disposition="STANDING"),
        _hev("HoldReconcileAccept", "h3", "STANDING", "RELEASED",
             hold_id=h0, disposition="ACCEPT_OURS")])
+    b("b_auto_release_closed_after_reject_restore_deny",
+      "DENY (panel round 3, cluster 7): an operator REFUSED this hold's "
+      "release (REJECT_RESTORE_HOLD). Landing back in HELD_FOREIGN would "
+      "otherwise re-open the ONLY state from which the non-operator "
+      "ACTOR_VERIFIED_AUTO path can fire — PR0 takes the strictly safer "
+      "reading and keeps it closed until an operator disposition. "
+      "UNRATIFIED: see schema standing_reject_restore_* keys",
+      [dict(obs, mode="SEPARATED"),
+       _hev("HoldReconcileRejectRestoreHold", "h2", "HELD_FOREIGN",
+            "HELD_FOREIGN", hold_id=h0, disposition="REJECT_RESTORE_HOLD",
+            mode="SEPARATED"),
+       ava("h3")],
+      credential_mode="SEPARATED")
     b("b_standing_reject_restore",
       "STANDING × operator_reconcile(REJECT_RESTORE_HOLD) dispatches 'as "
       "the HELD_FOREIGN rows' — resolved literal reading: → HELD_FOREIGN "

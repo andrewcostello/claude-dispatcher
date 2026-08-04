@@ -301,6 +301,11 @@ SUPPORTED_SCHEMA_MAJORS: frozenset[int] = frozenset((1,))
 # standing_reject_restore_resolves_to (the single place to change if
 # the author ratifies the other reading).
 STANDING_REJECT_RESTORE_TARGET_NAME: str = 'HELD_FOREIGN'
+STANDING_REJECT_RESTORE_ALTERNATIVE: str = 'STANDING'
+# UNRATIFIED trade-off (schema): landing in HELD_FOREIGN would re-open
+# the non-operator ACTOR_VERIFIED_AUTO path on a hold an operator just
+# refused to release. PR0 takes the strictly safer reading.
+AUTO_RELEASE_AFTER_REJECT_RESTORE: bool = False
 
 # Projection machine (round 14, codex): durable states + composed edges,
 # derived from the live table by composing through memory-only states.
@@ -3027,6 +3032,9 @@ class _HoldBook:
         # writer/reducer disagreements the reducer resolved (journalled,
         # never a halt — door 0 is inherently concurrent)
         self.resolution_notes: list[str] = []
+        # holds whose release an operator explicitly REFUSED — the
+        # non-operator auto-release path stays closed on them.
+        self.reject_restored: set = set()
 
 
 def _resolve_observe_delta(book: _HoldBook, base: str, event: object) -> tuple[str, str]:
@@ -3268,6 +3276,14 @@ def _step_section_b(book: _HoldBook, base: str, event: object,
             f"operator_reconcile({event.disposition}) — conflicting d′ "
             f"(event_id {ev.get('event_id')!r})", ev)
     if isinstance(event, ActorVerifiedAuto):
+        if (not AUTO_RELEASE_AFTER_REJECT_RESTORE
+                and hid in book.reject_restored):
+            return _halt(
+                BoundaryErrorCode.ILLEGAL_TRANSITION,
+                f"hold {hid}: an operator REJECTED this hold's release "
+                f"(REJECT_RESTORE_HOLD); the non-operator auto-release path "
+                f"stays closed until an operator disposition "
+                f"(event_id {ev.get('event_id')!r})", ev)
         if run_mode is not CredentialMode.SEPARATED:
             return _halt(
                 BoundaryErrorCode.ILLEGAL_TRANSITION,
@@ -3288,6 +3304,8 @@ def _step_section_b(book: _HoldBook, base: str, event: object,
             new = apply_section_b(cur, event)
         except IllegalTransitionError as exc:
             return _halt(BoundaryErrorCode.ILLEGAL_TRANSITION, str(exc), ev)
+    if isinstance(event, HoldReconcileRejectRestoreHold):
+        book.reject_restored.add(hid)
     _record_hold_outcome(book, hid, event, cur, new)
     return None
 
@@ -3527,6 +3545,11 @@ class SeatOutcome:
         if not isinstance(self.verdict, SeatVerdict):
             raise ValueError(f"SeatOutcome.verdict must be a SeatVerdict, "
                              f"got {self.verdict!r}")
+        # immutable COPY (twin of the RosterSnapshot fix): a caller-owned
+        # list would let a blocking CRITICAL/HIGH finding disappear AFTER
+        # construction, turning BLOCKED into APPROVED.
+        if not isinstance(self.findings, tuple):
+            object.__setattr__(self, "findings", tuple(self.findings))
         if not all(isinstance(f, Finding) for f in self.findings):
             raise ValueError("SeatOutcome.findings must be Finding instances")
 
