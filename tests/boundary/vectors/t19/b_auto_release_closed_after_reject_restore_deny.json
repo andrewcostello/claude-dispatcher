@@ -48,7 +48,8 @@
       "epoch_before": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
       "epoch_after": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
       "hold_id": "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b",
-      "disposition": "REJECT_RESTORE_HOLD"
+      "disposition": "REJECT_RESTORE_HOLD",
+      "actor_node_id": "N-operator"
     },
     {
       "schema_major": 1,

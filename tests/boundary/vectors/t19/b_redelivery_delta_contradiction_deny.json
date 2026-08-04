@@ -49,7 +49,7 @@
       "epoch_after": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
       "source_delivery_id": "d1",
       "delta_old_oid": "0000000000000000000000000000000000000000",
-      "delta_new_oid": "TOTALLY-DIFFERENT"
+      "delta_new_oid": "9999999999999999999999999999999999999999"
     }
   ]
 }

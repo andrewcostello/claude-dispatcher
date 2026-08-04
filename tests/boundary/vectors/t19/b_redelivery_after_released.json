@@ -48,7 +48,8 @@
       "epoch_before": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
       "epoch_after": "924a6d7870e21c3414a72689103e5b09adcb034d",
       "hold_id": "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b",
-      "disposition": "ACCEPT_FOREIGN_ADVANCED"
+      "disposition": "ACCEPT_FOREIGN_ADVANCED",
+      "actor_node_id": "N-operator"
     },
     {
       "schema_major": 1,
@@ -70,7 +71,9 @@
       "actor_display": "someone",
       "epoch_before": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
       "epoch_after": "ddb0b8bbf60b728fce9ace252db2a1eef68119c7",
-      "source_delivery_id": "d1"
+      "source_delivery_id": "d1",
+      "delta_old_oid": "0000000000000000000000000000000000000000",
+      "delta_new_oid": "1111111111111111111111111111111111111111"
     }
   ]
 }

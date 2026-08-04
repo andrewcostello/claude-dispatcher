@@ -201,7 +201,7 @@ class IllegalTransitionError(BoundaryFault):
         self.machine, self.state, self.event = machine, state, event
 
 
-class WireViolation(Exception):
+class WireViolation(ValueError):
     """A wire event that does not satisfy its §9 schema — unknown variant,
     unknown enum value, missing REQUIRED or present FORBIDDEN field. The
     reducers convert this to a typed SCHEMA_MAJOR_UNKNOWN halt; §9: unknown
@@ -290,6 +290,7 @@ HOLD_BRANCH_REF: str = "refs/heads/dispatcher/integrity-hold"
 
 # Recovery admission ceiling (§6.0 provisional bounds; the elapsed-
 # time half is a PR4 obligation — see schema recovery_ceiling).
+OPEN_HOLD_ADMISSION_CEILING: int = 5
 RECOVERY_CEILING_EVENTS: int = 10000
 RECOVERY_CEILING_REDUCE_SECONDS: int = 30
 
@@ -463,7 +464,10 @@ def _validate_event_fields(event: object) -> None:
         for needed in conditions.get(key, ()):
             got = getattr(event, _py_field(needed), None)
             if got is None or (isinstance(got, str) and got == ""):
-                raise ValueError(
+                # a §9 conditional-requirement breach is a SCHEMA violation
+                # (SCHEMA_MAJOR_UNKNOWN), not an illegal transition — the
+                # blanket ValueError guard mislabelled the whole class.
+                raise WireViolation(
                     f"{name}.{field}={key!r} requires {needed!r}, which is "
                     f"absent — evidence without an attributable identity")
 
@@ -1547,8 +1551,8 @@ class ObserveDeltaRedelivery:
     TO_STATE: ClassVar[str] = 'unchanged'
     EPOCH_EFFECT: ClassVar[str] = 'none'
     ROW_HOLD_EFFECT: ClassVar[Optional[str]] = None
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'source_delivery_id')
-    OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'hold_id', 'delta_old_oid', 'delta_new_oid', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id', 'disposition')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'source_delivery_id', 'delta_old_oid', 'delta_new_oid')
+    OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'hold_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id', 'disposition')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
     REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'actor_verification': {'VERIFIED_API': ('actor_node_id',)}}
@@ -1572,12 +1576,12 @@ class ObserveDeltaRedelivery:
     actor_verification: ActorVerification
     actor_display: str
     source_delivery_id: str
+    delta_old_oid: str
+    delta_new_oid: str
     subject_digest: Optional[str] = None
     movement_id: Optional[str] = None
     attempt_id: Optional[str] = None
     hold_id: Optional[str] = None
-    delta_old_oid: Optional[str] = None
-    delta_new_oid: Optional[str] = None
     actor_node_id: Optional[str] = None
     matched_subject_digest: Optional[str] = None
     matched_movement_id: Optional[str] = None
@@ -1709,8 +1713,8 @@ class HoldReconcileAccept:
     TO_STATE: ClassVar[str] = 'RELEASED'
     EPOCH_EFFECT: ClassVar[str] = 'per_disposition'
     ROW_HOLD_EFFECT: ClassVar[Optional[str]] = None
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'disposition')
-    OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'delta_old_oid', 'delta_new_oid', 'source_delivery_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'disposition', 'actor_node_id')
+    OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'delta_old_oid', 'delta_new_oid', 'source_delivery_id', 'matched_subject_digest', 'matched_movement_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
     REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'actor_verification': {'VERIFIED_API': ('actor_node_id',)}}
@@ -1735,13 +1739,13 @@ class HoldReconcileAccept:
     actor_display: str
     hold_id: str
     disposition: ReconcileDisposition
+    actor_node_id: str
     subject_digest: Optional[str] = None
     movement_id: Optional[str] = None
     attempt_id: Optional[str] = None
     delta_old_oid: Optional[str] = None
     delta_new_oid: Optional[str] = None
     source_delivery_id: Optional[str] = None
-    actor_node_id: Optional[str] = None
     matched_subject_digest: Optional[str] = None
     matched_movement_id: Optional[str] = None
 
@@ -1766,8 +1770,8 @@ class HoldReconcileRejectRestoreHold:
     TO_STATE: ClassVar[str] = 'HELD_FOREIGN'
     EPOCH_EFFECT: ClassVar[str] = 'none'
     ROW_HOLD_EFFECT: ClassVar[Optional[str]] = None
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'disposition')
-    OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'delta_old_oid', 'delta_new_oid', 'source_delivery_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'disposition', 'actor_node_id')
+    OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'delta_old_oid', 'delta_new_oid', 'source_delivery_id', 'matched_subject_digest', 'matched_movement_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
     REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'actor_verification': {'VERIFIED_API': ('actor_node_id',)}}
@@ -1792,13 +1796,13 @@ class HoldReconcileRejectRestoreHold:
     actor_display: str
     hold_id: str
     disposition: ReconcileDisposition
+    actor_node_id: str
     subject_digest: Optional[str] = None
     movement_id: Optional[str] = None
     attempt_id: Optional[str] = None
     delta_old_oid: Optional[str] = None
     delta_new_oid: Optional[str] = None
     source_delivery_id: Optional[str] = None
-    actor_node_id: Optional[str] = None
     matched_subject_digest: Optional[str] = None
     matched_movement_id: Optional[str] = None
 
@@ -1819,8 +1823,8 @@ class HoldReconcileStanding:
     TO_STATE: ClassVar[str] = 'STANDING'
     EPOCH_EFFECT: ClassVar[str] = 'none'
     ROW_HOLD_EFFECT: ClassVar[Optional[str]] = None
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'disposition')
-    OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'delta_old_oid', 'delta_new_oid', 'source_delivery_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'disposition', 'actor_node_id')
+    OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'delta_old_oid', 'delta_new_oid', 'source_delivery_id', 'matched_subject_digest', 'matched_movement_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {'disposition': 'STANDING'}
     REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'actor_verification': {'VERIFIED_API': ('actor_node_id',)}}
@@ -1845,13 +1849,13 @@ class HoldReconcileStanding:
     actor_display: str
     hold_id: str
     disposition: ReconcileDisposition
+    actor_node_id: str
     subject_digest: Optional[str] = None
     movement_id: Optional[str] = None
     attempt_id: Optional[str] = None
     delta_old_oid: Optional[str] = None
     delta_new_oid: Optional[str] = None
     source_delivery_id: Optional[str] = None
-    actor_node_id: Optional[str] = None
     matched_subject_digest: Optional[str] = None
     matched_movement_id: Optional[str] = None
 
@@ -1872,8 +1876,8 @@ class HoldReconcileReplayIdentity:
     TO_STATE: ClassVar[str] = 'RELEASED'
     EPOCH_EFFECT: ClassVar[str] = 'none'
     ROW_HOLD_EFFECT: ClassVar[Optional[str]] = None
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'disposition')
-    OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'delta_old_oid', 'delta_new_oid', 'source_delivery_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id')
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'disposition', 'actor_node_id')
+    OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'delta_old_oid', 'delta_new_oid', 'source_delivery_id', 'matched_subject_digest', 'matched_movement_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
     REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'actor_verification': {'VERIFIED_API': ('actor_node_id',)}}
@@ -1898,13 +1902,13 @@ class HoldReconcileReplayIdentity:
     actor_display: str
     hold_id: str
     disposition: ReconcileDisposition
+    actor_node_id: str
     subject_digest: Optional[str] = None
     movement_id: Optional[str] = None
     attempt_id: Optional[str] = None
     delta_old_oid: Optional[str] = None
     delta_new_oid: Optional[str] = None
     source_delivery_id: Optional[str] = None
-    actor_node_id: Optional[str] = None
     matched_subject_digest: Optional[str] = None
     matched_movement_id: Optional[str] = None
 
@@ -3227,7 +3231,8 @@ class _ReduceState:
             book = self.books[base] = _HoldBook()
             self.b_order.append(base)
         snapshot = dict(book.holds)
-        halt = _step_section_b(book, base, event, ev, self.run_mode)
+        halt = _step_section_b(book, base, event, ev, self.run_mode,
+                               frozenset(self.movements.get(base, {})))
         if halt is not None:
             return halt, False
         identity = book.holds == snapshot
@@ -3497,7 +3502,8 @@ def _check_hold_preconditions(hid: str, cur: MachineStateB, event: object,
 
 def _check_auto_release_gates(book: _HoldBook, base: str, hid: str,
                               event: object, ev: Mapping[str, object],
-                              run_mode: CredentialMode) -> Optional[dict]:
+                              run_mode: CredentialMode,
+                              known_movements: frozenset = frozenset()) -> Optional[dict]:
     """Every gate on the ONLY operator-less release of a foreign hold, in
     order: an operator's prior refusal closes it; the RUN's credential mode
     (never the event's) must be SEPARATED; then the hold-record
@@ -3525,6 +3531,13 @@ def _check_auto_release_gates(book: _HoldBook, base: str, hid: str,
     # new_oid field, so the observed OID for a foreign movement IS the
     # hold's own recorded delta_new_oid. Anything else is a writer choosing
     # the fence on the one operator-less release path (panel round 4).
+    if event.matched_movement_id is not None and             event.matched_movement_id not in known_movements:
+        return _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION,
+            f"hold {hid}: matched_movement_id "
+            f"{event.matched_movement_id!r} names no parked movement on "
+            f"this base — §6.0 requires the delta to match a KNOWN PARKED "
+            f"SUBJECT (event_id {ev.get('event_id')!r})", ev)
     _, _, observed = book.hold_delta[hid]
     if event.epoch_after != observed:
         return _halt(
@@ -3596,8 +3609,8 @@ def reduce_section_b(events: Sequence[Mapping[str, object]],
 
 
 def _step_section_b(book: _HoldBook, base: str, event: object,
-                    ev: Mapping[str, object],
-                    run_mode: CredentialMode) -> Optional[dict]:
+                    ev: Mapping[str, object], run_mode: CredentialMode,
+                    known_movements: frozenset = frozenset()) -> Optional[dict]:
     note = None
     cls = type(event)
     # An event's self-declared `mode` is display/audit; the RUN's mode is
@@ -3617,6 +3630,16 @@ def _step_section_b(book: _HoldBook, base: str, event: object,
         return halt
     if note is not None:
         book.resolution_notes.append(note)
+    # §6.0's admission bound, generated from the schema rather than left as
+    # prose in an operator_action string: more than N OPEN holds on a base
+    # halts NEW admissions until an operator reconciles. Existing holds
+    # still take their transitions — this bounds ADMISSION, not recovery.
+    if hid not in book.holds and len(book.open_by_delta) >= OPEN_HOLD_ADMISSION_CEILING:
+        return _halt(
+            BoundaryErrorCode.HOLD_ADMISSION_CEILING,
+            f"{base}: {len(book.open_by_delta)} open holds already — new "
+            f"admissions halt at {OPEN_HOLD_ADMISSION_CEILING} until an "
+            f"operator reconciles (event_id {ev.get('event_id')!r})", ev)
     # The `unchanged` no-op rows are state-independent by design — their
     # audit `from` is already constrained to FROM_STATES at construction;
     # every state-changing row must name the reduced state exactly.
@@ -3624,7 +3647,8 @@ def _step_section_b(book: _HoldBook, base: str, event: object,
     if pre is not None:
         return pre if pre != _IDENTITY_REPLAY else None
     if isinstance(event, ActorVerifiedAuto):
-        halt = _check_auto_release_gates(book, base, hid, event, ev, run_mode)
+        halt = _check_auto_release_gates(book, base, hid, event, ev, run_mode,
+                                         known_movements)
         if halt is not None:
             return halt
     if note is not None:

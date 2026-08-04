@@ -213,6 +213,11 @@ section_a:
   # enforced by every generated reducer/fold; the elapsed-reduce-time half is
   # a PR4 obligation (a wall clock in a deterministic reducer is not
   # testable here and the count bound already caps the work).
+  # §6.0's admission bound: more than this many OPEN holds on a base halts
+  # NEW admissions until an operator reconciles. It was prose inside an
+  # operator_action string — the one safety constant left ungenerated,
+  # while the reducer already counts open holds.
+  open_hold_admission_ceiling: 5
   recovery_ceiling:
     events: 10000
     reduce_seconds: 30
@@ -619,7 +624,11 @@ events:
       # panel round 2).
       variants:
         - {name: ObserveDelta,               row: observe_delta_create,        trigger: observe_delta,         required: [delta_old_oid, delta_new_oid], forbidden: [authorization_id]}
-        - {name: ObserveDeltaRedelivery,     row: observe_delta_redelivery_noop, trigger: observe_delta,       required: [source_delivery_id], forbidden: [authorization_id]}
+        # The delta tuple is REQUIRED on EVERY observe_delta variant: on the
+        # documented concurrency path a stale-tagged redelivery falls
+        # through to `create`, and a hold derived from empty strings is a
+        # phantom that silently swallows distinct foreign deltas.
+        - {name: ObserveDeltaRedelivery,     row: observe_delta_redelivery_noop, trigger: observe_delta,       required: [source_delivery_id, delta_old_oid, delta_new_oid], forbidden: [authorization_id]}
         - {name: ObserveDeltaNewDeliveryOnOpenHold, row: observe_delta_new_delivery_open_hold, trigger: observe_delta, required: [source_delivery_id, delta_old_oid, delta_new_oid], forbidden: [authorization_id]}
         # ActorVerifiedAuto requires VERIFIED_API + actor_node_id +
         # matched_subject_digest (§9), SEPARATED only, AND the webhook
@@ -632,10 +641,15 @@ events:
         # dispatches "as the HELD_FOREIGN rows" (§6.0 section-B table).
         # operator_reconcile variants carry only operator_accepting
         # dispositions (ACTOR_VERIFIED_AUTO is unmintable by an operator).
-        - {name: HoldReconcileAccept,        row: hold_reconcile_accept,       trigger: operator_reconcile,    required: [hold_id, disposition], extra_from: [STANDING], forbidden: [authorization_id]}
-        - {name: HoldReconcileRejectRestoreHold, row: hold_reconcile_reject_restore_hold, trigger: operator_reconcile, required: [hold_id, disposition], extra_from: [STANDING], forbidden: [authorization_id]}
-        - {name: HoldReconcileStanding,      row: hold_reconcile_standing,     trigger: operator_reconcile,    required: [hold_id, disposition], fixed: {disposition: STANDING}, extra_from: [STANDING], forbidden: [authorization_id]}
-        - {name: HoldReconcileReplayIdentity, row: hold_reconcile_replay_identity, trigger: operator_reconcile, required: [hold_id, disposition], forbidden: [authorization_id]}
+        # actor_node_id is REQUIRED on every operator reconcile: a hold
+        # release is an authority write, and §6.0 records authorization
+        # evidence BY IMMUTABLE NODE ID — actor_display is presentation,
+        # never predicate input. Without it the deciding party is
+        # unattributable in the durable record.
+        - {name: HoldReconcileAccept,        row: hold_reconcile_accept,       trigger: operator_reconcile,    required: [hold_id, disposition, actor_node_id], extra_from: [STANDING], forbidden: [authorization_id]}
+        - {name: HoldReconcileRejectRestoreHold, row: hold_reconcile_reject_restore_hold, trigger: operator_reconcile, required: [hold_id, disposition, actor_node_id], extra_from: [STANDING], forbidden: [authorization_id]}
+        - {name: HoldReconcileStanding,      row: hold_reconcile_standing,     trigger: operator_reconcile,    required: [hold_id, disposition, actor_node_id], fixed: {disposition: STANDING}, extra_from: [STANDING], forbidden: [authorization_id]}
+        - {name: HoldReconcileReplayIdentity, row: hold_reconcile_replay_identity, trigger: operator_reconcile, required: [hold_id, disposition, actor_node_id], forbidden: [authorization_id]}
 
       # ACTOR_VERIFIED_AUTO evidence contract (panel round 2 CRITICAL):
       # within PR0 the reducer enforces every cross-check that is
@@ -654,6 +668,14 @@ events:
         # (panel round 3). Provenance is §6.0's configured-webhook
         # verification, wired in PR4, which will fill hook_id /
         # delivery_guid / repository_id above.
+        # §6.0's gate is a CONJUNCTION. Two conjuncts are enforced below;
+        # the third — "whose delta matches a KNOWN PARKED SUBJECT" — needs
+        # the section-A movement index, which the ONE pass now has. It is
+        # enforced via matched_movement_id when the release names one, and
+        # recorded here as REQUIRED-in-PR4 when it does not (the panel's
+        # finding was that the omission was nowhere recorded at all).
+        parked_subject_conjunct: matched_movement_id
+        parked_subject_required_from: PR4
         consistency_checks_enforced_in_pr0:
           - verified_api
           - actor_node_id_present

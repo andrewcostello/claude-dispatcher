@@ -481,6 +481,8 @@ def _emit_durability_and_ceiling(fsm: dict) -> list[str]:
     ceiling = a["recovery_ceiling"]
     w("# Recovery admission ceiling (§6.0 provisional bounds; the elapsed-")
     w("# time half is a PR4 obligation — see schema recovery_ceiling).")
+    w(f"OPEN_HOLD_ADMISSION_CEILING: int = "
+      f"{int(a['open_hold_admission_ceiling'])}")
     w(f"RECOVERY_CEILING_EVENTS: int = {int(ceiling['events'])}")
     w(f"RECOVERY_CEILING_REDUCE_SECONDS: int = {int(ceiling['reduce_seconds'])}")
     w("")
@@ -925,7 +927,7 @@ class IllegalTransitionError(BoundaryFault):
         self.machine, self.state, self.event = machine, state, event
 
 
-class WireViolation(Exception):
+class WireViolation(ValueError):
     """A wire event that does not satisfy its §9 schema — unknown variant,
     unknown enum value, missing REQUIRED or present FORBIDDEN field. The
     reducers convert this to a typed SCHEMA_MAJOR_UNKNOWN halt; §9: unknown
@@ -1015,7 +1017,10 @@ def _validate_event_fields(event: object) -> None:
         for needed in conditions.get(key, ()):
             got = getattr(event, _py_field(needed), None)
             if got is None or (isinstance(got, str) and got == ""):
-                raise ValueError(
+                # a §9 conditional-requirement breach is a SCHEMA violation
+                # (SCHEMA_MAJOR_UNKNOWN), not an illegal transition — the
+                # blanket ValueError guard mislabelled the whole class.
+                raise WireViolation(
                     f"{name}.{field}={key!r} requires {needed!r}, which is "
                     f"absent — evidence without an attributable identity")
 
@@ -1883,7 +1888,8 @@ class _ReduceState:
             book = self.books[base] = _HoldBook()
             self.b_order.append(base)
         snapshot = dict(book.holds)
-        halt = _step_section_b(book, base, event, ev, self.run_mode)
+        halt = _step_section_b(book, base, event, ev, self.run_mode,
+                               frozenset(self.movements.get(base, {})))
         if halt is not None:
             return halt, False
         identity = book.holds == snapshot
@@ -2153,7 +2159,8 @@ def _check_hold_preconditions(hid: str, cur: MachineStateB, event: object,
 
 def _check_auto_release_gates(book: _HoldBook, base: str, hid: str,
                               event: object, ev: Mapping[str, object],
-                              run_mode: CredentialMode) -> Optional[dict]:
+                              run_mode: CredentialMode,
+                              known_movements: frozenset = frozenset()) -> Optional[dict]:
     """Every gate on the ONLY operator-less release of a foreign hold, in
     order: an operator's prior refusal closes it; the RUN's credential mode
     (never the event's) must be SEPARATED; then the hold-record
@@ -2181,6 +2188,14 @@ def _check_auto_release_gates(book: _HoldBook, base: str, hid: str,
     # new_oid field, so the observed OID for a foreign movement IS the
     # hold's own recorded delta_new_oid. Anything else is a writer choosing
     # the fence on the one operator-less release path (panel round 4).
+    if event.matched_movement_id is not None and \
+            event.matched_movement_id not in known_movements:
+        return _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION,
+            f"hold {hid}: matched_movement_id "
+            f"{event.matched_movement_id!r} names no parked movement on "
+            f"this base — §6.0 requires the delta to match a KNOWN PARKED "
+            f"SUBJECT (event_id {ev.get('event_id')!r})", ev)
     _, _, observed = book.hold_delta[hid]
     if event.epoch_after != observed:
         return _halt(
@@ -2252,8 +2267,8 @@ def reduce_section_b(events: Sequence[Mapping[str, object]],
 
 
 def _step_section_b(book: _HoldBook, base: str, event: object,
-                    ev: Mapping[str, object],
-                    run_mode: CredentialMode) -> Optional[dict]:
+                    ev: Mapping[str, object], run_mode: CredentialMode,
+                    known_movements: frozenset = frozenset()) -> Optional[dict]:
     note = None
     cls = type(event)
     # An event's self-declared `mode` is display/audit; the RUN's mode is
@@ -2273,6 +2288,16 @@ def _step_section_b(book: _HoldBook, base: str, event: object,
         return halt
     if note is not None:
         book.resolution_notes.append(note)
+    # §6.0's admission bound, generated from the schema rather than left as
+    # prose in an operator_action string: more than N OPEN holds on a base
+    # halts NEW admissions until an operator reconciles. Existing holds
+    # still take their transitions — this bounds ADMISSION, not recovery.
+    if hid not in book.holds and len(book.open_by_delta) >= OPEN_HOLD_ADMISSION_CEILING:
+        return _halt(
+            BoundaryErrorCode.HOLD_ADMISSION_CEILING,
+            f"{base}: {len(book.open_by_delta)} open holds already — new "
+            f"admissions halt at {OPEN_HOLD_ADMISSION_CEILING} until an "
+            f"operator reconciles (event_id {ev.get('event_id')!r})", ev)
     # The `unchanged` no-op rows are state-independent by design — their
     # audit `from` is already constrained to FROM_STATES at construction;
     # every state-changing row must name the reduced state exactly.
@@ -2280,7 +2305,8 @@ def _step_section_b(book: _HoldBook, base: str, event: object,
     if pre is not None:
         return pre if pre != _IDENTITY_REPLAY else None
     if isinstance(event, ActorVerifiedAuto):
-        halt = _check_auto_release_gates(book, base, hid, event, ev, run_mode)
+        halt = _check_auto_release_gates(book, base, hid, event, ev, run_mode,
+                                         known_movements)
         if halt is not None:
             return halt
     if note is not None:
@@ -2956,6 +2982,9 @@ def _ev(variant: str, eid: str, mid: str, frm: str, to: str,
 def _hev(variant: str, eid: str, frm: str, to: str, base: str = BASE1,
          **extra) -> dict:
     d = _env(eid)
+    if _B_TRIGGERS.get(variant) == "operator_reconcile":
+        # §6.0 records the deciding party by immutable node id
+        extra.setdefault("actor_node_id", "N-operator")
     d.update({"family": "hold_lifecycle", "variant": variant,
               "trigger_event": _B_TRIGGERS.get(variant, "observe_delta"),
               "base_key": base, "from": frm, "to": to, "ref": REF1,
@@ -3323,7 +3352,8 @@ def _section_b_vectors() -> dict[str, dict]:
       "delivery index ⇒ idempotent no-op, no re-park, no halt",
       [obs, release("h2"),
        _hev("ObserveDeltaRedelivery", "h3", "RELEASED", "RELEASED",
-            source_delivery_id="d1")])
+            source_delivery_id="d1", delta_old_oid=DELTA_OLD,
+            delta_new_oid=DELTA_NEW)])
     b("b_new_delivery_on_open_hold",
       "round-20 row: NEW source_delivery_id, same delta tuple, open hold — "
       "delivery recorded, state unchanged",
@@ -3345,7 +3375,8 @@ def _section_b_vectors() -> dict[str, dict]:
       "halt the most concurrent path in the system",
       [obs, release("h2"),
        _hev("ObserveDeltaRedelivery", "h3", "RELEASED", "RELEASED",
-            source_delivery_id="d9")])
+            source_delivery_id="d9", delta_old_oid=DELTA_OLD,
+            delta_new_oid=DELTA_NEW)])
     b("b_concurrent_tag_resolved_to_redelivery",
       "CONCURRENCY: the mirror case — a writer tagged a NEW delivery on an "
       "open hold but the id was already seen, so the apply order resolves a "
@@ -3537,7 +3568,7 @@ def _section_b_vectors() -> dict[str, dict]:
       [obs,
        _hev("ObserveDeltaRedelivery", "h2", "HELD_FOREIGN", "HELD_FOREIGN",
             source_delivery_id="d1", delta_old_oid=DELTA_OLD,
-            delta_new_oid="TOTALLY-DIFFERENT")])
+            delta_new_oid="9" * 40)])
     b("b_redelivery_stale_from_state",
       "the redelivery no-op is STATE-INDEPENDENT by design: a writer that "
       "stamped `from` before a concurrent reconcile released the hold must "
@@ -3546,7 +3577,8 @@ def _section_b_vectors() -> dict[str, dict]:
        _hev("HoldReconcileAccept", "h2", "HELD_FOREIGN", "RELEASED",
             hold_id=h0, disposition="ACCEPT_OURS"),
        _hev("ObserveDeltaRedelivery", "h3", "HELD_FOREIGN", "HELD_FOREIGN",
-            source_delivery_id="d1")])
+            source_delivery_id="d1", delta_old_oid=DELTA_OLD,
+            delta_new_oid=DELTA_NEW)])
     b("b_forbidden_authorization_id_deny",
       "DENY: section-A parity — authorization_id is FORBIDDEN on the "
       "section-B reconcile variants too",
