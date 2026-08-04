@@ -27,6 +27,7 @@ import ast
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import warnings
@@ -1598,11 +1599,29 @@ def test_environment_matrix_degraded_mode(tmp_path, monkeypatch):
     monkeypatch.setattr(lint, "REPO_ROOT", tmp_path / "repo")
     assert lint.find_workflow_repo() is None
     assert lint.peer_available() is False
-    # the degraded run is green and loud
-    env = dict(os.environ, CLAUDE_WORKFLOW_REPO=str(tmp_path / "absent"))
+    # Genuinely peer-less: run the child from an isolated tree whose sibling
+    # directory has no claude-workflow (panel round 3, finding 21 — pointing
+    # CLAUDE_WORKFLOW_REPO at a missing path still left the real sibling
+    # resolvable, so the subprocess half never exercised absence).
+    isolated = tmp_path / "nested" / "claude-dispatcher"
+    isolated.parent.mkdir(parents=True)
+    # real copies, not symlinks: t26_lint resolves REPO_ROOT from __file__,
+    # and a symlink would resolve straight back to the real checkout (whose
+    # sibling peer exists).
+    shutil.copytree(REPO_ROOT / "tools", isolated / "tools")
+    shutil.copytree(REPO_ROOT / "docs/plans", isolated / "docs/plans")
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_WORKFLOW_REPO"}
+    assert not (isolated.parent / "claude-workflow").exists()
+    probe = subprocess.run(
+        [sys.executable, str(isolated / "tools/t26_lint.py"), "--probe-peer"],
+        cwd=isolated, capture_output=True, text=True, timeout=180, env=env)
+    assert probe.returncode == 1, (
+        f"the isolated tree still resolved a peer: {probe.stdout}{probe.stderr}")
+    assert "peer ABSENT" in probe.stderr
+    # and the degraded run is green and loud from that same tree
     proc = subprocess.run(
-        [sys.executable, "tools/t26_lint.py", "--no-citations"],
-        cwd=REPO_ROOT, capture_output=True, text=True, timeout=180, env=env)
+        [sys.executable, str(isolated / "tools/t26_lint.py"), "--no-citations"],
+        cwd=isolated, capture_output=True, text=True, timeout=180, env=env)
     assert proc.returncode == 0, f"degraded mode failed:\n{proc.stderr}"
     assert "DEGRADED" in proc.stderr, (
         "the degraded announcement must reach stderr, not a captured stdout")

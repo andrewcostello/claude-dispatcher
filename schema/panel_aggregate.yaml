@@ -40,7 +40,13 @@ roster_snapshot:
   # Run-level roster changes are channel-(c), ADD-ONLY: may add seats, never
   # remove/replace/weaken; redesignating the SINGLE seat is "weaken" and
   # rejected (round 14, claude m7).
+  # Add-only roster mutation (§5.1: may add seats, never remove/replace,
+  # never redesignate the SINGLE seat). PR0 generates the SNAPSHOT and its
+  # digest verification; the augment() operation enforcing this rule belongs
+  # to PR5's panel_runner, where augmentation happens — recorded so PR5
+  # implements a declared rule rather than inventing one (finding 44).
   mutation_rule: additive_only
+  mutation_rule_enforced_in: PR5
 
 required_seats:
   # required_seats(FULL) = all roster seats;

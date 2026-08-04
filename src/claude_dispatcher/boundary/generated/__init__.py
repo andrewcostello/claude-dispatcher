@@ -2749,7 +2749,7 @@ class _Dedup:
     order-dependent). Shared by both reducers AND the epoch fold."""
 
     def __init__(self) -> None:
-        self._seen: dict[str, tuple[str, str]] = {}
+        self._seen: dict[str, tuple[bytes, str]] = {}
 
     def check(self, ev: Mapping[str, object], base: str) -> str:
         """'new' | 'dup'; raises _DivergentDuplicate on divergence or a
@@ -2761,7 +2761,9 @@ class _Dedup:
                 f"event missing required envelope field 'event_id' "
                 f"(fields present: {sorted(ev)})", ev), frozenset({base}))
         try:
-            canon = _canonical(ev)
+            # a 32-byte digest detects divergence just as well as the full
+            # canonical string and keeps recovery-path memory bounded.
+            canon = hashlib.sha256(_canonical(ev).encode("utf-8")).digest()
         except (TypeError, ValueError):
             raise _DivergentDuplicate(_halt(
                 BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,

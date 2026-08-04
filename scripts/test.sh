@@ -19,8 +19,14 @@ echo "test.sh: interpreter $PY ($("$PY" --version 2>&1))"
 
 PYTHONPATH=src "$PY" -m pytest tests/ -q --tb=line
 
-if "$PY" tools/t26_lint.py --probe-peer >/dev/null 2>&1; then
+probe_out="$("$PY" tools/t26_lint.py --probe-peer 2>&1)" && probe_rc=0 || probe_rc=$?
+if [ "$probe_rc" = 0 ]; then
   "$PY" tools/t26_lint.py
+elif [ "$probe_rc" != 1 ]; then
+  # exit 1 means "peer absent"; anything else is the probe itself failing,
+  # which must not be reported to the operator as a missing checkout.
+  echo "test.sh: --probe-peer failed (exit $probe_rc): $probe_out" >&2
+  exit "$probe_rc"
 else
   # --probe-peer exits 1 for exactly one reason: the peer is unresolvable.
   echo "test.sh: claude-workflow peer checkout absent — running t26_lint in" \

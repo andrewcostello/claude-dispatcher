@@ -58,3 +58,10 @@ t9_interpretation:
 architecture:
   package: claude_dispatcher.boundary
   door_entrypoints: []
+  # SCOPE, stated (panel round 3, finding 47): the gate reads STATIC import
+  # syntax — every spelling of `import` / `from ... import`, each with its
+  # own deny row. A dynamic importlib.import_module("claude_dispatcher.
+  # boundary") is not detected. That is an accepted PR0 limit: the threat
+  # here is honest misconfiguration (a production module reaching for
+  # boundary/ before PR6), not evasion — §0.1 puts a determined local actor
+  # out of scope, and PR6 removes the question by filling door_entrypoints.
