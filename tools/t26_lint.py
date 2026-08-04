@@ -23,9 +23,14 @@ Checks (exit nonzero on any violation):
   8. each §9 event field list appears normatively once (field-list-once)
 
 Baselines come from the doc header's "Review baseline for citations" line.
-The claude-workflow checkout is found via $CLAUDE_WORKFLOW_REPO, then
-../claude-workflow, then /home/andrew/Project/claude-workflow — absence is
-a FAILURE, not a skip: an unverifiable citation is a stale citation.
+The claude-workflow peer checkout is resolved by ONE predicate —
+peer_available(), $CLAUDE_WORKFLOW_REPO then <repo>/../claude-workflow —
+which scripts/test.sh consumes via `--probe-peer` and the pytest seal
+imports directly, so the three callers cannot disagree about the
+environment. With the peer present, check 6 runs and an unverifiable
+citation is a failure. Without it, `--no-citations` runs checks 1–5/7–8
+and says so loudly on stderr; that degraded mode is for dispatched-task
+worktrees only — `make verify-t26` and CI always require the peer.
 """
 
 from __future__ import annotations
@@ -232,10 +237,14 @@ def check_field_lists(doc: Doc, errors: list[str]) -> None:
 
 # ─── citations at the pinned baselines ───────────────────────────────────────
 
-# Peer-repo resolution: $CLAUDE_WORKFLOW_REPO, else the sibling checkout.
-# No machine-specific absolute paths (panel finding) — the failure message
-# names exactly what was tried and which variable to set.
-_WORKFLOW_CANDIDATES = ["$CLAUDE_WORKFLOW_REPO", "../claude-workflow (sibling)"]
+# ─── the ONE peer-checkout predicate ────────────────────────────────────────
+# Defined here, consumed by scripts/test.sh (via --probe-peer), by this
+# module's citation check, and by the pytest seal — so the three cannot
+# disagree about which environment they are in. `.git` is tested with
+# exists() because a linked git WORKTREE carries `.git` as a FILE, which is
+# exactly the layout this dispatcher creates for tasks (panel round 2: a
+# `-d` test disagreed with this one in both directions).
+_WORKFLOW_CANDIDATES = ["$CLAUDE_WORKFLOW_REPO", "<repo>/../claude-workflow"]
 
 
 def find_workflow_repo() -> Path | None:
@@ -246,18 +255,65 @@ def find_workflow_repo() -> Path | None:
     return None
 
 
+def peer_available() -> bool:
+    """The single environment predicate: True on a dev machine with the
+    claude-workflow peer checkout, False in a dispatched worktree without
+    one (degraded mode — every doc-local check still runs)."""
+    return find_workflow_repo() is not None
+
+
 GIT_TIMEOUT_SECONDS = 30  # repo convention: every git subprocess is bounded
 
 
-def git_show(repo: Path, sha: str, path: str) -> str | None:
+class GitResult:
+    """git output plus WHY it is missing — a timeout, a bad pin and a real
+    absence must not all read as 'stale citation' (panel round 2)."""
+
+    __slots__ = ("text", "error")
+
+    def __init__(self, text: str | None, error: str | None = None):
+        self.text = text
+        self.error = error
+
+    @property
+    def ok(self) -> bool:
+        return self.text is not None
+
+
+def git_show(repo: Path, sha: str, path: str) -> GitResult:
     try:
         proc = subprocess.run(
             ["git", "-C", str(repo), "show", f"{sha}:{path}"],
             capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS,
             env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
     except subprocess.TimeoutExpired:
-        return None  # surfaces as an unresolvable citation — fail, not hang
-    return proc.stdout if proc.returncode == 0 else None
+        return GitResult(None, f"timeout after {GIT_TIMEOUT_SECONDS}s")
+    except OSError as exc:                                  # git missing, etc.
+        return GitResult(None, f"git could not run: {exc}")
+    if proc.returncode != 0:
+        return GitResult(None, (proc.stderr or "").strip().splitlines()[-1:] and
+                         (proc.stderr or "").strip().splitlines()[-1] or
+                         f"git exit {proc.returncode}")
+    return GitResult(proc.stdout)
+
+
+def pin_resolves(repo: Path, sha: str) -> str | None:
+    """Verify the baseline SHA exists in the checkout ONCE up front, so an
+    unresolvable pin reports one accurate error naming the SHA and repo
+    instead of N 'stale citation' lines."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), "cat-file", "-e", f"{sha}^{{commit}}"],
+            capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+    except subprocess.TimeoutExpired:
+        return f"timeout resolving pin {sha} in {repo}"
+    except OSError as exc:
+        return f"git could not run in {repo}: {exc}"
+    if proc.returncode != 0:
+        return (f"pinned baseline {sha} does not resolve in {repo} "
+                f"(fetch it, or re-pin the header)")
+    return None
 
 
 def parse_pins(doc: Doc, errors: list[str]) -> tuple[str, str] | None:
@@ -272,9 +328,9 @@ def parse_pins(doc: Doc, errors: list[str]) -> tuple[str, str] | None:
 
 def resolve_py(repo: Path, sha: str, path: str) -> tuple[str, str] | None:
     for cand in (path, f"src/claude_dispatcher/{path}", f"tests/fixtures/{path}"):
-        content = git_show(repo, sha, cand)
-        if content is not None:
-            return cand, content
+        res = git_show(repo, sha, cand)
+        if res.ok:
+            return cand, res.text
     return None
 
 
@@ -282,7 +338,10 @@ def check_citations(doc: Doc, errors: list[str]) -> None:
     """(6) file:line citations resolve at the pinned baselines; symbol
     checks where the doc cites symbols. Historical sections (§11, the
     version-history header) cite lines against OLD baselines by definition
-    and are exempt — the same scoping §12 gives the retired-name rule."""
+    and are exempt — the same scoping §12 gives the retired-name rule.
+
+    Peer absence and an unresolvable pin are reported as THEMSELVES, once,
+    never as N stale-citation lines."""
     pins = parse_pins(doc, errors)
     if pins is None:
         return
@@ -292,35 +351,37 @@ def check_citations(doc: Doc, errors: list[str]) -> None:
         errors.append(
             "citations: peer checkout ABSENT — claude-workflow citations are "
             f"unverifiable (tried: {', '.join(_WORKFLOW_CANDIDATES)}; set "
-            "CLAUDE_WORKFLOW_REPO, or run with --no-citations in "
-            "environments without the peer checkout)")
+            "CLAUDE_WORKFLOW_REPO, or pass --no-citations in environments "
+            "without the peer checkout)")
         return
-    cache: dict[tuple[str, str], str | None] = {}
+    pin_problems = [p for p in (pin_resolves(REPO_ROOT, disp_sha),
+                                pin_resolves(wf_repo, wf_sha)) if p]
+    if pin_problems:
+        errors.extend(f"citations: {p}" for p in pin_problems)
+        return                      # one accurate error, not N misreports
+    cache: dict[str, tuple[str, str] | str] = {}
 
-    def content_for(path: str) -> tuple[str, str] | None:
+    def content_for(path: str) -> tuple[str, str] | str:
+        """(real_path, text) on success, or an error REASON string."""
+        if path in cache:
+            return cache[path]
         if path.endswith(".go"):
             real = GO_PATH_MAP.get(path, path)
-            key = ("workflow", real)
-            if key not in cache:
-                cache[key] = git_show(wf_repo, wf_sha, real)
-            return (real, cache[key]) if cache[key] is not None else None
-        key = ("dispatcher", path)
-        if key not in cache:
+            res = git_show(wf_repo, wf_sha, real)
+            got: tuple[str, str] | str = (real, res.text) if res.ok else \
+                f"{real} unreadable at pin ({res.error})"
+        else:
             hit = resolve_py(REPO_ROOT, disp_sha, path)
-            cache[key] = hit[1] if hit else None
-            if hit:
-                cache[("dispatcher-name", path)] = hit[0]
-        if cache[key] is None:
-            return None
-        return (str(cache.get(("dispatcher-name", path), path)), str(cache[key]))
+            got = hit if hit else f"{path} not found at pinned baseline"
+        cache[path] = got
+        return got
 
     for i, sec, line in doc.normative():
         for m in CITATION_RE.finditer(line):
             path, linespec = m.group("path"), m.group("lines")
             hit = content_for(path)
-            if hit is None:
-                errors.append(f"citations: line {i} (§{sec}): {path} not found "
-                              f"at pinned baseline")
+            if isinstance(hit, str):
+                errors.append(f"citations: line {i} (§{sec}): {hit}")
                 continue
             real, content = hit
             nlines = content.count("\n") + 1
@@ -328,17 +389,16 @@ def check_citations(doc: Doc, errors: list[str]) -> None:
             if maxline > nlines:
                 errors.append(f"citations: line {i} (§{sec}): {real}:{maxline} "
                               f"beyond EOF ({nlines} lines at pin)")
-    # symbol-level checks
     for repo_name, path, symbols in SYMBOL_CHECKS:
-        if repo_name == "workflow":
-            content = git_show(wf_repo, wf_sha, path)
-        else:
-            content = git_show(REPO_ROOT, disp_sha, path)
-        if content is None:
-            errors.append(f"citations: symbol file {path} missing at pin")
+        repo, sha = ((wf_repo, wf_sha) if repo_name == "workflow"
+                     else (REPO_ROOT, disp_sha))
+        res = git_show(repo, sha, path)
+        if not res.ok:
+            errors.append(f"citations: symbol file {path} unreadable at pin "
+                          f"({res.error})")
             continue
         for sym in symbols:
-            if sym not in content:
+            if sym not in res.text:
                 errors.append(f"citations: symbol `{sym}` not found in {path} at pin")
 
 
@@ -381,7 +441,20 @@ def main(argv: list[str] | None = None) -> int:
                          "environments without the claude-workflow peer "
                          "checkout, e.g. dispatched-task worktrees; the full "
                          "check runs in `make verify-t26` and CI)")
+    ap.add_argument("--probe-peer", action="store_true",
+                    help="exit 0 if the claude-workflow peer checkout is "
+                         "resolvable, 1 otherwise, printing what was tried; "
+                         "this is THE environment predicate scripts/test.sh "
+                         "and the pytest seal consume")
     args = ap.parse_args(argv)
+    if args.probe_peer:
+        repo = find_workflow_repo()
+        if repo is None:
+            print(f"t26_lint --probe-peer: peer ABSENT (tried: "
+                  f"{', '.join(_WORKFLOW_CANDIDATES)})", file=sys.stderr)
+            return 1
+        print(f"t26_lint --probe-peer: peer at {repo}")
+        return 0
     doc = Doc(DESIGN)
     errors: list[str] = []
     check_t_index(doc, errors)
@@ -391,8 +464,12 @@ def main(argv: list[str] | None = None) -> int:
     check_supersession(doc, errors)
     check_field_lists(doc, errors)
     if args.no_citations:
-        print("t26_lint: SKIPPED [citations] — peer-checkout check disabled "
-              "by --no-citations (doc-local checks still enforced)")
+        # stderr + unbuffered: the degraded announcement must survive CI log
+        # capture and pytest's stdout capture (panel round 2).
+        print("t26_lint: DEGRADED [citations SKIPPED] — no claude-workflow "
+              f"peer checkout (tried: {', '.join(_WORKFLOW_CANDIDATES)}); "
+              "every doc-local check still enforced. `make verify-t26` and "
+              "CI require the peer.", file=sys.stderr, flush=True)
     else:
         check_citations(doc, errors)
     check_plan_tmap(doc, errors)

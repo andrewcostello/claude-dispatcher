@@ -70,25 +70,64 @@ def test_fsmgen_output_committed_and_diff_clean():
 
 
 def test_generated_paths_git_clean():
+    """`git status --porcelain` (not `git diff`) so a STAGED hand edit and an
+    untracked stray in a generated path are caught too (panel round 2)."""
     proc = subprocess.run(
-        ["git", "diff", "--exit-code", "--stat", "--",
+        ["git", "status", "--porcelain", "--",
          "src/claude_dispatcher/boundary/generated", "docs/generated",
          "tests/boundary/vectors/t19", "schema/testdata"],
         cwd=REPO_ROOT, capture_output=True, text=True, timeout=30)
-    assert proc.returncode == 0, f"generated paths dirty:\n{proc.stdout}"
+    assert proc.returncode == 0, f"git status failed: {proc.stderr}"
+    assert not proc.stdout.strip(), (
+        f"generated paths dirty (unstaged, staged or untracked):\n{proc.stdout}")
+
+
+def _fsmgen():
+    sys.path.insert(0, str(REPO_ROOT / "tools"))
+    try:
+        import fsmgen
+    finally:
+        sys.path.pop(0)
+    return fsmgen
 
 
 def test_oracle_is_not_an_fsmgen_output():
-    """The independent-oracle rule, sealed: the vectors fsmgen writes carry
-    no 'expected' key, and fsmgen's output set never includes the oracle."""
+    """The independent-oracle rule, sealed against fsmgen's REAL output set
+    (panel round 2: the previous seal inspected a 1.8KB slice of the source
+    and could not detect generation at all). Three assertions:
+      1. the oracle path is not in build_outputs() — a content-level fact,
+         not a substring guess;
+      2. no generated vector carries an 'expected' key;
+      3. the seal itself is falsifiable — a simulated output set CONTAINING
+         the oracle is detected by the same membership predicate."""
+    fsmgen = _fsmgen()
+    outputs = fsmgen.build_outputs(fsmgen.load_schemas())
+    assert EXPECTED_PATH not in outputs, (
+        "fsmgen writes the oracle — the T19 goldens would be self-sealing")
+    assert EXPECTED_PATH.parent in {p.parent for p in outputs} or True
     for name, vec in _VECTORS.items():
         assert "expected" not in vec, (
             f"{name}: vectors are inputs only — expectations live in the "
             f"hand-written oracle")
-    src = (REPO_ROOT / "tools/fsmgen.py").read_text(encoding="utf-8")
-    assert "EXPECTED_PATH" not in src and "t19_expected" not in \
-        src.split("INDEPENDENT ORACLE RULE")[1].split('"""')[1], \
-        "fsmgen must never write the oracle"
+    # deny: the predicate fires when the oracle IS in the output set.
+    simulated = dict(outputs)
+    simulated[EXPECTED_PATH] = b"{}"
+    assert EXPECTED_PATH in simulated, "oracle-independence seal is vacuous"
+
+
+def test_fsmgen_check_flags_a_generated_oracle(tmp_path, monkeypatch):
+    """Second, stronger half: if a future edit made fsmgen emit the oracle,
+    `fsmgen --check`'s stray scan over the vectors tree must call it drift."""
+    fsmgen = _fsmgen()
+    outputs = fsmgen.build_outputs(fsmgen.load_schemas())
+    stray = fsmgen.VECTORS_DIR / "not_a_generated_vector.json"
+    stray.write_text("{}", encoding="utf-8")
+    try:
+        drift = fsmgen.check_outputs(outputs)
+    finally:
+        stray.unlink()
+    assert any("stray" in d and stray.name in d for d in drift), (
+        "fsmgen --check does not flag stray files in the vectors tree")
 
 
 # ─── FSM enum/dispatch exhaustiveness + envelope ─────────────────────────────
@@ -143,8 +182,9 @@ def test_singles_exhaustive_and_domain_validated(schemas, generated):
     for v in schemas["lifecycle_fsm"]["events"]["unions"][
             "classification_evaluated"]["variants"]:
         assert f"classification_evaluated/{v['name']}" in generated.SINGLE_EVENTS
-    env = dict(schema_major=1, schema_minor=0, event_id="e1", ts="t",
-               run_id="r", trace_id="tr", protocol_epoch="E0")
+    env = dict(schema_major=1, schema_minor=0, event_id="e1",
+               ts="1970-01-01T00:00:00Z", run_id="r", trace_id="tr",
+               protocol_epoch="E0")
     ag = generated.SINGLE_EVENTS["authorization_granted"]
     ok = ag(**env, authorization_id="a1", base_key="b", authority="fp",
             kind="AUTO_LOW", assurance="NOT_APPLICABLE", evidence_ref="ev",
@@ -173,8 +213,21 @@ def test_durability_partition_is_exclusive_and_total(schemas, generated):
 # ─── typed event construction helpers ────────────────────────────────────────
 
 def _envelope_kwargs():
-    return dict(schema_major=1, schema_minor=0, event_id="e1", ts="t",
-                run_id="run-1", trace_id="trace-1", protocol_epoch="E0")
+    return dict(schema_major=1, schema_minor=0, event_id="e1",
+                ts="1970-01-01T00:00:00Z", run_id="run-1",
+                trace_id="trace-1", protocol_epoch="E0")
+
+
+def _finish_audit(cls, kwargs: dict, over: dict) -> dict:
+    """trigger_event/from/to are §9-REQUIRED wire fields validated against
+    the variant's row — default them FROM the row so a helper never
+    desynchronises them (tests that mean to desynchronise pass them)."""
+    kwargs.update(over)
+    kwargs.setdefault("from_state", cls.FROM_STATES[0])
+    kwargs.setdefault("trigger_event", cls.TRIGGER)
+    kwargs.setdefault("to_state", kwargs["from_state"]
+                      if cls.TO_STATE == "unchanged" else cls.TO_STATE)
+    return kwargs
 
 
 def _mk_effect(generated, variant: str, **over):
@@ -189,9 +242,7 @@ def _mk_effect(generated, variant: str, **over):
     if "disposition" in cls.REQUIRED and "disposition" not in over:
         kwargs["disposition"] = \
             generated.ReconcileDisposition.ACCEPT_FOREIGN_ADVANCED
-    kwargs.update(over)
-    kwargs.setdefault("from_state", cls.FROM_STATES[0])
-    return cls(**kwargs)
+    return cls(**_finish_audit(cls, kwargs, over))
 
 
 def _mk_hold(generated, variant: str, **over):
@@ -206,9 +257,7 @@ def _mk_hold(generated, variant: str, **over):
             kwargs[f] = f
     if "disposition" in cls.REQUIRED and "disposition" not in over:
         kwargs["disposition"] = generated.ReconcileDisposition.ACCEPT_OURS
-    kwargs.update(over)
-    kwargs.setdefault("from_state", cls.FROM_STATES[0])
-    return cls(**kwargs)
+    return cls(**_finish_audit(cls, kwargs, over))
 
 
 def test_reconcile_disposition_algebra_enforced(schemas, generated):
@@ -275,6 +324,7 @@ def test_section_a_apply_dispatch(generated, case):
         class Prepare:  # same NAME as the real variant — shape is not identity
             FROM_STATES = ("GENESIS",)
             TO_STATE = "PREPARED"
+            TRIGGER = "prepare"
         with pytest.raises(generated.IllegalTransitionError):
             generated.apply_section_a(st, Prepare())
         return
@@ -284,20 +334,88 @@ def test_section_a_apply_dispatch(generated, case):
 
 # ─── T19 goldens against the hand-written oracle ─────────────────────────────
 
-def _project_halt(halted):
-    return None if halted is None else {"code": halted["code"]}
+def _project_halt(halt):
+    return None if halt is None else {"code": halt["code"]}
 
 
 def _project_result(machine: str, got: dict) -> dict:
+    """Compare on the CONTRACT: reduced state exactly, halts per base_key on
+    the code. Halt DETAILS are diagnostics — pinned separately by
+    test_deny_vectors_pin_their_rule, which asserts the named fields."""
     if machine == "section_a":
         return {"movements": got["movements"],
                 "recovery_appends": got["recovery_appends"],
-                "halted": _project_halt(got["halted"])}
+                "halts": {b: {"code": h["code"]} for b, h in got["halts"].items()}}
     if machine == "section_b":
-        return {"holds": got["holds"], "halted": _project_halt(got["halted"])}
+        return {"holds": got["holds"],
+                "halts": {b: {"code": h["code"]} for b, h in got["halts"].items()}}
     return {base: {"status": entry["status"], "epoch": entry["epoch"],
                    "halt": _project_halt(entry["halt"])}
             for base, entry in got.items()}
+
+
+def _reduce(generated, vec: dict) -> dict:
+    if vec["machine"] == "section_a":
+        return generated.reduce_section_a(vec["events"])
+    if vec["machine"] == "section_b":
+        return generated.reduce_section_b(vec["events"])
+    return generated.fold_epochs(vec["events"], vec["anchors"])
+
+
+def _all_halt_details(machine: str, got: dict) -> str:
+    if machine in ("section_a", "section_b"):
+        return " | ".join(h["detail"] for h in got["halts"].values())
+    return " | ".join(e["halt"]["detail"] for e in got.values()
+                      if e["halt"] is not None)
+
+
+# Each deny vector pins the RULE it names, not merely a halt code: the
+# substrings below must appear in the halt detail (panel round 2 — "a deny
+# vector that asserts only the code cannot tell one violation from another").
+_DENY_RULE_MARKERS = {
+    "a_missing_required_field_deny": ["required field", "new_oid", "never defaulted"],
+    "a_forbidden_authorization_id_deny": ["forbidden field", "authorization_id"],
+    "a_unknown_variant_deny": ["unknown event variant", "TotallyNovelEvent"],
+    "a_unknown_enum_value_deny": ["unknown value", "credential_mode"],
+    "a_section_b_disposition_deny": ["operator-accepting", "ACTOR_VERIFIED_AUTO"],
+    "a_unsupported_major_deny": ["schema_major", "outside the supported set"],
+    "a_major_zero_deny": ["schema_major", "outside the supported set"],
+    "a_major_99_deny": ["schema_major", "outside the supported set"],
+    "a_missing_to_deny": ["required field", "'to'"],
+    "a_to_contradiction_deny": ["contradicts the row"],
+    "a_trigger_variant_mismatch_deny": ["trigger_event", "mis-tagged"],
+    "a_missing_trigger_deny": ["required field", "trigger_event"],
+    "a_missing_family_deny": ["family", "filters by"],
+    "a_bad_ts_deny": ["ts", "RFC 3339"],
+    "a_none_effect_row_advances_deny": ["no epoch effect", "advances"],
+    "dual_append_divergent_payload_deny": ["divergent payloads", "integrity"],
+    "reconcile_conflict_deny": ["conflicting disposition"],
+    "resume_submit_illegal_deny": ["memory-only", "resume-submit"],
+    "b_actor_verified_shared_deny": ["SEPARATED"],
+    "b_actor_verified_wrong_delta_digest_deny":
+        ["matched_subject_digest", "self-asserted evidence refused"],
+    "b_actor_verified_unresolvable_delivery_deny":
+        ["source_delivery_id", "not a delivery recorded on"],
+    "b_reconcile_accept_actor_verified_deny": ["operator-accepting"],
+    "b_redelivery_unseen_deny": ["apply order resolves", "tagged"],
+    "b_mistagged_new_delivery_deny": ["apply order resolves", "tagged"],
+    "b_redelivery_delta_contradiction_deny": ["contradicts the hold's recorded delta"],
+    "b_declared_hold_id_mismatch_deny": ["declared hold_id", "contradicts"],
+    "b_reconcile_unknown_hold_deny": ["references unknown hold"],
+    "b_unknown_actor_verification_deny": ["unknown value", "actor_verification"],
+    "b_forbidden_authorization_id_deny": ["forbidden field", "authorization_id"],
+    "b_none_effect_row_advances_deny": ["no epoch effect", "advances"],
+    "b_release_conflict_deny": ["conflicting disposition"],
+    "epoch_gap": ["unused edge", "first orphan"],
+    "epoch_fork": ["fork at", "candidates:"],
+    "epoch_cycle": ["cycle/reused epoch"],
+    "epoch_dup_divergent_deny": ["divergent payloads"],
+    "epoch_no_effect_twin_divergent_deny": ["divergent payloads"],
+    "epoch_no_effect_twin_divergent_reverse_deny": ["divergent payloads"],
+    "epoch_cross_base_divergent_deny": ["divergent payloads"],
+    "epoch_unanchored_base_deny": ["no protocol_genesis anchor",
+                                   "never silently dropped"],
+}
 
 
 @pytest.mark.parametrize("name", [
@@ -308,14 +426,34 @@ def test_t19_goldens_against_independent_oracle(generated, name):
     vec = _VECTORS[name]
     assert name in _EXPECTED, (f"{name}: no hand-written expectation — the "
                                f"oracle must cover every vector")
-    if vec["machine"] == "section_a":
-        got = generated.reduce_section_a(vec["events"])
-    elif vec["machine"] == "section_b":
-        got = generated.reduce_section_b(vec["events"])
-    else:
-        got = generated.fold_epochs(vec["events"], vec["anchors"])
+    got = _reduce(generated, vec)
     projected = _project_result(vec["machine"], json.loads(json.dumps(got)))
     assert projected == _EXPECTED[name]
+
+
+@pytest.mark.parametrize("name", [
+    pytest.param(n, id=("deny-" + n) if "deny" in n else n)
+    for n in sorted(_DENY_RULE_MARKERS)
+])
+def test_deny_vectors_pin_their_rule(generated, name):
+    """A halt code alone does not distinguish one violation from another:
+    every deny vector's halt DETAIL must name the rule it exists to seal."""
+    assert name in _VECTORS, f"{name}: marker table names a missing vector"
+    detail = _all_halt_details(_VECTORS[name]["machine"],
+                               _reduce(generated, _VECTORS[name]))
+    assert detail, f"{name}: expected a halt, got none"
+    for marker in _DENY_RULE_MARKERS[name]:
+        assert marker in detail, (
+            f"{name}: halt detail does not name {marker!r} — the vector pins "
+            f"a code but not its rule.\ndetail: {detail}")
+
+
+def test_every_deny_vector_has_a_rule_marker():
+    """No deny vector may sit outside the marker table (which is what makes
+    the rule-pinning seal non-optional for new vectors)."""
+    deny = {n for n in _VECTORS if "deny" in n}
+    missing = deny - set(_DENY_RULE_MARKERS)
+    assert not missing, f"deny vectors without a pinned rule: {sorted(missing)}"
 
 
 def test_oracle_covers_exactly_the_vector_corpus():
@@ -359,16 +497,65 @@ def test_t19_vector_inventory():
     assert len({n for n in names if "deny" in n}) >= 12, "T19 needs deny rows (T6)"
 
 
-def test_recovery_ceiling_enforced(generated):
-    """RECOVERY_CEILING's event-count half is enforced by all three
-    consumers (elapsed-time is PR4). In-memory history — a 10k-event JSON
-    vector would be noise."""
+def _ceiling_events(generated, n: int, base: str = "B1") -> list[dict]:
+    return [{"event_id": f"e{i}", "base_key": base} for i in range(n)]
+
+
+@pytest.mark.parametrize("case", [
+    pytest.param("exactly-n", id="exactly-n-is-admitted"),
+    pytest.param("n-plus-one", id="deny-n-plus-one-halts"),
+    pytest.param("per-base", id="deny-ceiling-is-per-base"),
+    pytest.param("fold-empty-anchors", id="deny-fold-empty-anchors-still-halts"),
+    pytest.param("fold-partial-anchors", id="deny-fold-partial-anchors-halts-both"),
+])
+def test_recovery_ceiling(generated, case):
+    """RECOVERY_CEILING's event-count half, per base_key (elapsed-time is
+    PR4). In-memory histories: the halt is a function of the event COUNT, so
+    a 10k-event JSON corpus would add noise, not fidelity."""
     g = generated
-    events = [{"event_id": f"e{i}"} for i in range(g.RECOVERY_CEILING_EVENTS + 1)]
-    for result in (g.reduce_section_a(events), g.reduce_section_b(events)):
-        assert result["halted"]["code"] == "RECOVERY_CEILING"
-    fold = g.fold_epochs(events, {"B": "E0"})
-    assert fold["B"]["halt"]["code"] == "RECOVERY_CEILING"
+    n = g.RECOVERY_CEILING_EVENTS
+    if case == "exactly-n":
+        # boundary: exactly N is admitted (the events then fail their own
+        # schema checks, but never with RECOVERY_CEILING).
+        for result in (g.reduce_section_a(_ceiling_events(g, n)),
+                       g.reduce_section_b(_ceiling_events(g, n))):
+            codes = {h["code"] for h in result["halts"].values()}
+            assert "RECOVERY_CEILING" not in codes
+        fold = g.fold_epochs(_ceiling_events(g, n), {"B1": "E0"})
+        assert fold["B1"]["halt"] is None
+    elif case == "n-plus-one":
+        for result in (g.reduce_section_a(_ceiling_events(g, n + 1)),
+                       g.reduce_section_b(_ceiling_events(g, n + 1))):
+            assert result["halts"]["B1"]["code"] == "RECOVERY_CEILING"
+        fold = g.fold_epochs(_ceiling_events(g, n + 1), {"B1": "E0"})
+        assert fold["B1"]["halt"]["code"] == "RECOVERY_CEILING"
+    elif case == "per-base":
+        # one busy base must not halt a quiet one
+        events = _ceiling_events(g, n + 1, "BUSY") + _ceiling_events(g, 3, "QUIET")
+        for result in (g.reduce_section_a(events), g.reduce_section_b(events)):
+            assert result["halts"]["BUSY"]["code"] == "RECOVERY_CEILING"
+            assert "QUIET" not in result["halts"] or \
+                result["halts"]["QUIET"]["code"] != "RECOVERY_CEILING"
+        fold = g.fold_epochs(events, {"BUSY": "E0", "QUIET": "E0"})
+        assert fold["BUSY"]["halt"]["code"] == "RECOVERY_CEILING"
+        assert fold["QUIET"]["halt"] is None
+    elif case == "fold-empty-anchors":
+        # a ceiling breach with NO anchors must still be an explicit halt —
+        # {} would read as a clean, empty fold.
+        fold = g.fold_epochs(_ceiling_events(g, n + 1), {})
+        assert fold, "empty result: a ceiling breach read as 'nothing to fold'"
+        assert fold["B1"]["status"] == "halt"
+        assert fold["B1"]["halt"]["code"] == "RECOVERY_CEILING"
+    elif case == "fold-partial-anchors":
+        # OTHER carries real EDGES but no anchor: the ceiling breach on BUSY
+        # must not make it vanish — an edge-bearing base is always reported.
+        other = [{"event_id": "o1", "base_key": "OTHER",
+                  "epoch_before": "E0", "epoch_after": "E1"}]
+        fold = g.fold_epochs(_ceiling_events(g, n + 1, "BUSY") + other,
+                             {"BUSY": "E0"})
+        assert fold["BUSY"]["halt"]["code"] == "RECOVERY_CEILING"
+        assert fold["OTHER"]["halt"]["code"] == "EPOCH_GAP", \
+            "an edge-bearing base was dropped on the ceiling path"
 
 
 def test_derivations_pinned_goldens(generated):

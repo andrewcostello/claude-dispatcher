@@ -1,0 +1,30 @@
+{
+  "machine": "section_a",
+  "note": "DENY: ts outside RFC 3339 UTC \u2014 the audit trail's only time anchor must be orderable across hosts",
+  "events": [
+    {
+      "schema_major": 1,
+      "schema_minor": 0,
+      "event_id": "e1",
+      "ts": "yesterday-ish",
+      "run_id": "run-1",
+      "trace_id": "trace-1",
+      "protocol_epoch": "E0",
+      "family": "effect_lifecycle",
+      "variant": "Prepare",
+      "trigger_event": "prepare",
+      "movement_id": "m1",
+      "base_key": "R1:refs/heads/main",
+      "from": "GENESIS",
+      "to": "PREPARED",
+      "authority": "fp-1",
+      "epoch_before": "E0",
+      "epoch_after": "E0",
+      "hold_effect": "NONE",
+      "actor_context": "dispatcher",
+      "credential_mode": "SHARED",
+      "branch": "state",
+      "authorization_id": "auth-1"
+    }
+  ]
+}

@@ -43,11 +43,11 @@ Union of variant fields (reading view): `base_key, trigger_event, from, to, epoc
 | ObserveDelta | observe_delta_create | observe_delta | delta_old_oid, delta_new_oid | authorization_id |
 | ObserveDeltaRedelivery | observe_delta_redelivery_noop | observe_delta | source_delivery_id | authorization_id |
 | ObserveDeltaNewDeliveryOnOpenHold | observe_delta_new_delivery_open_hold | observe_delta | source_delivery_id, delta_old_oid, delta_new_oid | authorization_id |
-| ActorVerifiedAuto | actor_verified_match | actor_verified_match | hold_id, actor_node_id, matched_subject_digest | — |
-| HoldReconcileAccept | hold_reconcile_accept | operator_reconcile | hold_id, disposition | — |
-| HoldReconcileRejectRestoreHold | hold_reconcile_reject_restore_hold | operator_reconcile | hold_id, disposition | — |
-| HoldReconcileStanding | hold_reconcile_standing | operator_reconcile | hold_id, disposition | — |
-| HoldReconcileReplayIdentity | hold_reconcile_replay_identity | operator_reconcile | hold_id, disposition | — |
+| ActorVerifiedAuto | actor_verified_match | actor_verified_match | hold_id, actor_node_id, matched_subject_digest, source_delivery_id | authorization_id |
+| HoldReconcileAccept | hold_reconcile_accept | operator_reconcile | hold_id, disposition | authorization_id |
+| HoldReconcileRejectRestoreHold | hold_reconcile_reject_restore_hold | operator_reconcile | hold_id, disposition | authorization_id |
+| HoldReconcileStanding | hold_reconcile_standing | operator_reconcile | hold_id, disposition | authorization_id |
+| HoldReconcileReplayIdentity | hold_reconcile_replay_identity | operator_reconcile | hold_id, disposition | authorization_id |
 
 ## `classification_evaluated`
 

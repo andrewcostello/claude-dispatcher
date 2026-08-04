@@ -98,12 +98,30 @@ def _require_ident(token: object, where: str) -> str:
     return token
 
 
-def _validate_schema_tokens(s: dict) -> None:
-    # complexity-justified: straight-line enumeration of every schema section
-    # that feeds an identifier into generated code — one branch per section,
-    # no interacting paths; splitting it would hide the coverage inventory.
-    """No unvalidated schema token reaches exec() (panel finding)."""
-    fsm, errors = s["lifecycle_fsm"], s["boundary_errors"]
+# Keys each schema record may carry. An unrecognised key is a hard schema
+# error, not silent data (panel round 2: a YAML comma turned a scalar into a
+# stray null key nobody noticed).
+_ALLOWED_KEYS = {
+    "variant": {"name", "row", "trigger", "required", "forbidden", "fixed",
+                "extra_from"},
+    "single": {"required", "optional", "note", "field_pair_rules"},
+    "vector_case": {"name", "file", "expect", "reason", "reason_code"},
+    "row": {"id", "from", "event", "to", "guard", "display", "disposition",
+            "epoch_effect", "expected_base_oid_effect",
+            "standing_reject_restore_resolves_to"},
+}
+
+
+def _check_keys(record: dict, kind: str, where: str) -> None:
+    allowed = _ALLOWED_KEYS[kind]
+    extra = {k for k in record
+             if k not in allowed and not str(k).endswith("_domain")}
+    if extra:
+        raise SchemaError(f"{where}: unrecognised key(s) {sorted(extra)} — "
+                          f"allowed: {sorted(allowed)} (+ <field>_domain)")
+
+
+def _validate_machine_tokens(fsm: dict) -> None:
     for sec in ("section_a", "section_b"):
         for st in [fsm[sec]["initial_pseudo_state"], *fsm[sec]["states"]]:
             _require_ident(st, f"{sec}.states")
@@ -111,25 +129,101 @@ def _validate_schema_tokens(s: dict) -> None:
             _require_ident(evn, f"{sec}.events")
         for row in fsm[sec]["rows"]:
             _require_ident(row["id"], f"{sec}.rows")
+            _check_keys(row, "row", f"{sec}.rows.{row['id']}")
+            for key in ("epoch_effect", "expected_base_oid_effect"):
+                if key in row:
+                    _require_ident(row[key], f"{sec}.rows.{row['id']}.{key}")
     for m in fsm["reconcile_dispositions"]["members"]:
         _require_ident(m["name"], "reconcile_dispositions")
     for name, members in fsm["enums"].items():
         _require_ident(name, "enums")
         for m in members:
             _require_ident(m, f"enums.{name}")
+
+
+def _validate_event_tokens(fsm: dict) -> None:
     for fam, spec in fsm["events"]["unions"].items():
         _require_ident(fam, "unions")
         for v in spec["variants"]:
             _require_ident(v["name"], f"unions.{fam}")
-            for f in [*v.get("required", []), *v.get("forbidden", [])]:
+            _check_keys(v, "variant", f"unions.{fam}.{v['name']}")
+            # classification_evaluated's variants are payload records, not
+            # transition rows — only row-bearing variants carry a trigger.
+            if "row" in v:
+                _require_ident(v["trigger"], f"unions.{fam}.{v['name']}.trigger")
+            for f in [*v.get("required", []), *v.get("forbidden", []),
+                      *v.get("extra_from", [])]:
                 _require_ident(f, f"unions.{fam}.{v['name']}")
+            for k, val in v.get("fixed", {}).items():
+                _require_ident(k, f"unions.{fam}.{v['name']}.fixed key")
+                _require_ident(val, f"unions.{fam}.{v['name']}.fixed value")
     for name, spec in fsm["events"]["singles"].items():
         _require_ident(name, "singles")
+        _check_keys(spec, "single", f"singles.{name}")
         for f in [*spec["required"], *spec.get("optional", [])]:
             _require_ident(f, f"singles.{name}")
-    for f in [*fsm["events"]["envelope"]["required"],
-              *fsm["events"]["envelope"]["optional"]]:
+        for key, val in spec.items():
+            if key.endswith("_domain"):
+                _require_ident(key[:-len("_domain")], f"singles.{name} domain")
+                for member in val:
+                    _require_ident(member, f"singles.{name}.{key}")
+        for key, rule in spec.get("field_pair_rules", {}).items():
+            _require_ident(key, f"singles.{name}.field_pair_rules key")
+            _require_ident(rule["field"], f"singles.{name}.field_pair_rules field")
+            for lhs, rhs in rule["allowed"].items():
+                _require_ident(lhs, f"singles.{name}.pair lhs")
+                for member in rhs:
+                    _require_ident(member, f"singles.{name}.pair rhs")
+    env = fsm["events"]["envelope"]
+    for f in [*env["required"], *env["optional"]]:
         _require_ident(f, "envelope")
+    for m in env["supported_majors"]:
+        if isinstance(m, bool) or not isinstance(m, int):
+            raise SchemaError(f"envelope.supported_majors: {m!r} is not an int")
+    for f in fsm["events"]["reducer_family_filter"]["values"]:
+        _require_ident(f, "reducer_family_filter.values")
+    for k, v in fsm["events"]["field_name_map"].items():
+        _require_ident(v, f"field_name_map[{k!r}]")
+
+
+def _validate_shared_object_tokens(fsm: dict) -> None:
+    shared = fsm["events"]["shared_objects"]
+    for variant, spec in shared["ClassifierAuthority"]["union"].items():
+        _require_ident(variant, "shared_objects.ClassifierAuthority")
+        for f in spec["required"]:
+            _require_ident(f, f"shared_objects.ClassifierAuthority.{variant}")
+    for f in shared["AuthorityFingerprint"]["required"]:
+        _require_ident(f, "shared_objects.AuthorityFingerprint")
+
+
+def _validate_panel_tokens(panel: dict) -> None:
+    for k in panel["panel_intensity"]:
+        _require_ident(k, "panel_intensity")
+    for m in panel["strategy"]:
+        _require_ident(m, "strategy")
+    for key in ("verdict_domain", "severity_domain"):
+        for m in panel["seat_outcome"][key]:
+            _require_ident(m, f"seat_outcome.{key}")
+    for m in panel["aggregate"]["result_domain"]:
+        _require_ident(m, "aggregate.result_domain")
+    for key in ("verdict_blocks", "severity_blocks"):
+        for m in panel["blocking_predicate"][key]:
+            _require_ident(m, f"blocking_predicate.{key}")
+
+
+def _validate_schema_tokens(s: dict) -> None:
+    """No unvalidated schema token reaches exec(): every token the emitters
+    interpolate as an identifier, attribute or enum member is checked, plus
+    a per-record key allowlist so a stray or typo'd key is a load-time error
+    rather than silent data (panel round 2)."""
+    fsm, errors = s["lifecycle_fsm"], s["boundary_errors"]
+    _validate_machine_tokens(fsm)
+    _validate_event_tokens(fsm)
+    _validate_shared_object_tokens(fsm)
+    _validate_panel_tokens(s["panel_aggregate"])
+    for case in s["classifier_protocol"]["vectors"]["cases"]:
+        _check_keys(case, "vector_case",
+                    f"classifier_protocol.vectors.{case.get('name')}")
     for c in errors["codes"]:
         _require_ident(c["code"], "boundary_errors.codes")
         _require_ident(c["phase"], "boundary_errors.phase")
@@ -212,6 +306,7 @@ def emit_header() -> list[str]:
         "",
         "import hashlib",
         "import json",
+        "import re",
         "from dataclasses import dataclass",
         "from enum import Enum, IntEnum",
         "from typing import ClassVar, Mapping, Optional, Sequence",
@@ -308,8 +403,25 @@ def emit_machine_constants(fsm: dict, reachable: dict, proj_edges: list) -> list
     w(f"DURABLE_STATE_BRANCH: frozenset[str] = frozenset({tuple(dur['durable_state_branch'])!r})")
     w(f"MEMORY_ONLY: frozenset[str] = frozenset({tuple(dur['memory_only'])!r})")
     w(f"HOLD_BRANCH: frozenset[str] = frozenset({tuple(dur['hold_branch'])!r})")
-    w(f"STATE_BRANCH_REF: str = \"{dur['state_branch_ref']}\"")
-    w(f"HOLD_BRANCH_REF: str = \"{dur['hold_branch_ref']}\"")
+    w(f"STATE_BRANCH_REF: str = {json.dumps(str(dur['state_branch_ref']))}")
+    w(f"HOLD_BRANCH_REF: str = {json.dumps(str(dur['hold_branch_ref']))}")
+    w("")
+    env = fsm["events"]["envelope"]
+    w("# The v1 wire supports exactly these schema majors; anything else halts")
+    w("# as SCHEMA_MAJOR_UNKNOWN — the named §9 halt, range-checked at intake.")
+    w(f"SUPPORTED_SCHEMA_MAJORS: frozenset[int] = frozenset({tuple(int(m) for m in env['supported_majors'])!r})")
+    w("")
+    b_rows_by_id = {r['id']: r for r in b['rows']}
+    standing_target = _require_ident(
+        str(b_rows_by_id['standing_reenter']['standing_reject_restore_resolves_to']),
+        'standing_reject_restore_resolves_to')
+    if standing_target not in b['states']:
+        raise SchemaError(f"standing_reject_restore_resolves_to names unknown "
+                          f"state {standing_target!r}")
+    w("# STANDING × REJECT_RESTORE_HOLD resolution — driven by the schema key")
+    w("# standing_reject_restore_resolves_to (the single place to change if")
+    w("# the author ratifies the other reading).")
+    w(f"STANDING_REJECT_RESTORE_TARGET_NAME: str = {standing_target!r}")
     w("")
     ceiling = a["recovery_ceiling"]
     w("# Recovery admission ceiling (§6.0 provisional bounds; the elapsed-")
@@ -356,10 +468,11 @@ def emit_machine_constants(fsm: dict, reachable: dict, proj_edges: list) -> list
 
 def _variant_field_sets(fsm: dict, spec: dict, v: dict) -> tuple[list[str], list[str], list[str]]:
     """(required, optional, forbidden) wire-field lists for one variant —
-    envelope + family commons + per-variant, disjoint by construction."""
+    envelope + family commons + per-variant, disjoint by construction.
+    §9-required trigger_event/from/to are REAL required wire fields
+    (validated against the row, never stripped — panel round 2)."""
     env = fsm["events"]["envelope"]
-    fam_req = [f for f in spec["common_required"]
-               if f not in ("trigger_event", "from", "to")]
+    fam_req = list(spec["common_required"])
     fam_opt = list(spec.get("common_optional", []))
     var_req = list(v.get("required", []))
     forbidden = list(v.get("forbidden", []))
@@ -373,7 +486,7 @@ def _variant_field_sets(fsm: dict, spec: dict, v: dict) -> tuple[list[str], list
 
 
 def _emit_field_decl(w, f: str, optional: bool) -> None:
-    py_name = "from_state" if f == "from" else f
+    py_name = {"from": "from_state", "to": "to_state"}.get(f, f)
     enum_t = ENUM_FIELD_TYPES.get(f)
     if enum_t:
         w(f"    {py_name}: Optional[{enum_t}] = None" if optional
@@ -389,6 +502,7 @@ def _emit_field_decl(w, f: str, optional: bool) -> None:
 def _emit_post_init(w, name: str, fixed: dict, guard: str | None) -> None:
     w("    def __post_init__(self) -> None:")
     w("        _validate_event_fields(self)")
+    w("        _validate_row_audit_fields(self)")
     for k, val in fixed.items():
         if k == "disposition":
             w(f"        if self.disposition is not ReconcileDisposition.{val}:")
@@ -439,11 +553,14 @@ def emit_variants_family(fsm: dict, family: str,
         w(f'    """{family} variant — row `{row["id"]}`: '
           f'{"/".join(froms)} × {v["trigger"]} → {row["to"]}."""')
         w("")
+        epoch_effect = (row.get("expected_base_oid_effect")
+                        or row.get("epoch_effect") or "none")
         w(f"    FAMILY: ClassVar[str] = \"{family}\"")
         w(f"    TRIGGER: ClassVar[str] = \"{v['trigger']}\"")
         w(f"    ROW: ClassVar[str] = \"{row['id']}\"")
         w(f"    FROM_STATES: ClassVar[tuple[str, ...]] = {froms!r}")
         w(f"    TO_STATE: ClassVar[str] = {row['to']!r}")
+        w(f"    EPOCH_EFFECT: ClassVar[str] = {_require_ident(epoch_effect, row['id'] + '.epoch_effect')!r}")
         w(f"    REQUIRED: ClassVar[tuple[str, ...]] = {tuple(required)!r}")
         w(f"    OPTIONAL: ClassVar[tuple[str, ...]] = {tuple(optional)!r}")
         w(f"    FORBIDDEN: ClassVar[tuple[str, ...]] = {tuple(forbidden)!r}")
@@ -453,7 +570,6 @@ def emit_variants_family(fsm: dict, family: str,
             _emit_field_decl(w, f, optional=False)
         for f in optional:
             _emit_field_decl(w, f, optional=True)
-        w(f"    from_state: str = {froms[0]!r}  # audit `from` — validated ∈ FROM_STATES")
         w("")
         _emit_post_init(w, name, fixed, row.get("guard"))
     return names, L
@@ -470,7 +586,8 @@ def emit_singles(fsm: dict) -> tuple[dict[str, str], list[str]]:
     classes: dict[str, str] = {}
 
     def one(event_name: str, cls_name: str, required: list[str],
-            optional: list[str], domains: dict[str, list[str]]) -> None:
+            optional: list[str], domains: dict[str, list[str]],
+            pair_rules: dict) -> None:
         classes[event_name] = cls_name
         req: list[str] = []
         for f in [*env["required"], *required]:
@@ -487,6 +604,10 @@ def emit_singles(fsm: dict) -> tuple[dict[str, str], list[str]]:
         w("    FORBIDDEN: ClassVar[tuple[str, ...]] = ()")
         w(f"    DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = "
           f"{ {k: tuple(vv) for k, vv in domains.items()} !r}")
+        pairs = {k: {"field": v["field"],
+                     "allowed": {kk: tuple(vv) for kk, vv in v["allowed"].items()}}
+                 for k, v in pair_rules.items()}
+        w(f"    PAIR_RULES: ClassVar[Mapping[str, Mapping[str, object]]] = {pairs!r}")
         w("")
         for f in req:
             if f in domains:
@@ -502,16 +623,24 @@ def emit_singles(fsm: dict) -> tuple[dict[str, str], list[str]]:
             w(f"        if self.{f} not in self.DOMAINS[{f!r}]:")
             w(f"            raise ValueError(f\"{cls_name}.{f}: unknown value \"")
             w(f"                             f\"{{self.{f}!r}} outside the closed domain\")")
+        for key, rule in pair_rules.items():
+            other = rule["field"]
+            w(f"        _allowed = self.PAIR_RULES[{key!r}]['allowed'].get(self.{key})")
+            w(f"        if _allowed is not None and self.{other} not in _allowed:")
+            w(f"            raise ValueError(")
+            w(f"                f\"{cls_name}: {key}={{self.{key}!r}} admits \"")
+            w(f"                f\"{other} {{_allowed!r}}, got {{self.{other}!r}}\")")
         w("")
 
     for event_name, spec in fsm["events"]["singles"].items():
         domains = {key[:-len("_domain")]: list(val)
                    for key, val in spec.items() if key.endswith("_domain")}
         one(event_name, camel(event_name), list(spec["required"]),
-            list(spec.get("optional", [])), domains)
+            list(spec.get("optional", [])), domains,
+            dict(spec.get("field_pair_rules", {})))
     for v in fsm["events"]["unions"]["classification_evaluated"]["variants"]:
         one(f"classification_evaluated/{v['name']}", v["name"],
-            list(v["required"]), [], {})
+            list(v["required"]), [], {}, {})
     w("SINGLE_EVENTS: Mapping[str, type] = {")
     for event_name, cls_name in classes.items():
         w(f"    \"{event_name}\": {cls_name},")
@@ -648,15 +777,26 @@ _ENUM_WIRE_FIELDS: Mapping[str, type] = {
 }
 _INT_WIRE_FIELDS = frozenset({"schema_major", "schema_minor", "duration_ms"})
 
+# Audit timestamps are RFC 3339 UTC — offset-bearing so records are orderable
+# across hosts; anything else is a schema violation.
+_TS_RE = re.compile(
+    r"^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$")
+
 
 def _py_field(f: str) -> str:
     return FIELD_NAME_MAP.get(f, f)
 
 
+def _short(value: object, limit: int = 60) -> str:
+    """Journal-safe rendering: halt details must not dump whole payloads."""
+    text = repr(value)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 def _validate_event_fields(event: object) -> None:
     """Shared __post_init__ validation: required fields present with the
-    right type (never coerced), enum fields are enum INSTANCES, the audit
-    from_state names a legal FROM state. Raises ValueError."""
+    right type (never coerced), enum fields are enum INSTANCES, schema_major
+    inside the supported range, ts RFC 3339 UTC. Raises ValueError."""
     cls = type(event)
     name = cls.__name__
     for f in cls.REQUIRED:
@@ -665,32 +805,52 @@ def _validate_event_fields(event: object) -> None:
         value = getattr(event, _py_field(f), None)
         if value is not None:
             _validate_field_value(name, f, value, required=False)
-    from_states = getattr(cls, "FROM_STATES", None)
-    if from_states is not None:
-        from_state = event.from_state
-        if from_state not in from_states:
-            raise ValueError(
-                f"{name}.from_state {from_state!r} not in {from_states!r}")
+
+
+def _validate_row_audit_fields(event: object) -> None:
+    """§9 audit fields validated against the variant's row: from ∈
+    FROM_STATES, trigger_event == the row's trigger, to == the row's target
+    (== from on `unchanged` no-op rows). Raises ValueError."""
+    cls = type(event)
+    name = cls.__name__
+    if event.from_state not in cls.FROM_STATES:
+        raise ValueError(
+            f"{name}.from_state {event.from_state!r} not in {cls.FROM_STATES!r}")
+    if event.trigger_event != cls.TRIGGER:
+        raise ValueError(
+            f"{name}.trigger_event {event.trigger_event!r} contradicts the "
+            f"row's trigger {cls.TRIGGER!r} — a mis-tagged writer halts")
+    want_to = event.from_state if cls.TO_STATE == "unchanged" else cls.TO_STATE
+    if event.to_state != want_to:
+        raise ValueError(
+            f"{name}.to {event.to_state!r} contradicts the row's {want_to!r}")
 
 
 def _validate_field_value(name: str, f: str, value: object, required: bool) -> None:
     enum_t = _ENUM_WIRE_FIELDS.get(f)
     if enum_t is not None:
         if not isinstance(value, enum_t):
-            raise ValueError(
-                f"{name}.{f} must be a {enum_t.__name__} instance, got {value!r}")
+            raise ValueError(f"{name}.{f} must be a {enum_t.__name__} "
+                             f"instance, got {_short(value)}")
         return
     if f in _INT_WIRE_FIELDS:
         if isinstance(value, bool) or not isinstance(value, int):
-            raise ValueError(f"{name}.{f} must be an int, got {value!r}")
+            raise ValueError(f"{name}.{f} must be an int, got {_short(value)}")
+        if f == "schema_major" and value not in SUPPORTED_SCHEMA_MAJORS:
+            raise ValueError(
+                f"{name}.schema_major {value} outside the supported set "
+                f"{sorted(SUPPORTED_SCHEMA_MAJORS)} — unknown major halts (§9)")
         return
     if not isinstance(value, str) or (required and value == ""):
-        raise ValueError(f"{name}.{f} must be a non-empty str, got {value!r}")
+        raise ValueError(f"{name}.{f} must be a non-empty str, got {_short(value)}")
+    if f == "ts" and not _TS_RE.match(value):
+        raise ValueError(f"{name}.ts {_short(value)} is not RFC 3339 UTC")
 
 
 def _convert_wire_value(cls_name: str, f: str, value: object) -> object:
-    """Convert one wire value to the typed field — unknown enum values and
-    wrong types raise WireViolation (typed halt), never KeyError."""
+    """Convert one wire value to the typed field — unknown enum values,
+    unsupported majors and wrong types raise WireViolation (typed halt),
+    never KeyError."""
     enum_t = _ENUM_WIRE_FIELDS.get(f)
     if enum_t is not None:
         if isinstance(value, enum_t):
@@ -699,23 +859,34 @@ def _convert_wire_value(cls_name: str, f: str, value: object) -> object:
             return enum_t(str(value))
         except ValueError:
             raise WireViolation(
-                f"{cls_name}.{f}: unknown value {value!r} for closed enum "
-                f"{enum_t.__name__} — halts like an unknown variant (§9)") from None
+                f"{cls_name}.{f}: unknown value {_short(value)} for closed "
+                f"enum {enum_t.__name__} — halts like an unknown variant "
+                f"(§9)") from None
     if f in _INT_WIRE_FIELDS:
         if isinstance(value, bool) or not isinstance(value, int):
-            raise WireViolation(f"{cls_name}.{f}: must be an int, got {value!r}")
+            raise WireViolation(f"{cls_name}.{f}: must be an int, "
+                                f"got {_short(value)}")
+        if f == "schema_major" and value not in SUPPORTED_SCHEMA_MAJORS:
+            raise WireViolation(
+                f"{cls_name}.schema_major: {value} outside the supported set "
+                f"{sorted(SUPPORTED_SCHEMA_MAJORS)} — unknown major halts (§9)")
         return value
     if not isinstance(value, str) or value == "":
-        raise WireViolation(f"{cls_name}.{f}: must be a non-empty str, got {value!r}")
+        raise WireViolation(f"{cls_name}.{f}: must be a non-empty str, "
+                            f"got {_short(value)}")
+    if f == "ts" and not _TS_RE.match(value):
+        raise WireViolation(f"{cls_name}.ts: {_short(value)} is not RFC 3339 UTC")
     return value
 
 
 def build_wire_event(variants: Mapping[str, type], ev: Mapping[str, object]) -> object:
     """Construct a typed event from a wire dict, fail-closed: unknown
-    variant, missing REQUIRED, present FORBIDDEN, or unknown enum value ⇒
-    WireViolation (⇒ SCHEMA_MAJOR_UNKNOWN halt); required fields are NEVER
-    defaulted. Guard breaches inside the variant's __post_init__ surface as
-    ValueError (⇒ ILLEGAL_TRANSITION)."""
+    variant, missing REQUIRED (trigger_event/from/to included — §9 audit
+    fields are real wire fields), present FORBIDDEN, unknown enum value or
+    unsupported schema_major ⇒ WireViolation (⇒ SCHEMA_MAJOR_UNKNOWN halt);
+    required fields are NEVER defaulted. A trigger/to contradiction with the
+    variant's row is the same schema-violation class. Guard breaches inside
+    __post_init__ surface as ValueError (⇒ ILLEGAL_TRANSITION)."""
     variant = ev.get("variant")
     cls = variants.get(str(variant))
     if cls is None:
@@ -723,14 +894,7 @@ def build_wire_event(variants: Mapping[str, type], ev: Mapping[str, object]) -> 
             f"unknown event variant {variant!r} "
             f"(event_id {ev.get('event_id')!r}) — unknown variants halt (§9)")
     name = cls.__name__
-    if ev.get("from") is None:
-        raise WireViolation(f"{name}: required audit field 'from' absent "
-                            f"(event_id {ev.get('event_id')!r})")
-    if cls.TO_STATE != "unchanged" and ev.get("to") not in (None, cls.TO_STATE):
-        raise WireViolation(
-            f"{name}: audit 'to' {ev.get('to')!r} contradicts the row's "
-            f"{cls.TO_STATE!r} (event_id {ev.get('event_id')!r})")
-    kwargs: dict = {"from_state": str(ev["from"])}
+    kwargs: dict = {}
     for f in cls.REQUIRED:
         value = ev.get(f)
         if value is None:
@@ -747,6 +911,16 @@ def build_wire_event(variants: Mapping[str, type], ev: Mapping[str, object]) -> 
             raise WireViolation(
                 f"{name}: forbidden field {f!r} present "
                 f"(event_id {ev.get('event_id')!r})")
+    if kwargs.get("trigger_event") != cls.TRIGGER:
+        raise WireViolation(
+            f"{name}: trigger_event {ev.get('trigger_event')!r} contradicts "
+            f"the variant's row trigger {cls.TRIGGER!r} "
+            f"(event_id {ev.get('event_id')!r}) — mis-tagged writer")
+    want_to = kwargs.get("from_state") if cls.TO_STATE == "unchanged" else cls.TO_STATE
+    if kwargs.get("to_state") != want_to:
+        raise WireViolation(
+            f"{name}: audit 'to' {ev.get('to')!r} contradicts the row's "
+            f"{want_to!r} (event_id {ev.get('event_id')!r})")
     return cls(**kwargs)
 '''
 
@@ -825,6 +999,11 @@ def apply_section_b(state: MachineStateB, event: object) -> MachineStateB:
     if isinstance(event, HoldReconcileAccept):
         return MachineStateB(SectionBState.RELEASED, event.disposition)
     if isinstance(event, HoldReconcileRejectRestoreHold):
+        # "as the HELD_FOREIGN rows"; from STANDING the resolved reading is
+        # schema-driven (STANDING_REJECT_RESTORE_TARGET_NAME — the single
+        # place to change if the author ratifies the other reading).
+        if state.name is SectionBState.STANDING:
+            return MachineStateB(SectionBState[STANDING_REJECT_RESTORE_TARGET_NAME])
         return MachineStateB(SectionBState.HELD_FOREIGN)
     if isinstance(event, HoldReconcileStanding):
         return MachineStateB(SectionBState.STANDING)
@@ -863,10 +1042,99 @@ def derive_recovery_event_id(base_key: str, movement_id: str) -> str:
     return hashlib.sha256(preimage.encode("utf-8")).hexdigest()
 
 
+def derive_matched_delta_digest(base_key: str, ref: str, delta_old_oid: str,
+                                delta_new_oid: str) -> str:
+    """The PR0 consistency digest binding an ACTOR_VERIFIED_AUTO release to
+    the HOLD'S OWN recorded delta (schema actor_verified_evidence). PR4's
+    webhook protocol supplies provenance; this digest makes self-asserted
+    evidence structurally checkable NOW."""
+    preimage = _preimage([
+        f"subject-base={base_key}", f"subject-ref={ref}",
+        f"subject-old={delta_old_oid}", f"subject-new={delta_new_oid}"])
+    return hashlib.sha256(preimage.encode("utf-8")).hexdigest()
+
+
+# ─── §9 shared objects (generated from schema shared_objects) ───────────────
+
+@dataclass(frozen=True)
+class RequiredClassifier:
+    """ClassifierAuthority REQUIRED variant — exact-variant equality at the
+    fence is dataclass equality over the closed union."""
+
+    config_sha256: str
+    producer_digest: str
+    contract: str
+
+    def line(self) -> str:
+        return f"required:{self.config_sha256}:{self.producer_digest}:{self.contract}"
+
+
+@dataclass(frozen=True)
+class LegacyNoClassifier:
+    """ClassifierAuthority LEGACY variant — constructible only by the LEGACY
+    factory (PR2); never compares equal to any RequiredClassifier."""
+
+    def line(self) -> str:
+        return "legacy"
+
+
+ClassifierAuthority = (RequiredClassifier, LegacyNoClassifier)
+
+
+@dataclass(frozen=True)
+class AuthorityFingerprint:
+    """§9: one generated object the §6.0 fence compares; the classifier sum
+    carries digests/contract in the REQUIRED variant."""
+
+    protocol_epoch: str
+    base_epoch: str
+    subject_digest: str
+    roster_digest: str
+    classifier: object
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.classifier, ClassifierAuthority):
+            raise ValueError(
+                f"AuthorityFingerprint.classifier must be a ClassifierAuthority "
+                f"variant, got {type(self.classifier).__name__}")
+
+
+def subject_digest(*, repo_node_id: str, target: str, base_oid: str,
+                   head_oid: str, diff_sha256: str, classifier: object,
+                   unit_digest: Optional[str] = None) -> str:
+    """§9 canonical subject_digest preimage — exact tag bytes, UTF-8 lines,
+    newline-joined, SHA-256. `target` is the full target line
+    (`pr:<pr_node_id>:<target_ref>` or `ref:<target_ref>` — build with
+    target_pr()/target_ref())."""
+    if not isinstance(classifier, ClassifierAuthority):
+        raise ValueError("subject_digest: classifier must be a "
+                         "ClassifierAuthority variant")
+    preimage = _preimage([
+        f"repo={repo_node_id}", f"target={target}", f"base={base_oid}",
+        f"head={head_oid}", f"diff={diff_sha256}",
+        f"classifier={classifier.line()}",
+        f"unit={unit_digest if unit_digest is not None else 'none'}"])
+    return hashlib.sha256(preimage.encode("utf-8")).hexdigest()
+
+
+def target_pr(pr_node_id: str, target_ref: str) -> str:
+    """PR subjects carry BOTH fields — a retarget changes the digest."""
+    return f"pr:{pr_node_id}:{target_ref}"
+
+
+def target_ref(ref: str) -> str:
+    return f"ref:{ref}"
+
+
 # ─── reducers (T19 skeletons; PR4 hardens against live carriers) ────────────
 
 def _canonical(d: Mapping[str, object]) -> str:
-    return json.dumps({k: v for k, v in d.items() if k != "branch"},
+    """Byte-identity core for duplicate-event_id comparison. `branch` (which
+    carrier copy) and the per-ISSUER envelope fields ts/run_id/trace_id are
+    excluded so independently-issued twins of a DERIVED event (cold-start
+    recovery) converge; every semantic field still diverges loudly."""
+    drop = {"branch", "ts", "run_id", "trace_id"}
+    return json.dumps({k: v for k, v in d.items() if k not in drop},
                       sort_keys=True, separators=(",", ":"))
 
 
@@ -882,38 +1150,93 @@ def _halt(code: BoundaryErrorCode, detail: str,
 
 
 class _DivergentDuplicate(Exception):
-    def __init__(self, halt: dict):
+    def __init__(self, halt: dict, bases: frozenset):
         super().__init__(halt["detail"])
         self.halt = halt
+        self.bases = bases
 
 
 class _Dedup:
     """Duplicate-event_id absorption with byte-identical enforcement —
-    divergence is an integrity violation (EVENT_PAYLOAD_DIVERGENT). Shared
-    by both reducers AND the epoch fold so the contract cannot drift
-    (panel finding: the fold silently kept the first payload)."""
+    divergence is an integrity violation (EVENT_PAYLOAD_DIVERGENT) that
+    halts EVERY base a copy touched (cross-base reuse is not
+    order-dependent). Shared by both reducers AND the epoch fold."""
 
     def __init__(self) -> None:
-        self._seen: dict[str, str] = {}
+        self._seen: dict[str, tuple[str, str]] = {}
 
-    def check(self, ev: Mapping[str, object]) -> str:
+    def check(self, ev: Mapping[str, object], base: str) -> str:
         """'new' | 'dup'; raises _DivergentDuplicate on divergence or a
         missing envelope event_id."""
         eid = ev.get("event_id")
         if not isinstance(eid, str) or eid == "":
             raise _DivergentDuplicate(_halt(
                 BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
-                f"event missing required envelope field 'event_id': {ev!r}", ev))
+                f"event missing required envelope field 'event_id' "
+                f"(fields present: {sorted(ev)})", ev), frozenset({base}))
         canon = _canonical(ev)
         if eid in self._seen:
-            if self._seen[eid] != canon:
+            seen_canon, seen_base = self._seen[eid]
+            if seen_canon != canon:
                 raise _DivergentDuplicate(_halt(
                     BoundaryErrorCode.EVENT_PAYLOAD_DIVERGENT,
                     f"event_id {eid!r} has divergent payloads — integrity "
-                    f"violation, halt this base", ev))
+                    f"violation, halt this base", ev),
+                    frozenset({base, seen_base}))
             return "dup"
-        self._seen[eid] = canon
+        self._seen[eid] = (canon, base)
         return "new"
+
+
+def _per_base_counts(events: Sequence[Mapping[str, object]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for ev in events:
+        base = str(ev.get("base_key") or "")
+        counts[base] = counts.get(base, 0) + 1
+    return counts
+
+
+def _ceiling_halts(events: Sequence[Mapping[str, object]]) -> dict[str, dict]:
+    """RECOVERY_CEILING per base_key — one busy base never halts another."""
+    return {base: _halt(BoundaryErrorCode.RECOVERY_CEILING,
+                        f"{base or '<no base_key>'}: {n} events exceed the "
+                        f"recovery admission ceiling ({RECOVERY_CEILING_EVENTS})")
+            for base, n in _per_base_counts(events).items()
+            if n > RECOVERY_CEILING_EVENTS}
+
+
+def _intake(dedup: _Dedup, ev: Mapping[str, object], family: str,
+            variants: Mapping[str, type], base_halts: dict[str, dict]):
+    """Shared reducer intake: family filter (§6.0 — 'each reduce filters by
+    event schema name'; missing family is a schema violation, the OTHER
+    family is filtered, not halted), dedup, fail-closed construction.
+    Returns the typed event, or None when the event was consumed (dup /
+    other family / halt recorded)."""
+    base_hint = str(ev.get("base_key") or "")
+    if base_hint in base_halts:
+        return None  # base already halted — isolation, not suppression
+    fam = ev.get("family")
+    if fam is None:
+        base_halts.setdefault(base_hint, _halt(
+            BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+            f"event missing required field 'family' — the reduce filters by "
+            f"event schema name (§6.0) (event_id {ev.get('event_id')!r})", ev))
+        return None
+    if fam != family:
+        return None  # the other stream's events on a shared carrier
+    try:
+        if dedup.check(ev, base_hint) == "dup":
+            return None  # dual-append twin / redelivered copy
+        return build_wire_event(variants, ev)
+    except _DivergentDuplicate as exc:
+        for b in exc.bases:
+            base_halts.setdefault(b, exc.halt)
+    except WireViolation as exc:
+        base_halts.setdefault(base_hint, _halt(exc.code, exc.detail, ev))
+    except ValueError as exc:
+        base_halts.setdefault(base_hint, _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION, str(exc), ev))
+    return None
 
 
 def _fmt_a(st: MachineStateA, via_recovery: bool = False) -> dict:
@@ -926,90 +1249,95 @@ def reduce_section_a(events: Sequence[Mapping[str, object]]) -> dict:
     """Reduce a durable effect_lifecycle stream through the PROJECTION
     machine (durable states + composed edges), never the live table
     (round 14, codex) — reconcile steps, whose durable states ARE live
-    states, delegate to apply_section_a. Partitioned by base_key.
+    states, delegate to apply_section_a.
 
-    Uniform result shape — success and halt both carry
-    {movements, recovery_appends, halted}; a halted base is never
-    indistinguishable from an empty one, and halt results carry the state
-    reduced so far.
+    Halt isolation is PER base_key: one bad base's halt never suppresses
+    results or recovery appends for healthy bases, and the recovery
+    admission ceiling is counted per base. Result shape is uniform:
+    {movements, recovery_appends, halts} with halts == {} when clean and
+    partial reduced state present for halted bases.
 
     Cold-start step (5): an open PREPARED with no hold and no terminal gets
     a dual-appended {crash_recovery, PREPARED → HELD} with a DERIVED
     event_id; resume-submit is ILLEGAL (round 15, grok)."""
     movements: dict[str, dict[str, MachineStateA]] = {}
     order: list[tuple[str, str]] = []
-
-    def finish(halted: Optional[dict]) -> dict:
-        out: dict[str, dict] = {}
-        recovery: list[dict] = []
-        for base, mid in order:
-            st = movements[base][mid]
-            if halted is None and st.name is SectionAState.PREPARED:
-                recovery.append({
-                    "event_id": derive_recovery_event_id(base, mid),
-                    "movement_id": mid, "base_key": base,
-                    "trigger_event": "crash_recovery",
-                    "from": "PREPARED", "to": "HELD"})
-                out.setdefault(base, {})[mid] = _fmt_a(
-                    MachineStateA(SectionAState.HELD), via_recovery=True)
-            else:
-                out.setdefault(base, {})[mid] = _fmt_a(st)
-        return {"movements": out, "recovery_appends": recovery, "halted": halted}
-
-    if len(events) > RECOVERY_CEILING_EVENTS:
-        return finish(_halt(BoundaryErrorCode.RECOVERY_CEILING,
-                            f"{len(events)} events exceed the recovery "
-                            f"admission ceiling ({RECOVERY_CEILING_EVENTS})"))
+    base_halts: dict[str, dict] = _ceiling_halts(events)
     dedup = _Dedup()
     for ev in events:
-        try:
-            if dedup.check(ev) == "dup":
-                continue  # dual-append twin / redelivered copy
-            event = build_wire_event(EFFECT_VARIANTS, ev)
-        except _DivergentDuplicate as exc:
-            return finish(exc.halt)
-        except WireViolation as exc:
-            return finish(_halt(exc.code, exc.detail, ev))
-        except ValueError as exc:
-            return finish(_halt(BoundaryErrorCode.ILLEGAL_TRANSITION, str(exc), ev))
-        cls = type(event)
-        if cls.TO_STATE in MEMORY_ONLY:
-            return finish(_halt(
-                BoundaryErrorCode.ILLEGAL_TRANSITION,
-                f"memory-only transition {cls.__name__!r} in the durable "
-                f"stream (event_id {ev.get('event_id')!r}) — resume-submit "
-                f"is ILLEGAL", ev))
+        event = _intake(dedup, ev, "effect_lifecycle", EFFECT_VARIANTS, base_halts)
+        if event is None:
+            continue
         base, mid = event.base_key, event.movement_id
-        cur = movements.get(base, {}).get(mid, GENESIS_A)
-        if mid not in movements.get(base, {}):
-            movements.setdefault(base, {})[mid] = GENESIS_A
-            order.append((base, mid))
-        # projection validation: audit `from` must sit on a composed path out
-        # of the current durable state, and the durable pair must be an edge.
-        frontier = PROJECTION_REACHABLE.get(cur.name.value, ())
-        if event.from_state not in frontier:
-            return finish(_halt(
-                BoundaryErrorCode.ILLEGAL_TRANSITION,
-                f"movement {mid}@{base}: durable {cls.__name__!r} audit "
-                f"from={event.from_state!r} unreachable from durable state "
-                f"{cur.name.value} (event_id {ev.get('event_id')!r})", ev))
-        if (cur.name.value, cls.TO_STATE) not in PROJECTION_EDGES:
-            return finish(_halt(
-                BoundaryErrorCode.ILLEGAL_TRANSITION,
-                f"movement {mid}@{base}: no projection edge "
-                f"{cur.name.value} → {cls.TO_STATE} "
-                f"({cls.__name__!r}, event_id {ev.get('event_id')!r})", ev))
-        if cls.TRIGGER == "operator_reconcile":
-            # durable HELD/RECONCILED are live states — delegate to the one
-            # live-table dispatch instead of re-implementing it.
-            try:
-                movements[base][mid] = apply_section_a(cur, event)
-            except IllegalTransitionError as exc:
-                return finish(_halt(BoundaryErrorCode.ILLEGAL_TRANSITION,
-                                    str(exc), ev))
+        if base in base_halts:
+            continue
+        halt = _step_section_a(movements, order, base, mid, event, ev)
+        if halt is not None:
+            base_halts[base] = halt
+    return _finish_section_a(movements, order, base_halts)
+
+
+def _step_section_a(movements, order, base: str, mid: str, event: object,
+                    ev: Mapping[str, object]) -> Optional[dict]:
+    cls = type(event)
+    if cls.TO_STATE in MEMORY_ONLY:
+        return _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION,
+            f"memory-only transition {cls.__name__!r} in the durable stream "
+            f"(event_id {ev.get('event_id')!r}) — resume-submit is ILLEGAL", ev)
+    if cls.EPOCH_EFFECT == "none" and event.epoch_before != event.epoch_after:
+        return _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION,
+            f"movement {mid}@{base}: row {cls.ROW!r} declares no epoch effect "
+            f"but the event advances {event.epoch_before}→{event.epoch_after} "
+            f"(event_id {ev.get('event_id')!r})", ev)
+    cur = movements.get(base, {}).get(mid, GENESIS_A)
+    if mid not in movements.get(base, {}):
+        movements.setdefault(base, {})[mid] = GENESIS_A
+        order.append((base, mid))
+    # projection validation: audit `from` must sit on a composed path out
+    # of the current durable state, and the durable pair must be an edge.
+    frontier = PROJECTION_REACHABLE.get(cur.name.value, ())
+    if event.from_state not in frontier:
+        return _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION,
+            f"movement {mid}@{base}: durable {cls.__name__!r} audit "
+            f"from={event.from_state!r} unreachable from durable state "
+            f"{cur.name.value} (event_id {ev.get('event_id')!r})", ev)
+    if (cur.name.value, cls.TO_STATE) not in PROJECTION_EDGES:
+        return _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION,
+            f"movement {mid}@{base}: no projection edge "
+            f"{cur.name.value} → {cls.TO_STATE} "
+            f"({cls.__name__!r}, event_id {ev.get('event_id')!r})", ev)
+    if cls.TRIGGER == "operator_reconcile":
+        # durable HELD/RECONCILED are live states — delegate to the one
+        # live-table dispatch instead of re-implementing it.
+        try:
+            movements[base][mid] = apply_section_a(cur, event)
+        except IllegalTransitionError as exc:
+            return _halt(BoundaryErrorCode.ILLEGAL_TRANSITION, str(exc), ev)
+    else:
+        movements[base][mid] = MachineStateA(SectionAState[cls.TO_STATE])
+    return None
+
+
+def _finish_section_a(movements, order, base_halts) -> dict:
+    out: dict[str, dict] = {}
+    recovery: list[dict] = []
+    for base, mid in order:
+        st = movements[base][mid]
+        if base not in base_halts and st.name is SectionAState.PREPARED:
+            recovery.append({
+                "event_id": derive_recovery_event_id(base, mid),
+                "movement_id": mid, "base_key": base,
+                "trigger_event": "crash_recovery",
+                "from": "PREPARED", "to": "HELD"})
+            out.setdefault(base, {})[mid] = _fmt_a(
+                MachineStateA(SectionAState.HELD), via_recovery=True)
         else:
-            movements[base][mid] = MachineStateA(SectionAState[cls.TO_STATE])
-    return finish(None)
+            out.setdefault(base, {})[mid] = _fmt_a(st)
+    return {"movements": out, "recovery_appends": recovery, "halts": base_halts}
 
 
 class _HoldBook:
@@ -1051,9 +1379,9 @@ _OBSERVE_EXPECTED = {"redelivery": "ObserveDeltaRedelivery",
 def _admit_hold_event(book: _HoldBook, base: str, event: object,
                       ev: Mapping[str, object]):
     """Resolve which hold an event addresses: the §6.0 apply order for
-    observe_delta (mis-tagged variants and contradicted hold_ids halt),
-    reference lookup for actor/reconcile events (unknown holds halt).
-    Returns (hid, cur, halt)."""
+    observe_delta (mis-tagged variants, contradicted hold_ids AND
+    contradicted delta tuples halt), reference lookup for actor/reconcile
+    events (unknown holds halt). Returns (hid, cur, halt)."""
     cls = type(event)
     if cls.TRIGGER == "observe_delta":
         resolution, hid = _resolve_observe_delta(book, base, event)
@@ -1069,6 +1397,10 @@ def _admit_hold_event(book: _HoldBook, base: str, event: object,
                 f"declared hold_id {event.hold_id!r} contradicts the "
                 f"derived/resolved {hid!r} "
                 f"(event_id {ev.get('event_id')!r})", ev)
+        if resolution in ("redelivery", "record"):
+            halt = _check_delta_against_hold(book, hid, event, ev)
+            if halt is not None:
+                return None, None, halt
         return hid, book.holds.get(hid, GENESIS_B), None
     hid = event.hold_id
     cur = book.holds.get(hid)
@@ -1078,6 +1410,53 @@ def _admit_hold_event(book: _HoldBook, base: str, event: object,
             f"{cls.__name__!r} references unknown hold {hid!r} "
             f"(event_id {ev.get('event_id')!r})", ev)
     return hid, cur, None
+
+
+def _check_delta_against_hold(book: _HoldBook, hid: str, event: object,
+                              ev: Mapping[str, object]) -> Optional[dict]:
+    """A redelivery/record whose DECLARED delta contradicts the hold its
+    source_delivery_id resolves to is an integrity halt — never absorbed as
+    a no-op (fail-open otherwise)."""
+    recorded = book.hold_delta.get(hid)
+    if recorded is None:
+        return None
+    declared = (event.ref, event.delta_old_oid, event.delta_new_oid)
+    for name, decl, rec in zip(("ref", "delta_old_oid", "delta_new_oid"),
+                               declared, recorded):
+        if decl is not None and rec is not None and decl != rec:
+            return _halt(
+                BoundaryErrorCode.ILLEGAL_TRANSITION,
+                f"hold {hid}: declared {name} {decl!r} contradicts the "
+                f"hold's recorded delta {rec!r} "
+                f"(event_id {ev.get('event_id')!r})", ev)
+    return None
+
+
+def _check_actor_verified(book: _HoldBook, base: str, hid: str, event: object,
+                          ev: Mapping[str, object]) -> Optional[dict]:
+    """PR0's structurally-possible ACTOR_VERIFIED_AUTO cross-checks (schema
+    actor_verified_evidence): the release's source_delivery_id must resolve
+    to a delivery recorded ON this hold, and matched_subject_digest must
+    equal the digest derived from the HOLD'S OWN recorded delta. These
+    validate CONSISTENCY, not provenance — the §6.0 webhook verification
+    protocol that establishes provenance is wired in PR4; under SHARED the
+    mode gate already refuses the release."""
+    if event.source_delivery_id not in book.deliveries.get(hid, []):
+        return _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION,
+            f"hold {hid}: ACTOR_VERIFIED_AUTO source_delivery_id "
+            f"{event.source_delivery_id!r} is not a delivery recorded on "
+            f"this hold — self-asserted evidence refused "
+            f"(event_id {ev.get('event_id')!r})", ev)
+    ref, old, new = book.hold_delta[hid]
+    want = derive_matched_delta_digest(base, ref or "", old or "", new or "")
+    if event.matched_subject_digest != want:
+        return _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION,
+            f"hold {hid}: matched_subject_digest does not derive from the "
+            f"hold's recorded delta — self-asserted evidence refused "
+            f"(event_id {ev.get('event_id')!r})", ev)
+    return None
 
 
 def _record_hold_outcome(book: _HoldBook, hid: str, event: object,
@@ -1104,99 +1483,109 @@ def _record_hold_outcome(book: _HoldBook, hid: str, event: object,
 def reduce_section_b(events: Sequence[Mapping[str, object]]) -> dict:
     """Reduce a hold_lifecycle stream into section-B states per
     (base_key, hold_id), implementing §6.0's observe_delta apply order and
-    hold_id derivation for real: the reducer resolves the hold; an event
-    whose variant tag contradicts the resolution, or whose declared hold_id
-    contradicts the derivation, is an integrity halt — fail closed on
-    mis-tagged writers. Redelivery semantics (rounds 17–20): the same
-    source_delivery_id maps to the same hold_id regardless of state; a
-    genuinely NEW delivery after RELEASED derives the next occurrence and
-    parks again. Uniform result shape as reduce_section_a."""
+    hold_id derivation for real. Halt isolation and ceiling are PER
+    base_key (uniform shape: {holds, halts}).
+
+    ACTOR_VERIFIED_AUTO releases are cross-checked against the hold's own
+    record (delivery membership + delta-derived digest) — this reducer
+    validates CONSISTENCY, not provenance; provenance is PR4's webhook
+    protocol (schema actor_verified_evidence). Redelivery semantics
+    (rounds 17–20): same source_delivery_id ⇒ same hold regardless of
+    state; the no-op rows are state-independent, so their audit `from` is
+    validated against FROM_STATES only (a reconcile racing the append must
+    not turn an idempotent no-op into a halt)."""
     books: dict[str, _HoldBook] = {}
     base_order: list[str] = []
-
-    def finish(halted: Optional[dict]) -> dict:
-        out: dict[str, dict] = {}
-        for base in base_order:
-            book = books[base]
-            out[base] = {
-                hid: {"state": book.holds[hid].name.value,
-                      "disposition": (book.holds[hid].disposition.value
-                                      if book.holds[hid].disposition else None),
-                      "deliveries": book.deliveries.get(hid, [])}
-                for hid in book.order}
-        return {"holds": out, "halted": halted}
-
-    if len(events) > RECOVERY_CEILING_EVENTS:
-        return finish(_halt(BoundaryErrorCode.RECOVERY_CEILING,
-                            f"{len(events)} events exceed the recovery "
-                            f"admission ceiling ({RECOVERY_CEILING_EVENTS})"))
+    base_halts: dict[str, dict] = _ceiling_halts(events)
     dedup = _Dedup()
     for ev in events:
-        try:
-            if dedup.check(ev) == "dup":
-                continue
-            event = build_wire_event(HOLD_VARIANTS, ev)
-        except _DivergentDuplicate as exc:
-            return finish(exc.halt)
-        except WireViolation as exc:
-            return finish(_halt(exc.code, exc.detail, ev))
-        except ValueError as exc:
-            return finish(_halt(BoundaryErrorCode.ILLEGAL_TRANSITION, str(exc), ev))
+        event = _intake(dedup, ev, "hold_lifecycle", HOLD_VARIANTS, base_halts)
+        if event is None:
+            continue
         base = event.base_key
+        if base in base_halts:
+            continue
         book = books.get(base)
         if book is None:
             book = books[base] = _HoldBook()
             base_order.append(base)
-        hid, cur, halt = _admit_hold_event(book, base, event, ev)
+        halt = _step_section_b(book, base, event, ev)
         if halt is not None:
-            return finish(halt)
-        if event.from_state != cur.name.value:
-            return finish(_halt(
-                BoundaryErrorCode.ILLEGAL_TRANSITION,
-                f"hold {hid}: audit from={event.from_state!r} contradicts "
-                f"the reduced state {cur.name.value} "
-                f"(event_id {ev.get('event_id')!r})", ev))
-        try:
-            new = apply_section_b(cur, event)
-        except IllegalTransitionError as exc:
-            return finish(_halt(BoundaryErrorCode.ILLEGAL_TRANSITION, str(exc), ev))
-        _record_hold_outcome(book, hid, event, cur, new)
-    return finish(None)
+            base_halts[base] = halt
+    out: dict[str, dict] = {}
+    for base in base_order:
+        book = books[base]
+        out[base] = {
+            hid: {"state": book.holds[hid].name.value,
+                  "disposition": (book.holds[hid].disposition.value
+                                  if book.holds[hid].disposition else None),
+                  "deliveries": book.deliveries.get(hid, [])}
+            for hid in book.order}
+    return {"holds": out, "halts": base_halts}
+
+
+def _step_section_b(book: _HoldBook, base: str, event: object,
+                    ev: Mapping[str, object]) -> Optional[dict]:
+    cls = type(event)
+    if cls.EPOCH_EFFECT == "none" and event.epoch_before != event.epoch_after:
+        return _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION,
+            f"{base}: row {cls.ROW!r} declares no epoch effect but the event "
+            f"advances {event.epoch_before}→{event.epoch_after} "
+            f"(event_id {ev.get('event_id')!r})", ev)
+    hid, cur, halt = _admit_hold_event(book, base, event, ev)
+    if halt is not None:
+        return halt
+    # The `unchanged` no-op rows are state-independent by design — their
+    # audit `from` is already constrained to FROM_STATES at construction;
+    # every state-changing row must name the reduced state exactly.
+    if cls.TO_STATE != "unchanged" and event.from_state != cur.name.value:
+        return _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION,
+            f"hold {hid}: audit from={event.from_state!r} contradicts the "
+            f"reduced state {cur.name.value} "
+            f"(event_id {ev.get('event_id')!r})", ev)
+    if isinstance(event, ActorVerifiedAuto):
+        halt = _check_actor_verified(book, base, hid, event, ev)
+        if halt is not None:
+            return halt
+    try:
+        new = apply_section_b(cur, event)
+    except IllegalTransitionError as exc:
+        return _halt(BoundaryErrorCode.ILLEGAL_TRANSITION, str(exc), ev)
+    _record_hold_outcome(book, hid, event, cur, new)
+    return None
 
 
 def fold_epochs(events: Sequence[Mapping[str, object]],
                 anchors: Mapping[str, str]) -> dict:
-    """The §6.0 recovery-step-(3) epoch fold, per base_key: edges are only
-    epoch-ADVANCING transitions (epoch_before ≠ epoch_after), deduplicated
-    by event_id (divergent duplicates halt — the same _Dedup contract as
-    the reducers), walked from the protocol_genesis anchor consuming unused
-    edges. O(E): edges are bucketed by epoch_before once. Exactly one
-    candidate successor continues; zero with no unused edges is the valid
-    tail; zero WITH unused edges is a gap ⇒ halt; more than one is a fork
-    ⇒ halt; cycles or reused epochs ⇒ halt. A base that has edges but NO
-    anchor is a typed halt, never silently dropped. Halt details name the
-    offending epochs and event_ids."""
-    if len(events) > RECOVERY_CEILING_EVENTS:
-        return {base: {"status": "halt", "epoch": anchor,
-                       "halt": _halt(BoundaryErrorCode.RECOVERY_CEILING,
-                                     f"{len(events)} events exceed the "
-                                     f"recovery admission ceiling "
-                                     f"({RECOVERY_CEILING_EVENTS})")}
-                for base, anchor in sorted(anchors.items())}
+    """The §6.0 recovery-step-(3) epoch fold, per base_key. Edges are only
+    epoch-ADVANCING transitions, but EVERY event with an event_id is
+    registered for dedup FIRST — a divergent no-effect twin halts instead
+    of silently advancing, and a cross-base reuse halts every base a copy
+    touched. Halt isolation and the recovery ceiling are per base; a base
+    with edges but no anchor is a typed halt on every path (ceiling
+    included), and a ceiling breach with empty anchors still returns an
+    explicit halt entry — never {} silently."""
+    base_halts: dict[str, dict] = _ceiling_halts(events)
     dedup = _Dedup()
     edges_by_base: dict[str, list[Mapping[str, object]]] = {}
-    base_halts: dict[str, dict] = {}
     for ev in events:
+        base = str(ev.get("base_key") or "")
+        if base in base_halts:
+            continue
+        # dedup BEFORE the no-effect filter (panel round 2: a divergent
+        # duplicate must never slip in as a legitimate edge).
+        try:
+            if dedup.check(ev, base) == "dup":
+                continue  # carrier copies of one advance share an event_id
+        except _DivergentDuplicate as exc:
+            for b in exc.bases:
+                base_halts.setdefault(b, exc.halt)
+            continue
         eb, ea = ev.get("epoch_before"), ev.get("epoch_after")
         if eb is None or ea is None or eb == ea:
             continue  # no-effect pairs are not edges (round 16, codex)
-        base = str(ev.get("base_key") or "")
-        try:
-            if dedup.check(ev) == "dup":
-                continue  # carrier copies of one advance share an event_id
-        except _DivergentDuplicate as exc:
-            base_halts.setdefault(base, exc.halt)
-            continue
         if not base:
             base_halts.setdefault("", _halt(
                 BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
@@ -1349,12 +1738,19 @@ class SeatResultRecord:
 
 def required_seats(intensity: PanelIntensity, roster: RosterSnapshot) -> tuple[str, ...]:
     """required_seats(FULL) = all roster seats; required_seats(SINGLE) =
-    {designated_single_id}; SKIP demands no seats (§5.1/§5.2)."""
+    {designated_single_id}; SKIP demands no seats (§5.1/§5.2). The dispatch
+    is EXHAUSTIVE with a raising else arm: a raw int (PanelIntensity is an
+    IntEnum, so `2 == FULL` compares true), a string or None must never
+    fall through to the permissive zero-seat value, which aggregate maps to
+    NOT_APPLICABLE and §5.2 routes to a gate-satisfying satisfaction."""
     if intensity is PanelIntensity.FULL:
         return tuple(roster.ordered_seat_ids)
     if intensity is PanelIntensity.SINGLE:
         return (roster.designated_single_id,)
-    return ()
+    if intensity is PanelIntensity.SKIP:
+        return ()
+    raise TypeError(f"required_seats(): {intensity!r} is not a PanelIntensity "
+                    f"member — the intensity domain is closed")
 
 
 def blocking(outcome: object) -> bool:
@@ -1679,8 +2075,14 @@ def build_frames(s: dict) -> dict[str, bytes]:
 
     valid = frame(policy, diff)
     body = valid[4:]
+    # TRAILING_BYTES: outer_len CONSISTENT (it counts the extra octets) but
+    # octets remain inside the body after the last declared field — distinct
+    # from trailing_data.bin, which breaks the outer-length equality first.
+    inner_trailing_body = body + b"PAD!"
     return {
         "valid_frame.bin": valid,
+        "trailing_bytes.bin": (struct.pack(">I", len(inner_trailing_body))
+                               + inner_trailing_body),
         # policy_len exceeds the frame's remaining octets (within bounds)
         "malformed_length.bin": with_policy_len(len(policy) + 4096),
         "truncation.bin": valid[: len(valid) - 7],
@@ -1737,6 +2139,14 @@ def _hold_id_for(base: str, ref: str, old: str, new: str, seq: int) -> str:
     return hashlib.sha256(preimage.encode("utf-8")).hexdigest()
 
 
+def _matched_delta_digest_for(base: str, ref: str, old: str, new: str) -> str:
+    """Mirror of the schema's actor_verified_evidence preimage — used only to
+    place consistent evidence into vector INPUTS."""
+    preimage = "\n".join([f"subject-base={base}", f"subject-ref={ref}",
+                          f"subject-old={old}", f"subject-new={new}"])
+    return hashlib.sha256(preimage.encode("utf-8")).hexdigest()
+
+
 def _recovery_id_for(base: str, movement_id: str) -> str:
     preimage = "\n".join(["recovery=crash_recovery", f"base={base}",
                           f"movement={movement_id}"])
@@ -1749,10 +2159,25 @@ def _env(eid: str) -> dict:
             "trace_id": "trace-1", "protocol_epoch": "E0"}
 
 
+# trigger_event is derived from the variant's own row so a vector never
+# hand-desynchronises the audit field from the tag it claims (the deny
+# vectors that DO desynchronise pass it explicitly).
+_A_TRIGGERS: dict[str, str] = {}
+_B_TRIGGERS: dict[str, str] = {}
+
+
+def _load_triggers(fsm: dict) -> None:
+    for fam, table in (("effect_lifecycle", _A_TRIGGERS),
+                       ("hold_lifecycle", _B_TRIGGERS)):
+        for v in fsm["events"]["unions"][fam]["variants"]:
+            table[v["name"]] = v["trigger"]
+
+
 def _ev(variant: str, eid: str, mid: str, frm: str, to: str,
         base: str = BASE1, branch: str = "state", **extra) -> dict:
     d = _env(eid)
     d.update({"family": "effect_lifecycle", "variant": variant,
+              "trigger_event": _A_TRIGGERS.get(variant, "prepare"),
               "movement_id": mid, "base_key": base, "from": frm, "to": to,
               "authority": "fp-1", "epoch_before": "E0", "epoch_after": "E0",
               "hold_effect": "NONE", "actor_context": "dispatcher",
@@ -1765,6 +2190,7 @@ def _hev(variant: str, eid: str, frm: str, to: str, base: str = BASE1,
          **extra) -> dict:
     d = _env(eid)
     d.update({"family": "hold_lifecycle", "variant": variant,
+              "trigger_event": _B_TRIGGERS.get(variant, "observe_delta"),
               "base_key": base, "from": frm, "to": to, "ref": REF1,
               "mode": "SHARED", "actor_verification": "DISPLAY_ONLY",
               "actor_display": "someone", "epoch_before": "E0",
@@ -1775,7 +2201,8 @@ def _hev(variant: str, eid: str, frm: str, to: str, base: str = BASE1,
 
 def _edge(eid: str, eb: str, ea: str, base: str = BASE1, **extra) -> dict:
     d = _env(eid)
-    d.update({"base_key": base, "epoch_before": eb, "epoch_after": ea})
+    d.update({"base_key": base, "epoch_before": eb, "epoch_after": ea,
+              "family": "effect_lifecycle"})
     d.update(extra)
     return d
 
@@ -1902,12 +2329,78 @@ def _section_a_vectors() -> dict[str, dict]:
            authorization_id="auth-2")])
     a("a_recovery_converges",
       "two independently-issued recovery appends share the DERIVED event_id "
-      "— byte-identical twins converge through dedup instead of halting",
+      "and DIFFERENT per-issuer envelopes (ts/run_id/trace_id) — the "
+      "byte-identity core excludes those, so the twins converge through "
+      "dedup instead of halting the base",
       [prep,
-       _ev("CrashRecoveryFromPrepared", _recovery_id_for(BASE1, "m1"),
-           "m1", "PREPARED", "HELD", branch="hold"),
-       _ev("CrashRecoveryFromPrepared", _recovery_id_for(BASE1, "m1"),
-           "m1", "PREPARED", "HELD", branch="state")])
+       dict(_ev("CrashRecoveryFromPrepared", _recovery_id_for(BASE1, "m1"),
+                "m1", "PREPARED", "HELD", branch="hold"),
+            ts="1970-01-01T00:00:01Z", run_id="run-A", trace_id="trace-A"),
+       dict(_ev("CrashRecoveryFromPrepared", _recovery_id_for(BASE1, "m1"),
+                "m1", "PREPARED", "HELD", branch="state"),
+            ts="1970-01-01T00:00:09Z", run_id="run-B", trace_id="trace-B")])
+    a("a_unsupported_major_deny",
+      "DENY: schema_major outside the supported set halts — the named §9 "
+      "unknown-major halt, range-checked at intake",
+      [prep, dict(_ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "EXPLAINED",
+                      new_oid="oid-new"), schema_major=2)])
+    a("a_major_zero_deny",
+      "DENY: schema_major 0 is outside the supported set",
+      [dict(prep, schema_major=0)])
+    a("a_major_99_deny",
+      "DENY: schema_major 99 is outside the supported set",
+      [dict(prep, schema_major=99)])
+    a("a_missing_to_deny",
+      "DENY: §9-REQUIRED audit field `to` absent ⇒ schema halt",
+      [prep, {k: val for k, val in
+              _ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "EXPLAINED",
+                  new_oid="oid-new").items() if k != "to"}])
+    a("a_to_contradiction_deny",
+      "DENY: audit `to` contradicting the row's target ⇒ schema halt",
+      [prep, _ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "HELD",
+                 new_oid="oid-new")])
+    a("a_trigger_variant_mismatch_deny",
+      "DENY: trigger_event contradicting the variant's row trigger — a "
+      "mis-tagged writer must not smuggle a crash variant's exemptions",
+      [prep, _ev("MoveToHoldFromPrepared", "e2", "m1", "PREPARED", "HELD",
+                 trigger_event="crash_recovery")])
+    a("a_missing_trigger_deny",
+      "DENY: §9-REQUIRED trigger_event absent ⇒ schema halt",
+      [prep, {k: val for k, val in
+              _ev("MoveToHoldFromPrepared", "e2", "m1", "PREPARED",
+                  "HELD").items() if k != "trigger_event"}])
+    a("a_missing_family_deny",
+      "DENY: the reduce filters by event schema name (§6.0) — an event "
+      "with no `family` cannot be filtered and halts its base",
+      [prep, {k: val for k, val in
+              _ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "EXPLAINED",
+                  new_oid="oid-new").items() if k != "family"}])
+    a("a_bad_ts_deny",
+      "DENY: ts outside RFC 3339 UTC — the audit trail's only time anchor "
+      "must be orderable across hosts",
+      [dict(prep, ts="yesterday-ish")])
+    a("a_none_effect_row_advances_deny",
+      "DENY: a row declaring no epoch effect cannot advance the base epoch "
+      "— per-row epoch algebra is enforced, not decorative",
+      [dict(prep, epoch_after="E1")])
+    a("a_mixed_family_filtered",
+      "the hold branch carries BOTH families (§6.0): a hold_lifecycle event "
+      "in this stream is FILTERED by schema name, never halted",
+      [prep,
+       _hev("ObserveDelta", "h9", "GENESIS", "HELD_FOREIGN",
+            delta_old_oid="o0", delta_new_oid="o1", source_delivery_id="dX"),
+       _ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "EXPLAINED",
+           new_oid="oid-new")])
+    a("a_halt_isolation_multi_base",
+      "halt isolation: one base's schema violation must not suppress the "
+      "healthy base's reduce OR its crash-recovery append — the healthy "
+      "base is left with an OPEN PREPARED precisely so the append is the "
+      "thing under test",
+      [prep,   # BASE1/m1 stays open PREPARED ⇒ must still get its append
+       _ev("Prepare", "e3", "m2", "GENESIS", "PREPARED", base=BASE2,
+           authorization_id="auth-2"),
+       dict(_ev("Explained", "e4", "m2", "EFFECT_OBSERVED", "EXPLAINED",
+                base=BASE2, new_oid="oid-x"), schema_major=7)])
     return v
 
 
@@ -1963,22 +2456,38 @@ def _section_b_vectors() -> dict[str, dict]:
        _hev("ObserveDeltaNewDeliveryOnOpenHold", "h2", "HELD_FOREIGN",
             "HELD_FOREIGN", source_delivery_id="d1", delta_old_oid="o0",
             delta_new_oid="o1")])
+    matched = _matched_delta_digest_for(BASE1, REF1, "o0", "o1")
+
+    def ava(eid: str, **over) -> dict:
+        kwargs = dict(hold_id=h0, actor_node_id="N-op",
+                      matched_subject_digest=matched,
+                      source_delivery_id="d1",
+                      actor_verification="VERIFIED_API", mode="SEPARATED",
+                      disposition="ACTOR_VERIFIED_AUTO")
+        kwargs.update(over)
+        return _hev("ActorVerifiedAuto", eid, "HELD_FOREIGN", "RELEASED",
+                    **kwargs)
+
     b("b_actor_verified_auto_separated",
-      "SEPARATED + VERIFIED_API + node id + matched subject: auto-release "
-      "as ACTOR_VERIFIED_AUTO",
-      [dict(obs, mode="SEPARATED"),
-       _hev("ActorVerifiedAuto", "h2", "HELD_FOREIGN", "RELEASED",
-            hold_id=h0, actor_node_id="N-op", matched_subject_digest="subj-1",
-            actor_verification="VERIFIED_API", mode="SEPARATED",
-            disposition="ACTOR_VERIFIED_AUTO")])
+      "SEPARATED + VERIFIED_API + node id + a delivery recorded ON this "
+      "hold + a matched digest deriving from the HOLD'S OWN delta: "
+      "auto-release as ACTOR_VERIFIED_AUTO",
+      [dict(obs, mode="SEPARATED"), ava("h2")])
     b("b_actor_verified_shared_deny",
       "DENY: under SHARED, never — the ActorVerifiedAuto event is "
       "unconstructible without SEPARATED (§6.0)",
-      [obs,
-       _hev("ActorVerifiedAuto", "h2", "HELD_FOREIGN", "RELEASED",
-            hold_id=h0, actor_node_id="N-op", matched_subject_digest="subj-1",
-            actor_verification="VERIFIED_API", mode="SHARED",
-            disposition="ACTOR_VERIFIED_AUTO")])
+      [obs, ava("h2", mode="SHARED")])
+    b("b_actor_verified_wrong_delta_digest_deny",
+      "DENY (panel round 2 CRITICAL): matched_subject_digest that does not "
+      "derive from the HOLD'S OWN recorded delta is self-asserted evidence "
+      "— refused, not honoured",
+      [dict(obs, mode="SEPARATED"),
+       ava("h2", matched_subject_digest=_matched_delta_digest_for(
+           BASE1, REF1, "o0", "SOMETHING-ELSE"))])
+    b("b_actor_verified_unresolvable_delivery_deny",
+      "DENY (panel round 2 CRITICAL): a source_delivery_id that resolves to "
+      "no delivery recorded on this hold cannot clear the auto-release gate",
+      [dict(obs, mode="SEPARATED"), ava("h2", source_delivery_id="never-seen")])
     b("b_reject_restore_hold",
       "HELD_FOREIGN × operator_reconcile(REJECT_RESTORE_HOLD) → "
       "HELD_FOREIGN (assessment recorded; further reconcile legal)",
@@ -2045,6 +2554,42 @@ def _section_b_vectors() -> dict[str, dict]:
       [_hev("ObserveDelta", "h1", "GENESIS", "HELD_FOREIGN",
             delta_old_oid="o0", delta_new_oid="o1", source_delivery_id="d1",
             hold_id="declared-wrong")])
+    b("b_redelivery_delta_contradiction_deny",
+      "DENY: a redelivery whose DECLARED delta contradicts the hold its "
+      "source_delivery_id resolves to is never absorbed as a no-op",
+      [obs,
+       _hev("ObserveDeltaRedelivery", "h2", "HELD_FOREIGN", "HELD_FOREIGN",
+            source_delivery_id="d1", delta_old_oid="o0",
+            delta_new_oid="TOTALLY-DIFFERENT")])
+    b("b_redelivery_stale_from_state",
+      "the redelivery no-op is STATE-INDEPENDENT by design: a writer that "
+      "stamped `from` before a concurrent reconcile released the hold must "
+      "not turn an idempotent no-op into a base halt (TOCTOU)",
+      [obs,
+       _hev("HoldReconcileAccept", "h2", "HELD_FOREIGN", "RELEASED",
+            hold_id=h0, disposition="ACCEPT_OURS"),
+       _hev("ObserveDeltaRedelivery", "h3", "HELD_FOREIGN", "HELD_FOREIGN",
+            source_delivery_id="d1")])
+    b("b_forbidden_authorization_id_deny",
+      "DENY: section-A parity — authorization_id is FORBIDDEN on the "
+      "section-B reconcile variants too",
+      [obs,
+       _hev("HoldReconcileAccept", "h2", "HELD_FOREIGN", "RELEASED",
+            hold_id=h0, disposition="ACCEPT_OURS",
+            authorization_id="SMUGGLED")])
+    b("b_none_effect_row_advances_deny",
+      "DENY: the section-B creation row declares `epoch effect: none` — an "
+      "observe_delta cannot advance the base epoch",
+      [dict(obs, epoch_after="E1")])
+    b("b_halt_isolation_multi_base",
+      "halt isolation: a schema violation on one base leaves the other "
+      "base's holds intact and reduced",
+      [obs,
+       _hev("ObserveDelta", "x1", "GENESIS", "HELD_FOREIGN", base=BASE2,
+            delta_old_oid="p0", delta_new_oid="p1", source_delivery_id="e1"),
+       dict(_hev("ObserveDelta", "x2", "GENESIS", "HELD_FOREIGN", base=BASE2,
+                 delta_old_oid="p1", delta_new_oid="p2",
+                 source_delivery_id="e2"), schema_major=3)])
     return v
 
 
@@ -2094,13 +2639,32 @@ def _epoch_vectors() -> dict[str, dict]:
       [_edge("e1", "E0", "E1"),
        _edge("x1", "E0", "E1", base=BASE2), _edge("x2", "E0", "E2", base=BASE2)],
       {BASE1: "E0", BASE2: "E0"})
+    e("epoch_no_effect_twin_divergent_deny",
+      "DENY: a NO-EFFECT copy and an advancing copy sharing one event_id — "
+      "dedup registers before the no-effect filter, so the divergence halts "
+      "instead of the advance slipping in as a legitimate edge",
+      [_edge("e1", "E0", "E0"), _edge("e1", "E0", "E1")], anchors1)
+    e("epoch_no_effect_twin_divergent_reverse_deny",
+      "DENY: the same pair in the opposite arrival order halts identically",
+      [_edge("e1", "E0", "E1"), _edge("e1", "E0", "E0")], anchors1)
+    e("epoch_cross_base_divergent_deny",
+      "DENY: one event_id reused across two bases with divergent payloads "
+      "halts BOTH bases — never order-dependent",
+      [_edge("e1", "E0", "E1"), _edge("e1", "E0", "E2", base=BASE2)],
+      {BASE1: "E0", BASE2: "E0"})
+    # The RECOVERY_CEILING histories (breach with empty anchors, breach with
+    # partial anchors, and the exactly-N boundary) are exercised in-memory by
+    # tests/boundary/test_pr0.py::test_recovery_ceiling_* — a 10k-event JSON
+    # corpus would be noise, and the halt is a function of the event COUNT,
+    # which a generated history cannot make more faithful.
     return v
 
 
-def build_t19_vectors() -> dict[str, dict]:
+def build_t19_vectors(fsm: dict) -> dict[str, dict]:
     """Named §6.0 histories — INPUTS ONLY. Expected outputs are the
     hand-written oracle in tests/boundary/vectors/t19_expected.json, which
     this tool never writes (independent-oracle rule)."""
+    _load_triggers(fsm)
     vectors: dict[str, dict] = {}
     vectors.update(_section_a_vectors())
     vectors.update(_section_b_vectors())
@@ -2135,7 +2699,7 @@ def build_outputs(s: dict) -> dict[Path, bytes]:
     }
     for name, blob in frames.items():
         out[FRAMES_DIR / name] = blob
-    for name, vec in build_t19_vectors().items():
+    for name, vec in build_t19_vectors(s["lifecycle_fsm"]).items():
         out[VECTORS_DIR / f"{name}.json"] = (
             json.dumps(vec, indent=2, sort_keys=False) + "\n").encode("utf-8")
     return out
@@ -2148,12 +2712,20 @@ def check_outputs(outputs: dict[Path, bytes]) -> list[str]:
             drift.append(f"missing: {path.relative_to(REPO_ROOT)}")
         elif path.read_bytes() != blob:
             drift.append(f"stale: {path.relative_to(REPO_ROOT)}")
-    # the vector corpus is exact: stray files are drift too (the expected
-    # oracle lives OUTSIDE this dir and is never generated).
-    want_vectors = {p.name for p in outputs if p.parent == VECTORS_DIR}
-    if VECTORS_DIR.exists():
-        for p in sorted(VECTORS_DIR.glob("*.json")):
-            if p.name not in want_vectors:
+    # Every generated directory is EXACT: a stray file in any of them is
+    # drift (panel round 2 — the scan previously covered only the vectors
+    # tree, so an extra file under docs/generated or the frame corpus passed
+    # both seals). The hand-written oracle lives outside these directories
+    # and is never generated; if it ever appeared inside one, this scan is
+    # what calls it drift.
+    for directory, pattern in ((VECTORS_DIR, "*.json"),
+                               (DOCS_DIR, "*.md"),
+                               (FRAMES_DIR, "*")):
+        if not directory.exists():
+            continue
+        want = {p.name for p in outputs if p.parent == directory}
+        for p in sorted(directory.glob(pattern)):
+            if p.is_file() and p.name not in want:
                 drift.append(f"stray: {p.relative_to(REPO_ROOT)}")
     return drift
 

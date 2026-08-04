@@ -13,6 +13,7 @@
       "base_key": "R1:refs/heads/main",
       "epoch_before": "E0",
       "epoch_after": "E1",
+      "family": "effect_lifecycle",
       "stream": "effect_lifecycle"
     },
     {
@@ -26,6 +27,7 @@
       "base_key": "R1:refs/heads/main",
       "epoch_before": "E1",
       "epoch_after": "E2",
+      "family": "effect_lifecycle",
       "stream": "hold_lifecycle"
     }
   ],

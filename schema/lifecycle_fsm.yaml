@@ -395,6 +395,19 @@ events:
   envelope:
     required: [schema_major, schema_minor, event_id, ts, run_id, trace_id, protocol_epoch]
     optional: [subject_digest, movement_id, attempt_id, authorization_id]
+    # The v1 wire supports exactly these majors; any other value halts as
+    # SCHEMA_MAJOR_UNKNOWN — the named §9 halt, range-checked at intake.
+    supported_majors: [1]
+    # Audit timestamps are RFC 3339 UTC ("Z" or numeric offset) so records
+    # are orderable across hosts; any other shape is a schema violation.
+    ts_format: rfc3339_utc
+  # §6.0: the integrity-hold branch carries BOTH event families; "each
+  # reduce filters by event schema name". The wire field `family` is that
+  # schema name: REQUIRED at reducer intake, filtered (not halted) on
+  # mismatch, halted when absent.
+  reducer_family_filter:
+    field: family
+    values: [effect_lifecycle, hold_lifecycle]
   evolution:
     minors: additive-only; unknown minor fields ignored-and-logged
     unknown_major_at_cold_start: halt effects for that base pending operator decision
@@ -430,6 +443,13 @@ events:
     exempt: [protocol_genesis, merge_unit_declared, merge_unit_member_added,
              panel_roster_declared, panel_roster_augmented]
 
+  # GENERATED (panel round 2): fsmgen emits ClassifierAuthority as a closed
+  # frozen union (exact-variant equality via dataclass equality),
+  # AuthorityFingerprint, and subject_digest() from the preimage below. The
+  # wire `authority` field on events remains the canonical str rendering
+  # (the fingerprint digest) until PR2 binds the typed object at
+  # construction and PR4 compares it at the fence — stated here so the
+  # schema claim matches what is generated.
   shared_objects:
     ClassifierAuthority:
       union:
@@ -513,23 +533,52 @@ events:
                         matched_subject_digest, matched_movement_id,
                         disposition]
       # authorization_id is ABSENT on observe_delta — a foreign movement is
-      # unauthorized by definition (round 18, codex).
+      # unauthorized by definition (round 18, codex) — and FORBIDDEN on the
+      # reconcile/actor variants for section-A parity (their twins forbid
+      # it; silence is recorded as forbidden pending an explicit §9 grant —
+      # panel round 2).
       variants:
         - {name: ObserveDelta,               row: observe_delta_create,        trigger: observe_delta,         required: [delta_old_oid, delta_new_oid], forbidden: [authorization_id]}
         - {name: ObserveDeltaRedelivery,     row: observe_delta_redelivery_noop, trigger: observe_delta,       required: [source_delivery_id], forbidden: [authorization_id]}
         - {name: ObserveDeltaNewDeliveryOnOpenHold, row: observe_delta_new_delivery_open_hold, trigger: observe_delta, required: [source_delivery_id, delta_old_oid, delta_new_oid], forbidden: [authorization_id]}
         # ActorVerifiedAuto requires VERIFIED_API + actor_node_id +
-        # matched_subject_digest (§9); constructible only from VERIFIED_API
-        # evidence, SEPARATED only.
-        - {name: ActorVerifiedAuto,          row: actor_verified_match,        trigger: actor_verified_match,  required: [hold_id, actor_node_id, matched_subject_digest], fixed: {actor_verification: VERIFIED_API, disposition: ACTOR_VERIFIED_AUTO}}
+        # matched_subject_digest (§9), SEPARATED only, AND the webhook
+        # delivery it rests on (source_delivery_id) — the reducer
+        # cross-checks that delivery against the hold's own record and the
+        # matched digest against the hold's recorded delta. See
+        # actor_verified_evidence below for the provenance obligation.
+        - {name: ActorVerifiedAuto,          row: actor_verified_match,        trigger: actor_verified_match,  required: [hold_id, actor_node_id, matched_subject_digest, source_delivery_id], fixed: {actor_verification: VERIFIED_API, disposition: ACTOR_VERIFIED_AUTO}, forbidden: [authorization_id]}
         # extra_from: STANDING is re-enterable — its operator_reconcile row
         # dispatches "as the HELD_FOREIGN rows" (§6.0 section-B table).
         # operator_reconcile variants carry only operator_accepting
         # dispositions (ACTOR_VERIFIED_AUTO is unmintable by an operator).
-        - {name: HoldReconcileAccept,        row: hold_reconcile_accept,       trigger: operator_reconcile,    required: [hold_id, disposition], extra_from: [STANDING]}
-        - {name: HoldReconcileRejectRestoreHold, row: hold_reconcile_reject_restore_hold, trigger: operator_reconcile, required: [hold_id, disposition], extra_from: [STANDING]}
-        - {name: HoldReconcileStanding,      row: hold_reconcile_standing,     trigger: operator_reconcile,    required: [hold_id, disposition], fixed: {disposition: STANDING}, extra_from: [STANDING]}
-        - {name: HoldReconcileReplayIdentity, row: hold_reconcile_replay_identity, trigger: operator_reconcile, required: [hold_id, disposition]}
+        - {name: HoldReconcileAccept,        row: hold_reconcile_accept,       trigger: operator_reconcile,    required: [hold_id, disposition], extra_from: [STANDING], forbidden: [authorization_id]}
+        - {name: HoldReconcileRejectRestoreHold, row: hold_reconcile_reject_restore_hold, trigger: operator_reconcile, required: [hold_id, disposition], extra_from: [STANDING], forbidden: [authorization_id]}
+        - {name: HoldReconcileStanding,      row: hold_reconcile_standing,     trigger: operator_reconcile,    required: [hold_id, disposition], fixed: {disposition: STANDING}, extra_from: [STANDING], forbidden: [authorization_id]}
+        - {name: HoldReconcileReplayIdentity, row: hold_reconcile_replay_identity, trigger: operator_reconcile, required: [hold_id, disposition], forbidden: [authorization_id]}
+
+      # ACTOR_VERIFIED_AUTO evidence contract (panel round 2 CRITICAL):
+      # within PR0 the reducer enforces every cross-check that is
+      # structurally possible — mode SEPARATED, VERIFIED_API, actor node id
+      # present, the release's source_delivery_id resolving to a delivery
+      # recorded ON the hold it releases, and matched_subject_digest equal
+      # to the digest derived from the HOLD'S OWN recorded delta (preimage
+      # below). What the reducer CANNOT establish is provenance: that the
+      # evidence came from the §6.0 configured-webhook verification
+      # protocol. That protocol is wired in PR4; until then the reducer
+      # contract is "validates consistency, not provenance", and under
+      # SHARED the mode gate already refuses the release entirely.
+      actor_verified_evidence:
+        checks_enforced_in_pr0: [mode_separated, verified_api,
+                                 actor_node_id_present,
+                                 delivery_recorded_on_hold,
+                                 matched_digest_equals_hold_delta_digest]
+        provenance_wired_in: PR4
+        matched_delta_digest_preimage:
+          lines: ["subject-base=<base_key>", "subject-ref=<ref>",
+                  "subject-old=<delta_old_oid>", "subject-new=<delta_new_oid>"]
+          join: "\n"
+          hash: SHA-256
 
     classification_evaluated:
       # Split per round 20 (claude m3 + grok m1): the direct forensic record
@@ -539,24 +588,65 @@ events:
         - {name: IncompleteClassification, required: [candidate, context, evidence_failure, outcome_kind, duration_ms]}
       context_type: "AttemptContext{protocol_epoch, classifier, roster_digest}"
 
+  # Every closed-domain field carries its <field>_domain (unknown value ⇒
+  # halt like an unknown variant, §9); cross-field invariants ride in
+  # field_pair_rules and are generated into __post_init__ (panel round 2:
+  # AUTO_LOW must not be able to claim HUMAN_IDENTITY_ENFORCED). Block style
+  # throughout — flow-mapping scalars with commas silently truncate.
   singles:
-    panel_decided:        {required: [demanded, effective, strategy, roster_version, contributions], optional: [suppression]}
-    merge_planned:        {required: [subject, plan_kind, verdict, reasons, satisfaction], plan_kind_domain: [MERGEABLE, UNMERGEABLE]}
-    approval_evaluated:   {required: [review_id, actor_node_id, commit_oid, base_oid, in_set, assurance, outcome], note: diagnostic, non-authoritative — evaluation is not a grant}
+    panel_decided:
+      required: [demanded, effective, strategy, roster_version, contributions]
+      optional: [suppression]
+      demanded_domain: [SKIP, SINGLE, FULL]
+      effective_domain: [SKIP, SINGLE, FULL]
+      strategy_domain: [ALL_PARALLEL, PROGRESSIVE]
+    merge_planned:
+      required: [subject, plan_kind, verdict, reasons, satisfaction]
+      plan_kind_domain: [MERGEABLE, UNMERGEABLE]
+      verdict_domain: [LOW, ELEVATED, HUMAN_REQUIRED]   # §6.1 MergeVerdict
+    approval_evaluated:
+      required: [review_id, actor_node_id, commit_oid, base_oid, in_set, assurance, outcome]
+      assurance_domain: [OPERATOR_ATTESTED, HUMAN_IDENTITY_ENFORCED, NOT_APPLICABLE]
+      note: "diagnostic, non-authoritative — evaluation is not a grant"
     authorization_granted:
       required: [authorization_id, base_key, authority, kind, assurance, evidence_ref, actor]
       kind_domain: [AUTO_LOW, GITHUB_APPROVAL, LIVE_CONSENT]
       assurance_domain: [OPERATOR_ATTESTED, HUMAN_IDENTITY_ENFORCED, NOT_APPLICABLE]
-      note: the sole authorization record; AUTO_LOW carries NOT_APPLICABLE
-    consent:              {required: [subject, evidence_mode, assurance], optional: [suppressed], evidence_mode_domain: [LIVE, RERUN, ACCEPTED_UNVERIFIED]}
-    protocol_genesis:     {required: [protocol_epoch, credential_mode, protection_mode, classifier, roster_digest, approver_set_digest, per_base_epoch_anchors]}
-    merge_unit_declared:  {required: [unit_id, ordered_member_keys, unit_digest]}
-    merge_unit_member_added: {required: [unit_id, member_key]}
-    protocol_epoch_advanced: {required: [old, new]}
-    panel_roster_declared: {required: [roster_version, ordered_seat_ids, designated_single_id, roster_digest]}
-    panel_roster_augmented: {required: [added_seat_ids, new_roster_digest]}
+      # §9: AUTO_LOW carries NOT_APPLICABLE — and only NOT_APPLICABLE; a
+      # human-assurance value on an automatic grant is unconstructible.
+      # HUMAN_IDENTITY_ENFORCED additionally requires SEPARATED + T28 green
+      # at construction TIME — a runtime predicate PR5 enforces at the
+      # grant site; the pair rule below is the structural half.
+      field_pair_rules:
+        kind:
+          field: assurance
+          allowed:
+            AUTO_LOW: [NOT_APPLICABLE]
+            GITHUB_APPROVAL: [OPERATOR_ATTESTED, HUMAN_IDENTITY_ENFORCED]
+            LIVE_CONSENT: [OPERATOR_ATTESTED, HUMAN_IDENTITY_ENFORCED]
+      note: the sole authorization record
+    consent:
+      required: [subject, evidence_mode, assurance]
+      optional: [suppressed]
+      evidence_mode_domain: [LIVE, RERUN, ACCEPTED_UNVERIFIED]
+      # consent is a human channel — NOT_APPLICABLE is the AutoLow value and
+      # can never appear on a consent row (§6.3 AuthorizationEvidence).
+      assurance_domain: [OPERATOR_ATTESTED, HUMAN_IDENTITY_ENFORCED]
+    protocol_genesis:
+      required: [protocol_epoch, credential_mode, protection_mode, classifier, roster_digest, approver_set_digest, per_base_epoch_anchors]
+    merge_unit_declared:
+      required: [unit_id, ordered_member_keys, unit_digest]
+    merge_unit_member_added:
+      required: [unit_id, member_key]
+    protocol_epoch_advanced:
+      required: [old, new]
+    panel_roster_declared:
+      required: [roster_version, ordered_seat_ids, designated_single_id, roster_digest]
+    panel_roster_augmented:
+      required: [added_seat_ids, new_roster_digest]
     seat_result:
       required: [roster_digest, subject_digest, attempt_id, seat_id, verdict, findings_digest]
+      verdict_domain: [APPROVE, BLOCK]   # §5.1 closed — unknown ⇒ parse failure
       note: the aggregate accepts only seat results keyed (subject_digest, attempt_id) equal to the plan's
 
 # Auxiliary closed enums referenced by the unions. HoldEffect's value domain

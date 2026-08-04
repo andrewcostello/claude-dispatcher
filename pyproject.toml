@@ -12,9 +12,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# PyYAML is a DEV dependency: tools/fsmgen.py and tests/boundary read the
+# schema/*.yaml contract package with yaml.safe_load. It is deliberately not
+# a runtime dependency — nothing under src/ imports it, and the generated
+# boundary module is pure stdlib. safe_load (not the repo's ruamel yaml_io)
+# because these reads are load-only and must NOT round-trip comments: a
+# schema read that could rewrite the file is a write path into the safety
+# truth. If boundary/ ever ships a runtime schema read, move this line up.
 dev = [
     "pytest>=7",
     "pytest-cov>=4",
+    "PyYAML>=6",
 ]
 
 [project.scripts]

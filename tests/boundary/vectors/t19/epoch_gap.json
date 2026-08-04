@@ -12,7 +12,8 @@
       "protocol_epoch": "E0",
       "base_key": "R1:refs/heads/main",
       "epoch_before": "E1",
-      "epoch_after": "E2"
+      "epoch_after": "E2",
+      "family": "effect_lifecycle"
     }
   ],
   "anchors": {

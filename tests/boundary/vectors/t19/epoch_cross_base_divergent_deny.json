@@ -1,0 +1,36 @@
+{
+  "machine": "epoch_fold",
+  "note": "DENY: one event_id reused across two bases with divergent payloads halts BOTH bases \u2014 never order-dependent",
+  "events": [
+    {
+      "schema_major": 1,
+      "schema_minor": 0,
+      "event_id": "e1",
+      "ts": "1970-01-01T00:00:00Z",
+      "run_id": "run-1",
+      "trace_id": "trace-1",
+      "protocol_epoch": "E0",
+      "base_key": "R1:refs/heads/main",
+      "epoch_before": "E0",
+      "epoch_after": "E1",
+      "family": "effect_lifecycle"
+    },
+    {
+      "schema_major": 1,
+      "schema_minor": 0,
+      "event_id": "e1",
+      "ts": "1970-01-01T00:00:00Z",
+      "run_id": "run-1",
+      "trace_id": "trace-1",
+      "protocol_epoch": "E0",
+      "base_key": "R2:refs/heads/main",
+      "epoch_before": "E0",
+      "epoch_after": "E2",
+      "family": "effect_lifecycle"
+    }
+  ],
+  "anchors": {
+    "R1:refs/heads/main": "E0",
+    "R2:refs/heads/main": "E0"
+  }
+}

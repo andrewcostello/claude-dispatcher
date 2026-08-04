@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from enum import Enum, IntEnum
 from typing import ClassVar, Mapping, Optional, Sequence
@@ -285,6 +286,15 @@ HOLD_BRANCH: frozenset[str] = frozenset(('HELD',))
 STATE_BRANCH_REF: str = "refs/heads/dispatcher/state"
 HOLD_BRANCH_REF: str = "refs/heads/dispatcher/integrity-hold"
 
+# The v1 wire supports exactly these schema majors; anything else halts
+# as SCHEMA_MAJOR_UNKNOWN — the named §9 halt, range-checked at intake.
+SUPPORTED_SCHEMA_MAJORS: frozenset[int] = frozenset((1,))
+
+# STANDING × REJECT_RESTORE_HOLD resolution — driven by the schema key
+# standing_reject_restore_resolves_to (the single place to change if
+# the author ratifies the other reading).
+STANDING_REJECT_RESTORE_TARGET_NAME: str = 'HELD_FOREIGN'
+
 # Recovery admission ceiling (§6.0 provisional bounds; the elapsed-
 # time half is a PR4 obligation — see schema recovery_ceiling).
 RECOVERY_CEILING_EVENTS: int = 10000
@@ -363,15 +373,26 @@ _ENUM_WIRE_FIELDS: Mapping[str, type] = {
 }
 _INT_WIRE_FIELDS = frozenset({"schema_major", "schema_minor", "duration_ms"})
 
+# Audit timestamps are RFC 3339 UTC — offset-bearing so records are orderable
+# across hosts; anything else is a schema violation.
+_TS_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$")
+
 
 def _py_field(f: str) -> str:
     return FIELD_NAME_MAP.get(f, f)
 
 
+def _short(value: object, limit: int = 60) -> str:
+    """Journal-safe rendering: halt details must not dump whole payloads."""
+    text = repr(value)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 def _validate_event_fields(event: object) -> None:
     """Shared __post_init__ validation: required fields present with the
-    right type (never coerced), enum fields are enum INSTANCES, the audit
-    from_state names a legal FROM state. Raises ValueError."""
+    right type (never coerced), enum fields are enum INSTANCES, schema_major
+    inside the supported range, ts RFC 3339 UTC. Raises ValueError."""
     cls = type(event)
     name = cls.__name__
     for f in cls.REQUIRED:
@@ -380,32 +401,52 @@ def _validate_event_fields(event: object) -> None:
         value = getattr(event, _py_field(f), None)
         if value is not None:
             _validate_field_value(name, f, value, required=False)
-    from_states = getattr(cls, "FROM_STATES", None)
-    if from_states is not None:
-        from_state = event.from_state
-        if from_state not in from_states:
-            raise ValueError(
-                f"{name}.from_state {from_state!r} not in {from_states!r}")
+
+
+def _validate_row_audit_fields(event: object) -> None:
+    """§9 audit fields validated against the variant's row: from ∈
+    FROM_STATES, trigger_event == the row's trigger, to == the row's target
+    (== from on `unchanged` no-op rows). Raises ValueError."""
+    cls = type(event)
+    name = cls.__name__
+    if event.from_state not in cls.FROM_STATES:
+        raise ValueError(
+            f"{name}.from_state {event.from_state!r} not in {cls.FROM_STATES!r}")
+    if event.trigger_event != cls.TRIGGER:
+        raise ValueError(
+            f"{name}.trigger_event {event.trigger_event!r} contradicts the "
+            f"row's trigger {cls.TRIGGER!r} — a mis-tagged writer halts")
+    want_to = event.from_state if cls.TO_STATE == "unchanged" else cls.TO_STATE
+    if event.to_state != want_to:
+        raise ValueError(
+            f"{name}.to {event.to_state!r} contradicts the row's {want_to!r}")
 
 
 def _validate_field_value(name: str, f: str, value: object, required: bool) -> None:
     enum_t = _ENUM_WIRE_FIELDS.get(f)
     if enum_t is not None:
         if not isinstance(value, enum_t):
-            raise ValueError(
-                f"{name}.{f} must be a {enum_t.__name__} instance, got {value!r}")
+            raise ValueError(f"{name}.{f} must be a {enum_t.__name__} "
+                             f"instance, got {_short(value)}")
         return
     if f in _INT_WIRE_FIELDS:
         if isinstance(value, bool) or not isinstance(value, int):
-            raise ValueError(f"{name}.{f} must be an int, got {value!r}")
+            raise ValueError(f"{name}.{f} must be an int, got {_short(value)}")
+        if f == "schema_major" and value not in SUPPORTED_SCHEMA_MAJORS:
+            raise ValueError(
+                f"{name}.schema_major {value} outside the supported set "
+                f"{sorted(SUPPORTED_SCHEMA_MAJORS)} — unknown major halts (§9)")
         return
     if not isinstance(value, str) or (required and value == ""):
-        raise ValueError(f"{name}.{f} must be a non-empty str, got {value!r}")
+        raise ValueError(f"{name}.{f} must be a non-empty str, got {_short(value)}")
+    if f == "ts" and not _TS_RE.match(value):
+        raise ValueError(f"{name}.ts {_short(value)} is not RFC 3339 UTC")
 
 
 def _convert_wire_value(cls_name: str, f: str, value: object) -> object:
-    """Convert one wire value to the typed field — unknown enum values and
-    wrong types raise WireViolation (typed halt), never KeyError."""
+    """Convert one wire value to the typed field — unknown enum values,
+    unsupported majors and wrong types raise WireViolation (typed halt),
+    never KeyError."""
     enum_t = _ENUM_WIRE_FIELDS.get(f)
     if enum_t is not None:
         if isinstance(value, enum_t):
@@ -414,23 +455,34 @@ def _convert_wire_value(cls_name: str, f: str, value: object) -> object:
             return enum_t(str(value))
         except ValueError:
             raise WireViolation(
-                f"{cls_name}.{f}: unknown value {value!r} for closed enum "
-                f"{enum_t.__name__} — halts like an unknown variant (§9)") from None
+                f"{cls_name}.{f}: unknown value {_short(value)} for closed "
+                f"enum {enum_t.__name__} — halts like an unknown variant "
+                f"(§9)") from None
     if f in _INT_WIRE_FIELDS:
         if isinstance(value, bool) or not isinstance(value, int):
-            raise WireViolation(f"{cls_name}.{f}: must be an int, got {value!r}")
+            raise WireViolation(f"{cls_name}.{f}: must be an int, "
+                                f"got {_short(value)}")
+        if f == "schema_major" and value not in SUPPORTED_SCHEMA_MAJORS:
+            raise WireViolation(
+                f"{cls_name}.schema_major: {value} outside the supported set "
+                f"{sorted(SUPPORTED_SCHEMA_MAJORS)} — unknown major halts (§9)")
         return value
     if not isinstance(value, str) or value == "":
-        raise WireViolation(f"{cls_name}.{f}: must be a non-empty str, got {value!r}")
+        raise WireViolation(f"{cls_name}.{f}: must be a non-empty str, "
+                            f"got {_short(value)}")
+    if f == "ts" and not _TS_RE.match(value):
+        raise WireViolation(f"{cls_name}.ts: {_short(value)} is not RFC 3339 UTC")
     return value
 
 
 def build_wire_event(variants: Mapping[str, type], ev: Mapping[str, object]) -> object:
     """Construct a typed event from a wire dict, fail-closed: unknown
-    variant, missing REQUIRED, present FORBIDDEN, or unknown enum value ⇒
-    WireViolation (⇒ SCHEMA_MAJOR_UNKNOWN halt); required fields are NEVER
-    defaulted. Guard breaches inside the variant's __post_init__ surface as
-    ValueError (⇒ ILLEGAL_TRANSITION)."""
+    variant, missing REQUIRED (trigger_event/from/to included — §9 audit
+    fields are real wire fields), present FORBIDDEN, unknown enum value or
+    unsupported schema_major ⇒ WireViolation (⇒ SCHEMA_MAJOR_UNKNOWN halt);
+    required fields are NEVER defaulted. A trigger/to contradiction with the
+    variant's row is the same schema-violation class. Guard breaches inside
+    __post_init__ surface as ValueError (⇒ ILLEGAL_TRANSITION)."""
     variant = ev.get("variant")
     cls = variants.get(str(variant))
     if cls is None:
@@ -438,14 +490,7 @@ def build_wire_event(variants: Mapping[str, type], ev: Mapping[str, object]) -> 
             f"unknown event variant {variant!r} "
             f"(event_id {ev.get('event_id')!r}) — unknown variants halt (§9)")
     name = cls.__name__
-    if ev.get("from") is None:
-        raise WireViolation(f"{name}: required audit field 'from' absent "
-                            f"(event_id {ev.get('event_id')!r})")
-    if cls.TO_STATE != "unchanged" and ev.get("to") not in (None, cls.TO_STATE):
-        raise WireViolation(
-            f"{name}: audit 'to' {ev.get('to')!r} contradicts the row's "
-            f"{cls.TO_STATE!r} (event_id {ev.get('event_id')!r})")
-    kwargs: dict = {"from_state": str(ev["from"])}
+    kwargs: dict = {}
     for f in cls.REQUIRED:
         value = ev.get(f)
         if value is None:
@@ -462,6 +507,16 @@ def build_wire_event(variants: Mapping[str, type], ev: Mapping[str, object]) -> 
             raise WireViolation(
                 f"{name}: forbidden field {f!r} present "
                 f"(event_id {ev.get('event_id')!r})")
+    if kwargs.get("trigger_event") != cls.TRIGGER:
+        raise WireViolation(
+            f"{name}: trigger_event {ev.get('trigger_event')!r} contradicts "
+            f"the variant's row trigger {cls.TRIGGER!r} "
+            f"(event_id {ev.get('event_id')!r}) — mis-tagged writer")
+    want_to = kwargs.get("from_state") if cls.TO_STATE == "unchanged" else cls.TO_STATE
+    if kwargs.get("to_state") != want_to:
+        raise WireViolation(
+            f"{name}: audit 'to' {ev.get('to')!r} contradicts the row's "
+            f"{want_to!r} (event_id {ev.get('event_id')!r})")
     return cls(**kwargs)
 
 @dataclass(frozen=True)
@@ -473,7 +528,8 @@ class Prepare:
     ROW: ClassVar[str] = "prepare"
     FROM_STATES: ClassVar[tuple[str, ...]] = ('GENESIS',)
     TO_STATE: ClassVar[str] = 'PREPARED'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'authorization_id')
+    EPOCH_EFFECT: ClassVar[str] = 'none'
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'authorization_id')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -487,6 +543,9 @@ class Prepare:
     protocol_epoch: str
     movement_id: str
     base_key: str
+    trigger_event: str
+    from_state: str
+    to_state: str
     authority: str
     epoch_before: str
     epoch_after: str
@@ -497,10 +556,10 @@ class Prepare:
     subject_digest: Optional[str] = None
     attempt_id: Optional[str] = None
     reason: Optional[str] = None
-    from_state: str = 'GENESIS'  # audit `from` — validated ∈ FROM_STATES
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        _validate_row_audit_fields(self)
 
 @dataclass(frozen=True)
 class Submit:
@@ -511,7 +570,8 @@ class Submit:
     ROW: ClassVar[str] = "submit"
     FROM_STATES: ClassVar[tuple[str, ...]] = ('PREPARED',)
     TO_STATE: ClassVar[str] = 'SUBMITTED'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'authorization_id')
+    EPOCH_EFFECT: ClassVar[str] = 'none'
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'authorization_id')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -525,6 +585,9 @@ class Submit:
     protocol_epoch: str
     movement_id: str
     base_key: str
+    trigger_event: str
+    from_state: str
+    to_state: str
     authority: str
     epoch_before: str
     epoch_after: str
@@ -535,10 +598,10 @@ class Submit:
     subject_digest: Optional[str] = None
     attempt_id: Optional[str] = None
     reason: Optional[str] = None
-    from_state: str = 'PREPARED'  # audit `from` — validated ∈ FROM_STATES
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        _validate_row_audit_fields(self)
 
 @dataclass(frozen=True)
 class SubmitOutcomeUnknown:
@@ -549,7 +612,8 @@ class SubmitOutcomeUnknown:
     ROW: ClassVar[str] = "submit_outcome_unknown"
     FROM_STATES: ClassVar[tuple[str, ...]] = ('PREPARED',)
     TO_STATE: ClassVar[str] = 'OUTCOME_UNKNOWN'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
+    EPOCH_EFFECT: ClassVar[str] = 'none'
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -563,6 +627,9 @@ class SubmitOutcomeUnknown:
     protocol_epoch: str
     movement_id: str
     base_key: str
+    trigger_event: str
+    from_state: str
+    to_state: str
     authority: str
     epoch_before: str
     epoch_after: str
@@ -573,10 +640,10 @@ class SubmitOutcomeUnknown:
     attempt_id: Optional[str] = None
     authorization_id: Optional[str] = None
     reason: Optional[str] = None
-    from_state: str = 'PREPARED'  # audit `from` — validated ∈ FROM_STATES
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        _validate_row_audit_fields(self)
 
 @dataclass(frozen=True)
 class CrashRecoveryFromPrepared:
@@ -587,7 +654,8 @@ class CrashRecoveryFromPrepared:
     ROW: ClassVar[str] = "prepared_to_held"
     FROM_STATES: ClassVar[tuple[str, ...]] = ('PREPARED',)
     TO_STATE: ClassVar[str] = 'HELD'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
+    EPOCH_EFFECT: ClassVar[str] = 'none'
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -601,6 +669,9 @@ class CrashRecoveryFromPrepared:
     protocol_epoch: str
     movement_id: str
     base_key: str
+    trigger_event: str
+    from_state: str
+    to_state: str
     authority: str
     epoch_before: str
     epoch_after: str
@@ -610,10 +681,10 @@ class CrashRecoveryFromPrepared:
     subject_digest: Optional[str] = None
     attempt_id: Optional[str] = None
     reason: Optional[str] = None
-    from_state: str = 'PREPARED'  # audit `from` — validated ∈ FROM_STATES
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        _validate_row_audit_fields(self)
 
 @dataclass(frozen=True)
 class LaterObservationFromPrepared:
@@ -624,7 +695,8 @@ class LaterObservationFromPrepared:
     ROW: ClassVar[str] = "prepared_to_held"
     FROM_STATES: ClassVar[tuple[str, ...]] = ('PREPARED',)
     TO_STATE: ClassVar[str] = 'HELD'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
+    EPOCH_EFFECT: ClassVar[str] = 'none'
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -638,6 +710,9 @@ class LaterObservationFromPrepared:
     protocol_epoch: str
     movement_id: str
     base_key: str
+    trigger_event: str
+    from_state: str
+    to_state: str
     authority: str
     epoch_before: str
     epoch_after: str
@@ -648,10 +723,10 @@ class LaterObservationFromPrepared:
     attempt_id: Optional[str] = None
     authorization_id: Optional[str] = None
     reason: Optional[str] = None
-    from_state: str = 'PREPARED'  # audit `from` — validated ∈ FROM_STATES
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        _validate_row_audit_fields(self)
 
 @dataclass(frozen=True)
 class MoveToHoldFromPrepared:
@@ -662,7 +737,8 @@ class MoveToHoldFromPrepared:
     ROW: ClassVar[str] = "prepared_to_held"
     FROM_STATES: ClassVar[tuple[str, ...]] = ('PREPARED',)
     TO_STATE: ClassVar[str] = 'HELD'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
+    EPOCH_EFFECT: ClassVar[str] = 'none'
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -676,6 +752,9 @@ class MoveToHoldFromPrepared:
     protocol_epoch: str
     movement_id: str
     base_key: str
+    trigger_event: str
+    from_state: str
+    to_state: str
     authority: str
     epoch_before: str
     epoch_after: str
@@ -686,10 +765,10 @@ class MoveToHoldFromPrepared:
     attempt_id: Optional[str] = None
     authorization_id: Optional[str] = None
     reason: Optional[str] = None
-    from_state: str = 'PREPARED'  # audit `from` — validated ∈ FROM_STATES
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        _validate_row_audit_fields(self)
 
 @dataclass(frozen=True)
 class ObserveEffectMatched:
@@ -700,7 +779,8 @@ class ObserveEffectMatched:
     ROW: ClassVar[str] = "observe_effect_matched"
     FROM_STATES: ClassVar[tuple[str, ...]] = ('SUBMITTED',)
     TO_STATE: ClassVar[str] = 'EFFECT_OBSERVED'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'authorization_id', 'new_oid')
+    EPOCH_EFFECT: ClassVar[str] = 'none'
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'authorization_id', 'new_oid')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -714,6 +794,9 @@ class ObserveEffectMatched:
     protocol_epoch: str
     movement_id: str
     base_key: str
+    trigger_event: str
+    from_state: str
+    to_state: str
     authority: str
     epoch_before: str
     epoch_after: str
@@ -725,10 +808,10 @@ class ObserveEffectMatched:
     subject_digest: Optional[str] = None
     attempt_id: Optional[str] = None
     reason: Optional[str] = None
-    from_state: str = 'SUBMITTED'  # audit `from` — validated ∈ FROM_STATES
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        _validate_row_audit_fields(self)
 
 @dataclass(frozen=True)
 class ObserveEffectParentMismatch:
@@ -739,7 +822,8 @@ class ObserveEffectParentMismatch:
     ROW: ClassVar[str] = "observe_effect_mismatch"
     FROM_STATES: ClassVar[tuple[str, ...]] = ('SUBMITTED',)
     TO_STATE: ClassVar[str] = 'HELD'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'authorization_id', 'new_oid')
+    EPOCH_EFFECT: ClassVar[str] = 'none'
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'authorization_id', 'new_oid')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -753,6 +837,9 @@ class ObserveEffectParentMismatch:
     protocol_epoch: str
     movement_id: str
     base_key: str
+    trigger_event: str
+    from_state: str
+    to_state: str
     authority: str
     epoch_before: str
     epoch_after: str
@@ -764,10 +851,10 @@ class ObserveEffectParentMismatch:
     subject_digest: Optional[str] = None
     attempt_id: Optional[str] = None
     reason: Optional[str] = None
-    from_state: str = 'SUBMITTED'  # audit `from` — validated ∈ FROM_STATES
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        _validate_row_audit_fields(self)
 
 @dataclass(frozen=True)
 class ObserveReject:
@@ -778,7 +865,8 @@ class ObserveReject:
     ROW: ClassVar[str] = "observe_reject"
     FROM_STATES: ClassVar[tuple[str, ...]] = ('SUBMITTED',)
     TO_STATE: ClassVar[str] = 'REJECTED_NO_EFFECT'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'authorization_id')
+    EPOCH_EFFECT: ClassVar[str] = 'none'
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'authorization_id')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -792,6 +880,9 @@ class ObserveReject:
     protocol_epoch: str
     movement_id: str
     base_key: str
+    trigger_event: str
+    from_state: str
+    to_state: str
     authority: str
     epoch_before: str
     epoch_after: str
@@ -802,10 +893,10 @@ class ObserveReject:
     subject_digest: Optional[str] = None
     attempt_id: Optional[str] = None
     reason: Optional[str] = None
-    from_state: str = 'SUBMITTED'  # audit `from` — validated ∈ FROM_STATES
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        _validate_row_audit_fields(self)
 
 @dataclass(frozen=True)
 class TimeoutUnknown:
@@ -816,7 +907,8 @@ class TimeoutUnknown:
     ROW: ClassVar[str] = "timeout_unknown"
     FROM_STATES: ClassVar[tuple[str, ...]] = ('SUBMITTED',)
     TO_STATE: ClassVar[str] = 'OUTCOME_UNKNOWN'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
+    EPOCH_EFFECT: ClassVar[str] = 'none'
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -830,6 +922,9 @@ class TimeoutUnknown:
     protocol_epoch: str
     movement_id: str
     base_key: str
+    trigger_event: str
+    from_state: str
+    to_state: str
     authority: str
     epoch_before: str
     epoch_after: str
@@ -840,10 +935,10 @@ class TimeoutUnknown:
     attempt_id: Optional[str] = None
     authorization_id: Optional[str] = None
     reason: Optional[str] = None
-    from_state: str = 'SUBMITTED'  # audit `from` — validated ∈ FROM_STATES
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        _validate_row_audit_fields(self)
 
 @dataclass(frozen=True)
 class CrashRecoveryFromSubmitted:
@@ -854,7 +949,8 @@ class CrashRecoveryFromSubmitted:
     ROW: ClassVar[str] = "submitted_to_held"
     FROM_STATES: ClassVar[tuple[str, ...]] = ('SUBMITTED',)
     TO_STATE: ClassVar[str] = 'HELD'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
+    EPOCH_EFFECT: ClassVar[str] = 'none'
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -868,6 +964,9 @@ class CrashRecoveryFromSubmitted:
     protocol_epoch: str
     movement_id: str
     base_key: str
+    trigger_event: str
+    from_state: str
+    to_state: str
     authority: str
     epoch_before: str
     epoch_after: str
@@ -877,10 +976,10 @@ class CrashRecoveryFromSubmitted:
     subject_digest: Optional[str] = None
     attempt_id: Optional[str] = None
     reason: Optional[str] = None
-    from_state: str = 'SUBMITTED'  # audit `from` — validated ∈ FROM_STATES
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        _validate_row_audit_fields(self)
 
 @dataclass(frozen=True)
 class LaterObservationFromSubmitted:
@@ -891,7 +990,8 @@ class LaterObservationFromSubmitted:
     ROW: ClassVar[str] = "submitted_to_held"
     FROM_STATES: ClassVar[tuple[str, ...]] = ('SUBMITTED',)
     TO_STATE: ClassVar[str] = 'HELD'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
+    EPOCH_EFFECT: ClassVar[str] = 'none'
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -905,6 +1005,9 @@ class LaterObservationFromSubmitted:
     protocol_epoch: str
     movement_id: str
     base_key: str
+    trigger_event: str
+    from_state: str
+    to_state: str
     authority: str
     epoch_before: str
     epoch_after: str
@@ -915,10 +1018,10 @@ class LaterObservationFromSubmitted:
     attempt_id: Optional[str] = None
     authorization_id: Optional[str] = None
     reason: Optional[str] = None
-    from_state: str = 'SUBMITTED'  # audit `from` — validated ∈ FROM_STATES
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        _validate_row_audit_fields(self)
 
 @dataclass(frozen=True)
 class Explained:
@@ -929,7 +1032,8 @@ class Explained:
     ROW: ClassVar[str] = "explained"
     FROM_STATES: ClassVar[tuple[str, ...]] = ('EFFECT_OBSERVED',)
     TO_STATE: ClassVar[str] = 'EXPLAINED'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'new_oid')
+    EPOCH_EFFECT: ClassVar[str] = 'assign_new_oid'
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'new_oid')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -943,6 +1047,9 @@ class Explained:
     protocol_epoch: str
     movement_id: str
     base_key: str
+    trigger_event: str
+    from_state: str
+    to_state: str
     authority: str
     epoch_before: str
     epoch_after: str
@@ -954,10 +1061,10 @@ class Explained:
     attempt_id: Optional[str] = None
     authorization_id: Optional[str] = None
     reason: Optional[str] = None
-    from_state: str = 'EFFECT_OBSERVED'  # audit `from` — validated ∈ FROM_STATES
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        _validate_row_audit_fields(self)
 
 @dataclass(frozen=True)
 class RejectExplained:
@@ -968,7 +1075,8 @@ class RejectExplained:
     ROW: ClassVar[str] = "reject_explained"
     FROM_STATES: ClassVar[tuple[str, ...]] = ('REJECTED_NO_EFFECT',)
     TO_STATE: ClassVar[str] = 'EXPLAINED'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
+    EPOCH_EFFECT: ClassVar[str] = 'none'
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -982,6 +1090,9 @@ class RejectExplained:
     protocol_epoch: str
     movement_id: str
     base_key: str
+    trigger_event: str
+    from_state: str
+    to_state: str
     authority: str
     epoch_before: str
     epoch_after: str
@@ -992,10 +1103,10 @@ class RejectExplained:
     attempt_id: Optional[str] = None
     authorization_id: Optional[str] = None
     reason: Optional[str] = None
-    from_state: str = 'REJECTED_NO_EFFECT'  # audit `from` — validated ∈ FROM_STATES
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        _validate_row_audit_fields(self)
 
 @dataclass(frozen=True)
 class LaterObservationFromOutcomeUnknown:
@@ -1006,7 +1117,8 @@ class LaterObservationFromOutcomeUnknown:
     ROW: ClassVar[str] = "unknown_to_held"
     FROM_STATES: ClassVar[tuple[str, ...]] = ('OUTCOME_UNKNOWN',)
     TO_STATE: ClassVar[str] = 'HELD'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
+    EPOCH_EFFECT: ClassVar[str] = 'none'
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -1020,6 +1132,9 @@ class LaterObservationFromOutcomeUnknown:
     protocol_epoch: str
     movement_id: str
     base_key: str
+    trigger_event: str
+    from_state: str
+    to_state: str
     authority: str
     epoch_before: str
     epoch_after: str
@@ -1030,10 +1145,10 @@ class LaterObservationFromOutcomeUnknown:
     attempt_id: Optional[str] = None
     authorization_id: Optional[str] = None
     reason: Optional[str] = None
-    from_state: str = 'OUTCOME_UNKNOWN'  # audit `from` — validated ∈ FROM_STATES
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        _validate_row_audit_fields(self)
 
 @dataclass(frozen=True)
 class CrashRecoveryFromOutcomeUnknown:
@@ -1044,7 +1159,8 @@ class CrashRecoveryFromOutcomeUnknown:
     ROW: ClassVar[str] = "unknown_to_held"
     FROM_STATES: ClassVar[tuple[str, ...]] = ('OUTCOME_UNKNOWN',)
     TO_STATE: ClassVar[str] = 'HELD'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
+    EPOCH_EFFECT: ClassVar[str] = 'none'
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -1058,6 +1174,9 @@ class CrashRecoveryFromOutcomeUnknown:
     protocol_epoch: str
     movement_id: str
     base_key: str
+    trigger_event: str
+    from_state: str
+    to_state: str
     authority: str
     epoch_before: str
     epoch_after: str
@@ -1067,10 +1186,10 @@ class CrashRecoveryFromOutcomeUnknown:
     subject_digest: Optional[str] = None
     attempt_id: Optional[str] = None
     reason: Optional[str] = None
-    from_state: str = 'OUTCOME_UNKNOWN'  # audit `from` — validated ∈ FROM_STATES
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        _validate_row_audit_fields(self)
 
 @dataclass(frozen=True)
 class ReconcileAccept:
@@ -1081,7 +1200,8 @@ class ReconcileAccept:
     ROW: ClassVar[str] = "reconcile_accept"
     FROM_STATES: ClassVar[tuple[str, ...]] = ('HELD',)
     TO_STATE: ClassVar[str] = 'RECONCILED'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'disposition')
+    EPOCH_EFFECT: ClassVar[str] = 'per_disposition'
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'disposition')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -1095,6 +1215,9 @@ class ReconcileAccept:
     protocol_epoch: str
     movement_id: str
     base_key: str
+    trigger_event: str
+    from_state: str
+    to_state: str
     authority: str
     epoch_before: str
     epoch_after: str
@@ -1105,10 +1228,10 @@ class ReconcileAccept:
     subject_digest: Optional[str] = None
     attempt_id: Optional[str] = None
     reason: Optional[str] = None
-    from_state: str = 'HELD'  # audit `from` — validated ∈ FROM_STATES
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        _validate_row_audit_fields(self)
         # operator_reconcile can carry only operator-mintable accepting
         # dispositions — ACTOR_VERIFIED_AUTO/STANDING are section-B-only,
         # and the auto disposition is mintable solely by ActorVerifiedAuto.
@@ -1125,7 +1248,8 @@ class ReconcileRejectRestoreHold:
     ROW: ClassVar[str] = "reconcile_reject_restore_hold"
     FROM_STATES: ClassVar[tuple[str, ...]] = ('HELD',)
     TO_STATE: ClassVar[str] = 'HELD'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'disposition')
+    EPOCH_EFFECT: ClassVar[str] = 'none'
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'disposition')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -1139,6 +1263,9 @@ class ReconcileRejectRestoreHold:
     protocol_epoch: str
     movement_id: str
     base_key: str
+    trigger_event: str
+    from_state: str
+    to_state: str
     authority: str
     epoch_before: str
     epoch_after: str
@@ -1149,10 +1276,10 @@ class ReconcileRejectRestoreHold:
     subject_digest: Optional[str] = None
     attempt_id: Optional[str] = None
     reason: Optional[str] = None
-    from_state: str = 'HELD'  # audit `from` — validated ∈ FROM_STATES
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        _validate_row_audit_fields(self)
         if self.disposition is not ReconcileDisposition.REJECT_RESTORE_HOLD:
             raise ValueError("ReconcileRejectRestoreHold requires REJECT_RESTORE_HOLD")
 
@@ -1165,7 +1292,8 @@ class ReconcileReplayIdentity:
     ROW: ClassVar[str] = "reconcile_replay_identity"
     FROM_STATES: ClassVar[tuple[str, ...]] = ('RECONCILED',)
     TO_STATE: ClassVar[str] = 'RECONCILED'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'disposition')
+    EPOCH_EFFECT: ClassVar[str] = 'none'
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'disposition')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -1179,6 +1307,9 @@ class ReconcileReplayIdentity:
     protocol_epoch: str
     movement_id: str
     base_key: str
+    trigger_event: str
+    from_state: str
+    to_state: str
     authority: str
     epoch_before: str
     epoch_after: str
@@ -1189,10 +1320,10 @@ class ReconcileReplayIdentity:
     subject_digest: Optional[str] = None
     attempt_id: Optional[str] = None
     reason: Optional[str] = None
-    from_state: str = 'RECONCILED'  # audit `from` — validated ∈ FROM_STATES
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        _validate_row_audit_fields(self)
         # a replay repeats the operator-accepting disposition it echoes
         if self.disposition not in OPERATOR_ACCEPTING_DISPOSITIONS:
             raise ValueError(f"ReconcileReplayIdentity: replay disposition must be "
@@ -1207,7 +1338,8 @@ class ObserveDelta:
     ROW: ClassVar[str] = "observe_delta_create"
     FROM_STATES: ClassVar[tuple[str, ...]] = ('GENESIS',)
     TO_STATE: ClassVar[str] = 'HELD_FOREIGN'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'base_key', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'delta_old_oid', 'delta_new_oid')
+    EPOCH_EFFECT: ClassVar[str] = 'none'
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'delta_old_oid', 'delta_new_oid')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'hold_id', 'source_delivery_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id', 'disposition')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -1220,6 +1352,9 @@ class ObserveDelta:
     trace_id: str
     protocol_epoch: str
     base_key: str
+    trigger_event: str
+    from_state: str
+    to_state: str
     epoch_before: str
     epoch_after: str
     ref: str
@@ -1237,10 +1372,10 @@ class ObserveDelta:
     matched_subject_digest: Optional[str] = None
     matched_movement_id: Optional[str] = None
     disposition: Optional[ReconcileDisposition] = None
-    from_state: str = 'GENESIS'  # audit `from` — validated ∈ FROM_STATES
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        _validate_row_audit_fields(self)
 
 @dataclass(frozen=True)
 class ObserveDeltaRedelivery:
@@ -1251,7 +1386,8 @@ class ObserveDeltaRedelivery:
     ROW: ClassVar[str] = "observe_delta_redelivery_noop"
     FROM_STATES: ClassVar[tuple[str, ...]] = ('HELD_FOREIGN', 'RELEASED', 'STANDING')
     TO_STATE: ClassVar[str] = 'unchanged'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'base_key', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'source_delivery_id')
+    EPOCH_EFFECT: ClassVar[str] = 'none'
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'source_delivery_id')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'hold_id', 'delta_old_oid', 'delta_new_oid', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id', 'disposition')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -1264,6 +1400,9 @@ class ObserveDeltaRedelivery:
     trace_id: str
     protocol_epoch: str
     base_key: str
+    trigger_event: str
+    from_state: str
+    to_state: str
     epoch_before: str
     epoch_after: str
     ref: str
@@ -1281,10 +1420,10 @@ class ObserveDeltaRedelivery:
     matched_subject_digest: Optional[str] = None
     matched_movement_id: Optional[str] = None
     disposition: Optional[ReconcileDisposition] = None
-    from_state: str = 'HELD_FOREIGN'  # audit `from` — validated ∈ FROM_STATES
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        _validate_row_audit_fields(self)
 
 @dataclass(frozen=True)
 class ObserveDeltaNewDeliveryOnOpenHold:
@@ -1295,7 +1434,8 @@ class ObserveDeltaNewDeliveryOnOpenHold:
     ROW: ClassVar[str] = "observe_delta_new_delivery_open_hold"
     FROM_STATES: ClassVar[tuple[str, ...]] = ('HELD_FOREIGN', 'STANDING')
     TO_STATE: ClassVar[str] = 'unchanged'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'base_key', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'source_delivery_id', 'delta_old_oid', 'delta_new_oid')
+    EPOCH_EFFECT: ClassVar[str] = 'none'
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'source_delivery_id', 'delta_old_oid', 'delta_new_oid')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'hold_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id', 'disposition')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
@@ -1308,6 +1448,9 @@ class ObserveDeltaNewDeliveryOnOpenHold:
     trace_id: str
     protocol_epoch: str
     base_key: str
+    trigger_event: str
+    from_state: str
+    to_state: str
     epoch_before: str
     epoch_after: str
     ref: str
@@ -1325,10 +1468,10 @@ class ObserveDeltaNewDeliveryOnOpenHold:
     matched_subject_digest: Optional[str] = None
     matched_movement_id: Optional[str] = None
     disposition: Optional[ReconcileDisposition] = None
-    from_state: str = 'HELD_FOREIGN'  # audit `from` — validated ∈ FROM_STATES
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        _validate_row_audit_fields(self)
 
 @dataclass(frozen=True)
 class ActorVerifiedAuto:
@@ -1339,9 +1482,10 @@ class ActorVerifiedAuto:
     ROW: ClassVar[str] = "actor_verified_match"
     FROM_STATES: ClassVar[tuple[str, ...]] = ('HELD_FOREIGN',)
     TO_STATE: ClassVar[str] = 'RELEASED'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'base_key', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'actor_node_id', 'matched_subject_digest')
-    OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id', 'delta_old_oid', 'delta_new_oid', 'source_delivery_id', 'matched_movement_id', 'disposition')
-    FORBIDDEN: ClassVar[tuple[str, ...]] = ()
+    EPOCH_EFFECT: ClassVar[str] = 'as_accept_ours'
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'actor_node_id', 'matched_subject_digest', 'source_delivery_id')
+    OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'delta_old_oid', 'delta_new_oid', 'matched_movement_id', 'disposition')
+    FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {'actor_verification': 'VERIFIED_API', 'disposition': 'ACTOR_VERIFIED_AUTO'}
 
     schema_major: int
@@ -1352,6 +1496,9 @@ class ActorVerifiedAuto:
     trace_id: str
     protocol_epoch: str
     base_key: str
+    trigger_event: str
+    from_state: str
+    to_state: str
     epoch_before: str
     epoch_after: str
     ref: str
@@ -1361,19 +1508,18 @@ class ActorVerifiedAuto:
     hold_id: str
     actor_node_id: str
     matched_subject_digest: str
+    source_delivery_id: str
     subject_digest: Optional[str] = None
     movement_id: Optional[str] = None
     attempt_id: Optional[str] = None
-    authorization_id: Optional[str] = None
     delta_old_oid: Optional[str] = None
     delta_new_oid: Optional[str] = None
-    source_delivery_id: Optional[str] = None
     matched_movement_id: Optional[str] = None
     disposition: Optional[ReconcileDisposition] = None
-    from_state: str = 'HELD_FOREIGN'  # audit `from` — validated ∈ FROM_STATES
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        _validate_row_audit_fields(self)
         if self.actor_verification is not ActorVerification.VERIFIED_API:
             raise ValueError("ActorVerifiedAuto.actor_verification must be VERIFIED_API")
         if self.disposition is not ReconcileDisposition.ACTOR_VERIFIED_AUTO:
@@ -1393,9 +1539,10 @@ class HoldReconcileAccept:
     ROW: ClassVar[str] = "hold_reconcile_accept"
     FROM_STATES: ClassVar[tuple[str, ...]] = ('HELD_FOREIGN', 'STANDING')
     TO_STATE: ClassVar[str] = 'RELEASED'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'base_key', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'disposition')
-    OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id', 'delta_old_oid', 'delta_new_oid', 'source_delivery_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id')
-    FORBIDDEN: ClassVar[tuple[str, ...]] = ()
+    EPOCH_EFFECT: ClassVar[str] = 'per_disposition'
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'disposition')
+    OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'delta_old_oid', 'delta_new_oid', 'source_delivery_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id')
+    FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
 
     schema_major: int
@@ -1406,6 +1553,9 @@ class HoldReconcileAccept:
     trace_id: str
     protocol_epoch: str
     base_key: str
+    trigger_event: str
+    from_state: str
+    to_state: str
     epoch_before: str
     epoch_after: str
     ref: str
@@ -1417,17 +1567,16 @@ class HoldReconcileAccept:
     subject_digest: Optional[str] = None
     movement_id: Optional[str] = None
     attempt_id: Optional[str] = None
-    authorization_id: Optional[str] = None
     delta_old_oid: Optional[str] = None
     delta_new_oid: Optional[str] = None
     source_delivery_id: Optional[str] = None
     actor_node_id: Optional[str] = None
     matched_subject_digest: Optional[str] = None
     matched_movement_id: Optional[str] = None
-    from_state: str = 'HELD_FOREIGN'  # audit `from` — validated ∈ FROM_STATES
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        _validate_row_audit_fields(self)
         # operator_reconcile can carry only operator-mintable accepting
         # dispositions — ACTOR_VERIFIED_AUTO/STANDING are section-B-only,
         # and the auto disposition is mintable solely by ActorVerifiedAuto.
@@ -1444,9 +1593,10 @@ class HoldReconcileRejectRestoreHold:
     ROW: ClassVar[str] = "hold_reconcile_reject_restore_hold"
     FROM_STATES: ClassVar[tuple[str, ...]] = ('HELD_FOREIGN', 'STANDING')
     TO_STATE: ClassVar[str] = 'HELD_FOREIGN'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'base_key', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'disposition')
-    OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id', 'delta_old_oid', 'delta_new_oid', 'source_delivery_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id')
-    FORBIDDEN: ClassVar[tuple[str, ...]] = ()
+    EPOCH_EFFECT: ClassVar[str] = 'none'
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'disposition')
+    OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'delta_old_oid', 'delta_new_oid', 'source_delivery_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id')
+    FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
 
     schema_major: int
@@ -1457,6 +1607,9 @@ class HoldReconcileRejectRestoreHold:
     trace_id: str
     protocol_epoch: str
     base_key: str
+    trigger_event: str
+    from_state: str
+    to_state: str
     epoch_before: str
     epoch_after: str
     ref: str
@@ -1468,17 +1621,16 @@ class HoldReconcileRejectRestoreHold:
     subject_digest: Optional[str] = None
     movement_id: Optional[str] = None
     attempt_id: Optional[str] = None
-    authorization_id: Optional[str] = None
     delta_old_oid: Optional[str] = None
     delta_new_oid: Optional[str] = None
     source_delivery_id: Optional[str] = None
     actor_node_id: Optional[str] = None
     matched_subject_digest: Optional[str] = None
     matched_movement_id: Optional[str] = None
-    from_state: str = 'HELD_FOREIGN'  # audit `from` — validated ∈ FROM_STATES
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        _validate_row_audit_fields(self)
         if self.disposition is not ReconcileDisposition.REJECT_RESTORE_HOLD:
             raise ValueError("HoldReconcileRejectRestoreHold requires REJECT_RESTORE_HOLD")
 
@@ -1491,9 +1643,10 @@ class HoldReconcileStanding:
     ROW: ClassVar[str] = "hold_reconcile_standing"
     FROM_STATES: ClassVar[tuple[str, ...]] = ('HELD_FOREIGN', 'STANDING')
     TO_STATE: ClassVar[str] = 'STANDING'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'base_key', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'disposition')
-    OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id', 'delta_old_oid', 'delta_new_oid', 'source_delivery_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id')
-    FORBIDDEN: ClassVar[tuple[str, ...]] = ()
+    EPOCH_EFFECT: ClassVar[str] = 'none'
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'disposition')
+    OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'delta_old_oid', 'delta_new_oid', 'source_delivery_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id')
+    FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {'disposition': 'STANDING'}
 
     schema_major: int
@@ -1504,6 +1657,9 @@ class HoldReconcileStanding:
     trace_id: str
     protocol_epoch: str
     base_key: str
+    trigger_event: str
+    from_state: str
+    to_state: str
     epoch_before: str
     epoch_after: str
     ref: str
@@ -1515,17 +1671,16 @@ class HoldReconcileStanding:
     subject_digest: Optional[str] = None
     movement_id: Optional[str] = None
     attempt_id: Optional[str] = None
-    authorization_id: Optional[str] = None
     delta_old_oid: Optional[str] = None
     delta_new_oid: Optional[str] = None
     source_delivery_id: Optional[str] = None
     actor_node_id: Optional[str] = None
     matched_subject_digest: Optional[str] = None
     matched_movement_id: Optional[str] = None
-    from_state: str = 'HELD_FOREIGN'  # audit `from` — validated ∈ FROM_STATES
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        _validate_row_audit_fields(self)
         if self.disposition is not ReconcileDisposition.STANDING:
             raise ValueError("HoldReconcileStanding.disposition must be STANDING")
 
@@ -1538,9 +1693,10 @@ class HoldReconcileReplayIdentity:
     ROW: ClassVar[str] = "hold_reconcile_replay_identity"
     FROM_STATES: ClassVar[tuple[str, ...]] = ('RELEASED',)
     TO_STATE: ClassVar[str] = 'RELEASED'
-    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'base_key', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'disposition')
-    OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id', 'delta_old_oid', 'delta_new_oid', 'source_delivery_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id')
-    FORBIDDEN: ClassVar[tuple[str, ...]] = ()
+    EPOCH_EFFECT: ClassVar[str] = 'none'
+    REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'disposition')
+    OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'delta_old_oid', 'delta_new_oid', 'source_delivery_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id')
+    FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
 
     schema_major: int
@@ -1551,6 +1707,9 @@ class HoldReconcileReplayIdentity:
     trace_id: str
     protocol_epoch: str
     base_key: str
+    trigger_event: str
+    from_state: str
+    to_state: str
     epoch_before: str
     epoch_after: str
     ref: str
@@ -1562,17 +1721,16 @@ class HoldReconcileReplayIdentity:
     subject_digest: Optional[str] = None
     movement_id: Optional[str] = None
     attempt_id: Optional[str] = None
-    authorization_id: Optional[str] = None
     delta_old_oid: Optional[str] = None
     delta_new_oid: Optional[str] = None
     source_delivery_id: Optional[str] = None
     actor_node_id: Optional[str] = None
     matched_subject_digest: Optional[str] = None
     matched_movement_id: Optional[str] = None
-    from_state: str = 'RELEASED'  # audit `from` — validated ∈ FROM_STATES
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        _validate_row_audit_fields(self)
         # a replay repeats the operator-accepting disposition it echoes
         if self.disposition not in OPERATOR_ACCEPTING_DISPOSITIONS:
             raise ValueError(f"HoldReconcileReplayIdentity: replay disposition must be "
@@ -1620,7 +1778,8 @@ class PanelDecided:
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'demanded', 'effective', 'strategy', 'roster_version', 'contributions')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id', 'suppression')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
-    DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {}
+    DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {'demanded': ('SKIP', 'SINGLE', 'FULL'), 'effective': ('SKIP', 'SINGLE', 'FULL'), 'strategy': ('ALL_PARALLEL', 'PROGRESSIVE')}
+    PAIR_RULES: ClassVar[Mapping[str, Mapping[str, object]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -1642,6 +1801,15 @@ class PanelDecided:
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        if self.demanded not in self.DOMAINS['demanded']:
+            raise ValueError(f"PanelDecided.demanded: unknown value "
+                             f"{self.demanded!r} outside the closed domain")
+        if self.effective not in self.DOMAINS['effective']:
+            raise ValueError(f"PanelDecided.effective: unknown value "
+                             f"{self.effective!r} outside the closed domain")
+        if self.strategy not in self.DOMAINS['strategy']:
+            raise ValueError(f"PanelDecided.strategy: unknown value "
+                             f"{self.strategy!r} outside the closed domain")
 
 @dataclass(frozen=True)
 class MergePlanned:
@@ -1651,7 +1819,8 @@ class MergePlanned:
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'subject', 'plan_kind', 'verdict', 'reasons', 'satisfaction')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
-    DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {'plan_kind': ('MERGEABLE', 'UNMERGEABLE')}
+    DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {'plan_kind': ('MERGEABLE', 'UNMERGEABLE'), 'verdict': ('LOW', 'ELEVATED', 'HUMAN_REQUIRED')}
+    PAIR_RULES: ClassVar[Mapping[str, Mapping[str, object]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -1675,6 +1844,9 @@ class MergePlanned:
         if self.plan_kind not in self.DOMAINS['plan_kind']:
             raise ValueError(f"MergePlanned.plan_kind: unknown value "
                              f"{self.plan_kind!r} outside the closed domain")
+        if self.verdict not in self.DOMAINS['verdict']:
+            raise ValueError(f"MergePlanned.verdict: unknown value "
+                             f"{self.verdict!r} outside the closed domain")
 
 @dataclass(frozen=True)
 class ApprovalEvaluated:
@@ -1684,7 +1856,8 @@ class ApprovalEvaluated:
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'review_id', 'actor_node_id', 'commit_oid', 'base_oid', 'in_set', 'assurance', 'outcome')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
-    DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {}
+    DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {'assurance': ('OPERATOR_ATTESTED', 'HUMAN_IDENTITY_ENFORCED', 'NOT_APPLICABLE')}
+    PAIR_RULES: ClassVar[Mapping[str, Mapping[str, object]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -1707,6 +1880,9 @@ class ApprovalEvaluated:
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        if self.assurance not in self.DOMAINS['assurance']:
+            raise ValueError(f"ApprovalEvaluated.assurance: unknown value "
+                             f"{self.assurance!r} outside the closed domain")
 
 @dataclass(frozen=True)
 class AuthorizationGranted:
@@ -1717,6 +1893,7 @@ class AuthorizationGranted:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {'kind': ('AUTO_LOW', 'GITHUB_APPROVAL', 'LIVE_CONSENT'), 'assurance': ('OPERATOR_ATTESTED', 'HUMAN_IDENTITY_ENFORCED', 'NOT_APPLICABLE')}
+    PAIR_RULES: ClassVar[Mapping[str, Mapping[str, object]]] = {'kind': {'field': 'assurance', 'allowed': {'AUTO_LOW': ('NOT_APPLICABLE',), 'GITHUB_APPROVAL': ('OPERATOR_ATTESTED', 'HUMAN_IDENTITY_ENFORCED'), 'LIVE_CONSENT': ('OPERATOR_ATTESTED', 'HUMAN_IDENTITY_ENFORCED')}}}
 
     schema_major: int
     schema_minor: int
@@ -1744,6 +1921,11 @@ class AuthorizationGranted:
         if self.assurance not in self.DOMAINS['assurance']:
             raise ValueError(f"AuthorizationGranted.assurance: unknown value "
                              f"{self.assurance!r} outside the closed domain")
+        _allowed = self.PAIR_RULES['kind']['allowed'].get(self.kind)
+        if _allowed is not None and self.assurance not in _allowed:
+            raise ValueError(
+                f"AuthorizationGranted: kind={self.kind!r} admits "
+                f"assurance {_allowed!r}, got {self.assurance!r}")
 
 @dataclass(frozen=True)
 class Consent:
@@ -1753,7 +1935,8 @@ class Consent:
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'subject', 'evidence_mode', 'assurance')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id', 'suppressed')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
-    DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {'evidence_mode': ('LIVE', 'RERUN', 'ACCEPTED_UNVERIFIED')}
+    DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {'evidence_mode': ('LIVE', 'RERUN', 'ACCEPTED_UNVERIFIED'), 'assurance': ('OPERATOR_ATTESTED', 'HUMAN_IDENTITY_ENFORCED')}
+    PAIR_RULES: ClassVar[Mapping[str, Mapping[str, object]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -1776,6 +1959,9 @@ class Consent:
         if self.evidence_mode not in self.DOMAINS['evidence_mode']:
             raise ValueError(f"Consent.evidence_mode: unknown value "
                              f"{self.evidence_mode!r} outside the closed domain")
+        if self.assurance not in self.DOMAINS['assurance']:
+            raise ValueError(f"Consent.assurance: unknown value "
+                             f"{self.assurance!r} outside the closed domain")
 
 @dataclass(frozen=True)
 class ProtocolGenesis:
@@ -1786,6 +1972,7 @@ class ProtocolGenesis:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {}
+    PAIR_RULES: ClassVar[Mapping[str, Mapping[str, object]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -1817,6 +2004,7 @@ class MergeUnitDeclared:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {}
+    PAIR_RULES: ClassVar[Mapping[str, Mapping[str, object]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -1845,6 +2033,7 @@ class MergeUnitMemberAdded:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {}
+    PAIR_RULES: ClassVar[Mapping[str, Mapping[str, object]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -1872,6 +2061,7 @@ class ProtocolEpochAdvanced:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {}
+    PAIR_RULES: ClassVar[Mapping[str, Mapping[str, object]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -1899,6 +2089,7 @@ class PanelRosterDeclared:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {}
+    PAIR_RULES: ClassVar[Mapping[str, Mapping[str, object]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -1928,6 +2119,7 @@ class PanelRosterAugmented:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {}
+    PAIR_RULES: ClassVar[Mapping[str, Mapping[str, object]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -1954,7 +2146,8 @@ class SeatResult:
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'roster_digest', 'subject_digest', 'attempt_id', 'seat_id', 'verdict', 'findings_digest')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('movement_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
-    DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {}
+    DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {'verdict': ('APPROVE', 'BLOCK')}
+    PAIR_RULES: ClassVar[Mapping[str, Mapping[str, object]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -1974,6 +2167,9 @@ class SeatResult:
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
+        if self.verdict not in self.DOMAINS['verdict']:
+            raise ValueError(f"SeatResult.verdict: unknown value "
+                             f"{self.verdict!r} outside the closed domain")
 
 @dataclass(frozen=True)
 class CompleteClassification:
@@ -1984,6 +2180,7 @@ class CompleteClassification:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {}
+    PAIR_RULES: ClassVar[Mapping[str, Mapping[str, object]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -2013,6 +2210,7 @@ class IncompleteClassification:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {}
+    PAIR_RULES: ClassVar[Mapping[str, Mapping[str, object]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -2126,6 +2324,11 @@ def apply_section_b(state: MachineStateB, event: object) -> MachineStateB:
     if isinstance(event, HoldReconcileAccept):
         return MachineStateB(SectionBState.RELEASED, event.disposition)
     if isinstance(event, HoldReconcileRejectRestoreHold):
+        # "as the HELD_FOREIGN rows"; from STANDING the resolved reading is
+        # schema-driven (STANDING_REJECT_RESTORE_TARGET_NAME — the single
+        # place to change if the author ratifies the other reading).
+        if state.name is SectionBState.STANDING:
+            return MachineStateB(SectionBState[STANDING_REJECT_RESTORE_TARGET_NAME])
         return MachineStateB(SectionBState.HELD_FOREIGN)
     if isinstance(event, HoldReconcileStanding):
         return MachineStateB(SectionBState.STANDING)
@@ -2164,10 +2367,99 @@ def derive_recovery_event_id(base_key: str, movement_id: str) -> str:
     return hashlib.sha256(preimage.encode("utf-8")).hexdigest()
 
 
+def derive_matched_delta_digest(base_key: str, ref: str, delta_old_oid: str,
+                                delta_new_oid: str) -> str:
+    """The PR0 consistency digest binding an ACTOR_VERIFIED_AUTO release to
+    the HOLD'S OWN recorded delta (schema actor_verified_evidence). PR4's
+    webhook protocol supplies provenance; this digest makes self-asserted
+    evidence structurally checkable NOW."""
+    preimage = _preimage([
+        f"subject-base={base_key}", f"subject-ref={ref}",
+        f"subject-old={delta_old_oid}", f"subject-new={delta_new_oid}"])
+    return hashlib.sha256(preimage.encode("utf-8")).hexdigest()
+
+
+# ─── §9 shared objects (generated from schema shared_objects) ───────────────
+
+@dataclass(frozen=True)
+class RequiredClassifier:
+    """ClassifierAuthority REQUIRED variant — exact-variant equality at the
+    fence is dataclass equality over the closed union."""
+
+    config_sha256: str
+    producer_digest: str
+    contract: str
+
+    def line(self) -> str:
+        return f"required:{self.config_sha256}:{self.producer_digest}:{self.contract}"
+
+
+@dataclass(frozen=True)
+class LegacyNoClassifier:
+    """ClassifierAuthority LEGACY variant — constructible only by the LEGACY
+    factory (PR2); never compares equal to any RequiredClassifier."""
+
+    def line(self) -> str:
+        return "legacy"
+
+
+ClassifierAuthority = (RequiredClassifier, LegacyNoClassifier)
+
+
+@dataclass(frozen=True)
+class AuthorityFingerprint:
+    """§9: one generated object the §6.0 fence compares; the classifier sum
+    carries digests/contract in the REQUIRED variant."""
+
+    protocol_epoch: str
+    base_epoch: str
+    subject_digest: str
+    roster_digest: str
+    classifier: object
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.classifier, ClassifierAuthority):
+            raise ValueError(
+                f"AuthorityFingerprint.classifier must be a ClassifierAuthority "
+                f"variant, got {type(self.classifier).__name__}")
+
+
+def subject_digest(*, repo_node_id: str, target: str, base_oid: str,
+                   head_oid: str, diff_sha256: str, classifier: object,
+                   unit_digest: Optional[str] = None) -> str:
+    """§9 canonical subject_digest preimage — exact tag bytes, UTF-8 lines,
+    newline-joined, SHA-256. `target` is the full target line
+    (`pr:<pr_node_id>:<target_ref>` or `ref:<target_ref>` — build with
+    target_pr()/target_ref())."""
+    if not isinstance(classifier, ClassifierAuthority):
+        raise ValueError("subject_digest: classifier must be a "
+                         "ClassifierAuthority variant")
+    preimage = _preimage([
+        f"repo={repo_node_id}", f"target={target}", f"base={base_oid}",
+        f"head={head_oid}", f"diff={diff_sha256}",
+        f"classifier={classifier.line()}",
+        f"unit={unit_digest if unit_digest is not None else 'none'}"])
+    return hashlib.sha256(preimage.encode("utf-8")).hexdigest()
+
+
+def target_pr(pr_node_id: str, target_ref: str) -> str:
+    """PR subjects carry BOTH fields — a retarget changes the digest."""
+    return f"pr:{pr_node_id}:{target_ref}"
+
+
+def target_ref(ref: str) -> str:
+    return f"ref:{ref}"
+
+
 # ─── reducers (T19 skeletons; PR4 hardens against live carriers) ────────────
 
 def _canonical(d: Mapping[str, object]) -> str:
-    return json.dumps({k: v for k, v in d.items() if k != "branch"},
+    """Byte-identity core for duplicate-event_id comparison. `branch` (which
+    carrier copy) and the per-ISSUER envelope fields ts/run_id/trace_id are
+    excluded so independently-issued twins of a DERIVED event (cold-start
+    recovery) converge; every semantic field still diverges loudly."""
+    drop = {"branch", "ts", "run_id", "trace_id"}
+    return json.dumps({k: v for k, v in d.items() if k not in drop},
                       sort_keys=True, separators=(",", ":"))
 
 
@@ -2183,38 +2475,93 @@ def _halt(code: BoundaryErrorCode, detail: str,
 
 
 class _DivergentDuplicate(Exception):
-    def __init__(self, halt: dict):
+    def __init__(self, halt: dict, bases: frozenset):
         super().__init__(halt["detail"])
         self.halt = halt
+        self.bases = bases
 
 
 class _Dedup:
     """Duplicate-event_id absorption with byte-identical enforcement —
-    divergence is an integrity violation (EVENT_PAYLOAD_DIVERGENT). Shared
-    by both reducers AND the epoch fold so the contract cannot drift
-    (panel finding: the fold silently kept the first payload)."""
+    divergence is an integrity violation (EVENT_PAYLOAD_DIVERGENT) that
+    halts EVERY base a copy touched (cross-base reuse is not
+    order-dependent). Shared by both reducers AND the epoch fold."""
 
     def __init__(self) -> None:
-        self._seen: dict[str, str] = {}
+        self._seen: dict[str, tuple[str, str]] = {}
 
-    def check(self, ev: Mapping[str, object]) -> str:
+    def check(self, ev: Mapping[str, object], base: str) -> str:
         """'new' | 'dup'; raises _DivergentDuplicate on divergence or a
         missing envelope event_id."""
         eid = ev.get("event_id")
         if not isinstance(eid, str) or eid == "":
             raise _DivergentDuplicate(_halt(
                 BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
-                f"event missing required envelope field 'event_id': {ev!r}", ev))
+                f"event missing required envelope field 'event_id' "
+                f"(fields present: {sorted(ev)})", ev), frozenset({base}))
         canon = _canonical(ev)
         if eid in self._seen:
-            if self._seen[eid] != canon:
+            seen_canon, seen_base = self._seen[eid]
+            if seen_canon != canon:
                 raise _DivergentDuplicate(_halt(
                     BoundaryErrorCode.EVENT_PAYLOAD_DIVERGENT,
                     f"event_id {eid!r} has divergent payloads — integrity "
-                    f"violation, halt this base", ev))
+                    f"violation, halt this base", ev),
+                    frozenset({base, seen_base}))
             return "dup"
-        self._seen[eid] = canon
+        self._seen[eid] = (canon, base)
         return "new"
+
+
+def _per_base_counts(events: Sequence[Mapping[str, object]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for ev in events:
+        base = str(ev.get("base_key") or "")
+        counts[base] = counts.get(base, 0) + 1
+    return counts
+
+
+def _ceiling_halts(events: Sequence[Mapping[str, object]]) -> dict[str, dict]:
+    """RECOVERY_CEILING per base_key — one busy base never halts another."""
+    return {base: _halt(BoundaryErrorCode.RECOVERY_CEILING,
+                        f"{base or '<no base_key>'}: {n} events exceed the "
+                        f"recovery admission ceiling ({RECOVERY_CEILING_EVENTS})")
+            for base, n in _per_base_counts(events).items()
+            if n > RECOVERY_CEILING_EVENTS}
+
+
+def _intake(dedup: _Dedup, ev: Mapping[str, object], family: str,
+            variants: Mapping[str, type], base_halts: dict[str, dict]):
+    """Shared reducer intake: family filter (§6.0 — 'each reduce filters by
+    event schema name'; missing family is a schema violation, the OTHER
+    family is filtered, not halted), dedup, fail-closed construction.
+    Returns the typed event, or None when the event was consumed (dup /
+    other family / halt recorded)."""
+    base_hint = str(ev.get("base_key") or "")
+    if base_hint in base_halts:
+        return None  # base already halted — isolation, not suppression
+    fam = ev.get("family")
+    if fam is None:
+        base_halts.setdefault(base_hint, _halt(
+            BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+            f"event missing required field 'family' — the reduce filters by "
+            f"event schema name (§6.0) (event_id {ev.get('event_id')!r})", ev))
+        return None
+    if fam != family:
+        return None  # the other stream's events on a shared carrier
+    try:
+        if dedup.check(ev, base_hint) == "dup":
+            return None  # dual-append twin / redelivered copy
+        return build_wire_event(variants, ev)
+    except _DivergentDuplicate as exc:
+        for b in exc.bases:
+            base_halts.setdefault(b, exc.halt)
+    except WireViolation as exc:
+        base_halts.setdefault(base_hint, _halt(exc.code, exc.detail, ev))
+    except ValueError as exc:
+        base_halts.setdefault(base_hint, _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION, str(exc), ev))
+    return None
 
 
 def _fmt_a(st: MachineStateA, via_recovery: bool = False) -> dict:
@@ -2227,90 +2574,95 @@ def reduce_section_a(events: Sequence[Mapping[str, object]]) -> dict:
     """Reduce a durable effect_lifecycle stream through the PROJECTION
     machine (durable states + composed edges), never the live table
     (round 14, codex) — reconcile steps, whose durable states ARE live
-    states, delegate to apply_section_a. Partitioned by base_key.
+    states, delegate to apply_section_a.
 
-    Uniform result shape — success and halt both carry
-    {movements, recovery_appends, halted}; a halted base is never
-    indistinguishable from an empty one, and halt results carry the state
-    reduced so far.
+    Halt isolation is PER base_key: one bad base's halt never suppresses
+    results or recovery appends for healthy bases, and the recovery
+    admission ceiling is counted per base. Result shape is uniform:
+    {movements, recovery_appends, halts} with halts == {} when clean and
+    partial reduced state present for halted bases.
 
     Cold-start step (5): an open PREPARED with no hold and no terminal gets
     a dual-appended {crash_recovery, PREPARED → HELD} with a DERIVED
     event_id; resume-submit is ILLEGAL (round 15, grok)."""
     movements: dict[str, dict[str, MachineStateA]] = {}
     order: list[tuple[str, str]] = []
-
-    def finish(halted: Optional[dict]) -> dict:
-        out: dict[str, dict] = {}
-        recovery: list[dict] = []
-        for base, mid in order:
-            st = movements[base][mid]
-            if halted is None and st.name is SectionAState.PREPARED:
-                recovery.append({
-                    "event_id": derive_recovery_event_id(base, mid),
-                    "movement_id": mid, "base_key": base,
-                    "trigger_event": "crash_recovery",
-                    "from": "PREPARED", "to": "HELD"})
-                out.setdefault(base, {})[mid] = _fmt_a(
-                    MachineStateA(SectionAState.HELD), via_recovery=True)
-            else:
-                out.setdefault(base, {})[mid] = _fmt_a(st)
-        return {"movements": out, "recovery_appends": recovery, "halted": halted}
-
-    if len(events) > RECOVERY_CEILING_EVENTS:
-        return finish(_halt(BoundaryErrorCode.RECOVERY_CEILING,
-                            f"{len(events)} events exceed the recovery "
-                            f"admission ceiling ({RECOVERY_CEILING_EVENTS})"))
+    base_halts: dict[str, dict] = _ceiling_halts(events)
     dedup = _Dedup()
     for ev in events:
-        try:
-            if dedup.check(ev) == "dup":
-                continue  # dual-append twin / redelivered copy
-            event = build_wire_event(EFFECT_VARIANTS, ev)
-        except _DivergentDuplicate as exc:
-            return finish(exc.halt)
-        except WireViolation as exc:
-            return finish(_halt(exc.code, exc.detail, ev))
-        except ValueError as exc:
-            return finish(_halt(BoundaryErrorCode.ILLEGAL_TRANSITION, str(exc), ev))
-        cls = type(event)
-        if cls.TO_STATE in MEMORY_ONLY:
-            return finish(_halt(
-                BoundaryErrorCode.ILLEGAL_TRANSITION,
-                f"memory-only transition {cls.__name__!r} in the durable "
-                f"stream (event_id {ev.get('event_id')!r}) — resume-submit "
-                f"is ILLEGAL", ev))
+        event = _intake(dedup, ev, "effect_lifecycle", EFFECT_VARIANTS, base_halts)
+        if event is None:
+            continue
         base, mid = event.base_key, event.movement_id
-        cur = movements.get(base, {}).get(mid, GENESIS_A)
-        if mid not in movements.get(base, {}):
-            movements.setdefault(base, {})[mid] = GENESIS_A
-            order.append((base, mid))
-        # projection validation: audit `from` must sit on a composed path out
-        # of the current durable state, and the durable pair must be an edge.
-        frontier = PROJECTION_REACHABLE.get(cur.name.value, ())
-        if event.from_state not in frontier:
-            return finish(_halt(
-                BoundaryErrorCode.ILLEGAL_TRANSITION,
-                f"movement {mid}@{base}: durable {cls.__name__!r} audit "
-                f"from={event.from_state!r} unreachable from durable state "
-                f"{cur.name.value} (event_id {ev.get('event_id')!r})", ev))
-        if (cur.name.value, cls.TO_STATE) not in PROJECTION_EDGES:
-            return finish(_halt(
-                BoundaryErrorCode.ILLEGAL_TRANSITION,
-                f"movement {mid}@{base}: no projection edge "
-                f"{cur.name.value} → {cls.TO_STATE} "
-                f"({cls.__name__!r}, event_id {ev.get('event_id')!r})", ev))
-        if cls.TRIGGER == "operator_reconcile":
-            # durable HELD/RECONCILED are live states — delegate to the one
-            # live-table dispatch instead of re-implementing it.
-            try:
-                movements[base][mid] = apply_section_a(cur, event)
-            except IllegalTransitionError as exc:
-                return finish(_halt(BoundaryErrorCode.ILLEGAL_TRANSITION,
-                                    str(exc), ev))
+        if base in base_halts:
+            continue
+        halt = _step_section_a(movements, order, base, mid, event, ev)
+        if halt is not None:
+            base_halts[base] = halt
+    return _finish_section_a(movements, order, base_halts)
+
+
+def _step_section_a(movements, order, base: str, mid: str, event: object,
+                    ev: Mapping[str, object]) -> Optional[dict]:
+    cls = type(event)
+    if cls.TO_STATE in MEMORY_ONLY:
+        return _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION,
+            f"memory-only transition {cls.__name__!r} in the durable stream "
+            f"(event_id {ev.get('event_id')!r}) — resume-submit is ILLEGAL", ev)
+    if cls.EPOCH_EFFECT == "none" and event.epoch_before != event.epoch_after:
+        return _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION,
+            f"movement {mid}@{base}: row {cls.ROW!r} declares no epoch effect "
+            f"but the event advances {event.epoch_before}→{event.epoch_after} "
+            f"(event_id {ev.get('event_id')!r})", ev)
+    cur = movements.get(base, {}).get(mid, GENESIS_A)
+    if mid not in movements.get(base, {}):
+        movements.setdefault(base, {})[mid] = GENESIS_A
+        order.append((base, mid))
+    # projection validation: audit `from` must sit on a composed path out
+    # of the current durable state, and the durable pair must be an edge.
+    frontier = PROJECTION_REACHABLE.get(cur.name.value, ())
+    if event.from_state not in frontier:
+        return _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION,
+            f"movement {mid}@{base}: durable {cls.__name__!r} audit "
+            f"from={event.from_state!r} unreachable from durable state "
+            f"{cur.name.value} (event_id {ev.get('event_id')!r})", ev)
+    if (cur.name.value, cls.TO_STATE) not in PROJECTION_EDGES:
+        return _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION,
+            f"movement {mid}@{base}: no projection edge "
+            f"{cur.name.value} → {cls.TO_STATE} "
+            f"({cls.__name__!r}, event_id {ev.get('event_id')!r})", ev)
+    if cls.TRIGGER == "operator_reconcile":
+        # durable HELD/RECONCILED are live states — delegate to the one
+        # live-table dispatch instead of re-implementing it.
+        try:
+            movements[base][mid] = apply_section_a(cur, event)
+        except IllegalTransitionError as exc:
+            return _halt(BoundaryErrorCode.ILLEGAL_TRANSITION, str(exc), ev)
+    else:
+        movements[base][mid] = MachineStateA(SectionAState[cls.TO_STATE])
+    return None
+
+
+def _finish_section_a(movements, order, base_halts) -> dict:
+    out: dict[str, dict] = {}
+    recovery: list[dict] = []
+    for base, mid in order:
+        st = movements[base][mid]
+        if base not in base_halts and st.name is SectionAState.PREPARED:
+            recovery.append({
+                "event_id": derive_recovery_event_id(base, mid),
+                "movement_id": mid, "base_key": base,
+                "trigger_event": "crash_recovery",
+                "from": "PREPARED", "to": "HELD"})
+            out.setdefault(base, {})[mid] = _fmt_a(
+                MachineStateA(SectionAState.HELD), via_recovery=True)
         else:
-            movements[base][mid] = MachineStateA(SectionAState[cls.TO_STATE])
-    return finish(None)
+            out.setdefault(base, {})[mid] = _fmt_a(st)
+    return {"movements": out, "recovery_appends": recovery, "halts": base_halts}
 
 
 class _HoldBook:
@@ -2352,9 +2704,9 @@ _OBSERVE_EXPECTED = {"redelivery": "ObserveDeltaRedelivery",
 def _admit_hold_event(book: _HoldBook, base: str, event: object,
                       ev: Mapping[str, object]):
     """Resolve which hold an event addresses: the §6.0 apply order for
-    observe_delta (mis-tagged variants and contradicted hold_ids halt),
-    reference lookup for actor/reconcile events (unknown holds halt).
-    Returns (hid, cur, halt)."""
+    observe_delta (mis-tagged variants, contradicted hold_ids AND
+    contradicted delta tuples halt), reference lookup for actor/reconcile
+    events (unknown holds halt). Returns (hid, cur, halt)."""
     cls = type(event)
     if cls.TRIGGER == "observe_delta":
         resolution, hid = _resolve_observe_delta(book, base, event)
@@ -2370,6 +2722,10 @@ def _admit_hold_event(book: _HoldBook, base: str, event: object,
                 f"declared hold_id {event.hold_id!r} contradicts the "
                 f"derived/resolved {hid!r} "
                 f"(event_id {ev.get('event_id')!r})", ev)
+        if resolution in ("redelivery", "record"):
+            halt = _check_delta_against_hold(book, hid, event, ev)
+            if halt is not None:
+                return None, None, halt
         return hid, book.holds.get(hid, GENESIS_B), None
     hid = event.hold_id
     cur = book.holds.get(hid)
@@ -2379,6 +2735,53 @@ def _admit_hold_event(book: _HoldBook, base: str, event: object,
             f"{cls.__name__!r} references unknown hold {hid!r} "
             f"(event_id {ev.get('event_id')!r})", ev)
     return hid, cur, None
+
+
+def _check_delta_against_hold(book: _HoldBook, hid: str, event: object,
+                              ev: Mapping[str, object]) -> Optional[dict]:
+    """A redelivery/record whose DECLARED delta contradicts the hold its
+    source_delivery_id resolves to is an integrity halt — never absorbed as
+    a no-op (fail-open otherwise)."""
+    recorded = book.hold_delta.get(hid)
+    if recorded is None:
+        return None
+    declared = (event.ref, event.delta_old_oid, event.delta_new_oid)
+    for name, decl, rec in zip(("ref", "delta_old_oid", "delta_new_oid"),
+                               declared, recorded):
+        if decl is not None and rec is not None and decl != rec:
+            return _halt(
+                BoundaryErrorCode.ILLEGAL_TRANSITION,
+                f"hold {hid}: declared {name} {decl!r} contradicts the "
+                f"hold's recorded delta {rec!r} "
+                f"(event_id {ev.get('event_id')!r})", ev)
+    return None
+
+
+def _check_actor_verified(book: _HoldBook, base: str, hid: str, event: object,
+                          ev: Mapping[str, object]) -> Optional[dict]:
+    """PR0's structurally-possible ACTOR_VERIFIED_AUTO cross-checks (schema
+    actor_verified_evidence): the release's source_delivery_id must resolve
+    to a delivery recorded ON this hold, and matched_subject_digest must
+    equal the digest derived from the HOLD'S OWN recorded delta. These
+    validate CONSISTENCY, not provenance — the §6.0 webhook verification
+    protocol that establishes provenance is wired in PR4; under SHARED the
+    mode gate already refuses the release."""
+    if event.source_delivery_id not in book.deliveries.get(hid, []):
+        return _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION,
+            f"hold {hid}: ACTOR_VERIFIED_AUTO source_delivery_id "
+            f"{event.source_delivery_id!r} is not a delivery recorded on "
+            f"this hold — self-asserted evidence refused "
+            f"(event_id {ev.get('event_id')!r})", ev)
+    ref, old, new = book.hold_delta[hid]
+    want = derive_matched_delta_digest(base, ref or "", old or "", new or "")
+    if event.matched_subject_digest != want:
+        return _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION,
+            f"hold {hid}: matched_subject_digest does not derive from the "
+            f"hold's recorded delta — self-asserted evidence refused "
+            f"(event_id {ev.get('event_id')!r})", ev)
+    return None
 
 
 def _record_hold_outcome(book: _HoldBook, hid: str, event: object,
@@ -2405,99 +2808,109 @@ def _record_hold_outcome(book: _HoldBook, hid: str, event: object,
 def reduce_section_b(events: Sequence[Mapping[str, object]]) -> dict:
     """Reduce a hold_lifecycle stream into section-B states per
     (base_key, hold_id), implementing §6.0's observe_delta apply order and
-    hold_id derivation for real: the reducer resolves the hold; an event
-    whose variant tag contradicts the resolution, or whose declared hold_id
-    contradicts the derivation, is an integrity halt — fail closed on
-    mis-tagged writers. Redelivery semantics (rounds 17–20): the same
-    source_delivery_id maps to the same hold_id regardless of state; a
-    genuinely NEW delivery after RELEASED derives the next occurrence and
-    parks again. Uniform result shape as reduce_section_a."""
+    hold_id derivation for real. Halt isolation and ceiling are PER
+    base_key (uniform shape: {holds, halts}).
+
+    ACTOR_VERIFIED_AUTO releases are cross-checked against the hold's own
+    record (delivery membership + delta-derived digest) — this reducer
+    validates CONSISTENCY, not provenance; provenance is PR4's webhook
+    protocol (schema actor_verified_evidence). Redelivery semantics
+    (rounds 17–20): same source_delivery_id ⇒ same hold regardless of
+    state; the no-op rows are state-independent, so their audit `from` is
+    validated against FROM_STATES only (a reconcile racing the append must
+    not turn an idempotent no-op into a halt)."""
     books: dict[str, _HoldBook] = {}
     base_order: list[str] = []
-
-    def finish(halted: Optional[dict]) -> dict:
-        out: dict[str, dict] = {}
-        for base in base_order:
-            book = books[base]
-            out[base] = {
-                hid: {"state": book.holds[hid].name.value,
-                      "disposition": (book.holds[hid].disposition.value
-                                      if book.holds[hid].disposition else None),
-                      "deliveries": book.deliveries.get(hid, [])}
-                for hid in book.order}
-        return {"holds": out, "halted": halted}
-
-    if len(events) > RECOVERY_CEILING_EVENTS:
-        return finish(_halt(BoundaryErrorCode.RECOVERY_CEILING,
-                            f"{len(events)} events exceed the recovery "
-                            f"admission ceiling ({RECOVERY_CEILING_EVENTS})"))
+    base_halts: dict[str, dict] = _ceiling_halts(events)
     dedup = _Dedup()
     for ev in events:
-        try:
-            if dedup.check(ev) == "dup":
-                continue
-            event = build_wire_event(HOLD_VARIANTS, ev)
-        except _DivergentDuplicate as exc:
-            return finish(exc.halt)
-        except WireViolation as exc:
-            return finish(_halt(exc.code, exc.detail, ev))
-        except ValueError as exc:
-            return finish(_halt(BoundaryErrorCode.ILLEGAL_TRANSITION, str(exc), ev))
+        event = _intake(dedup, ev, "hold_lifecycle", HOLD_VARIANTS, base_halts)
+        if event is None:
+            continue
         base = event.base_key
+        if base in base_halts:
+            continue
         book = books.get(base)
         if book is None:
             book = books[base] = _HoldBook()
             base_order.append(base)
-        hid, cur, halt = _admit_hold_event(book, base, event, ev)
+        halt = _step_section_b(book, base, event, ev)
         if halt is not None:
-            return finish(halt)
-        if event.from_state != cur.name.value:
-            return finish(_halt(
-                BoundaryErrorCode.ILLEGAL_TRANSITION,
-                f"hold {hid}: audit from={event.from_state!r} contradicts "
-                f"the reduced state {cur.name.value} "
-                f"(event_id {ev.get('event_id')!r})", ev))
-        try:
-            new = apply_section_b(cur, event)
-        except IllegalTransitionError as exc:
-            return finish(_halt(BoundaryErrorCode.ILLEGAL_TRANSITION, str(exc), ev))
-        _record_hold_outcome(book, hid, event, cur, new)
-    return finish(None)
+            base_halts[base] = halt
+    out: dict[str, dict] = {}
+    for base in base_order:
+        book = books[base]
+        out[base] = {
+            hid: {"state": book.holds[hid].name.value,
+                  "disposition": (book.holds[hid].disposition.value
+                                  if book.holds[hid].disposition else None),
+                  "deliveries": book.deliveries.get(hid, [])}
+            for hid in book.order}
+    return {"holds": out, "halts": base_halts}
+
+
+def _step_section_b(book: _HoldBook, base: str, event: object,
+                    ev: Mapping[str, object]) -> Optional[dict]:
+    cls = type(event)
+    if cls.EPOCH_EFFECT == "none" and event.epoch_before != event.epoch_after:
+        return _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION,
+            f"{base}: row {cls.ROW!r} declares no epoch effect but the event "
+            f"advances {event.epoch_before}→{event.epoch_after} "
+            f"(event_id {ev.get('event_id')!r})", ev)
+    hid, cur, halt = _admit_hold_event(book, base, event, ev)
+    if halt is not None:
+        return halt
+    # The `unchanged` no-op rows are state-independent by design — their
+    # audit `from` is already constrained to FROM_STATES at construction;
+    # every state-changing row must name the reduced state exactly.
+    if cls.TO_STATE != "unchanged" and event.from_state != cur.name.value:
+        return _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION,
+            f"hold {hid}: audit from={event.from_state!r} contradicts the "
+            f"reduced state {cur.name.value} "
+            f"(event_id {ev.get('event_id')!r})", ev)
+    if isinstance(event, ActorVerifiedAuto):
+        halt = _check_actor_verified(book, base, hid, event, ev)
+        if halt is not None:
+            return halt
+    try:
+        new = apply_section_b(cur, event)
+    except IllegalTransitionError as exc:
+        return _halt(BoundaryErrorCode.ILLEGAL_TRANSITION, str(exc), ev)
+    _record_hold_outcome(book, hid, event, cur, new)
+    return None
 
 
 def fold_epochs(events: Sequence[Mapping[str, object]],
                 anchors: Mapping[str, str]) -> dict:
-    """The §6.0 recovery-step-(3) epoch fold, per base_key: edges are only
-    epoch-ADVANCING transitions (epoch_before ≠ epoch_after), deduplicated
-    by event_id (divergent duplicates halt — the same _Dedup contract as
-    the reducers), walked from the protocol_genesis anchor consuming unused
-    edges. O(E): edges are bucketed by epoch_before once. Exactly one
-    candidate successor continues; zero with no unused edges is the valid
-    tail; zero WITH unused edges is a gap ⇒ halt; more than one is a fork
-    ⇒ halt; cycles or reused epochs ⇒ halt. A base that has edges but NO
-    anchor is a typed halt, never silently dropped. Halt details name the
-    offending epochs and event_ids."""
-    if len(events) > RECOVERY_CEILING_EVENTS:
-        return {base: {"status": "halt", "epoch": anchor,
-                       "halt": _halt(BoundaryErrorCode.RECOVERY_CEILING,
-                                     f"{len(events)} events exceed the "
-                                     f"recovery admission ceiling "
-                                     f"({RECOVERY_CEILING_EVENTS})")}
-                for base, anchor in sorted(anchors.items())}
+    """The §6.0 recovery-step-(3) epoch fold, per base_key. Edges are only
+    epoch-ADVANCING transitions, but EVERY event with an event_id is
+    registered for dedup FIRST — a divergent no-effect twin halts instead
+    of silently advancing, and a cross-base reuse halts every base a copy
+    touched. Halt isolation and the recovery ceiling are per base; a base
+    with edges but no anchor is a typed halt on every path (ceiling
+    included), and a ceiling breach with empty anchors still returns an
+    explicit halt entry — never {} silently."""
+    base_halts: dict[str, dict] = _ceiling_halts(events)
     dedup = _Dedup()
     edges_by_base: dict[str, list[Mapping[str, object]]] = {}
-    base_halts: dict[str, dict] = {}
     for ev in events:
+        base = str(ev.get("base_key") or "")
+        if base in base_halts:
+            continue
+        # dedup BEFORE the no-effect filter (panel round 2: a divergent
+        # duplicate must never slip in as a legitimate edge).
+        try:
+            if dedup.check(ev, base) == "dup":
+                continue  # carrier copies of one advance share an event_id
+        except _DivergentDuplicate as exc:
+            for b in exc.bases:
+                base_halts.setdefault(b, exc.halt)
+            continue
         eb, ea = ev.get("epoch_before"), ev.get("epoch_after")
         if eb is None or ea is None or eb == ea:
             continue  # no-effect pairs are not edges (round 16, codex)
-        base = str(ev.get("base_key") or "")
-        try:
-            if dedup.check(ev) == "dup":
-                continue  # carrier copies of one advance share an event_id
-        except _DivergentDuplicate as exc:
-            base_halts.setdefault(base, exc.halt)
-            continue
         if not base:
             base_halts.setdefault("", _halt(
                 BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
@@ -2680,12 +3093,19 @@ class SeatResultRecord:
 
 def required_seats(intensity: PanelIntensity, roster: RosterSnapshot) -> tuple[str, ...]:
     """required_seats(FULL) = all roster seats; required_seats(SINGLE) =
-    {designated_single_id}; SKIP demands no seats (§5.1/§5.2)."""
+    {designated_single_id}; SKIP demands no seats (§5.1/§5.2). The dispatch
+    is EXHAUSTIVE with a raising else arm: a raw int (PanelIntensity is an
+    IntEnum, so `2 == FULL` compares true), a string or None must never
+    fall through to the permissive zero-seat value, which aggregate maps to
+    NOT_APPLICABLE and §5.2 routes to a gate-satisfying satisfaction."""
     if intensity is PanelIntensity.FULL:
         return tuple(roster.ordered_seat_ids)
     if intensity is PanelIntensity.SINGLE:
         return (roster.designated_single_id,)
-    return ()
+    if intensity is PanelIntensity.SKIP:
+        return ()
+    raise TypeError(f"required_seats(): {intensity!r} is not a PanelIntensity "
+                    f"member — the intensity domain is closed")
 
 
 def blocking(outcome: object) -> bool:

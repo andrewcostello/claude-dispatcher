@@ -1,6 +1,6 @@
 {
   "machine": "section_b",
-  "note": "SEPARATED + VERIFIED_API + node id + matched subject: auto-release as ACTOR_VERIFIED_AUTO",
+  "note": "SEPARATED + VERIFIED_API + node id + a delivery recorded ON this hold + a matched digest deriving from the HOLD'S OWN delta: auto-release as ACTOR_VERIFIED_AUTO",
   "events": [
     {
       "schema_major": 1,
@@ -12,6 +12,7 @@
       "protocol_epoch": "E0",
       "family": "hold_lifecycle",
       "variant": "ObserveDelta",
+      "trigger_event": "observe_delta",
       "base_key": "R1:refs/heads/main",
       "from": "GENESIS",
       "to": "HELD_FOREIGN",
@@ -35,6 +36,7 @@
       "protocol_epoch": "E0",
       "family": "hold_lifecycle",
       "variant": "ActorVerifiedAuto",
+      "trigger_event": "actor_verified_match",
       "base_key": "R1:refs/heads/main",
       "from": "HELD_FOREIGN",
       "to": "RELEASED",
@@ -46,7 +48,8 @@
       "epoch_after": "E0",
       "hold_id": "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724",
       "actor_node_id": "N-op",
-      "matched_subject_digest": "subj-1",
+      "matched_subject_digest": "5c783731590b0f76498792e7a5634ef6002ce1da77b7b588914152f458925686",
+      "source_delivery_id": "d1",
       "disposition": "ACTOR_VERIFIED_AUTO"
     }
   ]

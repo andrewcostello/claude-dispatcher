@@ -43,7 +43,7 @@
       "file": "truncation.bin",
       "expect": "reject",
       "reason_code": "OUTER_LEN_MISMATCH",
-      "reason": "frame cut short mid-diff",
+      "reason": "frame cut short mid-diff \u2014 the outer-length equality breaks first",
       "sha256": "06fc4acc2aac10a3bb57026d4c247ce3f810a124701d8eb94630f23f565ea9af",
       "bytes": 173
     },
@@ -52,9 +52,18 @@
       "file": "trailing_data.bin",
       "expect": "reject",
       "reason_code": "OUTER_LEN_MISMATCH",
-      "reason": "bytes after the last declared field",
+      "reason": "octets appended after the frame break the OUTER length equality first \u2014 TRAILING_BYTES (inside a consistent outer frame) is the separate trailing_bytes case",
       "sha256": "c43176a19a0702ec8652cb42396c73daaf6827c2aa355c24d94d3d7ecb583588",
       "bytes": 185
+    },
+    {
+      "name": "trailing_bytes",
+      "file": "trailing_bytes.bin",
+      "expect": "reject",
+      "reason_code": "TRAILING_BYTES",
+      "reason": "outer_len consistent, but octets remain inside the body after the last declared field",
+      "sha256": "5c9113c6ff762a7d3d7d973f0a80a0c50828bfc1919deaee571980c80cdd1352",
+      "bytes": 184
     },
     {
       "name": "empty_frame",
@@ -97,7 +106,7 @@
       "file": "bad_version.bin",
       "expect": "reject",
       "reason_code": "UNKNOWN_VERSION",
-      "reason": "version octet is 2",
+      "reason": "version octet is 2, contract pins 1",
       "sha256": "735f332159b4961e7b438a86046555a74ac7b61fa090e9aca218afd15fecb3cc",
       "bytes": 180
     },

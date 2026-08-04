@@ -120,15 +120,74 @@ vectors:
     -old
     +new
   cases:
-    - {name: valid_frame,      file: valid_frame.bin,      expect: accept}
-    - {name: malformed_length, file: malformed_length.bin, expect: reject, reason_code: POLICY_LEN_MISMATCH, reason: policy_len exceeds the frame's remaining octets}
-    - {name: truncation,       file: truncation.bin,       expect: reject, reason_code: OUTER_LEN_MISMATCH, reason: frame cut short mid-diff}
-    - {name: trailing_data,    file: trailing_data.bin,    expect: reject, reason_code: OUTER_LEN_MISMATCH, reason: bytes after the last declared field}
-    - {name: empty_frame,      file: empty_frame.bin,      expect: reject, reason_code: EMPTY_BODY, reason: outer_len declares an empty body — no version octet}
-    - {name: short_outer_len,  file: short_outer_len.bin,  expect: reject, reason_code: TRUNCATED_OUTER_LEN, reason: fewer than 4 octets on the wire}
-    - {name: cut_in_policy_len, file: cut_in_policy_len.bin, expect: reject, reason_code: TRUNCATED_POLICY_LEN, reason: frame ends inside the policy_len field itself}
-    - {name: cut_in_diff_len,  file: cut_in_diff_len.bin,  expect: reject, reason_code: TRUNCATED_DIFF_LEN, reason: frame ends inside the diff_len field itself}
-    - {name: bad_version,      file: bad_version.bin,      expect: reject, reason_code: UNKNOWN_VERSION, reason: version octet is 2, contract pins 1}
-    - {name: inner_diff_truncation, file: inner_diff_truncation.bin, expect: reject, reason_code: DIFF_LEN_MISMATCH, reason: diff_len exceeds the remaining octets with a consistent outer_len}
-    - {name: policy_over_bound, file: policy_over_bound.bin, expect: reject, reason_code: POLICY_BOUND_EXCEEDED, reason: declared policy_len of 2 MiB exceeds the 1 MiB bound — rejected before materialization}
-    - {name: diff_over_bound,  file: diff_over_bound.bin,  expect: reject, reason_code: DIFF_BOUND_EXCEEDED, reason: declared diff_len of 11 MiB exceeds the 10 MiB bound — rejected before materialization}
+    # Block style; scalars quoted where they contain commas (a YAML flow
+    # scalar terminates at a comma — panel round 2 found a truncated reason
+    # plus a stray null key from exactly that).
+    - name: valid_frame
+      file: valid_frame.bin
+      expect: accept
+    - name: malformed_length
+      file: malformed_length.bin
+      expect: reject
+      reason_code: POLICY_LEN_MISMATCH
+      reason: policy_len exceeds the frame's remaining octets
+    - name: truncation
+      file: truncation.bin
+      expect: reject
+      reason_code: OUTER_LEN_MISMATCH
+      reason: frame cut short mid-diff — the outer-length equality breaks first
+    - name: trailing_data
+      file: trailing_data.bin
+      expect: reject
+      reason_code: OUTER_LEN_MISMATCH
+      reason: >-
+        octets appended after the frame break the OUTER length equality
+        first — TRAILING_BYTES (inside a consistent outer frame) is the
+        separate trailing_bytes case
+    - name: trailing_bytes
+      file: trailing_bytes.bin
+      expect: reject
+      reason_code: TRAILING_BYTES
+      reason: >-
+        outer_len consistent, but octets remain inside the body after the
+        last declared field
+    - name: empty_frame
+      file: empty_frame.bin
+      expect: reject
+      reason_code: EMPTY_BODY
+      reason: outer_len declares an empty body — no version octet
+    - name: short_outer_len
+      file: short_outer_len.bin
+      expect: reject
+      reason_code: TRUNCATED_OUTER_LEN
+      reason: fewer than 4 octets on the wire
+    - name: cut_in_policy_len
+      file: cut_in_policy_len.bin
+      expect: reject
+      reason_code: TRUNCATED_POLICY_LEN
+      reason: frame ends inside the policy_len field itself
+    - name: cut_in_diff_len
+      file: cut_in_diff_len.bin
+      expect: reject
+      reason_code: TRUNCATED_DIFF_LEN
+      reason: frame ends inside the diff_len field itself
+    - name: bad_version
+      file: bad_version.bin
+      expect: reject
+      reason_code: UNKNOWN_VERSION
+      reason: "version octet is 2, contract pins 1"
+    - name: inner_diff_truncation
+      file: inner_diff_truncation.bin
+      expect: reject
+      reason_code: DIFF_LEN_MISMATCH
+      reason: diff_len exceeds the remaining octets with a consistent outer_len
+    - name: policy_over_bound
+      file: policy_over_bound.bin
+      expect: reject
+      reason_code: POLICY_BOUND_EXCEEDED
+      reason: declared policy_len of 2 MiB exceeds the 1 MiB bound — rejected before materialization
+    - name: diff_over_bound
+      file: diff_over_bound.bin
+      expect: reject
+      reason_code: DIFF_BOUND_EXCEEDED
+      reason: declared diff_len of 11 MiB exceeds the 10 MiB bound — rejected before materialization

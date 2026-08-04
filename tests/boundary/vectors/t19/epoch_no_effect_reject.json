@@ -12,7 +12,8 @@
       "protocol_epoch": "E0",
       "base_key": "R1:refs/heads/main",
       "epoch_before": "E0",
-      "epoch_after": "E0"
+      "epoch_after": "E0",
+      "family": "effect_lifecycle"
     },
     {
       "schema_major": 1,
@@ -24,7 +25,8 @@
       "protocol_epoch": "E0",
       "base_key": "R1:refs/heads/main",
       "epoch_before": "E0",
-      "epoch_after": "E0"
+      "epoch_after": "E0",
+      "family": "effect_lifecycle"
     }
   ],
   "anchors": {

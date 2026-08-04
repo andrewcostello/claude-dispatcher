@@ -1,0 +1,35 @@
+{
+  "machine": "epoch_fold",
+  "note": "DENY: a NO-EFFECT copy and an advancing copy sharing one event_id \u2014 dedup registers before the no-effect filter, so the divergence halts instead of the advance slipping in as a legitimate edge",
+  "events": [
+    {
+      "schema_major": 1,
+      "schema_minor": 0,
+      "event_id": "e1",
+      "ts": "1970-01-01T00:00:00Z",
+      "run_id": "run-1",
+      "trace_id": "trace-1",
+      "protocol_epoch": "E0",
+      "base_key": "R1:refs/heads/main",
+      "epoch_before": "E0",
+      "epoch_after": "E0",
+      "family": "effect_lifecycle"
+    },
+    {
+      "schema_major": 1,
+      "schema_minor": 0,
+      "event_id": "e1",
+      "ts": "1970-01-01T00:00:00Z",
+      "run_id": "run-1",
+      "trace_id": "trace-1",
+      "protocol_epoch": "E0",
+      "base_key": "R1:refs/heads/main",
+      "epoch_before": "E0",
+      "epoch_after": "E1",
+      "family": "effect_lifecycle"
+    }
+  ],
+  "anchors": {
+    "R1:refs/heads/main": "E0"
+  }
+}

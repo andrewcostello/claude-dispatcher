@@ -1,0 +1,30 @@
+{
+  "machine": "section_b",
+  "note": "DENY: the section-B creation row declares `epoch effect: none` \u2014 an observe_delta cannot advance the base epoch",
+  "events": [
+    {
+      "schema_major": 1,
+      "schema_minor": 0,
+      "event_id": "h1",
+      "ts": "1970-01-01T00:00:00Z",
+      "run_id": "run-1",
+      "trace_id": "trace-1",
+      "protocol_epoch": "E0",
+      "family": "hold_lifecycle",
+      "variant": "ObserveDelta",
+      "trigger_event": "observe_delta",
+      "base_key": "R1:refs/heads/main",
+      "from": "GENESIS",
+      "to": "HELD_FOREIGN",
+      "ref": "refs/heads/main",
+      "mode": "SHARED",
+      "actor_verification": "DISPLAY_ONLY",
+      "actor_display": "someone",
+      "epoch_before": "E0",
+      "epoch_after": "E1",
+      "delta_old_oid": "o0",
+      "delta_new_oid": "o1",
+      "source_delivery_id": "d1"
+    }
+  ]
+}
