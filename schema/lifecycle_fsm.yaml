@@ -178,8 +178,32 @@ section_a:
       # trace_id. For every other event the comparison is the full
       # canonical payload — the design's rule is unqualified.
       canonical_excludes_always: [branch]
-      canonical_excludes_for_derived_ids: [ts, run_id, trace_id]
-      derived_id_kinds: [crash_recovery]
+      # For a DERIVED event_id the identity IS the derivation key, so two
+      # independent issuers that reach the same correct conclusion must
+      # converge. Comparing their decoration (timestamps, run/trace ids,
+      # fingerprints, actor context, the fence they happened to read) turns
+      # agreement into a permanent EVENT_PAYLOAD_DIVERGENT halt — the exact
+      # failure the derived id exists to prevent. So the comparison for a
+      # derived id is a POSITIVE core: the row identity plus the fields the
+      # derivation binds. An exclusion list cannot be right here, because
+      # any field added later defaults to "compared" and re-breaks
+      # convergence silently.
+      canonical_core_for_derived_ids:
+        [family, variant, trigger_event, from, to, base_key,
+         movement_id, hold_id, source_delivery_id, disposition]
+      # Every kind whose event_id is derived, with the preimage that
+      # derives it. Two verifiers observing the same delivery on the same
+      # hold mint the same id and converge; previously only crash_recovery
+      # was derived, so a concurrent duplicate of the auto-release halted a
+      # base that had just done the right thing twice.
+      derived_id_kinds:
+        crash_recovery:
+          preimage_lines: ["recovery=crash_recovery", "base=<base_key>",
+                           "movement=<movement_id>"]
+        actor_verified_match:
+          preimage_lines: ["release=actor_verified_match",
+                           "base=<base_key>", "hold=<hold_id>",
+                           "delivery=<source_delivery_id>"]
 
   # The durable reduce runs the PROJECTION machine, not the live table
   # (round 14, codex): durable states + composed edges, generated from this

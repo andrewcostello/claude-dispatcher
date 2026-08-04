@@ -290,6 +290,13 @@ HOLD_BRANCH_REF: str = "refs/heads/dispatcher/integrity-hold"
 
 # Recovery admission ceiling (§6.0 provisional bounds; the elapsed-
 # time half is a PR4 obligation — see schema recovery_ceiling).
+# The to-HELD row's declared hold effect — the recovery append is a
+# real transition on that row, so it carries the row's value.
+_RECOVERY_HOLD_EFFECT: str = 'CREATED'
+# §9-required fields the RECOVERING PROCESS must stamp — derived from
+# the variant's own REQUIRED set, so a field added to §9 later shows
+# up here instead of being silently omitted from the append.
+_RECOVERY_ISSUER_SUPPLIED: tuple[str, ...] = ('ts', 'run_id', 'trace_id', 'protocol_epoch', 'authority', 'epoch_before', 'epoch_after', 'actor_context', 'credential_mode')
 OPEN_HOLD_ADMISSION_CEILING: int = 5
 RECOVERY_CEILING_EVENTS: int = 10000
 RECOVERY_CEILING_REDUCE_SECONDS: int = 30
@@ -373,8 +380,14 @@ SECTION_B_ROWS: tuple[Mapping[str, object], ...] = (
 # never semantic; the per-issuer envelope fields are excluded ONLY
 # for DERIVED event_ids, where independent issuers must converge.
 CANONICAL_EXCLUDES_ALWAYS: frozenset[str] = frozenset(('branch',))
-CANONICAL_EXCLUDES_FOR_DERIVED_IDS: frozenset[str] = frozenset(('ts', 'run_id', 'trace_id'))
-DERIVED_ID_KINDS: frozenset[str] = frozenset(('crash_recovery',))
+CANONICAL_CORE_FOR_DERIVED_IDS: frozenset[str] = frozenset(('family', 'variant', 'trigger_event', 'from', 'to', 'base_key', 'movement_id', 'hold_id', 'source_delivery_id', 'disposition'))
+# {trigger_event: (preimage line templates,)} — every kind whose
+# event_id is DERIVED, so independent issuers converge.
+DERIVED_ID_PREIMAGES: Mapping[str, tuple[str, ...]] = {
+    'crash_recovery': ('recovery=crash_recovery', 'base=<base_key>', 'movement=<movement_id>'),
+    'actor_verified_match': ('release=actor_verified_match', 'base=<base_key>', 'hold=<hold_id>', 'delivery=<source_delivery_id>'),
+}
+DERIVED_ID_KINDS: frozenset[str] = frozenset(DERIVED_ID_PREIMAGES)
 
 # `family` is the event's schema name — a CLOSED domain over every
 # record the protocol defines. Absent/empty/unknown halts; a family
@@ -2638,6 +2651,28 @@ def derive_hold_id(base_key: str, ref: str, delta_old_oid: str,
     return hashlib.sha256(preimage.encode("utf-8")).hexdigest()
 
 
+def derive_event_id(trigger_event: str, **components: object) -> str:
+    """The event_id for a DERIVED kind, from the schema's own preimage
+    template. Two independent issuers that agree on the components mint the
+    same id and converge through the duplicate-event_id dedup."""
+    template = DERIVED_ID_PREIMAGES.get(trigger_event)
+    if template is None:
+        raise ValueError(f"derive_event_id: {trigger_event!r} is not a "
+                         f"derived-id kind {sorted(DERIVED_ID_PREIMAGES)}")
+    lines = []
+    for line in template:
+        tag, _, placeholder = line.partition("=")
+        if placeholder.startswith("<") and placeholder.endswith(">"):
+            key = placeholder[1:-1]
+            if key not in components or components[key] is None:
+                raise ValueError(f"derive_event_id({trigger_event}): "
+                                 f"component {key!r} is absent")
+            lines.append(f"{tag}={components[key]}")
+        else:
+            lines.append(line)
+    return hashlib.sha256(_preimage(lines).encode("utf-8")).hexdigest()
+
+
 def derive_recovery_event_id(base_key: str, movement_id: str) -> str:
     """Deterministic event_id for the cold-start crash_recovery dual-append
     — two concurrent recoveries mint the SAME id and converge through the
@@ -2760,14 +2795,19 @@ def target_ref(ref: str) -> str:
 # ─── reducers (T19 skeletons; PR4 hardens against live carriers) ────────────
 
 def _is_derived_id(d: Mapping[str, object]) -> bool:
-    """True when this event's event_id is DERIVED (cold-start recovery), so
-    two independent issuers legitimately mint the same id."""
-    if str(d.get("trigger_event")) not in DERIVED_ID_KINDS:
+    """True when this event's event_id IS its own derivation, for any
+    derived-id kind — so two independent issuers legitimately mint the same
+    id and must be allowed to converge."""
+    trigger = str(d.get("trigger_event"))
+    if trigger not in DERIVED_ID_PREIMAGES:
         return False
-    base, movement = d.get("base_key"), d.get("movement_id")
-    if not isinstance(base, str) or not isinstance(movement, str):
+    try:
+        expected = derive_event_id(trigger, **{k: d.get(k) for k in
+                                              ("base_key", "movement_id",
+                                               "hold_id", "source_delivery_id")})
+    except ValueError:
         return False
-    return d.get("event_id") == derive_recovery_event_id(base, movement)
+    return d.get("event_id") == expected
 
 
 def _canonical(d: Mapping[str, object]) -> str:
@@ -2777,9 +2817,14 @@ def _canonical(d: Mapping[str, object]) -> str:
     recoveries must converge and cannot agree on ts/run_id/trace_id. For
     every other event the comparison is the FULL canonical payload, as the
     design's unqualified rule requires (panel round 3)."""
-    drop = set(CANONICAL_EXCLUDES_ALWAYS)
     if _is_derived_id(d):
-        drop |= set(CANONICAL_EXCLUDES_FOR_DERIVED_IDS)
+        # POSITIVE core: the row identity plus what the derivation binds.
+        # Everything else is issuer decoration, and comparing it turns two
+        # processes AGREEING into a permanent halt.
+        core = {k: v for k, v in d.items()
+                if k in CANONICAL_CORE_FOR_DERIVED_IDS}
+        return json.dumps(core, sort_keys=True, separators=(",", ":"))
+    drop = set(CANONICAL_EXCLUDES_ALWAYS)
     return json.dumps({k: v for k, v in d.items() if k not in drop},
                       sort_keys=True, separators=(",", ":"))
 
@@ -3348,11 +3393,30 @@ def _finish_section_a(movements, order, base_halts) -> dict:
     for base, mid in order:
         st = movements[base][mid]
         if base not in base_halts and st.name is SectionAState.PREPARED:
+            # A COMPLETE record, not a 6-field stub: this is a durable
+            # state change, so it carries every §9-required field. The
+            # issuer-supplied ones (ts, run/trace ids, authority, actor
+            # context) are the caller's to stamp and are excluded from the
+            # derived-id comparison core precisely so two recovering
+            # processes converge instead of halting the base.
             recovery.append({
-                "event_id": derive_recovery_event_id(base, mid),
-                "movement_id": mid, "base_key": base,
+                "event_id": derive_event_id("crash_recovery", base_key=base,
+                                            movement_id=mid),
+                "schema_major": min(SUPPORTED_SCHEMA_MAJORS),
+                "schema_minor": 0,
+                "family": "effect_lifecycle",
+                "variant": "CrashRecoveryFromPrepared",
                 "trigger_event": "crash_recovery",
-                "from": "PREPARED", "to": "HELD"})
+                "movement_id": mid, "base_key": base,
+                "from": "PREPARED", "to": "HELD",
+                "hold_effect": _RECOVERY_HOLD_EFFECT,
+                # Named, not invented: these are the §9-required fields the
+                # RECOVERING PROCESS must stamp (a reducer cannot know a
+                # timestamp or a run id). They are exactly the fields the
+                # derived-id comparison core excludes, so two processes that
+                # stamp them differently still CONVERGE instead of halting
+                # the base.
+                "issuer_supplied": _RECOVERY_ISSUER_SUPPLIED})
             out.setdefault(base, {})[mid] = _fmt_a(
                 MachineStateA(SectionAState.HELD), via_recovery=True)
         else:
