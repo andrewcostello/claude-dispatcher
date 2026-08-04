@@ -205,6 +205,75 @@ def test_singles_exhaustive_and_domain_validated(schemas, generated):
            kind="AUTO_LOW", assurance="", evidence_ref="ev", actor="d")
 
 
+def _independent_projection(schemas: dict) -> tuple[dict, set]:
+    """Recompute the projection machine from the SCHEMA ROWS by an
+    independent route: breadth-first closure over memory-only states,
+    written from §6.0's rule ("durable states + composed edges ... the
+    live table's paths composed through memory-only states") rather than
+    by calling fsmgen's compose_projection (panel round 2: the authority
+    for the durable reduce had no oracle)."""
+    sec = schemas["lifecycle_fsm"]["section_a"]
+    memory = set(sec["durability"]["memory_only"])
+    durable = set(sec["projection"]["durable_states"])
+    live: dict[str, set[str]] = {}
+    for row in sec["rows"]:
+        if row["to"] in ("ILLEGAL", "unchanged", "terminal"):
+            continue
+        froms = row["from"] if isinstance(row["from"], list) else [row["from"]]
+        if froms == ["any_other"]:
+            continue
+        for f in froms:
+            live.setdefault(f, set()).add(row["to"])
+    reachable, edges = {}, set()
+    for d in durable:
+        frontier, queue = {d}, [d]
+        while queue:
+            for nxt in live.get(queue.pop(), ()):
+                if nxt in memory:
+                    if nxt not in frontier:
+                        frontier.add(nxt)
+                        queue.append(nxt)
+                else:
+                    frontier.add(nxt)
+                    edges.add((d, nxt))
+        reachable[d] = tuple(sorted(s for s in frontier
+                                    if s in memory or s == d))
+    return reachable, edges
+
+
+def test_projection_machine_matches_an_independent_derivation(schemas, generated):
+    """PROJECTION_EDGES / PROJECTION_REACHABLE are the authority for the
+    durable reduce — pinned here against a second, independently written
+    derivation from the schema rows."""
+    reachable, edges = _independent_projection(schemas)
+    assert set(generated.PROJECTION_EDGES) == edges
+    assert dict(generated.PROJECTION_REACHABLE) == reachable
+    # the composed edges must genuinely bridge memory-only states: PREPARED
+    # → EXPLAINED exists only via SUBMITTED/EFFECT_OBSERVED, neither durable.
+    assert ("PREPARED", "EXPLAINED") in edges
+    assert "SUBMITTED" not in {e[0] for e in edges} | {e[1] for e in edges}
+
+
+def test_projection_frontier_violation_is_the_only_failure(generated):
+    """Deny row for the frontier check itself: a durable event whose audit
+    `from` is unreachable from the reduced durable state halts, with every
+    other invariant satisfied (the event is well-formed, the pair is a real
+    projection edge, the epoch algebra holds)."""
+    prep = _wire_effect(generated, "Prepare", "e1", "m1", "GENESIS",
+                        authorization_id="auth-1")
+    to_held = _wire_effect(generated, "MoveToHoldFromPrepared", "e2", "m1",
+                           "PREPARED")
+    # EFFECT_OBSERVED is a legal `from` for Explained (so the row-audit check
+    # passes) but is NOT on any composed path out of the reduced state HELD —
+    # only the FRONTIER check can reject this.
+    bad = _wire_effect(generated, "Explained", "e3", "m1", "EFFECT_OBSERVED",
+                       new_oid="oid-new")
+    got = generated.reduce_section_a([prep, to_held, bad])
+    halt = got["halts"]["R1:refs/heads/main"]
+    assert halt["code"] == "ILLEGAL_TRANSITION"
+    assert "unreachable from durable state" in halt["detail"]
+
+
 def test_durability_partition_is_exclusive_and_total(schemas, generated):
     dur = schemas["lifecycle_fsm"]["section_a"]["durability"]
     parts = [set(dur["durable_state_branch"]), set(dur["memory_only"]),
@@ -232,6 +301,24 @@ _ENUM_BY_FIELD = {
     "protection_mode": _GEN.ProtectionMode,
     "hold_effect": _GEN.HoldEffect,
 }
+
+
+def _wire_effect(generated, variant: str, eid: str, mid: str, frm: str,
+                 base: str = "R1:refs/heads/main", **extra) -> dict:
+    """A well-formed effect_lifecycle WIRE dict (what a reducer consumes),
+    with every §9-required field present."""
+    cls = generated.EFFECT_VARIANTS[variant]
+    to = frm if cls.TO_STATE == "unchanged" else cls.TO_STATE
+    ev = {"schema_major": 1, "schema_minor": 0, "event_id": eid,
+          "ts": "1970-01-01T00:00:00Z", "run_id": "run-1",
+          "trace_id": "trace-1", "protocol_epoch": "E0",
+          "family": "effect_lifecycle", "variant": variant,
+          "trigger_event": cls.TRIGGER, "movement_id": mid, "base_key": base,
+          "from": frm, "to": to, "authority": "fp-1", "epoch_before": "E0",
+          "epoch_after": "E0", "hold_effect": "NONE",
+          "actor_context": "dispatcher", "credential_mode": "SHARED"}
+    ev.update(extra)
+    return ev
 
 
 def _legal_disposition(generated, cls):
@@ -1209,7 +1296,9 @@ def test_t6_every_parametrized_seal_has_a_deny_row(request):
         if not isinstance(item, pytest.Function):
             continue
         fspath = Path(str(item.fspath))
-        if fspath.parent != BOUNDARY_DIR:
+        # design §12 states the rule over tests/boundary AS A WHOLE — a seal
+        # placed in a subpackage must not escape it (panel round 2).
+        if BOUNDARY_DIR not in fspath.parents:
             continue
         callspec = getattr(item, "callspec", None)
         if callspec is None:
