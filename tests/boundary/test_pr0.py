@@ -53,6 +53,12 @@ def load_vectors() -> dict[str, dict]:
 _VECTORS = load_vectors()
 _EXPECTED = json.loads(EXPECTED_PATH.read_text(encoding="utf-8"))["vectors"]
 
+# Parametrize decorators run at collection time, before fixtures exist, so
+# the generated module is imported once here for the param lists. Tests
+# still take the `generated` fixture for the assertions themselves.
+sys.path.insert(0, str(REPO_ROOT / "src"))
+from claude_dispatcher.boundary import generated as _GEN  # noqa: E402
+
 
 def _run(args: list[str], timeout: int = 180) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, *args], cwd=REPO_ROOT,
@@ -218,10 +224,40 @@ def _envelope_kwargs():
                 trace_id="trace-1", protocol_epoch="E0")
 
 
+# FIXED values in the schema are enum members on the generated dataclass.
+_ENUM_BY_FIELD = {
+    "actor_verification": _GEN.ActorVerification,
+    "mode": _GEN.CredentialMode,
+    "credential_mode": _GEN.CredentialMode,
+    "protection_mode": _GEN.ProtectionMode,
+    "hold_effect": _GEN.HoldEffect,
+}
+
+
+def _legal_disposition(generated, cls):
+    """The disposition a variant's own guard admits — FIXED when the row
+    pins one, REJECT_RESTORE_HOLD for the restore rows, else an
+    operator-accepting value. Derived, so a guard change surfaces here
+    rather than being papered over by a hard-coded constant."""
+    fixed = cls.FIXED.get("disposition")
+    if fixed:
+        return generated.ReconcileDisposition[fixed]
+    if "RejectRestoreHold" in cls.__name__:
+        return generated.ReconcileDisposition.REJECT_RESTORE_HOLD
+    return generated.ReconcileDisposition.ACCEPT_OURS
+
+
 def _finish_audit(cls, kwargs: dict, over: dict) -> dict:
     """trigger_event/from/to are §9-REQUIRED wire fields validated against
     the variant's row — default them FROM the row so a helper never
     desynchronises them (tests that mean to desynchronise pass them)."""
+    for field, value in cls.FIXED.items():
+        # a FIXED field is pinned by the row whether or not it is REQUIRED —
+        # ActorVerifiedAuto pins disposition while carrying it as optional.
+        if field not in over:
+            enum_t = (_GEN.ReconcileDisposition if field == "disposition"
+                      else _ENUM_BY_FIELD[field])
+            kwargs[field] = enum_t[value]
     kwargs.update(over)
     kwargs.setdefault("from_state", cls.FROM_STATES[0])
     kwargs.setdefault("trigger_event", cls.TRIGGER)
@@ -240,8 +276,7 @@ def _mk_effect(generated, variant: str, **over):
         if f in cls.REQUIRED:
             kwargs[f] = f
     if "disposition" in cls.REQUIRED and "disposition" not in over:
-        kwargs["disposition"] = \
-            generated.ReconcileDisposition.ACCEPT_FOREIGN_ADVANCED
+        kwargs["disposition"] = _legal_disposition(generated, cls)
     return cls(**_finish_audit(cls, kwargs, over))
 
 
@@ -256,7 +291,7 @@ def _mk_hold(generated, variant: str, **over):
         if f in cls.REQUIRED:
             kwargs[f] = f
     if "disposition" in cls.REQUIRED and "disposition" not in over:
-        kwargs["disposition"] = generated.ReconcileDisposition.ACCEPT_OURS
+        kwargs["disposition"] = _legal_disposition(generated, cls)
     return cls(**_finish_audit(cls, kwargs, over))
 
 
@@ -309,17 +344,26 @@ def test_section_a_illegal_pairs_raise(generated, state, variant):
     assert exc.value.error.code is generated.BoundaryErrorCode.ILLEGAL_TRANSITION
 
 
-@pytest.mark.parametrize("case", [
-    pytest.param(("GENESIS", "Prepare", "PREPARED"), id="genesis-prepare"),
-    pytest.param(("PREPARED", "Submit", "SUBMITTED"), id="prepared-submit"),
-    pytest.param(("SUBMITTED", "ObserveReject", "REJECTED_NO_EFFECT"),
-                 id="submitted-reject"),
-    pytest.param(("EFFECT_OBSERVED", "Explained", "EXPLAINED"), id="explained"),
-    pytest.param(("GENESIS", "LOOKALIKE", None), id="deny-structural-lookalike"),
-])
-def test_section_a_apply_dispatch(generated, case):
-    state, variant, want = case
+def _legal_pairs(variants: dict) -> list[tuple[str, str]]:
+    """Every (from_state, variant) the §6.0 tables declare legal — derived
+    from the generated FROM_STATES so a row added later cannot slip in
+    untested (panel round 2: six legal transitions had no test)."""
+    return sorted((frm, name) for name, cls in variants.items()
+                  for frm in cls.FROM_STATES)
+
+
+@pytest.mark.parametrize("pair", [
+    pytest.param(p, id=f"{p[0]}-x-{p[1]}")
+    for p in _legal_pairs(_GEN.EFFECT_VARIANTS)
+] + [pytest.param(("GENESIS", "LOOKALIKE"), id="deny-structural-lookalike")])
+def test_section_a_apply_dispatch(generated, pair):
+    """apply_section_a over the FULL legal cross-product of §6.0 section A."""
+    state, variant = pair
     st = generated.MachineStateA(generated.SectionAState[state])
+    if variant == "ReconcileReplayIdentity":
+        # an identity replay echoes the disposition the state already carries
+        st = generated.MachineStateA(generated.SectionAState[state],
+                                     generated.ReconcileDisposition.ACCEPT_OURS)
     if variant == "LOOKALIKE":
         class Prepare:  # same NAME as the real variant — shape is not identity
             FROM_STATES = ("GENESIS",)
@@ -328,8 +372,71 @@ def test_section_a_apply_dispatch(generated, case):
         with pytest.raises(generated.IllegalTransitionError):
             generated.apply_section_a(st, Prepare())
         return
-    ev = _mk_effect(generated, variant, from_state=state)
-    assert generated.apply_section_a(st, ev).name.value == want
+    cls = generated.EFFECT_VARIANTS[variant]
+    got = generated.apply_section_a(st, _mk_effect(generated, variant,
+                                                   from_state=state))
+    if variant == "ReconcileRejectRestoreHold":
+        assert got.name.value == "HELD"          # stays HELD, per the row
+    elif variant == "ReconcileReplayIdentity":
+        assert got.name.value == state           # identity replay
+    else:
+        assert got.name.value == cls.TO_STATE
+
+
+@pytest.mark.parametrize("pair", [
+    pytest.param(p, id=f"{p[0]}-x-{p[1]}")
+    for p in _legal_pairs(_GEN.HOLD_VARIANTS)
+] + [pytest.param(("HELD_FOREIGN", "LOOKALIKE"), id="deny-structural-lookalike")])
+def test_section_b_apply_dispatch(generated, pair):
+    """apply_section_b over the FULL legal cross-product of §6.0 section B
+    (panel round 2: this machine had no direct test at all)."""
+    state, variant = pair
+    st = generated.MachineStateB(generated.SectionBState[state])
+    if variant == "LOOKALIKE":
+        class ObserveDelta:  # right name and shape, wrong identity
+            FROM_STATES = ("HELD_FOREIGN",)
+            TO_STATE = "HELD_FOREIGN"
+            TRIGGER = "observe_delta"
+        with pytest.raises(generated.IllegalTransitionError):
+            generated.apply_section_b(st, ObserveDelta())
+        return
+    cls = generated.HOLD_VARIANTS[variant]
+    over = {"from_state": state}
+    if variant == "ActorVerifiedAuto":
+        over["mode"] = generated.CredentialMode.SEPARATED
+    if variant == "HoldReconcileReplayIdentity":
+        st = generated.MachineStateB(generated.SectionBState[state],
+                                     generated.ReconcileDisposition.ACCEPT_OURS)
+    got = generated.apply_section_b(st, _mk_hold(generated, variant, **over))
+    if cls.TO_STATE == "unchanged":
+        assert got == st                          # idempotent no-op rows
+    elif variant == "HoldReconcileRejectRestoreHold":
+        # "as the HELD_FOREIGN rows"; from STANDING the resolved reading is
+        # the schema key STANDING_REJECT_RESTORE_TARGET_NAME.
+        want = (generated.STANDING_REJECT_RESTORE_TARGET_NAME
+                if state == "STANDING" else "HELD_FOREIGN")
+        assert got.name.value == want
+    elif variant == "HoldReconcileReplayIdentity":
+        assert got.name.value == state
+    else:
+        assert got.name.value == cls.TO_STATE
+
+
+@pytest.mark.parametrize("state,variant", [
+    pytest.param("RELEASED", "ObserveDelta", id="deny-released-create"),
+    pytest.param("GENESIS", "HoldReconcileAccept", id="deny-genesis-reconcile"),
+    pytest.param("GENESIS", "ActorVerifiedAuto", id="deny-genesis-actor-verified"),
+    pytest.param("RELEASED", "HoldReconcileStanding", id="deny-released-standing"),
+])
+def test_section_b_illegal_pairs_raise(generated, state, variant):
+    over = {"mode": generated.CredentialMode.SEPARATED} \
+        if variant == "ActorVerifiedAuto" else {}
+    # the event is well-formed; only the (state × event) PAIR is illegal.
+    ev = _mk_hold(generated, variant, **over)
+    st = generated.MachineStateB(generated.SectionBState[state])
+    with pytest.raises(generated.IllegalTransitionError) as exc:
+        generated.apply_section_b(st, ev)
+    assert exc.value.error.code is generated.BoundaryErrorCode.ILLEGAL_TRANSITION
 
 
 # ─── T19 goldens against the hand-written oracle ─────────────────────────────
