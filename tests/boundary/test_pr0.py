@@ -1592,55 +1592,405 @@ def test_dedup_registers_even_on_an_already_halted_base(generated):
     assert got["halts"]["B2"]["code"] == "EVENT_PAYLOAD_DIVERGENT"
 
 
-# ─── derived ids: what convergence actually covers ──────────────────────────
+# ─── derived ids: independent issuers CONVERGE ──────────────────────────────
+#
+# Iteration 6 reported two defects here and left them unsealed rather than
+# ratify them: (a) `actor_verified_match` was not a derived-id kind, so a
+# concurrent duplicate of the ONLY operator-less release halted a base that
+# had just done the right thing twice; (b) the derived recovery id covered
+# the ID but not the PAYLOAD — `_canonical` dropped only ts/run_id/trace_id,
+# so any disagreement in the remaining issuer-supplied §9 fields was
+# EVENT_PAYLOAD_DIVERGENT, the exact permanent halt the derived id exists to
+# prevent. Both are fixed, so both are sealed.
+#
+# The derived ids below are computed HERE from the schema's own declared
+# preimage lines with a standalone snippet — never by calling
+# `derive_event_id`, which is the function under test.
 
-def test_derived_recovery_id_convergence_scope(generated):
-    """The derived recovery event_id exists so "two concurrent cold starts
-    converge instead of permanently halting the base". It covers the ID;
-    it does NOT cover the payload.
+def _derived_event_id(*lines: str) -> str:
+    """SHA-256 over the schema's tagged newline-joined preimage."""
+    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
 
-    `a_recovery_converges` varies only ts/run_id/trace_id — exactly and
-    only the fields `_canonical` drops for derived ids — so the fixture
-    cannot exhibit the failure it is cited for. The convergence claim is
-    therefore pinned here to its REAL scope, so widening or narrowing it is
-    a deliberate edit:
 
-      * the recovery plan `_finish_section_a` emits SIX fields; every other
-        §9-REQUIRED field (authority, actor_context, credential_mode,
-        protocol_epoch, epoch_before/after) is left to the issuer;
-      * `CANONICAL_EXCLUDES_FOR_DERIVED_IDS` is exactly {ts, run_id,
-        trace_id}, so a disagreement in any of those issuer-supplied fields
-        is EVENT_PAYLOAD_DIVERGENT — the permanent halt the derived id was
-        introduced to prevent.
+def _dual_append(schemas: dict) -> dict:
+    return schemas["lifecycle_fsm"]["section_a"]["durability"]["dual_append"]
 
-    This is a SCOPE seal, not an approval: the gap is reported as an
-    implementation finding (making the recovery append fully derived, or
-    justifying a wider exclude set in the schema, is an implementation
-    change this test author may not make).
 
-    MUTATION: add a field to CANONICAL_EXCLUDES_FOR_DERIVED_IDS ⇒ red; add
-    a field to the `_finish_section_a` plan ⇒ red.
+def _preimage_lines(schemas: dict, kind: str) -> list[str]:
+    return list(_dual_append(schemas)["derived_id_kinds"][kind]["preimage_lines"])
+
+
+def test_derived_id_kinds_are_declared_by_the_schema(schemas, generated):
+    """The derived-id set is schema-declared, not code-local, and it covers
+    BOTH kinds whose ids two independent issuers must agree on: the
+    cold-start recovery append and the auto-release of a foreign hold.
+
+    MUTATION: delete `actor_verified_match` from
+    lifecycle_fsm.section_a.durability.dual_append.derived_id_kinds and
+    regenerate
+    ⇒ red (and the convergence seal below goes red too).
     """
     g = generated
-    assert set(g.CANONICAL_EXCLUDES_FOR_DERIVED_IDS) == {"ts", "run_id",
-                                                         "trace_id"}
-    assert set(g.DERIVED_ID_KINDS) == {"crash_recovery"}, (
-        "actor_verified_match is still not a derived-id kind — see the "
-        "concurrent-auto-release finding")
+    declared = _dual_append(schemas)["derived_id_kinds"]
+    assert set(g.DERIVED_ID_KINDS) == set(declared)
+    assert set(g.DERIVED_ID_KINDS) == {"crash_recovery", "actor_verified_match"}, (
+        "the operator-less release is not a derived-id kind — two verifiers "
+        "reaching the same conclusion cannot converge")
+    for kind, spec in declared.items():
+        assert list(g.DERIVED_ID_PREIMAGES[kind]) == list(spec["preimage_lines"])
+
+
+def test_concurrent_auto_release_duplicates_converge(schemas, generated):
+    """ActorVerifiedAuto is the only operator-less release, on the path the
+    reducer itself calls "inherently concurrent" (door 0, webhook-driven,
+    at-least-once). Two independent verifiers observing the SAME delivery on
+    the SAME hold mint the SAME derived id and must converge into ONE
+    release with no halt — not a TERMINAL ILLEGAL_TRANSITION on a base that
+    just did the right thing twice.
+
+    The twins differ on issuer decoration (ts/run_id/trace_id): that is what
+    two processes cannot agree on, and it is exactly what the positive
+    comparison core excludes.
+
+    MUTATION (schema + regenerate): remove `actor_verified_match` from
+    `derived_id_kinds` ⇒ red. EQUIVALENT mutation actually run against the
+    committed module: `DERIVED_ID_PREIMAGES` → drop the
+    'actor_verified_match' entry ⇒ the twin is no longer recognised as
+    derived, `_canonical` compares full payloads, and the base halts
+    EVENT_PAYLOAD_DIVERGENT. Also verified: pinning the twin's event_id to
+    a NON-derived value ⇒ red (the deny row below).
+    """
+    g = generated
+    vec = copy.deepcopy(_VECTORS["b_actor_verified_auto_separated"])
+    auto = vec["events"][-1]
+    assert auto["variant"] == "ActorVerifiedAuto"
+    lines = _preimage_lines(schemas, "actor_verified_match")
+    assert lines == ["release=actor_verified_match", "base=<base_key>",
+                     "hold=<hold_id>", "delivery=<source_delivery_id>"], lines
+    derived = _derived_event_id(
+        "release=actor_verified_match",
+        f"base={auto['base_key']}",
+        f"hold={auto['hold_id']}",
+        f"delivery={auto['source_delivery_id']}")
+    auto["event_id"] = derived
+    twin = dict(auto, ts="1999-12-31T23:59:59Z", run_id="run-2",
+                trace_id="trace-2")
+    got = g.reduce_section_b(vec["events"] + [twin], g.CredentialMode.SEPARATED)
+    assert got["halts"] == {}, (
+        f"a concurrent duplicate of a correct auto-release halted the base: "
+        f"{got['halts']}")
+    holds = got["holds"]["R1:refs/heads/main"]
+    assert len(holds) == 1, f"the twin created a second hold: {holds}"
+    (state,) = {h["state"] for h in holds.values()}
+    assert state == "RELEASED"
+    # exactly ONE release: the twin was absorbed by dedup, not applied twice
+    (disposition,) = {h["disposition"] for h in holds.values()}
+    assert disposition == "ACTOR_VERIFIED_AUTO"
+
+
+def test_a_non_derived_auto_release_twin_still_halts(generated):
+    """deny: convergence is earned by the DERIVATION, not granted to the
+    kind. A second ActorVerifiedAuto carrying a freshly MINTED event_id is
+    a different event making the same claim, and the state precondition
+    refuses it — the seal above must not be readable as "duplicates are
+    always fine".
+
+    MUTATION: make `_is_derived_id` return True unconditionally ⇒ red.
+    """
+    g = generated
+    vec = copy.deepcopy(_VECTORS["b_actor_verified_auto_separated"])
+    auto = vec["events"][-1]
+    twin = dict(auto, event_id="minted-by-hand", ts="1999-12-31T23:59:59Z")
+    got = g.reduce_section_b(vec["events"] + [twin], g.CredentialMode.SEPARATED)
+    assert got["halts"], "a hand-minted duplicate release was admitted"
+    detail = " ".join(h["detail"] for h in got["halts"].values())
+    assert "contradicts the reduced state" in detail, detail
+
+
+def test_recovery_append_payload_converges_on_every_issuer_field(schemas,
+                                                                 generated):
+    """The derived recovery id covers the ID; this seals the PAYLOAD.
+
+    `_finish_section_a` now emits a COMPLETE §9 instruction record and names
+    the fields the recovering process must stamp itself. Two processes that
+    agree on the declared core and disagree on EVERY one of those
+    issuer-supplied fields must still converge — under the old exclusion
+    list (`ts`/`run_id`/`trace_id` only) each of the other six was
+    EVENT_PAYLOAD_DIVERGENT.
+
+    MUTATION: revert `_canonical`'s derived branch to an exclusion list —
+    `drop = set(CANONICAL_EXCLUDES_ALWAYS) | {"ts","run_id","trace_id"}`
+    and compare the remaining payload ⇒ red.
+    MUTATION: remove any field from `canonical_core_for_derived_ids` that
+    the two copies DO agree on (e.g. `base_key`) ⇒ still green, which is
+    why the deny row below pins the core's other direction.
+    """
+    g = generated
     prepared = _wire_effect(g, "Prepare", "e1", "m1", "GENESIS",
                             authorization_id="auth-1")
     plan = g.reduce_section_a([prepared])["recovery_appends"]
     assert len(plan) == 1
-    assert set(plan[0]) == {"event_id", "movement_id", "base_key",
-                            "trigger_event", "from", "to"}, (
-        "the recovery plan's field set changed — re-derive what two "
-        "concurrent cold starts can actually agree on before editing this")
-    # the §9 REQUIRED set of the row the plan describes is far larger, and
-    # every field outside the plan is issuer-supplied.
-    required = set(g.EFFECT_VARIANTS["CrashRecoveryFromPrepared"].REQUIRED)
-    issuer_supplied = required - set(plan[0]) - {"from", "to"}
-    assert issuer_supplied >= {"authority", "actor_context", "credential_mode",
-                               "protocol_epoch", "epoch_before", "epoch_after"}
+    append = plan[0]
+    issuer = list(append["issuer_supplied"])
+    # the named set is exactly the §9 REQUIRED fields the record does not
+    # carry — derived from the variant, not hand-listed here.
+    cls = g.EFFECT_VARIANTS["CrashRecoveryFromPrepared"]
+    carried = set(append) - {"issuer_supplied"}
+    assert set(issuer) == set(cls.REQUIRED) - carried, (
+        f"issuer_supplied is not REQUIRED minus the record's own fields: "
+        f"{sorted(issuer)} vs {sorted(set(cls.REQUIRED) - carried)}")
+    assert issuer, "the append names no issuer-supplied fields"
+
+    # Two recovering processes: same declared core, DIFFERENT values for
+    # every field the record says the issuer must stamp.
+    def _stamp(ts, run, trace, epoch, authority, ctx, mode) -> dict:
+        ev = {k: v for k, v in append.items() if k != "issuer_supplied"}
+        ev.update({"ts": ts, "run_id": run, "trace_id": trace,
+                   "protocol_epoch": epoch, "authority": authority,
+                   # `none` epoch effect: before == after WITHIN a copy,
+                   # while the two copies disagree.
+                   "epoch_before": epoch, "epoch_after": epoch,
+                   "actor_context": ctx, "credential_mode": mode})
+        return ev
+
+    first = _stamp("1970-01-01T00:00:00Z", "run-A", "trace-A", "E0", "fp-A",
+                   "dispatcher", "SHARED")
+    second = _stamp("2026-08-04T12:00:00Z", "run-B", "trace-B", "E9", "fp-B",
+                    "operator", "SEPARATED")
+    differing = [f for f in issuer if first.get(f) != second.get(f)]
+    assert set(differing) == set(issuer), (
+        f"the two copies agree on {sorted(set(issuer) - set(differing))} — "
+        f"this seal must vary EVERY issuer-supplied field")
+    # the append's audit `from` is PREPARED, so the stream carries the
+    # movement's own history first — this is a cold start reading its own
+    # durable trace, then two processes appending the recovery.
+    got = g.reduce_section_a([prepared, first, second])
+    assert got["halts"] == {}, (
+        f"two recovering processes that agree on the declared core did not "
+        f"converge: {got['halts']}")
+    assert got["movements"]["R1:refs/heads/main"]["m1"]["state"] == "HELD"
+    # …and the movement is HELD once, not twice: the twin was absorbed
+    assert got["recovery_appends"] == [], (
+        "the reduced state already reached HELD, so no further recovery "
+        "append is planned")
+
+
+def test_derived_twins_that_disagree_on_the_CORE_still_halt(schemas, generated):
+    """deny: convergence is scoped to issuer decoration. Two twins sharing a
+    derived event_id while disagreeing on a field INSIDE the declared
+    comparison core are two different claims wearing one id, and that is
+    still EVENT_PAYLOAD_DIVERGENT.
+
+    MUTATION: empty `canonical_core_for_derived_ids` (or make `_canonical`'s
+    derived branch return a constant) ⇒ red — the positive core would
+    compare nothing and any two events sharing a derived id would "agree".
+    """
+    g = generated
+    core = set(_dual_append(schemas)["canonical_core_for_derived_ids"])
+    assert set(g.CANONICAL_CORE_FOR_DERIVED_IDS) == core
+    prepared = _wire_effect(g, "Prepare", "e1", "m1", "GENESIS",
+                            authorization_id="auth-1")
+    append = g.reduce_section_a([prepared])["recovery_appends"][0]
+    base = {k: v for k, v in append.items() if k != "issuer_supplied"}
+    base.update({"ts": "1970-01-01T00:00:00Z", "run_id": "r",
+                 "trace_id": "t", "protocol_epoch": "E0", "authority": "fp",
+                 "epoch_before": "E0", "epoch_after": "E0",
+                 "actor_context": "dispatcher", "credential_mode": "SHARED"})
+    # `from` is in the core: a twin claiming a different origin for the same
+    # derived id is a divergent payload, not a convergent one.
+    assert "from" in core
+    twin = dict(base, **{"from": "SUBMITTED", "to": "HELD",
+                         "variant": "CrashRecoveryFromSubmitted"})
+    got = g.reduce_section_a([prepared, base, twin])
+    assert got["halts"], "twins disagreeing inside the comparison core converged"
+    assert got["halts"]["R1:refs/heads/main"]["code"] == "EVENT_PAYLOAD_DIVERGENT"
+
+
+# ─── the fold: identity replay, and the fence shape at harvest ──────────────
+
+def test_identity_replay_contributes_no_epoch_edge(generated):
+    """§6.0's blessed idempotent reconcile is a no-op to the fold exactly as
+    it is to the machines: a replay row's epoch effect is `none`, so it
+    contributes NO edge. If it did, the replay would either fork the chain
+    at the tail (two candidates from one epoch) or leave an unused edge —
+    an EPOCH_FORK/EPOCH_GAP halt on a history the design blesses.
+
+    MUTATION: make `_check_epoch_algebra` tolerate an advance on a `none`
+    row and give the replay `epoch_after != epoch_before` — or collect
+    edges from no-effect rows in `_collect_epoch_edges` (drop the
+    `eb == ea: continue` arm) ⇒ red.
+    """
+    g = generated
+    replay = _VECTORS["reconcile_replay_identity"]
+    variants = [e.get("variant") for e in replay["events"]]
+    assert "ReconcileReplayIdentity" in variants, (
+        f"this seal needs an identity-replay event: {variants}")
+    for ev in replay["events"]:
+        if ev.get("variant") == "ReconcileReplayIdentity":
+            assert g.EFFECT_VARIANTS["ReconcileReplayIdentity"].EPOCH_EFFECT \
+                == "none"
+            assert ev["epoch_before"] == ev["epoch_after"], (
+                "the replay row advances the fence — it is not an identity")
+    # the fold over the SAME history is clean: the replay adds no edge, so
+    # the chain from the anchor is walked to its tail with nothing left over.
+    anchor = replay["events"][0]["epoch_before"]
+    base = replay["events"][0]["base_key"]
+    fold = g.fold_epochs(replay["events"], {base: anchor})
+    assert fold[base]["halt"] is None, (
+        f"an identity replay contributed an edge: {fold[base]['halt']}")
+    assert fold[base]["status"] == "ok"
+    # …and dropping the replay leaves the SAME harvested fence: proof the
+    # replay contributed nothing rather than contributing a self-loop.
+    without = [e for e in replay["events"]
+               if e.get("variant") != "ReconcileReplayIdentity"]
+    assert g.fold_epochs(without, {base: anchor})[base]["epoch"] == \
+        fold[base]["epoch"], "the replay changed the harvested fence"
+
+
+@pytest.mark.parametrize("name", [
+    pytest.param(n, id=("deny-" + n) if "deny" in n else n)
+    for n in sorted(_VECTORS) if "anchors" in _VECTORS[n]
+])
+def test_fence_shape_at_harvest(generated, name):
+    """The fold's per-base result is what §6.0 harvests into
+    AuthorityFingerprint.base_epoch, so its SHAPE is a contract, not a
+    convenience: on an `ok` base the harvested fence is an object id (40
+    lowercase hex) — never None, never free text, never an epoch a halted
+    base merely reached. A `halt` base carries a typed halt, and its epoch
+    is diagnostic only.
+
+    Nothing asserted this before: every fold seal read `["halt"]` or
+    `["epoch"]` for one named vector, so a fence harvested as `None` or as
+    a writer's free text on an `ok` base was unsealed across the corpus.
+
+    MUTATION (verified): return `{"status": "ok", "epoch": None, "halt":
+    None}` from `_walk_epoch_chain`'s success arm ⇒ red on every ok row.
+    MUTATION (verified): `_walk_epoch_chain`'s success arm returning a
+    non-OID string ⇒ red.
+
+    SCOPE, stated because it is where this seal stops: it ranges over the
+    COMMITTED corpus, every anchor of which is a valid object id. Disabling
+    the per-edge `_valid_oid` check leaves it GREEN — the corpus contains no
+    non-OID fence to catch. The one input class that IS still admitted is
+    reported as an implementation finding, not asserted here (asserting the
+    current answer would ratify it): `fold_epochs([], {"B1": "not-an-oid"})`
+    and `{"B1": 7}` both return `{"status": "ok", "epoch": <that value>}`.
+    The anchor VALUE is validated for None (below) but not for shape.
+    """
+    g = generated
+    vec = _VECTORS[name]
+    fold = g.fold_epochs(vec["events"], vec["anchors"])
+    assert fold != {} or not vec["events"], (
+        "a non-empty history folded to nothing — 'no bases' and 'nothing to "
+        "fold' must be distinguishable")
+    for base, entry in fold.items():
+        assert entry["status"] in ("ok", "halt"), entry
+        if entry["status"] == "ok":
+            assert entry["halt"] is None, entry
+            assert isinstance(entry["epoch"], str) and _is_oid(entry["epoch"]), (
+                f"{name}/{base}: harvested fence {entry['epoch']!r} is not an "
+                f"object id — AuthorityFingerprint.base_epoch would carry "
+                f"writer free text")
+        else:
+            assert entry["halt"] is not None, entry
+            assert entry["halt"]["code"] in {c.value for c in g.BoundaryErrorCode}
+            assert entry["halt"]["detail"], (
+                f"{name}/{base}: a halt with no detail fails the 3am test")
+
+
+def test_a_none_anchor_is_a_typed_halt_not_a_crash(generated):
+    """`fold_epochs` iterates the union of anchors, edges and halts; a base
+    named in the anchor map with a None VALUE and no edges used to reach
+    `min([])` and raise a bare `ValueError: min() iterable argument is
+    empty` — every other malformed input on this path is a typed halt, and
+    the fold computes the authority fence. (Reported as an implementation
+    defect in the previous pass; fixed in iteration 7, so it is sealed
+    here.) A PR4 caller building anchors as
+    `{base: genesis.get("expected_base_oid")}` produces exactly this shape.
+
+    MUTATION: revert the anchor-value check so the None branch falls into
+    the edge walk ⇒ the test errors with a bare ValueError instead of
+    reading a typed halt.
+    """
+    g = generated
+    fold = g.fold_epochs([], {"B1": None})
+    assert fold, "a malformed anchor read as 'nothing to fold'"
+    assert fold["B1"]["status"] == "halt"
+    assert fold["B1"]["halt"]["code"] in {c.value for c in g.BoundaryErrorCode}
+    assert "missing anchor VALUE is malformed input" in fold["B1"]["halt"]["detail"], (
+        fold["B1"]["halt"]["detail"])
+    # …and it must not be readable as an ABSENT anchor: an absent base is
+    # simply not in the result at all.
+    assert g.fold_epochs([], {}) == {}
+
+
+_OID_HEX = set("0123456789abcdef")
+
+
+def _is_oid(value: str) -> bool:
+    """40 lowercase hex, checked here rather than by importing the module's
+    own regex — an independent second statement of the same shape rule."""
+    return len(value) == 40 and all(c in _OID_HEX for c in value)
+
+
+def test_matched_subject_digest_has_an_independent_oracle(schemas, generated):
+    """The auto-release's `matched_subject_digest` is the ONE cross-check
+    standing between a self-asserted release and the hold's own recorded
+    delta. Both the vector's value and the reducer's check came from the
+    same generated `derive_matched_delta_digest`, so a wrong preimage would
+    have agreed with itself — the shared-derivation class this file exists
+    to prevent.
+
+    The digest is now recomputed HERE from the schema's declared preimage
+    lines with a standalone snippet, and the VECTOR's committed value is
+    asserted against that independent hash.
+
+    MUTATION: reorder or rename any line in
+    `matched_delta_digest_preimage` and regenerate ⇒ red. EQUIVALENT
+    mutation run against the committed module: swap `subject-old`/
+    `subject-new` in `derive_matched_delta_digest` ⇒ red.
+    """
+    g = generated
+    spec = schemas["lifecycle_fsm"]["events"]["unions"]["hold_lifecycle"][
+        "actor_verified_evidence"]["matched_delta_digest_preimage"]
+    assert spec["join"] == "\n" and spec["hash"] == "SHA-256"
+    assert spec["lines"] == ["subject-base=<base_key>", "subject-ref=<ref>",
+                             "subject-old=<delta_old_oid>",
+                             "subject-new=<delta_new_oid>"], spec["lines"]
+    # the hold's own recorded delta, read off the vector that releases on it
+    vec = _VECTORS["b_actor_verified_auto_separated"]
+    observe = vec["events"][0]
+    auto = vec["events"][-1]
+    assert observe["variant"] == "ObserveDelta"
+    assert auto["variant"] == "ActorVerifiedAuto"
+    values = {"<base_key>": observe["base_key"], "<ref>": observe["ref"],
+              "<delta_old_oid>": observe["delta_old_oid"],
+              "<delta_new_oid>": observe["delta_new_oid"]}
+    built = []
+    for line in spec["lines"]:
+        tag, _, placeholder = line.partition("=")
+        built.append(f"{tag}={values[placeholder]}")
+    independent = hashlib.sha256("\n".join(built).encode()).hexdigest()
+    # 1. the generated derivation agrees with the schema's own spec
+    assert g.derive_matched_delta_digest(
+        observe["base_key"], observe["ref"], observe["delta_old_oid"],
+        observe["delta_new_oid"]) == independent, (
+        "derive_matched_delta_digest does not implement the schema's "
+        "declared preimage")
+    # 2. and the COMMITTED VECTOR carries that value — so the vector and the
+    #    checker no longer share one derivation.
+    assert auto["matched_subject_digest"] == independent, (
+        f"the vector's matched_subject_digest {auto['matched_subject_digest']!r}"
+        f" is not the independently derived {independent!r}")
+    # 3. deny: a digest over a DIFFERENT delta is refused by the reducer
+    forged = copy.deepcopy(vec)
+    forged["events"][-1]["matched_subject_digest"] = hashlib.sha256(
+        "\n".join(built[:-1] + ["subject-new=" + "9" * 40]).encode()).hexdigest()
+    got = g.reduce_section_b(forged["events"], g.CredentialMode.SEPARATED)
+    assert got["halts"], "a release bound to a different delta was admitted"
+    detail = " ".join(h["detail"] for h in got["halts"].values())
+    assert "matched_subject_digest" in detail and \
+        "self-asserted evidence refused" in detail, detail
 
 
 # ─── apply(): legal and illegal pairs ────────────────────────────────────────
@@ -1776,6 +2126,17 @@ def _project_halt(halt):
     return None if halt is None else {"code": halt["code"]}
 
 
+def _project_note(note: object) -> dict:
+    """The contract half of a door-0 resolution note: WHICH resolution the
+    reducer applied, WHAT the writer had tagged, and on WHICH hold. The
+    prose `detail`, the metric name and the run/trace correlation ids are
+    diagnostics, not contract."""
+    assert isinstance(note, dict), (
+        f"a resolution note must be a structured record, got {type(note).__name__}"
+        " — a prose sentence cannot be compared by content")
+    return {k: note[k] for k in ("code", "resolution", "tagged", "hold_id")}
+
+
 def _project_result(machine: str, got: dict) -> dict:
     """Compare on the CONTRACT: reduced state exactly, halts per base_key on
     the code. Halt DETAILS are diagnostics — pinned separately by
@@ -1785,9 +2146,15 @@ def _project_result(machine: str, got: dict) -> dict:
                 "recovery_appends": got["recovery_appends"],
                 "halts": {b: {"code": h["code"]} for b, h in got["halts"].items()}}
     if machine == "section_b":
+        # Notes are compared by CONTENT. `len(n)` let a note naming the
+        # WRONG resolution pass: b_concurrent_tag_resolved_to_new_hold,
+        # ..._to_redelivery and b_concurrent_duplicate_creations all
+        # projected to {"R1:refs/heads/main": 1}, so only the holds map
+        # distinguished them — and the note is the operator-facing record of
+        # how door 0's most concurrent path was resolved.
         return {"holds": got["holds"],
                 "halts": {b: {"code": h["code"]} for b, h in got["halts"].items()},
-                "resolution_notes": {b: len(n)
+                "resolution_notes": {b: [_project_note(x) for x in n]
                                      for b, n in got["resolution_notes"].items()}}
     return {base: {"status": entry["status"], "epoch": entry["epoch"],
                    "halt": _project_halt(entry["halt"])}
@@ -1983,13 +2350,37 @@ def test_t19_vector_inventory():
     assert len({n for n in names if "deny" in n}) >= 12, "T19 needs deny rows (T6)"
 
 
-def _edge_event(eid: str, base: str) -> dict:
-    """A real advancing effect_lifecycle event — the fold authenticates its
-    inputs, so an edge is a full event, not a {before, after} pair."""
+def _edge_history(prefix: str, base: str) -> list[dict]:
+    """A legal two-event history that CONTRIBUTES an epoch edge on `base`:
+    a `Prepare` (no epoch effect) followed by the advancing `Explained` for
+    the same movement. The fold authenticates its inputs, so an edge is a
+    full event history, not a {before, after} pair.
+
+    This used to copy `epoch_cross_stream`'s events[0] alone. That vector
+    now begins with a synthesised `Prepare` — a no-effect row, so the copy
+    contributed NO edge and the seal below asserted a halt on a base the
+    fold never saw. Selecting the advancing event BY ITS EPOCH EFFECT
+    rather than by list position is what stops that recurring.
+    """
     vec = _VECTORS["epoch_cross_stream"]
-    template = dict(vec["events"][0])
-    template.update({"event_id": eid, "base_key": base})
-    return template
+    advancing = next(
+        (e for e in vec["events"]
+         if e.get("epoch_before") != e.get("epoch_after")), None)
+    assert advancing is not None, (
+        "epoch_cross_stream carries no advancing event — this helper needs "
+        "one to build an edge-bearing history")
+    opening = next(
+        (e for e in vec["events"]
+         if e.get("movement_id") == advancing["movement_id"]
+         and e.get("epoch_before") == e.get("epoch_after")), None)
+    assert opening is not None, (
+        f"no no-effect opening row for movement "
+        f"{advancing['movement_id']!r} in epoch_cross_stream")
+    mid = f"{prefix}-m"
+    return [dict(opening, event_id=f"{prefix}-open", base_key=base,
+                 movement_id=mid),
+            dict(advancing, event_id=f"{prefix}-edge", base_key=base,
+                 movement_id=mid)]
 
 
 def _ceiling_events(generated, n: int, base: str = "B1") -> list[dict]:
@@ -2062,7 +2453,7 @@ def test_ceiling_with_empty_anchors_still_halts(generated):
 def test_ceiling_with_partial_anchors_keeps_edge_bearing_bases(generated):
     """deny: an edge-bearing base must not vanish on the ceiling path."""
     g, n = generated, generated.RECOVERY_CEILING_EVENTS
-    other = [_edge_event("o1", "OTHER")]
+    other = _edge_history("o1", "OTHER")
     fold = g.fold_epochs(_ceiling_events(g, n + 1, "BUSY") + other,
                          {"BUSY": "E0"})
     assert fold["BUSY"]["halt"]["code"] == "RECOVERY_CEILING"
@@ -2327,42 +2718,59 @@ def test_aggregate_rule_list_is_total(generated):
 
 def test_flipping_the_schema_rule_order_flips_the_behaviour(tmp_path, monkeypatch):
     """The `standing_reject_restore_resolves_to` standard applied here: swap
-    the BLOCKED and INCOMPLETE-on-missing-seat rules in a COPY of the
-    schema, regenerate, and the same inputs must produce the other answer.
-    If this passes with the order unchanged, the dispatch is not derived."""
+    two rules in a COPY of the schema, regenerate, and the same inputs must
+    produce the other answer. If it passes with the order unchanged, the
+    dispatch is not derived from the rules list.
+
+    The pair swapped changed with the escaped-Critical fix: blocking is now
+    rule 1 and beats BOTH the zero-seat and missing-seat arms, so swapping
+    blocking↔missing no longer changes any outcome (blocking wins from
+    either position for a blocking input). The pair that still discriminates
+    is `required_seats_empty` ↔ `outcome_keys_not_exactly_required_seats`,
+    over a SKIP-intensity call holding one NON-blocking outcome:
+      committed order → NOT_APPLICABLE (zero required seats governs)
+      swapped order   → INCOMPLETE   (keys ≠ required_seats governs)
+
+    MUTATION: hand-write the dispatch beside the rules list instead of
+    generating it from the list ⇒ the flipped module returns
+    NOT_APPLICABLE and this seal goes red.
+    """
     fsmgen = _fsmgen()
     schemas = fsmgen.load_schemas()
     rules = schemas["panel_aggregate"]["aggregate"]["rules"]
-    blocking_i = next((i for i, r in enumerate(rules)
-                       if "any_required_seat_outcome_blocking" in r), None)
-    missing_i = next((i for i, r in enumerate(rules)
-                      if "outcome_keys_not_exactly_required_seats" in r), None)
-    assert blocking_i is not None, (
-        "panel_aggregate.yaml no longer declares the "
-        "any_required_seat_outcome_blocking rule §5.1 makes unconditional")
-    assert missing_i is not None, (
-        "panel_aggregate.yaml no longer declares the "
-        "outcome_keys_not_exactly_required_seats rule")
-    rules[blocking_i], rules[missing_i] = rules[missing_i], rules[blocking_i]
+    empty_i = next((i for i, r in enumerate(rules)
+                    if "required_seats_empty" in r), None)
+    keys_i = next((i for i, r in enumerate(rules)
+                   if "outcome_keys_not_exactly_required_seats" in r), None)
+    assert empty_i is not None, (
+        "panel_aggregate.yaml no longer declares required_seats_empty — the "
+        "rule that keeps a zero-seat evaluation from reading as approval")
+    assert keys_i is not None, (
+        "panel_aggregate.yaml no longer declares "
+        "outcome_keys_not_exactly_required_seats")
+    assert empty_i < keys_i, (
+        "the committed order already has keys-mismatch before zero-seat; "
+        "this seal's discriminating pair is stale")
+    rules[empty_i], rules[keys_i] = rules[keys_i], rules[empty_i]
     flipped = fsmgen.module_from_source(fsmgen.build_generated_module(schemas))
     seats = ("claude", "grok", "codex")
     roster = flipped.RosterSnapshot(
         manifest_digest="md", roster_version="v1",
         roster_digest=flipped.roster_digest("v1", seats, "claude"),
         ordered_seat_ids=seats, designated_single_id="claude")
-    # a blocking seat AND a missing seat: which rule fires is the order
-    outcomes = {"claude": flipped.SeatOutcome(flipped.SeatVerdict.APPROVE),
-                "grok": flipped.SeatOutcome(flipped.SeatVerdict.BLOCK)}
-    got = flipped.aggregate(flipped.PanelIntensity.FULL, roster, outcomes)
+    # SKIP demands NO seats, and one non-blocking outcome is present:
+    # zero-seat and keys-mismatch both match, so which fires is the order.
+    outcomes = {"claude": flipped.SeatOutcome(flipped.SeatVerdict.APPROVE)}
+    got = flipped.aggregate(flipped.PanelIntensity.SKIP, roster, outcomes)
     assert got is flipped.PanelAggregateResult.INCOMPLETE, (
         "swapping the schema's rule order did not change the behaviour — "
         "the dispatch is not generated from the rules list")
-    # and the committed order still yields BLOCKED
+    # and the committed order still yields NOT_APPLICABLE on the same input
     from claude_dispatcher.boundary import generated as real
-    real_outcomes = {"claude": real.SeatOutcome(real.SeatVerdict.APPROVE),
-                     "grok": real.SeatOutcome(real.SeatVerdict.BLOCK)}
-    assert real.aggregate(real.PanelIntensity.FULL, _roster(real),
-                          real_outcomes) is real.PanelAggregateResult.BLOCKED
+    real_outcomes = {"claude": real.SeatOutcome(real.SeatVerdict.APPROVE)}
+    assert real.aggregate(real.PanelIntensity.SKIP, _roster(real),
+                          real_outcomes) is \
+        real.PanelAggregateResult.NOT_APPLICABLE
 
 
 def test_roster_snapshot_stores_an_immutable_seat_tuple(generated):
@@ -2580,16 +2988,37 @@ def test_schema_declared_preimages_bind_to_the_code(schemas, generated):
     assert roster["join"] == "\n" and roster["hash"] == "SHA-256"
     assert g.roster_digest("v", ["a", "b"], "a") == \
         hashlib.sha256("v\na\nb\na".encode()).hexdigest()
-    # §5.1 semantics: the aggregate's declared rule ORDER is what runs
+    # §5.1 semantics: the aggregate's declared rule ORDER is what runs.
+    #
+    # The order changed with the escaped-Critical fix (SMG-3966 class), and
+    # the change is design-faithful, not merely the impl author's claim:
+    # §5.1 states "**any seat reporting a blocking finding ⇒ BLOCKED**"
+    # UNQUALIFIED — "any seat", not "any required seat" — so the rule is
+    # evaluated FIRST and over EVERY outcome present. Under the old order a
+    # SKIP-intensity call returned the gate-satisfying NOT_APPLICABLE while
+    # holding a seat result carrying a blocking verdict: seats had run, one
+    # blocked, and the verdict was swallowed.
     order = [next(iter(rule)) for rule in schemas["panel_aggregate"]["aggregate"]["rules"]]
-    assert order[0] == "required_seats_empty"
-    assert order[1] == "any_required_seat_outcome_blocking"
+    assert order[0] == "any_seat_outcome_blocking", (
+        f"blocking is no longer the FIRST rule (order: {order}) — a "
+        f"zero-seat or missing-seat arm can swallow a blocking verdict")
+    assert order[1] == "required_seats_empty"
     r = _roster(g)
+    # zero required seats and NO outcome at all: nothing blocked, so the
+    # zero-seat rule still governs.
     assert g.aggregate(g.PanelIntensity.SKIP, r, {}) is \
-        g.PanelAggregateResult.NOT_APPLICABLE          # rule 1 wins
+        g.PanelAggregateResult.NOT_APPLICABLE
+    # the escaped-Critical row: a blocking seat result held under SKIP
+    # intensity must NOT read as the gate-satisfying NOT_APPLICABLE.
+    assert g.aggregate(g.PanelIntensity.SKIP, r,
+                       {"claude": g.SeatOutcome(g.SeatVerdict.BLOCK)}) is \
+        g.PanelAggregateResult.BLOCKED, (
+        "a blocking seat result was discarded by intensity — the SMG-3966 "
+        "escaped-Critical class")
+    # …and blocking still beats a missing seat
     blocking_and_missing = {"claude": g.SeatOutcome(g.SeatVerdict.BLOCK)}
     assert g.aggregate(g.PanelIntensity.FULL, r, blocking_and_missing) is \
-        g.PanelAggregateResult.BLOCKED                 # rule 2 beats rule 3
+        g.PanelAggregateResult.BLOCKED
 
 
 def test_roster_snapshot_verifies_its_own_digest(generated):

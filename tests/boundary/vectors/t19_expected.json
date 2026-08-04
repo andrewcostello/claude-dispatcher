@@ -13,7 +13,8 @@
     "Comparison contract: movements/holds/recovery_appends compared exactly;",
     "halts compared per base_key on the CODE (detail strings are diagnostics,",
     "not contract) \u2014 plus deny vectors additionally assert the named fields",
-    "in the halt detail, so a vector pins its RULE and not merely its code."
+    "in the halt detail, so a vector pins its RULE and not merely its code.",
+    "Section-B resolution notes are compared by CONTENT (code, resolution, tagged variant, hold_id) \u2014 a count alone let a note naming the WRONG door-0 resolution pass."
   ],
   "vectors": {
     "a_accept_ours_without_new_oid_deny": {
@@ -29,7 +30,7 @@
       "recovery_appends": [],
       "halts": {
         "R1:refs/heads/main": {
-          "code": "ILLEGAL_TRANSITION"
+          "code": "SCHEMA_MAJOR_UNKNOWN"
         }
       }
     },
@@ -162,19 +163,51 @@
       "recovery_appends": [
         {
           "event_id": "dd693323dd35ceed8d6339ba871ea2784b81410d51ef5e9940c2dfc883e808c6",
+          "schema_major": 1,
+          "schema_minor": 0,
+          "family": "effect_lifecycle",
+          "variant": "CrashRecoveryFromPrepared",
+          "trigger_event": "crash_recovery",
           "movement_id": "m1",
           "base_key": "R1:refs/heads/main",
-          "trigger_event": "crash_recovery",
           "from": "PREPARED",
-          "to": "HELD"
+          "to": "HELD",
+          "hold_effect": "CREATED",
+          "issuer_supplied": [
+            "ts",
+            "run_id",
+            "trace_id",
+            "protocol_epoch",
+            "authority",
+            "epoch_before",
+            "epoch_after",
+            "actor_context",
+            "credential_mode"
+          ]
         },
         {
           "event_id": "8411a37c0da405f99d9ca71da7b5a8ed13a0964507d048d63216a555481e58ac",
+          "schema_major": 1,
+          "schema_minor": 0,
+          "family": "effect_lifecycle",
+          "variant": "CrashRecoveryFromPrepared",
+          "trigger_event": "crash_recovery",
           "movement_id": "m3",
           "base_key": "R1:refs/heads/main",
-          "trigger_event": "crash_recovery",
           "from": "PREPARED",
-          "to": "HELD"
+          "to": "HELD",
+          "hold_effect": "CREATED",
+          "issuer_supplied": [
+            "ts",
+            "run_id",
+            "trace_id",
+            "protocol_epoch",
+            "authority",
+            "epoch_before",
+            "epoch_after",
+            "actor_context",
+            "credential_mode"
+          ]
         }
       ],
       "halts": {
@@ -203,11 +236,27 @@
       "recovery_appends": [
         {
           "event_id": "dd693323dd35ceed8d6339ba871ea2784b81410d51ef5e9940c2dfc883e808c6",
+          "schema_major": 1,
+          "schema_minor": 0,
+          "family": "effect_lifecycle",
+          "variant": "CrashRecoveryFromPrepared",
+          "trigger_event": "crash_recovery",
           "movement_id": "m1",
           "base_key": "R1:refs/heads/main",
-          "trigger_event": "crash_recovery",
           "from": "PREPARED",
-          "to": "HELD"
+          "to": "HELD",
+          "hold_effect": "CREATED",
+          "issuer_supplied": [
+            "ts",
+            "run_id",
+            "trace_id",
+            "protocol_epoch",
+            "authority",
+            "epoch_before",
+            "epoch_after",
+            "actor_context",
+            "credential_mode"
+          ]
         }
       ],
       "halts": {
@@ -335,11 +384,27 @@
       "recovery_appends": [
         {
           "event_id": "cb07c48cb9cd8073ff0064ac64d710269db11f26bad215de01cecec2b212700b",
+          "schema_major": 1,
+          "schema_minor": 0,
+          "family": "effect_lifecycle",
+          "variant": "CrashRecoveryFromPrepared",
+          "trigger_event": "crash_recovery",
           "movement_id": "m2",
           "base_key": "R2:refs/heads/main",
-          "trigger_event": "crash_recovery",
           "from": "PREPARED",
-          "to": "HELD"
+          "to": "HELD",
+          "hold_effect": "CREATED",
+          "issuer_supplied": [
+            "ts",
+            "run_id",
+            "trace_id",
+            "protocol_epoch",
+            "authority",
+            "epoch_before",
+            "epoch_after",
+            "actor_context",
+            "credential_mode"
+          ]
         }
       ],
       "halts": {}
@@ -675,7 +740,14 @@
       },
       "halts": {},
       "resolution_notes": {
-        "R1:refs/heads/main": 1
+        "R1:refs/heads/main": [
+          {
+            "code": "DOOR0_APPLY_ORDER_OVERRIDE",
+            "resolution": "record",
+            "tagged": "ObserveDelta",
+            "hold_id": "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b"
+          }
+        ]
       }
     },
     "b_concurrent_tag_resolved_to_new_hold": {
@@ -688,7 +760,7 @@
               "d1"
             ]
           },
-          "a7470bd66cdb4b908fec910c9b3d437132b20fd075ca519702741e321d879a3d": {
+          "935725e1551c6b9295b953bb818b54dc086ac9668ed2d9831d5cb82fadb5cc90": {
             "state": "HELD_FOREIGN",
             "disposition": null,
             "deliveries": [
@@ -699,7 +771,14 @@
       },
       "halts": {},
       "resolution_notes": {
-        "R1:refs/heads/main": 1
+        "R1:refs/heads/main": [
+          {
+            "code": "DOOR0_APPLY_ORDER_OVERRIDE",
+            "resolution": "create",
+            "tagged": "ObserveDeltaRedelivery",
+            "hold_id": "935725e1551c6b9295b953bb818b54dc086ac9668ed2d9831d5cb82fadb5cc90"
+          }
+        ]
       }
     },
     "b_concurrent_tag_resolved_to_redelivery": {
@@ -716,7 +795,14 @@
       },
       "halts": {},
       "resolution_notes": {
-        "R1:refs/heads/main": 1
+        "R1:refs/heads/main": [
+          {
+            "code": "DOOR0_APPLY_ORDER_OVERRIDE",
+            "resolution": "redelivery",
+            "tagged": "ObserveDeltaNewDeliveryOnOpenHold",
+            "hold_id": "f48f172b83a82ac0d9331aaa914fd599ae7a2cf606674a489f0477169ad9db2b"
+          }
+        ]
       }
     },
     "b_declared_hold_id_mismatch_deny": {
@@ -1175,7 +1261,7 @@
       "holds": {},
       "halts": {
         "R1:refs/heads/main": {
-          "code": "ILLEGAL_TRANSITION"
+          "code": "SCHEMA_MAJOR_UNKNOWN"
         }
       },
       "resolution_notes": {}
@@ -1193,11 +1279,27 @@
       "recovery_appends": [
         {
           "event_id": "dd693323dd35ceed8d6339ba871ea2784b81410d51ef5e9940c2dfc883e808c6",
+          "schema_major": 1,
+          "schema_minor": 0,
+          "family": "effect_lifecycle",
+          "variant": "CrashRecoveryFromPrepared",
+          "trigger_event": "crash_recovery",
           "movement_id": "m1",
           "base_key": "R1:refs/heads/main",
-          "trigger_event": "crash_recovery",
           "from": "PREPARED",
-          "to": "HELD"
+          "to": "HELD",
+          "hold_effect": "CREATED",
+          "issuer_supplied": [
+            "ts",
+            "run_id",
+            "trace_id",
+            "protocol_epoch",
+            "authority",
+            "epoch_before",
+            "epoch_after",
+            "actor_context",
+            "credential_mode"
+          ]
         }
       ],
       "halts": {}
@@ -1700,11 +1802,27 @@
       "recovery_appends": [
         {
           "event_id": "dd693323dd35ceed8d6339ba871ea2784b81410d51ef5e9940c2dfc883e808c6",
+          "schema_major": 1,
+          "schema_minor": 0,
+          "family": "effect_lifecycle",
+          "variant": "CrashRecoveryFromPrepared",
+          "trigger_event": "crash_recovery",
           "movement_id": "m1",
           "base_key": "R1:refs/heads/main",
-          "trigger_event": "crash_recovery",
           "from": "PREPARED",
-          "to": "HELD"
+          "to": "HELD",
+          "hold_effect": "CREATED",
+          "issuer_supplied": [
+            "ts",
+            "run_id",
+            "trace_id",
+            "protocol_epoch",
+            "authority",
+            "epoch_before",
+            "epoch_after",
+            "actor_context",
+            "credential_mode"
+          ]
         }
       ],
       "halts": {}
