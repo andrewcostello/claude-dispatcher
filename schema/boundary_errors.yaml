@@ -120,10 +120,28 @@ codes:
     # that base — and an unknown VALUE of a known enum field halts
     # identically"; a missing REQUIRED field or a present FORBIDDEN field is
     # the same class (the event does not satisfy its §9 schema).
+    # OPERATOR retriability is deliberate, not a side effect of the
+    # iteration-7 reclassification. This code is raised by the durable-stream
+    # reducers: an append-only authority carrier contains a record the
+    # protocol cannot interpret. No retry can fix it and the process cannot
+    # decide alone, which is the definition of OPERATOR (§6.0: "halt means
+    # effects stop for that base pending re-genesis"; §9: an unknown major or
+    # variant "halts that base pending operator decision").
     operator_action: >-
       event does not satisfy its §9 schema (unknown major, unknown variant,
-      unknown enum value, or missing/forbidden field) — effects halted for
-      the base pending operator decision; never act from a stale epoch
+      unknown enum value, malformed/missing/forbidden field). Effects are
+      halted for this base_key only; other bases keep running. Never act
+      from a stale epoch. To resolve: (1) find the record — the halt detail
+      carries its event_id, and run_id/trace_id correlate it to the run that
+      wrote it; (2) if its schema_major is NEWER than this binary supports,
+      this is a readers-before-writers violation: deploy the reader that
+      understands it, then re-run recovery — do not edit the carrier;
+      (3) if the record is corrupt, forged, or from a retired writer,
+      re-genesis this base per §6.0's bootstrap ceremony (the carrier is
+      append-only: repair means a new anchor, never a rewrite);
+      (4) if it is a known-good record this binary rejects in error, that is
+      a boundary defect — capture the event and halt the rollout rather than
+      relaxing the check.
   - code: EVENT_PAYLOAD_DIVERGENT
     phase: RECOVER
     retriability: OPERATOR
