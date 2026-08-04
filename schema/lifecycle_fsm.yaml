@@ -243,9 +243,29 @@ section_a:
   # while the reducer already counts open holds.
   open_hold_admission_ceiling: 5
   recovery_ceiling:
+    # The event-count half IS enforced, per base, at intake.
     events: 10000
+    # The elapsed-reduce-time half is NOT enforced. The previous rationale —
+    # "the count bound already caps the work" — was FALSE: the count bound is
+    # PER BASE, so a stream spanning many bases has unbounded total reduce
+    # work, and the constant was generated and consumed by nothing.
+    #
+    # It is not enforced here because a wall clock inside a pure reducer is
+    # neither deterministic nor testable, and the generated module is
+    # deliberately clock-free (every derivation is a function of its input).
+    # It belongs at the PR4 call site, which owns the clock and the
+    # admission decision.
     reduce_seconds: 30
     reduce_seconds_enforced_in: PR4
+    reduce_seconds_enforced_here: false
+    # Same treatment as its sibling deferral (actor_verified_evidence): a
+    # deferral that must not survive cut-over is RECORDED as a blocker, so
+    # it cannot be forgotten at PR6.
+    blocks_pr6_cutover: true
+    blocks_pr6_cutover_reason: >-
+      total reduce work is unbounded until the elapsed-time half of §6.0's
+      recovery ceiling is enforced at the PR4 call site; the generated
+      reducer enforces only the per-base event count
 
   # Epoch fold (design §6.0 recovery step 3) — a total algorithm.
   epoch_fold:

@@ -288,8 +288,13 @@ HOLD_BRANCH: frozenset[str] = frozenset(('HELD',))
 STATE_BRANCH_REF: str = "refs/heads/dispatcher/state"
 HOLD_BRANCH_REF: str = "refs/heads/dispatcher/integrity-hold"
 
-# Recovery admission ceiling (§6.0 provisional bounds; the elapsed-
-# time half is a PR4 obligation — see schema recovery_ceiling).
+# Recovery admission ceiling (§6.0 provisional bounds). The
+# event-count half is enforced PER BASE at intake. The elapsed-time
+# half is NOT enforced here and the per-base count does NOT bound
+# total work — a stream spanning many bases is unbounded. It is a
+# PR4 call-site obligation (a clock has no place in a deterministic
+# reducer) and a RECORDED PR6 cut-over blocker; the constant is
+# exported so the call site uses the schema's number, not its own.
 # The to-HELD row's declared hold effect — the recovery append is a
 # real transition on that row, so it carries the row's value.
 _RECOVERY_HOLD_EFFECT: str = 'CREATED'
@@ -648,7 +653,7 @@ class Prepare:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -693,7 +698,7 @@ class Submit:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -738,7 +743,7 @@ class SubmitOutcomeUnknown:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -783,7 +788,7 @@ class CrashRecoveryFromPrepared:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -827,7 +832,7 @@ class LaterObservationFromPrepared:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -872,7 +877,7 @@ class MoveToHoldFromPrepared:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -917,7 +922,7 @@ class ObserveEffectMatched:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -963,7 +968,7 @@ class ObserveEffectParentMismatch:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -1009,7 +1014,7 @@ class ObserveReject:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -1054,7 +1059,7 @@ class TimeoutUnknown:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -1099,7 +1104,7 @@ class CrashRecoveryFromSubmitted:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -1143,7 +1148,7 @@ class LaterObservationFromSubmitted:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -1188,7 +1193,7 @@ class Explained:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -1234,7 +1239,7 @@ class RejectExplained:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -1279,7 +1284,7 @@ class LaterObservationFromOutcomeUnknown:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -1324,7 +1329,7 @@ class CrashRecoveryFromOutcomeUnknown:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -1420,7 +1425,7 @@ class ReconcileRejectRestoreHold:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -2588,13 +2593,13 @@ def apply_section_b(state: MachineStateB, event: object) -> MachineStateB:
     if isinstance(event, (ObserveDeltaRedelivery, ObserveDeltaNewDeliveryOnOpenHold)):
         return state  # unchanged — idempotent no-op / delivery recorded
     if isinstance(event, ActorVerifiedAuto):
-        # Defence in depth ONLY: the authoritative gate is the RUN's
-        # credential mode, checked in reduce_section_b against run context
-        # (a mode the releasing event asserts about itself is no gate).
-        if event.mode is not CredentialMode.SEPARATED:
-            raise IllegalTransitionError(
-                "section_b", state.name.value, variant,
-                "ACTOR_VERIFIED_AUTO requires SEPARATED; under SHARED, never")
+        # NO mode check here, deliberately. It would be structurally
+        # unreachable — the constructor pins mode=SEPARATED, so no typed
+        # ActorVerifiedAuto can carry anything else and no mutation could
+        # redden the branch. An unsealed guard that looks like protection is
+        # worse than none: the authoritative gate is the RUN's credential
+        # mode, enforced in _check_auto_release_gates against run context
+        # (a mode the releasing event asserts about ITSELF is no gate).
         return MachineStateB(SectionBState.RELEASED,
                              ReconcileDisposition.ACTOR_VERIFIED_AUTO)
     if isinstance(event, HoldReconcileReplayIdentity):
@@ -3312,6 +3317,17 @@ class _ReduceState:
                 continue
             edges = self.edges.get(base, [])
             anchor = self.anchors.get(base)
+            if base in self.anchors and anchor is None:
+                # An anchor map that NAMES a base with no value is malformed
+                # input, not an absent anchor: every other malformed input on
+                # this path is a typed halt, so this one is too (it used to
+                # crash with a bare ValueError from min(), or vanish).
+                out[base] = {"status": "halt", "epoch": None, "halt": _halt(
+                    BoundaryErrorCode.EPOCH_GAP,
+                    f"{base}: the anchor map names this base with no "
+                    f"protocol_genesis epoch — a missing anchor VALUE is "
+                    f"malformed input, never an absent anchor")}
+                continue
             if anchor is None:
                 if not edges:
                     continue          # nothing observed for this base

@@ -479,8 +479,13 @@ def _emit_durability_and_ceiling(fsm: dict) -> list[str]:
     w(f"HOLD_BRANCH_REF: str = {json.dumps(str(dur['hold_branch_ref']))}")
     w("")
     ceiling = a["recovery_ceiling"]
-    w("# Recovery admission ceiling (§6.0 provisional bounds; the elapsed-")
-    w("# time half is a PR4 obligation — see schema recovery_ceiling).")
+    w("# Recovery admission ceiling (§6.0 provisional bounds). The")
+    w("# event-count half is enforced PER BASE at intake. The elapsed-time")
+    w("# half is NOT enforced here and the per-base count does NOT bound")
+    w("# total work — a stream spanning many bases is unbounded. It is a")
+    w("# PR4 call-site obligation (a clock has no place in a deterministic")
+    w("# reducer) and a RECORDED PR6 cut-over blocker; the constant is")
+    w("# exported so the call site uses the schema's number, not its own.")
     recovery_row = next(r for r in a["rows"] if r["id"] == "prepared_to_held")
     w("# The to-HELD row's declared hold effect — the recovery append is a")
     w("# real transition on that row, so it carries the row's value.")
@@ -695,9 +700,20 @@ def emit_variants_family(fsm: dict, family: str,
         fixed = dict(v.get("fixed", {}))
         # conditional requirements: {field: {value: (required_fields,)}} —
         # e.g. actor_verification VERIFIED_API ⇒ actor_node_id present.
+        # A conditional requirement may only name fields THIS variant
+        # carries. Union-level requires_when previously landed on every
+        # variant, so ReconcileRejectRestoreHold declared
+        # {ACCEPT_OURS: (new_oid,)} while carrying no new_oid at all — an
+        # unsatisfiable condition that raised the epoch-payload message
+        # where a reader expects the disposition one.
+        _carried = set(required) | set(optional)
         requires_when = {
-            f: {val: tuple(reqs) for val, reqs in conds.items()}
-            for f, conds in spec.get("requires_when", {}).items()}
+            f: {val: tuple(r for r in reqs if r in _carried)
+                for val, reqs in conds.items()
+                if any(r in _carried for r in reqs)}
+            for f, conds in spec.get("requires_when", {}).items()
+            if f in _carried}
+        requires_when = {f: conds for f, conds in requires_when.items() if conds}
         w("@dataclass(frozen=True)")
         w(f"class {name}:")
         w(f'    """{family} variant — row `{row["id"]}`: '
@@ -1255,13 +1271,13 @@ def apply_section_b(state: MachineStateB, event: object) -> MachineStateB:
     if isinstance(event, (ObserveDeltaRedelivery, ObserveDeltaNewDeliveryOnOpenHold)):
         return state  # unchanged — idempotent no-op / delivery recorded
     if isinstance(event, ActorVerifiedAuto):
-        # Defence in depth ONLY: the authoritative gate is the RUN's
-        # credential mode, checked in reduce_section_b against run context
-        # (a mode the releasing event asserts about itself is no gate).
-        if event.mode is not CredentialMode.SEPARATED:
-            raise IllegalTransitionError(
-                "section_b", state.name.value, variant,
-                "ACTOR_VERIFIED_AUTO requires SEPARATED; under SHARED, never")
+        # NO mode check here, deliberately. It would be structurally
+        # unreachable — the constructor pins mode=SEPARATED, so no typed
+        # ActorVerifiedAuto can carry anything else and no mutation could
+        # redden the branch. An unsealed guard that looks like protection is
+        # worse than none: the authoritative gate is the RUN's credential
+        # mode, enforced in _check_auto_release_gates against run context
+        # (a mode the releasing event asserts about ITSELF is no gate).
         return MachineStateB(SectionBState.RELEASED,
                              ReconcileDisposition.ACTOR_VERIFIED_AUTO)
     if isinstance(event, HoldReconcileReplayIdentity):
@@ -1979,6 +1995,17 @@ class _ReduceState:
                 continue
             edges = self.edges.get(base, [])
             anchor = self.anchors.get(base)
+            if base in self.anchors and anchor is None:
+                # An anchor map that NAMES a base with no value is malformed
+                # input, not an absent anchor: every other malformed input on
+                # this path is a typed halt, so this one is too (it used to
+                # crash with a bare ValueError from min(), or vanish).
+                out[base] = {"status": "halt", "epoch": None, "halt": _halt(
+                    BoundaryErrorCode.EPOCH_GAP,
+                    f"{base}: the anchor map names this base with no "
+                    f"protocol_genesis epoch — a missing anchor VALUE is "
+                    f"malformed input, never an absent anchor")}
+                continue
             if anchor is None:
                 if not edges:
                     continue          # nothing observed for this base
