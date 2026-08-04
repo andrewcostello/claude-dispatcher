@@ -64,6 +64,13 @@ Design §11's round-6 row deferred 21 MAJORs (claude 4 · grok 8 · codex 9) to 
 ## 3. Test-obligation map (mechanically linted by PR0's `t26_lint.py` against this doc — claude M2)
 T1/T4/T5/T7/T8/T9/T11/**T15**/T16/T22 → PR2 · T10/T30 → PR1 (+consumer halves PR2) · **T13/T21/T28-provenance → PR3** · T19/T23-component/T24/T28-predicates → PR4 · T2-component/T3/T12-doors/T14/T18/T20/T27/T29/T31 → PR5 · T2-singularity/T12-inventory/T23-tamper/T25 → PR6 gates · T6 (deny-row plugin)/T26 → PR0, permanent. Multi-PR obligations name each half above.
 
+## 4a. Live holes found while building PR0 (dated 2026-08-04, tracked, not closed)
+
+Both were found by adversarial review of the *existing* dispatcher while hardening the docs-only carve-out, and both are the AUTHORITY_POLICY_CHANGE shape this design closes for the rule table:
+
+1. **The Go classifier reads its rule table from a working tree.** `orchestrator.py:1905,1993` call `classification.classify_diff(repo_root=…)`, which passes `-worktree <repo_root>`, so `cmd/classify` loads `.agent/risk-paths.json` from the main checkout's working copy — an uncommitted edit changes the rule table for every classification. This is the same class as the Python `merge_engine` defect fixed on `fix/authority-doc-carveout`, one artifact over. **PR1's framed `-authoritative-stdin` + the §8 policy-fetch sequence is the fix** (the design already specifies it: policy bytes come from the protected root base, never a local path). Interim mitigation landed: `**/.agent/**` is in the authority floor, so a diff touching the table elevates and cannot self-approve.
+2. **The verdict is taken on a local ref and enforced on origin's PR head, with no SHA pin.** A commit pushed to origin between classification and merge is never gated. Needs `gh pr view --json headRefOid` + `--match-head-commit` in `pr.py` — the same `MergeSubject`/pre-effect-re-read property the design specifies for §6.0 doors, applied to the current merge path. Not scoped into PR0–PR6; tracked here so it is not lost.
+
 ## 4. Risks
 Cross-repo drift (→ §1 contract package + peer pins) · codex quota (optional seat) · SHARED residuals ship as designed, rendered in reporting · line-number citation brittleness: cite symbols not lines where the design does (`_has_commits_on_branch` branch, not orchestrator.py:3231 — grok m4).
 
