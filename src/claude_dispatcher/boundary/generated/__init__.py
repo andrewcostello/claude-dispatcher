@@ -419,6 +419,19 @@ def _valid_ts(value: str) -> bool:
     return True
 
 
+# Fields that ARE object ids. The fence (epoch_before/epoch_after) is
+# compared for equality at §6.0's authority check, so it is validated in
+# the ONE intake — not in one consumer only (panel round 6).
+_OID_WIRE_FIELDS = frozenset({"epoch_before", "epoch_after", "new_oid",
+                              "delta_old_oid", "delta_new_oid"})
+
+
+def _valid_oid(value: object) -> bool:
+    """Lowercase 40-hex — never str()-coerced from a dict, an int, or free
+    text."""
+    return isinstance(value, str) and _OID_RE.match(value) is not None
+
+
 def _py_field(f: str) -> str:
     return FIELD_NAME_MAP.get(f, f)
 
@@ -501,6 +514,11 @@ def _validate_field_value(name: str, f: str, value: object, required: bool) -> N
         return
     if not isinstance(value, str) or (required and value == ""):
         raise ValueError(f"{name}.{f} must be a non-empty str, got {_short(value)}")
+    if "\n" in value:
+        raise ValueError(
+            f"{name}.{f} contains a newline — every digest preimage in this "
+            f"protocol is newline-joined, so a newline-bearing component is "
+            f"non-injective (schema components_must_be_newline_free)")
     if f == "ts" and not _valid_ts(value):
         raise ValueError(f"{name}.ts {_short(value)} is not an RFC 3339 UTC "
                          f"instant")
@@ -530,9 +548,19 @@ def _convert_wire_value(cls_name: str, f: str, value: object) -> object:
                 f"{cls_name}.schema_major: {value} outside the supported set "
                 f"{sorted(SUPPORTED_SCHEMA_MAJORS)} — unknown major halts (§9)")
         return value
+    if f in _OID_WIRE_FIELDS and not isinstance(value, str):
+        raise WireViolation(
+            f"{cls_name}.{f}: {_short(value)} is not an object id — the "
+            f"fence is compared for equality and is never coerced")
     if not isinstance(value, str) or value == "":
         raise WireViolation(f"{cls_name}.{f}: must be a non-empty str, "
                             f"got {_short(value)}")
+    if "\n" in value:
+        # a newline escaping here reached _preimage as a bare ValueError and
+        # took the whole walk down with it (panel round 6) — typed, per-base.
+        raise WireViolation(
+            f"{cls_name}.{f}: contains a newline — digest preimages are "
+            f"newline-joined, so the component is non-injective")
     if f == "ts" and not _valid_ts(value):
         raise WireViolation(f"{cls_name}.ts: {_short(value)} is not an "
                             f"RFC 3339 UTC instant")
@@ -2876,6 +2904,12 @@ def _classify_event(ev: Mapping[str, object]) -> tuple[Optional[str], Optional[d
     return fam, None
 
 
+def _peer_variants(family: str) -> Mapping[str, type]:
+    """The OTHER lifecycle family's variant table — used only to tell a
+    mis-tagged writer from a legitimate peer record."""
+    return HOLD_VARIANTS if family == "effect_lifecycle" else EFFECT_VARIANTS
+
+
 def _variants_for(family: str) -> Optional[Mapping[str, type]]:
     """The variant table for a REDUCED-BY family, else None (a §9 single)."""
     if family == "effect_lifecycle":
@@ -3004,36 +3038,252 @@ def _fmt_a(st: MachineStateA, via_recovery: bool = False) -> dict:
             "via_recovery_append": via_recovery}
 
 
-def reduce_section_a(events: Sequence[Mapping[str, object]]) -> dict:
-    """Reduce a durable effect_lifecycle stream through the PROJECTION
-    machine (durable states + composed edges), never the live table
-    (round 14, codex) — reconcile steps, whose durable states ARE live
-    states, delegate to apply_section_a.
+def reduce_boundary(events: Sequence[Mapping[str, object]], *,
+                    anchors: Optional[Mapping[str, str]] = None,
+                    credential_mode: Optional[CredentialMode] = None) -> dict:
+    """THE single pass over a durable stream.
 
-    Halt isolation is PER base_key: one bad base's halt never suppresses
-    results or recovery appends for healthy bases, and the recovery
-    admission ceiling is counted per base. Result shape is uniform:
-    {movements, recovery_appends, halts} with halts == {} when clean and
-    partial reduced state present for halted bases.
+    Four consecutive review rounds found the same root cause: a second,
+    independent walk (the epoch fold) drifting from the reducers —
+    different validation, different algebra, different halts, on the same
+    bytes. Patching each divergence failed three times. So there is now
+    exactly ONE walk: it classifies, deduplicates and types each event
+    once, dispatches it to its machine, applies that row's transition rules
+    AND its epoch algebra, and — only for an event that survived all of
+    that — records the epoch edge. The epoch is a FIELD of the reduced
+    state, not a separate computation, so validation, algebra, gates and
+    dedup apply exactly once by construction and cannot drift again
+    (design §12's single-Apply chokepoint, one level up from the iteration-5
+    intake unification).
 
-    Cold-start step (5): an open PREPARED with no hold and no terminal gets
-    a dual-appended {crash_recovery, PREPARED → HELD} with a DERIVED
-    event_id; resume-submit is ILLEGAL (round 15, grok)."""
-    movements: dict[str, dict[str, MachineStateA]] = {}
-    order: list[tuple[str, str]] = []
-    base_halts: dict[str, dict] = _ceiling_halts(events)
-    dedup = _Dedup()
+    reduce_section_a / reduce_section_b / fold_epochs are projections of
+    this result, never second walks.
+
+    Returns {movements, holds, recovery_appends, epochs, halts,
+    resolution_notes}. Halts are per base_key and typed; the first cause is
+    reported and later ones are counted in `suppressed`."""
+    ctx = _ReduceState(anchors or {}, credential_mode)
+    ctx.seed_ceiling_halts(events)
     for ev in events:
-        event = _intake(dedup, ev, "effect_lifecycle", EFFECT_VARIANTS, base_halts)
-        if event is None:
-            continue
-        base, mid = event.base_key, event.movement_id
-        if base in base_halts:
-            continue
-        halt = _step_section_a(movements, order, base, mid, event, ev)
+        ctx.consume(ev)
+    return ctx.finish()
+
+
+class _ReduceState:
+    """The one walk's accumulator: per-base halts, both machines' state, and
+    the epoch edges harvested from events that passed every check."""
+
+    def __init__(self, anchors: Mapping[str, str],
+                 credential_mode: Optional[CredentialMode]) -> None:
+        self.anchors = anchors
+        # §0.3: absent/unprobeable ⇒ SHARED, never a soft SEPARATED.
+        self.run_mode = credential_mode or CredentialMode.SHARED
+        self.dedup = _Dedup()
+        self.halts: dict[str, dict] = {}
+        self.movements: dict[str, dict[str, MachineStateA]] = {}
+        self.a_order: list[tuple[str, str]] = []
+        self.books: dict[str, _HoldBook] = {}
+        self.b_order: list[str] = []
+        self.edges: dict[str, list[Mapping[str, object]]] = {}
+
+    # ── halts ───────────────────────────────────────────────────────────
+    def record_halt(self, base: str, halt: Optional[dict]) -> None:
+        """First cause is the base's reported halt; later causes are counted
+        rather than silently dropped (panel: a later EVENT_PAYLOAD_DIVERGENT
+        vanished behind a lesser first cause)."""
+        if halt is None:
+            return
+        first = self.halts.get(base)
+        if first is None:
+            halt.setdefault("suppressed", [])
+            self.halts[base] = halt
+            return
+        first.setdefault("suppressed", []).append(
+            {"code": halt["code"], "detail": halt["detail"]})
+
+    def seed_ceiling_halts(self, events: Sequence[Mapping[str, object]]) -> None:
+        for base, halt in _ceiling_halts(events).items():
+            self.record_halt(base, halt)
+
+    # ── the walk ────────────────────────────────────────────────────────
+    def consume(self, ev: Mapping[str, object]) -> None:
+        base_hint = str(ev.get("base_key") or "")
+        halted = base_hint in self.halts
+        fam, halt = _classify_event(ev)
         if halt is not None:
-            base_halts[base] = halt
-    return _finish_section_a(movements, order, base_halts)
+            self.record_halt(base_hint, halt)
+            return
+        variants = _variants_for(fam)
+        if variants is None:
+            # A §9 SINGLE. It is not reduced by either machine and may not
+            # carry a fence edge — nothing authenticates it.
+            if ev.get("epoch_before") is not None or ev.get("epoch_after") is not None:
+                self.record_halt(base_hint, _halt(
+                    BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+                    f"family {fam!r} is not reduced by any lifecycle machine "
+                    f"(REDUCED_BY_FAMILIES = {sorted(REDUCED_BY_FAMILIES)}) "
+                    f"yet carries epoch fields — nothing authenticates this "
+                    f"record, so it must never advance the fence "
+                    f"(event_id {ev.get('event_id')!r})", ev))
+            return
+        # Rules the walk applies BEFORE construction, so each names itself:
+        #   * a variant belonging to the OTHER family is a mis-tagged
+        #     writer, never a peer record to filter;
+        #   * a reduced-by record with no variant halts as an unknown one;
+        #   * an epoch field must be an object id — the fence is never
+        #     coerced, whatever its type.
+        variant = ev.get("variant")
+        if variant is None:
+            self.record_halt(base_hint, _halt(
+                BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+                f"{fam} record with no variant — unknown variants halt (§9); "
+                f"every consumer applies the same rule "
+                f"(event_id {ev.get('event_id')!r})", ev))
+            return
+        if str(variant) not in variants:
+            peer = _peer_variants(fam).get(str(variant))
+            if peer is not None:
+                self.record_halt(base_hint, _halt(
+                    BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+                    f"family {fam!r} contradicts variant "
+                    f"{peer.__name__!r}, whose own schema name is "
+                    f"{peer.FAMILY!r} — mis-tagged writer, never filtered "
+                    f"(event_id {ev.get('event_id')!r})", ev))
+                return
+        try:
+            seen = self.dedup.check(ev, base_hint)
+        except _DivergentDuplicate as exc:
+            for b in exc.bases:
+                self.record_halt(b, exc.halt)
+            return
+        if seen == "dup":
+            return                      # dual-append twin / redelivered copy
+        try:
+            event = build_wire_event(variants, ev)
+        except WireViolation as exc:
+            self.record_halt(base_hint, _halt(exc.code, exc.detail, ev))
+            return
+        except ValueError as exc:
+            self.record_halt(base_hint, _halt(
+                BoundaryErrorCode.ILLEGAL_TRANSITION, str(exc), ev))
+            return
+        if halted:
+            return                      # registered for dedup; state frozen
+        self._apply(fam, event, ev)
+
+    def _apply(self, fam: str, event: object, ev: Mapping[str, object]) -> None:
+        base = event.base_key
+        try:
+            if fam == "effect_lifecycle":
+                halt, advanced = self._step_a(base, event, ev)
+            else:
+                halt, advanced = self._step_b(base, event, ev)
+        except ValueError as exc:
+            # a guard or preimage rejection must stay a TYPED, per-base halt
+            # — never an exception escaping the walk (panel round 6).
+            self.record_halt(base, _halt(
+                BoundaryErrorCode.ILLEGAL_TRANSITION, str(exc), ev))
+            return
+        if halt is not None:
+            self.record_halt(base, halt)
+            return
+        if advanced:
+            # ONLY an event that survived validation, the transition rules
+            # AND the epoch algebra becomes a fence edge — and the value it
+            # carries INTO the fence is checked here, where it is the
+            # fence. (A non-advancing epoch field is inert; wrong TYPES are
+            # already refused at construction, so this is the shape rule.)
+            for field in ("epoch_before", "epoch_after"):
+                value = getattr(event, field)
+                if not _valid_oid(value):
+                    self.record_halt(base, _halt(
+                        BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+                        f"{field} {_short(value)} is not an object id "
+                        f"(lowercase 40-hex) — the fence is compared for "
+                        f"equality and is never coerced "
+                        f"(event_id {ev.get('event_id')!r})", ev))
+                    return
+            self.edges.setdefault(base, []).append(ev)
+
+    def _step_a(self, base: str, event: object,
+                ev: Mapping[str, object]) -> tuple[Optional[dict], bool]:
+        mid = event.movement_id
+        before = self.movements.get(base, {}).get(mid, GENESIS_A)
+        halt = _step_section_a(self.movements, self.a_order, base, mid, event, ev)
+        if halt is not None:
+            return halt, False
+        after = self.movements.get(base, {}).get(mid, GENESIS_A)
+        # An identity replay changes nothing — and therefore contributes NO
+        # edge. That single fact is what made §6.0's blessed idempotent
+        # replay a legal no-op to the machine and a fatal EPOCH_FORK to the
+        # old second walk.
+        identity = after == before
+        return None, (not identity) and event.epoch_before != event.epoch_after
+
+    def _step_b(self, base: str, event: object,
+                ev: Mapping[str, object]) -> tuple[Optional[dict], bool]:
+        book = self.books.get(base)
+        if book is None:
+            book = self.books[base] = _HoldBook()
+            self.b_order.append(base)
+        snapshot = dict(book.holds)
+        halt = _step_section_b(book, base, event, ev, self.run_mode)
+        if halt is not None:
+            return halt, False
+        identity = book.holds == snapshot
+        return None, (not identity) and event.epoch_before != event.epoch_after
+
+    # ── result ──────────────────────────────────────────────────────────
+    def finish(self) -> dict:
+        a = _finish_section_a(self.movements, self.a_order, self.halts)
+        holds: dict[str, dict] = {}
+        for base in self.b_order:
+            book = self.books[base]
+            holds[base] = {
+                hid: {"state": book.holds[hid].name.value,
+                      "disposition": (book.holds[hid].disposition.value
+                                      if book.holds[hid].disposition else None),
+                      "deliveries": book.deliveries.get(hid, [])}
+                for hid in book.order}
+        notes = {b: self.books[b].resolution_notes for b in self.b_order
+                 if self.books[b].resolution_notes}
+        return {"movements": a["movements"],
+                "recovery_appends": a["recovery_appends"],
+                "holds": holds, "resolution_notes": notes,
+                "halts": self.halts,
+                "epochs": self._walk_epochs()}
+
+    def _walk_epochs(self) -> dict:
+        out: dict[str, dict] = {}
+        for base in sorted(set(self.anchors) | set(self.edges) | set(self.halts)):
+            if base in self.halts:
+                out[base] = {"status": "halt", "epoch": self.anchors.get(base),
+                             "halt": self.halts[base]}
+                continue
+            edges = self.edges.get(base, [])
+            anchor = self.anchors.get(base)
+            if anchor is None:
+                if not edges:
+                    continue          # nothing observed for this base
+                first = min(edges, key=lambda e: str(e["event_id"]))
+                out[base] = {"status": "halt", "epoch": None, "halt": _halt(
+                    BoundaryErrorCode.EPOCH_GAP,
+                    f"{base}: {len(edges)} epoch edge(s) but no "
+                    f"protocol_genesis anchor (first {first['event_id']} "
+                    f"{first['epoch_before']}→{first['epoch_after']}) — never "
+                    f"silently dropped", first)}
+                continue
+            out[base] = _walk_epoch_chain(base, anchor, edges)
+        return out
+
+
+def reduce_section_a(events: Sequence[Mapping[str, object]]) -> dict:
+    """Section-A projection of the ONE pass (reduce_boundary) — never a
+    second walk. Shape: {movements, recovery_appends, halts}."""
+    result = reduce_boundary(events)
+    return {"movements": result["movements"],
+            "recovery_appends": result["recovery_appends"],
+            "halts": result["halts"]}
 
 
 def _step_section_a(movements, order, base: str, mid: str, event: object,
@@ -3336,60 +3586,13 @@ def _record_hold_outcome(book: _HoldBook, hid: str, event: object,
 
 def reduce_section_b(events: Sequence[Mapping[str, object]],
                      credential_mode: Optional[CredentialMode] = None) -> dict:
-    """Reduce a hold_lifecycle stream into section-B states per
-    (base_key, hold_id), implementing §6.0's observe_delta apply order and
-    hold_id derivation for real. Halt isolation and ceiling are PER
-    base_key (uniform shape: {holds, halts}).
-
-    `credential_mode` is the RUN's mode — reduced from protocol_genesis
-    where the stream is durable, else supplied by the caller and recorded.
-    It is NOT taken from event payload: ACTOR_VERIFIED_AUTO is the only
-    operator-less release of a foreign hold, and a gate a releasing event
-    clears about ITSELF is no gate (§0.3: any unprobeable predicate records
-    SHARED, never a soft SEPARATED). An event whose self-declared `mode`
-    disagrees with the run context is a typed halt; absent context is
-    treated as SHARED, so the auto-release path is closed by default.
-
-    ACTOR_VERIFIED_AUTO releases are additionally cross-checked against the
-    hold's own record (delivery membership + delta-derived digest) — those
-    validate CONSISTENCY, not provenance; provenance is PR4's webhook
-    protocol (schema actor_verified_evidence). Redelivery semantics
-    (rounds 17–20): same source_delivery_id ⇒ same hold regardless of
-    state; the no-op rows are state-independent, so their audit `from` is
-    validated against FROM_STATES only (a reconcile racing the append must
-    not turn an idempotent no-op into a halt)."""
-    # §0.3: absent/unprobeable ⇒ SHARED, never a soft SEPARATED.
-    run_mode = credential_mode or CredentialMode.SHARED
-    books: dict[str, _HoldBook] = {}
-    base_order: list[str] = []
-    base_halts: dict[str, dict] = _ceiling_halts(events)
-    dedup = _Dedup()
-    for ev in events:
-        event = _intake(dedup, ev, "hold_lifecycle", HOLD_VARIANTS, base_halts)
-        if event is None:
-            continue
-        base = event.base_key
-        if base in base_halts:
-            continue
-        book = books.get(base)
-        if book is None:
-            book = books[base] = _HoldBook()
-            base_order.append(base)
-        halt = _step_section_b(book, base, event, ev, run_mode)
-        if halt is not None:
-            base_halts[base] = halt
-    out: dict[str, dict] = {}
-    for base in base_order:
-        book = books[base]
-        out[base] = {
-            hid: {"state": book.holds[hid].name.value,
-                  "disposition": (book.holds[hid].disposition.value
-                                  if book.holds[hid].disposition else None),
-                  "deliveries": book.deliveries.get(hid, [])}
-            for hid in book.order}
-    notes = {b: books[b].resolution_notes for b in base_order
-             if books[b].resolution_notes}
-    return {"holds": out, "halts": base_halts, "resolution_notes": notes}
+    """Section-B projection of the ONE pass (reduce_boundary) — never a
+    second walk. `credential_mode` is the RUN's mode (protocol_genesis),
+    passed as context and never taken from event payload. Shape:
+    {holds, halts, resolution_notes}."""
+    result = reduce_boundary(events, credential_mode=credential_mode)
+    return {"holds": result["holds"], "halts": result["halts"],
+            "resolution_notes": result["resolution_notes"]}
 
 
 def _step_section_b(book: _HoldBook, base: str, event: object,
@@ -3442,127 +3645,17 @@ def _step_section_b(book: _HoldBook, base: str, event: object,
 
 def fold_epochs(events: Sequence[Mapping[str, object]],
                 anchors: Mapping[str, str]) -> dict:
-    """The §6.0 recovery-step-(3) epoch fold, per base_key. Edges are only
-    epoch-ADVANCING transitions, but EVERY event with an event_id is
-    registered for dedup FIRST — a divergent no-effect twin halts instead
-    of silently advancing, and a cross-base reuse halts every base a copy
-    touched. Halt isolation and the recovery ceiling are per base; a base
-    with edges but no anchor is a typed halt on every path (ceiling
-    included), and a ceiling breach with empty anchors still returns an
-    explicit halt entry — never {} silently."""
-    base_halts: dict[str, dict] = _ceiling_halts(events)
-    edges_by_base = _collect_epoch_edges(events, base_halts)
-    out: dict[str, dict] = {}
-    for base in sorted(set(anchors) | set(edges_by_base) | set(base_halts)):
-        if base in base_halts:
-            out[base] = {"status": "halt", "epoch": anchors.get(base),
-                         "halt": base_halts[base]}
-            continue
-        edges = edges_by_base.get(base, [])
-        anchor = anchors.get(base)
-        if anchor is None:
-            first = min(edges, key=lambda e: str(e["event_id"]))
-            out[base] = {"status": "halt", "epoch": None, "halt": _halt(
-                BoundaryErrorCode.EPOCH_GAP,
-                f"{base}: {len(edges)} epoch edge(s) but no protocol_genesis "
-                f"anchor (first {first['event_id']} "
-                f"{first['epoch_before']}→{first['epoch_after']}) — never "
-                f"silently dropped", first)}
-            continue
-        out[base] = _walk_epoch_chain(base, anchor, edges)
-    return out
+    """§6.0's recovery-step-(3) epoch fold, as a THIN ACCESSOR over the one
+    reduced state — not a second walk (panel round 6's structural fix).
 
-
-def _collect_epoch_edges(events: Sequence[Mapping[str, object]],
-                        base_halts: dict[str, dict]) -> dict:
-    """§9 validation, dedup and the no-effect filter, in that order — the
-    fold's output IS the fence epoch, so it runs the same schema checks as
-    the reducers, and dedup registers EVERY event (halted base included) so
-    divergence detection is order-independent."""
-    dedup = _Dedup()
-    edges_by_base: dict[str, list[Mapping[str, object]]] = {}
-    for ev in events:
-        base = str(ev.get("base_key") or "")
-        halted = base in base_halts
-        schema_halt = _validate_fold_event(ev)
-        if schema_halt is not None:
-            base_halts.setdefault(base, schema_halt)
-            continue
-        try:
-            if dedup.check(ev, base) == "dup" or halted:
-                continue  # carrier copies of one advance share an event_id
-        except _DivergentDuplicate as exc:
-            for b in exc.bases:
-                base_halts.setdefault(b, exc.halt)
-            continue
-        eb, ea = ev.get("epoch_before"), ev.get("epoch_after")
-        if eb is None or ea is None or eb == ea:
-            continue  # no-effect pairs are not edges (round 16, codex)
-        if not base:
-            base_halts.setdefault("", _halt(
-                BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
-                f"epoch edge missing base_key "
-                f"(event_id {ev.get('event_id')!r})", ev))
-            continue
-        edges_by_base.setdefault(base, []).append(ev)
-    return edges_by_base
-
-
-def _valid_oid(value: object) -> bool:
-    """Epoch values ARE object ids: lowercase 40-hex. The fence is compared
-    for equality at the §6.0 authority check, so it is never str()-coerced
-    from a dict, an int, or free text (panel round 4)."""
-    return isinstance(value, str) and _OID_RE.match(value) is not None
-
-
-def _validate_fold_event(ev: Mapping[str, object]) -> Optional[dict]:
-    """The fold runs the SAME classification as the reducers (one intake),
-    then the rules specific to being a fence consumer:
-
-      * only the REDUCED-BY families may carry epoch edges at all — a §9
-        single presenting epoch_before/epoch_after is a typed halt, not a
-        silent skip. Neither reducer authenticates those records (both
-        filter them), so nothing else would object;
-      * a reduced-by family MUST carry a variant — an absent one is the
-        unknown-variant halt build_wire_event already rules;
-      * epoch values are validated OID-shaped, never coerced.
-    """
-    fam, halt = _classify_event(ev)
-    if halt is not None:
-        return halt
-    variants = _variants_for(fam)
-    has_epoch = ev.get("epoch_before") is not None or ev.get("epoch_after") is not None
-    if variants is None:
-        if has_epoch:
-            return _halt(
-                BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
-                f"family {fam!r} is not reduced by any lifecycle machine "
-                f"(REDUCED_BY_FAMILIES = {sorted(REDUCED_BY_FAMILIES)}) yet "
-                f"carries epoch fields — nothing authenticates this record, "
-                f"so it must never advance the fence "
-                f"(event_id {ev.get('event_id')!r})", ev)
-        return None                      # a legitimate §9 single: no edge
-    if ev.get("variant") is None:
-        return _halt(
-            BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
-            f"{fam} record with no variant — unknown variants halt (§9); "
-            f"the fold applies the same rule as the reducers "
-            f"(event_id {ev.get('event_id')!r})", ev)
-    for field in ("epoch_before", "epoch_after"):
-        value = ev.get(field)
-        if value is not None and not _valid_oid(value):
-            return _halt(
-                BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
-                f"{field} {_short(value)} is not an object id (lowercase "
-                f"40-hex) — the fence is compared for equality and is never "
-                f"coerced (event_id {ev.get('event_id')!r})", ev)
-    try:
-        build_wire_event(variants, ev)
-    except WireViolation as exc:
-        return _halt(exc.code, exc.detail, ev)
-    except ValueError as exc:
-        return _halt(BoundaryErrorCode.ILLEGAL_TRANSITION, str(exc), ev)
-    return None
+    Every edge it walks came from an event that passed the same
+    classification, dedup, typed construction, transition rules and per-row
+    epoch algebra the reducers applied, in the same pass. An identity
+    replay contributes no edge, so §6.0's blessed idempotent reconcile is a
+    no-op here exactly as it is to the machines. Halt isolation, the
+    recovery ceiling and the halt taxonomy are likewise shared, because
+    they happen once."""
+    return reduce_boundary(events, anchors=anchors)["epochs"]
 
 
 def _walk_epoch_chain(base: str, anchor: str,
