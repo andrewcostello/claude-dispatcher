@@ -1,102 +1,110 @@
-# Classification → Gating Boundary: Implementation Plan (v2.2)
+# Classification → Gating Boundary: Implementation Plan (v3)
 
-**Input:** design v20 + round-20 dispositions (`docs/plans/2026-08-02-classification-gating-design.md` @ 9c8d517) — §12 PASSED.
-**Plan v1 → v2:** revised against the plan-level review (claude 2 BLOCKING + 4 MAJOR, grok 3 BLOCKING + 15 MAJOR/minor; codex quota-dead). Convergent core: v1 assigned the producer half of §8 and NO PR built the dispatcher half — the design's central mechanism would have arrived inside the cut-over PR. v2 gives it PR3. Full disposition table in §5.
-**Baselines:** `claude-dispatcher@9c8d517`, `claude-workflow@2dcecfd2`. PR0's first commit re-pins the design's T26 citation baselines to PR0-time HEADs (adjudicated: the build directive superseded this line's original "plan-time SHAs"; pinned `claude-dispatcher@88cec333`, citations verified there).
-
----
-
-## 0. Standing-item dispositions (the §12 MAJOR-disposition pass)
-
-### 0.1 Observability: targets AND emitters (two tables — grok M7: targets without wiring is documentation theater)
-
-**Targets** (values tunable; obligations not): classifier availability ≥ 99.5%/7d (breach ⇒ page; >1h ⇒ operator LEGACY choice) · classifier p95 < 30s · panel p95 < 20min FULL / 6min SINGLE · append lag p95 < 10s · CAS conflicts < 1% + 10×-spike alarm · `OUTCOME_UNKNOWN` > 15m page · hold age > 24h page / > 5 open ⇒ halt admissions · epoch mismatch/gap/fork ⇒ page + halt base · recovery ceiling 10k events / 30s reduce ⇒ halt admissions · **`OPERATOR_ATTESTED` vs `HUMAN_IDENTITY_ENFORCED` counted separately; any audit row missing `assurance`/`authorization_kind` ⇒ alarm** (grok M6).
-
-**Emitters** (metric → locus → first PR): classifier latency/availability, `classifier_contract` distribution → PR3 · lifecycle/hold/epoch/CAS/`subject_mismatch{stage}`/SEPARATED→SHARED flips → PR4 · verdicts-by-rule, outcomes-by-kind, authorization/assurance counters, LEGACY×financial alarm, `trace_id` spanning classify→effect → PR5 · T25 cost counters → PR6. **PR6's gate includes a metrics smoke: every target above has a live emitter** (claude M4, grok M7).
-
-### 0.2 `BoundaryError` — closed v1 universe (claude M3, grok M8)
-
-`BoundaryError{code, phase, retriability: RETRIABLE|TERMINAL|OPERATOR, operator_action}` · **`phase ∈ {PREFLIGHT, CLASSIFY, PANEL, AUTHORIZE, EFFECT, RECOVER, ROLLBACK}` (closed)** · unknown code at any consumer ⇒ TERMINAL · CLI exit map `0/2/3/4` = ok/TERMINAL/RETRIABLE/OPERATOR · every code carries a metric name (code→metric map generated with the type). Codes:
-`CLASSIFY_FAILED(kind)` · `FENCE_MISMATCH` · `EPOCH_GAP` · `EPOCH_FORK` · `CHAIN_BROKEN` · `CAS_CONFLICT` · `ILLEGAL_TRANSITION` · `CARRIER_UNPROTECTED` · `CARRIER_UNREADABLE` · `HOLD_ADMISSION_CEILING` · `WEBHOOK_EVIDENCE_UNAVAILABLE` · `ROSTER_INCOHERENT` · `UNMERGEABLE_CONSENT_ATTEMPT` · `ROLLBACK_UNSUPPORTED_MAJOR` · `BINARY_DIGEST_MISMATCH` · **`SCHEMA_MAJOR_UNKNOWN` · `EVENT_PAYLOAD_DIVERGENT` · `RECOVERY_CEILING` · `UNIT_MEMBERSHIP_MUTATION`**. PR2 seals a T1-style exhaustiveness test binding codes ↔ CLI ↔ metrics.
-
-### 0.3 Conformance/reference kit — deferred post-cut-over (design's standing rationale). PR0's generated artifacts make later extraction mechanical.
-
-### 0.4 Operator items — §0.2(c) + §0.3–0.5 ratifications gate PR6 cut-over. SHARED is the supported launch mode with named residuals.
-
-### 0.5 Round-6 deferred-MAJOR ledger (claude B2)
-Design §11's round-6 row deferred 21 MAJORs (claude 4 · grok 8 · codex 9) to this plan. The verbatim texts were not preserved (per-round seat outputs overwrite). Disposition — **absorption by construction, with the evidence being the process itself**: rounds 7–20 re-ran the same seats, same role, same dimensions against every subsequent version fourteen times; §12 obligated seats to re-raise anything unresolved, and the round-6 *themes* the tables record (event attribution, credential modes, wire contradictions, approver sets, policy epochs, registry sealing) each received dedicated BLOCKING-level treatment in later rounds (§11 rounds 6–20 tables). No seat re-raised a round-6 MAJOR as open in fourteen opportunities, including three explicit stragglers probes. Residual risk accepted: any round-6 MAJOR that was both unabsorbed and never re-found survives review-invisible — the same risk class §12 accepts for all unknown unknowns. The design's round-6 row is annotated closed-by-this-ledger.
+**Input:** design v20 + its round-20 dispositions (`docs/plans/2026-08-02-classification-gating-design.md`) — §12 PASSED.
+**Baselines:** design T26 citations are pinned in the design's own header; this plan's units re-pin at merge time.
+**v2.4 → v3:** restructured after building the A-stream and reviewing it five times at full scout coverage. Two things were wrong with v2, both structural rather than clerical: (1) each "PR" carried six to ten deliverables in one paragraph, so the first grew to 20,700 diff lines and could not be reviewed in a single panel; (2) it let a mechanism ship without its consumer, so operational policy (credential-mode threading, admission ceilings, operator attribution, dedup, fence provenance) arrived as dark code reviewed against hypothetical callers — an unbounded surface. v3 replaces 7 PRs with **18 units**, each sized to one panel, each pairing a mechanism with the caller that pins it. §5 records what the A-stream taught; the measurements that justify these rules are in §5 too.
 
 ---
 
-## 1. Rules that bind every PR
+## 0. Standing dispositions (the §12 MAJOR-disposition pass)
 
-- **Review**: 5-seat panel before PR (codex seat optional while quota-dead — bake-off policy), recheck `-min-severity medium`. **Merge gate = zero GATE-AFFECTING findings + a written disposition for every remaining finding** (accepted with rationale, or booked to a named later PR). Gate-affecting = the finding changes a gate decision: fence value, authorization, panel/merge verdict, halt behaviour, or the validity of a seal. This replaces the bare "zero MEDIUM+" count, which gated on a label that demonstrably does not track risk — a PR0 review classified a swallowed CRITICAL blocking verdict as MEDIUM beside a 7-parameter style nit (fixed in `roles/reviewer.md`: staged/dark code is rated by what it gates). Severity still orders the work; it no longer decides the gate alone.
-- **Review slicing**: a PR whose diff exceeds ~6k lines is reviewed in coherent slices (schema+generator / generated / seals / wiring), each panelled separately. Measured on PR0: the 20.5k-line monolith completed 1 of 6 scouts and reported 7 findings; the same tree sliced completed 6 of 6 and reported ~70. An unsliced large review produces a vacuous pass, so **every panel run records its scout-completion count and a run with unverified scouts is not a verdict**.
-- **Risk tiers**: PR0 includes the `.agent/risk-paths.json` update making `src/claude_dispatcher/boundary/**`, `schema/**`, and `tools/{fsmgen,t26_lint}*` **critical** (grok M9: the catch-all would have tiered them medium).
-- **Generated types are the sole source** (grok B2): PR0 artifacts define every FSM/§9/panel/error type; PR2+ may add only (a) the §3.1 `ClassifyOutcome` T15 fixture verbatim, (b) `parse_classification` + equation checks, (c) thin adapters. An import-boundary CI test fails on any redefinition of a generated name.
-- **Dark mode** (grok M1): `boundary/` is importable from tests only until PR6; the architecture test (skeleton in PR0, allowlist empty) fails on production imports. PR6 is the sole wiring PR and fills the door-entrypoint allowlist (grok M15).
-- **Per-PR seal table**: every PR description carries `{T#, test path, revert-falsify command}` rows; the revert-falsification requirement is per-seal, not a preamble (grok M15).
-- **Execution protocol per PR (operator directive, 2026-08-03) — scaffold → failing seals → parallel body-fill → immutable tests:**
-  1. **Scaffold phase**: every function lands first as a typed signature — request/response shapes from the PR0 generated types — with a contract docstring and a `raise NotImplementedError` body. (Go PRs: stubs returning typed errors.) The scaffold commit is reviewed for CONTRACT fidelity to the design before any body exists.
-  2. **Test phase — by a DIFFERENT agent than the scaffold's author**, both citing design sections independently (a shared misreading must not land in stub and test together and self-confirm). The seal tests for every scaffolded function are written against the stubs and committed FAILING (red), mapped to their T-obligations, before any body work begins. A test that passes against a stub is vacuous by definition and rejected. **Composition seals are first-class phase-B work, not an afterthought**: the T19 crash histories, `reduce(events) == state`, and end-to-end fence equality land as red suite-level tests before bodies, and the reducers get property-based tests, not only examples — a build where every function is green and the composition was never sealed is the failure this project's history warns about.
-  3. **Body fan-out — MODULE grain, not function grain** (per-function agents lack the cross-function invariant context; modules are the design's own seams). Bodies route to separate agents in parallel, each scoped to its module. **Body agents may not modify any test, scaffold signature, schema, or generated file** — enforced by `scripts/check_body_branch.sh <base> <branch>` (lands with PR0's CI work; fails on a non-empty `git diff -- tests/ schema/ '**/generated/**'` or any changed signature), run at integration and in CI, never trusted on agent self-report. Until that script exists the rule is operator-enforced by running the diff manually — stated so no claim outruns its mechanism (panel round 3 caught exactly this overclaim in v2.2).
-  4. **Dispute escalation — covers tests AND signatures**: a body agent that believes a test or a frozen signature is wrong STOPS on that function and files the dispute (artifact, expected-vs-design citation, proposed fix); contorting an implementation to fit a wrong contract is the mirror-image failure and equally forbidden. A SEPARATE reviewer agent adjudicates against the design doc; a genuinely wrong artifact is fixed in its own commit with the design citation, and that fix passes review before body work resumes. **The adjudication is final for the round; a repeat dispute on the same artifact escalates to the operator** — no agent-to-agent ping-pong. The body agent never touches the disputed artifact either way.
-  This is the mechanical form of the vacuous-seal rule: the seal's author and the seal's satisfier are never the same agent, and the seal cannot be weakened by the party it constrains.
-- **Cross-repo contract**: `schema/` is a versioned contract package; every schema either repo tests against is digest-cross-checked in both CIs with a single source-commit pin; each repo's CI records the peer SHA (grok M3/M10).
+### 0.1 Observability: targets AND emitters
+**Targets** (values tunable; obligations not): classifier availability ≥ 99.5%/7d (breach ⇒ page; >1h ⇒ operator LEGACY choice) · classifier p95 < 30s · panel p95 < 20min FULL / 6min SINGLE · append lag p95 < 10s · CAS conflicts < 1% + 10×-spike alarm · `OUTCOME_UNKNOWN` > 15m page · hold age > 24h page / > 5 open ⇒ halt admissions · epoch mismatch/gap/fork ⇒ page + halt base · recovery ceiling 10k events / 30s reduce ⇒ halt admissions · `OPERATOR_ATTESTED` vs `HUMAN_IDENTITY_ENFORCED` counted separately; any audit row missing `assurance`/`authorization_kind` ⇒ alarm.
 
-## 2. PR sequence
+**Emitters** (metric → first unit): classifier latency/availability + `classifier_contract` → B5 · lifecycle/hold/epoch/CAS/`subject_mismatch{stage}`/SEPARATED→SHARED flips → C2–C4 · verdicts-by-rule, outcomes-by-kind, authorization/assurance counters, LEGACY×financial, `trace_id` spanning classify→effect → C7 · T25 cost counters → C8. **C8's gate includes a metrics smoke: every target above has a live emitter.**
 
-**PR0 — `claude-dispatcher`: generated truth + CI seals (no runtime behavior).**
-`schema/lifecycle_fsm.yaml` (A+B tables incl. r20 rows, event alphabet, disposition algebra, durability partition, projection derivation, epoch-fold params, §9 union variants with per-variant requiredness) · `schema/panel_aggregate.yaml` **generating `required_seats`/`blocking`/`aggregate` code, diff-clean** (claude M-panel: a schema nothing checks against is prose lint one level up) · `schema/classifier_protocol.yaml` + golden/malformed vectors · `schema/ast_allowlists.yaml` + **fail-closed T8/T9 CI that fails while allowlisted modules are absent** (grok B3) · `schema/boundary_errors.yaml` (§0.2, generated) · `tools/fsmgen.py` (types, `apply()`, both reducers, T19 skeletons, diagrams, **and the design doc's §6.0/§9 tables — doc == artifact enforced**) · `tools/t26_lint.py` as CI (citations at re-pinned baselines, T-index, retired names, mutation/field-once, supersession markers, **and this plan's §3 T-map completeness**, claude M2) · architecture-test skeleton · risk-paths update · design-header baseline re-pin.
+### 0.2 `BoundaryError` — closed v1 universe
+`BoundaryError{code, phase ∈ {PREFLIGHT, CLASSIFY, PANEL, AUTHORIZE, EFFECT, RECOVER, ROLLBACK}, retriability ∈ {RETRIABLE, TERMINAL, OPERATOR}, operator_action}` · unknown code at any consumer ⇒ TERMINAL · CLI exit `0/2/3/4` = ok/TERMINAL/RETRIABLE/OPERATOR · every code carries a metric name, generated with the type. Codes: `CLASSIFY_FAILED(kind)` · `FENCE_MISMATCH` · `EPOCH_GAP` · `EPOCH_FORK` · `CHAIN_BROKEN` · `CAS_CONFLICT` · `ILLEGAL_TRANSITION` · `CARRIER_UNPROTECTED` · `CARRIER_UNREADABLE` · `HOLD_ADMISSION_CEILING` · `WEBHOOK_EVIDENCE_UNAVAILABLE` · `ROSTER_INCOHERENT` · `UNMERGEABLE_CONSENT_ATTEMPT` · `ROLLBACK_UNSUPPORTED_MAJOR` · `BINARY_DIGEST_MISMATCH` · `SCHEMA_MAJOR_UNKNOWN` · `EVENT_PAYLOAD_DIVERGENT` · `RECOVERY_CEILING` · `UNIT_MEMBERSHIP_MUTATION`. Widening the set is a plan amendment, never an in-flight addition.
 
-**PR1 — `claude-workflow`: `cmd/classify` wire (Go).** As v1: `-contract-version 1|2`, framed `-authoritative-stdin`, response wrapper with producer-computed digests, v2 envelope (`config_scaffold` required; no `config_sha256`/`classified_at`), capability probe with contractual exits. Seals: T10 goldens + rollback-mid-run + malformed-frame vectors; T30 split by equation; v1 differential vs pinned binary; sidecar-survival fixture. Contract package consumed at pinned SHA.
+### 0.3 Conformance/reference kit — deferred post-cut-over (the design's standing rationale).
 
-**PR2 — `claude-dispatcher`: types + parse (pure).** Generated types imported; adds the T15 fixture, `Classification.__post_init__` equations, `parse_classification` (+ bounds, `UNKNOWN_INTENSITY`, `V1_COMPAT` desugar), preimage functions, constructors with the guarded equalities, `MergePlan` ordered construction list, `BoundaryError` exhaustiveness seal. Seals: T1, T4, T5, T7 (stub via PR1 binary), T8/T9 (bodies under the PR0 gate), T11, T15, T16, T22, T30-consumer; construction-list property tests.
+### 0.4 Operator items — gate **C8**, nothing earlier
+- §0.2(c) channel-level attestation ratification; §0.3–0.5 amendment ratifications.
+- `STANDING × REJECT_RESTORE_HOLD`: the safer reading is implemented (`auto_release_after_reject_restore: false`) because `HELD_FOREIGN` is the only state auto-release can fire from, so demoting there re-opens non-operator release on a hold an operator just refused. Needs ratifying as a design amendment.
+- Auto-release webhook provenance: requires a design §9 amendment (the doc==artifact gate correctly refuses unilateral field additions); recorded `blocks_pr6_cutover`.
+- SHARED is the supported launch mode with its named residuals.
 
-**PR3 — `claude-dispatcher`: `boundary/authority_channels.py` — the §8 channel end-to-end** (plan-review consensus B1): GraphQL ref/tree-entry/blob policy fetch with mode checks · two-request compare protocol with octet preimage · frame assembly against the contract vectors · `O_NOFOLLOW`-open → hash-vs-**release-manifest digest** (compare, never adopt) → `fexecve`/`execveat` · wrapper → `parse_classification` integration · mid-run absence ⇒ `CLASSIFY_FAILED(CONFIGURED_BINARY_MISSING)` · policy-epoch escalation halt · hardened-git offline path. Seals: T13, T21 (both halves), T28 executable-provenance, dispatcher-side T10 vector consumption, corrupted-diff ⇒ `SUBJECT_MISMATCH`, "pathname never valid in REQUIRED" deny row. Emitters: classifier metrics (§0.1).
-
-**PR4 — `claude-dispatcher`: carriers, machines, reducers.** Bootstrap ceremony, append protocol, dual-append shared-`event_id`, reduces, epoch walk, `DurableAuthority`/`FenceSnapshot`/`SharedFence`/`SeparatedFence`/`SharedRestartAuthority`, webhook `VERIFIED_API`, effect lock, ceilings, **rollback preflight reduce-and-refuse + unsupported-major golden** (grok M2). Seals: full T19 suite, T23 component rows, T24, T28 predicates. Emitters: lifecycle/hold/epoch signals.
-
-**PR5 — `claude-dispatcher`: doors, consent, events, panel runner.** **`boundary/panel_runner.py` consuming `PanelPlan` only** (grok M11) · doors 0–3 as pure functions over `MergePlan` · `approve-and-merge` consent-at-read/evidence-at-read **with subject recompute over the §8 module only — T20/T27/T31 assert the channel via mock GraphQL, never local git** (grok M5) · §9 event emission + **audit rows that refuse missing `assurance`** (grok M6) · MergeUnit genesis/confirmation. Seals: T2 component half, T3, T12 door-function matrix, T14, T18, T20, T21-consumer, T27, T29, T31.
-
-**PR6 — cut-over (one PR).** Preflight REQUIRED|LEGACY + genesis; route `merge_engine`/`merge_prs`/`auto_integrate` through doors; delete the `_resolved_quality` re-resolution (orchestrator.py:2049), the `cross_family_panel` re-read, the `_has_commits_on_branch` direct-to-base success branch, and both legacy panel call sites; frozen-reviewer advisory labeling; sidecar writes; fill the door-entrypoint architecture allowlist. **Gate:** §0.4 ratifications recorded · rollback drill (REQUIRED→LEGACY on a scratch repo) · **metrics smoke (§0.1)** · **component-version matrix green** — `{dispatcher, classify, gates, iterate} old/new × authority claim ∈ {mirror-only, advisory, REQUIRED-live}` (grok M4) · T12 inventory/forbidden-mover rows · T2 runner-singularity AST assertion + T23 tamper-vs-live-door row (claude M1) · T25 + T26 green · release manifest pins the classify digest; preflight refuses REQUIRED on mismatch (grok M10).
-
-## 3. Test-obligation map (mechanically linted by PR0's `t26_lint.py` against this doc — claude M2)
-T1/T4/T5/T7/T8/T9/T11/**T15**/T16/T22 → PR2 · T10/T30 → PR1 (+consumer halves PR2) · **T13/T21/T28-provenance → PR3** · T19/T23-component/T24/T28-predicates → PR4 · T2-component/T3/T12-doors/T14/T18/T20/T27/T29/T31 → PR5 · T2-singularity/T12-inventory/T23-tamper/T25 → PR6 gates · T6 (deny-row plugin)/T26 → PR0, permanent. Multi-PR obligations name each half above.
-
-## 4a. Live holes found while building PR0 (dated 2026-08-04, tracked, not closed)
-
-Both were found by adversarial review of the *existing* dispatcher while hardening the docs-only carve-out, and both are the AUTHORITY_POLICY_CHANGE shape this design closes for the rule table:
-
-1. **The Go classifier reads its rule table from a working tree.** `orchestrator.py:1905,1993` call `classification.classify_diff(repo_root=…)`, which passes `-worktree <repo_root>`, so `cmd/classify` loads `.agent/risk-paths.json` from the main checkout's working copy — an uncommitted edit changes the rule table for every classification. This is the same class as the Python `merge_engine` defect fixed on `fix/authority-doc-carveout`, one artifact over. **PR1's framed `-authoritative-stdin` + the §8 policy-fetch sequence is the fix** (the design already specifies it: policy bytes come from the protected root base, never a local path). Interim mitigation landed: `**/.agent/**` is in the authority floor, so a diff touching the table elevates and cannot self-approve.
-2. **The verdict is taken on a local ref and enforced on origin's PR head, with no SHA pin.** A commit pushed to origin between classification and merge is never gated. Needs `gh pr view --json headRefOid` + `--match-head-commit` in `pr.py` — the same `MergeSubject`/pre-effect-re-read property the design specifies for §6.0 doors, applied to the current merge path. Not scoped into PR0–PR6; tracked here so it is not lost.
-
-## 4. Risks
-Cross-repo drift (→ §1 contract package + peer pins) · codex quota (optional seat) · SHARED residuals ship as designed, rendered in reporting · line-number citation brittleness: cite symbols not lines where the design does (`_has_commits_on_branch` branch, not orchestrator.py:3231 — grok m4).
-
-## 5. Plan-review disposition table (v1 → v2)
-
-| Finding (seats) | Disposition |
-|---|---|
-| §8 dispatcher-side channel in no PR — cut-over unbuildable or written inside PR5 (claude B1, grok B1/M5/M12) | PR3 is that channel; T13/T21/T28 live there; consent asserts the module |
-| Round-6 deferred MAJORs never dispositioned (claude B2) | §0.5 ledger: absorption-by-construction + accepted residual; design row annotated |
-| PR0 types vs PR2 hand types — dual definitions (grok B2) | generated-types-sole-source rule + import-boundary CI |
-| T8/T9 allowlists not PR0 CI (grok B3) | `ast_allowlists.yaml` + fail-closed-while-absent CI |
-| T-map incomplete (T15 missing, T13/T30 split unstated) (claude M2, grok M12) | map regenerated; lint enforces it against this doc |
-| `BoundaryError` not closed over the halt taxonomy; no phase domain/metric map (claude M3, grok M8) | four codes added; phase closed; code→metric generated; PR2 exhaustiveness seal |
-| SLO targets without emitters (claude M4, grok M7) | §0.1 emitters table; PR6 metrics smoke |
-| `panel_aggregate.yaml` generated nothing (claude M-panel) | fsmgen generates the aggregate, diff-clean |
-| Dark-mode/chokepoint unenforced (grok M1, M15) | architecture test skeleton PR0 → filled PR6; per-PR seal tables |
-| Rollback preflight unassigned (grok M2) | PR4 + golden |
-| Cross-repo pins beyond one file (grok M3, M10) | contract package + peer SHAs + manifest-pinned classify digest in PR6 preflight |
-| Component-version matrix missing (grok M4) | PR6 gate |
-| Assurance counters/audit refusal unscheduled (grok M6) | §0.1 + PR5 seals |
-| Risk-tier claim false for new paths (grok M9) | risk-paths update in PR0 |
-| Panel runner not a deliverable (grok M11) | `boundary/panel_runner.py` in PR5; legacy deletions in PR6 |
-| T12/T2/T23 halves mis-placed (claude M1, grok M13) | split across PR5/PR6 as named |
-| §12's five CI gates: 3/5 in PR0 (grok M14) | all five now in PR0 |
-| Baseline re-pin, citation symbols (grok m1/m4) | PR0 first commit; symbol-cited |
+### 0.5 Round-6 deferred-MAJOR ledger — closed by absorption-by-construction across design rounds 7–20, with the residual accepted (unchanged from v2).
 
 ---
 
-The plan-level MAJOR-disposition pass is complete: one adversarial review round + this revision. PR0 begins now; each PR re-enters the standard pipeline.
+## 1. Invariants every unit inherits
+
+Stated once because each was learned by shipping its violation. A unit that breaks one is not mergeable regardless of its findings count.
+
+1. **One public entrypoint per decision.** If two callables must agree about the same state, they are one callable plus pure accessors over its result. Patched divergence recurred four times (fold vs reducers: algebra, identity replay, dedup, then credential mode); unification ended each. Corollary: run-scoped context (credential mode, protocol epoch, roster) is a **required argument of the single entrypoint**, never a per-function parameter some caller can omit.
+2. **Validate before apply.** No transition, append or mutation is recorded until every check on that input passes. A halt leaves state unmutated, and the seal asserts *that*, not merely the halt code.
+3. **Total dispatch over closed unions.** Every consumer dispatches exhaustively with `else: raise`. Fixing the reachable instance is not fixing the property — `aggregate` discarded a *blocking* verdict, was fixed, and still discarded an *unparseable* one.
+4. **Absence is a named state.** No field defaults to the permissive value; missing input at a gate ⇒ typed halt (`skills/explicit-state.md`).
+5. **One fact, one place — including protections.** Redundant guards weaken seals: two globs covering one fact let a mutation delete half while the suite stayed green.
+6. **Policy comes from the protected base.** Nothing on the gating path reads its parameters from the branch under review or from a working tree (design §8). Done for Python in `fix/authority-doc-carveout`; open on the Go side (§4a).
+7. **No claim without its mechanism** — in code, comments, docs and this plan. A comment asserting a safety property the code lacks is a finding at the severity of that property.
+
+## 2. Rules that bind every unit
+
+- **Size**: a unit's diff must be reviewable in ONE critical-tier panel. Measured ceiling ≈ **3k lines**; above ~6k the panel demonstrably loses scouts (§5). Slicing a review is a recovery tool, not a plan.
+- **Coverage is part of the verdict**: every panel run records scout completion and seat count. A run with unverified scouts **is not a verdict**.
+- **Merge gate**: zero **gate-affecting** findings (changes a gate decision: fence value, authorization, panel/merge verdict, halt behaviour, or a seal's validity) + a **written disposition** for every remaining finding (fixed / accepted-with-rationale / booked to a named unit). Severity orders the work; it no longer decides the gate alone.
+- **A mechanism ships with its consumer.** Operational policy with no caller is reviewed against hypothesis and never converges. If a unit would introduce policy whose caller lands later, the policy moves to that later unit and this one ships types/data only.
+- **Generated types are the sole source**; hand-written redefinition of a generated name fails an import-boundary test.
+- **Dark mode**: `boundary/` is test-only until C8; the architecture test fails on production imports, and C8 is the sole wiring unit.
+- **Execution protocol per unit** (operator directive): scaffold (typed signatures, `NotImplementedError`) → **seal author ≠ scaffold author**, failing seals committed red, composition seals first-class (crash histories, `reduce == state`, property-based) → module-grain body fan-out → **body agents may not touch tests, scaffolds, schemas or generated files** (enforced by `scripts/check_body_branch.sh`, never self-report) → disputes over a test *or* a frozen signature stop and escalate to a separate adjudicator; adjudication is final for the round, a repeat dispute escalates to the operator.
+- **Cross-repo**: `schema/` is a versioned contract package; every schema either repo tests against is digest-cross-checked in both CIs at one pinned source commit.
+- **Agent hygiene** (learned the hard way): commit whenever green and never batch — a session limit or dropped connection then costs one chunk, not a session; every agent uses a **private scratch directory** (a shared one was overwritten mid-run by a concurrent agent); never run an agent in a checkout another agent is writing.
+
+## 3. Units
+
+Dependencies are strict: a unit may not begin before its predecessors merge. Sizes are diff targets.
+
+### Stream A — drift-proofing (`claude-dispatcher`; no runtime behaviour)
+| Unit | Deliverable | Seals | ~size |
+|---|---|---|---|
+| **A1** | `tools/t26_lint.py` + CI workflow + pre-push hook + `.agent/risk-paths.json` tiers + design baseline re-pin | lint self-passes; 10 planted violations each asserting their own message; peer-present/peer-absent matrix | 1.0k |
+| **A2** | the five `schema/*.yaml` as validated data + `doc == artifact` table generation | schema well-formedness; doc-table equality with two planted drifts | 1.5k |
+| **A3** | `fsmgen` → generated **types only** (enums, frozen dataclasses, wire validation, `BoundaryError`) | T1, T4, T5, T15, enum exhaustiveness, error-map element-wise | 2.0k |
+| **A4** | `fsmgen` → `apply()` transition relation for both machines + T19 **artifact-fidelity** goldens against the hand-written oracle | T19 transition rows, oracle-independence, T6, T8/T9 fail-closed, dark-mode gate | 2.5k |
+
+**A-stream status:** built as one 20.7k unit on `feat/PR0-generated-truth` before this restructuring and reviewed in five slices at near-full coverage. It ships as A1–A4 combined **once** its 5 CRITICALs, its vacuous seals and its CI findings are closed; its operational semantics are booked to Stream C (§4b). No future unit ships at that size.
+
+### Stream B — the classifier boundary (mechanism + caller in the same unit)
+| Unit | Deliverable | Seals | ~size |
+|---|---|---|---|
+| **B1** | `cmd/classify`: `-contract-version 1\|2`, v2 envelope (`config_scaffold` required; no `config_sha256`/`classified_at`), capability probe with contractual exits | T10 goldens both contracts; v1 differential vs the pinned binary (semantic equivalence, volatile fields excluded) | 1.5k |
+| **B2** | `cmd/classify`: framed `-authoritative-stdin` + response wrapper with **producer-computed** digests | octet-level frame goldens; malformed-length / truncation / trailing-data / corrupted-diff vectors | 1.5k |
+| **B3** | dispatcher parse: sealed `ClassifyOutcome`, `__post_init__` producer equations, `parse_classification`, bounds, `UNKNOWN_INTENSITY`, `V1_COMPAT` desugar | T7 (stub from the B1 binary), T11, T16, T22, T30 consumer half | 2.0k |
+| **B4** | `MergeSubject` / `AttemptSubject` / `ClassifierAuthority` / `AuthorityFingerprint` + canonical preimages | independent preimage oracles incl. the retarget property; guarded-constructor rows | 1.5k |
+| **B5** | §8 authority channels **with B3 as the caller**: GraphQL ref/tree-entry/blob, two-request compare + octet preimage, `O_NOFOLLOW` → hash-vs-manifest → `fexecve`, hardened-git offline | T13, T21 both halves, T28 provenance, "pathname never valid in REQUIRED" deny row | 2.5k |
+
+### Stream C — effects (each mechanism with its carrier)
+| Unit | Deliverable | Seals | ~size |
+|---|---|---|---|
+| **C1** | protected carriers: bootstrap ceremony (orphan commit → `createRef` → protection), `createCommitOnBranch` append protocol, CAS retry, `updateRefs` for non-append moves | carrier absent/mutable ⇒ halt; CAS conflict; duplicate `event_id` byte-identity | 2.0k |
+| **C2** | the reduce runtime over C1's carriers — **one public entrypoint taking the run context**; projection machine; epoch in reduced state; dedup; per-base halt isolation | full T19 crash/race/fork/gap/cycle histories; state-unmutated on every halt; property-based reducer tests | 2.5k |
+| **C3** | fences: `DurableAuthority` / `FenceSnapshot` / `SeparatedFence` / `SharedFence` (typed to refuse branch heads) / `SharedRestartAuthority`; protocol-epoch fencing | pre-effect equality set; forged terminal under SHARED; mode-boundary type test | 2.0k |
+| **C4** | section B: holds, `hold_lifecycle`, webhook `VERIFIED_API` (GUID → numeric resolution), `occurrence_seq`, admission ceiling, operator attribution | every section-B disposition row; ceiling backpressure **and its release path**; attribution required | 2.0k |
+| **C5** | `boundary/panel_runner.py` consuming `PanelPlan` only; `RosterSnapshot`; `aggregate`/`required_seats` generated from schema | T2 strategy × intensity × outcome; roster provenance; **total** outcome dispatch (blocking, unparseable, unknown) | 1.5k |
+| **C6** | doors 0–3 as pure functions over `MergePlan`; the ordered construction list; effect inventory | T12 door matrix (bot/self/stale/out-of-set/renamed/base-advanced/Unmergeable-consent); T14 | 2.0k |
+| **C7** | consent-at-read + evidence-at-read; `authorization_granted`; §9 event emission with envelope + fingerprints; audit rows refusing missing `assurance` | T3, T18, T20, T27, T29, T31 | 2.0k |
+| **C8** | **cut-over** (sole wiring unit): preflight REQUIRED\|LEGACY + genesis; route `merge_engine`/`merge_prs`/`auto_integrate` through the doors; delete `orchestrator.py:2049`'s re-resolution, the `cross_family_panel` re-read, the `_has_commits_on_branch` direct-to-base branch and both legacy panel call sites; sidecar writes; fill the door-entrypoint allowlist | **Gate:** §0.4 ratifications · rollback drill · metrics smoke · component-version matrix · T2 singularity AST · T12 inventory · T23 tamper-vs-live-door · T25 · T26 · manifest-pinned classify digest refused on mismatch | 1.5k |
+
+## 4. Live holes and forward dispositions
+
+### 4a. Found while building the A-stream (tracked, not closed)
+1. **The Go classifier reads its rule table from a working tree** — `orchestrator.py:1905,1993` pass `-worktree <repo_root>`, so an uncommitted `.agent/risk-paths.json` edit changes the table for every classification. **B2/B5 close it** (framed stdin + the §8 fetch). Interim mitigation landed: `**/.agent/**` sits in the authority floor, so touching it elevates.
+2. **The merge verdict is computed on a local ref and enforced on origin's PR head with no SHA pin** — a commit pushed in between is never gated. Needs `gh pr view --json headRefOid` + `--match-head-commit`. Its own unit, unscheduled.
+
+### 4b. A-stream operational findings booked forward
+Credential-mode threading and spurious mode halts → **C2/C3** (they need the run context a real caller supplies) · admission-ceiling backpressure and its release path → **C4** · operator attribution on section-A reconciles → **C4** · §9 singles bypassing dedup, and the derived-id core omitting fence/evidence → **C2** · `ACCEPT_OURS` fence provenance and `new_oid_source` → **C3** · auto-release from-states, the parked-subject conjunct, per-delivery vs per-hold key → **C4**. Each is recorded with its finding text in the A-stream merge PR body; **C2–C4 may not close review without addressing their inherited list.**
+
+## 5. What the A-stream taught (so it is not re-learned)
+- A 20.7k-line review completed **1 of 6 scouts and reported 7 findings**; the same tree in five slices completed 6/6 on four of five slices and reported **5 CRITICAL / 68 HIGH / 107 MEDIUM**. A too-large review returns a *clean-looking* number, which is more dangerous than a bad one.
+- Severity was assigned by current blast radius: a swallowed CRITICAL blocking verdict came back MEDIUM beside a 7-parameter style nit. `roles/reviewer.md` now rates staged/dark code by what it gates, and notes that a dark-code review returning only MEDIUMs is a signal to re-check that rule.
+- **24 seals were vacuous** when an independent author mutation-tested them — including every deny row for the fail-closed gates. Seals require mutation proof, not authorship.
+- One author writing both a fix and its check produced a circular oracle (T19 expectations generated by the reducer under test). Separating the roles caught it — and caught three operator/orchestrator instructions that were themselves wrong.
+- Instance-level fixes regenerate the defect at the next seam: four rounds of fold-vs-reducer divergence, two of `aggregate` discarding an outcome. Invariants 1 and 3 exist to end that.
+
+## 6. Test-obligation map (linted by A1 against this document)
+T1/T4/T5/T15 → A3 · T6/T8/T9/T19-transitions/oracle-independence → A4 · T26 → A1, permanent · T10/T30 → B1/B2 (+ consumer halves in B3) · T7/T11/T16/T22 → B3 · T24 → B4 · T13/T21/T28-provenance → B5 · T19-full/T23-component → C2 · T28-predicates → C3 · T2 → C5 · T12-doors/T14 → C6 · T3/T18/T20/T27/T29/T31 → C7 · T2-singularity/T12-inventory/T23-tamper/T25 → C8 gates. Multi-unit obligations name each half; every non-retired T appears at least once and A1's lint enforces that against this section.
+
+## 7. Risks
+Cross-repo schema drift (→ the contract package + peer SHA pins) · codex seat quota (optional; 4/5 is the working panel) · SHARED residuals ship as designed and are rendered in run reporting · citation brittleness: cite symbols, not line numbers.
