@@ -1765,6 +1765,24 @@ def _check_assign_new_oid(event: object, advanced: bool, after: str,
     return None
 
 
+def _check_fence_shape(event: object, ev: Mapping[str, object]) -> Optional[dict]:
+    """The shape rule at the fence edge: a value that becomes
+    AuthorityFingerprint.base_epoch is a lowercase 40-hex object id, never
+    coerced. Named as its own check so _apply can run it BEFORE the commit
+    point — it used to run after the step, which left the machine reporting
+    a terminal success state under its own halt."""
+    for field in ("epoch_before", "epoch_after"):
+        value = getattr(event, field)
+        if not _valid_oid(value):
+            return _halt(
+                BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+                f"{field} {_short(value)} is not an object id "
+                f"(lowercase 40-hex) — the fence is compared for "
+                f"equality and is never coerced "
+                f"(event_id {ev.get('event_id')!r})", ev)
+    return None
+
+
 def _fmt_a(st: MachineStateA, via_recovery: bool = False) -> dict:
     return {"state": st.name.value,
             "disposition": st.disposition.value if st.disposition else None,
@@ -1891,67 +1909,54 @@ class _ReduceState:
         self._apply(fam, event, ev)
 
     def _apply(self, fam: str, event: object, ev: Mapping[str, object]) -> None:
+        """VALIDATE, THEN APPLY (plan v3 invariant 2).
+
+        PROPERTY, and it is structural rather than an ordering convention:
+        nothing this walk reports is mutated until EVERY check on this event
+        has passed. The step runs against a _Shadow — a copy of everything
+        one event can touch (the base's movement map and insertion order, or
+        its hold book with its delivery index, open-delta map, terminal
+        counts, deliveries and resolution notes) — plus the fence edge the
+        event would contribute. `shadow.commit()` is the walk's ONE mutation
+        point, reached only on the all-clear path, so a halt on ANY check
+        leaves movements, holds, deliveries, notes and edges identical to
+        the pre-event state, on every path.
+
+        The hole this closes was exactly an ordering convention: the
+        fence-shape check sat AFTER the step, so a refused event still
+        reported EXPLAINED / RECONCILED / RELEASED next to its own halt —
+        terminal success and a halted base at once (split-brain). Two more
+        instances of the same class were live on the same seam: a section-A
+        event that failed the projection frontier had already registered a
+        GENESIS_A movement and an order entry, and a section-B event that
+        failed admission or its preconditions had already journalled its
+        door-0 resolution note. An ordering rule does not survive the next
+        check somebody appends after the step; a commit point does."""
         base = event.base_key
+        shadow = _Shadow(self, base, fam)
         try:
-            if fam == "effect_lifecycle":
-                halt, advanced = self._step_a(base, event, ev)
-            else:
-                halt, advanced = self._step_b(base, event, ev)
+            halt, advanced = shadow.step(event, ev)
         except ValueError as exc:
             # a guard or preimage rejection must stay a TYPED, per-base halt
             # — never an exception escaping the walk (panel round 6).
             self.record_halt(base, _halt(
                 BoundaryErrorCode.ILLEGAL_TRANSITION, str(exc), ev))
-            return
+            return                              # shadow discarded
         if halt is not None:
             self.record_halt(base, halt)
-            return
+            return                              # shadow discarded
         if advanced:
             # ONLY an event that survived validation, the transition rules
             # AND the epoch algebra becomes a fence edge — and the value it
             # carries INTO the fence is checked here, where it is the
             # fence. (A non-advancing epoch field is inert; wrong TYPES are
             # already refused at construction, so this is the shape rule.)
-            for field in ("epoch_before", "epoch_after"):
-                value = getattr(event, field)
-                if not _valid_oid(value):
-                    self.record_halt(base, _halt(
-                        BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
-                        f"{field} {_short(value)} is not an object id "
-                        f"(lowercase 40-hex) — the fence is compared for "
-                        f"equality and is never coerced "
-                        f"(event_id {ev.get('event_id')!r})", ev))
-                    return
-            self.edges.setdefault(base, []).append(ev)
-
-    def _step_a(self, base: str, event: object,
-                ev: Mapping[str, object]) -> tuple[Optional[dict], bool]:
-        mid = event.movement_id
-        before = self.movements.get(base, {}).get(mid, GENESIS_A)
-        halt = _step_section_a(self.movements, self.a_order, base, mid, event, ev)
-        if halt is not None:
-            return halt, False
-        after = self.movements.get(base, {}).get(mid, GENESIS_A)
-        # An identity replay changes nothing — and therefore contributes NO
-        # edge. That single fact is what made §6.0's blessed idempotent
-        # replay a legal no-op to the machine and a fatal EPOCH_FORK to the
-        # old second walk.
-        identity = after == before
-        return None, (not identity) and event.epoch_before != event.epoch_after
-
-    def _step_b(self, base: str, event: object,
-                ev: Mapping[str, object]) -> tuple[Optional[dict], bool]:
-        book = self.books.get(base)
-        if book is None:
-            book = self.books[base] = _HoldBook()
-            self.b_order.append(base)
-        snapshot = dict(book.holds)
-        halt = _step_section_b(book, base, event, ev, self.run_mode,
-                               frozenset(self.movements.get(base, {})))
-        if halt is not None:
-            return halt, False
-        identity = book.holds == snapshot
-        return None, (not identity) and event.epoch_before != event.epoch_after
+            fence_halt = _check_fence_shape(event, ev)
+            if fence_halt is not None:
+                self.record_halt(base, fence_halt)
+                return                          # shadow discarded
+            shadow.edge = ev
+        shadow.commit()
 
     # ── result ──────────────────────────────────────────────────────────
     def finish(self) -> dict:
@@ -2016,6 +2021,100 @@ class _ReduceState:
                 continue
             out[base] = _walk_epoch_chain(base, anchor, edges)
         return out
+
+
+class _Shadow:
+    """Everything ONE event can mutate, copied — and `commit()`, the single
+    mutation point of the whole walk (plan v3 invariant 2).
+
+    A shadow that is never committed IS the state a halt leaves behind, so
+    "no transition, append or bookkeeping mutation before every check has
+    passed" holds by construction instead of by the order the checks happen
+    to sit in. Only the family's own state is copied: a section-A event
+    cannot reach the hold book and a section-B event cannot reach the
+    movement map, and pretending otherwise would make the commit hide which
+    machine actually moved."""
+
+    def __init__(self, ctx: "_ReduceState", base: str, fam: str) -> None:
+        self.ctx = ctx
+        self.base = base
+        self.fam = fam
+        self.edge: Optional[Mapping[str, object]] = None
+        self.section_a = fam == "effect_lifecycle"
+        if self.section_a:
+            self.movements = {base: dict(ctx.movements.get(base, {}))}
+            self.a_order = list(ctx.a_order)
+            self.book = None
+            self.book_is_new = False
+        else:
+            self.movements = {}
+            self.a_order = []
+            self.book_is_new = base not in ctx.books
+            self.book = _copy_hold_book(ctx.books.get(base))
+
+    def step(self, event: object,
+             ev: Mapping[str, object]) -> tuple[Optional[dict], bool]:
+        return (self._step_a(event, ev) if self.section_a
+                else self._step_b(event, ev))
+
+    def _step_a(self, event: object,
+                ev: Mapping[str, object]) -> tuple[Optional[dict], bool]:
+        mid = event.movement_id
+        before = self.movements[self.base].get(mid, GENESIS_A)
+        halt = _step_section_a(self.movements, self.a_order, self.base, mid,
+                               event, ev)
+        if halt is not None:
+            return halt, False
+        after = self.movements[self.base].get(mid, GENESIS_A)
+        # An identity replay changes nothing — and therefore contributes NO
+        # edge. That single fact is what made §6.0's blessed idempotent
+        # replay a legal no-op to the machine and a fatal EPOCH_FORK to the
+        # old second walk.
+        identity = after == before
+        return None, (not identity) and event.epoch_before != event.epoch_after
+
+    def _step_b(self, event: object,
+                ev: Mapping[str, object]) -> tuple[Optional[dict], bool]:
+        snapshot = dict(self.book.holds)
+        halt = _step_section_b(self.book, self.base, event, ev,
+                               self.ctx.run_mode,
+                               frozenset(self.ctx.movements.get(self.base, {})))
+        if halt is not None:
+            return halt, False
+        identity = self.book.holds == snapshot
+        return None, (not identity) and event.epoch_before != event.epoch_after
+
+    def commit(self) -> None:
+        """The walk's ONE mutation point."""
+        base, ctx = self.base, self.ctx
+        if self.section_a:
+            ctx.movements[base] = self.movements[base]
+            ctx.a_order = self.a_order
+        else:
+            ctx.books[base] = self.book
+            if self.book_is_new:
+                ctx.b_order.append(base)
+        if self.edge is not None:
+            ctx.edges.setdefault(base, []).append(self.edge)
+
+
+def _copy_hold_book(book: Optional["_HoldBook"]) -> "_HoldBook":
+    """A hold book a step may mutate freely and the walk may discard. Every
+    container is copied one level deep — `deliveries`' lists included, since
+    a delivery appended to a shared list survives the discard."""
+    fresh = _HoldBook()
+    if book is None:
+        return fresh
+    fresh.delivery_index = dict(book.delivery_index)
+    fresh.open_by_delta = dict(book.open_by_delta)
+    fresh.terminal_count = dict(book.terminal_count)
+    fresh.holds = dict(book.holds)
+    fresh.hold_delta = dict(book.hold_delta)
+    fresh.deliveries = {h: list(v) for h, v in book.deliveries.items()}
+    fresh.order = list(book.order)
+    fresh.resolution_notes = list(book.resolution_notes)
+    fresh.reject_restored = set(book.reject_restored)
+    return fresh
 
 
 def reduce_section_a(events: Sequence[Mapping[str, object]]) -> dict:
