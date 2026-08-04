@@ -87,28 +87,55 @@ aggregate:
   # a non-matching or conflicting-duplicate record never reaches the
   # aggregate, and the dropped seat surfaces as INCOMPLETE.
   seat_result_key: [subject_digest, attempt_id]
+  # STEP 1 — EVERY outcome present is classified by ONE exhaustive dispatch
+  # over the closed union, BEFORE intensity is consulted at all. This is the
+  # structural fix for the escaped-verdict class (plan v3 invariant 3): the
+  # rules below used to be intensity-first and each evidence rule carried
+  # its OWN scope, so a rule that forgot to widen its scope silently
+  # discarded evidence. `any_seat_outcome_blocking` was widened to every
+  # outcome after SMG-3966; the unparseable rule was left scoped to
+  # required_seats, so SKIP + a PRESENT-but-unparseable result returned the
+  # gate-satisfying NOT_APPLICABLE — the same escape on the arm that covers
+  # a BLOCK the parser could not read. Scope is now a property of the
+  # classification, not of each rule, so there is no per-rule scope left to
+  # forget.
+  #
+  # Classes are total over the union: each member maps to the aggregate
+  # value its class forces, or to `null` for "contributes nothing, fall
+  # through to the intensity rules". A member with no entry, or a type
+  # outside the union, RAISES — never counted, in either direction.
+  outcome_classification:
+    dispatch: exhaustive_isinstance
+    classes:
+      # verdict == BLOCK ∨ ∃ finding severity ∈ {CRITICAL, HIGH}
+      SeatOutcome_blocking: BLOCKED
+      SeatOutcome_clean: null
+      # §5.1: an unknown verdict or severity is a parse failure ⇒
+      # INCOMPLETE, never skipped. It is NOT re-labelled BLOCKED: the seat
+      # gave no verdict, and inventing one is as much a fabrication as
+      # discarding it. Both INCOMPLETE and BLOCKED are non-gate-satisfying,
+      # so nothing is lost by staying honest.
+      UnparseableOutcome: INCOMPLETE
+    unknown_outcome_type: raise_typed_error
+  # STEP 2 — the intensity-dependent rules, in the schema's own order.
+  # Flipping the order here flips the generated function's behaviour.
   rules:
-    # Order is normative for the generated function.
-    #
-    # A BLOCKING SEAT RESULT IS NEVER DISCARDED BY INTENSITY. §5.1's "any
-    # seat reporting a blocking finding ⇒ BLOCKED" is unconditional, so it
-    # is evaluated FIRST and over EVERY outcome present — not only over
-    # required_seats. Previously a SKIP-intensity call returned the
-    # gate-satisfying NOT_APPLICABLE while holding a seat result carrying a
-    # CRITICAL blocking verdict: seats had run, one blocked, and the verdict
-    # was swallowed — the SMG-3966 escaped-Critical class. The PR5 trigger
-    # is real: a runner passing `demanded` (SKIP) while `effective`
-    # escalated.
-    - any_seat_outcome_blocking: BLOCKED
+    # The classification arms come first BY CONSTRUCTION — they read only
+    # the classes computed in step 1, so no outcome can be discarded by an
+    # intensity that ran later.
+    - any_outcome_classified_blocked: BLOCKED
+    - any_outcome_classified_incomplete: INCOMPLETE
     - required_seats_empty: NOT_APPLICABLE   # SKIP — evaluated nothing, approves nothing
+    # Subsumes the retired `any_required_seat_unavailable_or_unparseable`:
+    # an UNAVAILABLE required seat is a key mismatch, and an unparseable one
+    # is now classified in step 1 at every intensity.
     - outcome_keys_not_exactly_required_seats: INCOMPLETE  # no duplicates, no missing, no extras
-    - any_required_seat_unavailable_or_unparseable: INCOMPLETE  # never skipped
     - otherwise: APPROVED
-  # Outcome union is closed and dispatched exhaustively: SeatOutcome |
-  # UnparseableOutcome. Anything else — a structural lookalike, a raw-string
-  # verdict, None — raises a typed error; it is a caller bug, never counted
-  # as approval (explicit-state: isinstance, never duck-typing; raise on the
-  # unknown arm).
+  # Outcome union is closed: SeatOutcome | UnparseableOutcome. Anything
+  # else — a structural lookalike, a raw-string verdict, None — raises a
+  # typed error; it is a caller bug, never counted as approval
+  # (explicit-state: isinstance, never duck-typing; raise on the unknown
+  # arm).
   outcome_union: [SeatOutcome, UnparseableOutcome]
   unknown_outcome_type: raise_typed_error
   # The corroboration requirement is retired; where the two baselines

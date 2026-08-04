@@ -4052,47 +4052,84 @@ def required_seats(intensity: PanelIntensity, roster: RosterSnapshot) -> tuple[s
                     f"member — the intensity domain is closed")
 
 
-def blocking(outcome: object) -> bool:
+def blocking(outcome: SeatOutcome) -> bool:
     """blocking(outcome) ⟺ verdict == BLOCK ∨ ∃ finding with severity ∈
-    {CRITICAL, HIGH} — over the closed outcome union, dispatched
-    exhaustively: an UnparseableOutcome is a parse failure the aggregate
-    turns into INCOMPLETE, and anything else raises — a structural
-    lookalike is never counted, in either direction (explicit-state)."""
-    if isinstance(outcome, UnparseableOutcome):
-        return False
+    {CRITICAL, HIGH} — a predicate over a seat's VERDICT, so it is defined
+    only where a verdict exists.
+
+    An UnparseableOutcome is refused rather than answered. There is no
+    honest Boolean for "is a result nobody could parse blocking?": False was
+    a fail-open that let SKIP + unparseable reach the gate-satisfying
+    NOT_APPLICABLE, and True would fabricate a BLOCK verdict the seat never
+    gave. §5.1's answer is a third value — INCOMPLETE — which is not
+    expressible here, so the parse failure is classified by
+    classify_outcome() and never asked of this predicate (invariant 4:
+    absence is a named state, not a permissive default)."""
     if isinstance(outcome, SeatOutcome):
         if outcome.verdict in BLOCKING_VERDICTS:
             return True
         return any(f.severity in BLOCKING_SEVERITIES for f in outcome.findings)
+    if isinstance(outcome, UnparseableOutcome):
+        raise TypeError(
+            "blocking(): an UnparseableOutcome has no verdict to test — a "
+            "parse failure is INCOMPLETE by §5.1, which this predicate "
+            "cannot express. Use classify_outcome().")
     raise TypeError(f"blocking(): unknown seat-outcome type "
                     f"{type(outcome).__name__} — not a member of the closed "
                     f"SeatOutcome | UnparseableOutcome union")
+
+
+def classify_outcome(outcome: object) -> Optional[PanelAggregateResult]:
+    """ONE exhaustive dispatch over the closed seat-outcome union, mapping
+    each member to the aggregate value its class FORCES (or None for
+    "contributes nothing"). Every arm is a member of OUTCOME_CLASSES, which
+    is generated from the schema, and the final arm RAISES.
+
+    This is the seam every escaped verdict has come through. Both escapes
+    were the same shape: the aggregate asked an intensity question first and
+    each evidence rule carried its own scope, so a rule that was not widened
+    silently dropped evidence — `any_seat_outcome_blocking` was widened
+    after SMG-3966, the unparseable rule was not, and SKIP + unparseable
+    then returned a gate-satisfying NOT_APPLICABLE. Scope is now a property
+    of this classification, which runs over EVERY outcome present before
+    intensity is consulted, so there is no per-rule scope left to forget."""
+    if isinstance(outcome, SeatOutcome):
+        return OUTCOME_CLASSES["SeatOutcome_blocking" if blocking(outcome)
+                               else "SeatOutcome_clean"]
+    if isinstance(outcome, UnparseableOutcome):
+        return OUTCOME_CLASSES["UnparseableOutcome"]
+    raise TypeError(f"classify_outcome(): unknown seat-outcome type "
+                    f"{type(outcome).__name__} — not a member of the closed "
+                    f"SeatOutcome | UnparseableOutcome union; a structural "
+                    f"lookalike is never counted, in either direction")
 
 
 def aggregate(intensity: PanelIntensity, roster: RosterSnapshot,
               outcomes: Mapping[str, object]) -> PanelAggregateResult:
     """§5.1's one total aggregate, executed by BOTH strategies, over seat
     results already filtered to the plan's (subject_digest, attempt_id) key
-    (aggregate_seat_results does that filtering). Rule order is normative:
-    zero required seats ⇒ NOT_APPLICABLE (a panel that evaluated nothing
-    approves nothing — §5.2's SKIP satisfaction is NOT_REQUIRED, never
-    approval); any required seat reporting a blocking finding ⇒ BLOCKED
-    (unconditional in §5.1, so it decides even with another seat missing);
-    outcome keys must equal required_seats exactly and a required seat
-    unavailable or unparseable ⇒ INCOMPLETE, never skipped; otherwise
-    APPROVED. A non-member outcome type raises — never counted, never
-    approved."""
+    (aggregate_seat_results does that filtering).
+
+    Two steps, and the order between them is the invariant:
+
+      1. classify EVERY outcome present, exhaustively over the closed union
+         (classify_outcome; a non-member raises). Intensity is not consulted
+         and no outcome can be dropped.
+      2. run the schema's rules in the schema's own order over those
+         classes: a blocking class ⇒ BLOCKED and a parse failure ⇒
+         INCOMPLETE decide first; then zero required seats ⇒ NOT_APPLICABLE
+         (a panel that evaluated nothing approves nothing — §5.2's SKIP
+         satisfaction is NOT_REQUIRED, never approval); then outcome keys
+         must equal required_seats exactly (a missing required seat is
+         INCOMPLETE, never skipped); otherwise APPROVED."""
     required = required_seats(intensity, roster)
-    for seat, outcome in outcomes.items():
-        if not isinstance(outcome, (SeatOutcome, UnparseableOutcome)):
-            raise TypeError(
-                f"aggregate(): seat {seat!r} carries unknown outcome type "
-                f"{type(outcome).__name__} — outside the closed union")
+    classes = {seat: classify_outcome(outcome)
+               for seat, outcome in outcomes.items()}
     # The dispatch below is GENERATED from schema aggregate.rules, IN THE
     # SCHEMA'S ORDER — flipping the schema flips the behaviour (panel round
     # 4: the order had been sealed only by a name-order assertion).
     for predicate, result in AGGREGATE_RULES:
-        if predicate(required, outcomes):
+        if predicate(required, outcomes, classes):
             return result
     raise AssertionError("aggregate(): the rule list is not total — the "
                          "schema's final `otherwise` rule is missing")
@@ -4122,31 +4159,37 @@ def aggregate_seat_results(intensity: PanelIntensity, roster: RosterSnapshot,
 # ─── §5.1 aggregate rules, GENERATED from schema aggregate.rules ────
 # One entry per schema rule, in the schema's own order: flipping the
 # order in panel_aggregate.yaml flips aggregate()'s behaviour.
+# The closed outcome union's classes, GENERATED from schema
+# aggregate.outcome_classification.classes: the aggregate value each
+# class FORCES, or None for 'contributes nothing'. A member of the
+# union with no entry here is a generator error, not a fall-through.
+OUTCOME_CLASSES: Mapping[str, object] = {
+    'SeatOutcome_blocking': PanelAggregateResult.BLOCKED,
+    'SeatOutcome_clean': None,
+    'UnparseableOutcome': PanelAggregateResult.INCOMPLETE,
+}
+
 _AGGREGATE_PREDICATES: Mapping[str, object] = {
     'required_seats_empty':
-        lambda required, outcomes: not required,
-    'any_required_seat_outcome_blocking':
-        lambda required, outcomes: any(
-            blocking(outcomes[s]) for s in required if s in outcomes),
-    # Over EVERY outcome present, not only the required seats: a
-    # blocking result must never be discarded because the demanded
-    # intensity was lower than the panel that actually ran.
-    'any_seat_outcome_blocking':
-        lambda required, outcomes: any(
-            blocking(o) for o in outcomes.values()),
+        lambda required, outcomes, classes: not required,
+    # The two evidence arms read ONLY the step-1 classification, which
+    # covered every outcome present before intensity was consulted —
+    # so neither can be scoped to required_seats by omission.
+    'any_outcome_classified_blocked':
+        lambda required, outcomes, classes: any(
+            c is PanelAggregateResult.BLOCKED for c in classes.values()),
+    'any_outcome_classified_incomplete':
+        lambda required, outcomes, classes: any(
+            c is PanelAggregateResult.INCOMPLETE for c in classes.values()),
     'outcome_keys_not_exactly_required_seats':
-        lambda required, outcomes: set(outcomes) != set(required),
-    'any_required_seat_unavailable_or_unparseable':
-        lambda required, outcomes: any(
-            isinstance(outcomes[s], UnparseableOutcome)
-            for s in required if s in outcomes),
-    'otherwise': lambda required, outcomes: True,
+        lambda required, outcomes, classes: set(outcomes) != set(required),
+    'otherwise': lambda required, outcomes, classes: True,
 }
 
 AGGREGATE_RULES: tuple = (
-    (_AGGREGATE_PREDICATES['any_seat_outcome_blocking'], PanelAggregateResult.BLOCKED),
+    (_AGGREGATE_PREDICATES['any_outcome_classified_blocked'], PanelAggregateResult.BLOCKED),
+    (_AGGREGATE_PREDICATES['any_outcome_classified_incomplete'], PanelAggregateResult.INCOMPLETE),
     (_AGGREGATE_PREDICATES['required_seats_empty'], PanelAggregateResult.NOT_APPLICABLE),
     (_AGGREGATE_PREDICATES['outcome_keys_not_exactly_required_seats'], PanelAggregateResult.INCOMPLETE),
-    (_AGGREGATE_PREDICATES['any_required_seat_unavailable_or_unparseable'], PanelAggregateResult.INCOMPLETE),
     (_AGGREGATE_PREDICATES['otherwise'], PanelAggregateResult.APPROVED),
 )
