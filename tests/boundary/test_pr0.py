@@ -25,6 +25,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import warnings
@@ -1097,8 +1098,49 @@ def _lint():
     return t26_lint
 
 
+def test_environment_matrix_degraded_mode(tmp_path, monkeypatch):
+    """The peer-absent arm of the environment matrix, tested for real: with
+    the peer unresolvable, --probe-peer reports absent and --no-citations
+    still exits 0 having enforced every doc-local check, announcing the
+    degradation on STDERR (panel round 2 — the documented fallback had
+    never been executed, and the pytest seal took the citations-required
+    path unconditionally)."""
+    lint = _lint()
+    # make both candidates fail: no env var, and a REPO_ROOT whose sibling
+    # directory does not exist.
+    monkeypatch.delenv("CLAUDE_WORKFLOW_REPO", raising=False)
+    monkeypatch.setattr(lint, "REPO_ROOT", tmp_path / "repo")
+    assert lint.find_workflow_repo() is None
+    assert lint.peer_available() is False
+    # the degraded run is green and loud
+    env = dict(os.environ, CLAUDE_WORKFLOW_REPO=str(tmp_path / "absent"))
+    proc = subprocess.run(
+        [sys.executable, "tools/t26_lint.py", "--no-citations"],
+        cwd=REPO_ROOT, capture_output=True, text=True, timeout=180, env=env)
+    assert proc.returncode == 0, f"degraded mode failed:\n{proc.stderr}"
+    assert "DEGRADED" in proc.stderr, (
+        "the degraded announcement must reach stderr, not a captured stdout")
+    assert "citations SKIPPED" in proc.stderr
+
+
+def test_environment_matrix_peer_present():
+    """The peer-present arm: --probe-peer exits 0 and the citations-required
+    form is what CI/`make verify-t26` run."""
+    lint = _lint()
+    if not lint.peer_available():
+        pytest.skip("no claude-workflow peer checkout in this environment")
+    assert _run(["tools/t26_lint.py", "--probe-peer"]).returncode == 0
+    assert _run(["tools/t26_lint.py"]).returncode == 0
+
+
 def test_t26_lint_green_on_checked_in_docs():
-    proc = _run(["tools/t26_lint.py"])
+    """Green in EITHER environment: the seal consumes the same peer
+    predicate scripts/test.sh does, so a dispatched worktree without the
+    peer checkout is not reddened by a gate documented as peer-optional."""
+    lint = _lint()
+    args = ["tools/t26_lint.py"] if lint.peer_available() \
+        else ["tools/t26_lint.py", "--no-citations"]
+    proc = _run(args)
     assert proc.returncode == 0, f"t26_lint failed:\n{proc.stdout}{proc.stderr}"
 
 
