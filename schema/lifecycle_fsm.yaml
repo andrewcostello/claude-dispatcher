@@ -188,9 +188,36 @@ section_a:
       # derivation binds. An exclusion list cannot be right here, because
       # any field added later defaults to "compared" and re-breaks
       # convergence silently.
+      # The core is PER KIND, because "what two honest issuers must agree
+      # on" is a property of the kind, not of derivation in general. One
+      # shared core was written for crash_recovery — whose issuers are two
+      # cold-start processes that genuinely cannot agree on the fence they
+      # happened to read — and actor_verified_match then inherited it. Its
+      # excluded fields are not decoration: the fence is bound to the hold's
+      # own observed delta, matched_subject_digest IS the release's
+      # evidence, and actor_node_id/actor_verification are the attribution
+      # and its assurance. Two verifiers of the SAME delivery on the SAME
+      # hold cannot legitimately disagree on any of them, so a twin that
+      # did was absorbed as identical and the applied attribution was
+      # decided by arrival order.
       canonical_core_for_derived_ids:
-        [family, variant, trigger_event, from, to, base_key,
-         movement_id, hold_id, source_delivery_id, disposition]
+        crash_recovery:
+          # `hold_effect` is the durability-partition bit (was the hold
+          # effect CREATED) — a section-A recovery twin that disagrees
+          # about it is not the same record.
+          [family, variant, trigger_event, from, to, base_key,
+           movement_id, hold_id, source_delivery_id, disposition, hold_effect]
+        actor_verified_match:
+          # Everything derived from the hold's own recorded delta or from
+          # the verification result. source_delivery_id stays IN (the id
+          # binds it, so a same-id twin agrees by construction); the
+          # issuer-stamped envelope (ts, run_id, trace_id, authority,
+          # actor_context) stays OUT.
+          [family, variant, trigger_event, from, to, base_key,
+           movement_id, hold_id, source_delivery_id, disposition,
+           epoch_before, epoch_after, ref, mode,
+           matched_subject_digest, matched_movement_id,
+           actor_node_id, actor_verification]
       # Every kind whose event_id is derived, with the preimage that
       # derives it. Two verifiers observing the same delivery on the same
       # hold mint the same id and converge; previously only crash_recovery
@@ -468,6 +495,31 @@ reconcile_dispositions:
   replay_rule: >-
     An accepting disposition re-applied to RECONCILED(d)/RELEASED(d) with the
     same d is identity; a conflicting d′ is a typed error.
+  # Which dispositions PIN the fence, and therefore which the epoch algebra
+  # can check. Where the payload determines the value, the algebra compares
+  # the value; where it does not, there is nothing to compare and the algebra
+  # must not invent a requirement.
+  #
+  # In particular an accepting disposition is NOT required to CHANGE the
+  # fence. ACCEPT_FOREIGN_ADVANCED's effect is "re-seed expected_base_oid
+  # from a fresh §8 ref read" (design §6.0, ReconcileDisposition payload
+  # semantics) — and a re-seed landing on the value already held is the
+  # normal outcome of exactly the histories §6.0 lists as T19 rows: "ABA,
+  # origin unavailable, crash-between-effect-and-record, … force-push"
+  # (§6.1's hold-carrier paragraph), with §0.1's DETECT residual stating
+  # outright that "ABA restore defeats OID comparison (accepted: force-push
+  # restore is not an accident)". Demanding epoch_before ≠ epoch_after left
+  # the force-push-back reconcile with NO legal encoding: a different
+  # epoch_after would be a lie about the ref read, and REJECT_RESTORE_HOLD
+  # leaves the hold held — so the hold became permanently unreleasable and
+  # the base halted for the whole append-only history.
+  fence_pinning:
+    ACCEPT_OURS: new_oid                    # where the family carries new_oid
+    ACTOR_VERIFIED_AUTO: hold_observed_delta_new_oid
+    ACCEPT_FOREIGN_ADVANCED: unpinned_fresh_ref_read
+    REJECT_RESTORE_HOLD: must_not_advance
+    STANDING: must_not_advance
+  accepting_must_advance: false
 
 # ─── §9 event unions: one variant per legal transition row ───────────────────
 events:
