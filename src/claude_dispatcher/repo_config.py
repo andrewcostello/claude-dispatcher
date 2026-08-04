@@ -187,6 +187,12 @@ def load(repo_root: str | Path) -> RepoConfig:
             pairs.append((k.strip().lower(), v.strip()))
         model_routing = tuple(pairs)
 
+    # NOTE: `roles:` (the D1 build-protocol immutable-path table) is not in
+    # this tuple yet, so a repo that adds one lands it in `unknown_keys` and
+    # its additions are IGNORED. That is stated rather than implied because a
+    # silently dropped protection is the failure this module's strictness
+    # exists to avoid — see role_protocol.role_policy_from_mapping, which P3
+    # wires in here.
     known_top_level = ("test", "panel", "integration", "model_routing")
     unknown = tuple(sorted(
         [str(key) for key in doc if key not in known_top_level]
@@ -199,3 +205,51 @@ def load(repo_root: str | Path) -> RepoConfig:
         integration=integration,
         model_routing=model_routing,
     )
+
+
+class BaseConfigError(RepoConfigError):
+    """Raised when `.dispatcher.yaml` cannot be read out of a base ref's tree.
+
+    Distinct from a malformed-config error so a caller can tell "the policy is
+    invalid" from "the policy could not be fetched" — both fail closed, but
+    they have different operator actions.
+    """
+
+
+def load_text_at_base(repo_root: str | Path, base_ref: str) -> str | None:
+    """SCAFFOLD (D1/P1) — the ONE base-pinned reader of `.dispatcher.yaml`.
+
+    Returns the file's UTF-8 text as it exists in ``base_ref``'s **object
+    store**, or None when ``base_ref`` resolves to a tree that simply does not
+    contain the file. Never reads the working copy: on the in-worktree gating
+    path the working copy is the checkout of the very branch being judged, so
+    a branch could otherwise supply its own gate policy (design §8,
+    implementation-plan invariant 6).
+
+    Contract, exhaustively:
+
+      * ``base_ref`` resolves and the tree has no ``.dispatcher.yaml`` → None.
+        Absence is one state with one meaning; the caller applies its
+        compiled-in defaults, which are its strictest setting.
+      * ``base_ref`` resolves and the entry is a regular-file blob (mode
+        100644/100755) that decodes as UTF-8 → its text.
+      * anything else raises :class:`BaseConfigError`: the ref does not
+        resolve, the entry is a symlink (a redirect to somewhere the base does
+        not govern) or a submodule, git fails or times out, or the bytes are
+        not UTF-8. There is deliberately no fallback to the working copy and
+        none to "absent" — "I could not read the policy" must never be
+        reported as "there is no policy".
+
+    Implementation note for P3 (invariant 5 — one fact, one place): the
+    identical git read exists as steps 1–3 of
+    ``risk.load_risk_config_from_base`` on the unmerged
+    ``fix/authority-doc-carveout`` branch. Implement this as that read,
+    extracted, and make ``risk.py`` delegate to it in the same commit once
+    that branch has merged. Do not create a second reader — the two would
+    diverge on precisely the interesting cases (symlink, submodule, non-UTF-8),
+    and the file whose read they disagree about is the gate's own policy.
+
+    Consumers: :func:`role_protocol.load_role_policy_from_base` today; the
+    ``risk:`` loader after the carveout merge.
+    """
+    raise NotImplementedError
