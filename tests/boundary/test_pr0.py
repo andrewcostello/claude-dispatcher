@@ -121,6 +121,18 @@ from claude_dispatcher.boundary import generated as _GEN  # noqa: E402
 # and every projection is selected OUT OF the one result.
 
 
+def _event_of(vec: dict, variant: str) -> dict:
+    """The (single) event of a given variant in a vector, selected BY VARIANT
+    rather than by list position. Positional indexing into a generated corpus
+    has now rotted three seals — a synthesised opening row was prepended and
+    `events[0]` silently became a different event."""
+    hits = [e for e in vec["events"] if e.get("variant") == variant]
+    assert len(hits) == 1, (
+        f"expected exactly one {variant} in this vector, found {len(hits)} "
+        f"(variants: {[e.get('variant') for e in vec['events']]})")
+    return hits[0]
+
+
 def _run_context(generated, *, mode: str = "SHARED", anchors=None):
     """A RunContext. `mode` is REQUIRED by the type (None raises rather than
     reading as SHARED), and an empty `anchors` is the NAMED state "this run
@@ -1428,28 +1440,83 @@ def test_every_operator_reconcile_variant_refuses_foreign_dispositions(
 # therefore sealed with in-test wire streams driven through the same public
 # reducers the vectors use — identical reach, no generator edit.
 
-def test_epoch_per_disposition_accepting_must_advance(generated):
-    """§6.0 per_disposition: an ACCEPTING operator disposition advances the
-    fence. A reconcile that accepts and leaves base_epoch where it was
-    pins the authority fence to a stale epoch.
+def test_accepting_must_advance_is_retired_and_that_is_load_bearing(schemas,
+                                                                    generated):
+    """RETIRED, and I checked the retirement against the design rather than
+    accepting it: §6.0's section-B table gives `operator_reconcile(accepting
+    d)` the epoch effect "per d" and NOWHERE says an accepting disposition
+    must CHANGE the fence. §6.0/§6.1 name ABA and force-push-back as T19
+    rows, and both re-seed the fence from a fresh §8 ref read that
+    legitimately lands on the value already held — so demanding an advance
+    left those rows with no legal encoding at all and made the hold
+    permanently unreleasable.
 
-    MUTATION: `if accepting and not advanced:` → `if False:` ⇒ red.
+    What is NOT loosened is where a payload PINS the value. The schema's
+    `fence_pinning` map is the whole rule, and this seal pins the map itself
+    plus the fact that `unpinned_fresh_ref_read` is a NAMED value rather
+    than a gap: the reducer cannot verify a fresh ref read and must not
+    second-guess it.
+
+    MUTATION: flip `accepting_must_advance` to true in the schema and
+    regenerate ⇒ red here AND the ABA row below goes red, which is the
+    consequence that matters.
+    MUTATION: change any entry of `fence_pinning` ⇒ red.
     """
     g = generated
-    cls = g.EFFECT_VARIANTS["ReconcileAccept"]
-    ev = _wire_effect(g, "ReconcileAccept", "e1", "m1", cls.FROM_STATES[0],
-                      disposition="ACCEPT_FOREIGN_ADVANCED",
-                      epoch_before="E0", epoch_after="E0")
-    halt = _boundary(g, [ev])["halts"]["R1:refs/heads/main"]
-    assert halt["code"] == "ILLEGAL_TRANSITION"
-    assert "an accepting disposition advances the epoch" in halt["detail"]
-    assert "this event did not" in halt["detail"], halt["detail"]
+    disp = schemas["lifecycle_fsm"]["reconcile_dispositions"]
+    fence = disp["fence_pinning"]
+    assert dict(g.FENCE_PINNING) == fence
+    assert fence == {"ACCEPT_OURS": "new_oid",
+                     "ACTOR_VERIFIED_AUTO": "hold_observed_delta_new_oid",
+                     "ACCEPT_FOREIGN_ADVANCED": "unpinned_fresh_ref_read",
+                     "REJECT_RESTORE_HOLD": "must_not_advance",
+                     "STANDING": "must_not_advance"}
+    # every disposition in the closed domain has a pinning rule — a member
+    # with no entry would fall through to "unconstrained" by omission.
+    assert set(fence) == {d.name for d in g.ReconcileDisposition}, (
+        f"dispositions with no fence rule: "
+        f"{sorted({d.name for d in g.ReconcileDisposition} - set(fence))}")
+    assert disp["accepting_must_advance"] is False
+    assert g.ACCEPTING_MUST_ADVANCE is False
+
+
+def test_the_ABA_reconcile_re_seeds_to_the_value_already_held(generated):
+    """The row the retirement exists for, sealed so the retirement cannot be
+    re-argued from an empty table: a force-push-back (ABA) leaves the ref at
+    an OID the base already held, so the accepting reconcile that resolves it
+    re-seeds `base_epoch` to that same value. It must REDUCE, not halt.
+
+    §6.0/§6.1 name ABA as a T19 row and §0.1 accepts that "ABA restore
+    defeats OID comparison" — the protocol's answer is a hold plus an
+    operator reconcile, and this is that reconcile.
+
+    MUTATION: `if ACCEPTING_MUST_ADVANCE and accepting and not advanced:` →
+    drop the flag ⇒ red (the hold becomes permanently unreleasable and the
+    base halts for the whole append-only history).
+    """
+    g = generated
+    vec = copy.deepcopy(_VECTORS["b_reject_restore_hold"])
+    observed = _event_of(vec, "ObserveDelta")
+    # the operator accepts, re-seeding the fence from a fresh ref read that
+    # landed back on the epoch the base already had (A→B→A).
+    accept = dict(_event_of(vec, "HoldReconcileAccept"),
+                  event_id="aba-accept",
+                  disposition="ACCEPT_FOREIGN_ADVANCED", to="RELEASED",
+                  epoch_before=observed["epoch_before"],
+                  epoch_after=observed["epoch_before"])
+    got = _boundary(g, [observed, accept], mode=vec["credential_mode"])
+    assert got["halts"] == {}, (
+        f"an ABA re-seed to the value already held was refused — the hold is "
+        f"permanently unreleasable: {got['halts']}")
+    (hold,) = got["holds"]["R1:refs/heads/main"].values()
+    assert hold["state"] == "RELEASED"
+    assert hold["disposition"] == "ACCEPT_FOREIGN_ADVANCED"
 
 
 def test_epoch_accept_ours_pins_the_fence_to_its_own_new_oid(generated):
     """§6.0 per_disposition: ACCEPT_OURS(new_oid) pins the fence to ITS OWN
-    payload — otherwise the accepting writer chooses the authority fence
-    freely while still declaring an advance.
+    payload — the one accepting case where a payload determines the value,
+    so it is enforced even though a bare advance is not required.
 
     MUTATION: `if (disposition is ReconcileDisposition.ACCEPT_OURS and
     carries_new_oid` → `if (False and carries_new_oid` ⇒ red.
@@ -1465,24 +1532,32 @@ def test_epoch_accept_ours_pins_the_fence_to_its_own_new_oid(generated):
     assert "'oid-new'" in halt["detail"], halt["detail"]
 
 
-def test_epoch_as_accept_ours_must_advance(generated):
-    """§6.0 as_accept_ours: the auto-release mirrors ACCEPT_OURS, so it
-    advances. A release that does not advance leaves the fence pinned to
-    the pre-release epoch on the ONE operator-less path.
+def test_epoch_as_accept_ours_is_pinned_to_the_holds_own_delta(generated):
+    """§6.0 as_accept_ours: the auto-release's fence is pinned to the HOLD'S
+    OWN recorded delta_new_oid — the observed effect OID, never writer free
+    text and never "whatever advanced".
 
-    MUTATION: `if accepting and not advanced:` → `if False:` ⇒ red
-    (as_accept_ours reaches the same arm with `accepting` forced True).
+    This replaces an earlier seal that asserted the auto-release must
+    ADVANCE. That was the wrong rule (see the retirement seal above); the
+    right one is the pin, which is strictly stronger — it names one legal
+    value instead of excluding one illegal one.
+
+    MUTATION: delete the `event.epoch_after != observed` comparison in
+    `_check_auto_release_gates` ⇒ red.
     """
     g = generated
     vec = copy.deepcopy(_VECTORS["b_actor_verified_auto_separated"])
-    auto = vec["events"][-1]
-    assert auto["variant"] == "ActorVerifiedAuto"
-    auto["epoch_after"] = auto["epoch_before"]        # declared, not made
+    auto = _event_of(vec, "ActorVerifiedAuto")
+    observed = _event_of(vec, "ObserveDelta")["delta_new_oid"]
+    assert auto["epoch_after"] == observed, (
+        "the allow vector no longer pins the fence to the hold's own delta")
+    auto["epoch_after"] = auto["epoch_before"]     # any other value at all
     got = _boundary(g, vec["events"], mode="SEPARATED")
     halt = got["halts"]["R1:refs/heads/main"]
     assert halt["code"] == "ILLEGAL_TRANSITION"
-    assert "(as_accept_ours)" in halt["detail"], halt["detail"]
-    assert "an accepting disposition advances the epoch" in halt["detail"]
+    assert "must set the fence to the hold's own observed delta_new_oid" \
+        in halt["detail"], halt["detail"]
+    assert "never writer free text" in halt["detail"]
 
 
 def test_epoch_non_accepting_disposition_may_not_advance(generated):
@@ -1532,10 +1607,10 @@ def test_every_epoch_effect_has_a_deny(generated):
         "assign_new_oid": ["a_advancing_row_that_does_not_advance_deny",
                            "a_epoch_advance_not_pinned_to_new_oid_deny"],
         # per_disposition / as_accept_ours: the in-test seals above
-        "per_disposition": ["test_epoch_per_disposition_accepting_must_advance",
-                            "test_epoch_accept_ours_pins_the_fence_to_its_own_new_oid",
-                            "test_epoch_non_accepting_disposition_may_not_advance"],
-        "as_accept_ours": ["test_epoch_as_accept_ours_must_advance"],
+        "per_disposition": ["test_epoch_accept_ours_pins_the_fence_to_its_own_new_oid",
+                            "test_epoch_non_accepting_disposition_may_not_advance",
+                            "test_the_ABA_reconcile_re_seeds_to_the_value_already_held"],
+        "as_accept_ours": ["test_epoch_as_accept_ours_is_pinned_to_the_holds_own_delta"],
     }
     missing = set(g.EPOCH_EFFECT_VALUES) - set(denied)
     assert not missing, (
@@ -1851,8 +1926,7 @@ def test_concurrent_auto_release_duplicates_converge(schemas, generated):
     """
     g = generated
     vec = copy.deepcopy(_VECTORS["b_actor_verified_auto_separated"])
-    auto = vec["events"][-1]
-    assert auto["variant"] == "ActorVerifiedAuto"
+    auto = _event_of(vec, "ActorVerifiedAuto")
     lines = _preimage_lines(schemas, "actor_verified_match")
     assert lines == ["release=actor_verified_match", "base=<base_key>",
                      "hold=<hold_id>", "delivery=<source_delivery_id>"], lines
@@ -1975,8 +2049,17 @@ def test_derived_twins_that_disagree_on_the_CORE_still_halt(schemas, generated):
     compare nothing and any two events sharing a derived id would "agree".
     """
     g = generated
-    core = set(_dual_append(schemas)["canonical_core_for_derived_ids"])
-    assert set(g.CANONICAL_CORE_FOR_DERIVED_IDS) == core
+    # PER KIND now: actor_verified_match inheriting crash_recovery's core let
+    # a twin assert a different actor_node_id on an already-released hold
+    # with nothing to compare it against. A kind with no entry is a
+    # generation error, never a fall-through to another kind's core.
+    declared = _dual_append(schemas)["canonical_core_for_derived_ids"]
+    assert set(declared) == set(g.DERIVED_ID_KINDS), (
+        f"kinds with no byte-identity core: "
+        f"{sorted(set(g.DERIVED_ID_KINDS) - set(declared))}")
+    for kind, fields in declared.items():
+        assert set(g.CANONICAL_CORE_FOR_DERIVED_IDS[kind]) == set(fields)
+    core = set(declared["crash_recovery"])
     prepared = _wire_effect(g, "Prepare", "e1", "m1", "GENESIS",
                             authorization_id="auth-1")
     append = _boundary(g, [prepared])["recovery_appends"][0]
@@ -2038,7 +2121,7 @@ def test_identity_replay_contributes_no_epoch_edge(generated):
 
 @pytest.mark.parametrize("name", [
     pytest.param(n, id=("deny-" + n) if "deny" in n else n)
-    for n in sorted(_VECTORS) if "anchors" in _VECTORS[n]
+    for n in sorted(_VECTORS) if _VECTORS[n]["machine"] == "epoch_fold"
 ])
 def test_fence_shape_at_harvest(generated, name):
     """The fold's per-base result is what §6.0 harvests into
@@ -2057,14 +2140,14 @@ def test_fence_shape_at_harvest(generated, name):
     MUTATION (verified): `_walk_epoch_chain`'s success arm returning a
     non-OID string ⇒ red.
 
-    SCOPE, stated because it is where this seal stops: it ranges over the
-    COMMITTED corpus, every anchor of which is a valid object id. Disabling
-    the per-edge `_valid_oid` check leaves it GREEN — the corpus contains no
-    non-OID fence to catch. The one input class that IS still admitted is
-    reported as an implementation finding, not asserted here (asserting the
-    current answer would ratify it): `fold_epochs([], {"B1": "not-an-oid"})`
-    and `{"B1": 7}` both return `{"status": "ok", "epoch": <that value>}`.
-    The anchor VALUE is validated for None (below) but not for shape.
+    SCOPE: this ranges over the vectors whose declared MACHINE is the fence
+    walk. It was parametrised on `"anchors" in _VECTORS[n]`, which selected
+    only fold vectors while anchors were a fold-only field — every vector now
+    carries a full run context, so that predicate silently expanded to all
+    119, and its "a non-empty history folded to nothing" assertion is simply
+    wrong for a machine vector that declares no fence. Selecting on the
+    MACHINE is the fix, and the shape rules that hold for EVERY vector's
+    fence view get their own seal below.
     """
     g = generated
     vec = _VECTORS[name]
@@ -2230,10 +2313,8 @@ def test_matched_subject_digest_has_an_independent_oracle(schemas, generated):
                              "subject-new=<delta_new_oid>"], spec["lines"]
     # the hold's own recorded delta, read off the vector that releases on it
     vec = _VECTORS["b_actor_verified_auto_separated"]
-    observe = vec["events"][0]
-    auto = vec["events"][-1]
-    assert observe["variant"] == "ObserveDelta"
-    assert auto["variant"] == "ActorVerifiedAuto"
+    observe = _event_of(vec, "ObserveDelta")
+    auto = _event_of(vec, "ActorVerifiedAuto")
     values = {"<base_key>": observe["base_key"], "<ref>": observe["ref"],
               "<delta_old_oid>": observe["delta_old_oid"],
               "<delta_new_oid>": observe["delta_new_oid"]}
@@ -2255,7 +2336,7 @@ def test_matched_subject_digest_has_an_independent_oracle(schemas, generated):
         f" is not the independently derived {independent!r}")
     # 3. deny: a digest over a DIFFERENT delta is refused by the reducer
     forged = copy.deepcopy(vec)
-    forged["events"][-1]["matched_subject_digest"] = hashlib.sha256(
+    _event_of(forged, "ActorVerifiedAuto")["matched_subject_digest"] = hashlib.sha256(
         "\n".join(built[:-1] + ["subject-new=" + "9" * 40]).encode()).hexdigest()
     got = _boundary(g, forged["events"], mode="SEPARATED")
     assert got["halts"], "a release bound to a different delta was admitted"
@@ -2668,15 +2749,38 @@ ANCHOR_A = "0" * 40
 ANCHOR_B = "1" * 40
 
 
+def _seat_result_single(generated, event_id: str, base: str) -> dict:
+    """A COMPLETE §9 `seat_result` record. Singles are now constructed and
+    validated inside the one walk, so the old 5-field stub halts the base as
+    a schema violation and masks whatever the caller meant to isolate —
+    which is exactly what happened to the three ceiling seals. Built against
+    the generated type's own REQUIRED set, so a §9 field added later fails
+    HERE with a sentence instead of turning a ceiling seal into a
+    schema-violation seal."""
+    cls = generated.SINGLE_EVENTS["seat_result"]
+    values = {"schema_major": 1, "schema_minor": 0, "event_id": event_id,
+              "ts": "1970-01-01T00:00:00Z", "run_id": "run-1",
+              "trace_id": "trace-1", "protocol_epoch": "a" * 40,
+              "family": "seat_result", "roster_digest": "rd",
+              "subject_digest": "sd", "attempt_id": "att-1",
+              "seat_id": "claude", "verdict": "APPROVE",
+              "findings_digest": "fd"}
+    missing = set(cls.REQUIRED) - set(values)
+    assert not missing, (
+        f"§9 gave seat_result new REQUIRED fields {sorted(missing)} — this "
+        f"helper must carry every one, or the ceiling seals silently become "
+        f"schema-violation seals")
+    # base_key is not a seat_result field; it rides along because the
+    # per-base ceiling counts by base_key and unknown wire keys are ignored.
+    return dict(values, base_key=base)
+
+
 def _ceiling_events(generated, n: int, base: str = "B1") -> list[dict]:
-    """Minimally SCHEMA-VALID events (the fold now runs the same §9 checks
-    as the reducers, so a bare dict would halt as a schema violation and
-    mask what the ceiling tests are actually asserting)."""
-    # Valid §9 SINGLE records carrying no epoch fields: every consumer
-    # accepts them (the reducers filter, the fold finds no edge), so these
-    # tests isolate the CEILING rather than tripping another check.
-    return [{"event_id": f"{base}-e{i}", "base_key": base, "schema_major": 1,
-             "schema_minor": 0, "family": "seat_result"}
+    """N distinct, fully SCHEMA-VALID §9 singles carrying no epoch fields:
+    every consumer accepts them (both machines filter by family, the fence
+    walk finds no edge), so these seals isolate the CEILING rather than
+    tripping another check."""
+    return [_seat_result_single(generated, f"{base}-e{i}", base)
             for i in range(n)]
 
 
@@ -2859,8 +2963,7 @@ def test_ceiling_counts_deduplicated_events(generated):
     must (panel round 3 — at-least-once redelivery is exactly what the
     protocol absorbs)."""
     g, n = generated, generated.RECOVERY_CEILING_EVENTS
-    one = {"event_id": "same", "base_key": "B1", "schema_major": 1,
-           "schema_minor": 0, "family": "seat_result"}
+    one = _seat_result_single(g, "same", "B1")
     copies = [dict(one) for _ in range(n + 1)]
     assert "RECOVERY_CEILING" not in {
         h["code"] for h in _boundary(g, copies)["halts"].values()}
@@ -3007,11 +3110,34 @@ def test_blocking_predicate_exhaustive(generated):
                                     (g.Finding(g.Severity.CRITICAL),)))
     assert not g.blocking(g.SeatOutcome(g.SeatVerdict.APPROVE,
                                         (g.Finding(g.Severity.MEDIUM),)))
-    assert not g.blocking(g.UnparseableOutcome("x"))  # parse failure ≠ block
-    # deny: a structural lookalike is not a member of the closed union
+    # ADJUDICATED (I argued for True; ruled against, and the ruling is
+    # right): `blocking(UnparseableOutcome)` now RAISES. False was the
+    # fail-open — SKIP + unparseable reached the gate-satisfying
+    # NOT_APPLICABLE — but True fabricates a BLOCK verdict the seat never
+    # gave, and §5.1's actual answer is a THIRD value, INCOMPLETE, which a
+    # Boolean cannot express. Refusing to answer is the honest fix: the
+    # caller reaches INCOMPLETE, and both INCOMPLETE and BLOCKED are
+    # non-gate-satisfying, so nothing is lost.
+    #
+    # MUTATION: return False for UnparseableOutcome ⇒ red here AND on
+    # test_skip_holding_an_unparseable_outcome_is_incomplete, which is the
+    # row that proves the GATE answer rather than this predicate's.
+    with pytest.raises(TypeError, match=r"has no verdict to test"):
+        g.blocking(g.UnparseableOutcome("x"))
+    # the classification is where a parse failure IS answered
+    assert g.classify_outcome(g.UnparseableOutcome("x")) is \
+        g.PanelAggregateResult.INCOMPLETE
+    assert g.classify_outcome(g.SeatOutcome(g.SeatVerdict.APPROVE)) is None
+    assert g.classify_outcome(g.SeatOutcome(g.SeatVerdict.BLOCK)) is \
+        g.PanelAggregateResult.BLOCKED
+    # deny: a structural lookalike is not a member of the closed union, on
+    # EITHER surface
     with pytest.raises(TypeError,
                        match=r"unknown seat-outcome type _LookalikeOutcome"):
         g.blocking(_LookalikeOutcome())
+    with pytest.raises(TypeError,
+                       match=r"unknown seat-outcome type _LookalikeOutcome"):
+        g.classify_outcome(_LookalikeOutcome())
     # deny: a raw-string verdict never parses into the closed domain
     with pytest.raises(ValueError,
                        match=r"verdict must be a SeatVerdict"):
@@ -3092,7 +3218,9 @@ def test_aggregate_rule_list_is_total(generated):
     """
     g = generated
     assert g.AGGREGATE_RULES[-1][1] is g.PanelAggregateResult.APPROVED
-    assert g.AGGREGATE_RULES[-1][0]((), {}) is True, (
+    # the predicates take (required, outcomes, CLASSES) since S3: scope is a
+    # property of the classification step, not of each evidence rule.
+    assert g.AGGREGATE_RULES[-1][0]((), {}, {}) is True, (
         "the final rule is not unconditional — the dispatch is not total")
     # deny: with the otherwise arm removed the dispatch must RAISE, not
     # return None. Driven on a copy of the module's own rule tuple.
