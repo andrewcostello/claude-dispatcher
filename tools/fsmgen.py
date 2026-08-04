@@ -123,33 +123,36 @@ def _check_keys(record: dict, kind: str, where: str) -> None:
                           f"allowed: {sorted(allowed)} (+ <field>_domain)")
 
 
+def _validate_row_tokens(fsm: dict, sec: str) -> None:
+    """Row tokens reach exec via the row tables and the generated
+    FROM_STATES / TO_STATE / EPOCH_EFFECT / ROW_HOLD_EFFECT ClassVars."""
+    states = {fsm[sec]["initial_pseudo_state"], *fsm[sec]["states"]}
+    pseudo = {"ILLEGAL", "unchanged", "terminal", "any_other",
+              "as_held_foreign_rows"}
+    for row in fsm[sec]["rows"]:
+        _require_ident(row["id"], f"{sec}.rows")
+        _check_keys(row, "row", f"{sec}.rows.{row['id']}")
+        for key in ("epoch_effect", "expected_base_oid_effect", "hold_effect"):
+            if key in row:
+                _require_ident(row[key], f"{sec}.rows.{row['id']}.{key}")
+        for f in as_list(row["from"]):
+            _require_ident(f, f"{sec}.rows.{row['id']}.from")
+            if f not in states and f not in pseudo:
+                raise SchemaError(f"{sec}.rows.{row['id']}.from: {f!r} is "
+                                  f"not a declared state")
+        _require_ident(row["to"], f"{sec}.rows.{row['id']}.to")
+        if row["to"] not in states and row["to"] not in pseudo:
+            raise SchemaError(f"{sec}.rows.{row['id']}.to: {row['to']!r} "
+                              f"is not a declared state")
+
+
 def _validate_machine_tokens(fsm: dict) -> None:
     for sec in ("section_a", "section_b"):
         for st in [fsm[sec]["initial_pseudo_state"], *fsm[sec]["states"]]:
             _require_ident(st, f"{sec}.states")
         for evn in fsm[sec]["events"]:
             _require_ident(evn, f"{sec}.events")
-        states = {fsm[sec]["initial_pseudo_state"], *fsm[sec]["states"]}
-        pseudo = {"ILLEGAL", "unchanged", "terminal", "any_other",
-                  "as_held_foreign_rows"}
-        for row in fsm[sec]["rows"]:
-            _require_ident(row["id"], f"{sec}.rows")
-            _check_keys(row, "row", f"{sec}.rows.{row['id']}")
-            # from/to are emitted raw into the row tables and the generated
-            # FROM_STATES/TO_STATE ClassVars.
-            for f in as_list(row["from"]):
-                _require_ident(f, f"{sec}.rows.{row['id']}.from")
-                if f not in states and f not in pseudo:
-                    raise SchemaError(f"{sec}.rows.{row['id']}.from: {f!r} is "
-                                      f"not a declared state")
-            _require_ident(row["to"], f"{sec}.rows.{row['id']}.to")
-            if row["to"] not in states and row["to"] not in pseudo:
-                raise SchemaError(f"{sec}.rows.{row['id']}.to: {row['to']!r} "
-                                  f"is not a declared state")
-            for key in ("epoch_effect", "expected_base_oid_effect",
-                        "hold_effect"):
-                if key in row:
-                    _require_ident(row[key], f"{sec}.rows.{row['id']}.{key}")
+        _validate_row_tokens(fsm, sec)
     members = {m["name"] for m in fsm["reconcile_dispositions"]["members"]}
     for m in fsm["reconcile_dispositions"]["members"]:
         _require_ident(m["name"], "reconcile_dispositions")
@@ -1266,21 +1269,35 @@ class AuthorityFingerprint:
                 f"variant, got {type(self.classifier).__name__}")
 
 
-def subject_digest(*, repo_node_id: str, target: str, base_oid: str,
-                   head_oid: str, diff_sha256: str, classifier: object,
-                   unit_digest: Optional[str] = None) -> str:
+@dataclass(frozen=True)
+class SubjectComponents:
+    """The §9 subject_digest preimage's components as one frozen object —
+    seven loose parameters sat at the complexity table's threshold."""
+
+    repo_node_id: str
+    target: str
+    base_oid: str
+    head_oid: str
+    diff_sha256: str
+    classifier: object
+    unit_digest: Optional[str] = None
+
+
+def subject_digest(components: Optional[SubjectComponents] = None, /,
+                   **kwargs) -> str:
     """§9 canonical subject_digest preimage — exact tag bytes, UTF-8 lines,
     newline-joined, SHA-256. `target` is the full target line
     (`pr:<pr_node_id>:<target_ref>` or `ref:<target_ref>` — build with
     target_pr()/target_ref())."""
-    if not isinstance(classifier, ClassifierAuthority):
+    c = components if components is not None else SubjectComponents(**kwargs)
+    if not isinstance(c.classifier, ClassifierAuthority):
         raise ValueError("subject_digest: classifier must be a "
                          "ClassifierAuthority variant")
     preimage = _preimage([
-        f"repo={repo_node_id}", f"target={target}", f"base={base_oid}",
-        f"head={head_oid}", f"diff={diff_sha256}",
-        f"classifier={classifier.line()}",
-        f"unit={unit_digest if unit_digest is not None else 'none'}"])
+        f"repo={c.repo_node_id}", f"target={c.target}", f"base={c.base_oid}",
+        f"head={c.head_oid}", f"diff={c.diff_sha256}",
+        f"classifier={c.classifier.line()}",
+        f"unit={c.unit_digest if c.unit_digest is not None else 'none'}"])
     return hashlib.sha256(preimage.encode("utf-8")).hexdigest()
 
 
@@ -1489,12 +1506,7 @@ def _check_epoch_algebra(cls: type, event: object, where: str,
             return halt(f"declares no epoch effect but advances {before}→{after}")
         return None
     if effect == "assign_new_oid":
-        if not advanced:
-            return halt("must advance the epoch but did not")
-        if after != getattr(event, "new_oid", None):
-            return halt(f"must set the fence to the observed new_oid "
-                        f"{getattr(event, 'new_oid', None)!r}, got {after!r}")
-        return None
+        return _check_assign_new_oid(event, advanced, after, halt)
     if effect in ("per_disposition", "as_accept_ours"):
         disposition = getattr(event, "disposition", None)
         accepting = (effect == "as_accept_ours"
@@ -1516,6 +1528,18 @@ def _check_epoch_algebra(cls: type, event: object, where: str,
             return halt(f"ACCEPT_OURS pins the fence to its new_oid payload "
                         f"{getattr(event, 'new_oid', None)!r}, got {after!r}")
         return None
+    return None
+
+
+def _check_assign_new_oid(event: object, advanced: bool, after: str,
+                          halt) -> Optional[dict]:
+    """`:= new_oid` (§6.0's explained row): must advance, and the fence IS
+    the observed new_oid."""
+    if not advanced:
+        return halt("must advance the epoch but did not")
+    if after != getattr(event, "new_oid", None):
+        return halt(f"must set the fence to the observed new_oid "
+                    f"{getattr(event, 'new_oid', None)!r}, got {after!r}")
     return None
 
 
@@ -1733,6 +1757,63 @@ def _check_delta_against_hold(book: _HoldBook, hid: str, event: object,
     return None
 
 
+# sentinel: the step is a legal idempotent replay, not a halt
+_IDENTITY_REPLAY: dict = {"__identity_replay__": True}
+
+
+def _check_hold_preconditions(hid: str, cur: MachineStateB, event: object,
+                              ev: Mapping[str, object],
+                              note: Optional[str]) -> Optional[dict]:
+    """State preconditions for one section-B step. Returns a halt payload,
+    the _IDENTITY_REPLAY sentinel (a legal §6.0 idempotent replay), or
+    None. A writer whose apply-order tag was stale also stamped `from` from
+    that same stale read, so the reducer's resolution governs both."""
+    cls = type(event)
+    replaying = (cur.name is SectionBState.RELEASED
+                 and isinstance(event, HoldReconcileAccept))
+    if (cls.TO_STATE != "unchanged" and not replaying and note is None
+            and event.from_state != cur.name.value):
+        return _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION,
+            f"hold {hid}: audit from={event.from_state!r} contradicts the "
+            f"reduced state {cur.name.value} "
+            f"(event_id {ev.get('event_id')!r})", ev)
+    if replaying:
+        # §6.0 identity replay — same d is idempotent, d′ conflicts.
+        if cur.disposition is event.disposition:
+            return _IDENTITY_REPLAY
+        return _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION,
+            f"hold {hid}: RELEASED({cur.disposition}) × "
+            f"operator_reconcile({event.disposition}) — conflicting d′ "
+            f"(event_id {ev.get('event_id')!r})", ev)
+    return None
+
+
+def _check_auto_release_gates(book: _HoldBook, base: str, hid: str,
+                              event: object, ev: Mapping[str, object],
+                              run_mode: CredentialMode) -> Optional[dict]:
+    """Every gate on the ONLY operator-less release of a foreign hold, in
+    order: an operator's prior refusal closes it; the RUN's credential mode
+    (never the event's) must be SEPARATED; then the hold-record
+    consistency cross-checks."""
+    if not AUTO_RELEASE_AFTER_REJECT_RESTORE and hid in book.reject_restored:
+        return _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION,
+            f"hold {hid}: an operator REJECTED this hold's release "
+            f"(REJECT_RESTORE_HOLD); the non-operator auto-release path "
+            f"stays closed until an operator disposition "
+            f"(event_id {ev.get('event_id')!r})", ev)
+    if run_mode is not CredentialMode.SEPARATED:
+        return _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION,
+            f"hold {hid}: ACTOR_VERIFIED_AUTO requires the RUN to be "
+            f"SEPARATED (protocol_genesis.credential_mode); this run is "
+            f"{run_mode.value} — under SHARED, never "
+            f"(event_id {ev.get('event_id')!r})", ev)
+    return _check_actor_verified(book, base, hid, event, ev)
+
+
 def _check_actor_verified(book: _HoldBook, base: str, hid: str, event: object,
                           ev: Mapping[str, object]) -> Optional[dict]:
     """PR0's structurally-possible ACTOR_VERIFIED_AUTO cross-checks (schema
@@ -1864,44 +1945,11 @@ def _step_section_b(book: _HoldBook, base: str, event: object,
     # The `unchanged` no-op rows are state-independent by design — their
     # audit `from` is already constrained to FROM_STATES at construction;
     # every state-changing row must name the reduced state exactly.
-    replaying = (cur.name is SectionBState.RELEASED
-                 and isinstance(event, HoldReconcileAccept))
-    # A writer whose apply-order tag was stale also stamped `from` from the
-    # same stale read — the reducer's resolution governs both.
-    if (cls.TO_STATE != "unchanged" and not replaying and note is None
-            and event.from_state != cur.name.value):
-        return _halt(
-            BoundaryErrorCode.ILLEGAL_TRANSITION,
-            f"hold {hid}: audit from={event.from_state!r} contradicts the "
-            f"reduced state {cur.name.value} "
-            f"(event_id {ev.get('event_id')!r})", ev)
-    if (cur.name is SectionBState.RELEASED
-            and isinstance(event, HoldReconcileAccept)):
-        # §6.0 identity replay — same d is idempotent, d′ conflicts.
-        if cur.disposition is event.disposition:
-            return None
-        return _halt(
-            BoundaryErrorCode.ILLEGAL_TRANSITION,
-            f"hold {hid}: RELEASED({cur.disposition}) × "
-            f"operator_reconcile({event.disposition}) — conflicting d′ "
-            f"(event_id {ev.get('event_id')!r})", ev)
+    pre = _check_hold_preconditions(hid, cur, event, ev, note)
+    if pre is not None:
+        return pre if pre != _IDENTITY_REPLAY else None
     if isinstance(event, ActorVerifiedAuto):
-        if (not AUTO_RELEASE_AFTER_REJECT_RESTORE
-                and hid in book.reject_restored):
-            return _halt(
-                BoundaryErrorCode.ILLEGAL_TRANSITION,
-                f"hold {hid}: an operator REJECTED this hold's release "
-                f"(REJECT_RESTORE_HOLD); the non-operator auto-release path "
-                f"stays closed until an operator disposition "
-                f"(event_id {ev.get('event_id')!r})", ev)
-        if run_mode is not CredentialMode.SEPARATED:
-            return _halt(
-                BoundaryErrorCode.ILLEGAL_TRANSITION,
-                f"hold {hid}: ACTOR_VERIFIED_AUTO requires the RUN to be "
-                f"SEPARATED (protocol_genesis.credential_mode); this run is "
-                f"{run_mode.value} — under SHARED, never "
-                f"(event_id {ev.get('event_id')!r})", ev)
-        halt = _check_actor_verified(book, base, hid, event, ev)
+        halt = _check_auto_release_gates(book, base, hid, event, ev, run_mode)
         if halt is not None:
             return halt
     if note is not None:
@@ -1931,39 +1979,7 @@ def fold_epochs(events: Sequence[Mapping[str, object]],
     included), and a ceiling breach with empty anchors still returns an
     explicit halt entry — never {} silently."""
     base_halts: dict[str, dict] = _ceiling_halts(events)
-    dedup = _Dedup()
-    edges_by_base: dict[str, list[Mapping[str, object]]] = {}
-    for ev in events:
-        base = str(ev.get("base_key") or "")
-        halted = base in base_halts
-        # The fold is the THIRD consumer of the same durable stream and its
-        # output IS AuthorityFingerprint.base_epoch — so it runs the same §9
-        # schema validation the reducers do (panel round 3: an unknown-major
-        # or unknown-family event could otherwise advance the fence).
-        schema_halt = _validate_fold_event(ev)
-        if schema_halt is not None:
-            base_halts.setdefault(base, schema_halt)
-            continue
-        # dedup BEFORE the no-effect filter (panel round 2: a divergent
-        # duplicate must never slip in as a legitimate edge).
-        try:
-            # register on every event, halted or not (order independence)
-            if dedup.check(ev, base) == "dup" or halted:
-                continue  # carrier copies of one advance share an event_id
-        except _DivergentDuplicate as exc:
-            for b in exc.bases:
-                base_halts.setdefault(b, exc.halt)
-            continue
-        eb, ea = ev.get("epoch_before"), ev.get("epoch_after")
-        if eb is None or ea is None or eb == ea:
-            continue  # no-effect pairs are not edges (round 16, codex)
-        if not base:
-            base_halts.setdefault("", _halt(
-                BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
-                f"epoch edge missing base_key "
-                f"(event_id {ev.get('event_id')!r})", ev))
-            continue
-        edges_by_base.setdefault(base, []).append(ev)
+    edges_by_base = _collect_epoch_edges(events, base_halts)
     out: dict[str, dict] = {}
     for base in sorted(set(anchors) | set(edges_by_base) | set(base_halts)):
         if base in base_halts:
@@ -1983,6 +1999,41 @@ def fold_epochs(events: Sequence[Mapping[str, object]],
             continue
         out[base] = _walk_epoch_chain(base, anchor, edges)
     return out
+
+
+def _collect_epoch_edges(events: Sequence[Mapping[str, object]],
+                        base_halts: dict[str, dict]) -> dict:
+    """§9 validation, dedup and the no-effect filter, in that order — the
+    fold's output IS the fence epoch, so it runs the same schema checks as
+    the reducers, and dedup registers EVERY event (halted base included) so
+    divergence detection is order-independent."""
+    dedup = _Dedup()
+    edges_by_base: dict[str, list[Mapping[str, object]]] = {}
+    for ev in events:
+        base = str(ev.get("base_key") or "")
+        halted = base in base_halts
+        schema_halt = _validate_fold_event(ev)
+        if schema_halt is not None:
+            base_halts.setdefault(base, schema_halt)
+            continue
+        try:
+            if dedup.check(ev, base) == "dup" or halted:
+                continue  # carrier copies of one advance share an event_id
+        except _DivergentDuplicate as exc:
+            for b in exc.bases:
+                base_halts.setdefault(b, exc.halt)
+            continue
+        eb, ea = ev.get("epoch_before"), ev.get("epoch_after")
+        if eb is None or ea is None or eb == ea:
+            continue  # no-effect pairs are not edges (round 16, codex)
+        if not base:
+            base_halts.setdefault("", _halt(
+                BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+                f"epoch edge missing base_key "
+                f"(event_id {ev.get('event_id')!r})", ev))
+            continue
+        edges_by_base.setdefault(base, []).append(ev)
+    return edges_by_base
 
 
 def _validate_fold_event(ev: Mapping[str, object]) -> Optional[dict]:
@@ -3130,6 +3181,17 @@ def _section_b_vectors() -> dict[str, dict]:
             hold_id=h0, disposition="STANDING"),
        _hev("HoldReconcileAccept", "h3", "STANDING", "RELEASED",
             hold_id=h0, disposition="ACCEPT_OURS")])
+    b("b_from_state_contradicts_reduced_deny",
+      "DENY: the strict counterpart of the redelivery tolerance — a "
+      "STATE-CHANGING event whose audit `from` contradicts the reduced "
+      "state halts (only the state-independent no-op rows are tolerant)",
+      [obs,
+       _hev("HoldReconcileAccept", "h2", "STANDING", "RELEASED",
+            hold_id=h0, disposition="ACCEPT_FOREIGN_ADVANCED")])
+    b("b_missing_event_id_deny",
+      "DENY: an event with no envelope event_id cannot be deduplicated, so "
+      "byte-identity cannot be established",
+      [{k: val for k, val in obs.items() if k != "event_id"}])
     b("b_auto_release_closed_after_reject_restore_deny",
       "DENY (panel round 3, cluster 7): an operator REFUSED this hold's "
       "release (REJECT_RESTORE_HOLD). Landing back in HELD_FOREIGN would "
@@ -3289,6 +3351,11 @@ def _epoch_vectors() -> dict[str, dict]:
       "DENY: a base with epoch edges but no protocol_genesis anchor is a "
       "typed halt, never silently dropped",
       [_edge("e1", "E0", "E1"), _edge("x1", "E0", "E1", base=BASE2)], anchors1)
+    e("epoch_missing_base_key_deny",
+      "DENY: an epoch edge with no base_key cannot be partitioned — the "
+      "fold refuses rather than folding it into an arbitrary base",
+      [{k: val for k, val in _edge("e1", "E0", "E1").items()
+        if k != "base_key"}], anchors1)
     e("epoch_unknown_major_deny",
       "DENY (panel round 3): the fold is the THIRD consumer of the durable "
       "stream and its output IS the fence epoch — an unknown-major event "

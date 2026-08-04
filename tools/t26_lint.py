@@ -291,9 +291,8 @@ def git_show(repo: Path, sha: str, path: str) -> GitResult:
     except OSError as exc:                                  # git missing, etc.
         return GitResult(None, f"git could not run: {exc}")
     if proc.returncode != 0:
-        return GitResult(None, (proc.stderr or "").strip().splitlines()[-1:] and
-                         (proc.stderr or "").strip().splitlines()[-1] or
-                         f"git exit {proc.returncode}")
+        lines = (proc.stderr or "").strip().splitlines()
+        return GitResult(None, lines[-1] if lines else f"git exit {proc.returncode}")
     return GitResult(proc.stdout)
 
 
@@ -326,12 +325,18 @@ def parse_pins(doc: Doc, errors: list[str]) -> tuple[str, str] | None:
     return m.group(1), m.group(2)
 
 
-def resolve_py(repo: Path, sha: str, path: str) -> tuple[str, str] | None:
+def resolve_py(repo: Path, sha: str, path: str) -> tuple[str, str] | str:
+    """(real_path, text) or an error REASON — a timeout must not be reported
+    as a stale citation (panel round 3, finding 48)."""
+    reasons = []
     for cand in (path, f"src/claude_dispatcher/{path}", f"tests/fixtures/{path}"):
         res = git_show(repo, sha, cand)
         if res.ok:
             return cand, res.text
-    return None
+        reasons.append(f"{cand}: {res.error}")
+        if res.error and "timeout" in res.error:
+            return f"{path} unreadable at pin ({res.error})"
+    return f"{path} not found at pinned baseline ({'; '.join(reasons)})"
 
 
 def _citation_context(doc: Doc, errors: list[str]):
@@ -371,8 +376,7 @@ def _content_resolver(disp_sha: str, wf_sha: str, wf_repo: Path):
             got: tuple[str, str] | str = (real, res.text) if res.ok else \
                 f"{real} unreadable at pin ({res.error})"
         else:
-            hit = resolve_py(REPO_ROOT, disp_sha, path)
-            got = hit if hit else f"{path} not found at pinned baseline"
+            got = resolve_py(REPO_ROOT, disp_sha, path)
         cache[path] = got
         return got
 

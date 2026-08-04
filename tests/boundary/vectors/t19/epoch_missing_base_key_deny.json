@@ -1,0 +1,21 @@
+{
+  "machine": "epoch_fold",
+  "note": "DENY: an epoch edge with no base_key cannot be partitioned \u2014 the fold refuses rather than folding it into an arbitrary base",
+  "events": [
+    {
+      "schema_major": 1,
+      "schema_minor": 0,
+      "event_id": "e1",
+      "ts": "1970-01-01T00:00:00Z",
+      "run_id": "run-1",
+      "trace_id": "trace-1",
+      "protocol_epoch": "E0",
+      "epoch_before": "E0",
+      "epoch_after": "E1",
+      "family": "effect_lifecycle"
+    }
+  ],
+  "anchors": {
+    "R1:refs/heads/main": "E0"
+  }
+}

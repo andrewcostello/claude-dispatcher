@@ -198,7 +198,6 @@ def test_oracle_is_not_an_fsmgen_output():
     outputs = fsmgen.build_outputs(fsmgen.load_schemas())
     assert EXPECTED_PATH not in outputs, (
         "fsmgen writes the oracle — the T19 goldens would be self-sealing")
-    assert EXPECTED_PATH.parent in {p.parent for p in outputs} or True
     for name, vec in _VECTORS.items():
         assert "expected" not in vec, (
             f"{name}: vectors are inputs only — expectations live in the "
@@ -214,14 +213,34 @@ def test_fsmgen_check_flags_a_generated_oracle(tmp_path, monkeypatch):
     `fsmgen --check`'s stray scan over the vectors tree must call it drift."""
     fsmgen = _fsmgen()
     outputs = fsmgen.build_outputs(fsmgen.load_schemas())
-    stray = fsmgen.VECTORS_DIR / "not_a_generated_vector.json"
-    stray.write_text("{}", encoding="utf-8")
-    try:
-        drift = fsmgen.check_outputs(outputs)
-    finally:
-        stray.unlink()
-    assert any("stray" in d and stray.name in d for d in drift), (
-        "fsmgen --check does not flag stray files in the vectors tree")
+    # Redirect the generated tree into tmp_path rather than writing a stray
+    # file into the real repo (panel round 3, finding 50): a crash between
+    # write and unlink would leave the working tree dirty.
+    real_vectors = fsmgen.VECTORS_DIR
+    staged = tmp_path / "t19"
+    staged.mkdir()
+    remapped = {}
+    for path, blob in outputs.items():
+        if path.parent == real_vectors:
+            (staged / path.name).write_bytes(blob)
+            remapped[staged / path.name] = blob
+        else:
+            remapped[path] = blob
+    (staged / "not_a_generated_vector.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(fsmgen, "VECTORS_DIR", staged)
+    # REPO_ROOT moves with it: check_outputs reports paths relative to it.
+    monkeypatch.setattr(fsmgen, "REPO_ROOT", tmp_path)
+    # the other generated dirs are scanned too — point them at empty staging
+    # so this probe isolates the vectors tree.
+    for attr in ("DOCS_DIR", "FRAMES_DIR"):
+        empty = tmp_path / attr.lower()
+        empty.mkdir(exist_ok=True)
+        monkeypatch.setattr(fsmgen, attr, empty)
+    remapped = {k: v for k, v in remapped.items()
+                if k.is_relative_to(tmp_path)}
+    drift = fsmgen.check_outputs(remapped)
+    assert any("stray" in d and "not_a_generated_vector" in d for d in drift), (
+        f"fsmgen --check does not flag stray files in the vectors tree: {drift}")
 
 
 # ─── FSM enum/dispatch exhaustiveness + envelope ─────────────────────────────
@@ -925,6 +944,10 @@ _DENY_RULE_MARKERS = {
         ["source_delivery_id", "not a delivery recorded on"],
     "b_reconcile_accept_actor_verified_deny": ["operator-accepting"],
     "b_replayed_conflicting_reconcile_deny": ["conflicting d"],
+    "b_from_state_contradicts_reduced_deny":
+        ["audit from", "contradicts the reduced state"],
+    "b_missing_event_id_deny": ["missing required envelope field 'event_id'"],
+    "epoch_missing_base_key_deny": ["missing base_key"],
     "b_auto_release_closed_after_reject_restore_deny":
         ["operator REJECTED", "stays closed"],
     "a_replayed_conflicting_reconcile_deny": ["conflicting d"],

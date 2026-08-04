@@ -769,6 +769,25 @@
       "halts": {},
       "resolution_notes": {}
     },
+    "b_from_state_contradicts_reduced_deny": {
+      "holds": {
+        "R1:refs/heads/main": {
+          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+            "state": "HELD_FOREIGN",
+            "disposition": null,
+            "deliveries": [
+              "d1"
+            ]
+          }
+        }
+      },
+      "halts": {
+        "R1:refs/heads/main": {
+          "code": "ILLEGAL_TRANSITION"
+        }
+      },
+      "resolution_notes": {}
+    },
     "b_halt_isolation_after_halt": {
       "holds": {
         "R1:refs/heads/main": {
@@ -811,6 +830,15 @@
       },
       "halts": {
         "R2:refs/heads/main": {
+          "code": "SCHEMA_MAJOR_UNKNOWN"
+        }
+      },
+      "resolution_notes": {}
+    },
+    "b_missing_event_id_deny": {
+      "holds": {},
+      "halts": {
+        "R1:refs/heads/main": {
           "code": "SCHEMA_MAJOR_UNKNOWN"
         }
       },
@@ -1298,6 +1326,20 @@
         "halt": {
           "code": "EPOCH_GAP"
         }
+      }
+    },
+    "epoch_missing_base_key_deny": {
+      "": {
+        "status": "halt",
+        "epoch": null,
+        "halt": {
+          "code": "SCHEMA_MAJOR_UNKNOWN"
+        }
+      },
+      "R1:refs/heads/main": {
+        "status": "ok",
+        "epoch": "E0",
+        "halt": null
       }
     },
     "epoch_multi_base": {
