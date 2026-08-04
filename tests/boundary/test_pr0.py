@@ -1336,6 +1336,39 @@ def test_blocking_predicate_exhaustive(generated):
         g.SeatOutcome("BLOCK")
 
 
+def test_unknown_epoch_effect_is_closed_at_both_ends(generated):
+    """An epoch effect outside the four implemented arms must not read as
+    "no algebra" (panel round 4, finding 5). Closed at BOTH ends:
+      1. schema load rejects a row declaring one;
+      2. the runtime checker halts rather than falling through — tested
+         directly, since (1) makes it unreachable from a valid schema."""
+    fsmgen = _fsmgen()
+    schemas = fsmgen.load_schemas()
+    schemas["lifecycle_fsm"]["section_a"]["rows"][0]["epoch_effect"] = "novel_effect"
+    with pytest.raises(SystemExit) as exc:
+        fsmgen._validate_schema_tokens(schemas)
+    assert "closed epoch-effect domain" in str(exc.value)
+
+    g = generated
+
+    class _NovelRow:                      # a row the checker does not know
+        ROW = "novel_row"
+        EPOCH_EFFECT = "novel_effect"
+        REQUIRED = ("epoch_before", "epoch_after")
+        OPTIONAL = ()
+
+    class _Ev:
+        epoch_before = "a" * 40
+        epoch_after = "b" * 40
+        disposition = None
+        new_oid = None
+
+    halt = g._check_epoch_algebra(_NovelRow, _Ev(), "where", {"event_id": "e"})
+    assert halt is not None, "unknown epoch effect fell through as no-op"
+    assert halt["code"] == "ILLEGAL_TRANSITION"
+    assert "domain is closed" in halt["detail"]
+
+
 def test_aggregate_dispatch_is_generated_from_the_schema_rules(schemas, generated):
     """§5.1's rule ORDER is now GENERATED from panel_aggregate.yaml's rules
     list, not hand-written beside it (panel round 4, finding 6). The
