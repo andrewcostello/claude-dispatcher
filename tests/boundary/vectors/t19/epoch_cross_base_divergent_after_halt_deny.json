@@ -1,0 +1,49 @@
+{
+  "machine": "epoch_fold",
+  "note": "DENY (panel round 3): a base pre-halted by a schema violation must still REGISTER its events in dedup \u2014 otherwise a divergent twin on a HEALTHY base later in the stream reads as first-seen and advances that base's fence from a reused id",
+  "events": [
+    {
+      "schema_major": 7,
+      "schema_minor": 0,
+      "event_id": "x0",
+      "ts": "1970-01-01T00:00:00Z",
+      "run_id": "run-1",
+      "trace_id": "trace-1",
+      "protocol_epoch": "E0",
+      "base_key": "R2:refs/heads/main",
+      "epoch_before": "E0",
+      "epoch_after": "E1",
+      "family": "effect_lifecycle"
+    },
+    {
+      "schema_major": 1,
+      "schema_minor": 0,
+      "event_id": "e1",
+      "ts": "1970-01-01T00:00:00Z",
+      "run_id": "run-1",
+      "trace_id": "trace-1",
+      "protocol_epoch": "E0",
+      "base_key": "R2:refs/heads/main",
+      "epoch_before": "E0",
+      "epoch_after": "E1",
+      "family": "effect_lifecycle"
+    },
+    {
+      "schema_major": 1,
+      "schema_minor": 0,
+      "event_id": "e1",
+      "ts": "1970-01-01T00:00:00Z",
+      "run_id": "run-1",
+      "trace_id": "trace-1",
+      "protocol_epoch": "E0",
+      "base_key": "R1:refs/heads/main",
+      "epoch_before": "E0",
+      "epoch_after": "E9",
+      "family": "effect_lifecycle"
+    }
+  ],
+  "anchors": {
+    "R1:refs/heads/main": "E0",
+    "R2:refs/heads/main": "E0"
+  }
+}

@@ -169,6 +169,16 @@ section_a:
       canonical_in_crash_window: hold_branch
       dedup_key: event_id
       divergent_payload: halt   # EVENT_PAYLOAD_DIVERGENT
+      # The canonical form compared for byte-identity. `branch` is which
+      # carrier copy this is — never semantic. The per-ISSUER envelope
+      # fields are excluded ONLY for events whose event_id is DERIVED
+      # (cold-start crash_recovery): two independent processes must mint
+      # the same id and converge, and they cannot agree on ts/run_id/
+      # trace_id. For every other event the comparison is the full
+      # canonical payload — the design's rule is unqualified.
+      canonical_excludes_always: [branch]
+      canonical_excludes_for_derived_ids: [ts, run_id, trace_id]
+      derived_id_kinds: [crash_recovery]
 
   # The durable reduce runs the PROJECTION machine, not the live table
   # (round 14, codex): durable states + composed edges, generated from this

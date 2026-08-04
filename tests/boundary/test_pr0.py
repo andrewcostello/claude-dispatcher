@@ -761,7 +761,9 @@ def _project_result(machine: str, got: dict) -> dict:
                 "halts": {b: {"code": h["code"]} for b, h in got["halts"].items()}}
     if machine == "section_b":
         return {"holds": got["holds"],
-                "halts": {b: {"code": h["code"]} for b, h in got["halts"].items()}}
+                "halts": {b: {"code": h["code"]} for b, h in got["halts"].items()},
+                "resolution_notes": {b: len(n)
+                                     for b, n in got["resolution_notes"].items()}}
     return {base: {"status": entry["status"], "epoch": entry["epoch"],
                    "halt": _project_halt(entry["halt"])}
             for base, entry in got.items()}
@@ -836,8 +838,9 @@ _DENY_RULE_MARKERS = {
     "b_actor_verified_unresolvable_delivery_deny":
         ["source_delivery_id", "not a delivery recorded on"],
     "b_reconcile_accept_actor_verified_deny": ["operator-accepting"],
-    "b_redelivery_unseen_deny": ["apply order resolves", "tagged"],
-    "b_mistagged_new_delivery_deny": ["apply order resolves", "tagged"],
+    "b_replayed_conflicting_reconcile_deny": ["conflicting d"],
+    "a_replayed_conflicting_reconcile_deny": ["conflicting d"],
+    "epoch_cross_base_divergent_after_halt_deny": ["divergent payloads"],
     "b_redelivery_delta_contradiction_deny": ["contradicts the hold's recorded delta"],
     "b_declared_hold_id_mismatch_deny": ["declared hold_id", "contradicts"],
     "b_reconcile_unknown_hold_deny": ["references unknown hold"],
@@ -924,7 +927,9 @@ def test_t19_vector_inventory():
         "epoch_dup_divergent_deny", "epoch_unanchored_base_deny",
         "epoch_multi_base",
         "b_redelivery_after_released", "b_repark_after_released",
-        "b_redelivery_unseen_deny", "b_mistagged_new_delivery_deny",
+        "b_concurrent_tag_resolved_to_new_hold",
+        "b_concurrent_tag_resolved_to_redelivery",
+        "b_replayed_accepting_reconcile_is_identity",
         "b_reject_restore_hold", "b_standing_reenter",
         "b_standing_reject_restore", "b_standing_standing",
         "b_reconcile_accept_actor_verified_deny",
@@ -940,7 +945,7 @@ def _ceiling_events(generated, n: int, base: str = "B1") -> list[dict]:
     """Minimally SCHEMA-VALID events (the fold now runs the same §9 checks
     as the reducers, so a bare dict would halt as a schema violation and
     mask what the ceiling tests are actually asserting)."""
-    return [{"event_id": f"e{i}", "base_key": base, "schema_major": 1,
+    return [{"event_id": f"{base}-e{i}", "base_key": base, "schema_major": 1,
              "schema_minor": 0, "family": "effect_lifecycle"}
             for i in range(n)]
 
@@ -997,6 +1002,21 @@ def test_ceiling_with_partial_anchors_keeps_edge_bearing_bases(generated):
                          {"BUSY": "E0"})
     assert fold["BUSY"]["halt"]["code"] == "RECOVERY_CEILING"
     assert fold["OTHER"]["halt"]["code"] == "EPOCH_GAP"
+
+
+def test_ceiling_counts_deduplicated_events(generated):
+    """The ceiling bounds recovered HISTORY, not wire traffic: N+1 COPIES of
+    one event must not trip an OPERATOR halt, while N+1 DISTINCT events
+    must (panel round 3 — at-least-once redelivery is exactly what the
+    protocol absorbs)."""
+    g, n = generated, generated.RECOVERY_CEILING_EVENTS
+    one = {"event_id": "same", "base_key": "B1", "schema_major": 1,
+           "schema_minor": 0, "family": "effect_lifecycle"}
+    copies = [dict(one) for _ in range(n + 1)]
+    assert "RECOVERY_CEILING" not in {
+        h["code"] for h in g.reduce_section_a(copies)["halts"].values()}
+    distinct = _ceiling_events(g, n + 1)
+    assert g.reduce_section_a(distinct)["halts"]["B1"]["code"] == "RECOVERY_CEILING"
 
 
 def test_derivations_pinned_goldens(generated):

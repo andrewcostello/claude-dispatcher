@@ -375,6 +375,36 @@
       "recovery_appends": [],
       "halts": {}
     },
+    "a_replayed_accepting_reconcile_is_identity": {
+      "movements": {
+        "R1:refs/heads/main": {
+          "m1": {
+            "state": "RECONCILED",
+            "disposition": "ACCEPT_FOREIGN_ADVANCED",
+            "via_recovery_append": false
+          }
+        }
+      },
+      "recovery_appends": [],
+      "halts": {}
+    },
+    "a_replayed_conflicting_reconcile_deny": {
+      "movements": {
+        "R1:refs/heads/main": {
+          "m1": {
+            "state": "RECONCILED",
+            "disposition": "ACCEPT_FOREIGN_ADVANCED",
+            "via_recovery_append": false
+          }
+        }
+      },
+      "recovery_appends": [],
+      "halts": {
+        "R1:refs/heads/main": {
+          "code": "ILLEGAL_TRANSITION"
+        }
+      }
+    },
     "a_section_b_disposition_deny": {
       "movements": {
         "R1:refs/heads/main": {
@@ -532,7 +562,8 @@
           }
         }
       },
-      "halts": {}
+      "halts": {},
+      "resolution_notes": {}
     },
     "b_actor_verified_shared_run_deny": {
       "holds": {
@@ -550,7 +581,8 @@
         "R1:refs/heads/main": {
           "code": "ILLEGAL_TRANSITION"
         }
-      }
+      },
+      "resolution_notes": {}
     },
     "b_actor_verified_unresolvable_delivery_deny": {
       "holds": {
@@ -568,7 +600,8 @@
         "R1:refs/heads/main": {
           "code": "ILLEGAL_TRANSITION"
         }
-      }
+      },
+      "resolution_notes": {}
     },
     "b_actor_verified_wrong_delta_digest_deny": {
       "holds": {
@@ -586,6 +619,66 @@
         "R1:refs/heads/main": {
           "code": "ILLEGAL_TRANSITION"
         }
+      },
+      "resolution_notes": {}
+    },
+    "b_concurrent_duplicate_creations": {
+      "holds": {
+        "R1:refs/heads/main": {
+          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+            "state": "HELD_FOREIGN",
+            "disposition": null,
+            "deliveries": [
+              "d1",
+              "d2"
+            ]
+          }
+        }
+      },
+      "halts": {},
+      "resolution_notes": {
+        "R1:refs/heads/main": 1
+      }
+    },
+    "b_concurrent_tag_resolved_to_new_hold": {
+      "holds": {
+        "R1:refs/heads/main": {
+          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+            "state": "RELEASED",
+            "disposition": "ACCEPT_FOREIGN_ADVANCED",
+            "deliveries": [
+              "d1"
+            ]
+          },
+          "a7470bd66cdb4b908fec910c9b3d437132b20fd075ca519702741e321d879a3d": {
+            "state": "HELD_FOREIGN",
+            "disposition": null,
+            "deliveries": [
+              "d9"
+            ]
+          }
+        }
+      },
+      "halts": {},
+      "resolution_notes": {
+        "R1:refs/heads/main": 1
+      }
+    },
+    "b_concurrent_tag_resolved_to_redelivery": {
+      "holds": {
+        "R1:refs/heads/main": {
+          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+            "state": "HELD_FOREIGN",
+            "disposition": null,
+            "deliveries": [
+              "d1"
+            ]
+          }
+        }
+      },
+      "halts": {},
+      "resolution_notes": {
+        "R1:refs/heads/main": 1
       }
     },
     "b_declared_hold_id_mismatch_deny": {
@@ -596,7 +689,8 @@
         "R1:refs/heads/main": {
           "code": "ILLEGAL_TRANSITION"
         }
-      }
+      },
+      "resolution_notes": {}
     },
     "b_display_only_needs_no_actor_node_id": {
       "holds": {
@@ -610,7 +704,8 @@
           }
         }
       },
-      "halts": {}
+      "halts": {},
+      "resolution_notes": {}
     },
     "b_family_mistag_deny": {
       "holds": {},
@@ -618,7 +713,8 @@
         "R1:refs/heads/main": {
           "code": "SCHEMA_MAJOR_UNKNOWN"
         }
-      }
+      },
+      "resolution_notes": {}
     },
     "b_forbidden_authorization_id_deny": {
       "holds": {
@@ -636,7 +732,8 @@
         "R1:refs/heads/main": {
           "code": "SCHEMA_MAJOR_UNKNOWN"
         }
-      }
+      },
+      "resolution_notes": {}
     },
     "b_foreign_hold_created": {
       "holds": {
@@ -650,7 +747,8 @@
           }
         }
       },
-      "halts": {}
+      "halts": {},
+      "resolution_notes": {}
     },
     "b_halt_isolation_after_halt": {
       "holds": {
@@ -668,7 +766,8 @@
         "R2:refs/heads/main": {
           "code": "SCHEMA_MAJOR_UNKNOWN"
         }
-      }
+      },
+      "resolution_notes": {}
     },
     "b_halt_isolation_multi_base": {
       "holds": {
@@ -695,25 +794,8 @@
         "R2:refs/heads/main": {
           "code": "SCHEMA_MAJOR_UNKNOWN"
         }
-      }
-    },
-    "b_mistagged_new_delivery_deny": {
-      "holds": {
-        "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
-            "state": "HELD_FOREIGN",
-            "disposition": null,
-            "deliveries": [
-              "d1"
-            ]
-          }
-        }
       },
-      "halts": {
-        "R1:refs/heads/main": {
-          "code": "ILLEGAL_TRANSITION"
-        }
-      }
+      "resolution_notes": {}
     },
     "b_mode_disagrees_with_run_deny": {
       "holds": {
@@ -723,7 +805,8 @@
         "R1:refs/heads/main": {
           "code": "ILLEGAL_TRANSITION"
         }
-      }
+      },
+      "resolution_notes": {}
     },
     "b_new_delivery_on_open_hold": {
       "holds": {
@@ -738,7 +821,8 @@
           }
         }
       },
-      "halts": {}
+      "halts": {},
+      "resolution_notes": {}
     },
     "b_none_effect_row_advances_deny": {
       "holds": {
@@ -748,7 +832,8 @@
         "R1:refs/heads/main": {
           "code": "ILLEGAL_TRANSITION"
         }
-      }
+      },
+      "resolution_notes": {}
     },
     "b_reconcile_accept_actor_verified_deny": {
       "holds": {
@@ -766,7 +851,8 @@
         "R1:refs/heads/main": {
           "code": "ILLEGAL_TRANSITION"
         }
-      }
+      },
+      "resolution_notes": {}
     },
     "b_reconcile_unknown_hold_deny": {
       "holds": {
@@ -784,7 +870,8 @@
         "R1:refs/heads/main": {
           "code": "ILLEGAL_TRANSITION"
         }
-      }
+      },
+      "resolution_notes": {}
     },
     "b_redelivery_after_released": {
       "holds": {
@@ -798,7 +885,8 @@
           }
         }
       },
-      "halts": {}
+      "halts": {},
+      "resolution_notes": {}
     },
     "b_redelivery_delta_contradiction_deny": {
       "holds": {
@@ -816,7 +904,8 @@
         "R1:refs/heads/main": {
           "code": "ILLEGAL_TRANSITION"
         }
-      }
+      },
+      "resolution_notes": {}
     },
     "b_redelivery_stale_from_state": {
       "holds": {
@@ -830,25 +919,8 @@
           }
         }
       },
-      "halts": {}
-    },
-    "b_redelivery_unseen_deny": {
-      "holds": {
-        "R1:refs/heads/main": {
-          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
-            "state": "RELEASED",
-            "disposition": "ACCEPT_FOREIGN_ADVANCED",
-            "deliveries": [
-              "d1"
-            ]
-          }
-        }
-      },
-      "halts": {
-        "R1:refs/heads/main": {
-          "code": "ILLEGAL_TRANSITION"
-        }
-      }
+      "halts": {},
+      "resolution_notes": {}
     },
     "b_reject_restore_hold": {
       "holds": {
@@ -862,7 +934,8 @@
           }
         }
       },
-      "halts": {}
+      "halts": {},
+      "resolution_notes": {}
     },
     "b_release_conflict_deny": {
       "holds": {
@@ -880,7 +953,8 @@
         "R1:refs/heads/main": {
           "code": "ILLEGAL_TRANSITION"
         }
-      }
+      },
+      "resolution_notes": {}
     },
     "b_release_replay_identity": {
       "holds": {
@@ -894,7 +968,8 @@
           }
         }
       },
-      "halts": {}
+      "halts": {},
+      "resolution_notes": {}
     },
     "b_repark_after_released": {
       "holds": {
@@ -915,7 +990,57 @@
           }
         }
       },
-      "halts": {}
+      "halts": {},
+      "resolution_notes": {}
+    },
+    "b_replayed_accepting_reconcile_is_identity": {
+      "holds": {
+        "R1:refs/heads/main": {
+          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+            "state": "RELEASED",
+            "disposition": "ACCEPT_OURS",
+            "deliveries": [
+              "d1"
+            ]
+          }
+        }
+      },
+      "halts": {},
+      "resolution_notes": {}
+    },
+    "b_replayed_actor_verified_match": {
+      "holds": {
+        "R1:refs/heads/main": {
+          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+            "state": "RELEASED",
+            "disposition": "ACTOR_VERIFIED_AUTO",
+            "deliveries": [
+              "d1"
+            ]
+          }
+        }
+      },
+      "halts": {},
+      "resolution_notes": {}
+    },
+    "b_replayed_conflicting_reconcile_deny": {
+      "holds": {
+        "R1:refs/heads/main": {
+          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+            "state": "RELEASED",
+            "disposition": "ACCEPT_OURS",
+            "deliveries": [
+              "d1"
+            ]
+          }
+        }
+      },
+      "halts": {
+        "R1:refs/heads/main": {
+          "code": "ILLEGAL_TRANSITION"
+        }
+      },
+      "resolution_notes": {}
     },
     "b_standing_reenter": {
       "holds": {
@@ -929,7 +1054,8 @@
           }
         }
       },
-      "halts": {}
+      "halts": {},
+      "resolution_notes": {}
     },
     "b_standing_reject_restore": {
       "holds": {
@@ -943,7 +1069,8 @@
           }
         }
       },
-      "halts": {}
+      "halts": {},
+      "resolution_notes": {}
     },
     "b_standing_standing": {
       "holds": {
@@ -957,7 +1084,8 @@
           }
         }
       },
-      "halts": {}
+      "halts": {},
+      "resolution_notes": {}
     },
     "b_unknown_actor_verification_deny": {
       "holds": {},
@@ -965,7 +1093,8 @@
         "R1:refs/heads/main": {
           "code": "SCHEMA_MAJOR_UNKNOWN"
         }
-      }
+      },
+      "resolution_notes": {}
     },
     "b_unknown_family_deny": {
       "holds": {},
@@ -973,7 +1102,8 @@
         "R1:refs/heads/main": {
           "code": "SCHEMA_MAJOR_UNKNOWN"
         }
-      }
+      },
+      "resolution_notes": {}
     },
     "b_verified_api_without_actor_node_id_deny": {
       "holds": {},
@@ -981,7 +1111,8 @@
         "R1:refs/heads/main": {
           "code": "ILLEGAL_TRANSITION"
         }
-      }
+      },
+      "resolution_notes": {}
     },
     "crash_p1_before_hold_append": {
       "movements": {
@@ -1058,6 +1189,22 @@
       "halts": {
         "R1:refs/heads/main": {
           "code": "EVENT_PAYLOAD_DIVERGENT"
+        }
+      }
+    },
+    "epoch_cross_base_divergent_after_halt_deny": {
+      "R1:refs/heads/main": {
+        "status": "halt",
+        "epoch": "E0",
+        "halt": {
+          "code": "EVENT_PAYLOAD_DIVERGENT"
+        }
+      },
+      "R2:refs/heads/main": {
+        "status": "halt",
+        "epoch": "E0",
+        "halt": {
+          "code": "SCHEMA_MAJOR_UNKNOWN"
         }
       }
     },

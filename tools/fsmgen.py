@@ -520,6 +520,17 @@ def _emit_projection_and_rows(fsm: dict, reachable: dict,
             ]) + "},")
         w(")")
         w("")
+    da = fsm["section_a"]["durability"]["dual_append"]
+    w("# Byte-identity comparison sets (schema dual_append): `branch` is")
+    w("# never semantic; the per-issuer envelope fields are excluded ONLY")
+    w("# for DERIVED event_ids, where independent issuers must converge.")
+    w(f"CANONICAL_EXCLUDES_ALWAYS: frozenset[str] = "
+      f"frozenset({tuple(da['canonical_excludes_always'])!r})")
+    w(f"CANONICAL_EXCLUDES_FOR_DERIVED_IDS: frozenset[str] = "
+      f"frozenset({tuple(da['canonical_excludes_for_derived_ids'])!r})")
+    w(f"DERIVED_ID_KINDS: frozenset[str] = "
+      f"frozenset({tuple(da['derived_id_kinds'])!r})")
+    w("")
     fam = fsm["events"]["reducer_family_filter"]
     w("# `family` is the event's schema name — a CLOSED domain over every")
     w("# record the protocol defines. Absent/empty/unknown halts; a family")
@@ -1273,12 +1284,27 @@ def target_ref(ref: str) -> str:
 
 # ─── reducers (T19 skeletons; PR4 hardens against live carriers) ────────────
 
+def _is_derived_id(d: Mapping[str, object]) -> bool:
+    """True when this event's event_id is DERIVED (cold-start recovery), so
+    two independent issuers legitimately mint the same id."""
+    if str(d.get("trigger_event")) not in DERIVED_ID_KINDS:
+        return False
+    base, movement = d.get("base_key"), d.get("movement_id")
+    if not isinstance(base, str) or not isinstance(movement, str):
+        return False
+    return d.get("event_id") == derive_recovery_event_id(base, movement)
+
+
 def _canonical(d: Mapping[str, object]) -> str:
     """Byte-identity core for duplicate-event_id comparison. `branch` (which
-    carrier copy) and the per-ISSUER envelope fields ts/run_id/trace_id are
-    excluded so independently-issued twins of a DERIVED event (cold-start
-    recovery) converge; every semantic field still diverges loudly."""
-    drop = {"branch", "ts", "run_id", "trace_id"}
+    carrier copy) is never semantic. The per-ISSUER envelope fields are
+    dropped ONLY when the event_id is DERIVED — two concurrent cold-start
+    recoveries must converge and cannot agree on ts/run_id/trace_id. For
+    every other event the comparison is the FULL canonical payload, as the
+    design's unqualified rule requires (panel round 3)."""
+    drop = set(CANONICAL_EXCLUDES_ALWAYS)
+    if _is_derived_id(d):
+        drop |= set(CANONICAL_EXCLUDES_FOR_DERIVED_IDS)
     return json.dumps({k: v for k, v in d.items() if k not in drop},
                       sort_keys=True, separators=(",", ":"))
 
@@ -1341,9 +1367,20 @@ class _Dedup:
 
 
 def _per_base_counts(events: Sequence[Mapping[str, object]]) -> dict[str, int]:
+    """DEDUPLICATED counts per base: idempotent redeliveries and dual-append
+    twins are exactly what the protocol expects to absorb, so they must not
+    consume ceiling budget and escalate to an OPERATOR halt (panel round 3).
+    The ceiling bounds the recovered HISTORY, not the wire traffic."""
     counts: dict[str, int] = {}
+    seen: dict[str, set] = {}
     for ev in events:
         base = str(ev.get("base_key") or "")
+        eid = ev.get("event_id")
+        bucket = seen.setdefault(base, set())
+        if isinstance(eid, str) and eid:
+            if eid in bucket:
+                continue
+            bucket.add(eid)
         counts[base] = counts.get(base, 0) + 1
     return counts
 
@@ -1365,8 +1402,7 @@ def _intake(dedup: _Dedup, ev: Mapping[str, object], family: str,
     Returns the typed event, or None when the event was consumed (dup /
     other family / halt recorded)."""
     base_hint = str(ev.get("base_key") or "")
-    if base_hint in base_halts:
-        return None  # base already halted — isolation, not suppression
+    halted = base_hint in base_halts
     fam = ev.get("family")
     if not isinstance(fam, str) or fam == "":
         base_halts.setdefault(base_hint, _halt(
@@ -1397,8 +1433,12 @@ def _intake(dedup: _Dedup, ev: Mapping[str, object], family: str,
                 f"never filtered (event_id {ev.get('event_id')!r})", ev))
         return None
     try:
-        if dedup.check(ev, base_hint) == "dup":
-            return None  # dual-append twin / redelivered copy
+        # dedup runs for EVERY event, halted base or not: skipping
+        # registration would let a divergent twin on a HEALTHY base later in
+        # the stream read as first-seen (panel round 3 — order dependence).
+        seen = dedup.check(ev, base_hint)
+        if halted or seen == "dup":
+            return None  # halted base: register only; dup: absorbed
         return build_wire_event(variants, ev)
     except _DivergentDuplicate as exc:
         for b in exc.bases:
@@ -1518,6 +1558,17 @@ def _step_section_a(movements, order, base: str, mid: str, event: object,
     if epoch_halt is not None:
         return epoch_halt
     cur = movements.get(base, {}).get(mid, GENESIS_A)
+    # §6.0 identity replay is checked BEFORE the projection preconditions:
+    # the replaying writer read HELD, so its audit `from` is HELD too, and
+    # a precondition error would pre-empt the idempotence rule.
+    if cur.name is SectionAState.RECONCILED and isinstance(event, ReconcileAccept):
+        if cur.disposition is event.disposition:
+            return None                          # identity replay
+        return _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION,
+            f"movement {mid}@{base}: RECONCILED({cur.disposition}) × "
+            f"operator_reconcile({event.disposition}) — conflicting d′ "
+            f"(event_id {ev.get('event_id')!r})", ev)
     if mid not in movements.get(base, {}):
         movements.setdefault(base, {})[mid] = GENESIS_A
         order.append((base, mid))
@@ -1537,8 +1588,6 @@ def _step_section_a(movements, order, base: str, mid: str, event: object,
             f"{cur.name.value} → {cls.TO_STATE} "
             f"({cls.__name__!r}, event_id {ev.get('event_id')!r})", ev)
     if cls.TRIGGER == "operator_reconcile":
-        # durable HELD/RECONCILED are live states — delegate to the one
-        # live-table dispatch instead of re-implementing it.
         try:
             movements[base][mid] = apply_section_a(cur, event)
         except IllegalTransitionError as exc:
@@ -1579,6 +1628,9 @@ class _HoldBook:
         self.hold_delta: dict[str, tuple] = {}
         self.deliveries: dict[str, list[str]] = {}
         self.order: list[str] = []
+        # writer/reducer disagreements the reducer resolved (journalled,
+        # never a halt — door 0 is inherently concurrent)
+        self.resolution_notes: list[str] = []
 
 
 def _resolve_observe_delta(book: _HoldBook, base: str, event: object) -> tuple[str, str]:
@@ -1607,35 +1659,44 @@ def _admit_hold_event(book: _HoldBook, base: str, event: object,
     """Resolve which hold an event addresses: the §6.0 apply order for
     observe_delta (mis-tagged variants, contradicted hold_ids AND
     contradicted delta tuples halt), reference lookup for actor/reconcile
-    events (unknown holds halt). Returns (hid, cur, halt)."""
+    events (unknown holds halt). Returns (hid, cur, halt, note) — `note`
+    journals a writer/reducer disagreement the reducer resolved."""
     cls = type(event)
     if cls.TRIGGER == "observe_delta":
         resolution, hid = _resolve_observe_delta(book, base, event)
         if cls.__name__ != _OBSERVE_EXPECTED[resolution]:
-            return None, None, _halt(
-                BoundaryErrorCode.ILLEGAL_TRANSITION,
-                f"apply order resolves {resolution!r} (hold {hid}) but "
-                f"the event is tagged {cls.__name__!r} "
-                f"(event_id {ev.get('event_id')!r})", ev)
+            # Door 0 is the most concurrent path in the system: the tag
+            # encodes a decision the writer made from a read a concurrent
+            # writer invalidated. The schema names the REDUCER the
+            # authority for this resolution (section_b.hold_id.apply_order),
+            # so apply the derived answer and journal the disagreement
+            # rather than halting the base (panel round 3).
+            resolution_note = (
+                f"apply order resolved {resolution!r} (hold {hid}); the "
+                f"event was tagged {cls.__name__!r} — the reducer's "
+                f"derivation is authoritative "
+                f"(event_id {ev.get('event_id')!r})")
+        else:
+            resolution_note = None
         if event.hold_id is not None and event.hold_id != hid:
             return None, None, _halt(
                 BoundaryErrorCode.ILLEGAL_TRANSITION,
                 f"declared hold_id {event.hold_id!r} contradicts the "
                 f"derived/resolved {hid!r} "
-                f"(event_id {ev.get('event_id')!r})", ev)
+                f"(event_id {ev.get('event_id')!r})", ev), None
         if resolution in ("redelivery", "record"):
             halt = _check_delta_against_hold(book, hid, event, ev)
             if halt is not None:
-                return None, None, halt
-        return hid, book.holds.get(hid, GENESIS_B), None
+                return None, None, halt, None
+        return hid, book.holds.get(hid, GENESIS_B), None, resolution_note
     hid = event.hold_id
     cur = book.holds.get(hid)
     if cur is None:
         return None, None, _halt(
             BoundaryErrorCode.ILLEGAL_TRANSITION,
             f"{cls.__name__!r} references unknown hold {hid!r} "
-            f"(event_id {ev.get('event_id')!r})", ev)
-    return hid, cur, None
+            f"(event_id {ev.get('event_id')!r})", ev), None
+    return hid, cur, None, None
 
 
 def _check_delta_against_hold(book: _HoldBook, hid: str, event: object,
@@ -1759,12 +1820,15 @@ def reduce_section_b(events: Sequence[Mapping[str, object]],
                                   if book.holds[hid].disposition else None),
                   "deliveries": book.deliveries.get(hid, [])}
             for hid in book.order}
-    return {"holds": out, "halts": base_halts}
+    notes = {b: books[b].resolution_notes for b in base_order
+             if books[b].resolution_notes}
+    return {"holds": out, "halts": base_halts, "resolution_notes": notes}
 
 
 def _step_section_b(book: _HoldBook, base: str, event: object,
                     ev: Mapping[str, object],
                     run_mode: CredentialMode) -> Optional[dict]:
+    note = None
     cls = type(event)
     # An event's self-declared `mode` is display/audit; the RUN's mode is
     # authority. Divergence is a typed halt, never a silent upgrade.
@@ -1778,17 +1842,34 @@ def _step_section_b(book: _HoldBook, base: str, event: object,
     epoch_halt = _check_epoch_algebra(cls, event, base, ev)
     if epoch_halt is not None:
         return epoch_halt
-    hid, cur, halt = _admit_hold_event(book, base, event, ev)
+    hid, cur, halt, note = _admit_hold_event(book, base, event, ev)
     if halt is not None:
         return halt
+    if note is not None:
+        book.resolution_notes.append(note)
     # The `unchanged` no-op rows are state-independent by design — their
     # audit `from` is already constrained to FROM_STATES at construction;
     # every state-changing row must name the reduced state exactly.
-    if cls.TO_STATE != "unchanged" and event.from_state != cur.name.value:
+    replaying = (cur.name is SectionBState.RELEASED
+                 and isinstance(event, HoldReconcileAccept))
+    # A writer whose apply-order tag was stale also stamped `from` from the
+    # same stale read — the reducer's resolution governs both.
+    if (cls.TO_STATE != "unchanged" and not replaying and note is None
+            and event.from_state != cur.name.value):
         return _halt(
             BoundaryErrorCode.ILLEGAL_TRANSITION,
             f"hold {hid}: audit from={event.from_state!r} contradicts the "
             f"reduced state {cur.name.value} "
+            f"(event_id {ev.get('event_id')!r})", ev)
+    if (cur.name is SectionBState.RELEASED
+            and isinstance(event, HoldReconcileAccept)):
+        # §6.0 identity replay — same d is idempotent, d′ conflicts.
+        if cur.disposition is event.disposition:
+            return None
+        return _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION,
+            f"hold {hid}: RELEASED({cur.disposition}) × "
+            f"operator_reconcile({event.disposition}) — conflicting d′ "
             f"(event_id {ev.get('event_id')!r})", ev)
     if isinstance(event, ActorVerifiedAuto):
         if run_mode is not CredentialMode.SEPARATED:
@@ -1801,10 +1882,16 @@ def _step_section_b(book: _HoldBook, base: str, event: object,
         halt = _check_actor_verified(book, base, hid, event, ev)
         if halt is not None:
             return halt
-    try:
-        new = apply_section_b(cur, event)
-    except IllegalTransitionError as exc:
-        return _halt(BoundaryErrorCode.ILLEGAL_TRANSITION, str(exc), ev)
+    if note is not None:
+        # the reducer's resolution governs: a hold that does not yet exist
+        # is created; one that does absorbs the delivery as a no-op.
+        new = (MachineStateB(SectionBState.HELD_FOREIGN)
+               if cur.name is SectionBState.GENESIS else cur)
+    else:
+        try:
+            new = apply_section_b(cur, event)
+        except IllegalTransitionError as exc:
+            return _halt(BoundaryErrorCode.ILLEGAL_TRANSITION, str(exc), ev)
     _record_hold_outcome(book, hid, event, cur, new)
     return None
 
@@ -1824,8 +1911,7 @@ def fold_epochs(events: Sequence[Mapping[str, object]],
     edges_by_base: dict[str, list[Mapping[str, object]]] = {}
     for ev in events:
         base = str(ev.get("base_key") or "")
-        if base in base_halts:
-            continue
+        halted = base in base_halts
         # The fold is the THIRD consumer of the same durable stream and its
         # output IS AuthorityFingerprint.base_epoch — so it runs the same §9
         # schema validation the reducers do (panel round 3: an unknown-major
@@ -1837,7 +1923,8 @@ def fold_epochs(events: Sequence[Mapping[str, object]],
         # dedup BEFORE the no-effect filter (panel round 2: a divergent
         # duplicate must never slip in as a legitimate edge).
         try:
-            if dedup.check(ev, base) == "dup":
+            # register on every event, halted or not (order independence)
+            if dedup.check(ev, base) == "dup" or halted:
                 continue  # carrier copies of one advance share an event_id
         except _DivergentDuplicate as exc:
             for b in exc.bases:
@@ -2824,6 +2911,22 @@ def _section_a_vectors() -> dict[str, dict]:
       [dict(prep, schema_minor=9, some_future_field="ignored"),
        _ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "EXPLAINED",
            new_oid="oid-new", schema_minor=9)])
+    a("a_replayed_accepting_reconcile_is_identity",
+      "IDEMPOTENCE (§6.0): an accepting disposition re-applied to "
+      "RECONCILED with the SAME d is identity, not a state-precondition "
+      "error — the writer read HELD and cannot know to use the replay tag",
+      [prep, hold_copy, state_copy,
+       _ev("ReconcileAccept", "e3", "m1", "HELD", "RECONCILED",
+           disposition="ACCEPT_FOREIGN_ADVANCED"),
+       _ev("ReconcileAccept", "e4", "m1", "HELD", "RECONCILED",
+           disposition="ACCEPT_FOREIGN_ADVANCED")])
+    a("a_replayed_conflicting_reconcile_deny",
+      "DENY: a CONFLICTING d′ on the same movement still halts",
+      [prep, hold_copy, state_copy,
+       _ev("ReconcileAccept", "e3", "m1", "HELD", "RECONCILED",
+           disposition="ACCEPT_FOREIGN_ADVANCED"),
+       _ev("ReconcileAccept", "e4", "m1", "HELD", "RECONCILED",
+           disposition="ACCEPT_OURS", new_oid="oid-x")])
     a("a_halt_isolation_after_halt",
       "halt isolation ORDERING: a base halts FIRST, then a healthy base's "
       "events arrive — they must still reduce and still earn their "
@@ -2890,20 +2993,41 @@ def _section_b_vectors() -> dict[str, dict]:
       [obs, release("h2"),
        _hev("ObserveDelta", "h3", "GENESIS", "HELD_FOREIGN",
             delta_old_oid="o0", delta_new_oid="o1", source_delivery_id="d2")])
-    b("b_redelivery_unseen_deny",
-      "DENY: an ObserveDeltaRedelivery naming a source_delivery_id never "
-      "seen on this base is mis-tagged — the apply order resolves a NEW "
-      "hold, so the no-op claim is an integrity halt",
+    b("b_concurrent_tag_resolved_to_new_hold",
+      "CONCURRENCY (panel round 3): a writer tagged a redelivery from a "
+      "read a concurrent writer invalidated — the delivery id is unseen, "
+      "so the apply order resolves a NEW hold. The reducer's derivation is "
+      "authoritative: park the hold and journal the disagreement, never "
+      "halt the most concurrent path in the system",
       [obs, release("h2"),
        _hev("ObserveDeltaRedelivery", "h3", "RELEASED", "RELEASED",
             source_delivery_id="d9")])
-    b("b_mistagged_new_delivery_deny",
-      "DENY: an ObserveDeltaNewDeliveryOnOpenHold carrying an ALREADY-seen "
-      "delivery id resolves as a redelivery — mis-tag halts",
+    b("b_concurrent_tag_resolved_to_redelivery",
+      "CONCURRENCY: the mirror case — a writer tagged a NEW delivery on an "
+      "open hold but the id was already seen, so the apply order resolves a "
+      "redelivery no-op; resolved and journalled, not halted",
       [obs,
        _hev("ObserveDeltaNewDeliveryOnOpenHold", "h2", "HELD_FOREIGN",
             "HELD_FOREIGN", source_delivery_id="d1", delta_old_oid="o0",
             delta_new_oid="o1")])
+    b("b_concurrent_duplicate_creations",
+      "CONCURRENCY: two independently-issued observe_delta creations for "
+      "ONE delta — the second resolves onto the open hold rather than "
+      "minting a colliding id",
+      [obs,
+       _hev("ObserveDelta", "h2", "GENESIS", "HELD_FOREIGN",
+            delta_old_oid="o0", delta_new_oid="o1", source_delivery_id="d2")])
+    b("b_replayed_accepting_reconcile_is_identity",
+      "IDEMPOTENCE (§6.0): an accepting disposition re-applied with the "
+      "SAME d is identity — a writer that read HELD_FOREIGN cannot know to "
+      "use the replay tag, so the accept variant replayed onto the terminal "
+      "it already produced must NOT halt",
+      [obs, release("h2", disposition="ACCEPT_OURS"),
+       release("h3", disposition="ACCEPT_OURS")])
+    b("b_replayed_conflicting_reconcile_deny",
+      "DENY: only a CONFLICTING d′ halts",
+      [obs, release("h2", disposition="ACCEPT_OURS"),
+       release("h3", disposition="ACCEPT_FOREIGN_ADVANCED")])
     matched = _matched_delta_digest_for(BASE1, REF1, "o0", "o1")
 
     def ava(eid: str, **over) -> dict:
@@ -2943,6 +3067,11 @@ def _section_b_vectors() -> dict[str, dict]:
       "DENY (panel round 2 CRITICAL): a source_delivery_id that resolves to "
       "no delivery recorded on this hold cannot clear the auto-release gate",
       [dict(obs, mode="SEPARATED"), ava("h2", source_delivery_id="never-seen")],
+      credential_mode="SEPARATED")
+    b("b_replayed_actor_verified_match",
+      "IDEMPOTENCE: a redelivered actor_verified_match on an already "
+      "auto-released hold is absorbed by the event_id dedup",
+      [dict(obs, mode="SEPARATED"), ava("h2"), ava("h2")],
       credential_mode="SEPARATED")
     b("b_verified_api_without_actor_node_id_deny",
       "DENY (panel round 3): VERIFIED_API evidence with no actor_node_id — "
@@ -3124,6 +3253,15 @@ def _epoch_vectors() -> dict[str, dict]:
     e("epoch_unknown_family_deny",
       "DENY: the fold runs the same closed-family check as the reducers",
       [dict(_edge("e1", "E0", "E1"), family="checkpoint_lifecycle")], anchors1)
+    e("epoch_cross_base_divergent_after_halt_deny",
+      "DENY (panel round 3): a base pre-halted by a schema violation must "
+      "still REGISTER its events in dedup — otherwise a divergent twin on "
+      "a HEALTHY base later in the stream reads as first-seen and advances "
+      "that base's fence from a reused id",
+      [dict(_edge("x0", "E0", "E1", base=BASE2), schema_major=7),
+       _edge("e1", "E0", "E1", base=BASE2),
+       _edge("e1", "E0", "E9")],
+      {BASE1: "E0", BASE2: "E0"})
     e("epoch_multi_base",
       "the fold partitions by base_key: one base's clean chain, another's "
       "fork — independent results",
