@@ -1452,6 +1452,31 @@ def test_build_wire_event_is_fail_closed(generated, over, match):
     assert exc.value.code is g.BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN
 
 
+@pytest.mark.parametrize("major,match", [
+    pytest.param("1", r"non-integer schema_major",
+                 id="deny-reducer-major-is-a-string"),
+    pytest.param(True, r"non-integer schema_major",
+                 id="deny-reducer-major-is-a-bool"),
+    pytest.param(1.0, r"non-integer schema_major",
+                 id="deny-reducer-major-is-a-float"),
+])
+def test_reducers_halt_on_a_non_integer_schema_major(generated, major, match):
+    """`_classify_event` is the envelope check EVERY consumer shares, and
+    its non-integer arm had no vector — the corpus covers only out-of-range
+    integers (0, 99). A bool is the sharp case: `True == 1` and
+    `True in SUPPORTED_SCHEMA_MAJORS` are both true, so without the
+    isinstance(bool) test a boolean major would be admitted as major 1.
+
+    MUTATION: `if isinstance(major, bool) or not isinstance(major, int):`
+    → `if False:` ⇒ red on all three rows.
+    """
+    g = generated
+    ev = dict(_wire_ok(g), schema_major=major)
+    halt = g.reduce_section_a([ev])["halts"]["R1:refs/heads/main"]
+    assert halt["code"] == "SCHEMA_MAJOR_UNKNOWN"
+    assert "non-integer schema_major" in halt["detail"], halt["detail"]
+
+
 def test_build_wire_event_rejects_a_forbidden_field(generated):
     """deny: a FORBIDDEN field present is a schema violation — the §9
     authorization_id may not ride on a reconcile row.
