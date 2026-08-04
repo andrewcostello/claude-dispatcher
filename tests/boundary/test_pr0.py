@@ -2472,6 +2472,311 @@ def test_section_b_illegal_pairs_raise(generated, state, variant):
     assert (exc.value.state, exc.value.event) == (state, variant)
 
 
+# ─── S2: a REFUSED event mutates nothing ─────────────────────────────────────
+#
+# The property: an event the walk refuses leaves the reduced state exactly as
+# it was. Four rounds missed this because of how it was tested, not what was
+# tested, so the BASELINE DISCIPLINE is the whole seal:
+#
+#   * compare against `prefix + [an INERT halt]`, never against `prefix`
+#     alone. Recovery-append synthesis is halt-CONDITIONAL by design
+#     (`_finish_section_a` plans an append only for a base that did not
+#     halt), so an unhalted prefix differs from a halted stream in a way that
+#     is not a state mutation — and that difference is what a prefix baseline
+#     reports as a diff.
+#   * NEVER compare against the un-mutated full stream. Apply-then-halt then
+#     looks like AGREEMENT, which is exactly the false pass that let this
+#     through: the offending event mutates the state and the comparison says
+#     "same as when it succeeded".
+#
+# The inert halt is an unknown `family`: `_classify_event` refuses it before
+# any machine, dedup entry or edge exists, so it halts the base and touches
+# nothing. Both runs therefore have a halted base, differing only in WHY.
+
+_STATE_KEYS = ("movements", "holds", "recovery_appends", "resolution_notes",
+               "epochs")
+
+
+def _inert_halt_event(base: str, event_id: str = "inert-halt") -> dict:
+    """A wire event whose ONLY defect is an unknown family — refused by the
+    shared envelope classification before any machine state, dedup entry or
+    epoch edge comes into existence."""
+    return {"schema_major": 1, "schema_minor": 0, "event_id": event_id,
+            "ts": "1970-01-01T00:00:00Z", "run_id": "run-1",
+            "trace_id": "trace-1", "protocol_epoch": "a" * 40,
+            "family": "not_a_declared_family", "base_key": base}
+
+
+def _state_without_halt_cause(result: dict, base: str) -> dict:
+    """Everything the reduce produced EXCEPT which halt fired. `epochs` is
+    included — its per-base status is state — with only the halt payload
+    dropped, so a refusal that silently contributed an edge is still caught."""
+    state = {k: copy.deepcopy(result[k]) for k in _STATE_KEYS}
+    for entry in state["epochs"].values():
+        entry.pop("halt", None)
+    return state
+
+
+def _assert_refusal_mutates_nothing(generated, prefix, offending, *, rule,
+                                    mode="SHARED", anchors=None,
+                                    base="R1:refs/heads/main"):
+    """Run `prefix + [inert halt]` and `prefix + [offending]` and assert the
+    two reduced states are IDENTICAL apart from the halt cause."""
+    g = generated
+    baseline = _boundary(g, list(prefix) + [_inert_halt_event(base)],
+                         mode=mode, anchors=anchors)
+    actual = _boundary(g, list(prefix) + [offending], mode=mode,
+                       anchors=anchors)
+    # the baseline really is halted, and by the INERT cause
+    assert baseline["halts"][base]["code"] == "SCHEMA_MAJOR_UNKNOWN", (
+        f"the inert baseline did not halt inertly: {baseline['halts']}")
+    assert "unknown family" in baseline["halts"][base]["detail"]
+    # the offending event really is refused, by the rule this arm names
+    assert base in actual["halts"], (
+        f"the offending event was ADMITTED — this arm proves nothing: "
+        f"{actual}")
+    assert rule in actual["halts"][base]["detail"], (
+        f"refused, but not by the rule this arm seals ({rule!r}): "
+        f"{actual['halts'][base]['detail']}")
+    assert _state_without_halt_cause(actual, base) == \
+        _state_without_halt_cause(baseline, base), (
+        "a REFUSED event mutated the reduced state\n"
+        f"  after refusal: {_state_without_halt_cause(actual, base)}\n"
+        f"  inert baseline: {_state_without_halt_cause(baseline, base)}")
+    return actual
+
+
+def _free_text_fence(ev: dict) -> dict:
+    """Make an event's fence writer free text while leaving its algebra
+    self-consistent, so the SHAPE rule is what refuses it."""
+    out = dict(ev, epoch_after="not-an-oid", event_id=ev["event_id"] + "-bad")
+    if out.get("new_oid") is not None:
+        out["new_oid"] = "not-an-oid"
+    return out
+
+
+def test_s2_free_text_fence_on_explained_leaves_no_EXPLAINED(generated):
+    """ARM 1/8. MUTATION: move the edge-recording `_valid_oid` refusal to
+    AFTER the machine step ⇒ red (the movement reaches EXPLAINED and the
+    state differs from the inert baseline)."""
+    g = generated
+    vec = _VECTORS["epoch_cross_stream"]
+    prep = next(e for e in vec["events"]
+                if e["variant"] == "Prepare" and e["movement_id"] == "m-e1")
+    explained = next(e for e in vec["events"]
+                     if e["variant"] == "Explained" and e["movement_id"] == "m-e1")
+    got = _assert_refusal_mutates_nothing(
+        g, [prep], _free_text_fence(explained),
+        rule="is not an object id", anchors=vec["anchors"])
+    states = {m["state"] for m in got["movements"]["R1:refs/heads/main"].values()}
+    assert "EXPLAINED" not in states, states
+
+
+def test_s2_free_text_fence_on_accept_ours_leaves_no_RECONCILED(generated):
+    """ARM 2/8. MUTATION: same relocation ⇒ red (the movement reaches
+    RECONCILED with the free-text fence recorded)."""
+    g = generated
+    vec = _VECTORS["reconciled_accept_ours"]
+    prefix = [e for e in vec["events"] if e["variant"] != "ReconcileAccept"]
+    accept = _event_of(vec, "ReconcileAccept")
+    assert accept["disposition"] == "ACCEPT_OURS"
+    got = _assert_refusal_mutates_nothing(
+        g, prefix, _free_text_fence(accept), rule="is not an object id",
+        mode=vec["credential_mode"], anchors=vec["anchors"])
+    states = {m["state"] for m in got["movements"]["R1:refs/heads/main"].values()}
+    assert "RECONCILED" not in states, states
+
+
+def test_s2_free_text_fence_on_hold_accept_leaves_the_hold_held(generated):
+    """ARM 3/8. MUTATION: same relocation ⇒ red (the hold reaches RELEASED
+    and carries a disposition)."""
+    g = generated
+    vec = _VECTORS["b_reject_restore_hold"]
+    prefix = [e for e in vec["events"] if e["variant"] != "HoldReconcileAccept"]
+    accept = _event_of(vec, "HoldReconcileAccept")
+    got = _assert_refusal_mutates_nothing(
+        g, prefix, _free_text_fence(accept), rule="is not an object id",
+        mode=vec["credential_mode"], anchors=vec["anchors"])
+    (hold,) = got["holds"]["R1:refs/heads/main"].values()
+    assert hold["state"] == "HELD_FOREIGN", hold
+    assert hold["disposition"] is None, (
+        "a refused reconcile left its disposition on the hold")
+
+
+def test_s2_auto_release_refused_at_the_fence_pin_leaves_no_RELEASED(generated):
+    """ARM 4/8. The ONLY operator-less release: refused because its fence is
+    not the hold's own observed delta_new_oid.
+
+    MUTATION — COMPOSITE, and the redundancy is recorded rather than hidden.
+    TWO mechanisms protect this arm and each alone suffices, so neither is
+    falsifiable on its own (both verified GREEN singly): the gate runs BEFORE
+    `apply_section_b`, AND `_apply` discards the staged shadow on any halt.
+    Moving `_check_auto_release_gates` below `_record_hold_outcome` TOGETHER
+    WITH making the halt path `shadow.commit()` ⇒ red — the hold is
+    RELEASED(ACTOR_VERIFIED_AUTO) on a refused release."""
+    g = generated
+    vec = copy.deepcopy(_VECTORS["b_actor_verified_auto_separated"])
+    prefix = [e for e in vec["events"] if e["variant"] != "ActorVerifiedAuto"]
+    auto = dict(_event_of(vec, "ActorVerifiedAuto"),
+                epoch_after="b" * 40, event_id="wrong-fence")
+    got = _assert_refusal_mutates_nothing(
+        g, prefix, auto,
+        rule="must set the fence to the hold's own observed delta_new_oid",
+        mode="SEPARATED", anchors=vec["anchors"])
+    (hold,) = got["holds"]["R1:refs/heads/main"].values()
+    assert hold["state"] == "HELD_FOREIGN", hold
+    assert hold["disposition"] is None
+
+
+def test_s2_projection_frontier_refusal_creates_no_movement(generated):
+    """ARM 5/8, and the sharpest: a durable event whose audit `from` is
+    unreachable from the reduced durable state is refused — and the movement
+    it names must not spring into existence as GENESIS, nor be appended to
+    the order (a GENESIS entry with no transition is a movement the protocol
+    never saw, and it would earn a recovery append at the next cold start).
+
+    MUTATION: move `movements.setdefault(base, {})[mid] = GENESIS_A` and the
+    `order.append(...)` ABOVE the frontier check in `_step_section_a` ⇒ red.
+    """
+    g = generated
+    prep = _wire_effect(g, "Prepare", "e1", "m1", "GENESIS",
+                        authorization_id="auth-1")
+    to_held = _wire_effect(g, "MoveToHoldFromPrepared", "e2", "m1", "PREPARED")
+    # EFFECT_OBSERVED is a legal `from` for Explained, so the row-audit check
+    # passes; it is NOT on any composed path out of HELD, so only the
+    # FRONTIER check can reject it. A DIFFERENT movement id, so an admitted
+    # event would have to create it.
+    bad = _wire_effect(g, "Explained", "e3", "m-never-prepared",
+                       "EFFECT_OBSERVED", new_oid="c" * 40,
+                       epoch_before="a" * 40, epoch_after="c" * 40)
+    got = _assert_refusal_mutates_nothing(
+        g, [prep, to_held], bad, rule="unreachable from durable state",
+        anchors={"R1:refs/heads/main": "a" * 40})
+    movements = got["movements"]["R1:refs/heads/main"]
+    assert "m-never-prepared" not in movements, (
+        "a refused event created a GENESIS movement — it would earn a "
+        "recovery append at the next cold start")
+    assert set(movements) == {"m1"}, movements
+
+
+def test_s2_contradicted_hold_id_records_no_delivery(generated):
+    """ARM 6/8: an observe_delta whose DECLARED hold_id contradicts the
+    reducer's resolution is an integrity halt — and the delivery it carries
+    must not be recorded on any hold, or a later redelivery would resolve
+    onto a hold this event never legitimately addressed.
+
+    MUTATION: record the delivery before the declared-hold_id comparison
+    ⇒ red.
+    """
+    g = generated
+    vec = _VECTORS["b_declared_hold_id_mismatch_deny"]
+    bad = _event_of(vec, "ObserveDelta")
+    got = _assert_refusal_mutates_nothing(
+        g, [], bad, rule="contradicts the derived/resolved",
+        mode=vec["credential_mode"], anchors=vec["anchors"])
+    assert got["holds"] == {}, got["holds"]
+    deliveries = [d for base in got["holds"].values()
+                  for hold in base.values() for d in hold["deliveries"]]
+    assert not deliveries, deliveries
+
+
+def test_s2_first_event_halt_creates_no_hold_book(generated):
+    """ARM 7/8: when the FIRST hold_lifecycle event on a base is refused, the
+    base gets no hold book AT ALL. `{base: {}}` is a different fact — it says
+    an empty book exists, and a consumer reading "this base has zero open
+    holds" from a stream that was never reduced is the fail-open.
+
+    MUTATION: create the book before `_step_section_b`'s mode check ⇒ red
+    (the base appears with an empty book).
+    """
+    g = generated
+    vec = _VECTORS["b_mode_disagrees_with_run_deny"]
+    bad = _event_of(vec, "ObserveDelta")
+    got = _assert_refusal_mutates_nothing(
+        g, [], bad, rule="credential mode is run context",
+        mode=vec["credential_mode"], anchors=vec["anchors"])
+    assert got["holds"] == {}, (
+        f"a base whose first event was refused has a hold book: {got['holds']}")
+    assert "R1:refs/heads/main" not in got["holds"]
+
+
+def test_s2_auto_release_after_reject_restore_changes_nothing(generated):
+    """ARM 8/8: an operator's REJECT_RESTORE_HOLD closes the auto-release
+    path, and the refused auto-release must leave the hold exactly as the
+    operator's refusal left it — same state, same disposition, same
+    deliveries.
+
+    MUTATION — COMPOSITE, same two mechanisms as arm 4 and for the same
+    reason: gate-before-apply AND shadow-discarded-on-halt. Moving the gate
+    below `_record_hold_outcome` together with committing the shadow on the
+    halt path ⇒ red, and the hold is RELEASED — the non-operator path having
+    re-opened what an operator refused, which is the exact fail-open this
+    gate exists for.
+    """
+    g = generated
+    vec = _VECTORS["b_auto_release_closed_after_reject_restore_deny"]
+    prefix = [e for e in vec["events"] if e["variant"] != "ActorVerifiedAuto"]
+    auto = _event_of(vec, "ActorVerifiedAuto")
+    got = _assert_refusal_mutates_nothing(
+        g, prefix, auto, rule="an operator REJECTED this hold's release",
+        mode=vec["credential_mode"], anchors=vec["anchors"])
+    (hold,) = got["holds"]["R1:refs/heads/main"].values()
+    assert hold["state"] == "HELD_FOREIGN", hold
+    # §6.0's row is "HELD_FOREIGN (assessment recorded)": the hold stays held
+    # and carries NO disposition — a disposition on the hold is what RELEASED
+    # and STANDING carry. The refused auto-release must not put one there.
+    assert hold["disposition"] is None, (
+        "the refused auto-release recorded a disposition on a hold the "
+        "operator left held")
+    assert hold["deliveries"] == ["d1"], hold
+
+
+def test_s2_the_baseline_discipline_itself(generated):
+    """The seal on the METHOD, because the method is what failed four times.
+
+    Two facts, both falsifiable:
+      1. a PREFIX baseline is NOT a valid baseline — `reduce(prefix)` and
+         `reduce(prefix + [inert halt])` differ, and they differ in
+         `recovery_appends`, which is halt-conditional. A seal built on the
+         prefix would report that difference as a state mutation and be
+         "fixed" by loosening the comparison.
+      2. the inert halt really is inert — it halts the base while leaving
+         every state key identical to the prefix's own machine state.
+    """
+    g = generated
+    prep = _wire_effect(g, "Prepare", "e1", "m1", "GENESIS",
+                        authorization_id="auth-1")
+    prefix_only = _boundary(g, [prep])
+    with_inert = _boundary(g, [prep, _inert_halt_event("R1:refs/heads/main")])
+    assert prefix_only["recovery_appends"], (
+        "this probe needs a prefix that EARNS a recovery append")
+    assert with_inert["recovery_appends"] == [], (
+        "recovery-append synthesis is no longer halt-conditional — re-derive "
+        "the baseline discipline before trusting the arms above")
+    assert prefix_only["recovery_appends"] != with_inert["recovery_appends"], (
+        "a prefix baseline and an inert-halt baseline agree, so the "
+        "discipline this file documents is no longer load-bearing")
+    # …and the difference reaches the MOVEMENTS projection too, which is the
+    # part that would read as a state mutation: an open PREPARED movement is
+    # reported as HELD-via-recovery only on an UNHALTED base.
+    assert prefix_only["movements"] != with_inert["movements"], (
+        "the recovery-append projection is no longer halt-conditional")
+    assert with_inert["halts"]["R1:refs/heads/main"]["code"] == \
+        "SCHEMA_MAJOR_UNKNOWN"
+    # The inert halt itself contributes NOTHING: two different inert halts,
+    # differing in every field a wire event has that is not the family,
+    # produce byte-identical reduced state. That is what makes it usable as
+    # a baseline — the arms above compare two HALTED runs, so the
+    # halt-conditional projection is computed the same way in both.
+    other = dict(_inert_halt_event("R1:refs/heads/main", "inert-2"),
+                 ts="2026-08-04T00:00:00Z", run_id="run-9",
+                 trace_id="trace-9", protocol_epoch="b" * 40)
+    again = _boundary(g, [prep, other])
+    assert _state_without_halt_cause(again, "R1:refs/heads/main") == \
+        _state_without_halt_cause(with_inert, "R1:refs/heads/main"), (
+        "the inert halt is not inert — its own payload reached the state")
+
+
 # ─── T19 goldens against the hand-written oracle ─────────────────────────────
 
 def _project_halt(halt):
