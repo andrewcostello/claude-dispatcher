@@ -75,6 +75,7 @@
       "actor_node_id": "N-op",
       "matched_subject_digest": "8840355a0e653d105e16c7d49d4328707565a0c69c74d73059ab4b2bec17e427",
       "source_delivery_id": "d1",
+      "matched_movement_id": "m-parked",
       "disposition": "ACTOR_VERIFIED_AUTO"
     }
   ],

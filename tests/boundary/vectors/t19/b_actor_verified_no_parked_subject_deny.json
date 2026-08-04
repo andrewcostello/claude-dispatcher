@@ -1,6 +1,6 @@
 {
   "machine": "section_b",
-  "note": "a SEPARATED RUN + VERIFIED_API + node id + a delivery recorded ON this hold + a matched digest deriving from the HOLD'S OWN delta: auto-release as ACTOR_VERIFIED_AUTO",
+  "note": "DENY (invariant 4): \u00a76.0's auto-release gate is a CONJUNCTION and its second conjunct is a KNOWN PARKED SUBJECT. A release naming NO matched_movement_id used to pass \u2014 absence read as 'any subject qualifies' on the one operator-less release of a foreign hold. Absence is now a refusal",
   "credential_mode": "SEPARATED",
   "events": [
     {
@@ -75,7 +75,7 @@
       "actor_node_id": "N-op",
       "matched_subject_digest": "8840355a0e653d105e16c7d49d4328707565a0c69c74d73059ab4b2bec17e427",
       "source_delivery_id": "d1",
-      "matched_movement_id": "m-parked",
+      "matched_movement_id": null,
       "disposition": "ACTOR_VERIFIED_AUTO"
     }
   ],

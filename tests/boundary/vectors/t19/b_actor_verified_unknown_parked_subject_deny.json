@@ -1,6 +1,6 @@
 {
   "machine": "section_b",
-  "note": "a SEPARATED RUN + VERIFIED_API + node id + a delivery recorded ON this hold + a matched digest deriving from the HOLD'S OWN delta: auto-release as ACTOR_VERIFIED_AUTO",
+  "note": "DENY: a matched_movement_id naming a movement this base never parked is self-asserted subject matching \u2014 the index is the section-A movements the SAME walk reduced, never the writer's claim",
   "credential_mode": "SEPARATED",
   "events": [
     {
@@ -75,7 +75,7 @@
       "actor_node_id": "N-op",
       "matched_subject_digest": "8840355a0e653d105e16c7d49d4328707565a0c69c74d73059ab4b2bec17e427",
       "source_delivery_id": "d1",
-      "matched_movement_id": "m-parked",
+      "matched_movement_id": "m-never-prepared",
       "disposition": "ACTOR_VERIFIED_AUTO"
     }
   ],

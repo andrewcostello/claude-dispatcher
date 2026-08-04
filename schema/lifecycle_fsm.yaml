@@ -764,14 +764,35 @@ events:
         # (panel round 3). Provenance is §6.0's configured-webhook
         # verification, wired in PR4, which will fill hook_id /
         # delivery_guid / repository_id above.
-        # §6.0's gate is a CONJUNCTION. Two conjuncts are enforced below;
-        # the third — "whose delta matches a KNOWN PARKED SUBJECT" — needs
-        # the section-A movement index, which the ONE pass now has. It is
-        # enforced via matched_movement_id when the release names one, and
-        # recorded here as REQUIRED-in-PR4 when it does not (the panel's
-        # finding was that the omission was nowhere recorded at all).
+        # §6.0's gate is a CONJUNCTION: "a section-B hold whose VERIFIED
+        # actor node ID ∈ the genesis {dispatcher, operator} set AND whose
+        # delta matches a KNOWN PARKED SUBJECT auto-releases". The second
+        # conjunct needs the section-A movement index, which the ONE pass
+        # has.
+        #
+        # It used to be enforced only "when the release names one" — an
+        # ABSENT matched_movement_id passed the gate. That is a fail-open on
+        # absent data (invariant 4), not a missing mechanism: the field, the
+        # index and the check all exist, and the only reason absence was
+        # permissive was an `is not None` guard. Deferring the BEHAVIOUR
+        # would have been legitimate; defaulting the ANSWER to "any subject
+        # qualifies" on the one operator-less release of a foreign hold was
+        # not. So absence now REFUSES the auto-release path.
+        #
+        # §9 keeps the field OPTIONAL, because it is optional on the other
+        # hold_lifecycle rows and §9's field list is normative (the
+        # doc==artifact gate refuses widening it here). The requirement is
+        # scoped to the disposition that needs it, which is where the design
+        # states it.
         parked_subject_conjunct: matched_movement_id
-        parked_subject_required_from: PR4
+        parked_subject_conjunct_required_for: ACTOR_VERIFIED_AUTO
+        parked_subject_absent: refuse_auto_release
+        # What is STILL deferred, and is a real missing mechanism rather than
+        # a default: the movement index is the movements reduced SO FAR in
+        # this walk, so a parked movement appearing LATER in a merged
+        # carrier ordering is not yet visible. Ordering-independent matching
+        # needs the two-phase read §6.0's recovery step (1)/(2) describes.
+        ordering_independent_match_wired_in: PR4
         consistency_checks_enforced_in_pr0:
           - verified_api
           - actor_node_id_present

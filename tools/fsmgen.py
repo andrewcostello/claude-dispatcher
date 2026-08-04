@@ -612,6 +612,21 @@ def _emit_durability_and_ceiling(fsm: dict) -> list[str]:
     w("# refused to release. PR0 takes the strictly safer reading.")
     w(f"AUTO_RELEASE_AFTER_REJECT_RESTORE: bool = "
       f"{bool(row['auto_release_after_reject_restore'])!r}")
+    ave = fsm["events"]["unions"]["hold_lifecycle"]["actor_verified_evidence"]
+    w("# §6.0's auto-release gate is a CONJUNCTION, and the parked-subject")
+    w("# conjunct's field is OPTIONAL in §9 — so its ABSENCE needs a stated")
+    w("# answer. `refuse_auto_release` is the only one that is not a default:")
+    w("# an absent matched_movement_id used to PASS the gate, which read")
+    w("# 'any subject qualifies' on the one operator-less release path.")
+    w(f"PARKED_SUBJECT_CONJUNCT_FIELD: str = "
+      f"{_require_ident(str(ave['parked_subject_conjunct']), 'parked_subject_conjunct')!r}")
+    absent = str(ave["parked_subject_absent"])
+    if absent != "refuse_auto_release":
+        raise SchemaError(
+            f"actor_verified_evidence.parked_subject_absent is {absent!r}; the "
+            f"only non-defaulting answer is 'refuse_auto_release' — a missing "
+            f"conjunct cannot be read as satisfied (invariant 4)")
+    w(f"PARKED_SUBJECT_ABSENT: str = {absent!r}")
     w("")
     return L
 
@@ -2775,8 +2790,22 @@ def _check_auto_release_gates(book: _HoldBook, base: str, hid: str,
     # new_oid field, so the observed OID for a foreign movement IS the
     # hold's own recorded delta_new_oid. Anything else is a writer choosing
     # the fence on the one operator-less release path (panel round 4).
-    if event.matched_movement_id is not None and \
-            event.matched_movement_id not in known_movements:
+    # §6.0's second conjunct: the delta must match a KNOWN PARKED SUBJECT.
+    # ABSENCE IS A REFUSAL, not a pass. The field is optional in §9 (it is
+    # optional on the other hold_lifecycle rows and §9's list is normative),
+    # so this row states its own requirement — which is where the design
+    # states it. Reading an absent conjunct as satisfied was a fail-open on
+    # absent data on the ONLY operator-less release of a foreign hold, and
+    # no fixture carried the field, so nothing exercised either arm.
+    if event.matched_movement_id is None:
+        return _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION,
+            f"hold {hid}: ACTOR_VERIFIED_AUTO carries no "
+            f"{PARKED_SUBJECT_CONJUNCT_FIELD} — §6.0's gate is a "
+            f"CONJUNCTION and its second conjunct is that the delta match a "
+            f"KNOWN PARKED SUBJECT; an unnamed subject is not 'any subject' "
+            f"(event_id {ev.get('event_id')!r})", ev)
+    if event.matched_movement_id not in known_movements:
         return _halt(
             BoundaryErrorCode.ILLEGAL_TRANSITION,
             f"hold {hid}: matched_movement_id "
@@ -3915,6 +3944,9 @@ def _section_a_vectors() -> dict[str, dict]:
     return v
 
 
+PARKED_MID = "m-parked"
+
+
 def _section_b_vectors() -> dict[str, dict]:
     h0 = _hold_id_for(BASE1, REF1, DELTA_OLD, DELTA_NEW, 0)
     obs = _hev("ObserveDelta", "h1", "GENESIS", "HELD_FOREIGN",
@@ -3996,10 +4028,19 @@ def _section_b_vectors() -> dict[str, dict]:
        release("h3", disposition="ACCEPT_FOREIGN_ADVANCED")])
     matched = _matched_delta_digest_for(BASE1, REF1, DELTA_OLD, DELTA_NEW)
 
+    # §6.0's auto-release gate is a CONJUNCTION, and its second conjunct is
+    # a KNOWN PARKED SUBJECT — so every auto-release history needs a parked
+    # section-A movement for the delta to match, and the release must NAME
+    # it. No fixture used to carry matched_movement_id at all, which is why
+    # neither arm of that conjunct was exercised.
+    parked = _ev("Prepare", "p1", PARKED_MID, "GENESIS", "PREPARED",
+                 authorization_id="auth-parked")
+
     def ava(eid: str, **over) -> dict:
         kwargs = dict(hold_id=h0, actor_node_id="N-op",
                       matched_subject_digest=matched,
                       source_delivery_id="d1",
+                      matched_movement_id=PARKED_MID,
                       actor_verification="VERIFIED_API", mode="SEPARATED",
                       disposition="ACTOR_VERIFIED_AUTO")
         kwargs.update(over)
@@ -4014,13 +4055,14 @@ def _section_b_vectors() -> dict[str, dict]:
       "a SEPARATED RUN + VERIFIED_API + node id + a delivery recorded ON "
       "this hold + a matched digest deriving from the HOLD'S OWN delta: "
       "auto-release as ACTOR_VERIFIED_AUTO",
-      [dict(obs, mode="SEPARATED"), ava("h2")], credential_mode="SEPARATED")
+      [parked, dict(obs, mode="SEPARATED"), ava("h2")],
+      credential_mode="SEPARATED")
     b("b_actor_verified_shared_run_deny",
       "DENY (panel round 3): the RUN is SHARED — 'under SHARED, never' is "
       "enforced against protocol_genesis.credential_mode. The event's own "
       "`mode` AGREES with the run here, so the run-mode gate is the only "
       "rule that can fire (isolating it from the disagreement check)",
-      [obs, ava("h2", mode="SHARED")], credential_mode="SHARED")
+      [parked, obs, ava("h2", mode="SHARED")], credential_mode="SHARED")
     b("b_mode_disagrees_with_run_deny",
       "DENY (panel round 3): an event whose self-declared `mode` disagrees "
       "with the run's credential mode is a typed halt — credential mode is "
@@ -4031,25 +4073,26 @@ def _section_b_vectors() -> dict[str, dict]:
       "the fence — §6.0's 'as ACCEPT_OURS' means expected_base_oid := the "
       "observed new_oid, which for a foreign movement is the hold's own "
       "recorded delta_new_oid. An attacker-chosen epoch_after halts",
-      [dict(obs, mode="SEPARATED"),
+      [parked, dict(obs, mode="SEPARATED"),
        ava("h2", epoch_after=_oid("ATTACKER-CHOSEN-OID"))],
       credential_mode="SEPARATED")
     b("b_actor_verified_wrong_delta_digest_deny",
       "DENY (panel round 2 CRITICAL): matched_subject_digest that does not "
       "derive from the HOLD'S OWN recorded delta is self-asserted evidence "
       "— refused, not honoured",
-      [dict(obs, mode="SEPARATED"),
+      [parked, dict(obs, mode="SEPARATED"),
        ava("h2", matched_subject_digest=_matched_delta_digest_for(
            BASE1, REF1, DELTA_OLD, "9" * 40))], credential_mode="SEPARATED")
     b("b_actor_verified_unresolvable_delivery_deny",
       "DENY (panel round 2 CRITICAL): a source_delivery_id that resolves to "
       "no delivery recorded on this hold cannot clear the auto-release gate",
-      [dict(obs, mode="SEPARATED"), ava("h2", source_delivery_id="never-seen")],
+      [parked, dict(obs, mode="SEPARATED"),
+       ava("h2", source_delivery_id="never-seen")],
       credential_mode="SEPARATED")
     b("b_replayed_actor_verified_match",
       "IDEMPOTENCE: a redelivered actor_verified_match on an already "
       "auto-released hold is absorbed by the event_id dedup",
-      [dict(obs, mode="SEPARATED"), ava("h2"), ava("h2")],
+      [parked, dict(obs, mode="SEPARATED"), ava("h2"), ava("h2")],
       credential_mode="SEPARATED")
     b("b_verified_api_without_actor_node_id_deny",
       "DENY (panel round 3): VERIFIED_API evidence with no actor_node_id — "
@@ -4100,6 +4143,24 @@ def _section_b_vectors() -> dict[str, dict]:
             "HELD_FOREIGN", hold_id=h0, disposition="REJECT_RESTORE_HOLD",
             mode="SEPARATED"),
        ava("h3")],
+      credential_mode="SEPARATED")
+    # Both arms of §6.0's second conjunct, which nothing exercised: the
+    # field was optional AND absence passed the gate, so no fixture could
+    # distinguish "matched a parked subject" from "said nothing".
+    b("b_actor_verified_no_parked_subject_deny",
+      "DENY (invariant 4): §6.0's auto-release gate is a CONJUNCTION and its "
+      "second conjunct is a KNOWN PARKED SUBJECT. A release naming NO "
+      "matched_movement_id used to pass — absence read as 'any subject "
+      "qualifies' on the one operator-less release of a foreign hold. "
+      "Absence is now a refusal",
+      [parked, dict(obs, mode="SEPARATED"),
+       ava("h2", matched_movement_id=None)], credential_mode="SEPARATED")
+    b("b_actor_verified_unknown_parked_subject_deny",
+      "DENY: a matched_movement_id naming a movement this base never parked "
+      "is self-asserted subject matching — the index is the section-A "
+      "movements the SAME walk reduced, never the writer's claim",
+      [parked, dict(obs, mode="SEPARATED"),
+       ava("h2", matched_movement_id="m-never-prepared")],
       credential_mode="SEPARATED")
     b("b_standing_reject_restore",
       "STANDING × operator_reconcile(REJECT_RESTORE_HOLD) dispatches 'as "

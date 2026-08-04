@@ -341,6 +341,13 @@ STANDING_REJECT_RESTORE_ALTERNATIVE: str = 'STANDING'
 # the non-operator ACTOR_VERIFIED_AUTO path on a hold an operator just
 # refused to release. PR0 takes the strictly safer reading.
 AUTO_RELEASE_AFTER_REJECT_RESTORE: bool = False
+# §6.0's auto-release gate is a CONJUNCTION, and the parked-subject
+# conjunct's field is OPTIONAL in §9 — so its ABSENCE needs a stated
+# answer. `refuse_auto_release` is the only one that is not a default:
+# an absent matched_movement_id used to PASS the gate, which read
+# 'any subject qualifies' on the one operator-less release path.
+PARKED_SUBJECT_CONJUNCT_FIELD: str = 'matched_movement_id'
+PARKED_SUBJECT_ABSENT: str = 'refuse_auto_release'
 
 # Projection machine (round 14, codex): durable states + composed edges,
 # derived from the live table by composing through memory-only states.
@@ -4018,7 +4025,22 @@ def _check_auto_release_gates(book: _HoldBook, base: str, hid: str,
     # new_oid field, so the observed OID for a foreign movement IS the
     # hold's own recorded delta_new_oid. Anything else is a writer choosing
     # the fence on the one operator-less release path (panel round 4).
-    if event.matched_movement_id is not None and             event.matched_movement_id not in known_movements:
+    # §6.0's second conjunct: the delta must match a KNOWN PARKED SUBJECT.
+    # ABSENCE IS A REFUSAL, not a pass. The field is optional in §9 (it is
+    # optional on the other hold_lifecycle rows and §9's list is normative),
+    # so this row states its own requirement — which is where the design
+    # states it. Reading an absent conjunct as satisfied was a fail-open on
+    # absent data on the ONLY operator-less release of a foreign hold, and
+    # no fixture carried the field, so nothing exercised either arm.
+    if event.matched_movement_id is None:
+        return _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION,
+            f"hold {hid}: ACTOR_VERIFIED_AUTO carries no "
+            f"{PARKED_SUBJECT_CONJUNCT_FIELD} — §6.0's gate is a "
+            f"CONJUNCTION and its second conjunct is that the delta match a "
+            f"KNOWN PARKED SUBJECT; an unnamed subject is not 'any subject' "
+            f"(event_id {ev.get('event_id')!r})", ev)
+    if event.matched_movement_id not in known_movements:
         return _halt(
             BoundaryErrorCode.ILLEGAL_TRANSITION,
             f"hold {hid}: matched_movement_id "
