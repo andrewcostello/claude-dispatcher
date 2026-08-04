@@ -1920,6 +1920,89 @@ def test_fence_shape_at_harvest(generated, name):
                 f"{name}/{base}: a halt with no detail fails the 3am test")
 
 
+@pytest.mark.parametrize("field", [
+    pytest.param("epoch_before", id="deny-non-oid-fence-before"),
+    pytest.param("epoch_after", id="deny-non-oid-fence-after"),
+])
+def test_an_advancing_edge_may_not_carry_a_non_oid_fence(generated, field):
+    """The reachable half of the fence-shape contract, and the one the
+    corpus could not reach: an event that survives validation, the
+    transition rules AND the epoch algebra still may not carry writer free
+    text INTO the fence. `epoch_after == new_oid` holds for `not-an-oid`
+    just as well as for a real oid, so the algebra alone does not close it.
+
+    MUTATION: `if not _valid_oid(value):` → `if False:` in the reduce's
+    edge-recording arm ⇒ red on both rows and on both consumers. (Before
+    this seal that mutation left the whole suite green — the committed
+    corpus contains no non-OID fence, which is exactly why the shape rule
+    needed a constructed input rather than a vector.)
+    """
+    g = generated
+    history = _edge_history("bad", "R1:refs/heads/main")
+    opening, advancing = history
+    # keep the row's own algebra satisfied so the SHAPE rule is what fires:
+    # `assign_new_oid` requires epoch_after == the observed new_oid.
+    bad = dict(advancing, event_id="bad-fence")
+    bad[field] = "not-an-oid"
+    if field == "epoch_after":
+        bad["new_oid"] = "not-an-oid"
+    else:
+        # epoch_before is free text while the advance itself stays legal
+        bad["epoch_after"] = advancing["epoch_after"]
+    halt = g.reduce_section_a([opening, bad])["halts"]["R1:refs/heads/main"]
+    assert halt["code"] == "SCHEMA_MAJOR_UNKNOWN", halt
+    assert f"{field} 'not-an-oid' is not an object id" in halt["detail"], (
+        halt["detail"])
+    assert "never coerced" in halt["detail"]
+    # the fold shares the one pass, so it halts identically rather than
+    # harvesting the free text as a fence
+    fold = g.fold_epochs([opening, bad],
+                         {"R1:refs/heads/main": opening["epoch_before"]})
+    entry = fold["R1:refs/heads/main"]
+    assert entry["status"] == "halt", entry
+    assert entry["halt"]["code"] == "SCHEMA_MAJOR_UNKNOWN"
+
+
+@pytest.mark.parametrize("kind,components,match", [
+    pytest.param("crash_recovery", {"base_key": "b", "movement_id": "m"}, None,
+                 id="crash-recovery-derives"),
+    pytest.param("actor_verified_match",
+                 {"base_key": "b", "hold_id": "h", "source_delivery_id": "d"},
+                 None, id="actor-verified-match-derives"),
+    pytest.param("operator_reconcile", {"base_key": "b"},
+                 r"is not a derived-id kind",
+                 id="deny-derive-unknown-kind"),
+    pytest.param("crash_recovery", {"base_key": "b"},
+                 r"component 'movement_id' is absent",
+                 id="deny-derive-absent-component"),
+])
+def test_derive_event_id_is_closed_over_its_kinds(generated, kind, components,
+                                                  match):
+    """`derive_event_id` is the ONE place two independent issuers agree, so
+    it fails loudly rather than deriving from a hole: an unknown kind and an
+    absent preimage component both raise, naming which.
+
+    MUTATION: return a digest of the template instead of raising on an
+    unknown kind ⇒ the unknown-kind row goes red; substitute "" for an
+    absent component ⇒ the absent-component row goes red (and two issuers
+    holding different views of a missing field would silently "converge").
+    """
+    g = generated
+    if match is None:
+        got = g.derive_event_id(kind, **components)
+        assert len(got) == 64 and got == got.lower()
+        # …and it is the schema's preimage, recomputed here
+        lines = []
+        for line in g.DERIVED_ID_PREIMAGES[kind]:
+            tag, _, placeholder = line.partition("=")
+            lines.append(f"{tag}={components[placeholder[1:-1]]}"
+                         if placeholder.startswith("<") else line)
+        assert got == hashlib.sha256("\n".join(lines).encode()).hexdigest()
+        return
+    with pytest.raises(ValueError, match=match):
+        g.derive_event_id(kind, **components)
+
+
 def test_a_none_anchor_is_a_typed_halt_not_a_crash(generated):
     """`fold_epochs` iterates the union of anchors, edges and halts; a base
     named in the anchor map with a None VALUE and no edges used to reach
