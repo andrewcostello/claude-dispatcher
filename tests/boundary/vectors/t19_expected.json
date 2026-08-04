@@ -16,6 +16,40 @@
     "in the halt detail, so a vector pins its RULE and not merely its code."
   ],
   "vectors": {
+    "a_accept_ours_without_new_oid_deny": {
+      "movements": {
+        "R1:refs/heads/main": {
+          "m1": {
+            "state": "HELD",
+            "disposition": null,
+            "via_recovery_append": false
+          }
+        }
+      },
+      "recovery_appends": [],
+      "halts": {
+        "R1:refs/heads/main": {
+          "code": "ILLEGAL_TRANSITION"
+        }
+      }
+    },
+    "a_advancing_row_that_does_not_advance_deny": {
+      "movements": {
+        "R1:refs/heads/main": {
+          "m1": {
+            "state": "PREPARED",
+            "disposition": null,
+            "via_recovery_append": false
+          }
+        }
+      },
+      "recovery_appends": [],
+      "halts": {
+        "R1:refs/heads/main": {
+          "code": "ILLEGAL_TRANSITION"
+        }
+      }
+    },
     "a_bad_ts_deny": {
       "movements": {},
       "recovery_appends": [],
@@ -56,6 +90,23 @@
       "halts": {
         "R1:refs/heads/main": {
           "code": "SCHEMA_MAJOR_UNKNOWN"
+        }
+      }
+    },
+    "a_epoch_advance_not_pinned_to_new_oid_deny": {
+      "movements": {
+        "R1:refs/heads/main": {
+          "m1": {
+            "state": "PREPARED",
+            "disposition": null,
+            "via_recovery_append": false
+          }
+        }
+      },
+      "recovery_appends": [],
+      "halts": {
+        "R1:refs/heads/main": {
+          "code": "ILLEGAL_TRANSITION"
         }
       }
     },
@@ -302,6 +353,15 @@
         }
       }
     },
+    "a_out_of_range_ts_deny": {
+      "movements": {},
+      "recovery_appends": [],
+      "halts": {
+        "R1:refs/heads/main": {
+          "code": "SCHEMA_MAJOR_UNKNOWN"
+        }
+      }
+    },
     "a_recovery_converges": {
       "movements": {
         "R1:refs/heads/main": {
@@ -412,6 +472,19 @@
           "code": "SCHEMA_MAJOR_UNKNOWN"
         }
       }
+    },
+    "a_unknown_minor_and_field_tolerated": {
+      "movements": {
+        "R1:refs/heads/main": {
+          "m1": {
+            "state": "EXPLAINED",
+            "disposition": null,
+            "via_recovery_append": false
+          }
+        }
+      },
+      "recovery_appends": [],
+      "halts": {}
     },
     "a_unknown_variant_deny": {
       "movements": {
@@ -1118,6 +1191,24 @@
         "epoch": null,
         "halt": {
           "code": "EPOCH_GAP"
+        }
+      }
+    },
+    "epoch_unknown_family_deny": {
+      "R1:refs/heads/main": {
+        "status": "halt",
+        "epoch": "E0",
+        "halt": {
+          "code": "SCHEMA_MAJOR_UNKNOWN"
+        }
+      }
+    },
+    "epoch_unknown_major_deny": {
+      "R1:refs/heads/main": {
+        "status": "halt",
+        "epoch": "E0",
+        "halt": {
+          "code": "SCHEMA_MAJOR_UNKNOWN"
         }
       }
     },

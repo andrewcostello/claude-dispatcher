@@ -44,7 +44,7 @@
       "authority": "fp-1",
       "epoch_before": "E0",
       "epoch_after": "E0",
-      "hold_effect": "NONE",
+      "hold_effect": "CREATED",
       "actor_context": "dispatcher",
       "credential_mode": "SHARED",
       "branch": "hold"
@@ -67,7 +67,7 @@
       "authority": "fp-1",
       "epoch_before": "E0",
       "epoch_after": "E0",
-      "hold_effect": "NONE",
+      "hold_effect": "CREATED",
       "actor_context": "dispatcher",
       "credential_mode": "SHARED",
       "branch": "state",

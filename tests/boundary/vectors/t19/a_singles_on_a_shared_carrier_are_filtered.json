@@ -77,7 +77,7 @@
       "to": "EXPLAINED",
       "authority": "fp-1",
       "epoch_before": "E0",
-      "epoch_after": "E0",
+      "epoch_after": "oid-new",
       "hold_effect": "NONE",
       "actor_context": "dispatcher",
       "credential_mode": "SHARED",

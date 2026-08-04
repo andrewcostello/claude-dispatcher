@@ -46,7 +46,7 @@
       "actor_verification": "DISPLAY_ONLY",
       "actor_display": "someone",
       "epoch_before": "E0",
-      "epoch_after": "E0",
+      "epoch_after": "E0-advanced",
       "hold_id": "not-a-real-hold",
       "disposition": "ACCEPT_OURS"
     }

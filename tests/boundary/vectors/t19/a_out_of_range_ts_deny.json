@@ -1,0 +1,30 @@
+{
+  "machine": "section_a",
+  "note": "DENY (panel round 3): a SHAPE-valid but impossible instant (2026-13-45T99:99:99Z) is not a timestamp \u2014 ts is semantically parsed, not merely regex-matched",
+  "events": [
+    {
+      "schema_major": 1,
+      "schema_minor": 0,
+      "event_id": "e1",
+      "ts": "2026-13-45T99:99:99Z",
+      "run_id": "run-1",
+      "trace_id": "trace-1",
+      "protocol_epoch": "E0",
+      "family": "effect_lifecycle",
+      "variant": "Prepare",
+      "trigger_event": "prepare",
+      "movement_id": "m1",
+      "base_key": "R1:refs/heads/main",
+      "from": "GENESIS",
+      "to": "PREPARED",
+      "authority": "fp-1",
+      "epoch_before": "E0",
+      "epoch_after": "E0",
+      "hold_effect": "NONE",
+      "actor_context": "dispatcher",
+      "credential_mode": "SHARED",
+      "branch": "state",
+      "authorization_id": "auth-1"
+    }
+  ]
+}

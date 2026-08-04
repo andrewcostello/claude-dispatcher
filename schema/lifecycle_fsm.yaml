@@ -40,64 +40,76 @@ section_a:
       from: GENESIS
       event: prepare
       to: PREPARED
+      hold_effect: NONE
       display: ["—", "`prepare(movement_id, subject)`", "PREPARED", "—"]
     - id: submit
       from: PREPARED
       event: submit
       to: SUBMITTED
+      hold_effect: NONE
       display: ["PREPARED", "`submit`", "SUBMITTED", "—"]
     - id: submit_outcome_unknown
       from: PREPARED
       event: submit_outcome_unknown
       to: OUTCOME_UNKNOWN
+      hold_effect: NONE
       display: ["PREPARED", "`submit_outcome_unknown` (transport failed before any outcome existed)", "OUTCOME_UNKNOWN", "—"]
     - id: prepared_to_held
       from: PREPARED
       event: [crash_recovery, later_observation, move_to_hold]
       to: HELD
+      hold_effect: CREATED
       display: ["PREPARED", "`crash_recovery` / `later_observation` / `move_to_hold`", "HELD", "—"]
     - id: observe_effect_matched
       from: SUBMITTED
       event: observe_effect
       guard: parent_pair_match
       to: EFFECT_OBSERVED
+      hold_effect: NONE
       display: ["SUBMITTED", "`observe_effect(new_oid)` ∧ parent pair == (base_oid, head_oid)", "EFFECT_OBSERVED", "—"]
     - id: observe_effect_mismatch
       from: SUBMITTED
       event: observe_effect
       guard: parent_pair_mismatch
       to: HELD
+      hold_effect: CREATED
       display: ["SUBMITTED", "`observe_effect(new_oid)` ∧ parent-pair mismatch", "HELD", "—"]
     - id: observe_reject
       from: SUBMITTED
       event: observe_reject
       to: REJECTED_NO_EFFECT
+      hold_effect: NONE
       display: ["SUBMITTED", "`observe_reject`", "REJECTED_NO_EFFECT", "—"]
     - id: timeout_unknown
       from: SUBMITTED
       event: timeout_unknown
       to: OUTCOME_UNKNOWN
+      hold_effect: NONE
       display: ["SUBMITTED", "`timeout_unknown`", "OUTCOME_UNKNOWN", "—"]
     - id: submitted_to_held
       from: SUBMITTED
       event: [crash_recovery, later_observation]
       to: HELD
+      hold_effect: CREATED
       display: ["SUBMITTED", "`crash_recovery` / `later_observation`", "HELD", "—"]
     - id: explained
       from: EFFECT_OBSERVED
       event: match_in_memory
       to: EXPLAINED
       expected_base_oid_effect: assign_new_oid
+      hold_effect: NONE
       display: ["EFFECT_OBSERVED", "`match_in_memory(movement_id)`", "EXPLAINED", "`:= new_oid`"]
     - id: reject_explained
       from: REJECTED_NO_EFFECT
       event: match_in_memory
       to: EXPLAINED
+      hold_effect: NONE
       display: ["REJECTED_NO_EFFECT", "`match_in_memory(movement_id)` (cause recorded)", "EXPLAINED — never silently terminal", "—"]
     - id: unknown_to_held
       from: OUTCOME_UNKNOWN
       event: [later_observation, crash_recovery]
       to: HELD
+      hold_effect: CREATED
       display: ["OUTCOME_UNKNOWN", "`later_observation` / `crash_recovery`", "HELD", "—"]
     - id: reconcile_accept
       from: HELD
@@ -105,18 +117,21 @@ section_a:
       guard: accepting_disposition
       to: RECONCILED
       expected_base_oid_effect: per_disposition
+      hold_effect: RELEASED
       display: ["HELD", "`operator_reconcile(accepting disposition)`", "RECONCILED(d)", "per disposition"]
     - id: reconcile_reject_restore_hold
       from: HELD
       event: operator_reconcile
       guard: reject_restore_hold
       to: HELD
+      hold_effect: RETAINED
       display: ["HELD", "`operator_reconcile(REJECT_RESTORE_HOLD)`", "**HELD** (assessment recorded; further reconcile legal)", "none"]
     - id: reconcile_replay_identity
       from: RECONCILED
       event: operator_reconcile
       guard: same_disposition
       to: RECONCILED
+      hold_effect: NONE
       display: ["RECONCILED(d)", "`operator_reconcile(d)` — same d", "RECONCILED(d) — identity (idempotent replay)", "none"]
     - id: reconcile_conflict_illegal
       from: RECONCILED
@@ -504,6 +519,11 @@ events:
                         authority, epoch_before, epoch_after, hold_effect,
                         actor_context, credential_mode]
       common_optional: [reason]
+      # §6.0's ReconcileDisposition payload algebra, generated: a
+      # disposition whose `payload:` names new_oid must carry it.
+      requires_when:
+        disposition:
+          ACCEPT_OURS: [new_oid]
       # authorization_id requiredness is defined per-variant in §9 and nowhere
       # else: required on prepare, submit, observe_effect, observe_reject;
       # absent on reconcile and crash variants. §9 is silent on the remaining
@@ -525,9 +545,15 @@ events:
         - {name: RejectExplained,            row: reject_explained,            trigger: match_in_memory,       required: []}
         - {name: LaterObservationFromOutcomeUnknown, row: unknown_to_held,     trigger: later_observation,     required: []}
         - {name: CrashRecoveryFromOutcomeUnknown, row: unknown_to_held,        trigger: crash_recovery,        required: [], forbidden: [authorization_id]}
-        - {name: ReconcileAccept,            row: reconcile_accept,            trigger: operator_reconcile,    required: [disposition], forbidden: [authorization_id]}
+        # ACCEPT_OURS(new_oid) ⇒ expected_base_oid := new_oid (§6.0's
+        # disposition payload algebra). The variant carries new_oid so the
+        # algebra is representable; requires_when makes it mandatory for
+        # exactly the disposition whose payload declares it.
+        - {name: ReconcileAccept,            row: reconcile_accept,            trigger: operator_reconcile,    required: [disposition], optional: [new_oid], forbidden: [authorization_id]}
         - {name: ReconcileRejectRestoreHold, row: reconcile_reject_restore_hold, trigger: operator_reconcile,  required: [disposition], forbidden: [authorization_id]}
-        - {name: ReconcileReplayIdentity,    row: reconcile_replay_identity,   trigger: operator_reconcile,    required: [disposition], forbidden: [authorization_id]}
+        # a replay echoes the SAME disposition — and therefore the same
+        # payload, so ACCEPT_OURS's new_oid must be carryable here too.
+        - {name: ReconcileReplayIdentity,    row: reconcile_replay_identity,   trigger: operator_reconcile,    required: [disposition], optional: [new_oid], forbidden: [authorization_id]}
 
     hold_lifecycle:
       # One event per section-B TRANSITION — the section-B carrier and reduce

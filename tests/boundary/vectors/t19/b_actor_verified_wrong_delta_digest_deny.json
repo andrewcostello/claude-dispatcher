@@ -46,7 +46,7 @@
       "actor_verification": "VERIFIED_API",
       "actor_display": "someone",
       "epoch_before": "E0",
-      "epoch_after": "E0",
+      "epoch_after": "E0-advanced",
       "hold_id": "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724",
       "actor_node_id": "N-op",
       "matched_subject_digest": "bbdcf102219c75b009f0a94f68060c7540769116b2b9cbddb3a13b1ec0192fc2",

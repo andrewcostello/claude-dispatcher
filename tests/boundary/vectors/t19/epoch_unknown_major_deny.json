@@ -1,0 +1,22 @@
+{
+  "machine": "epoch_fold",
+  "note": "DENY (panel round 3): the fold is the THIRD consumer of the durable stream and its output IS the fence epoch \u2014 an unknown-major event must never advance it",
+  "events": [
+    {
+      "schema_major": 7,
+      "schema_minor": 0,
+      "event_id": "e1",
+      "ts": "1970-01-01T00:00:00Z",
+      "run_id": "run-1",
+      "trace_id": "trace-1",
+      "protocol_epoch": "E0",
+      "base_key": "R1:refs/heads/main",
+      "epoch_before": "E0",
+      "epoch_after": "E1",
+      "family": "effect_lifecycle"
+    }
+  ],
+  "anchors": {
+    "R1:refs/heads/main": "E0"
+  }
+}

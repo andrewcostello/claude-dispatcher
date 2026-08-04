@@ -102,12 +102,12 @@ def _require_ident(token: object, where: str) -> str:
 # error, not silent data (panel round 2: a YAML comma turned a scalar into a
 # stray null key nobody noticed).
 _ALLOWED_KEYS = {
-    "variant": {"name", "row", "trigger", "required", "forbidden", "fixed",
-                "extra_from"},
+    "variant": {"name", "row", "trigger", "required", "optional", "forbidden",
+                "fixed", "extra_from"},
     "single": {"required", "optional", "note", "field_pair_rules"},
     "vector_case": {"name", "file", "expect", "reason", "reason_code"},
     "row": {"id", "from", "event", "to", "guard", "display", "disposition",
-            "epoch_effect", "expected_base_oid_effect",
+            "epoch_effect", "expected_base_oid_effect", "hold_effect",
             "standing_reject_restore_resolves_to"},
 }
 
@@ -127,14 +127,39 @@ def _validate_machine_tokens(fsm: dict) -> None:
             _require_ident(st, f"{sec}.states")
         for evn in fsm[sec]["events"]:
             _require_ident(evn, f"{sec}.events")
+        states = {fsm[sec]["initial_pseudo_state"], *fsm[sec]["states"]}
+        pseudo = {"ILLEGAL", "unchanged", "terminal", "any_other",
+                  "as_held_foreign_rows"}
         for row in fsm[sec]["rows"]:
             _require_ident(row["id"], f"{sec}.rows")
             _check_keys(row, "row", f"{sec}.rows.{row['id']}")
-            for key in ("epoch_effect", "expected_base_oid_effect"):
+            # from/to are emitted raw into the row tables and the generated
+            # FROM_STATES/TO_STATE ClassVars.
+            for f in as_list(row["from"]):
+                _require_ident(f, f"{sec}.rows.{row['id']}.from")
+                if f not in states and f not in pseudo:
+                    raise SchemaError(f"{sec}.rows.{row['id']}.from: {f!r} is "
+                                      f"not a declared state")
+            _require_ident(row["to"], f"{sec}.rows.{row['id']}.to")
+            if row["to"] not in states and row["to"] not in pseudo:
+                raise SchemaError(f"{sec}.rows.{row['id']}.to: {row['to']!r} "
+                                  f"is not a declared state")
+            for key in ("epoch_effect", "expected_base_oid_effect",
+                        "hold_effect"):
                 if key in row:
                     _require_ident(row[key], f"{sec}.rows.{row['id']}.{key}")
+    members = {m["name"] for m in fsm["reconcile_dispositions"]["members"]}
     for m in fsm["reconcile_dispositions"]["members"]:
         _require_ident(m["name"], "reconcile_dispositions")
+    # These sets are emitted RAW as `ReconcileDisposition.{d}` — validate the
+    # tokens and require them to name declared members (panel round 3: the
+    # "no unvalidated token" invariant was false for three classes).
+    for key in ("accepting", "operator_accepting"):
+        for d in fsm["reconcile_dispositions"][key]:
+            _require_ident(d, f"reconcile_dispositions.{key}")
+            if d not in members:
+                raise SchemaError(f"reconcile_dispositions.{key}: {d!r} is "
+                                  f"not a declared member")
     for name, members in fsm["enums"].items():
         _require_ident(name, "enums")
         for m in members:
@@ -144,6 +169,17 @@ def _validate_machine_tokens(fsm: dict) -> None:
 def _validate_union_tokens(fsm: dict) -> None:
     for fam, spec in fsm["events"]["unions"].items():
         _require_ident(fam, "unions")
+        # common_required/common_optional are emitted raw as dataclass field
+        # declarations.
+        for f in [*spec.get("common_required", []),
+                  *spec.get("common_optional", [])]:
+            _require_ident(f, f"unions.{fam}.common_*")
+        for f, conds in spec.get("requires_when", {}).items():
+            _require_ident(f, f"unions.{fam}.requires_when")
+            for val, reqs in conds.items():
+                _require_ident(val, f"unions.{fam}.requires_when value")
+                for r in reqs:
+                    _require_ident(r, f"unions.{fam}.requires_when required")
         for v in spec["variants"]:
             _require_ident(v["name"], f"unions.{fam}")
             _check_keys(v, "variant", f"unions.{fam}.{v['name']}")
@@ -151,8 +187,8 @@ def _validate_union_tokens(fsm: dict) -> None:
             # transition rows — only row-bearing variants carry a trigger.
             if "row" in v:
                 _require_ident(v["trigger"], f"unions.{fam}.{v['name']}.trigger")
-            for f in [*v.get("required", []), *v.get("forbidden", []),
-                      *v.get("extra_from", [])]:
+            for f in [*v.get("required", []), *v.get("optional", []),
+                      *v.get("forbidden", []), *v.get("extra_from", [])]:
                 _require_ident(f, f"unions.{fam}.{v['name']}")
             for k, val in v.get("fixed", {}).items():
                 _require_ident(k, f"unions.{fam}.{v['name']}.fixed key")
@@ -316,6 +352,7 @@ def emit_header() -> list[str]:
         "",
         "from __future__ import annotations",
         "",
+        "import datetime",
         "import hashlib",
         "import json",
         "import re",
@@ -518,12 +555,13 @@ def _variant_field_sets(fsm: dict, spec: dict, v: dict) -> tuple[list[str], list
     fam_req = ["family", *spec["common_required"]]
     fam_opt = list(spec.get("common_optional", []))
     var_req = list(v.get("required", []))
+    var_opt = list(v.get("optional", []))
     forbidden = list(v.get("forbidden", []))
     required: list[str] = []
     for f in [*env["required"], *fam_req, *var_req]:
         if f not in required:
             required.append(f)
-    optional = [f for f in [*env["optional"], *fam_opt]
+    optional = [f for f in [*env["optional"], *fam_opt, *var_opt]
                 if f not in required and f not in forbidden]
     return required, optional, forbidden
 
@@ -609,6 +647,11 @@ def emit_variants_family(fsm: dict, family: str,
         w(f"    FROM_STATES: ClassVar[tuple[str, ...]] = {froms!r}")
         w(f"    TO_STATE: ClassVar[str] = {row['to']!r}")
         w(f"    EPOCH_EFFECT: ClassVar[str] = {_require_ident(epoch_effect, row['id'] + '.epoch_effect')!r}")
+        if "hold_effect" in row:
+            w(f"    ROW_HOLD_EFFECT: ClassVar[Optional[str]] = "
+              f"{_require_ident(row['hold_effect'], row['id'] + '.hold_effect')!r}")
+        else:
+            w("    ROW_HOLD_EFFECT: ClassVar[Optional[str]] = None")
         w(f"    REQUIRED: ClassVar[tuple[str, ...]] = {tuple(required)!r}")
         w(f"    OPTIONAL: ClassVar[tuple[str, ...]] = {tuple(optional)!r}")
         w(f"    FORBIDDEN: ClassVar[tuple[str, ...]] = {tuple(forbidden)!r}")
@@ -841,6 +884,20 @@ _TS_RE = re.compile(
     r"^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$")
 
 
+def _valid_ts(value: str) -> bool:
+    """RFC 3339 UTC, SEMANTICALLY: the regex fixes the shape (fromisoformat
+    tolerates forms RFC 3339 does not), then a real parse rejects
+    impossible instants — month 13, day 45, hour 99, offset +99:99 all
+    pass a shape check and are not timestamps."""
+    if not _TS_RE.match(value):
+        return False
+    try:
+        datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return True
+
+
 def _py_field(f: str) -> str:
     return FIELD_NAME_MAP.get(f, f)
 
@@ -890,6 +947,12 @@ def _validate_row_audit_fields(event: object) -> None:
         raise ValueError(
             f"{name}.family {event.family!r} contradicts the variant's own "
             f"schema name {cls.FAMILY!r} — a mis-tagged writer halts")
+    row_hold_effect = getattr(cls, "ROW_HOLD_EFFECT", None)
+    if row_hold_effect is not None and event.hold_effect is not None:
+        if event.hold_effect.value != row_hold_effect:
+            raise ValueError(
+                f"{name}.hold_effect {event.hold_effect.value!r} contradicts "
+                f"the row's declared effect {row_hold_effect!r}")
     if event.trigger_event != cls.TRIGGER:
         raise ValueError(
             f"{name}.trigger_event {event.trigger_event!r} contradicts the "
@@ -917,8 +980,9 @@ def _validate_field_value(name: str, f: str, value: object, required: bool) -> N
         return
     if not isinstance(value, str) or (required and value == ""):
         raise ValueError(f"{name}.{f} must be a non-empty str, got {_short(value)}")
-    if f == "ts" and not _TS_RE.match(value):
-        raise ValueError(f"{name}.ts {_short(value)} is not RFC 3339 UTC")
+    if f == "ts" and not _valid_ts(value):
+        raise ValueError(f"{name}.ts {_short(value)} is not an RFC 3339 UTC "
+                         f"instant")
 
 
 def _convert_wire_value(cls_name: str, f: str, value: object) -> object:
@@ -948,8 +1012,9 @@ def _convert_wire_value(cls_name: str, f: str, value: object) -> object:
     if not isinstance(value, str) or value == "":
         raise WireViolation(f"{cls_name}.{f}: must be a non-empty str, "
                             f"got {_short(value)}")
-    if f == "ts" and not _TS_RE.match(value):
-        raise WireViolation(f"{cls_name}.ts: {_short(value)} is not RFC 3339 UTC")
+    if f == "ts" and not _valid_ts(value):
+        raise WireViolation(f"{cls_name}.ts: {_short(value)} is not an "
+                            f"RFC 3339 UTC instant")
     return value
 
 
@@ -1254,7 +1319,14 @@ class _Dedup:
                 BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
                 f"event missing required envelope field 'event_id' "
                 f"(fields present: {sorted(ev)})", ev), frozenset({base}))
-        canon = _canonical(ev)
+        try:
+            canon = _canonical(ev)
+        except (TypeError, ValueError):
+            raise _DivergentDuplicate(_halt(
+                BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+                f"event {eid!r} carries a non-serializable payload — the "
+                f"canonical form is undefined, so byte-identity cannot be "
+                f"established", ev), frozenset({base})) from None
         if eid in self._seen:
             seen_canon, seen_base = self._seen[eid]
             if seen_canon != canon:
@@ -1339,6 +1411,63 @@ def _intake(dedup: _Dedup, ev: Mapping[str, object], family: str,
     return None
 
 
+def _check_epoch_algebra(cls: type, event: object, where: str,
+                         ev: Mapping[str, object]) -> Optional[dict]:
+    """§6.0's per-row epoch algebra, BOTH halves (panel round 3: only the
+    negative half was enforced, so an advancing row could set the fence —
+    AuthorityFingerprint.base_epoch — to any string at all).
+
+      none            ⇒ epoch_before == epoch_after
+      assign_new_oid  ⇒ advances, and epoch_after IS the observed new_oid
+      per_disposition ⇒ an accepting disposition advances; a non-accepting
+                        one (REJECT_RESTORE_HOLD) must not; ACCEPT_OURS
+                        additionally pins the fence to its new_oid payload
+      as_accept_ours  ⇒ advances (the auto-release mirrors ACCEPT_OURS)
+    """
+    before, after = event.epoch_before, event.epoch_after
+    advanced = before != after
+    effect = cls.EPOCH_EFFECT
+
+    def halt(msg: str) -> dict:
+        return _halt(BoundaryErrorCode.ILLEGAL_TRANSITION,
+                     f"{where}: row {cls.ROW!r} ({effect}) {msg} "
+                     f"(event_id {ev.get('event_id')!r})", ev)
+
+    if effect == "none":
+        if advanced:
+            return halt(f"declares no epoch effect but advances {before}→{after}")
+        return None
+    if effect == "assign_new_oid":
+        if not advanced:
+            return halt("must advance the epoch but did not")
+        if after != getattr(event, "new_oid", None):
+            return halt(f"must set the fence to the observed new_oid "
+                        f"{getattr(event, 'new_oid', None)!r}, got {after!r}")
+        return None
+    if effect in ("per_disposition", "as_accept_ours"):
+        disposition = getattr(event, "disposition", None)
+        accepting = (effect == "as_accept_ours"
+                     or disposition in ACCEPTING_DISPOSITIONS)
+        if accepting and not advanced:
+            return halt("an accepting disposition advances the epoch; "
+                        "this event did not")
+        if not accepting and advanced:
+            return halt(f"a non-accepting disposition "
+                        f"({disposition}) must not advance "
+                        f"{before}→{after}")
+        # ACCEPT_OURS(new_oid) pins the fence to its payload — but only
+        # where the family carries new_oid at all: §9's hold_lifecycle field
+        # list has no new_oid, so section B expresses the advance through
+        # epoch_after alone.
+        carries_new_oid = "new_oid" in cls.REQUIRED or "new_oid" in cls.OPTIONAL
+        if (disposition is ReconcileDisposition.ACCEPT_OURS and carries_new_oid
+                and after != getattr(event, "new_oid", None)):
+            return halt(f"ACCEPT_OURS pins the fence to its new_oid payload "
+                        f"{getattr(event, 'new_oid', None)!r}, got {after!r}")
+        return None
+    return None
+
+
 def _fmt_a(st: MachineStateA, via_recovery: bool = False) -> dict:
     return {"state": st.name.value,
             "disposition": st.disposition.value if st.disposition else None,
@@ -1385,12 +1514,9 @@ def _step_section_a(movements, order, base: str, mid: str, event: object,
             BoundaryErrorCode.ILLEGAL_TRANSITION,
             f"memory-only transition {cls.__name__!r} in the durable stream "
             f"(event_id {ev.get('event_id')!r}) — resume-submit is ILLEGAL", ev)
-    if cls.EPOCH_EFFECT == "none" and event.epoch_before != event.epoch_after:
-        return _halt(
-            BoundaryErrorCode.ILLEGAL_TRANSITION,
-            f"movement {mid}@{base}: row {cls.ROW!r} declares no epoch effect "
-            f"but the event advances {event.epoch_before}→{event.epoch_after} "
-            f"(event_id {ev.get('event_id')!r})", ev)
+    epoch_halt = _check_epoch_algebra(cls, event, f"movement {mid}@{base}", ev)
+    if epoch_halt is not None:
+        return epoch_halt
     cur = movements.get(base, {}).get(mid, GENESIS_A)
     if mid not in movements.get(base, {}):
         movements.setdefault(base, {})[mid] = GENESIS_A
@@ -1649,12 +1775,9 @@ def _step_section_b(book: _HoldBook, base: str, event: object,
             f"the run's mode is {run_mode.value!r} — credential mode is run "
             f"context (protocol_genesis), not event payload "
             f"(event_id {ev.get('event_id')!r})", ev)
-    if cls.EPOCH_EFFECT == "none" and event.epoch_before != event.epoch_after:
-        return _halt(
-            BoundaryErrorCode.ILLEGAL_TRANSITION,
-            f"{base}: row {cls.ROW!r} declares no epoch effect but the event "
-            f"advances {event.epoch_before}→{event.epoch_after} "
-            f"(event_id {ev.get('event_id')!r})", ev)
+    epoch_halt = _check_epoch_algebra(cls, event, base, ev)
+    if epoch_halt is not None:
+        return epoch_halt
     hid, cur, halt = _admit_hold_event(book, base, event, ev)
     if halt is not None:
         return halt
@@ -1703,6 +1826,14 @@ def fold_epochs(events: Sequence[Mapping[str, object]],
         base = str(ev.get("base_key") or "")
         if base in base_halts:
             continue
+        # The fold is the THIRD consumer of the same durable stream and its
+        # output IS AuthorityFingerprint.base_epoch — so it runs the same §9
+        # schema validation the reducers do (panel round 3: an unknown-major
+        # or unknown-family event could otherwise advance the fence).
+        schema_halt = _validate_fold_event(ev)
+        if schema_halt is not None:
+            base_halts.setdefault(base, schema_halt)
+            continue
         # dedup BEFORE the no-effect filter (panel round 2: a divergent
         # duplicate must never slip in as a legitimate edge).
         try:
@@ -1741,6 +1872,42 @@ def fold_epochs(events: Sequence[Mapping[str, object]],
             continue
         out[base] = _walk_epoch_chain(base, anchor, edges)
     return out
+
+
+def _validate_fold_event(ev: Mapping[str, object]) -> Optional[dict]:
+    """The §9 schema checks the fold shares with the reducers: supported
+    major, closed family domain, and (for lifecycle events) full variant
+    validation. Returns a halt payload or None."""
+    major = ev.get("schema_major")
+    if isinstance(major, bool) or not isinstance(major, int):
+        return _halt(BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+                     f"epoch edge has a non-integer schema_major "
+                     f"(event_id {ev.get('event_id')!r})", ev)
+    if major not in SUPPORTED_SCHEMA_MAJORS:
+        return _halt(BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+                     f"epoch edge schema_major {major} outside the supported "
+                     f"set {sorted(SUPPORTED_SCHEMA_MAJORS)} — an unknown "
+                     f"major must never advance the fence "
+                     f"(event_id {ev.get('event_id')!r})", ev)
+    fam = ev.get("family")
+    if not isinstance(fam, str) or fam == "":
+        return _halt(BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+                     f"epoch edge missing required field 'family' "
+                     f"(event_id {ev.get('event_id')!r})", ev)
+    if fam not in FAMILY_VALUES:
+        return _halt(BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+                     f"epoch edge has unknown family {fam!r} outside the "
+                     f"closed domain (event_id {ev.get('event_id')!r})", ev)
+    variants = (EFFECT_VARIANTS if fam == "effect_lifecycle"
+                else HOLD_VARIANTS if fam == "hold_lifecycle" else None)
+    if variants is not None and ev.get("variant") is not None:
+        try:
+            build_wire_event(variants, ev)
+        except WireViolation as exc:
+            return _halt(exc.code, exc.detail, ev)
+        except ValueError as exc:
+            return _halt(BoundaryErrorCode.ILLEGAL_TRANSITION, str(exc), ev)
+    return None
 
 
 def _walk_epoch_chain(base: str, anchor: str,
@@ -2299,6 +2466,9 @@ def _env(eid: str) -> dict:
 # vectors that DO desynchronise pass it explicitly).
 _A_TRIGGERS: dict[str, str] = {}
 _B_TRIGGERS: dict[str, str] = {}
+_A_HOLD_EFFECTS: dict[str, str] = {}
+_A_EPOCH_EFFECTS: dict[str, str] = {}
+_B_EPOCH_EFFECTS: dict[str, str] = {}
 
 
 def _load_triggers(fsm: dict) -> None:
@@ -2306,6 +2476,40 @@ def _load_triggers(fsm: dict) -> None:
                        ("hold_lifecycle", _B_TRIGGERS)):
         for v in fsm["events"]["unions"][fam]["variants"]:
             table[v["name"]] = v["trigger"]
+    rows = {r["id"]: r for r in fsm["section_a"]["rows"]}
+    for v in fsm["events"]["unions"]["effect_lifecycle"]["variants"]:
+        row = rows[v["row"]]
+        if row.get("hold_effect"):
+            _A_HOLD_EFFECTS[v["name"]] = row["hold_effect"]
+        _A_EPOCH_EFFECTS[v["name"]] = (row.get("expected_base_oid_effect")
+                                       or row.get("epoch_effect") or "none")
+    b_rows = {r["id"]: r for r in fsm["section_b"]["rows"]}
+    for v in fsm["events"]["unions"]["hold_lifecycle"]["variants"]:
+        row = b_rows[v["row"]]
+        _B_EPOCH_EFFECTS[v["name"]] = (row.get("epoch_effect")
+                                       or row.get("expected_base_oid_effect")
+                                       or "none")
+
+
+def _epoch_after_for(variant: str, extra: dict, before: str,
+                     effects: Mapping[str, str]) -> str:
+    """§6.0's per-row epoch algebra, applied when BUILDING a vector so the
+    corpus encodes the real fence semantics (panel round 3: every golden
+    previously recorded epoch_before == epoch_after, even on rows whose
+    declared effect is an advance)."""
+    effect = effects.get(variant, "none")
+    disposition = extra.get("disposition")
+    if effect == "assign_new_oid":
+        return str(extra.get("new_oid", before))
+    if effect == "as_accept_ours":
+        return str(extra.get("new_oid", f"{before}-advanced"))
+    if effect == "per_disposition":
+        if disposition in ("ACCEPT_OURS", "ACCEPT_FOREIGN_ADVANCED",
+                           "ACTOR_VERIFIED_AUTO"):
+            # accepting dispositions advance; ACCEPT_OURS pins to its
+            # new_oid payload where the family carries one (section A).
+            return str(extra.get("new_oid", f"{before}-advanced"))
+    return before
 
 
 def _ev(variant: str, eid: str, mid: str, frm: str, to: str,
@@ -2318,8 +2522,11 @@ def _ev(variant: str, eid: str, mid: str, frm: str, to: str,
     d.update({"family": "effect_lifecycle", "variant": variant,
               "trigger_event": _A_TRIGGERS.get(variant, "prepare"),
               "movement_id": mid, "base_key": base, "from": frm, "to": to,
-              "authority": "fp-1", "epoch_before": "E0", "epoch_after": "E0",
-              "hold_effect": "NONE", "actor_context": "dispatcher",
+              "authority": "fp-1", "epoch_before": "E0",
+              "epoch_after": _epoch_after_for(variant, extra, "E0",
+                                              _A_EPOCH_EFFECTS),
+              "hold_effect": _A_HOLD_EFFECTS.get(variant, "NONE"),
+              "actor_context": "dispatcher",
               "credential_mode": "SHARED", "branch": branch})
     d.update(extra)
     return d
@@ -2333,7 +2540,8 @@ def _hev(variant: str, eid: str, frm: str, to: str, base: str = BASE1,
               "base_key": base, "from": frm, "to": to, "ref": REF1,
               "mode": "SHARED", "actor_verification": "DISPLAY_ONLY",
               "actor_display": "someone", "epoch_before": "E0",
-              "epoch_after": "E0"})
+              "epoch_after": _epoch_after_for(variant, extra, "E0",
+                                              _B_EPOCH_EFFECTS)})
     d.update(extra)
     return d
 
@@ -2449,7 +2657,7 @@ def _section_a_vectors() -> dict[str, dict]:
        _ev("ReconcileAccept", "e3", "m1", "HELD", "RECONCILED",
            disposition="ACCEPT_FOREIGN_ADVANCED"),
        _ev("ReconcileReplayIdentity", "e4", "m1", "RECONCILED", "RECONCILED",
-           disposition="ACCEPT_OURS")])
+           disposition="ACCEPT_OURS", new_oid="oid-other")])
     a("resume_submit_illegal_deny",
       "DENY: a durable stream carrying a memory-only transition "
       "(resume-submit after crash) is ILLEGAL",
@@ -2581,6 +2789,41 @@ def _section_a_vectors() -> dict[str, dict]:
       "next cold start and bypasses the conflicting-disposition halt",
       [prep, _ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "EXPLAINED",
                  new_oid="oid-new", family="hold_lifecycle")])
+    a("a_out_of_range_ts_deny",
+      "DENY (panel round 3): a SHAPE-valid but impossible instant "
+      "(2026-13-45T99:99:99Z) is not a timestamp — ts is semantically "
+      "parsed, not merely regex-matched",
+      [dict(prep, ts="2026-13-45T99:99:99Z")])
+    a("a_epoch_advance_not_pinned_to_new_oid_deny",
+      "DENY (panel round 3): the `explained` row's declared effect is "
+      "`:= new_oid`, so the fence MUST be set to the observed new_oid — an "
+      "advance to any other value is refused",
+      [prep, _ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "EXPLAINED",
+                 new_oid="oid-new", epoch_after="SOMETHING-ELSE")])
+    a("a_advancing_row_that_does_not_advance_deny",
+      "DENY: the positive half of the algebra — a row declaring an advance "
+      "that leaves the fence unchanged is refused",
+      [prep, _ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "EXPLAINED",
+                 new_oid="oid-new", epoch_after="E0")])
+    a("a_accept_ours_without_new_oid_deny",
+      "DENY (panel round 3): ACCEPT_OURS(new_oid) is §6.0's payload "
+      "algebra — the disposition is unconstructible without its payload",
+      [prep,
+       _ev("MoveToHoldFromPrepared", "e2", "m1", "PREPARED", "HELD",
+           branch="hold"),
+       _ev("MoveToHoldFromPrepared", "e2", "m1", "PREPARED", "HELD",
+           branch="state"),
+       {k: val for k, val in
+        _ev("ReconcileAccept", "e3", "m1", "HELD", "RECONCILED",
+            disposition="ACCEPT_OURS", new_oid="oid-accepted").items()
+        if k != "new_oid"}])
+    a("a_unknown_minor_and_field_tolerated",
+      "ACCEPT (§9 evolution, reader-first rollout): a HIGHER schema_minor "
+      "and an unknown top-level field are tolerated — additive minors must "
+      "not halt, or a writer deploying ahead of a reader breaks the base",
+      [dict(prep, schema_minor=9, some_future_field="ignored"),
+       _ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "EXPLAINED",
+           new_oid="oid-new", schema_minor=9)])
     a("a_halt_isolation_after_halt",
       "halt isolation ORDERING: a base halts FIRST, then a healthy base's "
       "events arrive — they must still reduce and still earn their "
@@ -2873,6 +3116,14 @@ def _epoch_vectors() -> dict[str, dict]:
       "DENY: a base with epoch edges but no protocol_genesis anchor is a "
       "typed halt, never silently dropped",
       [_edge("e1", "E0", "E1"), _edge("x1", "E0", "E1", base=BASE2)], anchors1)
+    e("epoch_unknown_major_deny",
+      "DENY (panel round 3): the fold is the THIRD consumer of the durable "
+      "stream and its output IS the fence epoch — an unknown-major event "
+      "must never advance it",
+      [dict(_edge("e1", "E0", "E1"), schema_major=7)], anchors1)
+    e("epoch_unknown_family_deny",
+      "DENY: the fold runs the same closed-family check as the reducers",
+      [dict(_edge("e1", "E0", "E1"), family="checkpoint_lifecycle")], anchors1)
     e("epoch_multi_base",
       "the fold partitions by base_key: one base's clean chain, another's "
       "fork — independent results",

@@ -181,6 +181,40 @@ def test_every_event_type_carries_the_envelope(schemas, generated):
             f"missing from REQUIRED")
 
 
+@pytest.mark.parametrize("path,token", [
+    pytest.param(("lifecycle_fsm", "reconcile_dispositions", "accepting", 0),
+                 'X"; import os; os.system("id"); "', id="deny-accepting-set"),
+    pytest.param(("lifecycle_fsm", "reconcile_dispositions", "operator_accepting", 0),
+                 "not an identifier", id="deny-operator-accepting-set"),
+    pytest.param(("lifecycle_fsm", "events", "unions", "effect_lifecycle",
+                  "common_required", 0), "bad-field", id="deny-common-required"),
+    pytest.param(("lifecycle_fsm", "events", "unions", "hold_lifecycle",
+                  "common_optional", 0), "bad optional", id="deny-common-optional"),
+    pytest.param(("lifecycle_fsm", "section_a", "rows", 0, "to"),
+                 "NOT_A_STATE", id="deny-row-to-undeclared-state"),
+    pytest.param(("lifecycle_fsm", "section_a", "rows", 0, "from"),
+                 "NOT_A_STATE", id="deny-row-from-undeclared-state"),
+    pytest.param(("panel_aggregate", "strategy", 0), "bad strategy",
+                 id="deny-panel-strategy"),
+    pytest.param(("boundary_errors", "codes", 0, "code"), "bad code",
+                 id="deny-error-code"),
+])
+def test_no_unvalidated_schema_token_reaches_exec(path, token):
+    """The "no unvalidated token" invariant, PROVED per sink: plant a
+    hostile token at each place the emitters interpolate schema data into
+    generated source and assert the loader refuses it (panel round 3: the
+    invariant was claimed and false for three token classes)."""
+    fsmgen = _fsmgen()
+    schemas = fsmgen.load_schemas()
+    node = schemas[path[0]]
+    for key in path[1:-1]:
+        node = node[key]
+    node[path[-1]] = token
+    with pytest.raises(SystemExit) as exc:
+        fsmgen._validate_schema_tokens(schemas)
+    assert "SCHEMA ERROR" in str(exc.value)
+
+
 def test_family_is_a_generated_field_on_every_event_type(schemas, generated):
     """panel round 3 CRITICAL: `family` is the event's schema name and must
     be a REQUIRED generated field on EVERY event type — the two lifecycle
@@ -402,9 +436,13 @@ def _wire_effect(generated, variant: str, eid: str, mid: str, frm: str,
           "family": cls.FAMILY, "variant": variant,
           "trigger_event": cls.TRIGGER, "movement_id": mid, "base_key": base,
           "from": frm, "to": to, "authority": "fp-1", "epoch_before": "E0",
-          "epoch_after": "E0", "hold_effect": "NONE",
+          "epoch_after": "E0",
+          "hold_effect": getattr(cls, "ROW_HOLD_EFFECT", None) or "NONE",
           "actor_context": "dispatcher", "credential_mode": "SHARED"}
     ev.update(extra)
+    # honour the row's epoch algebra unless the caller is testing it
+    if "epoch_after" not in extra and cls.EPOCH_EFFECT == "assign_new_oid":
+        ev["epoch_after"] = ev.get("new_oid", ev["epoch_after"])
     return ev
 
 
@@ -418,7 +456,9 @@ def _legal_disposition(generated, cls):
         return generated.ReconcileDisposition[fixed]
     if "RejectRestoreHold" in cls.__name__:
         return generated.ReconcileDisposition.REJECT_RESTORE_HOLD
-    return generated.ReconcileDisposition.ACCEPT_OURS
+    # ACCEPT_FOREIGN_ADVANCED is the accepting disposition with NO payload —
+    # ACCEPT_OURS would additionally require its new_oid (§6.0 algebra).
+    return generated.ReconcileDisposition.ACCEPT_FOREIGN_ADVANCED
 
 
 def _finish_audit(cls, kwargs: dict, over: dict) -> dict:
@@ -434,10 +474,24 @@ def _finish_audit(cls, kwargs: dict, over: dict) -> dict:
             kwargs[field] = enum_t[value]
     kwargs.update(over)
     kwargs.setdefault("family", cls.FAMILY)
+    row_effect = getattr(cls, "ROW_HOLD_EFFECT", None)
+    if row_effect is not None and "hold_effect" not in over:
+        kwargs["hold_effect"] = _GEN.HoldEffect[row_effect]
     kwargs.setdefault("from_state", cls.FROM_STATES[0])
     kwargs.setdefault("trigger_event", cls.TRIGGER)
     kwargs.setdefault("to_state", kwargs["from_state"]
                       if cls.TO_STATE == "unchanged" else cls.TO_STATE)
+    # honour the row's epoch algebra so a helper-built event is legal
+    effect = cls.EPOCH_EFFECT
+    if "epoch_after" not in over:
+        if effect == "assign_new_oid":
+            kwargs["epoch_after"] = kwargs.get("new_oid", "E1")
+        elif effect in ("per_disposition", "as_accept_ours"):
+            disp = kwargs.get("disposition")
+            accepting = (effect == "as_accept_ours"
+                         or disp in _GEN.ACCEPTING_DISPOSITIONS)
+            if accepting:
+                kwargs["epoch_after"] = kwargs.get("new_oid", "E1")
     return kwargs
 
 
@@ -610,8 +664,9 @@ def test_section_a_apply_dispatch(generated, pair):
     st = generated.MachineStateA(generated.SectionAState[state])
     if variant == "ReconcileReplayIdentity":
         # an identity replay echoes the disposition the state already carries
-        st = generated.MachineStateA(generated.SectionAState[state],
-                                     generated.ReconcileDisposition.ACCEPT_OURS)
+        st = generated.MachineStateA(
+            generated.SectionAState[state],
+            generated.ReconcileDisposition.ACCEPT_FOREIGN_ADVANCED)
     if variant == "LOOKALIKE":
         class Prepare:  # same NAME as the real variant — shape is not identity
             FROM_STATES = ("GENESIS",)
@@ -653,8 +708,11 @@ def test_section_b_apply_dispatch(generated, pair):
     if variant == "ActorVerifiedAuto":
         over["mode"] = generated.CredentialMode.SEPARATED
     if variant == "HoldReconcileReplayIdentity":
-        st = generated.MachineStateB(generated.SectionBState[state],
-                                     generated.ReconcileDisposition.ACCEPT_OURS)
+        # a replay echoes the disposition the state carries — which is the
+        # helper's default accepting disposition.
+        st = generated.MachineStateB(
+            generated.SectionBState[state],
+            generated.ReconcileDisposition.ACCEPT_FOREIGN_ADVANCED)
     got = generated.apply_section_b(st, _mk_hold(generated, variant, **over))
     if cls.TO_STATE == "unchanged":
         assert got == st                          # idempotent no-op rows
@@ -751,6 +809,14 @@ _DENY_RULE_MARKERS = {
     "b_family_mistag_deny": ["contradicts variant", "mis-tagged writer"],
     "b_unknown_family_deny": ["unknown family", "closed domain"],
     "a_bad_ts_deny": ["ts", "RFC 3339"],
+    "a_out_of_range_ts_deny": ["ts", "RFC 3339 UTC instant"],
+    "a_epoch_advance_not_pinned_to_new_oid_deny":
+        ["assign_new_oid", "must set the fence to the observed new_oid"],
+    "a_advancing_row_that_does_not_advance_deny":
+        ["assign_new_oid", "must advance the epoch but did not"],
+    "a_accept_ours_without_new_oid_deny": ["ACCEPT_OURS", "requires", "new_oid"],
+    "epoch_unknown_major_deny": ["schema_major", "never advance the fence"],
+    "epoch_unknown_family_deny": ["unknown family", "closed domain"],
     "a_none_effect_row_advances_deny": ["no epoch effect", "advances"],
     "dual_append_divergent_payload_deny": ["divergent payloads", "integrity"],
     "reconcile_conflict_deny": ["conflicting disposition"],
@@ -871,7 +937,12 @@ def test_t19_vector_inventory():
 
 
 def _ceiling_events(generated, n: int, base: str = "B1") -> list[dict]:
-    return [{"event_id": f"e{i}", "base_key": base} for i in range(n)]
+    """Minimally SCHEMA-VALID events (the fold now runs the same §9 checks
+    as the reducers, so a bare dict would halt as a schema violation and
+    mask what the ceiling tests are actually asserting)."""
+    return [{"event_id": f"e{i}", "base_key": base, "schema_major": 1,
+             "schema_minor": 0, "family": "effect_lifecycle"}
+            for i in range(n)]
 
 
 def test_ceiling_exactly_n_is_admitted(generated):
@@ -919,7 +990,8 @@ def test_ceiling_with_empty_anchors_still_halts(generated):
 def test_ceiling_with_partial_anchors_keeps_edge_bearing_bases(generated):
     """deny: an edge-bearing base must not vanish on the ceiling path."""
     g, n = generated, generated.RECOVERY_CEILING_EVENTS
-    other = [{"event_id": "o1", "base_key": "OTHER",
+    other = [{"event_id": "o1", "base_key": "OTHER", "schema_major": 1,
+              "schema_minor": 0, "family": "effect_lifecycle",
               "epoch_before": "E0", "epoch_after": "E1"}]
     fold = g.fold_epochs(_ceiling_events(g, n + 1, "BUSY") + other,
                          {"BUSY": "E0"})

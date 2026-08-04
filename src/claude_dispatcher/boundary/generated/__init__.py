@@ -11,6 +11,7 @@ build by construction."""
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
 import re
@@ -386,6 +387,20 @@ _TS_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$")
 
 
+def _valid_ts(value: str) -> bool:
+    """RFC 3339 UTC, SEMANTICALLY: the regex fixes the shape (fromisoformat
+    tolerates forms RFC 3339 does not), then a real parse rejects
+    impossible instants — month 13, day 45, hour 99, offset +99:99 all
+    pass a shape check and are not timestamps."""
+    if not _TS_RE.match(value):
+        return False
+    try:
+        datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return True
+
+
 def _py_field(f: str) -> str:
     return FIELD_NAME_MAP.get(f, f)
 
@@ -435,6 +450,12 @@ def _validate_row_audit_fields(event: object) -> None:
         raise ValueError(
             f"{name}.family {event.family!r} contradicts the variant's own "
             f"schema name {cls.FAMILY!r} — a mis-tagged writer halts")
+    row_hold_effect = getattr(cls, "ROW_HOLD_EFFECT", None)
+    if row_hold_effect is not None and event.hold_effect is not None:
+        if event.hold_effect.value != row_hold_effect:
+            raise ValueError(
+                f"{name}.hold_effect {event.hold_effect.value!r} contradicts "
+                f"the row's declared effect {row_hold_effect!r}")
     if event.trigger_event != cls.TRIGGER:
         raise ValueError(
             f"{name}.trigger_event {event.trigger_event!r} contradicts the "
@@ -462,8 +483,9 @@ def _validate_field_value(name: str, f: str, value: object, required: bool) -> N
         return
     if not isinstance(value, str) or (required and value == ""):
         raise ValueError(f"{name}.{f} must be a non-empty str, got {_short(value)}")
-    if f == "ts" and not _TS_RE.match(value):
-        raise ValueError(f"{name}.ts {_short(value)} is not RFC 3339 UTC")
+    if f == "ts" and not _valid_ts(value):
+        raise ValueError(f"{name}.ts {_short(value)} is not an RFC 3339 UTC "
+                         f"instant")
 
 
 def _convert_wire_value(cls_name: str, f: str, value: object) -> object:
@@ -493,8 +515,9 @@ def _convert_wire_value(cls_name: str, f: str, value: object) -> object:
     if not isinstance(value, str) or value == "":
         raise WireViolation(f"{cls_name}.{f}: must be a non-empty str, "
                             f"got {_short(value)}")
-    if f == "ts" and not _TS_RE.match(value):
-        raise WireViolation(f"{cls_name}.ts: {_short(value)} is not RFC 3339 UTC")
+    if f == "ts" and not _valid_ts(value):
+        raise WireViolation(f"{cls_name}.ts: {_short(value)} is not an "
+                            f"RFC 3339 UTC instant")
     return value
 
 
@@ -557,11 +580,12 @@ class Prepare:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('GENESIS',)
     TO_STATE: ClassVar[str] = 'PREPARED'
     EPOCH_EFFECT: ClassVar[str] = 'none'
+    ROW_HOLD_EFFECT: ClassVar[Optional[str]] = 'NONE'
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'authorization_id')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
 
     schema_major: int
     schema_minor: int
@@ -601,11 +625,12 @@ class Submit:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('PREPARED',)
     TO_STATE: ClassVar[str] = 'SUBMITTED'
     EPOCH_EFFECT: ClassVar[str] = 'none'
+    ROW_HOLD_EFFECT: ClassVar[Optional[str]] = 'NONE'
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'authorization_id')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
 
     schema_major: int
     schema_minor: int
@@ -645,11 +670,12 @@ class SubmitOutcomeUnknown:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('PREPARED',)
     TO_STATE: ClassVar[str] = 'OUTCOME_UNKNOWN'
     EPOCH_EFFECT: ClassVar[str] = 'none'
+    ROW_HOLD_EFFECT: ClassVar[Optional[str]] = 'NONE'
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
 
     schema_major: int
     schema_minor: int
@@ -689,11 +715,12 @@ class CrashRecoveryFromPrepared:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('PREPARED',)
     TO_STATE: ClassVar[str] = 'HELD'
     EPOCH_EFFECT: ClassVar[str] = 'none'
+    ROW_HOLD_EFFECT: ClassVar[Optional[str]] = 'CREATED'
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
 
     schema_major: int
     schema_minor: int
@@ -732,11 +759,12 @@ class LaterObservationFromPrepared:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('PREPARED',)
     TO_STATE: ClassVar[str] = 'HELD'
     EPOCH_EFFECT: ClassVar[str] = 'none'
+    ROW_HOLD_EFFECT: ClassVar[Optional[str]] = 'CREATED'
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
 
     schema_major: int
     schema_minor: int
@@ -776,11 +804,12 @@ class MoveToHoldFromPrepared:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('PREPARED',)
     TO_STATE: ClassVar[str] = 'HELD'
     EPOCH_EFFECT: ClassVar[str] = 'none'
+    ROW_HOLD_EFFECT: ClassVar[Optional[str]] = 'CREATED'
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
 
     schema_major: int
     schema_minor: int
@@ -820,11 +849,12 @@ class ObserveEffectMatched:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('SUBMITTED',)
     TO_STATE: ClassVar[str] = 'EFFECT_OBSERVED'
     EPOCH_EFFECT: ClassVar[str] = 'none'
+    ROW_HOLD_EFFECT: ClassVar[Optional[str]] = 'NONE'
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'authorization_id', 'new_oid')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
 
     schema_major: int
     schema_minor: int
@@ -865,11 +895,12 @@ class ObserveEffectParentMismatch:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('SUBMITTED',)
     TO_STATE: ClassVar[str] = 'HELD'
     EPOCH_EFFECT: ClassVar[str] = 'none'
+    ROW_HOLD_EFFECT: ClassVar[Optional[str]] = 'CREATED'
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'authorization_id', 'new_oid')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
 
     schema_major: int
     schema_minor: int
@@ -910,11 +941,12 @@ class ObserveReject:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('SUBMITTED',)
     TO_STATE: ClassVar[str] = 'REJECTED_NO_EFFECT'
     EPOCH_EFFECT: ClassVar[str] = 'none'
+    ROW_HOLD_EFFECT: ClassVar[Optional[str]] = 'NONE'
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'authorization_id')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
 
     schema_major: int
     schema_minor: int
@@ -954,11 +986,12 @@ class TimeoutUnknown:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('SUBMITTED',)
     TO_STATE: ClassVar[str] = 'OUTCOME_UNKNOWN'
     EPOCH_EFFECT: ClassVar[str] = 'none'
+    ROW_HOLD_EFFECT: ClassVar[Optional[str]] = 'NONE'
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
 
     schema_major: int
     schema_minor: int
@@ -998,11 +1031,12 @@ class CrashRecoveryFromSubmitted:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('SUBMITTED',)
     TO_STATE: ClassVar[str] = 'HELD'
     EPOCH_EFFECT: ClassVar[str] = 'none'
+    ROW_HOLD_EFFECT: ClassVar[Optional[str]] = 'CREATED'
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
 
     schema_major: int
     schema_minor: int
@@ -1041,11 +1075,12 @@ class LaterObservationFromSubmitted:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('SUBMITTED',)
     TO_STATE: ClassVar[str] = 'HELD'
     EPOCH_EFFECT: ClassVar[str] = 'none'
+    ROW_HOLD_EFFECT: ClassVar[Optional[str]] = 'CREATED'
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
 
     schema_major: int
     schema_minor: int
@@ -1085,11 +1120,12 @@ class Explained:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('EFFECT_OBSERVED',)
     TO_STATE: ClassVar[str] = 'EXPLAINED'
     EPOCH_EFFECT: ClassVar[str] = 'assign_new_oid'
+    ROW_HOLD_EFFECT: ClassVar[Optional[str]] = 'NONE'
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'new_oid')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
 
     schema_major: int
     schema_minor: int
@@ -1130,11 +1166,12 @@ class RejectExplained:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('REJECTED_NO_EFFECT',)
     TO_STATE: ClassVar[str] = 'EXPLAINED'
     EPOCH_EFFECT: ClassVar[str] = 'none'
+    ROW_HOLD_EFFECT: ClassVar[Optional[str]] = 'NONE'
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
 
     schema_major: int
     schema_minor: int
@@ -1174,11 +1211,12 @@ class LaterObservationFromOutcomeUnknown:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('OUTCOME_UNKNOWN',)
     TO_STATE: ClassVar[str] = 'HELD'
     EPOCH_EFFECT: ClassVar[str] = 'none'
+    ROW_HOLD_EFFECT: ClassVar[Optional[str]] = 'CREATED'
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
 
     schema_major: int
     schema_minor: int
@@ -1218,11 +1256,12 @@ class CrashRecoveryFromOutcomeUnknown:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('OUTCOME_UNKNOWN',)
     TO_STATE: ClassVar[str] = 'HELD'
     EPOCH_EFFECT: ClassVar[str] = 'none'
+    ROW_HOLD_EFFECT: ClassVar[Optional[str]] = 'CREATED'
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
 
     schema_major: int
     schema_minor: int
@@ -1261,11 +1300,12 @@ class ReconcileAccept:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('HELD',)
     TO_STATE: ClassVar[str] = 'RECONCILED'
     EPOCH_EFFECT: ClassVar[str] = 'per_disposition'
+    ROW_HOLD_EFFECT: ClassVar[Optional[str]] = 'RELEASED'
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'disposition')
-    OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
+    OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason', 'new_oid')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
 
     schema_major: int
     schema_minor: int
@@ -1290,6 +1330,7 @@ class ReconcileAccept:
     subject_digest: Optional[str] = None
     attempt_id: Optional[str] = None
     reason: Optional[str] = None
+    new_oid: Optional[str] = None
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
@@ -1311,11 +1352,12 @@ class ReconcileRejectRestoreHold:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('HELD',)
     TO_STATE: ClassVar[str] = 'HELD'
     EPOCH_EFFECT: ClassVar[str] = 'none'
+    ROW_HOLD_EFFECT: ClassVar[Optional[str]] = 'RETAINED'
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'disposition')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
 
     schema_major: int
     schema_minor: int
@@ -1357,11 +1399,12 @@ class ReconcileReplayIdentity:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('RECONCILED',)
     TO_STATE: ClassVar[str] = 'RECONCILED'
     EPOCH_EFFECT: ClassVar[str] = 'none'
+    ROW_HOLD_EFFECT: ClassVar[Optional[str]] = 'NONE'
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'movement_id', 'base_key', 'trigger_event', 'from', 'to', 'authority', 'epoch_before', 'epoch_after', 'hold_effect', 'actor_context', 'credential_mode', 'disposition')
-    OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
+    OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason', 'new_oid')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
-    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'disposition': {'ACCEPT_OURS': ('new_oid',)}}
 
     schema_major: int
     schema_minor: int
@@ -1386,6 +1429,7 @@ class ReconcileReplayIdentity:
     subject_digest: Optional[str] = None
     attempt_id: Optional[str] = None
     reason: Optional[str] = None
+    new_oid: Optional[str] = None
 
     def __post_init__(self) -> None:
         _validate_event_fields(self)
@@ -1405,6 +1449,7 @@ class ObserveDelta:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('GENESIS',)
     TO_STATE: ClassVar[str] = 'HELD_FOREIGN'
     EPOCH_EFFECT: ClassVar[str] = 'none'
+    ROW_HOLD_EFFECT: ClassVar[Optional[str]] = None
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'delta_old_oid', 'delta_new_oid')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'hold_id', 'source_delivery_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id', 'disposition')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
@@ -1455,6 +1500,7 @@ class ObserveDeltaRedelivery:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('HELD_FOREIGN', 'RELEASED', 'STANDING')
     TO_STATE: ClassVar[str] = 'unchanged'
     EPOCH_EFFECT: ClassVar[str] = 'none'
+    ROW_HOLD_EFFECT: ClassVar[Optional[str]] = None
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'source_delivery_id')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'hold_id', 'delta_old_oid', 'delta_new_oid', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id', 'disposition')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
@@ -1505,6 +1551,7 @@ class ObserveDeltaNewDeliveryOnOpenHold:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('HELD_FOREIGN', 'STANDING')
     TO_STATE: ClassVar[str] = 'unchanged'
     EPOCH_EFFECT: ClassVar[str] = 'none'
+    ROW_HOLD_EFFECT: ClassVar[Optional[str]] = None
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'source_delivery_id', 'delta_old_oid', 'delta_new_oid')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'hold_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id', 'disposition')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
@@ -1555,6 +1602,7 @@ class ActorVerifiedAuto:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('HELD_FOREIGN',)
     TO_STATE: ClassVar[str] = 'RELEASED'
     EPOCH_EFFECT: ClassVar[str] = 'as_accept_ours'
+    ROW_HOLD_EFFECT: ClassVar[Optional[str]] = None
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'actor_node_id', 'matched_subject_digest', 'source_delivery_id')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'delta_old_oid', 'delta_new_oid', 'matched_movement_id', 'disposition')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
@@ -1614,6 +1662,7 @@ class HoldReconcileAccept:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('HELD_FOREIGN', 'STANDING')
     TO_STATE: ClassVar[str] = 'RELEASED'
     EPOCH_EFFECT: ClassVar[str] = 'per_disposition'
+    ROW_HOLD_EFFECT: ClassVar[Optional[str]] = None
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'disposition')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'delta_old_oid', 'delta_new_oid', 'source_delivery_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
@@ -1670,6 +1719,7 @@ class HoldReconcileRejectRestoreHold:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('HELD_FOREIGN', 'STANDING')
     TO_STATE: ClassVar[str] = 'HELD_FOREIGN'
     EPOCH_EFFECT: ClassVar[str] = 'none'
+    ROW_HOLD_EFFECT: ClassVar[Optional[str]] = None
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'disposition')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'delta_old_oid', 'delta_new_oid', 'source_delivery_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
@@ -1722,6 +1772,7 @@ class HoldReconcileStanding:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('HELD_FOREIGN', 'STANDING')
     TO_STATE: ClassVar[str] = 'STANDING'
     EPOCH_EFFECT: ClassVar[str] = 'none'
+    ROW_HOLD_EFFECT: ClassVar[Optional[str]] = None
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'disposition')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'delta_old_oid', 'delta_new_oid', 'source_delivery_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
@@ -1774,6 +1825,7 @@ class HoldReconcileReplayIdentity:
     FROM_STATES: ClassVar[tuple[str, ...]] = ('RELEASED',)
     TO_STATE: ClassVar[str] = 'RELEASED'
     EPOCH_EFFECT: ClassVar[str] = 'none'
+    ROW_HOLD_EFFECT: ClassVar[Optional[str]] = None
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'base_key', 'trigger_event', 'from', 'to', 'epoch_before', 'epoch_after', 'ref', 'mode', 'actor_verification', 'actor_display', 'hold_id', 'disposition')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'delta_old_oid', 'delta_new_oid', 'source_delivery_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
@@ -2666,7 +2718,14 @@ class _Dedup:
                 BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
                 f"event missing required envelope field 'event_id' "
                 f"(fields present: {sorted(ev)})", ev), frozenset({base}))
-        canon = _canonical(ev)
+        try:
+            canon = _canonical(ev)
+        except (TypeError, ValueError):
+            raise _DivergentDuplicate(_halt(
+                BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+                f"event {eid!r} carries a non-serializable payload — the "
+                f"canonical form is undefined, so byte-identity cannot be "
+                f"established", ev), frozenset({base})) from None
         if eid in self._seen:
             seen_canon, seen_base = self._seen[eid]
             if seen_canon != canon:
@@ -2751,6 +2810,63 @@ def _intake(dedup: _Dedup, ev: Mapping[str, object], family: str,
     return None
 
 
+def _check_epoch_algebra(cls: type, event: object, where: str,
+                         ev: Mapping[str, object]) -> Optional[dict]:
+    """§6.0's per-row epoch algebra, BOTH halves (panel round 3: only the
+    negative half was enforced, so an advancing row could set the fence —
+    AuthorityFingerprint.base_epoch — to any string at all).
+
+      none            ⇒ epoch_before == epoch_after
+      assign_new_oid  ⇒ advances, and epoch_after IS the observed new_oid
+      per_disposition ⇒ an accepting disposition advances; a non-accepting
+                        one (REJECT_RESTORE_HOLD) must not; ACCEPT_OURS
+                        additionally pins the fence to its new_oid payload
+      as_accept_ours  ⇒ advances (the auto-release mirrors ACCEPT_OURS)
+    """
+    before, after = event.epoch_before, event.epoch_after
+    advanced = before != after
+    effect = cls.EPOCH_EFFECT
+
+    def halt(msg: str) -> dict:
+        return _halt(BoundaryErrorCode.ILLEGAL_TRANSITION,
+                     f"{where}: row {cls.ROW!r} ({effect}) {msg} "
+                     f"(event_id {ev.get('event_id')!r})", ev)
+
+    if effect == "none":
+        if advanced:
+            return halt(f"declares no epoch effect but advances {before}→{after}")
+        return None
+    if effect == "assign_new_oid":
+        if not advanced:
+            return halt("must advance the epoch but did not")
+        if after != getattr(event, "new_oid", None):
+            return halt(f"must set the fence to the observed new_oid "
+                        f"{getattr(event, 'new_oid', None)!r}, got {after!r}")
+        return None
+    if effect in ("per_disposition", "as_accept_ours"):
+        disposition = getattr(event, "disposition", None)
+        accepting = (effect == "as_accept_ours"
+                     or disposition in ACCEPTING_DISPOSITIONS)
+        if accepting and not advanced:
+            return halt("an accepting disposition advances the epoch; "
+                        "this event did not")
+        if not accepting and advanced:
+            return halt(f"a non-accepting disposition "
+                        f"({disposition}) must not advance "
+                        f"{before}→{after}")
+        # ACCEPT_OURS(new_oid) pins the fence to its payload — but only
+        # where the family carries new_oid at all: §9's hold_lifecycle field
+        # list has no new_oid, so section B expresses the advance through
+        # epoch_after alone.
+        carries_new_oid = "new_oid" in cls.REQUIRED or "new_oid" in cls.OPTIONAL
+        if (disposition is ReconcileDisposition.ACCEPT_OURS and carries_new_oid
+                and after != getattr(event, "new_oid", None)):
+            return halt(f"ACCEPT_OURS pins the fence to its new_oid payload "
+                        f"{getattr(event, 'new_oid', None)!r}, got {after!r}")
+        return None
+    return None
+
+
 def _fmt_a(st: MachineStateA, via_recovery: bool = False) -> dict:
     return {"state": st.name.value,
             "disposition": st.disposition.value if st.disposition else None,
@@ -2797,12 +2913,9 @@ def _step_section_a(movements, order, base: str, mid: str, event: object,
             BoundaryErrorCode.ILLEGAL_TRANSITION,
             f"memory-only transition {cls.__name__!r} in the durable stream "
             f"(event_id {ev.get('event_id')!r}) — resume-submit is ILLEGAL", ev)
-    if cls.EPOCH_EFFECT == "none" and event.epoch_before != event.epoch_after:
-        return _halt(
-            BoundaryErrorCode.ILLEGAL_TRANSITION,
-            f"movement {mid}@{base}: row {cls.ROW!r} declares no epoch effect "
-            f"but the event advances {event.epoch_before}→{event.epoch_after} "
-            f"(event_id {ev.get('event_id')!r})", ev)
+    epoch_halt = _check_epoch_algebra(cls, event, f"movement {mid}@{base}", ev)
+    if epoch_halt is not None:
+        return epoch_halt
     cur = movements.get(base, {}).get(mid, GENESIS_A)
     if mid not in movements.get(base, {}):
         movements.setdefault(base, {})[mid] = GENESIS_A
@@ -3061,12 +3174,9 @@ def _step_section_b(book: _HoldBook, base: str, event: object,
             f"the run's mode is {run_mode.value!r} — credential mode is run "
             f"context (protocol_genesis), not event payload "
             f"(event_id {ev.get('event_id')!r})", ev)
-    if cls.EPOCH_EFFECT == "none" and event.epoch_before != event.epoch_after:
-        return _halt(
-            BoundaryErrorCode.ILLEGAL_TRANSITION,
-            f"{base}: row {cls.ROW!r} declares no epoch effect but the event "
-            f"advances {event.epoch_before}→{event.epoch_after} "
-            f"(event_id {ev.get('event_id')!r})", ev)
+    epoch_halt = _check_epoch_algebra(cls, event, base, ev)
+    if epoch_halt is not None:
+        return epoch_halt
     hid, cur, halt = _admit_hold_event(book, base, event, ev)
     if halt is not None:
         return halt
@@ -3115,6 +3225,14 @@ def fold_epochs(events: Sequence[Mapping[str, object]],
         base = str(ev.get("base_key") or "")
         if base in base_halts:
             continue
+        # The fold is the THIRD consumer of the same durable stream and its
+        # output IS AuthorityFingerprint.base_epoch — so it runs the same §9
+        # schema validation the reducers do (panel round 3: an unknown-major
+        # or unknown-family event could otherwise advance the fence).
+        schema_halt = _validate_fold_event(ev)
+        if schema_halt is not None:
+            base_halts.setdefault(base, schema_halt)
+            continue
         # dedup BEFORE the no-effect filter (panel round 2: a divergent
         # duplicate must never slip in as a legitimate edge).
         try:
@@ -3153,6 +3271,42 @@ def fold_epochs(events: Sequence[Mapping[str, object]],
             continue
         out[base] = _walk_epoch_chain(base, anchor, edges)
     return out
+
+
+def _validate_fold_event(ev: Mapping[str, object]) -> Optional[dict]:
+    """The §9 schema checks the fold shares with the reducers: supported
+    major, closed family domain, and (for lifecycle events) full variant
+    validation. Returns a halt payload or None."""
+    major = ev.get("schema_major")
+    if isinstance(major, bool) or not isinstance(major, int):
+        return _halt(BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+                     f"epoch edge has a non-integer schema_major "
+                     f"(event_id {ev.get('event_id')!r})", ev)
+    if major not in SUPPORTED_SCHEMA_MAJORS:
+        return _halt(BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+                     f"epoch edge schema_major {major} outside the supported "
+                     f"set {sorted(SUPPORTED_SCHEMA_MAJORS)} — an unknown "
+                     f"major must never advance the fence "
+                     f"(event_id {ev.get('event_id')!r})", ev)
+    fam = ev.get("family")
+    if not isinstance(fam, str) or fam == "":
+        return _halt(BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+                     f"epoch edge missing required field 'family' "
+                     f"(event_id {ev.get('event_id')!r})", ev)
+    if fam not in FAMILY_VALUES:
+        return _halt(BoundaryErrorCode.SCHEMA_MAJOR_UNKNOWN,
+                     f"epoch edge has unknown family {fam!r} outside the "
+                     f"closed domain (event_id {ev.get('event_id')!r})", ev)
+    variants = (EFFECT_VARIANTS if fam == "effect_lifecycle"
+                else HOLD_VARIANTS if fam == "hold_lifecycle" else None)
+    if variants is not None and ev.get("variant") is not None:
+        try:
+            build_wire_event(variants, ev)
+        except WireViolation as exc:
+            return _halt(exc.code, exc.detail, ev)
+        except ValueError as exc:
+            return _halt(BoundaryErrorCode.ILLEGAL_TRANSITION, str(exc), ev)
+    return None
 
 
 def _walk_epoch_chain(base: str, anchor: str,

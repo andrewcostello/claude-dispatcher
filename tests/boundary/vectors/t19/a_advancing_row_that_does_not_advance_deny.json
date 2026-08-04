@@ -1,6 +1,6 @@
 {
   "machine": "section_a",
-  "note": "held origin: PREPARED \u00d7 CrashRecoveryFromPrepared",
+  "note": "DENY: the positive half of the algebra \u2014 a row declaring an advance that leaves the fence unchanged is refused",
   "events": [
     {
       "schema_major": 1,
@@ -35,42 +35,20 @@
       "trace_id": "trace-1",
       "protocol_epoch": "E0",
       "family": "effect_lifecycle",
-      "variant": "CrashRecoveryFromPrepared",
-      "trigger_event": "crash_recovery",
+      "variant": "Explained",
+      "trigger_event": "match_in_memory",
       "movement_id": "m1",
       "base_key": "R1:refs/heads/main",
-      "from": "PREPARED",
-      "to": "HELD",
+      "from": "EFFECT_OBSERVED",
+      "to": "EXPLAINED",
       "authority": "fp-1",
       "epoch_before": "E0",
       "epoch_after": "E0",
-      "hold_effect": "CREATED",
+      "hold_effect": "NONE",
       "actor_context": "dispatcher",
       "credential_mode": "SHARED",
-      "branch": "hold"
-    },
-    {
-      "schema_major": 1,
-      "schema_minor": 0,
-      "event_id": "e2",
-      "ts": "1970-01-01T00:00:00Z",
-      "run_id": "run-1",
-      "trace_id": "trace-1",
-      "protocol_epoch": "E0",
-      "family": "effect_lifecycle",
-      "variant": "CrashRecoveryFromPrepared",
-      "trigger_event": "crash_recovery",
-      "movement_id": "m1",
-      "base_key": "R1:refs/heads/main",
-      "from": "PREPARED",
-      "to": "HELD",
-      "authority": "fp-1",
-      "epoch_before": "E0",
-      "epoch_after": "E0",
-      "hold_effect": "CREATED",
-      "actor_context": "dispatcher",
-      "credential_mode": "SHARED",
-      "branch": "state"
+      "branch": "state",
+      "new_oid": "oid-new"
     }
   ]
 }
