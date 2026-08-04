@@ -217,35 +217,70 @@ def _workflow() -> dict:
         (REPO_ROOT / ".github/workflows/verify.yml").read_text(encoding="utf-8"))
 
 
-def test_ci_citations_job_hard_fails_on_a_missing_peer():
-    """The claim "CI always requires the peer" must not outrun its
-    enforcement: the citations job may not soft-fail (panel round 4).
+def _assert_job_hard_fails(wf: dict, job_name: str) -> list:
+    """The posture EVERY job in this workflow must hold, checked job-wide and
+    step-wide. Factored out because the sibling-surface escape is the class
+    this stream keeps hitting: the previous seal was written job-wide for
+    `citations` and left `gate` — the arm that runs the ENTIRE suite —
+    checked only for the presence of a string, so `continue-on-error: true`
+    or `if: false` on `gate` disabled every seal in the repo while the
+    anti-soft-fail seal reported success.
 
-    The claim is JOB-wide, so the seal is job-wide: previously it read only
-    the peer-checkout step's continue-on-error, so `continue-on-error: true`
-    on the `make verify` step — or on the job mapping itself — kept it green
-    while the citations-REQUIRED half stopped gating.
+    Returns the job's steps so a caller can add its own job-specific rows."""
+    job = wf["jobs"][job_name]
+    assert not job.get("continue-on-error"), (
+        f"jobs.{job_name}.continue-on-error soft-fails the whole job — it "
+        f"would report success having enforced nothing")
+    assert "if" not in job, (
+        f"jobs.{job_name} carries a job-level `if:` ({job.get('if')!r}) — a "
+        f"conditional gate is not a gate")
+    steps = job["steps"]
+    soft = [s.get("name", s.get("uses", "?")) for s in steps
+            if s.get("continue-on-error")]
+    assert not soft, f"jobs.{job_name} steps soft-fail: {soft}"
+    warn = [s.get("if") for s in steps if "!= 'success'" in str(s.get("if", ""))]
+    assert not warn, f"jobs.{job_name} keeps a skip-and-warn path: {warn}"
+    return steps
 
-    MUTATION (verify.yml, not committed): add `continue-on-error: true` to
-    the "make verify" step ⇒ red; add it to `jobs.citations` ⇒ red; add
-    `if: ${{ needs.gate.result != 'success' }}` to any citations step ⇒ red;
-    delete the peer-checkout step ⇒ red with a sentence, not StopIteration.
+
+def test_every_ci_job_hard_fails(schemas):
+    """EVERY job, not a named one: the posture check iterates `jobs.*`, so a
+    job added later is covered on the day it is added. The trigger set is
+    checked for the same reason — narrowing `on:` to workflow_dispatch stops
+    every job running on any PR, and every "runs in CI" claim in the boundary
+    artifacts becomes false with nothing able to tell.
+
+    MUTATIONS (verify.yml, not committed): `continue-on-error: true` on the
+    `gate` job, on the `citations` job, or on any step of either ⇒ red; a
+    job-level `if:` on either ⇒ red; `on:` reduced to `workflow_dispatch`
+    ⇒ red; a new job with `continue-on-error: true` ⇒ red without editing
+    this seal.
     """
     wf = _workflow()
-    job = wf["jobs"]["citations"]
-    citations = job["steps"]
-    # the JOB mapping itself must not soft-fail or be conditionally skipped
-    assert not job.get("continue-on-error"), (
-        "jobs.citations.continue-on-error soft-fails the whole job — the "
-        "citations-REQUIRED half would report success having checked nothing")
-    assert "if" not in job, (
-        f"jobs.citations carries a job-level `if:` ({job.get('if')!r}) — the "
-        f"peer-present arm must run unconditionally")
-    # …and no STEP may soft-fail: the `make verify` step is the one that
-    # actually enforces citations.
-    soft = [s.get("name", s.get("uses", "?")) for s in citations
-            if s.get("continue-on-error")]
-    assert not soft, f"citations steps soft-fail: {soft}"
+    assert set(wf["jobs"]) >= {"gate", "citations"}, sorted(wf["jobs"])
+    for job_name in wf["jobs"]:
+        _assert_job_hard_fails(wf, job_name)
+    triggers = wf.get(True, wf.get("on"))          # PyYAML reads `on:` as True
+    assert isinstance(triggers, dict), triggers
+    assert "pull_request" in triggers, (
+        f"the workflow no longer runs on pull_request ({sorted(triggers)}) — "
+        f"every CI claim in the boundary artifacts would be false")
+    assert "push" in triggers
+
+
+def test_ci_citations_job_hard_fails_on_a_missing_peer():
+    """The claim "CI always requires the peer" must not outrun its
+    enforcement: the citations job may not soft-fail (panel round 4), and it
+    must actually check out the peer and run the citations-REQUIRED form.
+
+    The job-wide posture is `_assert_job_hard_fails`, shared with every other
+    job; what is citations-SPECIFIC is asserted here.
+
+    MUTATION: delete the peer-checkout step ⇒ red with a sentence, not
+    StopIteration; drop `--probe-peer` ⇒ red; drop `make verify` ⇒ red.
+    """
+    wf = _workflow()
+    citations = _assert_job_hard_fails(wf, "citations")
     peer_step = next((s for s in citations
                       if "checkout" in str(s.get("uses", ""))
                       and "claude-workflow" in str(s.get("with", {}))), None)
@@ -257,48 +292,47 @@ def test_ci_citations_job_hard_fails_on_a_missing_peer():
     assert any("make verify" in str(s.get("run", "")) for s in citations), (
         "the citations job no longer runs `make verify` — the "
         "citations-REQUIRED T26 form is what this job exists for")
-    # skip-and-warn, in EITHER spelling: a bare `x != 'success'` and the
-    # `${{ ... != 'success' }}` expression form (which ends in `}}`, so an
-    # endswith() check could never see it).
-    warn = [s.get("if") for s in citations if "!= 'success'" in str(s.get("if", ""))]
-    assert not warn, f"a skip-and-warn path remains: {warn}"
     # and the doc-local arm runs unconditionally in the other job
-    gate = wf["jobs"]["gate"]["steps"]
+    gate = _assert_job_hard_fails(wf, "gate")
     assert any("scripts/test.sh" in str(s.get("run", "")) for s in gate), (
         "the gate job no longer runs scripts/test.sh — the peer-ABSENT arm "
         "of the environment matrix is unexercised in CI")
 
 
-def test_boundary_paths_stay_in_the_critical_risk_tier():
-    """Plan §0/§2 requires the boundary surface to classify as CRITICAL
-    risk, which is what routes a change here through the full panel. The
-    rule lived in .agent/risk-paths.json with nothing asserting it: quietly
-    dropping a path — or downgrading the rule to "high" — would leave the
-    whole suite green while the code that decides whether review happens
-    stopped demanding review of itself.
+def test_the_linter_owns_the_ci_posture_too(schemas):
+    """The posture is enforced from TWO places on purpose, and this seal is
+    what keeps them from diverging: `tools/t26_lint.py`'s `check_ci_posture`
+    runs in the repo gate and in CI, so the posture is checked even where
+    this pytest seal is not run (a worktree that runs only `make verify-t26`).
 
-    MUTATION (.agent/risk-paths.json, not committed): change
-    generated-safety-truth's risk to "high" ⇒ red; delete "schema/**" or
-    "tools/fsmgen.py" from its paths ⇒ red.
+    MUTATION: make `check_ci_posture` return without appending on a
+    soft-failing job ⇒ red.
     """
-    spec = json.loads((REPO_ROOT / ".agent/risk-paths.json")
-                      .read_text(encoding="utf-8"))
-    rule = next((r for r in spec["rules"]
-                 if r.get("id") == "generated-safety-truth"), None)
-    assert rule is not None, (
-        ".agent/risk-paths.json no longer carries the generated-safety-truth "
-        "rule — the boundary would take unmatched_risk instead of critical")
-    assert rule["risk"] == "critical", (
-        f"the boundary risk tier was downgraded to {rule['risk']!r}")
-    required = {"src/claude_dispatcher/boundary/**", "schema/**",
-                "tools/fsmgen.py", "tools/t26_lint.py",
-                "tests/boundary/vectors/t19_expected.json",
-                "tests/boundary/**"}
-    missing = required - set(rule["paths"])
-    assert not missing, f"dropped from the critical rule: {sorted(missing)}"
-    # risk is the MAX over matched rules, so no rule may be marked
-    # presentation-only for these paths.
-    assert not rule.get("presentational")
+    lint = _lint()
+    assert hasattr(lint, "check_ci_posture"), (
+        "t26_lint no longer owns the CI posture — the pytest seal would be "
+        "the only enforcement, and it does not run in every environment")
+    clean: list[str] = []
+    lint.check_ci_posture(clean)
+    assert not clean, f"the committed workflow fails its own posture: {clean}"
+    # falsify it: a soft-failing job in a COPY of the workflow is reported
+    wf = _workflow()
+    wf["jobs"]["gate"]["continue-on-error"] = True
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        planted = Path(tmp) / "verify.yml"
+        planted.write_text(yaml.safe_dump(wf), encoding="utf-8")
+        real = lint.WORKFLOW
+        try:
+            lint.WORKFLOW = planted
+            errors: list[str] = []
+            lint.check_ci_posture(errors)
+        finally:
+            lint.WORKFLOW = real
+    assert errors, (
+        "check_ci_posture accepted a soft-failing job — the linter half of "
+        "the CI posture is vacuous")
+    assert any("gate" in e for e in errors), errors
 
 
 def test_auto_release_deferral_is_a_recorded_cutover_blocker(schemas):
@@ -2281,10 +2315,13 @@ def test_a_none_anchor_is_a_typed_halt_not_a_crash(generated):
 _OID_HEX = set("0123456789abcdef")
 
 
-def _is_oid(value: str) -> bool:
-    """40 lowercase hex, checked here rather than by importing the module's
-    own regex — an independent second statement of the same shape rule."""
-    return len(value) == 40 and all(c in _OID_HEX for c in value)
+def _is_oid(value: object) -> bool:
+    """40 lowercase hex, stated from the RULE'S WORDS rather than by calling
+    the module's own predicate or reusing its regex — an independent second
+    statement, which is the only kind that can catch a regex whose anchor
+    was wrong. Non-strings are not object ids."""
+    return (isinstance(value, str) and not isinstance(value, bool)
+            and len(value) == 40 and all(c in _OID_HEX for c in value))
 
 
 def test_matched_subject_digest_has_an_independent_oracle(schemas, generated):
@@ -4037,6 +4074,295 @@ class _LookalikeSeatResultRecord:
     subject_digest = "subj"
     attempt_id = "att-2"
     outcome = None
+
+
+# ─── the requested remainder ─────────────────────────────────────────────────
+
+@pytest.mark.parametrize("via", [
+    pytest.param("aggregate", id="deny-skip-holding-unparseable"),
+    pytest.param("aggregate_seat_results",
+                 id="deny-skip-holding-unparseable-through-the-filter"),
+])
+def test_skip_holding_an_unparseable_outcome_is_incomplete(generated, via):
+    """The SECOND escape of the escaped-verdict class, and the reason
+    `blocking()` now refuses to answer: SKIP demands no seats, so a rule
+    scoped to `required_seats` never looked at the unparseable result, and
+    the gate got the gate-SATISFYING NOT_APPLICABLE while a seat had run and
+    produced something nobody could read.
+
+    Sealed on BOTH entry points, because the sibling-surface escape is the
+    class this whole stream keeps hitting: `aggregate` and the filtered
+    `aggregate_seat_results` must agree.
+
+    MUTATION: scope `any_outcome_classified_incomplete` to `required_seats`
+    (`for s in required if s in outcomes`) ⇒ red on both rows.
+    MUTATION: `blocking(UnparseableOutcome) → False` plus classifying it as
+    None ⇒ red on both rows.
+    """
+    g = generated
+    r = _roster(g)
+    unreadable = g.UnparseableOutcome("severity: CATASTROPHIC")
+    if via == "aggregate":
+        got = g.aggregate(g.PanelIntensity.SKIP, r, {"claude": unreadable})
+    else:
+        got = g.aggregate_seat_results(
+            g.PanelIntensity.SKIP, r, "subj", "att-1",
+            [g.SeatResultRecord("claude", "subj", "att-1", unreadable)])
+    assert got is g.PanelAggregateResult.INCOMPLETE, (
+        f"a SKIP-intensity panel holding an unparseable seat result returned "
+        f"{got.name} — NOT_APPLICABLE and APPROVED are both gate-satisfying")
+    # …and the same holds when a blocking result rides along: BLOCKED wins,
+    # and neither reads as approval.
+    both = {"claude": unreadable, "grok": g.SeatOutcome(g.SeatVerdict.BLOCK)}
+    assert g.aggregate(g.PanelIntensity.SKIP, r, both) is \
+        g.PanelAggregateResult.BLOCKED
+
+
+@pytest.mark.parametrize("value,want", [
+    pytest.param("a" * 40, True, id="valid-40-hex"),
+    pytest.param("0123456789abcdef" * 2 + "01234567", True, id="valid-mixed-hex"),
+    pytest.param("a" * 40 + "\n", False, id="deny-oid-with-a-trailing-newline"),
+    pytest.param("\n" + "a" * 40, False, id="deny-oid-with-a-leading-newline"),
+    pytest.param("a" * 20 + "\n" + "a" * 19, False,
+                 id="deny-oid-with-an-inner-newline"),
+    pytest.param("A" * 40, False, id="deny-uppercase-hex"),
+    pytest.param("a" * 41, False, id="deny-41-hex"),
+    pytest.param("a" * 39, False, id="deny-39-hex"),
+    pytest.param("g" * 40, False, id="deny-non-hex-letters"),
+    pytest.param("", False, id="deny-empty"),
+    pytest.param(7, False, id="deny-not-a-str"),
+    pytest.param(None, False, id="deny-none"),
+])
+def test_valid_oid_agrees_with_this_files_own_shape_oracle(generated, value,
+                                                          want):
+    """The shape rule stated TWICE and asserted equal: the module's
+    `_valid_oid` against this file's `_is_oid`, which is written from the
+    rule's words ("40 lowercase hex") rather than from the module's regex.
+
+    The bug this exists for: the pattern was `$` with `.match`, and in Python
+    `$` matches before a trailing newline — so a 41-byte "oid" ending in
+    `\n` passed and reached the fence, where the fence is compared
+    byte-for-byte. ONE statement of the shape cannot catch that; two can, and
+    only if they are written independently, or they are one statement twice.
+
+    MUTATION: `\\A[0-9a-f]{40}\\Z` → `^[0-9a-f]{40}$` ⇒ the three newline
+    rows go red. MUTATION: `_is_oid` → `return True` ⇒ every deny row red.
+    MUTATION: make `_is_oid` call `generated._valid_oid` ⇒ the two statements
+    collapse into one and the newline rows stop discriminating.
+    """
+    assert _is_oid(value) is want, (
+        f"this file's shape oracle disagrees with its own row for {value!r}")
+    assert generated._valid_oid(value) is want, (
+        f"_valid_oid({value!r}) is {generated._valid_oid(value)}, the shape "
+        f"rule says {want} — the two statements of 'lowercase 40-hex' have "
+        f"diverged")
+
+
+@pytest.mark.parametrize("field,value,rule", [
+    pytest.param("kind", "VIBES", "unknown value 'VIBES'",
+                 id="deny-single-unknown-enum-value"),
+    pytest.param("ts", "1970-13-45T99:00:00Z", "not an RFC 3339 UTC instant",
+                 id="deny-single-impossible-ts"),
+])
+def test_a_single_on_the_shared_carrier_is_validated_not_filtered(
+        generated, field, value, rule):
+    """§9 singles ride the same durable carrier as the two lifecycle
+    families, and they are CONSTRUCTED and validated in the one walk — not
+    waved through by the family filter. A malformed single halts its base.
+
+    MUTATION: return the single unvalidated from the intake (filter by
+    family before construction) ⇒ red on both rows.
+    """
+    g = generated
+    bad = dict(_seat_result_single(g, "s1", "R1:refs/heads/main"))
+    bad["family"] = "authorization_granted" if field == "kind" else bad["family"]
+    if field == "kind":
+        # authorization_granted is the SOLE authorization record; its `kind`
+        # is a closed domain and an unknown value halts like an unknown major.
+        bad = dict(_envelope_kwargs(), family="authorization_granted",
+                   event_id="s1", base_key="R1:refs/heads/main",
+                   authorization_id="a1", authority="fp", kind=value,
+                   assurance="NOT_APPLICABLE", evidence_ref="ev",
+                   actor="dispatcher")
+    else:
+        bad[field] = value
+    halt = _boundary(g, [bad])["halts"]["R1:refs/heads/main"]
+    assert rule in halt["detail"], halt["detail"]
+
+
+def test_a_divergent_authorization_granted_twin_halts(generated):
+    """A §9 single is subject to the SAME duplicate-event_id integrity rule
+    as a lifecycle event: two records sharing an event_id must be
+    byte-identical. `authorization_granted` is the sole authorization
+    record, so a divergent twin is two different grants wearing one id.
+
+    MUTATION: skip dedup for non-lifecycle families ⇒ red.
+    """
+    g = generated
+    first = dict(_envelope_kwargs(), family="authorization_granted",
+                 event_id="auth-dup", base_key="R1:refs/heads/main",
+                 authorization_id="a1", authority="fp", kind="AUTO_LOW",
+                 assurance="NOT_APPLICABLE", evidence_ref="ev",
+                 actor="dispatcher")
+    twin = dict(first, actor="somebody-else")
+    got = _boundary(g, [first, twin])
+    halt = got["halts"]["R1:refs/heads/main"]
+    assert halt["code"] == "EVENT_PAYLOAD_DIVERGENT", halt
+    # …and an IDENTICAL twin is absorbed, so the rule is integrity and not
+    # a ban on redelivery.
+    assert _boundary(g, [first, dict(first)])["halts"] == {}
+
+
+@pytest.mark.parametrize("field", [
+    pytest.param("actor_node_id", id="deny-derived-twin-different-actor"),
+    pytest.param("epoch_after", id="deny-derived-twin-different-fence"),
+])
+def test_the_auto_release_core_covers_its_own_evidence(generated, field):
+    """`actor_verified_match`'s byte-identity core is PER KIND for a reason:
+    inheriting crash_recovery's core left `actor_node_id` and the fence
+    outside the comparison, so a twin sharing the derived id could assert a
+    DIFFERENT operator on an already-released hold with nothing to compare
+    it against — and a different fence on the one operator-less release.
+
+    MUTATION: drop the field from `canonical_core_for_derived_ids`'s
+    actor_verified_match entry and regenerate ⇒ that row goes green→red is
+    lost, i.e. the twin converges and the divergence is undetectable.
+    """
+    g = generated
+    assert field in g.CANONICAL_CORE_FOR_DERIVED_IDS["actor_verified_match"]
+    vec = copy.deepcopy(_VECTORS["b_actor_verified_auto_separated"])
+    auto = _event_of(vec, "ActorVerifiedAuto")
+    derived = _derived_event_id(
+        "release=actor_verified_match", f"base={auto['base_key']}",
+        f"hold={auto['hold_id']}", f"delivery={auto['source_delivery_id']}")
+    auto["event_id"] = derived
+    twin = dict(auto, **{field: ("N-someone-else" if field == "actor_node_id"
+                                 else "c" * 40)})
+    got = _boundary(g, vec["events"] + [twin], mode="SEPARATED",
+                    anchors=vec["anchors"])
+    halt = got["halts"].get("R1:refs/heads/main")
+    assert halt is not None, (
+        f"a derived twin asserting a different {field} converged — the core "
+        f"does not cover this kind's own evidence")
+    assert halt["code"] == "EVENT_PAYLOAD_DIVERGENT", halt
+
+
+def test_two_deliveries_of_one_delta_converge_on_one_hold(generated):
+    """§6.0's apply order step 2: a genuinely NEW delivery of a delta that
+    already has an OPEN hold is RECORDED on that hold rather than deriving a
+    colliding id. Both deliveries end up on one hold, in arrival order.
+
+    MUTATION: skip step 2 (`lookup_open_hold_for_delta_tuple`) so the second
+    delivery derives `occurrence_seq + 1` ⇒ red (two holds for one delta).
+    """
+    g = generated
+    vec = _VECTORS["b_concurrent_duplicate_creations"]
+    got = _boundary(g, vec["events"], mode=vec["credential_mode"],
+                    anchors=vec["anchors"])
+    assert got["halts"] == {}, got["halts"]
+    holds = got["holds"]["R1:refs/heads/main"]
+    assert len(holds) == 1, f"one delta produced {len(holds)} holds: {holds}"
+    (hold,) = holds.values()
+    assert hold["deliveries"] == ["d1", "d2"], hold["deliveries"]
+    assert hold["state"] == "HELD_FOREIGN"
+
+
+def test_the_open_hold_admission_ceiling_halts_admissions(generated):
+    """§6.0's >5-open-holds admission halt, on the arm that can reach it: a
+    base with the ceiling of OPEN holds refuses a NEW admission while
+    existing holds still take their transitions — it bounds ADMISSION, not
+    recovery. STANDING counts toward it (it still blocks the base).
+
+    MUTATION: `>=` → `>` in `_check_hold_admission` ⇒ red (one more than the
+    ceiling is admitted). MUTATION: count `book.holds` instead of
+    `book.open_by_delta` ⇒ red (released holds would count and the ceiling
+    would fire early).
+    """
+    g = generated
+    n = g.OPEN_HOLD_ADMISSION_CEILING
+    template = _event_of(_VECTORS["b_foreign_hold_created"], "ObserveDelta")
+    def _delta(i: int) -> dict:
+        return dict(template, event_id=f"h{i}", source_delivery_id=f"d{i}",
+                    delta_new_oid=f"{i:040x}")
+    admitted = [_delta(i) for i in range(n)]
+    got = _boundary(g, admitted, mode="SHARED")
+    assert got["halts"] == {}, f"the ceiling fired at N: {got['halts']}"
+    assert len(got["holds"]["R1:refs/heads/main"]) == n
+    # N+1 distinct deltas: the next ADMISSION is refused, and the N already
+    # admitted are untouched.
+    over = _boundary(g, admitted + [_delta(n)], mode="SHARED")
+    halt = over["halts"]["R1:refs/heads/main"]
+    assert halt["code"] == "HOLD_ADMISSION_CEILING", halt
+    assert f"admissions halt at {n}" in halt["detail"], halt["detail"]
+    assert over["holds"]["R1:refs/heads/main"] == \
+        got["holds"]["R1:refs/heads/main"], (
+        "a refused admission changed the holds already parked")
+
+
+def test_the_reduce_seconds_half_is_a_recorded_cutover_blocker(schemas):
+    """The elapsed-time half of §6.0's recovery ceiling is NOT enforced here
+    — a wall clock in a pure reducer is neither deterministic nor testable —
+    so total reduce work is unbounded until PR4's call site enforces it. The
+    deferral is therefore RECORDED as a PR6 cut-over blocker, the same
+    treatment as `actor_verified_evidence`'s provenance deferral, so it
+    cannot be forgotten.
+
+    This is the seal for a correct-but-unsealed fact: previously
+    `reduce_seconds_enforced_in: PR4` carried no cut-over marker and no seal,
+    while its sibling deferral did — the asymmetry was the whole risk.
+
+    MUTATION: drop `blocks_pr6_cutover` from the ceiling block ⇒ red; set it
+    false ⇒ red; claim `reduce_seconds_enforced_here: true` while the
+    reducer stays clock-free ⇒ red.
+    """
+    ceiling = schemas["lifecycle_fsm"]["section_a"]["recovery_ceiling"]
+    assert ceiling["reduce_seconds"] == 30
+    assert ceiling["reduce_seconds_enforced_in"] == "PR4"
+    assert ceiling["reduce_seconds_enforced_here"] is False, (
+        "the schema claims the reduce-time half is enforced here; the "
+        "generated module is deliberately clock-free, so the claim would be "
+        "false and the bound would be believed")
+    assert ceiling["blocks_pr6_cutover"] is True, (
+        "the reduce-time deferral is no longer a recorded cut-over blocker — "
+        "its sibling (actor_verified_evidence) is, and the asymmetry is how a "
+        "deferral gets forgotten")
+    assert "unbounded" in ceiling["blocks_pr6_cutover_reason"]
+    # the sibling deferral it is matched against, so the pair cannot drift
+    ev = schemas["lifecycle_fsm"]["events"]["unions"]["hold_lifecycle"][
+        "actor_verified_evidence"]
+    assert ev["blocks_pr6_cutover"] is True
+
+
+def test_auto_release_is_legal_only_from_HELD_FOREIGN(schemas, generated):
+    """Correct-but-unsealed: the only operator-less release has exactly ONE
+    legal origin. Widening its FROM_STATES — to RELEASED (a second release
+    of an already-released hold) or STANDING (an operator-acknowledged hold
+    the operator has NOT dispositioned) — would open the auto-release path
+    on states §6.0 gives only to `operator_reconcile`.
+
+    §6.0's section-B table has one `actor_verified_match` row, from
+    HELD_FOREIGN; STANDING's row is `operator_reconcile` only.
+
+    MUTATION: add STANDING to the actor_verified_match row's `from` in the
+    schema and regenerate ⇒ red here, and the apply row below goes red too.
+    """
+    g = generated
+    cls = g.HOLD_VARIANTS["ActorVerifiedAuto"]
+    assert cls.FROM_STATES == ("HELD_FOREIGN",), cls.FROM_STATES
+    rows = [r for r in schemas["lifecycle_fsm"]["section_b"]["rows"]
+            if r.get("event") == "actor_verified_match"]
+    assert len(rows) == 1, f"§6.0 has {len(rows)} actor_verified_match rows"
+    assert rows[0]["from"] == "HELD_FOREIGN"
+    # …and the machine refuses the widened pairs, so the FROM_STATES tuple is
+    # not the only thing holding the line.
+    for state in ("RELEASED", "STANDING", "GENESIS"):
+        st = g.MachineStateB(g.SectionBState[state])
+        ev = _mk_hold(g, "ActorVerifiedAuto", hold_id="h", actor_node_id="n",
+                      matched_subject_digest="s", matched_movement_id="m",
+                      mode=g.CredentialMode.SEPARATED)
+        with pytest.raises(g.IllegalTransitionError,
+                           match=rf"section_b: {state} × ActorVerifiedAuto"):
+            g.apply_section_b(st, ev)
 
 
 # ─── BoundaryError universe: element-wise seal ───────────────────────────────
