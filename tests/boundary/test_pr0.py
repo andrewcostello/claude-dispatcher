@@ -850,26 +850,49 @@ def _mk_hold(generated, variant: str, **over):
 @pytest.mark.parametrize("case", [
     pytest.param("display-only", id="deny-actor-verified-display-only"),
     pytest.param("non-auto-disposition", id="deny-actor-verified-wrong-disposition"),
-    pytest.param("no-actor-node-id", id="deny-verified-api-without-identity"),
+    pytest.param("no-actor-node-id", id="deny-auto-release-without-identity"),
     pytest.param("valid", id="actor-verified-valid-evidence"),
 ])
 def test_actor_verified_auto_evidence_guards(generated, case):
     """The auto-release path's constructor guards, exercised through the
-    REAL constructor (panel round 3: only the SHARED arm had a deny)."""
+    REAL constructor (panel round 3: only the SHARED arm had a deny).
+
+    Each row now pins the RULE, not the exception type: `_mk_hold` builds a
+    dozen fields at once, so a bare `pytest.raises(ValueError)` here passes
+    on a raise from any of the other guards.
+
+    MUTATIONS (generated, each reverted): drop ActorVerifiedAuto's
+    `actor_verification` FIXED pin ⇒ display-only row green→red is lost, so
+    the row is what holds it; delete the REQUIRES_WHEN VERIFIED_API⇒
+    actor_node_id rule ⇒ the no-actor-node-id row goes red; drop the FIXED
+    disposition pin ⇒ the wrong-disposition row goes red.
+    """
     g = generated
     over = {"mode": g.CredentialMode.SEPARATED}
+    expect = ""
     if case == "display-only":
         over["actor_verification"] = g.ActorVerification.DISPLAY_ONLY
+        # the row FIXES actor_verification=VERIFIED_API: evidence for the
+        # only operator-less release may never be presentation-only.
+        expect = r"actor_verification .*VERIFIED_API"
     elif case == "non-auto-disposition":
         over["disposition"] = g.ReconcileDisposition.ACCEPT_OURS
+        expect = r"disposition .*ACTOR_VERIFIED_AUTO"
     elif case == "no-actor-node-id":
         over["actor_node_id"] = None
+        # NOTE: on THIS variant actor_node_id is §9-REQUIRED, so the plain
+        # required-field check refuses it before the VERIFIED_API
+        # conditional can — the id says "without identity", the rule that
+        # fires is the REQUIRED one. (The conditional itself is sealed on
+        # ObserveDelta, where actor_node_id is optional: see
+        # test_requires_when_verified_api_needs_an_identity.)
+        expect = r"ActorVerifiedAuto\.actor_node_id must be a non-empty str"
     if case == "valid":
         ev = _mk_hold(g, "ActorVerifiedAuto", **over)
         assert ev.disposition is g.ReconcileDisposition.ACTOR_VERIFIED_AUTO
         assert ev.actor_verification is g.ActorVerification.VERIFIED_API
         return
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=expect):
         _mk_hold(g, "ActorVerifiedAuto", **over)
 
 
@@ -901,38 +924,168 @@ def test_requires_when_verified_api_needs_an_identity(generated, verification,
     if ok:
         assert _mk_hold(g, "ObserveDelta", **over) is not None
     else:
-        with pytest.raises(ValueError):
+        # pin the CONDITIONAL rule, not merely ValueError: `_mk_hold` sets a
+        # dozen fields, several of which have their own guards.
+        with pytest.raises(ValueError, match=r"requires 'actor_node_id'"):
             _mk_hold(g, "ObserveDelta", **over)
 
 
-def test_credential_mode_is_run_context_not_event_payload(generated):
-    """The authoritative gate is the RUN's mode: the same event stream that
-    auto-releases under a SEPARATED run must NOT under a SHARED one, and an
-    absent context defaults closed (§0.3: never a soft SEPARATED)."""
+# ─── the credential-mode refusal, one seal per LAYER ─────────────────────────
+#
+# Round 3 asserted `("credential mode is run context" in detail or "under
+# SHARED, never" in detail)` and claimed "TWO independent layers refuse it,
+# and the seal names which". A disjunction over two layers' messages names
+# neither: for BOTH parametrised modes only the first arm ever matched, and
+# coverage showed the deeper gate's halt body was never executed at all.
+# The three layers are now sealed one per test, each asserting the exact
+# wording of ITS OWN site:
+#
+#   layer 1  ActorVerifiedAuto.__post_init__      "requires SEPARATED; under
+#                                                  SHARED, never"
+#   layer 2  _step_section_b mode-disagreement    "credential mode is run
+#                                                  context ... not event
+#                                                  payload"
+#   layer 3  _check_auto_release_gates run-mode   "requires the RUN to be
+#                                                  SEPARATED"
+#
+# SCOPE, stated because a comment must not claim what coverage denies:
+# layer 3 is UNREACHABLE through reduce_section_b on the committed tree —
+# the constructor pins event.mode=SEPARATED and _step_section_b halts unless
+# event.mode == run_mode, so run_mode is SEPARATED on every path that
+# reaches the gate. It is defence in depth, and it is sealed by driving it
+# directly (the same white-box route test_unknown_epoch_effect_is_closed_at
+# _both_ends already uses for _check_epoch_algebra), never by an `or` that
+# lets layer 2 stand in for it.
+
+def test_auto_release_under_a_separated_run_releases(generated):
+    """The allow arm: the SAME stream that must be refused elsewhere DOES
+    auto-release when the run context is SEPARATED — otherwise the deny
+    arms below would pass on a stream that never releases at all."""
     g = generated
     vec = _VECTORS["b_actor_verified_auto_separated"]
     released = g.reduce_section_b(vec["events"], g.CredentialMode.SEPARATED)
-    assert not released["halts"]
+    assert not released["halts"], released["halts"]
     assert {d["state"] for h in released["holds"].values()
             for d in h.values()} == {"RELEASED"}
-    for mode in (g.CredentialMode.SHARED, None):
-        got = g.reduce_section_b(vec["events"], mode)
-        assert got["halts"], f"mode={mode}: auto-release was not refused"
-        # TWO independent layers refuse it, and the seal names which:
-        #   (1) the event's self-declared mode disagrees with the run;
-        #   (2) the run-mode gate on the auto-release path itself.
-        # Both are load-bearing — removing either leaves the other
-        # refusing (verified by the round-3 falsification probes).
-        detail = " ".join(h["detail"] for h in got["halts"].values())
-        assert ("credential mode is run context" in detail
-                or "under SHARED, never" in detail), detail
 
 
-def test_reconcile_disposition_algebra_enforced(schemas, generated):
-    """The disposition sets match the schema AND are enforced: an
-    operator_reconcile variant on either machine rejects section-B-only /
-    non-operator dispositions at construction (panel CRITICAL: no side door
-    into RELEASED(ACTOR_VERIFIED_AUTO))."""
+@pytest.mark.parametrize("mode_name", [
+    pytest.param("SHARED", id="deny-shared-run-refuses-auto-release"),
+    pytest.param(None, id="deny-absent-context-defaults-closed"),
+])
+def test_layer2_event_mode_disagreeing_with_the_run_halts(generated, mode_name):
+    """LAYER 2, alone: an event declaring SEPARATED under a SHARED (or
+    absent, §0.3 ⇒ SHARED) run is refused by the mode-disagreement check in
+    `_step_section_b`, by its own wording.
+
+    MUTATION: `if event.mode is not run_mode:` → `if False:` in
+    _step_section_b ⇒ red (both rows).
+    """
+    g = generated
+    mode = None if mode_name is None else g.CredentialMode[mode_name]
+    vec = _VECTORS["b_actor_verified_auto_separated"]
+    got = g.reduce_section_b(vec["events"], mode)
+    assert got["halts"], f"mode={mode_name}: auto-release was not refused"
+    detail = " ".join(h["detail"] for h in got["halts"].values())
+    assert "credential mode is run context" in detail, detail
+    assert "not event payload" in detail, detail
+    # …and it is THIS layer that caught it: layer 3's wording must be
+    # absent, or the seal cannot name which site refused.
+    assert "requires the RUN to be SEPARATED" not in detail, (
+        "layer 3 fired here — the layer attribution in this file's comments "
+        "is stale; re-derive which site refuses before editing this seal")
+
+
+def test_layer1_constructor_pins_separated_on_the_auto_release(generated):
+    """LAYER 1, alone: a SHARED-declared auto-release is unconstructible.
+
+    MUTATION: delete `if self.mode is not CredentialMode.SEPARATED: raise`
+    from ActorVerifiedAuto.__post_init__ ⇒ red.
+    """
+    g = generated
+    with pytest.raises(ValueError,
+                       match=r"requires SEPARATED; under SHARED, never"):
+        _mk_hold(g, "ActorVerifiedAuto", hold_id="h", actor_node_id="n",
+                 matched_subject_digest="s",
+                 actor_verification=g.ActorVerification.VERIFIED_API,
+                 mode=g.CredentialMode.SHARED,
+                 disposition=g.ReconcileDisposition.ACTOR_VERIFIED_AUTO)
+
+
+@pytest.mark.parametrize("mode_name", [
+    pytest.param("SEPARATED", id="separated-run-passes-the-gate"),
+    pytest.param("SHARED", id="deny-shared-run-refused-by-the-run-mode-gate"),
+])
+def test_layer3_run_mode_gate_inside_check_auto_release_gates(generated,
+                                                              mode_name):
+    """LAYER 3, alone and driven DIRECTLY: `_check_auto_release_gates`'s
+    run-mode arm — the layer the schema names authoritative
+    (`credential_mode_source: run_context`) and the layer coverage showed
+    was never executed by any test.
+
+    It is unreachable through `reduce_section_b` (see the scope note above),
+    so it is exercised the way the epoch-effect closed-domain arm is: by
+    calling the generated helper with a run mode the reducer can never hand
+    it, and asserting the gate's OWN sentence, `hold {hid}:` prefix
+    included, so layer 1's byte-similar "under SHARED, never" cannot stand
+    in for it.
+
+    MUTATION: `if run_mode is not CredentialMode.SEPARATED:` → `if False:`
+    in _check_auto_release_gates ⇒ red (the SHARED row). Before this seal
+    the same mutation left the whole boundary suite at exit 0.
+    """
+    g = generated
+    book = g._HoldBook()
+    hid = "hold-1"
+    event = _mk_hold(g, "ActorVerifiedAuto", hold_id=hid, actor_node_id="n",
+                     matched_subject_digest="s",
+                     mode=g.CredentialMode.SEPARATED)
+    ev = {"event_id": "e-auto"}
+    halt = g._check_auto_release_gates(book, "R1:refs/heads/main", hid, event,
+                                       ev, g.CredentialMode[mode_name])
+    if mode_name == "SEPARATED":
+        # the run-mode arm must NOT fire; the next gate (delivery
+        # membership) does — proving the call reached past this arm rather
+        # than returning None for an unrelated reason.
+        assert halt is not None
+        assert "requires the RUN to be SEPARATED" not in halt["detail"]
+        assert "not a delivery recorded on" in halt["detail"], halt["detail"]
+        return
+    assert halt is not None, (
+        "the run-mode gate admitted a non-SEPARATED run on the only "
+        "operator-less release path")
+    assert halt["code"] == "ILLEGAL_TRANSITION"
+    assert f"hold {hid}: ACTOR_VERIFIED_AUTO requires the RUN to be " \
+        "SEPARATED" in halt["detail"], halt["detail"]
+    assert "protocol_genesis.credential_mode" in halt["detail"]
+
+
+def test_auto_release_gate_order_refusal_before_run_mode(generated):
+    """The gate ORDER is normative: an operator's prior REJECT_RESTORE_HOLD
+    closes the auto-release path before the run-mode arm is consulted, so a
+    SEPARATED run cannot re-open what an operator refused.
+
+    MUTATION: move the `hid in book.reject_restored` arm below the run-mode
+    arm ⇒ the SHARED row below reports the run-mode sentence ⇒ red.
+    """
+    g = generated
+    book = g._HoldBook()
+    hid = "hold-1"
+    book.reject_restored.add(hid)
+    event = _mk_hold(g, "ActorVerifiedAuto", hold_id=hid, actor_node_id="n",
+                     matched_subject_digest="s",
+                     mode=g.CredentialMode.SEPARATED)
+    for mode in (g.CredentialMode.SEPARATED, g.CredentialMode.SHARED):
+        halt = g._check_auto_release_gates(book, "R1:refs/heads/main", hid,
+                                           event, {"event_id": "e"}, mode)
+        assert halt is not None
+        assert "an operator REJECTED this hold's release" in halt["detail"], (
+            f"mode={mode}: the operator refusal is no longer the first gate")
+
+
+def test_reconcile_disposition_sets_match_the_schema(schemas, generated):
+    """The disposition SETS are generated from the schema, not hand-listed
+    beside it (the enforcement half is the parametrised seal below)."""
     disp = schemas["lifecycle_fsm"]["reconcile_dispositions"]
     g = generated
     assert {d.name for d in g.ACCEPTING_DISPOSITIONS} == set(disp["accepting"])
@@ -941,23 +1094,104 @@ def test_reconcile_disposition_algebra_enforced(schemas, generated):
     assert {d.name for d in g.SECTION_B_ONLY_DISPOSITIONS} == \
         {m["name"] for m in disp["members"] if m.get("section_b_only")}
     assert not (g.OPERATOR_ACCEPTING_DISPOSITIONS & g.SECTION_B_ONLY_DISPOSITIONS)
-    with pytest.raises(ValueError):  # section A cannot mint the auto disposition
-        _mk_effect(g, "ReconcileAccept",
-                   disposition=g.ReconcileDisposition.ACTOR_VERIFIED_AUTO)
-    with pytest.raises(ValueError):  # nor can a section-B operator reconcile
-        _mk_hold(g, "HoldReconcileAccept", hold_id="h",
-                 disposition=g.ReconcileDisposition.ACTOR_VERIFIED_AUTO)
-    with pytest.raises(ValueError):  # STANDING routes through its own variant
-        _mk_hold(g, "HoldReconcileAccept", hold_id="h",
-                 disposition=g.ReconcileDisposition.STANDING)
-    with pytest.raises(ValueError):  # under SHARED, never
-        _mk_hold(g, "ActorVerifiedAuto", hold_id="h", actor_node_id="n",
-                 matched_subject_digest="s",
-                 actor_verification=g.ActorVerification.VERIFIED_API,
-                 mode=g.CredentialMode.SHARED,
-                 disposition=g.ReconcileDisposition.ACTOR_VERIFIED_AUTO)
-    with pytest.raises(ValueError):  # raw string for an enum field: no coercion
-        _mk_effect(g, "Prepare", credential_mode="SHARED")
+
+
+def _admitted_dispositions(g, cls) -> set:
+    """The dispositions a variant's OWN guard admits, derived from the row
+    (never hand-listed): a FIXED disposition pins exactly one; the restore
+    rows take REJECT_RESTORE_HOLD; every other operator_reconcile row takes
+    the operator-accepting set. `_legal_disposition` picks one member of
+    this same set, so a guard change surfaces in both places."""
+    fixed = cls.FIXED.get("disposition")
+    if fixed:
+        return {g.ReconcileDisposition[fixed]}
+    if "RejectRestoreHold" in cls.__name__:
+        return {g.ReconcileDisposition.REJECT_RESTORE_HOLD}
+    return set(g.OPERATOR_ACCEPTING_DISPOSITIONS)
+
+
+def _reconcile_rows() -> list:
+    """(machine, variant, disposition) for every operator_reconcile variant
+    on either machine × every disposition its row must refuse. Derived from
+    the generated tables, so a variant added later cannot slip in untested."""
+    rows = []
+    for machine, table in (("a", _GEN.EFFECT_VARIANTS), ("b", _GEN.HOLD_VARIANTS)):
+        for name, cls in sorted(table.items()):
+            if cls.TRIGGER != "operator_reconcile":
+                continue
+            admitted = _admitted_dispositions(_GEN, cls)
+            for d in _GEN.ReconcileDisposition:
+                if d in admitted:
+                    continue
+                rows.append(pytest.param(machine, name, d.name,
+                                         id=f"deny-{name}-{d.name}"))
+    return rows
+
+
+@pytest.mark.parametrize("machine,variant,disposition", _reconcile_rows())
+def test_every_operator_reconcile_variant_refuses_foreign_dispositions(
+        generated, machine, variant, disposition):
+    """Panel CRITICAL: no side door into RELEASED(ACTOR_VERIFIED_AUTO). The
+    round-3 seal denied exactly TWO variants (ReconcileAccept and
+    HoldReconcileAccept); coverage showed five per-variant disposition
+    guards were never executed — including BOTH replay-identity rows, which
+    are precisely the ones that can echo a disposition into RELEASED, and
+    which the docstring claimed were closed.
+
+    Every operator_reconcile variant × every disposition its own row must
+    refuse is now a row, and each asserts the GUARD'S OWN message (prefixed
+    with the variant name), so a raise from an unrelated guard cannot pass
+    for this one.
+
+    MUTATIONS (generated, each reverted, each red on exactly its rows):
+      ReconcileRejectRestoreHold requires REJECT_RESTORE_HOLD      → `pass`
+      ReconcileReplayIdentity replay-must-be-operator-accepting    → `pass`
+      HoldReconcileRejectRestoreHold requires REJECT_RESTORE_HOLD  → `pass`
+      HoldReconcileStanding.disposition must be STANDING           → `pass`
+      HoldReconcileReplayIdentity replay-must-be-operator-accepting→ `pass`
+      ReconcileAccept / HoldReconcileAccept operator-accepting     → `pass`
+    """
+    g = generated
+    d = g.ReconcileDisposition[disposition]
+    over = {"disposition": d}
+    if machine == "b":
+        over["hold_id"] = "h"
+    cls = (g.EFFECT_VARIANTS if machine == "a" else g.HOLD_VARIANTS)[variant]
+    carries_new_oid = "new_oid" in cls.REQUIRED or "new_oid" in cls.OPTIONAL
+    rules = ("operator-accepting", "REJECT_RESTORE_HOLD", "must be STANDING")
+    if d is g.ReconcileDisposition.ACCEPT_OURS:
+        if carries_new_oid:
+            # supply the §9 conditional's payload so the row trips the
+            # DISPOSITION guard rather than the epoch-payload guard — the
+            # wrong-reason pass the panel demonstrated on this very helper.
+            over["new_oid"] = "oid-new"
+        else:
+            # this row declares REQUIRES_WHEN {ACCEPT_OURS: (new_oid,)} while
+            # carrying no new_oid field at all, so the conditional refuses
+            # ACCEPT_OURS before the disposition guard is reached. Still a
+            # refusal of the foreign disposition — by a different, also
+            # §9-normative rule, so this row accepts either sentence (and
+            # still refuses any raise that names NEITHER).
+            rules = (*rules, "requires 'new_oid'")
+    mk = _mk_effect if machine == "a" else _mk_hold
+    with pytest.raises(ValueError, match=rf"^{variant}[.: ]") as exc:
+        mk(g, variant, **over)
+    text = str(exc.value)
+    assert any(rule in text for rule in rules), (
+        f"{variant} refused {disposition} but not by the rule this row "
+        f"seals ({rules}): {text}")
+
+
+def test_enum_wire_fields_are_never_coerced_from_a_raw_string(generated):
+    """deny: a raw string for an enum field is a schema violation, never a
+    coercion (§9 explicit-state).
+
+    MUTATION: make `_validate_field_value`'s enum arm `return` instead of
+    raising ⇒ red.
+    """
+    with pytest.raises(ValueError,
+                       match=r"credential_mode must be a CredentialMode instance"):
+        _mk_effect(generated, "Prepare", credential_mode="SHARED")
 
 
 # ─── apply(): legal and illegal pairs ────────────────────────────────────────
