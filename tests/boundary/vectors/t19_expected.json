@@ -42,6 +42,45 @@
         }
       }
     },
+    "a_halt_isolation_after_halt": {
+      "movements": {
+        "R1:refs/heads/main": {
+          "m1": {
+            "state": "HELD",
+            "disposition": null,
+            "via_recovery_append": true
+          },
+          "m3": {
+            "state": "HELD",
+            "disposition": null,
+            "via_recovery_append": true
+          }
+        }
+      },
+      "recovery_appends": [
+        {
+          "event_id": "dd693323dd35ceed8d6339ba871ea2784b81410d51ef5e9940c2dfc883e808c6",
+          "movement_id": "m1",
+          "base_key": "R1:refs/heads/main",
+          "trigger_event": "crash_recovery",
+          "from": "PREPARED",
+          "to": "HELD"
+        },
+        {
+          "event_id": "8411a37c0da405f99d9ca71da7b5a8ed13a0964507d048d63216a555481e58ac",
+          "movement_id": "m3",
+          "base_key": "R1:refs/heads/main",
+          "trigger_event": "crash_recovery",
+          "from": "PREPARED",
+          "to": "HELD"
+        }
+      ],
+      "halts": {
+        "R2:refs/heads/main": {
+          "code": "SCHEMA_MAJOR_UNKNOWN"
+        }
+      }
+    },
     "a_halt_isolation_multi_base": {
       "movements": {
         "R1:refs/heads/main": {
@@ -436,6 +475,24 @@
         }
       },
       "halts": {}
+    },
+    "b_halt_isolation_after_halt": {
+      "holds": {
+        "R1:refs/heads/main": {
+          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+            "state": "HELD_FOREIGN",
+            "disposition": null,
+            "deliveries": [
+              "d1"
+            ]
+          }
+        }
+      },
+      "halts": {
+        "R2:refs/heads/main": {
+          "code": "SCHEMA_MAJOR_UNKNOWN"
+        }
+      }
     },
     "b_halt_isolation_multi_base": {
       "holds": {

@@ -2433,6 +2433,17 @@ def _section_a_vectors() -> dict[str, dict]:
             delta_old_oid="o0", delta_new_oid="o1", source_delivery_id="dX"),
        _ev("Explained", "e2", "m1", "EFFECT_OBSERVED", "EXPLAINED",
            new_oid="oid-new")])
+    a("a_halt_isolation_after_halt",
+      "halt isolation ORDERING: a base halts FIRST, then a healthy base's "
+      "events arrive — they must still reduce and still earn their "
+      "crash-recovery append (a global 'stop on first halt' would silently "
+      "swallow them)",
+      [dict(_ev("Prepare", "e1", "m2", "GENESIS", "PREPARED", base=BASE2,
+                authorization_id="auth-2"), schema_major=7),
+       _ev("Prepare", "e2", "m1", "GENESIS", "PREPARED",
+           authorization_id="auth-1"),
+       _ev("Prepare", "e3", "m3", "GENESIS", "PREPARED",
+           authorization_id="auth-3")])
     a("a_halt_isolation_multi_base",
       "halt isolation: one base's schema violation must not suppress the "
       "healthy base's reduce OR its crash-recovery append — the healthy "
@@ -2623,6 +2634,13 @@ def _section_b_vectors() -> dict[str, dict]:
       "DENY: the section-B creation row declares `epoch effect: none` — an "
       "observe_delta cannot advance the base epoch",
       [dict(obs, epoch_after="E1")])
+    b("b_halt_isolation_after_halt",
+      "halt isolation ORDERING (section B): one base halts first, a later "
+      "healthy base still reduces its holds",
+      [dict(_hev("ObserveDelta", "x1", "GENESIS", "HELD_FOREIGN", base=BASE2,
+                 delta_old_oid="p0", delta_new_oid="p1",
+                 source_delivery_id="e1"), schema_major=3),
+       obs])
     b("b_halt_isolation_multi_base",
       "halt isolation: a schema violation on one base leaves the other "
       "base's holds intact and reduced",
