@@ -88,12 +88,19 @@ aggregate:
   # aggregate, and the dropped seat surfaces as INCOMPLETE.
   seat_result_key: [subject_digest, attempt_id]
   rules:
-    # Order is normative for the generated function. "Any seat reporting a
-    # blocking finding ⇒ BLOCKED" is unconditional in §5.1, so a blocking
-    # finding among the parseable outcomes decides even when another required
-    # seat is missing — both results deny, BLOCKED carries the finding.
+    # Order is normative for the generated function.
+    #
+    # A BLOCKING SEAT RESULT IS NEVER DISCARDED BY INTENSITY. §5.1's "any
+    # seat reporting a blocking finding ⇒ BLOCKED" is unconditional, so it
+    # is evaluated FIRST and over EVERY outcome present — not only over
+    # required_seats. Previously a SKIP-intensity call returned the
+    # gate-satisfying NOT_APPLICABLE while holding a seat result carrying a
+    # CRITICAL blocking verdict: seats had run, one blocked, and the verdict
+    # was swallowed — the SMG-3966 escaped-Critical class. The PR5 trigger
+    # is real: a runner passing `demanded` (SKIP) while `effective`
+    # escalated.
+    - any_seat_outcome_blocking: BLOCKED
     - required_seats_empty: NOT_APPLICABLE   # SKIP — evaluated nothing, approves nothing
-    - any_required_seat_outcome_blocking: BLOCKED
     - outcome_keys_not_exactly_required_seats: INCOMPLETE  # no duplicates, no missing, no extras
     - any_required_seat_unavailable_or_unparseable: INCOMPLETE  # never skipped
     - otherwise: APPROVED

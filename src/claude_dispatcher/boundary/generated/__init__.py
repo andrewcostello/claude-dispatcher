@@ -3914,6 +3914,12 @@ _AGGREGATE_PREDICATES: Mapping[str, object] = {
     'any_required_seat_outcome_blocking':
         lambda required, outcomes: any(
             blocking(outcomes[s]) for s in required if s in outcomes),
+    # Over EVERY outcome present, not only the required seats: a
+    # blocking result must never be discarded because the demanded
+    # intensity was lower than the panel that actually ran.
+    'any_seat_outcome_blocking':
+        lambda required, outcomes: any(
+            blocking(o) for o in outcomes.values()),
     'outcome_keys_not_exactly_required_seats':
         lambda required, outcomes: set(outcomes) != set(required),
     'any_required_seat_unavailable_or_unparseable':
@@ -3924,8 +3930,8 @@ _AGGREGATE_PREDICATES: Mapping[str, object] = {
 }
 
 AGGREGATE_RULES: tuple = (
+    (_AGGREGATE_PREDICATES['any_seat_outcome_blocking'], PanelAggregateResult.BLOCKED),
     (_AGGREGATE_PREDICATES['required_seats_empty'], PanelAggregateResult.NOT_APPLICABLE),
-    (_AGGREGATE_PREDICATES['any_required_seat_outcome_blocking'], PanelAggregateResult.BLOCKED),
     (_AGGREGATE_PREDICATES['outcome_keys_not_exactly_required_seats'], PanelAggregateResult.INCOMPLETE),
     (_AGGREGATE_PREDICATES['any_required_seat_unavailable_or_unparseable'], PanelAggregateResult.INCOMPLETE),
     (_AGGREGATE_PREDICATES['otherwise'], PanelAggregateResult.APPROVED),
