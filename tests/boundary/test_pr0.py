@@ -276,6 +276,72 @@ def test_projection_frontier_violation_is_the_only_failure(generated):
     assert "unreachable from durable state" in halt["detail"]
 
 
+@pytest.mark.parametrize("kind,assurance,ok", [
+    pytest.param("AUTO_LOW", "NOT_APPLICABLE", True, id="auto-low-not-applicable"),
+    pytest.param("GITHUB_APPROVAL", "OPERATOR_ATTESTED", True, id="approval-attested"),
+    pytest.param("LIVE_CONSENT", "HUMAN_IDENTITY_ENFORCED", True, id="consent-enforced"),
+    pytest.param("AUTO_LOW", "HUMAN_IDENTITY_ENFORCED", False,
+                 id="deny-auto-low-claims-human-identity"),
+    pytest.param("AUTO_LOW", "OPERATOR_ATTESTED", False,
+                 id="deny-auto-low-claims-attestation"),
+    pytest.param("GITHUB_APPROVAL", "NOT_APPLICABLE", False,
+                 id="deny-approval-claims-not-applicable"),
+])
+def test_authorization_granted_kind_assurance_pairs(generated, kind, assurance, ok):
+    """§9: the SOLE authorization record cannot assert a human-assurance
+    value on an automatic grant — the (kind, assurance) pair rule is
+    generated from the schema, not left as prose (panel round 2)."""
+    ag = generated.SINGLE_EVENTS["authorization_granted"]
+    env = dict(schema_major=1, schema_minor=0, event_id="e1",
+               ts="1970-01-01T00:00:00Z", run_id="r", trace_id="t",
+               protocol_epoch="E0")
+    build = lambda: ag(  # noqa: E731
+        **env, authorization_id="a1", base_key="b", authority="fp",
+        kind=kind, assurance=assurance, evidence_ref="ev", actor="dispatcher")
+    if ok:
+        assert build().assurance == assurance
+    else:
+        with pytest.raises(ValueError):
+            build()
+
+
+@pytest.mark.parametrize("event,field,bad", [
+    pytest.param("seat_result", "verdict", "VIBES", id="deny-seat-verdict"),
+    pytest.param("panel_decided", "strategy", "YOLO", id="deny-strategy"),
+    pytest.param("panel_decided", "demanded", "MAXIMUM", id="deny-demanded"),
+    pytest.param("merge_planned", "plan_kind", "MAYBE", id="deny-plan-kind"),
+    pytest.param("merge_planned", "verdict", "MEDIUM", id="deny-merge-verdict"),
+    pytest.param("approval_evaluated", "assurance", "VIBES",
+                 id="deny-approval-assurance"),
+    pytest.param("consent", "evidence_mode", "TELEPATHY",
+                 id="deny-consent-evidence-mode"),
+    pytest.param("consent", "assurance", "NOT_APPLICABLE",
+                 id="deny-consent-not-applicable"),
+])
+def test_singles_closed_domains_reject_unknown_values(schemas, generated,
+                                                      event, field, bad):
+    """§9: an unknown VALUE of a known enum field halts identically to an
+    unknown variant — asserted for every gate-decision field the design
+    closes (panel round 2, finding 12)."""
+    spec = schemas["lifecycle_fsm"]["events"]["singles"][event]
+    cls = generated.SINGLE_EVENTS[event]
+    assert f"{field}_domain" in spec, f"{event}.{field} has no declared domain"
+    env = dict(schema_major=1, schema_minor=0, event_id="e1",
+               ts="1970-01-01T00:00:00Z", run_id="r", trace_id="t",
+               protocol_epoch="E0")
+    payload = {f: f for f in spec["required"]}
+    for dom_key, members in spec.items():
+        if dom_key.endswith("_domain"):
+            payload[dom_key[:-len("_domain")]] = members[0]
+    if event == "authorization_granted":
+        payload["assurance"] = "NOT_APPLICABLE"
+    payload[field] = bad
+    with pytest.raises(ValueError):
+        cls(**env, **payload)
+    del payload[field]
+    assert cls.DOMAINS.get(field), f"{event}.{field} domain not generated"
+
+
 def test_durability_partition_is_exclusive_and_total(schemas, generated):
     dur = schemas["lifecycle_fsm"]["section_a"]["durability"]
     parts = [set(dur["durable_state_branch"]), set(dur["memory_only"]),
