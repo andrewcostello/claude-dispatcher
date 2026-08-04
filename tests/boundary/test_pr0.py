@@ -701,6 +701,14 @@ def test_credential_mode_is_run_context_not_event_payload(generated):
     for mode in (g.CredentialMode.SHARED, None):
         got = g.reduce_section_b(vec["events"], mode)
         assert got["halts"], f"mode={mode}: auto-release was not refused"
+        # TWO independent layers refuse it, and the seal names which:
+        #   (1) the event's self-declared mode disagrees with the run;
+        #   (2) the run-mode gate on the auto-release path itself.
+        # Both are load-bearing — removing either leaves the other
+        # refusing (verified by the round-3 falsification probes).
+        detail = " ".join(h["detail"] for h in got["halts"].values())
+        assert ("credential mode is run context" in detail
+                or "under SHARED, never" in detail), detail
 
 
 def test_reconcile_disposition_algebra_enforced(schemas, generated):
