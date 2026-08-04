@@ -1681,6 +1681,12 @@ class RosterSnapshot:
     designated_single_id: str
 
     def __post_init__(self) -> None:
+        # the digest binds ordered_seat_ids, so the field must be an
+        # immutable COPY — a caller-owned list could be mutated out from
+        # under a verified digest.
+        if not isinstance(self.ordered_seat_ids, tuple):
+            object.__setattr__(self, "ordered_seat_ids",
+                               tuple(self.ordered_seat_ids))
         if self.designated_single_id not in self.ordered_seat_ids:
             raise ValueError("designated_single_id must be a roster seat")
         if len(set(self.ordered_seat_ids)) != len(self.ordered_seat_ids):

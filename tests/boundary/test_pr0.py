@@ -27,6 +27,7 @@ import hashlib
 import json
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -871,6 +872,25 @@ def test_blocking_predicate_exhaustive(generated):
         g.SeatOutcome("BLOCK")
 
 
+def test_roster_snapshot_stores_an_immutable_seat_tuple(generated):
+    """The digest binds ordered_seat_ids, so the field must be immutable —
+    a list would let a caller mutate the roster out from under a verified
+    digest (panel round 2, finding 27)."""
+    g = generated
+    seats = ["claude", "grok", "codex"]          # a LIST on the way in
+    snap = g.RosterSnapshot(
+        manifest_digest="md", roster_version="v1",
+        roster_digest=g.roster_digest("v1", seats, "claude"),
+        ordered_seat_ids=seats, designated_single_id="claude")
+    assert isinstance(snap.ordered_seat_ids, tuple), \
+        "ordered_seat_ids must be stored as a tuple"
+    seats.append("gemini")                        # mutate the original
+    assert snap.ordered_seat_ids == ("claude", "grok", "codex"), \
+        "the snapshot aliased a caller-owned mutable sequence"
+    with pytest.raises((AttributeError, TypeError)):   # deny: frozen
+        snap.ordered_seat_ids = ("x",)
+
+
 def test_roster_snapshot_verifies_its_own_digest(generated):
     g = generated
     seats = ("claude", "grok", "codex")
@@ -1019,6 +1039,18 @@ def test_classifier_frame_vectors(schemas, case):
         assert entry["reason_code"] in proto["reject_reasons"]
 
 
+def test_every_reject_reason_has_a_vector(schemas):
+    """The reject-reason domain is declared CLOSED — every member must be
+    exercised by a committed vector, or the corpus silently under-covers it
+    (panel round 2: TRAILING_BYTES had no vector and the trailing_data
+    label concealed the gap)."""
+    declared = set(schemas["classifier_protocol"]["reject_reasons"])
+    covered = {c["reason_code"] for c in _FRAME_CASES if c.get("reason_code")}
+    assert declared == covered, (
+        f"unexercised reject reasons: {sorted(declared - covered)}; "
+        f"vectors naming undeclared reasons: {sorted(covered - declared)}")
+
+
 def test_frame_parser_is_total_on_arbitrary_prefixes(schemas):
     """No prefix of the valid frame crashes the parser — every truncation
     point yields a typed reject (the two crash paths the panel reproduced
@@ -1061,45 +1093,58 @@ def _planted_doc(lint, tmp_path: Path, mutate) -> object:
 _ANCHOR = "## 5. Panel decision"
 
 
-@pytest.mark.parametrize("check_name,planted_line", [
+@pytest.mark.parametrize("check_name,planted_line,expect", [
     pytest.param("check_retired",
                  "The machine uses AuthoritySnapshot here.",
+                 "retired-name: line 152 (§5): `AuthoritySnapshot`",
                  id="deny-retired-live-use"),
     pytest.param("check_retired",
                  "The deleted disposition path uses MOVED_TO_HOLD as a live"
                  " mechanism.",
+                 "retired-name: line 152 (§5): `MOVED_TO_HOLD`",
                  id="deny-retired-hides-behind-domain-words"),
     pytest.param("check_retired",
                  "Every disposition here is deleted after FOREIGN_OBSERVED"
                  " fires in the reduce.",
+                 "retired-name: line 152 (§5): `FOREIGN_OBSERVED`",
                  id="deny-retired-foreign-observed-domain-words"),
     pytest.param("check_retired",
                  "A deleted disposition writes integrity_hold events on"
                  " every transition.",
+                 "retired-name: line 152 (§5): `integrity_hold`",
                  id="deny-retired-integrity-hold-domain-words"),
     pytest.param("check_retired",
                  "The wire carries request_id on each deleted disposition"
                  " row.",
+                 "retired-name: line 152 (§5): `request_id`",
                  id="deny-retired-request-id-domain-words"),
     pytest.param("check_section_refs", "See §99.9 for details.",
+                 "§-ref: line 152: §99.9 unresolved",
                  id="deny-unresolved-section-ref"),
     pytest.param("check_mutations",
                  "Appends use `createCommitOnBranch` again.",
+                 "mutation-once: `createCommitOnBranch` bound 2 times",
                  id="deny-second-mutation-binding"),
     pytest.param("check_t_index", "T99 seals this.",
+                 "T-index: T99 (cited at line 152) has 0 §10 rows",
                  id="deny-t-without-index-row"),
     pytest.param("check_field_lists",
                  "`seat_result{roster_digest}` again.",
+                 "field-list-once: `seat_result{...}` appears 2 times",
                  id="deny-second-field-list"),
     pytest.param("check_citations",
                  "See orchestrator.py:999999 for the branch.",
+                 "orchestrator.py:999999 beyond EOF",
                  id="deny-citation-beyond-eof"),
 ])
-def test_t26_lint_planted_violations_fire(tmp_path, check_name, planted_line):
+def test_t26_lint_planted_violations_fire(tmp_path, check_name, planted_line,
+                                          expect):
     """A lint that cannot fail is a vacuous seal (root cause E): each check
     is falsified through the REAL Doc constructor over a planted copy —
     including retired names hiding behind the domain words 'disposition'
-    and 'deleted' (panel finding)."""
+    and 'deleted'. The assertion names the SPECIFIC violation, so an
+    environment error (or an unrelated check firing) cannot masquerade as
+    the plant being caught (panel round 2, finding 39)."""
     lint = _lint()
     doc = _planted_doc(lint, tmp_path,
                        lambda text: text.replace(
@@ -1107,6 +1152,15 @@ def test_t26_lint_planted_violations_fire(tmp_path, check_name, planted_line):
     errors: list[str] = []
     getattr(lint, check_name)(doc, errors)
     assert errors, f"{check_name} is vacuous — planted violation not flagged"
+    assert any(expect in e for e in errors), (
+        f"{check_name} fired, but not for the planted violation.\n"
+        f"expected a message containing: {expect!r}\ngot: {errors}")
+    # the clean doc must NOT produce this violation — proving the plant, and
+    # not the document itself, is what the check reacted to.
+    clean: list[str] = []
+    getattr(lint, check_name)(lint.Doc(lint.DESIGN), clean)
+    assert not any(expect in e for e in clean), (
+        f"{check_name}: the checked-in doc already trips this message")
 
 
 def test_t26_lint_supersession_and_plan_tmap_falsified(tmp_path, monkeypatch):
@@ -1207,8 +1261,14 @@ def test_ast_allowlists_fail_closed(schemas, tmp_path, gate):
         f"{'ABSENT — pre-PR2 fail-closed gate' if absent else 'present'}):\n"
         + "\n".join(hits))
     if absent:
-        print(f"{gate}: allowlisted modules absent as expected pre-PR2: "
-              f"{[str(m.relative_to(REPO_ROOT)) for m in absent]}")
+        # a captured print() is invisible on a passing test; a warning shows
+        # in pytest's summary (the repo runs with -ra) and in CI logs.
+        warnings.warn(
+            f"{gate}: FAIL-CLOSED GATE DEGRADED — allowlisted modules absent "
+            f"as expected pre-PR2: "
+            f"{[str(m.relative_to(REPO_ROOT)) for m in absent]}; the gate "
+            f"still hard-fails any guarded name defined elsewhere",
+            stacklevel=2)
 
 
 # ─── architecture skeleton: dark mode ────────────────────────────────────────
