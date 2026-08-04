@@ -1,6 +1,7 @@
 {
   "machine": "section_b",
   "note": "HELD_FOREIGN \u00d7 operator_reconcile(REJECT_RESTORE_HOLD) \u2192 HELD_FOREIGN (assessment recorded; further reconcile legal)",
+  "credential_mode": "SHARED",
   "events": [
     {
       "schema_major": 1,

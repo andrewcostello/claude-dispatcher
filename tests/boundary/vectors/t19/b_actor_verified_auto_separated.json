@@ -1,6 +1,7 @@
 {
   "machine": "section_b",
-  "note": "SEPARATED + VERIFIED_API + node id + a delivery recorded ON this hold + a matched digest deriving from the HOLD'S OWN delta: auto-release as ACTOR_VERIFIED_AUTO",
+  "note": "a SEPARATED RUN + VERIFIED_API + node id + a delivery recorded ON this hold + a matched digest deriving from the HOLD'S OWN delta: auto-release as ACTOR_VERIFIED_AUTO",
+  "credential_mode": "SEPARATED",
   "events": [
     {
       "schema_major": 1,

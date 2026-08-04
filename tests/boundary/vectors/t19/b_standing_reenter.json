@@ -1,6 +1,7 @@
 {
   "machine": "section_b",
   "note": "STANDING is re-enterable: park persistent, then reconcile releases",
+  "credential_mode": "SHARED",
   "events": [
     {
       "schema_major": 1,

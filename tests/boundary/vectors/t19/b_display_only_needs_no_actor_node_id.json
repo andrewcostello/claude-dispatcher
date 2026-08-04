@@ -1,6 +1,6 @@
 {
   "machine": "section_b",
-  "note": "DENY: the section-B creation row declares `epoch effect: none` \u2014 an observe_delta cannot advance the base epoch",
+  "note": "the allow row for the same rule: DISPLAY_ONLY evidence carries no identity requirement",
   "credential_mode": "SHARED",
   "events": [
     {
@@ -22,7 +22,7 @@
       "actor_verification": "DISPLAY_ONLY",
       "actor_display": "someone",
       "epoch_before": "E0",
-      "epoch_after": "E1",
+      "epoch_after": "E0",
       "delta_old_oid": "o0",
       "delta_new_oid": "o1",
       "source_delivery_id": "d1"

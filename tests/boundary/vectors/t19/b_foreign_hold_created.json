@@ -1,6 +1,7 @@
 {
   "machine": "section_b",
   "note": "\u2014 \u00d7 observe_delta \u2192 HELD_FOREIGN (created); hold_id derived per \u00a76.0",
+  "credential_mode": "SHARED",
   "events": [
     {
       "schema_major": 1,

@@ -1,6 +1,7 @@
 {
   "machine": "section_b",
   "note": "round-20 row: NEW source_delivery_id, same delta tuple, open hold \u2014 delivery recorded, state unchanged",
+  "credential_mode": "SHARED",
   "events": [
     {
       "schema_major": 1,

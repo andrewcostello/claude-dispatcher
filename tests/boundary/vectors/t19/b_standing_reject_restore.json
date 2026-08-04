@@ -1,6 +1,7 @@
 {
   "machine": "section_b",
   "note": "STANDING \u00d7 operator_reconcile(REJECT_RESTORE_HOLD) dispatches 'as the HELD_FOREIGN rows' \u2014 resolved literal reading: \u2192 HELD_FOREIGN (schema standing_reject_restore_resolves_to; flagged for author confirmation)",
+  "credential_mode": "SHARED",
   "events": [
     {
       "schema_major": 1,

@@ -470,6 +470,79 @@ def _mk_hold(generated, variant: str, **over):
     return cls(**_finish_audit(cls, kwargs, over))
 
 
+@pytest.mark.parametrize("case", [
+    pytest.param("display-only", id="deny-actor-verified-display-only"),
+    pytest.param("non-auto-disposition", id="deny-actor-verified-wrong-disposition"),
+    pytest.param("no-actor-node-id", id="deny-verified-api-without-identity"),
+    pytest.param("valid", id="actor-verified-valid-evidence"),
+])
+def test_actor_verified_auto_evidence_guards(generated, case):
+    """The auto-release path's constructor guards, exercised through the
+    REAL constructor (panel round 3: only the SHARED arm had a deny)."""
+    g = generated
+    over = {"mode": g.CredentialMode.SEPARATED}
+    if case == "display-only":
+        over["actor_verification"] = g.ActorVerification.DISPLAY_ONLY
+    elif case == "non-auto-disposition":
+        over["disposition"] = g.ReconcileDisposition.ACCEPT_OURS
+    elif case == "no-actor-node-id":
+        over["actor_node_id"] = None
+    if case == "valid":
+        ev = _mk_hold(g, "ActorVerifiedAuto", **over)
+        assert ev.disposition is g.ReconcileDisposition.ACTOR_VERIFIED_AUTO
+        assert ev.actor_verification is g.ActorVerification.VERIFIED_API
+        return
+    with pytest.raises(ValueError):
+        _mk_hold(g, "ActorVerifiedAuto", **over)
+
+
+def test_actor_verified_fixed_values_match_the_schema(schemas, generated):
+    """Emptying the schema's `fixed:` must be red, not silently permissive."""
+    variants = schemas["lifecycle_fsm"]["events"]["unions"]["hold_lifecycle"]["variants"]
+    spec = next(v for v in variants if v["name"] == "ActorVerifiedAuto")
+    assert spec["fixed"] == {"actor_verification": "VERIFIED_API",
+                             "disposition": "ACTOR_VERIFIED_AUTO"}
+    assert dict(generated.HOLD_VARIANTS["ActorVerifiedAuto"].FIXED) == spec["fixed"]
+    assert "source_delivery_id" in spec["required"]
+
+
+@pytest.mark.parametrize("verification,identity,ok", [
+    pytest.param("VERIFIED_API", "N_op", True, id="verified-with-identity"),
+    pytest.param("DISPLAY_ONLY", None, True, id="display-only-no-identity"),
+    pytest.param("VERIFIED_API", None, False,
+                 id="deny-verified-api-without-identity"),
+    pytest.param("VERIFIED_API", "", False,
+                 id="deny-verified-api-empty-identity"),
+])
+def test_requires_when_verified_api_needs_an_identity(generated, verification,
+                                                      identity, ok):
+    """§6.0: actor_display is presentation, never predicate input — evidence
+    claiming VERIFIED_API must carry an attributable actor_node_id."""
+    g = generated
+    over = {"actor_verification": g.ActorVerification[verification],
+            "actor_node_id": identity}
+    if ok:
+        assert _mk_hold(g, "ObserveDelta", **over) is not None
+    else:
+        with pytest.raises(ValueError):
+            _mk_hold(g, "ObserveDelta", **over)
+
+
+def test_credential_mode_is_run_context_not_event_payload(generated):
+    """The authoritative gate is the RUN's mode: the same event stream that
+    auto-releases under a SEPARATED run must NOT under a SHARED one, and an
+    absent context defaults closed (§0.3: never a soft SEPARATED)."""
+    g = generated
+    vec = _VECTORS["b_actor_verified_auto_separated"]
+    released = g.reduce_section_b(vec["events"], g.CredentialMode.SEPARATED)
+    assert not released["halts"]
+    assert {d["state"] for h in released["holds"].values()
+            for d in h.values()} == {"RELEASED"}
+    for mode in (g.CredentialMode.SHARED, None):
+        got = g.reduce_section_b(vec["events"], mode)
+        assert got["halts"], f"mode={mode}: auto-release was not refused"
+
+
 def test_reconcile_disposition_algebra_enforced(schemas, generated):
     """The disposition sets match the schema AND are enforced: an
     operator_reconcile variant on either machine rejects section-B-only /
@@ -640,7 +713,10 @@ def _reduce(generated, vec: dict) -> dict:
     if vec["machine"] == "section_a":
         return generated.reduce_section_a(vec["events"])
     if vec["machine"] == "section_b":
-        return generated.reduce_section_b(vec["events"])
+        # credential_mode is RUN context (protocol_genesis), supplied by the
+        # caller — never read from the events.
+        mode = generated.CredentialMode[vec["credential_mode"]]
+        return generated.reduce_section_b(vec["events"], mode)
     return generated.fold_epochs(vec["events"], vec["anchors"])
 
 
@@ -679,7 +755,16 @@ _DENY_RULE_MARKERS = {
     "dual_append_divergent_payload_deny": ["divergent payloads", "integrity"],
     "reconcile_conflict_deny": ["conflicting disposition"],
     "resume_submit_illegal_deny": ["memory-only", "resume-submit"],
-    "b_actor_verified_shared_deny": ["SEPARATED"],
+    # Layered defence: with `mode` pinned SEPARATED by the constructor, a
+    # SHARED-declared auto-release is refused at CONSTRUCTION; a
+    # SEPARATED-declared one under a SHARED run is refused by the
+    # disagreement check. The run-mode gate in reduce_section_b is the
+    # third layer (sealed directly by
+    # test_credential_mode_is_run_context_not_event_payload).
+    "b_actor_verified_shared_run_deny": ["under SHARED, never"],
+    "b_mode_disagrees_with_run_deny": ["run context", "not event payload"],
+    "b_verified_api_without_actor_node_id_deny":
+        ["actor_verification", "requires", "actor_node_id"],
     "b_actor_verified_wrong_delta_digest_deny":
         ["matched_subject_digest", "self-asserted evidence refused"],
     "b_actor_verified_unresolvable_delivery_deny":

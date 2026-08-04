@@ -1,6 +1,7 @@
 {
   "machine": "section_b",
   "note": "DENY: an operator_reconcile cannot mint ACTOR_VERIFIED_AUTO \u2014 the accept guard admits operator-accepting dispositions only",
+  "credential_mode": "SHARED",
   "events": [
     {
       "schema_major": 1,

@@ -1,6 +1,6 @@
 {
   "machine": "section_b",
-  "note": "DENY: the section-B creation row declares `epoch effect: none` \u2014 an observe_delta cannot advance the base epoch",
+  "note": "DENY (panel round 3): an event whose self-declared `mode` disagrees with the run's credential mode is a typed halt \u2014 credential mode is run context, never event payload",
   "credential_mode": "SHARED",
   "events": [
     {
@@ -18,11 +18,11 @@
       "from": "GENESIS",
       "to": "HELD_FOREIGN",
       "ref": "refs/heads/main",
-      "mode": "SHARED",
+      "mode": "SEPARATED",
       "actor_verification": "DISPLAY_ONLY",
       "actor_display": "someone",
       "epoch_before": "E0",
-      "epoch_after": "E1",
+      "epoch_after": "E0",
       "delta_old_oid": "o0",
       "delta_new_oid": "o1",
       "source_delivery_id": "d1"

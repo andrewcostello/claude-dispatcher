@@ -1,6 +1,7 @@
 {
   "machine": "section_b",
   "note": "the redelivery no-op is STATE-INDEPENDENT by design: a writer that stamped `from` before a concurrent reconcile released the hold must not turn an idempotent no-op into a base halt (TOCTOU)",
+  "credential_mode": "SHARED",
   "events": [
     {
       "schema_major": 1,

@@ -591,6 +591,11 @@ def emit_variants_family(fsm: dict, family: str,
         froms = tuple(as_list(row["from"]) + list(v.get("extra_from", [])))
         required, optional, forbidden = _variant_field_sets(fsm, spec, v)
         fixed = dict(v.get("fixed", {}))
+        # conditional requirements: {field: {value: (required_fields,)}} —
+        # e.g. actor_verification VERIFIED_API ⇒ actor_node_id present.
+        requires_when = {
+            f: {val: tuple(reqs) for val, reqs in conds.items()}
+            for f, conds in spec.get("requires_when", {}).items()}
         w("@dataclass(frozen=True)")
         w(f"class {name}:")
         w(f'    """{family} variant — row `{row["id"]}`: '
@@ -608,6 +613,8 @@ def emit_variants_family(fsm: dict, family: str,
         w(f"    OPTIONAL: ClassVar[tuple[str, ...]] = {tuple(optional)!r}")
         w(f"    FORBIDDEN: ClassVar[tuple[str, ...]] = {tuple(forbidden)!r}")
         w(f"    FIXED: ClassVar[Mapping[str, str]] = {fixed!r}")
+        w(f"    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = "
+          f"{requires_when!r}")
         w("")
         for f in required:
             _emit_field_decl(w, f, optional=False)
@@ -649,6 +656,7 @@ def emit_singles(fsm: dict) -> tuple[dict[str, str], list[str]]:
         w(f"    REQUIRED: ClassVar[tuple[str, ...]] = {tuple(req)!r}")
         w(f"    OPTIONAL: ClassVar[tuple[str, ...]] = {tuple(opt)!r}")
         w("    FORBIDDEN: ClassVar[tuple[str, ...]] = ()")
+        w("    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}")
         w(f"    DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = "
           f"{ {k: tuple(vv) for k, vv in domains.items()} !r}")
         pairs = {k: {"field": v["field"],
@@ -846,7 +854,10 @@ def _short(value: object, limit: int = 60) -> str:
 def _validate_event_fields(event: object) -> None:
     """Shared __post_init__ validation: required fields present with the
     right type (never coerced), enum fields are enum INSTANCES, schema_major
-    inside the supported range, ts RFC 3339 UTC. Raises ValueError."""
+    inside the supported range, ts RFC 3339 UTC, and the schema's
+    CONDITIONAL requirements (e.g. VERIFIED_API evidence must carry an
+    attributable actor_node_id — actor_display is presentation, never
+    predicate input). Raises ValueError."""
     cls = type(event)
     name = cls.__name__
     for f in cls.REQUIRED:
@@ -855,6 +866,15 @@ def _validate_event_fields(event: object) -> None:
         value = getattr(event, _py_field(f), None)
         if value is not None:
             _validate_field_value(name, f, value, required=False)
+    for field, conditions in cls.REQUIRES_WHEN.items():
+        current = getattr(event, _py_field(field), None)
+        key = current.value if hasattr(current, "value") else current
+        for needed in conditions.get(key, ()):
+            got = getattr(event, _py_field(needed), None)
+            if got is None or (isinstance(got, str) and got == ""):
+                raise ValueError(
+                    f"{name}.{field}={key!r} requires {needed!r}, which is "
+                    f"absent — evidence without an attributable identity")
 
 
 def _validate_row_audit_fields(event: object) -> None:
@@ -1041,8 +1061,9 @@ def apply_section_b(state: MachineStateB, event: object) -> MachineStateB:
     if isinstance(event, (ObserveDeltaRedelivery, ObserveDeltaNewDeliveryOnOpenHold)):
         return state  # unchanged — idempotent no-op / delivery recorded
     if isinstance(event, ActorVerifiedAuto):
-        # Defense in depth: construction already enforces SEPARATED +
-        # VERIFIED_API + node id + matched subject (§6.0: under SHARED, never).
+        # Defence in depth ONLY: the authoritative gate is the RUN's
+        # credential mode, checked in reduce_section_b against run context
+        # (a mode the releasing event asserts about itself is no gate).
         if event.mode is not CredentialMode.SEPARATED:
             raise IllegalTransitionError(
                 "section_b", state.name.value, variant,
@@ -1559,20 +1580,32 @@ def _record_hold_outcome(book: _HoldBook, hid: str, event: object,
     book.holds[hid] = new
 
 
-def reduce_section_b(events: Sequence[Mapping[str, object]]) -> dict:
+def reduce_section_b(events: Sequence[Mapping[str, object]],
+                     credential_mode: Optional[CredentialMode] = None) -> dict:
     """Reduce a hold_lifecycle stream into section-B states per
     (base_key, hold_id), implementing §6.0's observe_delta apply order and
     hold_id derivation for real. Halt isolation and ceiling are PER
     base_key (uniform shape: {holds, halts}).
 
-    ACTOR_VERIFIED_AUTO releases are cross-checked against the hold's own
-    record (delivery membership + delta-derived digest) — this reducer
-    validates CONSISTENCY, not provenance; provenance is PR4's webhook
+    `credential_mode` is the RUN's mode — reduced from protocol_genesis
+    where the stream is durable, else supplied by the caller and recorded.
+    It is NOT taken from event payload: ACTOR_VERIFIED_AUTO is the only
+    operator-less release of a foreign hold, and a gate a releasing event
+    clears about ITSELF is no gate (§0.3: any unprobeable predicate records
+    SHARED, never a soft SEPARATED). An event whose self-declared `mode`
+    disagrees with the run context is a typed halt; absent context is
+    treated as SHARED, so the auto-release path is closed by default.
+
+    ACTOR_VERIFIED_AUTO releases are additionally cross-checked against the
+    hold's own record (delivery membership + delta-derived digest) — those
+    validate CONSISTENCY, not provenance; provenance is PR4's webhook
     protocol (schema actor_verified_evidence). Redelivery semantics
     (rounds 17–20): same source_delivery_id ⇒ same hold regardless of
     state; the no-op rows are state-independent, so their audit `from` is
     validated against FROM_STATES only (a reconcile racing the append must
     not turn an idempotent no-op into a halt)."""
+    # §0.3: absent/unprobeable ⇒ SHARED, never a soft SEPARATED.
+    run_mode = credential_mode or CredentialMode.SHARED
     books: dict[str, _HoldBook] = {}
     base_order: list[str] = []
     base_halts: dict[str, dict] = _ceiling_halts(events)
@@ -1588,7 +1621,7 @@ def reduce_section_b(events: Sequence[Mapping[str, object]]) -> dict:
         if book is None:
             book = books[base] = _HoldBook()
             base_order.append(base)
-        halt = _step_section_b(book, base, event, ev)
+        halt = _step_section_b(book, base, event, ev, run_mode)
         if halt is not None:
             base_halts[base] = halt
     out: dict[str, dict] = {}
@@ -1604,8 +1637,18 @@ def reduce_section_b(events: Sequence[Mapping[str, object]]) -> dict:
 
 
 def _step_section_b(book: _HoldBook, base: str, event: object,
-                    ev: Mapping[str, object]) -> Optional[dict]:
+                    ev: Mapping[str, object],
+                    run_mode: CredentialMode) -> Optional[dict]:
     cls = type(event)
+    # An event's self-declared `mode` is display/audit; the RUN's mode is
+    # authority. Divergence is a typed halt, never a silent upgrade.
+    if event.mode is not run_mode:
+        return _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION,
+            f"{base}: event declares credential mode {event.mode.value!r} but "
+            f"the run's mode is {run_mode.value!r} — credential mode is run "
+            f"context (protocol_genesis), not event payload "
+            f"(event_id {ev.get('event_id')!r})", ev)
     if cls.EPOCH_EFFECT == "none" and event.epoch_before != event.epoch_after:
         return _halt(
             BoundaryErrorCode.ILLEGAL_TRANSITION,
@@ -1625,6 +1668,13 @@ def _step_section_b(book: _HoldBook, base: str, event: object,
             f"reduced state {cur.name.value} "
             f"(event_id {ev.get('event_id')!r})", ev)
     if isinstance(event, ActorVerifiedAuto):
+        if run_mode is not CredentialMode.SEPARATED:
+            return _halt(
+                BoundaryErrorCode.ILLEGAL_TRANSITION,
+                f"hold {hid}: ACTOR_VERIFIED_AUTO requires the RUN to be "
+                f"SEPARATED (protocol_genesis.credential_mode); this run is "
+                f"{run_mode.value} — under SHARED, never "
+                f"(event_id {ev.get('event_id')!r})", ev)
         halt = _check_actor_verified(book, base, hid, event, ev)
         if halt is not None:
             return halt
@@ -2567,8 +2617,12 @@ def _section_b_vectors() -> dict[str, dict]:
 
     v: dict[str, dict] = {}
 
-    def b(name: str, note: str, events: list[dict]) -> None:
-        v[name] = {"machine": "section_b", "note": note, "events": events}
+    def b(name: str, note: str, events: list[dict],
+          credential_mode: str = "SHARED") -> None:
+        # credential_mode is the RUN's mode (protocol_genesis), passed to the
+        # reducer as context — never read from the events themselves.
+        v[name] = {"machine": "section_b", "note": note,
+                   "credential_mode": credential_mode, "events": events}
 
     b("b_foreign_hold_created",
       "— × observe_delta → HELD_FOREIGN (created); hold_id derived per §6.0",
@@ -2620,25 +2674,45 @@ def _section_b_vectors() -> dict[str, dict]:
                     **kwargs)
 
     b("b_actor_verified_auto_separated",
-      "SEPARATED + VERIFIED_API + node id + a delivery recorded ON this "
-      "hold + a matched digest deriving from the HOLD'S OWN delta: "
+      "a SEPARATED RUN + VERIFIED_API + node id + a delivery recorded ON "
+      "this hold + a matched digest deriving from the HOLD'S OWN delta: "
       "auto-release as ACTOR_VERIFIED_AUTO",
-      [dict(obs, mode="SEPARATED"), ava("h2")])
-    b("b_actor_verified_shared_deny",
-      "DENY: under SHARED, never — the ActorVerifiedAuto event is "
-      "unconstructible without SEPARATED (§6.0)",
-      [obs, ava("h2", mode="SHARED")])
+      [dict(obs, mode="SEPARATED"), ava("h2")], credential_mode="SEPARATED")
+    b("b_actor_verified_shared_run_deny",
+      "DENY (panel round 3): the RUN is SHARED — 'under SHARED, never' is "
+      "enforced against protocol_genesis.credential_mode. The event's own "
+      "`mode` AGREES with the run here, so the run-mode gate is the only "
+      "rule that can fire (isolating it from the disagreement check)",
+      [obs, ava("h2", mode="SHARED")], credential_mode="SHARED")
+    b("b_mode_disagrees_with_run_deny",
+      "DENY (panel round 3): an event whose self-declared `mode` disagrees "
+      "with the run's credential mode is a typed halt — credential mode is "
+      "run context, never event payload",
+      [dict(obs, mode="SEPARATED")], credential_mode="SHARED")
     b("b_actor_verified_wrong_delta_digest_deny",
       "DENY (panel round 2 CRITICAL): matched_subject_digest that does not "
       "derive from the HOLD'S OWN recorded delta is self-asserted evidence "
       "— refused, not honoured",
       [dict(obs, mode="SEPARATED"),
        ava("h2", matched_subject_digest=_matched_delta_digest_for(
-           BASE1, REF1, "o0", "SOMETHING-ELSE"))])
+           BASE1, REF1, "o0", "SOMETHING-ELSE"))], credential_mode="SEPARATED")
     b("b_actor_verified_unresolvable_delivery_deny",
       "DENY (panel round 2 CRITICAL): a source_delivery_id that resolves to "
       "no delivery recorded on this hold cannot clear the auto-release gate",
-      [dict(obs, mode="SEPARATED"), ava("h2", source_delivery_id="never-seen")])
+      [dict(obs, mode="SEPARATED"), ava("h2", source_delivery_id="never-seen")],
+      credential_mode="SEPARATED")
+    b("b_verified_api_without_actor_node_id_deny",
+      "DENY (panel round 3): VERIFIED_API evidence with no actor_node_id — "
+      "a durable record claiming verified actor evidence with no "
+      "attributable identity (actor_display is presentation, never "
+      "predicate input)",
+      [_hev("ObserveDelta", "h1", "GENESIS", "HELD_FOREIGN",
+            delta_old_oid="o0", delta_new_oid="o1", source_delivery_id="d1",
+            actor_verification="VERIFIED_API")])
+    b("b_display_only_needs_no_actor_node_id",
+      "the allow row for the same rule: DISPLAY_ONLY evidence carries no "
+      "identity requirement",
+      [obs])
     b("b_reject_restore_hold",
       "HELD_FOREIGN × operator_reconcile(REJECT_RESTORE_HOLD) → "
       "HELD_FOREIGN (assessment recorded; further reconcile legal)",

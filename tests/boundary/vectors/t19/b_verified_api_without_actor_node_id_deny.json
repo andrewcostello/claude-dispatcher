@@ -1,6 +1,6 @@
 {
   "machine": "section_b",
-  "note": "DENY: the section-B creation row declares `epoch effect: none` \u2014 an observe_delta cannot advance the base epoch",
+  "note": "DENY (panel round 3): VERIFIED_API evidence with no actor_node_id \u2014 a durable record claiming verified actor evidence with no attributable identity (actor_display is presentation, never predicate input)",
   "credential_mode": "SHARED",
   "events": [
     {
@@ -19,10 +19,10 @@
       "to": "HELD_FOREIGN",
       "ref": "refs/heads/main",
       "mode": "SHARED",
-      "actor_verification": "DISPLAY_ONLY",
+      "actor_verification": "VERIFIED_API",
       "actor_display": "someone",
       "epoch_before": "E0",
-      "epoch_after": "E1",
+      "epoch_after": "E0",
       "delta_old_oid": "o0",
       "delta_new_oid": "o1",
       "source_delivery_id": "d1"

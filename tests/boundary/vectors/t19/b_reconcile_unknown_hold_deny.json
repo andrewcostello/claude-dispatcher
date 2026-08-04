@@ -1,6 +1,7 @@
 {
   "machine": "section_b",
   "note": "DENY: a reconcile referencing a hold_id the stream never created halts \u2014 no hold is invented",
+  "credential_mode": "SHARED",
   "events": [
     {
       "schema_major": 1,

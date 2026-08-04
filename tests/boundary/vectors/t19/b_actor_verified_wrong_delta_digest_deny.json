@@ -1,6 +1,7 @@
 {
   "machine": "section_b",
   "note": "DENY (panel round 2 CRITICAL): matched_subject_digest that does not derive from the HOLD'S OWN recorded delta is self-asserted evidence \u2014 refused, not honoured",
+  "credential_mode": "SEPARATED",
   "events": [
     {
       "schema_major": 1,

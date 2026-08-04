@@ -1,6 +1,7 @@
 {
   "machine": "section_b",
   "note": "DENY: an ObserveDeltaRedelivery naming a source_delivery_id never seen on this base is mis-tagged \u2014 the apply order resolves a NEW hold, so the no-op claim is an integrity halt",
+  "credential_mode": "SHARED",
   "events": [
     {
       "schema_major": 1,

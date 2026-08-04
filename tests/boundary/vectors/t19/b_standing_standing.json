@@ -1,6 +1,7 @@
 {
   "machine": "section_b",
   "note": "STANDING \u00d7 operator_reconcile(STANDING) \u2014 re-acknowledged, stays STANDING",
+  "credential_mode": "SHARED",
   "events": [
     {
       "schema_major": 1,

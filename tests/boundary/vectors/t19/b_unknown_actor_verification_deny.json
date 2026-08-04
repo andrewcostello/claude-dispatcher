@@ -1,6 +1,7 @@
 {
   "machine": "section_b",
   "note": "DENY: unknown VALUE of actor_verification halts like an unknown variant (\u00a79)",
+  "credential_mode": "SHARED",
   "events": [
     {
       "schema_major": 1,

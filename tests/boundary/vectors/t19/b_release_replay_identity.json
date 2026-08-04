@@ -1,6 +1,7 @@
 {
   "machine": "section_b",
   "note": "RELEASED(d) \u00d7 operator_reconcile(same d) \u2014 identity",
+  "credential_mode": "SHARED",
   "events": [
     {
       "schema_major": 1,

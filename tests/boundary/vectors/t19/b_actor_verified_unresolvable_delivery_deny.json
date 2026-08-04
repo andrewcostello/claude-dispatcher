@@ -1,6 +1,7 @@
 {
   "machine": "section_b",
   "note": "DENY (panel round 2 CRITICAL): a source_delivery_id that resolves to no delivery recorded on this hold cannot clear the auto-release gate",
+  "credential_mode": "SEPARATED",
   "events": [
     {
       "schema_major": 1,

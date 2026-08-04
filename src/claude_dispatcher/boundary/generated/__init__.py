@@ -399,7 +399,10 @@ def _short(value: object, limit: int = 60) -> str:
 def _validate_event_fields(event: object) -> None:
     """Shared __post_init__ validation: required fields present with the
     right type (never coerced), enum fields are enum INSTANCES, schema_major
-    inside the supported range, ts RFC 3339 UTC. Raises ValueError."""
+    inside the supported range, ts RFC 3339 UTC, and the schema's
+    CONDITIONAL requirements (e.g. VERIFIED_API evidence must carry an
+    attributable actor_node_id — actor_display is presentation, never
+    predicate input). Raises ValueError."""
     cls = type(event)
     name = cls.__name__
     for f in cls.REQUIRED:
@@ -408,6 +411,15 @@ def _validate_event_fields(event: object) -> None:
         value = getattr(event, _py_field(f), None)
         if value is not None:
             _validate_field_value(name, f, value, required=False)
+    for field, conditions in cls.REQUIRES_WHEN.items():
+        current = getattr(event, _py_field(field), None)
+        key = current.value if hasattr(current, "value") else current
+        for needed in conditions.get(key, ()):
+            got = getattr(event, _py_field(needed), None)
+            if got is None or (isinstance(got, str) and got == ""):
+                raise ValueError(
+                    f"{name}.{field}={key!r} requires {needed!r}, which is "
+                    f"absent — evidence without an attributable identity")
 
 
 def _validate_row_audit_fields(event: object) -> None:
@@ -549,6 +561,7 @@ class Prepare:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -592,6 +605,7 @@ class Submit:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -635,6 +649,7 @@ class SubmitOutcomeUnknown:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -678,6 +693,7 @@ class CrashRecoveryFromPrepared:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -720,6 +736,7 @@ class LaterObservationFromPrepared:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -763,6 +780,7 @@ class MoveToHoldFromPrepared:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -806,6 +824,7 @@ class ObserveEffectMatched:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -850,6 +869,7 @@ class ObserveEffectParentMismatch:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -894,6 +914,7 @@ class ObserveReject:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -937,6 +958,7 @@ class TimeoutUnknown:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -980,6 +1002,7 @@ class CrashRecoveryFromSubmitted:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -1022,6 +1045,7 @@ class LaterObservationFromSubmitted:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -1065,6 +1089,7 @@ class Explained:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -1109,6 +1134,7 @@ class RejectExplained:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -1152,6 +1178,7 @@ class LaterObservationFromOutcomeUnknown:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'authorization_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
     FIXED: ClassVar[Mapping[str, str]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -1195,6 +1222,7 @@ class CrashRecoveryFromOutcomeUnknown:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -1237,6 +1265,7 @@ class ReconcileAccept:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -1286,6 +1315,7 @@ class ReconcileRejectRestoreHold:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -1331,6 +1361,7 @@ class ReconcileReplayIdentity:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'attempt_id', 'reason')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
 
     schema_major: int
     schema_minor: int
@@ -1378,6 +1409,7 @@ class ObserveDelta:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'hold_id', 'source_delivery_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id', 'disposition')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'actor_verification': {'VERIFIED_API': ('actor_node_id',)}}
 
     schema_major: int
     schema_minor: int
@@ -1427,6 +1459,7 @@ class ObserveDeltaRedelivery:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'hold_id', 'delta_old_oid', 'delta_new_oid', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id', 'disposition')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'actor_verification': {'VERIFIED_API': ('actor_node_id',)}}
 
     schema_major: int
     schema_minor: int
@@ -1476,6 +1509,7 @@ class ObserveDeltaNewDeliveryOnOpenHold:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'hold_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id', 'disposition')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'actor_verification': {'VERIFIED_API': ('actor_node_id',)}}
 
     schema_major: int
     schema_minor: int
@@ -1525,6 +1559,7 @@ class ActorVerifiedAuto:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'delta_old_oid', 'delta_new_oid', 'matched_movement_id', 'disposition')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {'actor_verification': 'VERIFIED_API', 'disposition': 'ACTOR_VERIFIED_AUTO'}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'actor_verification': {'VERIFIED_API': ('actor_node_id',)}}
 
     schema_major: int
     schema_minor: int
@@ -1583,6 +1618,7 @@ class HoldReconcileAccept:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'delta_old_oid', 'delta_new_oid', 'source_delivery_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'actor_verification': {'VERIFIED_API': ('actor_node_id',)}}
 
     schema_major: int
     schema_minor: int
@@ -1638,6 +1674,7 @@ class HoldReconcileRejectRestoreHold:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'delta_old_oid', 'delta_new_oid', 'source_delivery_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'actor_verification': {'VERIFIED_API': ('actor_node_id',)}}
 
     schema_major: int
     schema_minor: int
@@ -1689,6 +1726,7 @@ class HoldReconcileStanding:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'delta_old_oid', 'delta_new_oid', 'source_delivery_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {'disposition': 'STANDING'}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'actor_verification': {'VERIFIED_API': ('actor_node_id',)}}
 
     schema_major: int
     schema_minor: int
@@ -1740,6 +1778,7 @@ class HoldReconcileReplayIdentity:
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'delta_old_oid', 'delta_new_oid', 'source_delivery_id', 'actor_node_id', 'matched_subject_digest', 'matched_movement_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ('authorization_id',)
     FIXED: ClassVar[Mapping[str, str]] = {}
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {'actor_verification': {'VERIFIED_API': ('actor_node_id',)}}
 
     schema_major: int
     schema_minor: int
@@ -1822,6 +1861,7 @@ class PanelDecided:
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'demanded', 'effective', 'strategy', 'roster_version', 'contributions')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id', 'suppression')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {'demanded': ('SKIP', 'SINGLE', 'FULL'), 'effective': ('SKIP', 'SINGLE', 'FULL'), 'strategy': ('ALL_PARALLEL', 'PROGRESSIVE')}
     PAIR_RULES: ClassVar[Mapping[str, Mapping[str, object]]] = {}
 
@@ -1868,6 +1908,7 @@ class MergePlanned:
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'subject', 'plan_kind', 'verdict', 'reasons', 'satisfaction')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {'plan_kind': ('MERGEABLE', 'UNMERGEABLE'), 'verdict': ('LOW', 'ELEVATED', 'HUMAN_REQUIRED')}
     PAIR_RULES: ClassVar[Mapping[str, Mapping[str, object]]] = {}
 
@@ -1910,6 +1951,7 @@ class ApprovalEvaluated:
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'review_id', 'actor_node_id', 'commit_oid', 'base_oid', 'in_set', 'assurance', 'outcome')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {'assurance': ('OPERATOR_ATTESTED', 'HUMAN_IDENTITY_ENFORCED', 'NOT_APPLICABLE')}
     PAIR_RULES: ClassVar[Mapping[str, Mapping[str, object]]] = {}
 
@@ -1951,6 +1993,7 @@ class AuthorizationGranted:
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'authorization_id', 'base_key', 'authority', 'kind', 'assurance', 'evidence_ref', 'actor')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {'kind': ('AUTO_LOW', 'GITHUB_APPROVAL', 'LIVE_CONSENT'), 'assurance': ('OPERATOR_ATTESTED', 'HUMAN_IDENTITY_ENFORCED', 'NOT_APPLICABLE')}
     PAIR_RULES: ClassVar[Mapping[str, Mapping[str, object]]] = {'kind': {'field': 'assurance', 'allowed': {'AUTO_LOW': ('NOT_APPLICABLE',), 'GITHUB_APPROVAL': ('OPERATOR_ATTESTED', 'HUMAN_IDENTITY_ENFORCED'), 'LIVE_CONSENT': ('OPERATOR_ATTESTED', 'HUMAN_IDENTITY_ENFORCED')}}}
 
@@ -1999,6 +2042,7 @@ class Consent:
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'subject', 'evidence_mode', 'assurance')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id', 'suppressed')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {'evidence_mode': ('LIVE', 'RERUN', 'ACCEPTED_UNVERIFIED'), 'assurance': ('OPERATOR_ATTESTED', 'HUMAN_IDENTITY_ENFORCED')}
     PAIR_RULES: ClassVar[Mapping[str, Mapping[str, object]]] = {}
 
@@ -2040,6 +2084,7 @@ class ProtocolGenesis:
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'credential_mode', 'protection_mode', 'classifier', 'roster_digest', 'approver_set_digest', 'per_base_epoch_anchors')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {}
     PAIR_RULES: ClassVar[Mapping[str, Mapping[str, object]]] = {}
 
@@ -2077,6 +2122,7 @@ class MergeUnitDeclared:
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'unit_id', 'ordered_member_keys', 'unit_digest')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {}
     PAIR_RULES: ClassVar[Mapping[str, Mapping[str, object]]] = {}
 
@@ -2111,6 +2157,7 @@ class MergeUnitMemberAdded:
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'unit_id', 'member_key')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {}
     PAIR_RULES: ClassVar[Mapping[str, Mapping[str, object]]] = {}
 
@@ -2144,6 +2191,7 @@ class ProtocolEpochAdvanced:
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'old', 'new')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {}
     PAIR_RULES: ClassVar[Mapping[str, Mapping[str, object]]] = {}
 
@@ -2177,6 +2225,7 @@ class PanelRosterDeclared:
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'roster_version', 'ordered_seat_ids', 'designated_single_id', 'roster_digest')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {}
     PAIR_RULES: ClassVar[Mapping[str, Mapping[str, object]]] = {}
 
@@ -2212,6 +2261,7 @@ class PanelRosterAugmented:
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'added_seat_ids', 'new_roster_digest')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {}
     PAIR_RULES: ClassVar[Mapping[str, Mapping[str, object]]] = {}
 
@@ -2245,6 +2295,7 @@ class SeatResult:
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'roster_digest', 'subject_digest', 'attempt_id', 'seat_id', 'verdict', 'findings_digest')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('movement_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {'verdict': ('APPROVE', 'BLOCK')}
     PAIR_RULES: ClassVar[Mapping[str, Mapping[str, object]]] = {}
 
@@ -2283,6 +2334,7 @@ class CompleteClassification:
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'subject', 'authority', 'outcome_kind', 'duration_ms')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {}
     PAIR_RULES: ClassVar[Mapping[str, Mapping[str, object]]] = {}
 
@@ -2318,6 +2370,7 @@ class IncompleteClassification:
     REQUIRED: ClassVar[tuple[str, ...]] = ('schema_major', 'schema_minor', 'event_id', 'ts', 'run_id', 'trace_id', 'protocol_epoch', 'family', 'candidate', 'context', 'evidence_failure', 'outcome_kind', 'duration_ms')
     OPTIONAL: ClassVar[tuple[str, ...]] = ('subject_digest', 'movement_id', 'attempt_id', 'authorization_id')
     FORBIDDEN: ClassVar[tuple[str, ...]] = ()
+    REQUIRES_WHEN: ClassVar[Mapping[str, Mapping[str, tuple]]] = {}
     DOMAINS: ClassVar[Mapping[str, tuple[str, ...]]] = {}
     PAIR_RULES: ClassVar[Mapping[str, Mapping[str, object]]] = {}
 
@@ -2420,8 +2473,9 @@ def apply_section_b(state: MachineStateB, event: object) -> MachineStateB:
     if isinstance(event, (ObserveDeltaRedelivery, ObserveDeltaNewDeliveryOnOpenHold)):
         return state  # unchanged — idempotent no-op / delivery recorded
     if isinstance(event, ActorVerifiedAuto):
-        # Defense in depth: construction already enforces SEPARATED +
-        # VERIFIED_API + node id + matched subject (§6.0: under SHARED, never).
+        # Defence in depth ONLY: the authoritative gate is the RUN's
+        # credential mode, checked in reduce_section_b against run context
+        # (a mode the releasing event asserts about itself is no gate).
         if event.mode is not CredentialMode.SEPARATED:
             raise IllegalTransitionError(
                 "section_b", state.name.value, variant,
@@ -2938,20 +2992,32 @@ def _record_hold_outcome(book: _HoldBook, hid: str, event: object,
     book.holds[hid] = new
 
 
-def reduce_section_b(events: Sequence[Mapping[str, object]]) -> dict:
+def reduce_section_b(events: Sequence[Mapping[str, object]],
+                     credential_mode: Optional[CredentialMode] = None) -> dict:
     """Reduce a hold_lifecycle stream into section-B states per
     (base_key, hold_id), implementing §6.0's observe_delta apply order and
     hold_id derivation for real. Halt isolation and ceiling are PER
     base_key (uniform shape: {holds, halts}).
 
-    ACTOR_VERIFIED_AUTO releases are cross-checked against the hold's own
-    record (delivery membership + delta-derived digest) — this reducer
-    validates CONSISTENCY, not provenance; provenance is PR4's webhook
+    `credential_mode` is the RUN's mode — reduced from protocol_genesis
+    where the stream is durable, else supplied by the caller and recorded.
+    It is NOT taken from event payload: ACTOR_VERIFIED_AUTO is the only
+    operator-less release of a foreign hold, and a gate a releasing event
+    clears about ITSELF is no gate (§0.3: any unprobeable predicate records
+    SHARED, never a soft SEPARATED). An event whose self-declared `mode`
+    disagrees with the run context is a typed halt; absent context is
+    treated as SHARED, so the auto-release path is closed by default.
+
+    ACTOR_VERIFIED_AUTO releases are additionally cross-checked against the
+    hold's own record (delivery membership + delta-derived digest) — those
+    validate CONSISTENCY, not provenance; provenance is PR4's webhook
     protocol (schema actor_verified_evidence). Redelivery semantics
     (rounds 17–20): same source_delivery_id ⇒ same hold regardless of
     state; the no-op rows are state-independent, so their audit `from` is
     validated against FROM_STATES only (a reconcile racing the append must
     not turn an idempotent no-op into a halt)."""
+    # §0.3: absent/unprobeable ⇒ SHARED, never a soft SEPARATED.
+    run_mode = credential_mode or CredentialMode.SHARED
     books: dict[str, _HoldBook] = {}
     base_order: list[str] = []
     base_halts: dict[str, dict] = _ceiling_halts(events)
@@ -2967,7 +3033,7 @@ def reduce_section_b(events: Sequence[Mapping[str, object]]) -> dict:
         if book is None:
             book = books[base] = _HoldBook()
             base_order.append(base)
-        halt = _step_section_b(book, base, event, ev)
+        halt = _step_section_b(book, base, event, ev, run_mode)
         if halt is not None:
             base_halts[base] = halt
     out: dict[str, dict] = {}
@@ -2983,8 +3049,18 @@ def reduce_section_b(events: Sequence[Mapping[str, object]]) -> dict:
 
 
 def _step_section_b(book: _HoldBook, base: str, event: object,
-                    ev: Mapping[str, object]) -> Optional[dict]:
+                    ev: Mapping[str, object],
+                    run_mode: CredentialMode) -> Optional[dict]:
     cls = type(event)
+    # An event's self-declared `mode` is display/audit; the RUN's mode is
+    # authority. Divergence is a typed halt, never a silent upgrade.
+    if event.mode is not run_mode:
+        return _halt(
+            BoundaryErrorCode.ILLEGAL_TRANSITION,
+            f"{base}: event declares credential mode {event.mode.value!r} but "
+            f"the run's mode is {run_mode.value!r} — credential mode is run "
+            f"context (protocol_genesis), not event payload "
+            f"(event_id {ev.get('event_id')!r})", ev)
     if cls.EPOCH_EFFECT == "none" and event.epoch_before != event.epoch_after:
         return _halt(
             BoundaryErrorCode.ILLEGAL_TRANSITION,
@@ -3004,6 +3080,13 @@ def _step_section_b(book: _HoldBook, base: str, event: object,
             f"reduced state {cur.name.value} "
             f"(event_id {ev.get('event_id')!r})", ev)
     if isinstance(event, ActorVerifiedAuto):
+        if run_mode is not CredentialMode.SEPARATED:
+            return _halt(
+                BoundaryErrorCode.ILLEGAL_TRANSITION,
+                f"hold {hid}: ACTOR_VERIFIED_AUTO requires the RUN to be "
+                f"SEPARATED (protocol_genesis.credential_mode); this run is "
+                f"{run_mode.value} — under SHARED, never "
+                f"(event_id {ev.get('event_id')!r})", ev)
         halt = _check_actor_verified(book, base, hid, event, ev)
         if halt is not None:
             return halt

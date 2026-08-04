@@ -1,6 +1,7 @@
 {
   "machine": "section_b",
   "note": "cold-start golden (round 19, claude B2): redelivered webhook after RELEASED \u2014 same source_delivery_id resolves to the same hold via the delivery index \u21d2 idempotent no-op, no re-park, no halt",
+  "credential_mode": "SHARED",
   "events": [
     {
       "schema_major": 1,

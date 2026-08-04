@@ -1,6 +1,7 @@
 {
   "machine": "section_b",
   "note": "DENY: an observe_delta declaring a hold_id that contradicts the \u00a76.0 derivation halts \u2014 the derivation is the authority",
+  "credential_mode": "SHARED",
   "events": [
     {
       "schema_major": 1,

@@ -1,6 +1,7 @@
 {
   "machine": "section_b",
   "note": "halt isolation: a schema violation on one base leaves the other base's holds intact and reduced",
+  "credential_mode": "SHARED",
   "events": [
     {
       "schema_major": 1,

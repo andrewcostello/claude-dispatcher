@@ -547,6 +547,23 @@ events:
                         source_delivery_id, actor_node_id,
                         matched_subject_digest, matched_movement_id,
                         disposition]
+      # NOTE (panel round 3, finding 24): §6.0's VERIFIED_API protocol also
+      # persists {hook_id, delivery_guid, repository_id}. They are NOT added
+      # here: design §9's hold_lifecycle field list is normative and the
+      # doc==artifact comparison rejects any field it does not name — adding
+      # them unilaterally would be precisely the dual-definition drift PR0
+      # exists to prevent (verified: fsmgen fails with a §9 field-list
+      # mismatch). They are recorded as a PR4 obligation under
+      # actor_verified_evidence.provenance_fields_pending_design_amendment
+      # below, and landing them is a design-doc amendment + additive minor,
+      # not a PR0 edit.
+      #
+      # Conditional requirement, generated into the validators: evidence
+      # claiming VERIFIED_API must carry an attributable identity —
+      # actor_display is presentation, never predicate input (§6.0).
+      requires_when:
+        actor_verification:
+          VERIFIED_API: [actor_node_id]
       # authorization_id is ABSENT on observe_delta — a foreign movement is
       # unauthorized by definition (round 18, codex) — and FORBIDDEN on the
       # reconcile/actor variants for section-A parity (their twins forbid
@@ -584,11 +601,28 @@ events:
       # contract is "validates consistency, not provenance", and under
       # SHARED the mode gate already refuses the release entirely.
       actor_verified_evidence:
-        checks_enforced_in_pr0: [mode_separated, verified_api,
-                                 actor_node_id_present,
-                                 delivery_recorded_on_hold,
-                                 matched_digest_equals_hold_delta_digest]
+        # NONE of these establish PROVENANCE — every input is derivable
+        # from the hold's own record, so they prove SELF-CONSISTENCY only
+        # (panel round 3). Provenance is §6.0's configured-webhook
+        # verification, wired in PR4, which will fill hook_id /
+        # delivery_guid / repository_id above.
+        consistency_checks_enforced_in_pr0:
+          - verified_api
+          - actor_node_id_present
+          - delivery_recorded_on_hold
+          - matched_digest_equals_hold_delta_digest
+        # Credential mode is a RUN fact (protocol_genesis.credential_mode),
+        # NOT event payload: the reducer takes it as context and halts when
+        # an event's self-declared `mode` disagrees. "Under SHARED, never"
+        # is enforced against the run's mode, never the releasing event's.
+        credential_mode_source: run_context
+        credential_mode_context_key: credential_mode
         provenance_wired_in: PR4
+        # The durable fields §6.0's webhook protocol persists. Adding them
+        # to the wire requires amending design §9's field list first (see
+        # the NOTE above); PR4 does both together.
+        provenance_fields_pending_design_amendment:
+          [hook_id, delivery_guid, repository_id]
         matched_delta_digest_preimage:
           lines: ["subject-base=<base_key>", "subject-ref=<ref>",
                   "subject-old=<delta_old_oid>", "subject-new=<delta_new_oid>"]

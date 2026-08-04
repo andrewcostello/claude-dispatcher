@@ -1,6 +1,7 @@
 {
   "machine": "section_b",
   "note": "DENY: a family outside the closed domain halts in section B too",
+  "credential_mode": "SHARED",
   "events": [
     {
       "schema_major": 1,

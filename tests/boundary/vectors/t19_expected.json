@@ -461,7 +461,7 @@
       },
       "halts": {}
     },
-    "b_actor_verified_shared_deny": {
+    "b_actor_verified_shared_run_deny": {
       "holds": {
         "R1:refs/heads/main": {
           "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
@@ -524,6 +524,20 @@
           "code": "ILLEGAL_TRANSITION"
         }
       }
+    },
+    "b_display_only_needs_no_actor_node_id": {
+      "holds": {
+        "R1:refs/heads/main": {
+          "ee8e6d58f6a3b89373def7e3b4e1556b6499ab81a8edc174b555931d8bb9e724": {
+            "state": "HELD_FOREIGN",
+            "disposition": null,
+            "deliveries": [
+              "d1"
+            ]
+          }
+        }
+      },
+      "halts": {}
     },
     "b_family_mistag_deny": {
       "holds": {},
@@ -621,6 +635,16 @@
             ]
           }
         }
+      },
+      "halts": {
+        "R1:refs/heads/main": {
+          "code": "ILLEGAL_TRANSITION"
+        }
+      }
+    },
+    "b_mode_disagrees_with_run_deny": {
+      "holds": {
+        "R1:refs/heads/main": {}
       },
       "halts": {
         "R1:refs/heads/main": {
@@ -875,6 +899,14 @@
       "halts": {
         "R1:refs/heads/main": {
           "code": "SCHEMA_MAJOR_UNKNOWN"
+        }
+      }
+    },
+    "b_verified_api_without_actor_node_id_deny": {
+      "holds": {},
+      "halts": {
+        "R1:refs/heads/main": {
+          "code": "ILLEGAL_TRANSITION"
         }
       }
     },

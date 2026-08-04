@@ -1,6 +1,7 @@
 {
   "machine": "section_b",
   "note": "a genuinely NEW delivery of the same delta after RELEASED derives occurrence_seq+1 and parks a NEW hold \u2014 door 0 keeps its record",
+  "credential_mode": "SHARED",
   "events": [
     {
       "schema_major": 1,

@@ -1,6 +1,7 @@
 {
   "machine": "section_b",
   "note": "DENY: a redelivery whose DECLARED delta contradicts the hold its source_delivery_id resolves to is never absorbed as a no-op",
+  "credential_mode": "SHARED",
   "events": [
     {
       "schema_major": 1,

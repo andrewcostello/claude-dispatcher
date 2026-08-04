@@ -1,6 +1,7 @@
 {
   "machine": "section_b",
   "note": "DENY: section-A parity \u2014 authorization_id is FORBIDDEN on the section-B reconcile variants too",
+  "credential_mode": "SHARED",
   "events": [
     {
       "schema_major": 1,

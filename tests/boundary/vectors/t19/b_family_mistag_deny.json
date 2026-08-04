@@ -1,6 +1,7 @@
 {
   "machine": "section_b",
   "note": "DENY: a foreign-hold observation mis-tagged `effect_lifecycle` must halt \u2014 a silent drop leaves the base unparked: no hold, no admission pressure, no operator reconcile demanded",
+  "credential_mode": "SHARED",
   "events": [
     {
       "schema_major": 1,

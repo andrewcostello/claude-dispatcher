@@ -1,6 +1,7 @@
 {
   "machine": "section_b",
   "note": "DENY: an ObserveDeltaNewDeliveryOnOpenHold carrying an ALREADY-seen delivery id resolves as a redelivery \u2014 mis-tag halts",
+  "credential_mode": "SHARED",
   "events": [
     {
       "schema_major": 1,

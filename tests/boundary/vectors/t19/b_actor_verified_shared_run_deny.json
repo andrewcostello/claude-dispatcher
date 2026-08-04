@@ -1,6 +1,7 @@
 {
   "machine": "section_b",
-  "note": "DENY: under SHARED, never \u2014 the ActorVerifiedAuto event is unconstructible without SEPARATED (\u00a76.0)",
+  "note": "DENY (panel round 3): the RUN is SHARED \u2014 'under SHARED, never' is enforced against protocol_genesis.credential_mode. The event's own `mode` AGREES with the run here, so the run-mode gate is the only rule that can fire (isolating it from the disagreement check)",
+  "credential_mode": "SHARED",
   "events": [
     {
       "schema_major": 1,

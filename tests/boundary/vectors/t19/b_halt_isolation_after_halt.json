@@ -1,6 +1,7 @@
 {
   "machine": "section_b",
   "note": "halt isolation ORDERING (section B): one base halts first, a later healthy base still reduces its holds",
+  "credential_mode": "SHARED",
   "events": [
     {
       "schema_major": 3,

@@ -1,6 +1,7 @@
 {
   "machine": "section_b",
   "note": "DENY: RELEASED(d) \u00d7 operator_reconcile(d\u2032 \u2260 d) \u21d2 ILLEGAL typed error",
+  "credential_mode": "SHARED",
   "events": [
     {
       "schema_major": 1,
