@@ -991,8 +991,121 @@ def units_of(tasks: Sequence[plan_mod.Task]) -> tuple[UnitView, ...]:
 
     LEGACY tasks are in no unit and never appear here. Deterministic order:
     units sorted by ``unit_id``, member keys sorted within each unit.
+
+    A row whose role does not parse, and a row whose membership is ambiguous or
+    missing, belongs to NO unit: this function reports the units that exist and
+    :func:`validate` reports why the others do not. Silently inventing a unit
+    for an unparseable row would be a guess, and dropping the row without a
+    report is what :func:`validate`'s PO-1..PO-4 errors exist to prevent.
     """
-    raise NotImplementedError
+    roles, _unparseable = _roles_of(tasks)
+    unit_of = _unit_roots(tasks, roles)[0]
+
+    members: dict[str, dict[Role, list[str]]] = {}
+    for task in tasks:
+        role = roles.get(task.key)
+        if role is None or role is Role.LEGACY:
+            continue
+        root = unit_of.get(task.key)
+        if root is None:
+            continue
+        members.setdefault(root, {}).setdefault(role, []).append(task.key)
+
+    units: list[UnitView] = []
+    for root in sorted(members):
+        by_role = members[root]
+        # A unit is identified by its SCAFFOLD task, so a root with no scaffold
+        # row in this file is not a unit we can name.
+        if root not in by_role.get(Role.SCAFFOLD, []):
+            continue
+        units.append(
+            UnitView(
+                unit_id=root,
+                scaffold_key=root,
+                seals_keys=tuple(sorted(by_role.get(Role.SEALS, ()))),
+                bodies_keys=tuple(sorted(by_role.get(Role.BODIES, ()))),
+                adjudicate_keys=tuple(sorted(by_role.get(Role.ADJUDICATE, ()))),
+            )
+        )
+    return tuple(units)
+
+
+def _roles_of(
+    tasks: Sequence[plan_mod.Task],
+) -> tuple[dict[str, Role], dict[str, str]]:
+    """``({key: Role}, {key: parse error})`` over ``tasks``.
+
+    Roles are read off ``Task.raw`` (the precedent is `orchestrator`'s read of
+    the unmodeled `risk:` field): P1 deliberately did not add a `role` field to
+    `Task`, because a field defaulting to LEGACY while `load_tasks` did not
+    parse it would assert "legacy" for rows that carry a role. P3 did not add
+    one either — the parse happens in `load_tasks` and the row is the single
+    source, so a modeled field would be a second copy of the same fact.
+    """
+    roles: dict[str, Role] = {}
+    errors: dict[str, str] = {}
+    for task in tasks:
+        try:
+            roles[task.key] = parse_role_field(task.raw or {}, task_key=task.key)
+        except RoleProtocolError as exc:
+            errors[task.key] = str(exc)
+    return roles, errors
+
+
+def _unit_roots(
+    tasks: Sequence[plan_mod.Task], roles: Mapping[str, Role]
+) -> tuple[dict[str, str], dict[str, tuple[str, ...]]]:
+    """``({key: unit root}, {key: the roots its direct predecessors gave})``.
+
+    Resolved in phase order, because a SEALS row's root is named directly on it
+    (its scaffold edge) while a BODIES row's root comes through its seals edge.
+    A row whose predecessors yield zero or more than one root gets no entry in
+    the first mapping; the second mapping keeps what they yielded so
+    :func:`validate` can say which rule was broken and with what evidence.
+    """
+    by_key = {task.key: task for task in tasks}
+    unit_of: dict[str, str] = {}
+    candidates: dict[str, tuple[str, ...]] = {}
+
+    def _deps_with_role(key: str, wanted: tuple[Role, ...]) -> list[str]:
+        task = by_key.get(key)
+        if task is None:
+            return []
+        return [
+            dep
+            for dep in task.blocked_by
+            if roles.get(dep) in wanted
+        ]
+
+    for task in tasks:
+        if roles.get(task.key) is Role.SCAFFOLD:
+            unit_of[task.key] = task.key
+            candidates[task.key] = (task.key,)
+
+    # SEALS -> its directly-named SCAFFOLD; BODIES -> its directly-named SEALS;
+    # ADJUDICATE -> any directly-named mandatory-phase task. Direct edges only:
+    # transitively, a BODIES row could satisfy "has a seals predecessor"
+    # through ANOTHER unit's seals while its own unit's seals never existed.
+    for role, wanted in (
+        (Role.SEALS, (Role.SCAFFOLD,)),
+        (Role.BODIES, (Role.SEALS,)),
+        (Role.ADJUDICATE, MANDATORY_PHASE_ORDER),
+    ):
+        for task in tasks:
+            if roles.get(task.key) is not role:
+                continue
+            roots = _dedup(
+                [
+                    root
+                    for dep in _deps_with_role(task.key, wanted)
+                    for root in (unit_of.get(dep),)
+                    if root is not None
+                ]
+            )
+            candidates[task.key] = roots
+            if len(roots) == 1:
+                unit_of[task.key] = roots[0]
+    return unit_of, candidates
 
 
 @dataclass(frozen=True)
@@ -1013,7 +1126,7 @@ class RoleValidation:
     @property
     def ok(self) -> bool:
         """True iff there are no errors. Warnings do not affect it."""
-        raise NotImplementedError
+        return not self.errors
 
 
 def validate(tasks: Sequence[plan_mod.Task]) -> RoleValidation:
@@ -1068,7 +1181,157 @@ def validate(tasks: Sequence[plan_mod.Task]) -> RoleValidation:
     Determinism: errors and warnings are ordered by task key, then by rule id,
     so two runs over one file produce byte-identical output.
     """
-    raise NotImplementedError
+    errors: list[tuple[str, str, str]] = []  # (task key, rule id, message)
+    warnings: list[tuple[str, str, str]] = []
+
+    roles, role_errors = _roles_of(tasks)
+    specs: list[TaskRoleSpec] = []
+    for task in tasks:
+        if task.key in role_errors:
+            errors.append((task.key, "ROLE", role_errors[task.key]))
+            continue
+        try:
+            specs.append(parse_task_role_spec(task.raw or {}, task_key=task.key))
+        except RoleProtocolError as exc:
+            # Collected, never raised on the first: one run must report every
+            # broken row, or fixing them costs one round per row.
+            errors.append((task.key, "ROW", str(exc)))
+
+    unit_of, candidates = _unit_roots(tasks, roles)
+    units = units_of(tasks)
+    by_key = {task.key: task for task in tasks}
+
+    def _direct_roles(key: str, wanted: tuple[Role, ...]) -> list[str]:
+        task = by_key.get(key)
+        if task is None:
+            return []
+        return [dep for dep in task.blocked_by if roles.get(dep) in wanted]
+
+    for task in tasks:
+        role = roles.get(task.key)
+        if role is None or role is Role.LEGACY:
+            continue
+
+        if role is Role.SEALS and not _direct_roles(task.key, (Role.SCAFFOLD,)):
+            errors.append((
+                task.key,
+                "PO-1",
+                f"PO-1: task {task.key} is role 'seals' and names no 'scaffold' "
+                "task in its blockedBy. The edge IS the unit: without it there "
+                "is nothing for the dispatcher to order by and no scaffold to "
+                "seal against",
+            ))
+        if role is Role.BODIES and not _direct_roles(task.key, (Role.SEALS,)):
+            errors.append((
+                task.key,
+                "PO-2",
+                f"PO-2: task {task.key} is role 'bodies' and names no 'seals' "
+                "task in its blockedBy. That edge is what makes 'bodies may not "
+                "start until seals is done' enforceable; an absent edge is a "
+                "refusal, never an empty unit that passes",
+            ))
+        if role is Role.ADJUDICATE and not _direct_roles(
+            task.key, MANDATORY_PHASE_ORDER
+        ):
+            errors.append((
+                task.key,
+                "PO-3",
+                f"PO-3: task {task.key} is role 'adjudicate' and names no "
+                "scaffold/seals/bodies task in its blockedBy, so the dispute it "
+                "rules on belongs to no unit",
+            ))
+
+        roots = candidates.get(task.key, ())
+        if len(roots) > 1:
+            errors.append((
+                task.key,
+                "PO-4",
+                f"PO-4: task {task.key}'s role-carrying predecessors resolve to "
+                f"{len(roots)} units ({', '.join(roots)}); ambiguous membership "
+                "is a typed error, not a silent choice of one",
+            ))
+
+        if role in (Role.SEALS, Role.BODIES):
+            own_root = unit_of.get(task.key)
+            own_phase = MANDATORY_PHASE_ORDER.index(role)
+            for dep in task.blocked_by:
+                dep_role = roles.get(dep)
+                if dep_role not in MANDATORY_PHASE_ORDER:
+                    continue
+                if own_root is None or unit_of.get(dep) != own_root:
+                    continue
+                if MANDATORY_PHASE_ORDER.index(dep_role) > own_phase:
+                    errors.append((
+                        task.key,
+                        "PO-5",
+                        f"PO-5: task {task.key} (role {role.value!r}) is blocked "
+                        f"by {dep} (role {dep_role.value!r}) of its own unit "
+                        f"{own_root} — a later phase cannot gate an earlier one. "
+                        "This is a phase inversion, not a cycle, so cycle "
+                        "detection cannot see it",
+                    ))
+
+    # --- warnings: reported, never refusing ------------------------------- #
+    defaults = built_in_policy()
+    for spec in specs:
+        if not spec.added_immutable_globs:
+            continue
+        try:
+            role_globs = defaults.rule_for(spec.role).globs
+        except RoleProtocolError:  # pragma: no cover - table covers every role
+            continue
+        for entry in spec.added_immutable_globs:
+            if entry in role_globs:
+                warnings.append((
+                    spec.task_key,
+                    "W-REDUNDANT",
+                    f"task {spec.task_key} adds immutable path {entry!r}, which "
+                    f"role {spec.role.value!r} already denies. A duplicated "
+                    "protection is invariant 5's failure mode: two entries "
+                    "covering one fact let a mutation delete half while the "
+                    "suite stays green",
+                ))
+
+    for unit in units:
+        if not unit.seals_keys:
+            warnings.append((
+                unit.scaffold_key,
+                "W-NO-SEALS",
+                f"unit {unit.unit_id}: scaffold task {unit.scaffold_key} has no "
+                "'seals' task depending on it — an incomplete unit. Legal "
+                "(worklists are authored incrementally) and worth seeing",
+            ))
+        for seals_key in unit.seals_keys:
+            if not any(
+                seals_key in by_key[bodies_key].blocked_by
+                for bodies_key in unit.bodies_keys
+            ):
+                warnings.append((
+                    seals_key,
+                    "W-NO-BODIES",
+                    f"unit {unit.unit_id}: seals task {seals_key} has no "
+                    "'bodies' task depending on it — an incomplete unit",
+                ))
+
+    legacy_keys = sorted(k for k, r in roles.items() if r is Role.LEGACY)
+    role_keys = sorted(k for k, r in roles.items() if r is not Role.LEGACY)
+    if legacy_keys and role_keys:
+        warnings.append((
+            "",
+            "W-MIXED",
+            "this file mixes role-less (legacy) rows with role-carrying rows: "
+            f"legacy {', '.join(legacy_keys)}; roles {', '.join(role_keys)}. "
+            "Legal and expected during migration, worth seeing",
+        ))
+
+    return RoleValidation(
+        errors=tuple(msg for _k, _r, msg in sorted(errors, key=lambda e: e[:2])),
+        warnings=tuple(
+            msg for _k, _r, msg in sorted(warnings, key=lambda w: w[:2])
+        ),
+        specs=tuple(sorted(specs, key=lambda s: s.task_key)),
+        units=units,
+    )
 
 
 def agent_correlation_warnings(
@@ -1097,7 +1360,56 @@ def agent_correlation_warnings(
 
     One warning per (unit, shared family), sorted by unit id.
     """
-    raise NotImplementedError
+    if isinstance(default_agent, bool) or not isinstance(default_agent, str):
+        raise RoleProtocolError(
+            f"default_agent must be the run-level implementer name, got "
+            f"{default_agent!r}. There is no module-level guess: under "
+            "--no-claude the effective implementer is grok, not claude"
+        )
+    if not default_agent.strip():
+        raise RoleProtocolError(
+            "default_agent is blank; the effective family of a row with no "
+            "agent: is the run-level implementer, and a blank one would make "
+            "every row correlate with every other"
+        )
+
+    spec_by_key = {spec.task_key: spec for spec in validation.specs}
+    fallback = _agent_family(default_agent)
+
+    def _families(keys: Sequence[str]) -> set[str]:
+        out: set[str] = set()
+        for key in keys:
+            spec = spec_by_key.get(key)
+            declared = spec.declared_agent if spec is not None else None
+            # The EFFECTIVE family: an absent `agent:` is the run default, so
+            # an unstated row and an explicit `agent: claude` are one family.
+            # A differing `model:` tier is deliberately not consulted — opus
+            # and sonnet share their failure modes, which is the whole point.
+            out.add(_agent_family(declared) if declared else fallback)
+        return out
+
+    warnings: list[str] = []
+    for unit in sorted(validation.units, key=lambda u: u.unit_id):
+        shared = sorted(_families(unit.seals_keys) & _families(unit.bodies_keys))
+        for family in shared:
+            warnings.append(
+                f"unit {unit.unit_id}: seals "
+                f"({', '.join(unit.seals_keys)}) and bodies "
+                f"({', '.join(unit.bodies_keys)}) share model family "
+                f"{family!r}. Cross-family sealing is a recommendation, not a "
+                "rule — a shared family is a correlated-failure risk, never a "
+                "refusal (plan §3, Stream D correction)"
+            )
+    return tuple(warnings)
+
+
+def _agent_family(agent: str) -> str:
+    """The model family an ``agent:`` name belongs to.
+
+    Case and surrounding whitespace are not part of the identity; the model
+    *tier* is not consulted at all (that is ``model:``, a separate field).
+    """
+    return agent.strip().lower()
 
 
 def dispatch_satisfied_statuses(
@@ -1132,8 +1444,65 @@ def dispatch_satisfied_statuses(
     Consequence P3 must not paper over: in ``pr`` mode a unit's bodies wait
     for the seals PR to *land*, so a unit serialises across two PR merges.
     That is the intended cost of the phase gate.
+
+    **2026-08-04 P2 ruling, widening what P1 wrote.** The narrowing is keyed on
+    the *dependency* being a SEALS task, not on the (BODIES ← SEALS) pair. P1's
+    prose left (dependency=SEALS, dependent ∈ {SCAFFOLD, SEALS, ADJUDICATE,
+    LEGACY}) unstated and the seals cover those pairs for totality only. The
+    reason to answer them the same way is that the property belongs to the
+    dependency: seals are done when they are committed RED **and reviewed**, so
+    an Awaiting-Review seals task has not finished its phase no matter who is
+    waiting on it. Answering those pairs with the wide pr-mode set would make
+    the gate depend on the waiter's role, which is not where the fact lives.
     """
-    raise NotImplementedError
+    from . import plan as plan_mod
+
+    # Total over `integration` FIRST: an unknown mode must not be answered at
+    # all, for any pair. Membership, not a truthiness test, so "" / "PR" /
+    # "pr " / "auto" are all refusals rather than a silent branch-mode default.
+    if isinstance(integration, bool) or not isinstance(integration, str):
+        raise RoleProtocolError(
+            f"integration must be 'branch' or 'pr', got {integration!r} "
+            f"({type(integration).__name__})"
+        )
+    if integration not in ("branch", "pr"):
+        raise RoleProtocolError(
+            f"unknown integration mode {integration!r}; legal values are "
+            "'branch' and 'pr'. An unrecognised mode must not silently pick "
+            "one of the two status sets"
+        )
+
+    # Total over both roles, with `else: raise` (invariant 3): a Role member
+    # added without updating this dispatch must redden, never fall through to
+    # whichever set happens to be last.
+    for name, role in (("dependent", dependent_role), ("dependency", dependency_role)):
+        if role not in (
+            Role.SCAFFOLD,
+            Role.SEALS,
+            Role.BODIES,
+            Role.ADJUDICATE,
+            Role.LEGACY,
+        ):
+            raise RoleProtocolError(
+                f"{name}_role {role!r} is not a Role member this dispatch "
+                "handles; a new role must be added here explicitly, because "
+                "falling through would order its edges by someone else's rule"
+            )
+
+    if dependency_role is Role.SEALS:
+        if integration == "pr":
+            # The divergence from the pr-mode widening, stated in the contract
+            # above: a review gate, not a code-availability gate.
+            return frozenset({plan_mod.MERGED})
+        # branch mode: Done is already terminal, so the edge does not narrow —
+        # and it is byte-identically plan's own set, not a hand-written twin.
+        return plan_mod._DISPATCH_SATISFIED_BRANCH
+
+    # Every edge NOT into a SEALS dependency keeps today's behaviour exactly,
+    # read off plan's own sets so a change there cannot pass unnoticed here.
+    if integration == "pr":
+        return plan_mod._DISPATCH_SATISFIED_PR
+    return plan_mod._DISPATCH_SATISFIED_BRANCH
 
 
 # --------------------------------------------------------------------------- #
