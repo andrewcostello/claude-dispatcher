@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # check_body_branch.sh <base> <branch> <role>
 #
-# STUB (unit D1, phase P1). Exits non-zero with a not-implemented message.
-# P3 replaces the marked block with the delegation described below.
+# Unit D1. P1 wrote this contract as a stub; P3 replaced the marked block at
+# the bottom with the delegation described below. The contract is unchanged —
+# only the stub's `exit 70` is gone.
 #
 # WHAT IT IS FOR
 # The build protocol (implementation-plan §2a) gives each phase of a unit a
@@ -41,7 +42,9 @@
 #         the role's writable set was unavailable, or the diff was empty.
 #         FAILS CLOSED — callers must not treat 3 as a pass
 #    64   usage error
-#    70   not implemented (this stub)
+#    70   not implemented. Reserved: the stub emitted it, nothing does now.
+#         Kept in the table (and in role_protocol.ExitCode) so a caller that
+#         still special-cases 70 keeps a defined meaning for it
 #
 #   The policy is read from `.dispatcher.yaml` in <base>'s object store, never
 #   from the working tree: a branch may not supply the policy that judges it
@@ -60,11 +63,24 @@
 
 set -euo pipefail
 
-# --- BEGIN not-implemented stub (P3 replaces this block) ---------------------
-echo "check_body_branch.sh: NOT IMPLEMENTED (unit D1 phase P3 fills it)." >&2
-echo "  Called with: ${*:-<no arguments>}" >&2
-echo "  Until it lands, a role's immutable paths are enforced only at plan" >&2
-echo "  time (role_protocol.validate); a branch's diff is NOT checked, so do" >&2
-echo "  not report this as a pass." >&2
-exit 70
-# --- END not-implemented stub ------------------------------------------------
+# --- BEGIN delegation (P3) ---------------------------------------------------
+# Everything below is plumbing. No rule is decided here: not the argument
+# count, not the legal role words, not the exit codes, not one glob. All of
+# that is role_protocol.main, so this script cannot answer differently from
+# the orchestrator's post-implementer check or from a hand invocation
+# (invariant 1). If you find yourself adding a `case` or an `if` that inspects
+# "$@" below, that is the drift this file exists to prevent.
+
+# The dispatcher's own `src/`, resolved from THIS SCRIPT's location — never
+# from the cwd. The cwd is the checkout under judgement, and putting its `src`
+# on the path would let the branch supply the code that judges it, which is
+# invariant 6 by another route.
+_script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+_dispatcher_src="$(dirname -- "${_script_dir}")/src"
+if [ -d "${_dispatcher_src}" ]; then
+  PYTHONPATH="${_dispatcher_src}${PYTHONPATH:+:${PYTHONPATH}}"
+  export PYTHONPATH
+fi
+
+exec "${PYTHON:-python3}" -m claude_dispatcher.role_protocol "$@"
+# --- END delegation ----------------------------------------------------------
