@@ -2114,6 +2114,26 @@ class ExitCode(Enum):
     NOT_IMPLEMENTED = 70
 
 
+#: Stands in for a task key when the role word came from argv rather than from
+#: a `tasks.yaml` row, so :func:`parse_role_field`'s messages stay diagnosable
+#: from a CI log without this module owning a second copy of the closed set.
+_CLI_ROLE_SUBJECT = "<the role argument>"
+
+#: The script face's usage line. One string, so the shell wrapper never has to
+#: restate the arity or the legal roles (which is how the two drift apart).
+_USAGE = "usage: check_body_branch <base> <branch> <role>"
+
+#: Verdict → exit code. A mapping rather than a chain of ifs so a new
+#: :class:`DiffVerdict` member is an *unmapped* verdict — caught below and
+#: failed closed — instead of falling through whichever branch happens to be
+#: last.
+_VERDICT_EXIT_CODES: Mapping[DiffVerdict, ExitCode] = {
+    DiffVerdict.CLEAN: ExitCode.OK,
+    DiffVerdict.VIOLATION: ExitCode.VIOLATION,
+    DiffVerdict.UNDETERMINED: ExitCode.UNDETERMINED,
+}
+
+
 def parse_role_value(text: str) -> Role:
     """Parse a CLI/script role argument into a :class:`Role`.
 
@@ -2122,8 +2142,20 @@ def parse_role_value(text: str) -> Role:
     ``legacy`` is a checker invoked with no role, and answering CLEAN for it
     would let a caller disable the gate by passing a word. Raises
     :class:`RoleProtocolError`.
+
+    **P3 implementation note.** This is deliberately a *delegation* to
+    :func:`parse_role_field` with a synthetic one-key row rather than a second
+    closed-set match. The script face and the plan-time parser must accept
+    exactly the same words: two membership tests over
+    :data:`AUTHORABLE_ROLES` would be two facts in two places and would drift
+    on precisely the interesting shapes (``legacy``, ``scaffold+seals``,
+    blank), which are the ones a caller reaches for to disable the gate. The
+    only difference is the diagnostic subject — there is no task key here, so
+    :data:`_CLI_ROLE_SUBJECT` stands in for one.
     """
-    raise NotImplementedError
+    return parse_role_field(
+        {ROLE_FIELD_CANONICAL: text}, task_key=_CLI_ROLE_SUBJECT
+    )
 
 
 def main(argv: Sequence[str]) -> int:
@@ -2138,8 +2170,115 @@ def main(argv: Sequence[str]) -> int:
 
     ``repo_root`` is the current working directory: the script runs inside the
     checkout being judged, as CI does.
+
+    **P3 implementation notes.**
+
+    * An unparseable ``role`` is :data:`ExitCode.USAGE` (64), never a verdict
+      code. 0/2/3 all tell CI "a gate ran and reached a conclusion"; when the
+      role would not parse, nothing was checked at all, and 3 in particular
+      would be a lie about *which* step failed. The P2 seal only pins "never
+      OK" and names the choice as an open dispute; this is the resolution and
+      the reason for it.
+    * The rationale printed for a violation is
+      :attr:`PathViolation.rationale`, carried on the violation itself. It is
+      deliberately not re-derived from the policy here: a second policy read
+      on the reporting path is exactly how the report and the verdict come to
+      disagree about which rule fired.
+    * :func:`check_branch` is looked up as a module global at call time, not
+      captured, so the one decision point stays substitutable.
     """
-    raise NotImplementedError
+    import sys
+
+    args = list(argv)
+    if len(args) != 3:
+        print(_USAGE, file=sys.stderr)
+        print(
+            f"  roles: {_authorable_values()} "
+            "('legacy' is not accepted: a role-less task has no immutable "
+            "paths, and accepting the word here would disable the gate)",
+            file=sys.stderr,
+        )
+        print(f"  got {len(args)} argument(s): {args!r}", file=sys.stderr)
+        return ExitCode.USAGE.value
+
+    base_ref, branch_ref, role_text = args
+    try:
+        role = parse_role_value(role_text)
+    except RoleProtocolError as exc:
+        print(f"check_body_branch: {exc}", file=sys.stderr)
+        print(_USAGE, file=sys.stderr)
+        return ExitCode.USAGE.value
+
+    result = check_branch(Path.cwd(), base_ref, branch_ref, role)
+
+    _print_report(result)
+
+    exit_code = _VERDICT_EXIT_CODES.get(result.verdict)
+    if exit_code is None:
+        # A DiffVerdict member nobody mapped. Fail closed and say so: the one
+        # thing this function must never do is report an unmapped verdict as
+        # OK (`skills/explicit-state.md` — an unknown state is not a pass).
+        print(
+            f"check_body_branch: unmapped verdict {result.verdict!r}; "
+            "refusing to report it as a pass",
+            file=sys.stderr,
+        )
+        return ExitCode.UNDETERMINED.value
+    return exit_code.value
+
+
+def _print_report(result: RoleDiffResult) -> None:
+    """The human-readable half of :func:`main`, on stdout.
+
+    Everything an agent needs to understand why it was refused, from the run
+    log alone: the verdict, what was actually examined (so a CLEAN verdict can
+    be audited for having examined something), every forbidden path with the
+    glob that forbade it and that rule's rationale, and every changed
+    signature. Diagnostics that are not the verdict go to stderr in
+    :func:`main`.
+    """
+    import sys
+
+    print(
+        f"check_body_branch: {result.verdict.value.upper()} "
+        f"role={result.role.value} base={result.base_ref} "
+        f"branch={result.branch_ref}"
+    )
+    source = result.policy_source.value if result.policy_source else "unresolved"
+    print(f"  policy: {source}")
+    print(f"  changed paths examined: {len(result.checked_paths)}")
+    for path in result.checked_paths:
+        print(f"    {path}")
+
+    for violation in result.violations:
+        print(f"  FORBIDDEN {violation.path}")
+        print(
+            f"    matched {violation.matched_glob} "
+            f"({violation.rule_kind.value})"
+        )
+        if violation.rationale:
+            print(f"    why: {violation.rationale}")
+
+    signature = result.signature
+    if signature is not None:
+        print(f"  scaffolded signatures: {signature.status.value}")
+        if signature.detail:
+            print(f"    {signature.detail}")
+        for change in signature.changes:
+            after = "<removed>" if change.after is None else change.after
+            print(f"  CHANGED SIGNATURE {change.path}::{change.symbol}")
+            print(f"    before: {change.before}")
+            print(f"    after:  {after}")
+
+    if result.detail:
+        print(f"  detail: {result.detail}")
+
+    if result.verdict is DiffVerdict.UNDETERMINED:
+        print(
+            "check_body_branch: UNDETERMINED is not a pass — the branch was "
+            "not cleared",
+            file=sys.stderr,
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover - script face

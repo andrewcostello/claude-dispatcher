@@ -8,6 +8,11 @@ at its root. Current schema:
     `advisory:`, a list of advisory (probationary, non-blocking) reviewer
     family names — e.g. ``panel: {advisory: [grok]}`` — consumed by the
     orchestrator's cross-family panel.
+  * `roles:` — the build-protocol immutable-path additions (see
+    `role_protocol`). Validated here, but NOT returned: the gating path reads
+    this section from the protected base, never from a working tree. Load-time
+    validation exists so an invalid or self-weakening policy is a refusal
+    rather than a line silently dropped into `unknown_keys`.
 
 Future sections (`e2e:`, `risk:`) will arrive in later phases, so this
 loader tolerates unknown top-level keys rather than rejecting them: a repo
@@ -93,6 +98,12 @@ def load(repo_root: str | Path) -> RepoConfig:
     YAML, a `test:` value that is not a non-blank string, a `panel:` value
     that is not a mapping, a `panel.advisory` that is not a list of
     non-empty strings — raises RepoConfigError.
+
+    A `roles:` section is validated through
+    `role_protocol.role_policy_from_mapping` and its failure is re-raised as a
+    RepoConfigError; the parsed policy is discarded (see the comment at the
+    call). An invalid or narrowing section is therefore a load failure, not a
+    dropped line.
     """
     path = Path(repo_root) / CONFIG_FILENAME
     if not path.exists():
@@ -189,13 +200,36 @@ def load(repo_root: str | Path) -> RepoConfig:
             pairs.append((k.strip().lower(), v.strip()))
         model_routing = tuple(pairs)
 
-    # NOTE: `roles:` (the D1 build-protocol immutable-path table) is not in
-    # this tuple yet, so a repo that adds one lands it in `unknown_keys` and
-    # its additions are IGNORED. That is stated rather than implied because a
-    # silently dropped protection is the failure this module's strictness
-    # exists to avoid — see role_protocol.role_policy_from_mapping, which P3
-    # wires in here.
-    known_top_level = ("test", "panel", "integration", "model_routing")
+    # `roles:` — the D1 build-protocol immutable-path table. This loader
+    # VALIDATES the section and deliberately does not keep the parsed policy:
+    # `load` reads the working tree, and the gating path must take its policy
+    # from the protected base (role_protocol.load_role_policy_from_base,
+    # invariant 6), or a branch could supply the policy that judges it.
+    #
+    # Validating it here anyway is the point. Before this wiring the section
+    # landed in `unknown_keys` and its additions were IGNORED — so a repo that
+    # asked for extra protection got none, silently, and a repo that wrote a
+    # *narrowing* entry (`immutable_paths: ['!**/tests/**']`) got a
+    # self-weakening policy that no one refused. A silently dropped protection
+    # is the failure this module's strictness exists to avoid, and the only
+    # place a human sees this file before it is used is a load.
+    #
+    # Imported inside the function: role_protocol reads this module for the
+    # one base-pinned reader, so a module-level import here would be a cycle.
+    # The section NAME comes from role_protocol too — one fact, one place, so
+    # a rename cannot leave the loader watching the old key.
+    from claude_dispatcher import role_protocol
+
+    roles_key = role_protocol.CONFIG_SECTION
+    if roles_key in doc:
+        try:
+            role_protocol.role_policy_from_mapping(doc.get(roles_key))
+        except role_protocol.RoleProtocolError as exc:
+            raise RepoConfigError(
+                f"'{roles_key}' in {path} is not a usable role policy: {exc}"
+            ) from exc
+
+    known_top_level = ("test", "panel", "integration", "model_routing", roles_key)
     unknown = tuple(sorted(
         [str(key) for key in doc if key not in known_top_level]
         + panel_unknown
