@@ -434,6 +434,39 @@ FORBIDDEN_DISPUTED_GLOBS: frozenset[str] = frozenset(
     {"*", "**", "**/*", "/", "./**", "."}
 )
 
+#: The non-overridable floor: globs NO authorable role may write, whatever the
+#: policy says and whatever the task declared (2026-08-07 operator ruling).
+#:
+#: The table above is "effectively a floor" only because config and per-task
+#: overrides may not *remove* a deny entry — and that argument covers the three
+#: DENY_GLOBS roles and nothing else. :data:`Role.ADJUDICATE` is
+#: ALLOW_ONLY_GLOBS, and :func:`effective_rule` builds its writable set out of
+#: the task's own ``disputed_paths:``, so an adjudicate row that declared
+#: ``.dispatcher.yaml`` got that path *allowed* and the gate reported CLEAN —
+#: the most privileged role rewriting the policy file that configures every
+#: role's permissions, its own included. That is the self-widening shape this
+#: unit exists to remove, and the table cannot close it because the table is
+#: not what ADJUDICATE is judged by.
+#:
+#: Two properties this constant carries that the table does not:
+#:
+#:   * it is unioned into the decision **at evaluation time**, not merged into
+#:     a :class:`RolePolicy` — so a policy handed to :func:`check_branch` that
+#:     omits it entirely (a base-pinned ``roles:`` section, a caller-supplied
+#:     policy) still gets it;
+#:   * it is matched against the paths **git reports as changed**, never
+#:     against the strings a task declared. That is the crux: the floor cannot
+#:     be spelled around, because it never reads the spelling. ``sub/**`` in
+#:     ``disputed_paths:`` contains no trace of the floor path and still cannot
+#:     buy ``sub/project/.dispatcher.yaml``.
+#:
+#: **BEHAVIOUR NOT IMPLEMENTED — D1 P2 stub.** Nothing reads this constant yet.
+#: It is declared here so the seals in ``tests/test_role_protocol_floor.py``
+#: have a typed name to bind to; those seals are committed RED and P3 makes
+#: them pass. Adding a glob here without adding its literal rows to that file
+#: reddens the totality seal.
+FLOOR_GLOBS: tuple[str, ...] = ("**/.dispatcher.yaml",)
+
 
 class PolicySource(Enum):
     """Where the effective policy came from — a named state, always reportable.
