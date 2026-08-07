@@ -1989,8 +1989,226 @@ def compare_signatures(
     was deleted) → every base symbol is a change with ``after`` None.
 
     Pure function of the two texts.
+
+    Implementation notes (P3), none of which change what the contract above
+    promises:
+
+      * "Signature" is read off the module body and class bodies only.
+        Function bodies are never descended into, so a nested helper a body
+        agent adds is invisible here — which is the point. Moving a
+        scaffolded ``def`` inside an ``if`` is likewise not an escape: the
+        symbol simply disappears from head and is reported as removed.
+      * A decorator's fingerprint is its unparsed *expression*, not its bare
+        name: ``@dataclass(frozen=True)`` → ``@dataclass`` is a contract
+        change in this codebase, and a name-only reading would miss it.
+      * Both texts None is neither of the two named None cases (the file
+        exists at neither revision, so it is not "new on the branch") and is
+        refused with :class:`RoleDiffError` rather than answered CHECKED-and-
+        clean. :func:`check_branch` turns that into UNDETERMINED, which is
+        the honest verdict for a path git named but neither tree holds.
     """
-    raise NotImplementedError
+    if not path.endswith(".py"):
+        return SignatureComparison(
+            status=SignatureCheckStatus.UNCHECKED_UNSUPPORTED_LANGUAGE,
+            detail=(
+                f"{path} is not a Python file; this module compares Python "
+                "signatures only and will not report an unchecked file as "
+                "unchanged"
+            ),
+        )
+
+    if base_text is None and head_text is None:
+        raise RoleDiffError(
+            f"{path} has no content at either revision; there is nothing to "
+            "compare, and reporting a clean check for a path the diff named "
+            "would be a pass bought by doing nothing"
+        )
+
+    if base_text is None:
+        return SignatureComparison(
+            status=SignatureCheckStatus.CHECKED,
+            detail=f"{path} is new on the branch; no base signature to preserve",
+        )
+
+    try:
+        base_symbols = _scaffolded_signatures(base_text)
+    except SyntaxError as exc:
+        return SignatureComparison(
+            status=SignatureCheckStatus.UNCHECKED_UNPARSEABLE,
+            detail=f"{path} does not parse as Python at base: {exc}",
+        )
+    except ValueError as exc:  # null bytes and similar ast.parse refusals
+        return SignatureComparison(
+            status=SignatureCheckStatus.UNCHECKED_UNPARSEABLE,
+            detail=f"{path} could not be parsed at base: {exc}",
+        )
+
+    if head_text is None:
+        head_symbols: dict[str, str] = {}
+        detail = f"{path} was deleted on the branch"
+    else:
+        try:
+            head_symbols = _scaffolded_signatures(head_text)
+        except SyntaxError as exc:
+            return SignatureComparison(
+                status=SignatureCheckStatus.UNCHECKED_UNPARSEABLE,
+                detail=f"{path} does not parse as Python at head: {exc}",
+            )
+        except ValueError as exc:
+            return SignatureComparison(
+                status=SignatureCheckStatus.UNCHECKED_UNPARSEABLE,
+                detail=f"{path} could not be parsed at head: {exc}",
+            )
+        detail = ""
+
+    changes = tuple(
+        SignatureChange(
+            path=path,
+            symbol=symbol,
+            before=before,
+            after=head_symbols.get(symbol),
+        )
+        for symbol, before in base_symbols.items()
+        if head_symbols.get(symbol) != before
+    )
+    return SignatureComparison(
+        status=SignatureCheckStatus.CHECKED, changes=changes, detail=detail
+    )
+
+
+_HAS_DEFAULT = " = <default>"
+
+
+def _annotation_source(node: ast.expr | None) -> str:
+    """The normalised source of an annotation, or ``""`` when unannotated.
+
+    ``ast.unparse`` rather than the raw slice, so a reflowed or requoted
+    annotation is not a change.
+    """
+    return "" if node is None else ast.unparse(node)
+
+
+def _parameter_fingerprint(
+    kind: str, arg: ast.arg, *, has_default: bool
+) -> str:
+    """One parameter: kind, name, annotation, and whether a default exists.
+
+    The default's VALUE is deliberately absent — that is a body concern.
+    """
+    return (
+        f"{kind} {arg.arg}: {_annotation_source(arg.annotation)}"
+        f"{_HAS_DEFAULT if has_default else ''}"
+    )
+
+
+def _parameter_fingerprints(args: ast.arguments) -> tuple[str, ...]:
+    """Every parameter in declaration order, carrying its kind.
+
+    The kind is part of the contract: making a keyword-only parameter
+    positional widens what callers may do, so ``f(a, *, b)`` and ``f(a, b)``
+    must not fingerprint alike.
+    """
+    positional = list(args.posonlyargs) + list(args.args)
+    first_default = len(positional) - len(args.defaults)
+    fingerprints = [
+        _parameter_fingerprint(
+            "positional_only" if index < len(args.posonlyargs)
+            else "positional_or_keyword",
+            arg,
+            has_default=index >= first_default,
+        )
+        for index, arg in enumerate(positional)
+    ]
+    if args.vararg is not None:
+        fingerprints.append(
+            _parameter_fingerprint("var_positional", args.vararg, has_default=False)
+        )
+    fingerprints.extend(
+        _parameter_fingerprint("keyword_only", arg, has_default=default is not None)
+        for arg, default in zip(args.kwonlyargs, args.kw_defaults)
+    )
+    if args.kwarg is not None:
+        fingerprints.append(
+            _parameter_fingerprint("var_keyword", args.kwarg, has_default=False)
+        )
+    return tuple(fingerprints)
+
+
+def _decorator_fingerprints(
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
+) -> str:
+    """The decorators, unparsed whole.
+
+    ``@dataclass(frozen=True)`` is not ``@dataclass``: in this codebase
+    frozen-ness IS the contract, so the arguments belong to the fingerprint.
+    """
+    return " ".join(f"@{ast.unparse(dec)}" for dec in node.decorator_list)
+
+
+def _function_fingerprint(
+    qualname: str, node: ast.FunctionDef | ast.AsyncFunctionDef
+) -> str:
+    """A ``def``/``async def``'s fingerprint. Body and docstring excluded."""
+    keyword = "async def" if isinstance(node, ast.AsyncFunctionDef) else "def"
+    params = ", ".join(_parameter_fingerprints(node.args))
+    return (
+        f"{keyword} {qualname}({params}) -> {_annotation_source(node.returns)}"
+        f" [{_decorator_fingerprints(node)}]"
+    )
+
+
+def _class_fingerprint(qualname: str, node: ast.ClassDef) -> str:
+    """A class's fingerprint: bases, decorators, and annotated class fields.
+
+    Frozen dataclass fields are the contract here, so field order, name,
+    annotation and has-default all count; the default's value does not.
+    """
+    bases = [ast.unparse(base) for base in node.bases]
+    bases += [
+        f"{'**' if kw.arg is None else kw.arg}={ast.unparse(kw.value)}"
+        for kw in node.keywords
+    ]
+    fields = [
+        f"{stmt.target.id}: {_annotation_source(stmt.annotation)}"
+        f"{_HAS_DEFAULT if stmt.value is not None else ''}"
+        for stmt in node.body
+        if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name)
+    ]
+    return (
+        f"class {qualname}({', '.join(bases)})"
+        f" [{_decorator_fingerprints(node)}]"
+        f" {{{'; '.join(fields)}}}"
+    )
+
+
+def _collect_signatures(
+    body: Sequence[ast.stmt], prefix: str, into: dict[str, str]
+) -> None:
+    """Fingerprint every ``def``/``class`` in ``body``, qualified by ``prefix``.
+
+    Function bodies are not descended into: a helper defined inside a function
+    is body work, not a scaffolded signature.
+    """
+    for stmt in body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            qualname = f"{prefix}{stmt.name}"
+            into[qualname] = _function_fingerprint(qualname, stmt)
+        elif isinstance(stmt, ast.ClassDef):
+            qualname = f"{prefix}{stmt.name}"
+            into[qualname] = _class_fingerprint(qualname, stmt)
+            _collect_signatures(stmt.body, f"{qualname}.", into)
+
+
+def _scaffolded_signatures(text: str) -> dict[str, str]:
+    """Qualified symbol → fingerprint for one revision of one Python file.
+
+    Declaration order is preserved so a report reads top-to-bottom. Raises
+    ``SyntaxError``/``ValueError`` from :func:`ast.parse`; the caller names
+    that UNCHECKED_UNPARSEABLE rather than swallowing it.
+    """
+    signatures: dict[str, str] = {}
+    _collect_signatures(ast.parse(text).body, "", signatures)
+    return signatures
 
 
 def changed_paths_between(
