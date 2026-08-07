@@ -2013,8 +2013,51 @@ def changed_paths_between(
     failure, timeout or unparseable output; the caller maps that to
     :data:`DiffVerdict.UNDETERMINED`. It must never return an empty tuple to
     mean failure.
+
+    **P3 implementation notes.** The argv carries ``-c core.quotePath=false``:
+    with quoting on, git renders a non-ASCII path as ``\\NNN`` escapes, and a
+    path this function mis-renders is a path :func:`evaluate_changed_paths`
+    cannot glob-match — a silent hole in the gate, which is the one failure
+    mode this module exists to prevent. Output is split on newlines rather
+    than read with ``-z`` because git still C-quotes (and therefore never
+    emits a raw newline inside) a path containing a control character.
+
+    Duplicate lines are collapsed, order preserved: the diff of a merge-shaped
+    range can name a path twice, and a doubled violation report would read as
+    two offences.
     """
-    raise NotImplementedError
+    argv = [
+        "git",
+        "-c",
+        "core.quotePath=false",
+        "diff",
+        "--name-only",
+        "--no-renames",
+        f"{base_ref}...{branch_ref}",
+    ]
+    rc, out, err = _run_git_capture(argv, str(repo_root), run)
+    if rc != 0:
+        raise RoleDiffError(
+            f"git diff {base_ref}...{branch_ref} in {repo_root} exited {rc}: "
+            f"{err.strip() or '(no stderr)'}; an empty path list from a failed "
+            "command is indistinguishable from an empty diff, so this raises"
+        )
+
+    paths: list[str] = []
+    seen: set[str] = set()
+    for line in out.split("\n"):
+        if not line:
+            continue
+        if not line.strip():
+            raise RoleDiffError(
+                f"git diff {base_ref}...{branch_ref} in {repo_root} emitted a "
+                f"blank path {line!r}; unparseable output is not an empty diff"
+            )
+        if line in seen:
+            continue
+        seen.add(line)
+        paths.append(line)
+    return tuple(paths)
 
 
 def file_text_at(
@@ -2031,8 +2074,30 @@ def file_text_at(
     a non-regular-file entry raises :class:`RoleDiffError` rather than
     returning None, so an unreadable base can never be mistaken for a
     newly-added file (which would suppress every signature change in it).
+
+    **P3 implementation note.** Spelled ``git show ref:path`` in the contract,
+    implemented as a delegation to ``repo_config.blob_text_at`` — the ONE
+    reader of any path out of a ref's object store (invariant 5, and that
+    function's own docstring names this caller). A private second reader here
+    would have to answer symlink, submodule, non-UTF-8 and unresolvable-ref
+    for itself, and the two readers would diverge on exactly those cases. A
+    bare ``git show`` is in fact *wrong* for two of them: it prints a
+    symlink's target as if it were file content, and it cannot distinguish
+    "absent" from "unreadable" without inspecting git's message.
+
+    Looked up as an attribute on the module, never from-imported, so a seal
+    can prove this function contains no second git read.
     """
-    raise NotImplementedError
+    from . import repo_config as repo_config_mod
+
+    try:
+        return repo_config_mod.blob_text_at(repo_root, ref, path, run=run)
+    except Exception as exc:
+        raise RoleDiffError(
+            f"cannot read {path} at {ref}: {exc}; an unreadable revision is "
+            "never reported as 'the file is not there', which would suppress "
+            "every signature change in it"
+        ) from exc
 
 
 class RoleDiffError(RuntimeError):
@@ -2089,8 +2154,382 @@ def check_branch(
     LEGACY always returns CLEAN when the diff read succeeded and was
     non-empty: a pre-protocol task has no immutable paths, and this function
     must not become a new gate on legacy work.
+
+    **P3 implementation notes**, each an addition the contract implies rather
+    than states, and every one of them fails *closed*:
+
+      * this function never raises. Every failure — an unreadable policy, an
+        illegal override, a git explosion, a :class:`Role` member nothing here
+        handles — becomes UNDETERMINED carrying the message in ``detail``,
+        because :func:`main`'s callers need exit 3, not a traceback.
+      * a ``spec`` whose ``role`` disagrees with the ``role`` argument is
+        UNDETERMINED. The two are separate parameters and nothing reconciles
+        them; picking either one would judge the branch under a rule its
+        caller did not ask for.
+      * ADJUDICATE with a ``spec`` whose ``disputed_paths`` is empty is
+        UNDETERMINED for the same reason a missing ``spec`` is: the writable
+        set, not the object carrying it, is what step 2 requires. An empty
+        allow-only set makes every changed path a violation and loses the
+        reason.
+      * step 5's aggregate over several files reports the FIRST non-CHECKED
+        status and the union of the changes: one unparseable file must not be
+        able to hide a changed signature in another, and a partial check is
+        not a CHECKED one.
+      * :func:`changed_paths_between`, :func:`file_text_at` and
+        :func:`compare_signatures` are called through module globals, so the
+        one entrypoint is the one place a caller can substitute the git seam.
     """
-    raise NotImplementedError
+
+    def _undetermined(
+        detail: str,
+        *,
+        policy_source: PolicySource | None = None,
+        checked_paths: Sequence[str] = (),
+        signature: SignatureComparison | None = None,
+    ) -> RoleDiffResult:
+        return RoleDiffResult(
+            verdict=DiffVerdict.UNDETERMINED,
+            role=role,
+            base_ref=base_ref,
+            branch_ref=branch_ref,
+            signature=signature,
+            checked_paths=tuple(checked_paths),
+            policy_source=policy_source,
+            detail=detail,
+        )
+
+    # 1. The policy. `policy` given wins verbatim — a PR-time pass and a
+    #    task-loop pass cannot disagree if they can be handed the same one.
+    if policy is None:
+        try:
+            policy = load_role_policy_from_base(repo_root, base_ref)
+        except Exception as exc:
+            return _undetermined(
+                f"cannot read the role policy at {base_ref}: {exc}; "
+                "'I could not read the policy' must not be answered with a "
+                "policy, and the built-in defaults would silently drop the "
+                "repo's additions"
+            )
+    source = policy.source
+
+    # 2. The effective rule, resolved before anything is applied to a diff.
+    if spec is not None and spec.role is not role:
+        return _undetermined(
+            f"task {spec.task_key} carries role {spec.role.value!r} but this "
+            f"check was asked for {role.value!r}; judging the branch under "
+            "either one would be a guess about which the caller meant",
+            policy_source=source,
+        )
+    if role is Role.ADJUDICATE and (spec is None or not spec.disputed_paths):
+        return _undetermined(
+            "role 'adjudicate' has no writable set without the task row's "
+            f"{DISPUTED_PATHS_FIELD!r}; an absent list is never 'may touch "
+            "nothing' (a wrong CLEAN for an empty diff) and never 'may touch "
+            "anything'",
+            policy_source=source,
+        )
+    try:
+        rule = (
+            effective_rule(spec, policy)
+            if spec is not None
+            else policy.rule_for(role)
+        )
+    except RoleProtocolError as exc:
+        return _undetermined(
+            f"cannot resolve the effective rule for role {role.value!r}: "
+            f"{exc}; an override that will not validate is never applied and "
+            "never ignored",
+            policy_source=source,
+        )
+
+    # 3. The diff.
+    try:
+        changed = changed_paths_between(repo_root, base_ref, branch_ref, run=run)
+    except RoleDiffError as exc:
+        return _undetermined(
+            f"cannot read the branch diff {base_ref}...{branch_ref}: {exc}",
+            policy_source=source,
+        )
+    if not changed:
+        return _undetermined(
+            f"git reported no changed paths for {base_ref}...{branch_ref}; a "
+            f"role task that changed nothing has not done its {role.value!r} "
+            "phase, and 'did nothing' must not look like 'succeeded'",
+            policy_source=source,
+        )
+
+    if role is Role.LEGACY:
+        return RoleDiffResult(
+            verdict=DiffVerdict.CLEAN,
+            role=role,
+            base_ref=base_ref,
+            branch_ref=branch_ref,
+            signature=_not_applicable_signature(role),
+            checked_paths=changed,
+            policy_source=source,
+            detail=(
+                "legacy: a pre-protocol single-role task has no immutable "
+                "paths, and this check must not become a new gate on it"
+            ),
+        )
+
+    # 4. The paths.
+    try:
+        violations = evaluate_changed_paths(rule, changed)
+    except RoleProtocolError as exc:
+        return _undetermined(
+            f"cannot evaluate the changed paths for role {role.value!r}: "
+            f"{exc}",
+            policy_source=source,
+            checked_paths=changed,
+        )
+
+    # 5. The scaffolded signatures — the half of the gate no path glob sees.
+    if role is Role.BODIES:
+        try:
+            signature = _compare_branch_signatures(
+                repo_root, base_ref, branch_ref, changed, run=run
+            )
+        except RoleDiffError as exc:
+            return _undetermined(
+                f"cannot compare scaffolded signatures across "
+                f"{base_ref}...{branch_ref}: {exc}",
+                policy_source=source,
+                checked_paths=changed,
+            )
+    elif role in (Role.SCAFFOLD, Role.SEALS, Role.ADJUDICATE):
+        signature = _not_applicable_signature(role)
+    else:
+        # Exhaustive by construction: LEGACY returned above and the other four
+        # are named. A Role member added without updating this dispatch lands
+        # here and is UNDETERMINED, never a silent NOT_APPLICABLE + CLEAN.
+        return _undetermined(
+            f"no signature obligation is defined for role {role!r}; a new "
+            "Role member must be handled everywhere it is dispatched, not "
+            "fall through to the permissive branch",
+            policy_source=source,
+            checked_paths=changed,
+        )
+
+    if violations or signature.changes:
+        verdict = DiffVerdict.VIOLATION
+        detail = (
+            f"{len(violations)} forbidden path(s) and "
+            f"{len(signature.changes)} changed scaffolded signature(s)"
+        )
+    elif role is Role.BODIES and signature.status in _UNCHECKED_SIGNATURE_STATUSES:
+        verdict = DiffVerdict.UNDETERMINED
+        detail = (
+            f"the scaffolded-signature comparison did not run "
+            f"({signature.status.value}"
+            f"{': ' + signature.detail if signature.detail else ''}); on "
+            "'bodies' — the one role whose gate that is — an unchecked "
+            "signature is not a pass"
+        )
+    else:
+        verdict = DiffVerdict.CLEAN
+        detail = (
+            f"{len(changed)} changed path(s) checked against the "
+            f"{rule.kind.value} rule for {role.value!r}; signatures: "
+            f"{signature.status.value}"
+        )
+
+    return RoleDiffResult(
+        verdict=verdict,
+        role=role,
+        base_ref=base_ref,
+        branch_ref=branch_ref,
+        violations=violations,
+        signature=signature,
+        checked_paths=changed,
+        policy_source=source,
+        detail=detail,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Private helpers for the diff-time path (no decisions of their own — every
+# rule they serve is stated in the public function that calls them)
+# --------------------------------------------------------------------------- #
+
+#: How long any single git read on the gating path may take. A gate that hangs
+#: is a gate that is not enforcing anything, and CI would report the hang as an
+#: infrastructure failure rather than as an unchecked branch.
+_GIT_TIMEOUT_SECONDS = 30
+
+#: The statuses that mean the signature comparison did NOT run. Named as a set
+#: rather than spelled `is not CHECKED` so NOT_APPLICABLE — a real answer for
+#: a role with no signature duty — can never be swept in with them.
+_UNCHECKED_SIGNATURE_STATUSES: frozenset[SignatureCheckStatus] = frozenset(
+    {
+        SignatureCheckStatus.UNCHECKED_UNSUPPORTED_LANGUAGE,
+        SignatureCheckStatus.UNCHECKED_UNPARSEABLE,
+    }
+)
+
+
+def _not_applicable_signature(role: Role) -> SignatureComparison:
+    """The signature result for a role with no scaffolded-signature duty.
+
+    A :class:`SignatureComparison` rather than None: NOT_APPLICABLE is a named
+    state the result must be able to report, and a None here would make every
+    consumer handle a nullable to learn the same fact.
+    """
+    return SignatureComparison(
+        status=SignatureCheckStatus.NOT_APPLICABLE,
+        detail=(
+            f"role {role.value!r} has no scaffolded-signature obligation; "
+            "only 'bodies' implements against sealed stubs"
+        ),
+    )
+
+
+def _compare_branch_signatures(
+    repo_root: str | Path,
+    base_ref: str,
+    branch_ref: str,
+    changed_paths: Sequence[str],
+    *,
+    run: Callable[..., object] | None,
+) -> SignatureComparison:
+    """:func:`compare_signatures` over every changed ``*.py`` path at base.
+
+    A path absent at ``base_ref`` is skipped: a file that did not exist at
+    base has no scaffolded signature to preserve. Absence comes from
+    :func:`file_text_at` returning None, which that function guarantees means
+    "not in that tree" and nothing else — a read error raises out of here and
+    the caller maps it to UNDETERMINED, because "I could not read the base"
+    reported as "newly added" would suppress every signature change in it.
+
+    Aggregation: the FIRST non-CHECKED status wins and the changes of every
+    file are unioned, so one unparseable file cannot hide a changed signature
+    in another and a partial check never reports as CHECKED.
+    """
+    status = SignatureCheckStatus.CHECKED
+    changes: list[SignatureChange] = []
+    details: list[str] = []
+
+    for path in changed_paths:
+        if not path.endswith(".py"):
+            continue
+        base_text = file_text_at(repo_root, base_ref, path, run=run)
+        if base_text is None:
+            continue
+        head_text = file_text_at(repo_root, branch_ref, path, run=run)
+        comparison = compare_signatures(path, base_text, head_text)
+        changes.extend(comparison.changes)
+        if (
+            status is SignatureCheckStatus.CHECKED
+            and comparison.status is not SignatureCheckStatus.CHECKED
+        ):
+            status = comparison.status
+        if comparison.detail:
+            details.append(comparison.detail)
+
+    return SignatureComparison(
+        status=status, changes=tuple(changes), detail="; ".join(details)
+    )
+
+
+def _run_git_capture(
+    cmd: Sequence[str],
+    cwd: str,
+    run: Callable[..., object] | None,
+) -> tuple[int, str, str]:
+    """``(returncode, stdout, stderr)`` for one git command on the gate path.
+
+    ``run`` is the injectable subprocess seam (``push_verify``'s convention).
+    Its result may be a ``CompletedProcess`` or a ``(rc, out, err)`` triple:
+    the annotation admits both and neither reading is more correct, so both
+    are accepted rather than one being pinned here.
+
+    Every way this can fail — the seam raising, a timeout, a result shape
+    nothing can read, stdout that is not UTF-8 — becomes
+    :class:`RoleDiffError`. Deliberately total: a git read that returns
+    *something* on failure would hand the caller an empty path list, and an
+    empty path list is the one answer this module may never derive from a
+    failure.
+
+    Not shared with ``repo_config._run_git``: that one is the blob reader's
+    plumbing and hands back raw bytes for the object-store path. The one fact
+    those two would be at risk of answering differently — what a git read of a
+    *path* means — is not duplicated: :func:`file_text_at` delegates to
+    ``repo_config.blob_text_at`` rather than running git itself.
+    """
+    import subprocess
+
+    argv = [str(part) for part in cmd]
+    try:
+        if run is None:
+            proc = subprocess.run(
+                argv, cwd=cwd, capture_output=True, timeout=_GIT_TIMEOUT_SECONDS
+            )
+            rc: int = proc.returncode
+            raw_out: object = proc.stdout or b""
+            raw_err: object = proc.stderr or b""
+        else:
+            result = run(
+                argv,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=_GIT_TIMEOUT_SECONDS,
+            )
+            if hasattr(result, "returncode"):
+                rc = int(getattr(result, "returncode"))
+                raw_out = getattr(result, "stdout", "") or ""
+                raw_err = getattr(result, "stderr", "") or ""
+            elif isinstance(result, tuple) and len(result) >= 2:
+                rc = int(result[0])
+                raw_out = result[1] or ""
+                raw_err = result[2] if len(result) > 2 and result[2] else ""
+            else:
+                raise RoleDiffError(
+                    f"the injected git seam returned an unusable "
+                    f"{type(result).__name__} for {' '.join(argv)}; a result "
+                    "that cannot be read is not an empty diff"
+                )
+    except RoleDiffError:
+        raise
+    except Exception as exc:
+        raise RoleDiffError(
+            f"{' '.join(argv)} in {cwd} could not be run: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+
+    return rc, _git_stdout_text(raw_out, argv), _git_stderr_text(raw_err)
+
+
+def _git_stdout_text(raw: object, argv: Sequence[str]) -> str:
+    """git stdout as text, STRICTLY decoded.
+
+    A path this cannot decode raises rather than becoming mojibake: a
+    mis-decoded path is one :func:`evaluate_changed_paths` cannot glob-match,
+    which is a hole in the gate that reports as a pass.
+    """
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, (bytes, bytearray)):
+        try:
+            return bytes(raw).decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise RoleDiffError(
+                f"{' '.join(argv)} emitted output that is not valid UTF-8: "
+                f"{exc}; a path that cannot be decoded cannot be matched"
+            ) from exc
+    raise RoleDiffError(
+        f"{' '.join(argv)} produced stdout of type {type(raw).__name__}, "
+        "which is neither text nor bytes"
+    )
+
+
+def _git_stderr_text(raw: object) -> str:
+    """git stderr as text for a message. Lossy on purpose — it is diagnostic
+    only, and a diagnostic that cannot be decoded must not mask the failure it
+    is describing."""
+    if isinstance(raw, (bytes, bytearray)):
+        return bytes(raw).decode("utf-8", "replace")
+    return "" if raw is None else str(raw)
 
 
 # --------------------------------------------------------------------------- #
