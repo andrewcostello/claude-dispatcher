@@ -549,15 +549,24 @@ def test_dispatch_dispatch_is_total_over_role_x_role_x_integration(
     A combination that falls out of the bottom (returning None, or raising for a
     legal pair) would make `runnable_now` unable to order that edge at all.
 
-    NOTE for the adjudicator: the docstring specifies edges *into* a SEALS
-    dependency only for the SEALS->BODIES case, and specifies "every edge NOT
-    into a SEALS dependency" for today's behaviour — leaving (dependency=SEALS,
-    dependent in {SCAFFOLD, SEALS, ADJUDICATE, LEGACY}) unstated. Those
-    combinations are sealed here for TOTALITY only; their exact sets are raised
-    as a P2 dispute rather than guessed.
+    The NOTE that stood here raised (dependency=SEALS, dependent in {SCAFFOLD,
+    SEALS, ADJUDICATE, LEGACY}) as a P2 dispute and sealed those eight pairs for
+    TOTALITY only. P4 (2026-08-07): the dispute is settled — the P2 ruling of
+    2026-08-04 reads "**Any edge whose *dependency* is a `seals` task uses
+    `{Merged}` in `pr` mode**, not just seals->bodies. The narrower reading let
+    an `adjudicate` task dispatch against an open, unreviewed seals PR — the
+    same fail-open the seals->bodies narrowing exists to close." So the sets are
+    no longer unstated and are asserted exactly.
+
+    A non-empty subset of seven statuses was satisfiable by almost anything:
+    returning `{To Do}` for those eight pairs left the suite green, which is an
+    ordering gate that dispatches against a seals task that has not started.
 
     Red now: NotImplementedError.
-    Green when: the dispatch is exhaustive over both roles and both modes.
+    Green when: the dispatch is exhaustive over both roles and both modes, and
+    every seals-dependency edge in `pr` mode is exactly `{Merged}`.
+    Falsify: widen any seals-dependency edge in pr mode beyond `{Merged}` — the
+    row for that pair goes red.
     """
     satisfied = dispatch_satisfied_statuses(
         dependent, dependency, integration=integration
@@ -565,6 +574,12 @@ def test_dispatch_dispatch_is_total_over_role_x_role_x_integration(
     assert isinstance(satisfied, frozenset)
     assert satisfied, f"{dependent}/{dependency}/{integration} satisfied by nothing"
     assert satisfied <= _KNOWN_STATUSES, satisfied
+    if dependency is Role.SEALS and integration == "pr":
+        assert satisfied == frozenset({plan.MERGED}), (
+            f"{dependent.value} may dispatch against a seals dependency in "
+            f"status {sorted(satisfied)}; the 2026-08-04 P2 ruling requires "
+            "exactly {'Merged'} for EVERY edge whose dependency is a seals task"
+        )
 
 
 @pytest.mark.parametrize("integration", ["", "PR", "Branch", "worktree", "pr ", "auto"])

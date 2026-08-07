@@ -254,17 +254,29 @@ def test_disputed_paths_contract_is_enforced_per_role(row: dict, case: str) -> N
     assert TASK_KEY in str(exc.value), case
 
 
-@pytest.mark.parametrize("wildcard", sorted(FORBIDDEN_DISPUTED_GLOBS))
+#: Written out rather than derived from `FORBIDDEN_DISPUTED_GLOBS` — see below.
+_FORBIDDEN_DISPUTED_EXPECTED: tuple[str, ...] = ("*", "**", "**/*", "/", "./**", ".")
+
+
+@pytest.mark.parametrize("wildcard", _FORBIDDEN_DISPUTED_EXPECTED)
 def test_wildcard_disputed_path_is_refused(wildcard: str) -> None:
     """A wildcard adjudication converts ALLOW_ONLY into UNRESTRICTED.
 
-    The row set is DERIVED from FORBIDDEN_DISPUTED_GLOBS, so adding a wildcard
-    to that frozenset adds its row automatically and removing one removes its
-    protection visibly.
+    P4 (2026-08-07): the row set used to be DERIVED from
+    FORBIDDEN_DISPUTED_GLOBS, and the docstring claimed that "removing one
+    removes its protection visibly". It did the opposite — removing an entry
+    removed its ROW, so the deletion was invisible. Dropping `**/*` (which
+    matches every path) was undetected by the whole suite. Written out, a
+    removal reddens the row that names it.
 
     Red now: NotImplementedError.
     Green when: each wildcard is refused as a `disputed_paths:` entry.
+    Falsify: drop an entry from FORBIDDEN_DISPUTED_GLOBS — its row goes red.
     """
+    assert wildcard in FORBIDDEN_DISPUTED_GLOBS, (
+        f"{wildcard!r} is no longer forbidden as a disputed path; a wildcard "
+        "adjudication is not an adjudication"
+    )
     row = {"role": "adjudicate", DISPUTED_PATHS_FIELD: [wildcard]}
     with pytest.raises(RoleProtocolError):
         parse_task_role_spec(row, task_key=TASK_KEY)

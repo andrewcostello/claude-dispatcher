@@ -216,6 +216,68 @@ def test_a_successful_read_of_an_empty_diff_returns_no_paths() -> None:
     assert changed_paths_between("/x", "main", "feat/x", run=_run_stub(changed=[])) == ()
 
 
+def test_a_non_ascii_path_survives_the_diff_and_is_still_gate_matched(
+    git_repo: Path,
+) -> None:
+    """`-c core.quotePath=false`, sealed by its consequence rather than by its
+    argv. With quoting ON git renders a non-ASCII path as `\\NNN` octal escapes,
+    and a path this function mis-renders is a path `evaluate_changed_paths`
+    cannot glob-match: a body agent could add a seal file named `tests/tést.py`
+    and the gate would report CLEAN. That is a silent hole in the one thing this
+    module exists to prevent, so the seal goes all the way to the verdict.
+
+    Green when: the raw path round-trips AND `**/tests/**` still forbids it.
+    Falsify: drop `-c core.quotePath=false` from the argv — git returns
+    `"tests/t\\303\\251st.py"` (quoted, escaped), the raw-path assertion goes
+    red, and so does the BODIES violation, because no glob matches that string.
+    """
+    _git(["checkout", "-q", "-b", "feat/x"], git_repo)
+    (git_repo / "tests").mkdir()
+    (git_repo / "tests" / "tést.py").write_text("def test_x():\n    pass\n", "utf-8")
+    _git(["add", "."], git_repo)
+    _git(["commit", "-q", "-m", "a seal with a non-ascii name"], git_repo)
+
+    paths = changed_paths_between(git_repo, "main", "feat/x")
+    assert paths == ("tests/tést.py",), (
+        "the path must come back as git's raw bytes decoded, not octal-escaped "
+        f"and not quoted: {paths!r}"
+    )
+    violations = role_protocol.evaluate_changed_paths(
+        built_in_policy().rule_for(Role.BODIES), list(paths)
+    )
+    assert [(v.path, v.matched_glob) for v in violations] == [
+        ("tests/tést.py", "**/tests/**")
+    ], "a non-ASCII seal path must still be forbidden to BODIES"
+
+
+def test_changed_paths_keep_gits_order_and_collapse_only_duplicates() -> None:
+    """Order is the report's order: the paths are printed back to the agent that
+    tripped the gate, and a re-ordered list makes the report disagree with the
+    diff it claims to describe. Duplicates collapse because a merge-shaped range
+    can name a path twice and a doubled violation reads as two offences.
+
+    The fixture is chosen so that every plausible mutation is visible — this is
+    the seal a `sorted(reverse=True)` in the implementation previously survived,
+    because both existing fixtures happened to be reverse-ordered already (one
+    of them is compared as a `set`, so it could never have caught it):
+
+      * `sorted(...)`          -> ('docs/mid.md', 'src/zeta.py', 'tests/alpha.py')
+      * `sorted(..., reverse)` -> ('tests/alpha.py', 'src/zeta.py', 'docs/mid.md')
+      * no dedup               -> four entries
+      * `set(...)`             -> arbitrary order, and reddens on CPython's hash
+
+    none of which equal the expected tuple.
+    """
+    run = _run_stub(
+        changed=["src/zeta.py", "tests/alpha.py", "src/zeta.py", "docs/mid.md"]
+    )
+    assert changed_paths_between("/x", "main", "feat/x", run=run) == (
+        "src/zeta.py",
+        "tests/alpha.py",
+        "docs/mid.md",
+    )
+
+
 # --------------------------------------------------------------------------- #
 # file_text_at — None means absent-from-that-tree and nothing else
 # --------------------------------------------------------------------------- #
@@ -451,21 +513,20 @@ def test_both_texts_none_is_not_a_silent_pass() -> None:
     without doing anything?" shape.
 
     Red now: NotImplementedError.
-    Green when: it either raises or reports a non-CHECKED status — what it must
-    not do is answer "checked, all fine".
-    NOTE: the docstring does not state this case; it is raised as a P2 dispute
-    and sealed only to the extent the contract already implies (no vacuous
-    CHECKED-clean).
+    Green when: it raises `RoleDiffError`.
+    Falsify: return `CHECKED` with no changes (the shape the pre-ruling
+    docstring literally licensed) — this goes red.
+
+    P4 (2026-08-07): the NOTE here said the docstring did not state this case
+    and sealed only "not a vacuous CHECKED-clean", accepting ANY exception. The
+    P2 ruling settled it — "`compare_signatures` with both revisions absent ⇒
+    raise (the caller has a bug)" — and the contract now says so, so the seal
+    names the exception type. An `except Exception: return` also swallowed a
+    stray TypeError as a pass, which is a seal satisfied by two different
+    answers.
     """
-    try:
-        result = compare_signatures("src/m.py", None, None)
-    except NotImplementedError:
-        raise
-    except Exception:
-        return  # an explicit refusal is an acceptable reading
-    assert not (
-        result.status is SignatureCheckStatus.CHECKED and result.changes == ()
-    ), "a path with no content on either side must not report a clean check"
+    with pytest.raises(RoleDiffError):
+        compare_signatures("src/m.py", None, None)
 
 
 @pytest.mark.parametrize(
@@ -572,8 +633,24 @@ def test_a_clean_branch_records_what_it_actually_checked() -> None:
         # A seal author who may edit the implementation can make its own seal
         # pass — the definition of a vacuous seal.
         (Role.SEALS, "src/claude_dispatcher/role_protocol.py", "**/src/**"),
-        (Role.SEALS, "src/claude_dispatcher/reviewer_prompts/_shared.md",
+        # P4 ruling (2026-08-07). This row was `Role.SEALS` and expected
+        # `**/reviewer_prompts/**`; the gate answered `**/src/**`, which is
+        # correct under the FIRST-match contract because SEALS denies `**/src/**`
+        # too and it sits earlier in the table. The fixture, not the table and
+        # not the matcher, was the defect: under SEALS this real path is covered
+        # by TWO globs, so the assertion could not distinguish the protection it
+        # named. Retargeted to BODIES, where `**/reviewer_prompts/**` is the SOLE
+        # cover of this exact path — BODIES has no `**/src/**` deny, because
+        # writing `src/` is its job — so this row can only be satisfied by the
+        # glob it names. This is also the case that matters operationally: the
+        # role that legitimately writes `src/` is the one for which this glob is
+        # the only thing standing between a body agent and the reviewer prompt
+        # that is about to judge it.
+        (Role.BODIES, "src/claude_dispatcher/reviewer_prompts/_shared.md",
          "**/reviewer_prompts/**"),
+        # The twin hole, sealed for the same reason and by the same argument.
+        (Role.BODIES, "src/claude_dispatcher/verifier_prompts/verifier.md",
+         "**/verifier_prompts/**"),
         # P1 must not write the seals it will be judged by.
         (Role.SCAFFOLD, "tests/test_role_protocol_table.py", "**/tests/**"),
         (Role.SCAFFOLD, "pkg/testdata/golden.json", "**/testdata/**"),
@@ -598,6 +675,35 @@ def test_a_forbidden_path_is_a_violation_naming_the_path_and_the_glob(
         (path, expected_glob)
     ]
     assert result.violations[0].rule_kind is RuleKind.DENY_GLOBS
+
+
+def test_every_forbidden_path_is_reported_not_just_the_first() -> None:
+    """An under-reporting gate sends the agent round the loop once per offence.
+
+    P4 (2026-08-07): no fixture in this file put TWO forbidden paths in one
+    diff, so `return tuple(violations[:1])` in `evaluate_changed_paths` was
+    invisible to the whole suite. The innocuous path is kept in the middle so
+    the seal also pins that reporting order follows the diff, not the violation
+    order.
+
+    Green when: all three forbidden paths are reported, in the diff's order.
+    Falsify: `violations[:1]`, or reporting only the last — this goes red.
+    """
+    result = _check(
+        Role.BODIES,
+        [
+            "tests/test_one.py",
+            "src/claude_dispatcher/app.py",
+            "schema/merge.yaml",
+            "roles/reviewer.md",
+        ],
+    )
+    assert result.verdict is DiffVerdict.VIOLATION
+    assert [(v.path, v.matched_glob) for v in result.violations] == [
+        ("tests/test_one.py", "**/tests/**"),
+        ("schema/merge.yaml", "**/schema/**"),
+        ("roles/reviewer.md", "**/roles/*.md"),
+    ]
 
 
 def test_empty_diff_is_undetermined_never_clean() -> None:
@@ -955,11 +1061,17 @@ def test_main_prints_every_violated_path_with_the_glob_that_forbade_it(
     log alone.
 
     Red now: NotImplementedError.
-    Green when: each violated path and its glob appear on stdout.
-    NOTE: the docstring also requires the rule's RATIONALE on stdout, but
-    `RoleDiffResult` carries no rule and `check_branch` is the only permitted
-    decision point — so that half is raised as a P2 dispute (unsatisfiable from
-    the declared result type) and is NOT sealed here.
+    Green when: each violated path, its glob AND the violated rule's rationale
+    appear on stdout.
+    Falsify: drop the `why:` line from `_print_report` — this goes red.
+
+    P4 (2026-08-07): the NOTE here called the rationale half "unsatisfiable
+    from the declared result type" and left it unsealed. That was true when it
+    was written and is now stale: the 2026-08-04 P2 ruling put `rationale` on
+    `PathViolation`, P1 added the field, and `main` prints it — but nothing
+    asserted it, so the print was one deletion away from silently going. The
+    rationale is the whole point of the report: an agent that trips the gate
+    has to learn WHY the path is not its to touch, from the run log alone.
     """
     monkeypatch.setattr(
         role_protocol,
@@ -974,6 +1086,7 @@ def test_main_prints_every_violated_path_with_the_glob_that_forbade_it(
                     path="tests/test_seal.py",
                     matched_glob="**/tests/**",
                     rule_kind=RuleKind.DENY_GLOBS,
+                    rationale="P3 implements the seals, never edits them",
                 ),
             ),
             checked_paths=("tests/test_seal.py",),
@@ -983,6 +1096,10 @@ def test_main_prints_every_violated_path_with_the_glob_that_forbade_it(
     out = capsys.readouterr().out
     assert "tests/test_seal.py" in out
     assert "**/tests/**" in out
+    assert "P3 implements the seals, never edits them" in out, (
+        "the violated rule's rationale must reach stdout: an agent that trips "
+        "the gate is told WHY the path is not its to touch, from the log alone"
+    )
 
 
 def test_the_ci_script_delegates_instead_of_reporting_not_implemented(
@@ -1023,11 +1140,17 @@ def test_the_ci_script_delegates_instead_of_reporting_not_implemented(
     assert proc.returncode != ExitCode.NOT_IMPLEMENTED.value, (
         "the CI face still reports not-implemented: no branch diff is checked"
     )
-    assert proc.returncode in {
-        ExitCode.OK.value,
-        ExitCode.VIOLATION.value,
-        ExitCode.UNDETERMINED.value,
-    }, proc.stderr
+    # P4 (2026-08-07): `rc in {0, 2, 3}` was the whole of this seal, and
+    # `src/app.py` is a path BODIES may write, so the expected verdict is CLEAN
+    # → 0 — exactly what a rubber stamp emits. Replacing the entire delegation
+    # with `[ $# -ne 3 ] && exit 64; exit 0` left the suite green. The report
+    # text is asserted instead: only the real `_print_report` can produce it.
+    assert proc.returncode == ExitCode.OK.value, proc.stderr
+    assert "check_body_branch: CLEAN role=bodies base=main branch=feat/x" in (
+        proc.stdout
+    ), proc.stdout
+    assert "changed paths examined: 1" in proc.stdout, proc.stdout
+    assert "src/app.py" in proc.stdout, proc.stdout
 
     usage = subprocess.run(
         ["bash", str(script), "main"],
@@ -1037,3 +1160,79 @@ def test_the_ci_script_delegates_instead_of_reporting_not_implemented(
         env=env,
     )
     assert usage.returncode == ExitCode.USAGE.value, usage.stderr
+
+
+def test_the_ci_script_does_not_let_the_judged_checkout_supply_its_own_gate(
+    git_repo: Path,
+) -> None:
+    """The branch under judgement must not be able to supply the code that
+    judges it (design §8 / invariant 6). This is the gate-evasion seal for the
+    script's import path, and it is written as the attack rather than as an
+    assertion about how the script computes PYTHONPATH — because the script
+    computed PYTHONPATH correctly, from `BASH_SOURCE`, and was exploitable
+    anyway.
+
+    The hole (found and confirmed by P4, 2026-08-07): for `python -m pkg.mod`,
+    Python sets `sys.path[0]` to the CWD, and PYTHONPATH entries are searched
+    AFTER it. The script runs with cwd = the checkout under judgement, as CI
+    does. So a bodies branch that commits a top-level `claude_dispatcher/`
+    package wins the import over the real one no matter how carefully the
+    wrapper resolved its own `src/`. Run against the pre-fix script, the planted
+    gate below printed "everything is fine" and exited 0 while the same branch
+    added a file under `tests/`.
+
+    Green when: the script suppresses the cwd entry (`-P` / PYTHONSAFEPATH), so
+    the REAL gate runs and reports the planted seal file as a violation.
+    Falsify: remove `-P` and `PYTHONSAFEPATH=1` from the script — the planted
+    `main` runs, returns 0, and this goes red on the exit code AND on the
+    marker string.
+
+    Note this test must NOT put the real `src` on PYTHONPATH: doing so would
+    prove nothing, since the question is precisely whether the wrapper gets the
+    right module onto the path by itself.
+    """
+    import os
+    import sys
+
+    _git(["checkout", "-q", "-b", "feat/x"], git_repo)
+    # The body agent's payload: a gate that approves everything...
+    pkg = git_repo / "claude_dispatcher"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "role_protocol.py").write_text(
+        "import sys\n"
+        "def main(argv):\n"
+        "    print('HOSTILE GATE: everything is fine')\n"
+        "    return 0\n"
+        "if __name__ == '__main__':\n"
+        "    raise SystemExit(main(sys.argv[1:]))\n",
+        encoding="utf-8",
+    )
+    # ...and the forbidden edit it exists to hide.
+    (git_repo / "tests").mkdir()
+    (git_repo / "tests" / "test_planted_seal.py").write_text(
+        "def test_x():\n    pass\n", encoding="utf-8"
+    )
+    _git(["add", "."], git_repo)
+    _git(["commit", "-q", "-m", "a seal, and a gate that approves it"], git_repo)
+
+    script = Path(__file__).resolve().parent.parent / "scripts" / "check_body_branch.sh"
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    env["PYTHON"] = sys.executable
+    proc = subprocess.run(
+        ["bash", str(script), "main", "feat/x", "bodies"],
+        cwd=str(git_repo),
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert "HOSTILE GATE" not in proc.stdout, (
+        "the checkout under judgement supplied the module that judged it: "
+        f"{proc.stdout}"
+    )
+    assert proc.returncode == ExitCode.VIOLATION.value, (
+        "the real gate must run and must refuse the planted seal file; got "
+        f"rc={proc.returncode}\nstdout={proc.stdout}\nstderr={proc.stderr}"
+    )
+    assert "tests/test_planted_seal.py" in proc.stdout

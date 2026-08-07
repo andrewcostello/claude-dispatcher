@@ -44,6 +44,7 @@ from claude_dispatcher.role_protocol import (
     RoleProtocolError,
     RoleRule,
     RuleKind,
+    TEST_PATH_DELEGATED_ROLES,
     built_in_policy,
     evaluate_changed_paths,
     first_matching_glob,
@@ -95,7 +96,63 @@ _GLOB_PROBES: dict[str, str] = {
     "**/verifier_prompts/**": "pkg/verifier_prompts/verifier.md",
 }
 
-_TABLE_PAIRS = sorted(
+# The (role, glob) pairs the table must contain, WRITTEN OUT rather than read
+# off `DEFAULT_ROLE_RULES`.
+#
+# P4 (2026-08-07): this list used to be a comprehension over DEFAULT_ROLE_RULES,
+# which made the mutation-resistance seal below a tautology — deleting a glob
+# from the table deleted its parametrized row, so the row could not go red, it
+# simply stopped existing. Measured: deleting each of the 28 (role, glob) pairs
+# in turn and running all five D1 seal files, 18 of the 28 deletions were caught
+# by NOTHING. Four of those are outright fail-opens with no backstop —
+# BODIES/`**/reviewer_prompts/**`, BODIES/`**/verifier_prompts/**` (the sole
+# cover of the machine-read prompts that judge the branch, since BODIES has no
+# `**/src/**` deny), SEALS/`**/roles/*.md` and SEALS/`**/schema/**` (both live
+# outside `src/`, so nothing else denies them). A seal that cannot fail reads as
+# protection while providing none, which is the exact failure this unit exists
+# to remove.
+#
+# Written out, the two directions split cleanly and each deletion still reddens
+# exactly ONE seal, as the docstrings below promise:
+#   * REMOVING a glob from DEFAULT_ROLE_RULES -> that pair's parametrized row
+#     goes red (the row still exists, and `first_matching_glob` now returns None)
+#   * ADDING one -> `test_every_table_glob_has_exactly_one_probe_and_one_cover`
+#     goes red, because the live table carries a pair this list does not.
+_EXPECTED_TABLE_PAIRS: tuple[tuple[str, str], ...] = (
+    ("bodies", "**/*.spec.*"),
+    ("bodies", "**/*.test.*"),
+    ("bodies", "**/*_test.go"),
+    ("bodies", "**/*_test.py"),
+    ("bodies", "**/.dispatcher.yaml"),
+    ("bodies", "**/conftest.py"),
+    ("bodies", "**/reviewer_prompts/**"),
+    ("bodies", "**/roles/*.md"),
+    ("bodies", "**/schema/**"),
+    ("bodies", "**/test_*.py"),
+    ("bodies", "**/testdata/**"),
+    ("bodies", "**/tests/**"),
+    ("bodies", "**/verifier_prompts/**"),
+    ("scaffold", "**/*.spec.*"),
+    ("scaffold", "**/*.test.*"),
+    ("scaffold", "**/*_test.go"),
+    ("scaffold", "**/*_test.py"),
+    ("scaffold", "**/.dispatcher.yaml"),
+    ("scaffold", "**/conftest.py"),
+    ("scaffold", "**/test_*.py"),
+    ("scaffold", "**/testdata/**"),
+    ("scaffold", "**/tests/**"),
+    ("seals", "**/.dispatcher.yaml"),
+    ("seals", "**/reviewer_prompts/**"),
+    ("seals", "**/roles/*.md"),
+    ("seals", "**/schema/**"),
+    ("seals", "**/src/**"),
+    ("seals", "**/verifier_prompts/**"),
+)
+
+_TABLE_PAIRS = _EXPECTED_TABLE_PAIRS
+
+#: The same pairs as the live table reports them — used ONLY to detect additions.
+_LIVE_TABLE_PAIRS = sorted(
     (rule.role.value, glob) for rule in DEFAULT_ROLE_RULES for glob in rule.globs
 )
 
@@ -330,16 +387,28 @@ def test_every_table_glob_has_exactly_one_probe_and_one_cover() -> None:
     giving it a probe here would encode the pre-ruling table.
     Green when: `first_matching_glob` delegates to `risk.matches_any_glob` and
     `**/generated/**` is gone from DEFAULT_ROLE_RULES.
+    Falsify: add any glob to any DEFAULT_ROLE_RULES row — this goes red (and
+    only this), because the live table then carries a pair `_EXPECTED_TABLE_PAIRS`
+    does not.
     """
+    # Additions: a glob nobody wrote down here, and therefore a glob with no
+    # probe and no parametrized row. Checked against the WRITTEN list, not
+    # against itself — see the P4 note on `_EXPECTED_TABLE_PAIRS`.
+    unexpected = sorted(set(_LIVE_TABLE_PAIRS) - set(_EXPECTED_TABLE_PAIRS))
+    assert not unexpected, (
+        "DEFAULT_ROLE_RULES carries (role, glob) pairs that are not pinned by a "
+        "parametrized row below. Add them to _EXPECTED_TABLE_PAIRS (and give the "
+        f"glob a probe in _GLOB_PROBES) or they are unsealed: {unexpected}"
+    )
     missing = sorted(
-        {glob for _role, glob in _TABLE_PAIRS} - set(_GLOB_PROBES)
+        {glob for _role, glob in _EXPECTED_TABLE_PAIRS} - set(_GLOB_PROBES)
     )
     assert not missing, (
-        "DEFAULT_ROLE_RULES globs with no probe path — add one to _GLOB_PROBES "
+        "expected table globs with no probe path — add one to _GLOB_PROBES "
         f"so a deletion cannot go unnoticed: {missing}"
     )
     # Non-vacuity: the probe table must actually be exercised by the rows below.
-    assert len(_TABLE_PAIRS) >= 15, _TABLE_PAIRS
+    assert len(_EXPECTED_TABLE_PAIRS) >= 15, _EXPECTED_TABLE_PAIRS
     # And the lens must be the module's, not a re-implementation.
     assert first_matching_glob("pkg/tests/x.py", ("**/tests/**",)) == "**/tests/**"
 
@@ -355,7 +424,11 @@ def test_each_glob_denies_its_probe_and_is_that_probe_s_only_cover(
     `evaluate_changed_paths` all raise NotImplementedError.
     Green when: they are implemented and the table still contains this glob.
     Falsify: delete this glob from DEFAULT_ROLE_RULES — this row (and no other)
-    goes red, because `first_matching_glob` then returns None.
+    goes red, because `covers` is then empty and `first_matching_glob` returns
+    None. This only holds because the parametrize list is WRITTEN OUT in
+    `_EXPECTED_TABLE_PAIRS`; when it was derived from the table, deleting a glob
+    deleted the row instead of reddening it and 18 of 28 deletions went
+    undetected across all five D1 seal files (P4, 2026-08-07).
     """
     role = Role(role_value)
     probe = _GLOB_PROBES.get(glob)
@@ -408,6 +481,21 @@ def _test_path_alternatives() -> list[str]:
     return inner.split("|")
 
 
+#: The roles whose deny set must include `seal_verify`'s predicate, WRITTEN OUT
+#: rather than read off `TEST_PATH_DELEGATED_ROLES` — deriving it from the
+#: constant under test is the tautology documented on `_EXPECTED_TABLE_PAIRS`.
+#: P4 (2026-08-07): this seal read `Role.BODIES` only, so the mutation
+#: `TEST_PATH_DELEGATED_ROLES = (Role.BODIES,)` left the whole suite green while
+#: a SCAFFOLD agent could add `test/unit.py`, `web/__tests__/app.js`,
+#: `spec/models.rb`, `pkg/fixtures/sample.json` or `src/app/handler_test.js` —
+#: every one a file `seal_verify` calls a test — with the gate reporting CLEAN.
+#: P1 must not write the seals it will be judged by any more than P3 may.
+_DELEGATED_ROLES_EXPECTED: tuple[Role, ...] = (Role.SCAFFOLD, Role.BODIES)
+
+
+@pytest.mark.parametrize(
+    "role", _DELEGATED_ROLES_EXPECTED, ids=lambda r: r.value
+)
 @pytest.mark.parametrize(
     "alternative, probe",
     sorted(
@@ -416,8 +504,8 @@ def _test_path_alternatives() -> list[str]:
         for probe in probes
     ),
 )
-def test_every_seal_verify_test_path_is_denied_to_bodies(
-    alternative: str, probe: str
+def test_every_seal_verify_test_path_is_denied_to_every_delegated_role(
+    alternative: str, probe: str, role: Role
 ) -> None:
     """Two disagreeing notions of "is this a test file" is invariant 5's failure.
 
@@ -440,9 +528,17 @@ def test_every_seal_verify_test_path_is_denied_to_bodies(
     singular `test/`, `__tests__/`, `spec/`, `fixtures/`, and `_test.` with a
     non-Python/Go extension. (b) is a scaffold/contract disagreement raised as a
     P2 dispute: role_protocol's own module docstring promises this coherence.
-    Green when: `evaluate_changed_paths` is implemented AND the BODIES deny set
-    covers every `_TEST_PATH` alternative.
+    Green when: `evaluate_changed_paths` is implemented AND each delegated
+    role's deny set covers every `_TEST_PATH` alternative.
+    Falsify: drop either role from `TEST_PATH_DELEGATED_ROLES` — that role's
+    rows go red (P4, 2026-08-07: previously only BODIES was checked, so dropping
+    SCAFFOLD was invisible).
     """
+    assert TEST_PATH_DELEGATED_ROLES == _DELEGATED_ROLES_EXPECTED, (
+        "the delegated-role set changed; this seal's coverage is written out "
+        "on purpose, so update _DELEGATED_ROLES_EXPECTED deliberately: "
+        f"{TEST_PATH_DELEGATED_ROLES}"
+    )
     alternatives = _test_path_alternatives()
     assert sorted(alternatives) == sorted(_TEST_PATH_PROBES), (
         "seal_verify._TEST_PATH changed shape; probe table is stale: "
@@ -452,13 +548,13 @@ def test_every_seal_verify_test_path_is_denied_to_bodies(
         f"{probe!r} does not exhibit alternative {alternative!r} — the fixture, "
         "not the table, is wrong"
     )
-    bodies = _table_rule(Role.BODIES)
-    violations = evaluate_changed_paths(bodies, [probe])
+    rule = _table_rule(role)
+    violations = evaluate_changed_paths(rule, [probe])
     assert [v.path for v in violations] == [probe], (
-        f"seal_verify calls {probe!r} a test file but BODIES may write it: "
-        f"{alternative!r} is uncovered by {bodies.globs}"
+        f"seal_verify calls {probe!r} a test file but {role.value} may write "
+        f"it: {alternative!r} is uncovered by {rule.globs}"
     )
-    assert violations[0].matched_glob in bodies.globs
+    assert violations[0].matched_glob in rule.globs
 
 
 # --------------------------------------------------------------------------- #
@@ -515,15 +611,40 @@ def test_generated_paths_are_absent_from_the_deny_table_for_every_role() -> None
             assert evaluate_changed_paths(rule, ["pkg/generated/types.py"]) == ()
 
 
+#: The members `FORBIDDEN_DISPUTED_GLOBS` must have, written out — see the P4
+#: note in the seal below. `**/*` is the load-bearing one: it matches every path.
+_FORBIDDEN_DISPUTED_EXPECTED: tuple[str, ...] = (
+    "*",
+    "**",
+    "**/*",
+    "/",
+    "./**",
+    ".",
+)
+
+
 def test_forbidden_disputed_globs_are_the_wildcards_that_void_adjudication() -> None:
     """A wildcard `disputed_paths:` turns ALLOW_ONLY into UNRESTRICTED.
 
     Red now: `validate_rule` raises NotImplementedError.
     Green when: every forbidden wildcard is refused as an ALLOW_ONLY glob.
     Falsify: drop an entry from FORBIDDEN_DISPUTED_GLOBS — its row goes red.
+
+    P4 (2026-08-07): the loop used to iterate `FORBIDDEN_DISPUTED_GLOBS` itself,
+    so dropping an entry dropped its iteration rather than reddening it — the
+    tautology documented on `_EXPECTED_TABLE_PAIRS`. Dropping `**/*` was
+    undetected by the whole suite, and `**/*` matches every path, so a task
+    could declare `disputed_paths: ["**/*"]` and hand ADJUDICATE an unrestricted
+    writable set: ALLOW_ONLY converted to UNRESTRICTED with extra steps, the one
+    thing this constant exists to forbid. The expected members are now written
+    out and the set is pinned by equality.
     """
-    assert FORBIDDEN_DISPUTED_GLOBS, "an empty forbidden set would be vacuous"
-    for glob in sorted(FORBIDDEN_DISPUTED_GLOBS):
+    assert FORBIDDEN_DISPUTED_GLOBS == frozenset(_FORBIDDEN_DISPUTED_EXPECTED), (
+        "FORBIDDEN_DISPUTED_GLOBS changed; it is written out here on purpose so "
+        "a removal reddens instead of vanishing: "
+        f"{sorted(FORBIDDEN_DISPUTED_GLOBS ^ frozenset(_FORBIDDEN_DISPUTED_EXPECTED))}"
+    )
+    for glob in _FORBIDDEN_DISPUTED_EXPECTED:
         rule = RoleRule(
             role=Role.ADJUDICATE,
             kind=RuleKind.ALLOW_ONLY_GLOBS,

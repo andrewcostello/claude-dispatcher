@@ -82,5 +82,19 @@ if [ -d "${_dispatcher_src}" ]; then
   export PYTHONPATH
 fi
 
-exec "${PYTHON:-python3}" -m claude_dispatcher.role_protocol "$@"
+# `-P` (and PYTHONSAFEPATH, its env twin) stops Python prepending the cwd to
+# `sys.path`. Without it the BASH_SOURCE resolution above buys NOTHING: for
+# `python -m pkg.mod`, `sys.path[0]` is the cwd and PYTHONPATH entries come
+# AFTER it, so the checkout under judgement wins the import. A bodies branch
+# that commits a top-level `claude_dispatcher/role_protocol.py` whose `main`
+# returns 0 is then judged by its own gate — verified exploitable against this
+# script before this line existed (P4, 2026-08-07): the planted gate printed
+# "everything is fine" and exited 0 while the same branch added a file under
+# `tests/`. Sealed by
+# `test_the_ci_script_does_not_let_the_judged_checkout_supply_its_own_gate`.
+# Both spellings are set: `-P` is the flag, PYTHONSAFEPATH covers a $PYTHON
+# that is a wrapper swallowing argv flags. Requires CPython >= 3.11, which
+# `pyproject.toml` already floors.
+export PYTHONSAFEPATH=1
+exec "${PYTHON:-python3}" -P -m claude_dispatcher.role_protocol "$@"
 # --- END delegation ----------------------------------------------------------

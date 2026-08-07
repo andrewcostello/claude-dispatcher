@@ -1983,10 +1983,18 @@ def compare_signatures(
 
     Statuses: both texts parse → CHECKED. ``path`` is not ``*.py`` →
     UNCHECKED_UNSUPPORTED_LANGUAGE with the path in ``detail``. Either text
-    fails to parse → UNCHECKED_UNPARSEABLE. ``base_text`` None (the file is
-    new on the branch) → CHECKED with no changes: a file that did not exist at
-    base has no scaffolded signature to preserve. ``head_text`` None (the file
-    was deleted) → every base symbol is a change with ``after`` None.
+    fails to parse → UNCHECKED_UNPARSEABLE. ``base_text`` None **and
+    ``head_text`` not None** (the file is new on the branch) → CHECKED with no
+    changes: a file that did not exist at base has no scaffolded signature to
+    preserve. ``head_text`` None (the file was deleted) → every base symbol is
+    a change with ``after`` None. **Both texts None → raises
+    :class:`RoleDiffError`**: the file exists at neither revision, so it is
+    neither "new on the branch" nor "deleted", the caller has a bug, and the
+    one answer that must never be given is CHECKED-with-no-changes — a pass
+    bought by having nothing to look at (2026-08-04 P2 ruling; the earlier text
+    said flatly "``base_text`` None → CHECKED", which read literally made the
+    both-absent case a silent pass). :func:`check_branch` turns the raise into
+    UNDETERMINED.
 
     Pure function of the two texts.
 
@@ -2001,11 +2009,10 @@ def compare_signatures(
       * A decorator's fingerprint is its unparsed *expression*, not its bare
         name: ``@dataclass(frozen=True)`` → ``@dataclass`` is a contract
         change in this codebase, and a name-only reading would miss it.
-      * Both texts None is neither of the two named None cases (the file
-        exists at neither revision, so it is not "new on the branch") and is
-        refused with :class:`RoleDiffError` rather than answered CHECKED-and-
-        clean. :func:`check_branch` turns that into UNDETERMINED, which is
-        the honest verdict for a path git named but neither tree holds.
+      * The both-texts-None refusal is stated in the contract above rather
+        than here, because it IS the contract and not an implementation
+        choice: UNDETERMINED is the honest verdict for a path git named but
+        neither tree holds.
     """
     if not path.endswith(".py"):
         return SignatureComparison(
