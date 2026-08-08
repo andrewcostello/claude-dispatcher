@@ -41,13 +41,48 @@ implementation stays RED on six of its eight rows. Each row also asserts, in the
 test body, whether the declaration genuinely GRANTS the changed path, so a row
 can never pass on an allowlist miss it was not testing.
 
-What is deliberately NOT sealed here
-------------------------------------
-`Role.LEGACY`. `test_role_protocol_diff.test_legacy_is_clean_on_any_non_empty_diff`
-pins LEGACY + `.dispatcher.yaml` to CLEAN, and the module contract is emphatic
-that a pre-protocol row must behave exactly as it does today. "The floor applies
-to every role" is therefore sealed here as "every AUTHORABLE role". Raised as a
-P2 dispute — see the report.
+LEGACY — resolved by P4, 2026-08-07
+-----------------------------------
+This file originally sealed the floor for the four AUTHORABLE roles only, and
+said so under a heading reading "what is deliberately NOT sealed here". The
+reason was real and was not the seal author's to overrule: two committed seals
+asserted the opposite (`test_role_protocol_diff.py::test_legacy_is_clean_on_any_
+non_empty_diff` pinned LEGACY + `.dispatcher.yaml` to CLEAN with
+`violations == ()`, and `test_role_protocol_table.py`'s UNRESTRICTED row probed
+the same path expecting none), and a seal author may not amend a seal.
+
+The operator has ruled that the floor applies to LEGACY too, on the ground that
+the alternative is not a floor: LEGACY is the state a row acquires by having no
+`role:` key, so a floor LEGACY escapes is bypassed by DELETING ONE LINE, and the
+deleted line buys the right to rewrite the file that configures every role's
+permissions. Both seals were amended by P4 — each carries its own AMENDED BY P4
+note and justification — and the coverage here is extended to all five roles:
+the LEGACY rows of `_FLOOR_x_ROLE_ROWS`, plus
+`test_a_role_less_task_cannot_omit_its_way_past_the_floor` and its control
+`test_legacy_still_writes_everything_that_is_not_on_the_floor`.
+
+Note for P3: `check_branch` short-circuits LEGACY to CLEAN *before* the changed
+paths are evaluated, and its docstring still says "LEGACY always returns CLEAN
+when the diff read succeeded and was non-empty". That sentence is overridden by
+this ruling and must be updated in the same commit that implements the floor;
+P4 left `src/` alone deliberately (see the FLOOR_GLOBS note below).
+
+Plan time and LEGACY: nothing to seal. `disputed_paths:` is forbidden on every
+role but ADJUDICATE, and `immutable_paths:` only ADDs, so a LEGACY row has no
+way to DECLARE a floor path at all. Point 2 is ADJUDICATE-shaped by
+construction; point 1 is what covers LEGACY.
+
+`FLOOR_GLOBS` living in `src/` — P4 reading, noted not acted on
+---------------------------------------------------------------
+The typed constant this file binds to was added by the SEALS author to
+`src/claude_dispatcher/role_protocol.py`, and `**/src/**` is denied to SEALS.
+The gate this unit builds would flag that commit. P4's reading: the write was
+sanctioned (the SEALS brief allows the typed stub a seal needs something to bind
+to, and the constant carries no behaviour — nothing reads it), but the gate is
+right to flag it and the exemption is not expressible in the policy today. It is
+recorded as a known, accepted divergence rather than papered over; the durable
+fix is for the SCAFFOLD phase to land the typed name, so the seal author never
+needs to write under `src/` at all. No seal here asserts anything about it.
 
 Vacuity discipline
 ------------------
@@ -149,8 +184,13 @@ def _policy_without_the_floor() -> RolePolicy:
     rules: list[RoleRule] = []
     for role in Role:
         if role is Role.LEGACY:
+            # P4: `_STRIPPED_RATIONALE` here too, not the word "legacy", so the
+            # LEGACY rows of `_FLOOR_x_ROLE_ROWS` get the same proof as every
+            # other row that the violation carried the FLOOR's reason.
             rules.append(
-                RoleRule(Role.LEGACY, RuleKind.UNRESTRICTED, (), "legacy")
+                RoleRule(
+                    Role.LEGACY, RuleKind.UNRESTRICTED, (), _STRIPPED_RATIONALE
+                )
             )
         elif role is Role.ADJUDICATE:
             rules.append(
@@ -418,16 +458,16 @@ def test_the_floor_fires_on_the_floor_path_and_leaves_the_rest_of_the_diff_alone
 # Point 1c — the floor is not a property of the policy, so nothing can lower it
 # --------------------------------------------------------------------------- #
 
-#: (role, floor glob, probe path). WRITTEN OUT — four authorable roles times the
-#: two probes of the one floor glob. Same P4 lesson as `_FLOOR_ROWS`: derived
-#: from `AUTHORABLE_ROLES` or from `FLOOR_GLOBS`, deleting either constant's
-#: entry would delete rows instead of reddening them.
+#: (role, floor glob, probe path). WRITTEN OUT — every role times the two probes
+#: of the one floor glob. Same P4 lesson as `_FLOOR_ROWS`: derived from
+#: `AUTHORABLE_ROLES` or from `FLOOR_GLOBS`, deleting either constant's entry
+#: would delete rows instead of reddening them.
 #:
-#: LEGACY is absent deliberately —
-#: `test_role_protocol_diff.test_legacy_is_clean_on_any_non_empty_diff` pins
-#: LEGACY + `.dispatcher.yaml` to CLEAN and a pre-protocol row must behave
-#: exactly as it does today. Raised as a P2 dispute against "the floor applies
-#: to EVERY role".
+#: The two `legacy` rows were added by P4 on the 2026-08-07 ruling that the
+#: floor applies to LEGACY as well (see the module docstring). They are the
+#: policy-independent half of that ruling: the four authorable rows prove no
+#: supplied policy can lower the floor, and the LEGACY rows prove the same for
+#: the one role whose rule has no globs to lower.
 _FLOOR_x_ROLE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("scaffold", "**/.dispatcher.yaml", ".dispatcher.yaml"),
     ("scaffold", "**/.dispatcher.yaml", "sub/project/.dispatcher.yaml"),
@@ -437,6 +477,8 @@ _FLOOR_x_ROLE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("bodies", "**/.dispatcher.yaml", "sub/project/.dispatcher.yaml"),
     ("adjudicate", "**/.dispatcher.yaml", ".dispatcher.yaml"),
     ("adjudicate", "**/.dispatcher.yaml", "sub/project/.dispatcher.yaml"),
+    ("legacy", "**/.dispatcher.yaml", ".dispatcher.yaml"),
+    ("legacy", "**/.dispatcher.yaml", "sub/project/.dispatcher.yaml"),
 )
 
 
@@ -452,17 +494,19 @@ def test_a_policy_that_omits_the_floor_cannot_lower_it_for_any_role(
     caller-supplied policy, a future config shape that replaces rather than adds
     — none of them can reach the floor, because the floor was never in there.
 
-    A floor that any role can escape is not a floor, so all four authorable
-    roles are checked. For the three DENY roles the compiled-in table already
-    denies this path; that is exactly why the injected policy is stripped —
-    under the built-in table these rows would pass without a floor existing at
-    all.
+    A floor that any role can escape is not a floor, so all FIVE roles are
+    checked (P4, 2026-08-07: LEGACY was added on the operator's ruling — a floor
+    the role-less state escapes is bypassed by deleting the `role:` line). For
+    the three DENY roles the compiled-in table already denies this path; that is
+    exactly why the injected policy is stripped — under the built-in table those
+    rows would pass without a floor existing at all.
 
     The fixture exhibits the defect first: the probe is asserted WRITABLE under
     the injected policy (no deny glob covers it; ADJUDICATE's declaration grants
-    it), so a pass can only come from the floor.
+    it; LEGACY's rule is UNRESTRICTED and covers nothing), so a pass can only
+    come from the floor.
 
-    Red now: `DiffVerdict.CLEAN` for all eight rows.
+    Red now: `DiffVerdict.CLEAN` for all ten rows.
     Green when: the floor fires regardless of the policy in hand.
     Falsify: merge `FLOOR_GLOBS` into `built_in_policy()` instead of unioning at
     evaluation time — every row here goes red, because the injected policy never
@@ -476,6 +520,11 @@ def test_a_policy_that_omits_the_floor_cannot_lower_it_for_any_role(
         "the injected policy denies the probe; this row would then pass "
         "without a floor existing"
     )
+    if role is Role.LEGACY:
+        # The same "the fixture exhibits the defect" step, for the one role
+        # whose rule carries no globs to inspect: UNRESTRICTED permits the probe
+        # outright, so nothing but the floor can produce a violation here.
+        assert rule.kind is RuleKind.UNRESTRICTED, rule.kind
 
     spec = _spec(role, probe) if role is Role.ADJUDICATE else None
     if spec is not None:
@@ -547,6 +596,78 @@ def test_a_per_task_override_cannot_add_a_floor_path_to_the_writable_set() -> No
 
 
 # --------------------------------------------------------------------------- #
+# Point 1d — LEGACY, the state you get by deleting a line (P4, 2026-08-07)
+# --------------------------------------------------------------------------- #
+
+
+def test_a_role_less_task_cannot_omit_its_way_past_the_floor() -> None:
+    """The cheapest bypass of all: no `role:` key, therefore `Role.LEGACY`.
+
+    Added by P4 on the operator's ruling, with the operator's reasoning: a floor
+    LEGACY escapes is not a floor, because LEGACY is not a role anyone has to be
+    granted — it is what a row IS when the `role:` line is missing. Every seal
+    above could hold and the policy file would still be one deleted line away
+    from writable. The seal author could not add this row (two committed seals
+    asserted the opposite and a seal author may not amend a seal); both were
+    amended by P4 and are named in the module docstring.
+
+    This goes through `built_in_policy()` rather than the stripped policy on
+    purpose: the stripped-policy version is `_FLOOR_x_ROLE_ROWS`' two `legacy`
+    rows, and this one pins the same answer under the policy the gate actually
+    runs with.
+
+    The diff is mixed on purpose — a doc, the policy file and a seal — so this
+    cannot be satisfied by refusing legacy work wholesale, and so the report
+    names only the path that is actually on the floor.
+
+    Red now: `DiffVerdict.CLEAN`, `violations == ()`. `check_branch` returns
+    CLEAN for LEGACY *before* it evaluates any path (verified against the built
+    worktree), which is the specific place P3 has to union the floor in.
+    Green when: exactly one violation, the policy file, naming the floor glob.
+    Falsify: exempt LEGACY from the floor — this goes red. Refuse legacy work
+    wholesale — the control below goes red.
+    """
+    changed = ["docs/x.md", _ROOT_CONFIG, "tests/test_x.py"]
+    result = _check(Role.LEGACY, changed)
+    assert result.checked_paths == tuple(changed)
+    assert [(v.path, v.matched_glob) for v in result.violations] == [
+        (_ROOT_CONFIG, _THE_CONFIG_FLOOR)
+    ], (
+        "a row with no `role:` key rewrote the file that configures every "
+        "role's permissions; the floor was bypassed by deleting one line"
+    )
+    assert result.verdict is DiffVerdict.VIOLATION
+
+
+def test_legacy_still_writes_everything_that_is_not_on_the_floor() -> None:
+    """The control for the ruling above, and the reason it is a narrowing rather
+    than a withdrawal.
+
+    Every `features/*/tasks.yaml` in this repo is role-less, so "the floor
+    applies to LEGACY" must cost those rows nothing outside the floor. The
+    probes are the paths OTHER roles are denied — tests, schema, src, the
+    reviewer's own instructions — none of which LEGACY has ever been gated on.
+
+    Green now, and it must STILL be green after P3. If it ever goes red, the
+    floor was implemented as "gate legacy work like a role", which is a
+    different and much larger change than the one that was ruled.
+    """
+    result = _check(
+        Role.LEGACY,
+        [
+            "docs/x.md",
+            "tests/test_x.py",
+            "schema/merge.yaml",
+            "src/claude_dispatcher/plan.py",
+            "roles/reviewer.md",
+            "features/d1/tasks.yaml",
+        ],
+    )
+    assert result.verdict is DiffVerdict.CLEAN
+    assert result.violations == ()
+
+
+# --------------------------------------------------------------------------- #
 # Point 2 — plan-time refusal
 # --------------------------------------------------------------------------- #
 
@@ -559,6 +680,37 @@ def test_a_per_task_override_cannot_add_a_floor_path_to_the_writable_set() -> No
 #: is hostile and unnecessary — the decision-time floor catches them for real,
 #: which is the entire reason the ruling has two independent points. This seal
 #: is a LOWER bound on the refusal set; refusing more is legal.
+#:
+#: **P4 RULING, 2026-08-07 — the line above is the right line, and it is now
+#: bounded on BOTH sides.** The seal author raised where to draw it as an open
+#: question. Upheld, for three reasons:
+#:
+#:   1. The two points are not two attempts at the same check. Point 1 is a
+#:      DECISION over the paths git reported and is complete: `sub/**` and
+#:      `**/*.yaml` are caught there for real, by
+#:      `test_the_floor_does_not_care_how_the_declaration_was_spelled`. Point 2
+#:      is an EARLY WARNING over a declaration, and a declaration is a string
+#:      about the future — it cannot know whether `sub/**` will contain a config
+#:      file on the branch that eventually exists. Making the early warning try
+#:      to answer a question only the diff can answer is what produces the
+#:      false refusals.
+#:   2. The cost of being wrong is asymmetric in the safe direction. A missed
+#:      plan-time refusal costs one build cycle and the branch is still stopped;
+#:      a false plan-time refusal makes a legitimate dispute over `docs/**` or
+#:      `src/**` — the two most common shapes a real adjudication takes —
+#:      unplannable, with no override, because the whole point of a floor is
+#:      that it cannot be overridden.
+#:   3. A refusal must be explainable to the agent that trips it. "Your
+#:      declaration names the policy file" is a fact about the row. "Your
+#:      declaration could match the policy file" is a fact about a hypothetical
+#:      tree, and an agent cannot act on it except by narrowing a declaration
+#:      that was already correct.
+#:
+#: The lower bound stays a lower bound (refusing more IS legal), but it is no
+#: longer unbounded above: `test_a_legitimate_disputed_path_still_parses` now
+#: carries `docs/**`, `src/claude_dispatcher/**` and `sub/**` as rows, so an
+#: implementation that reaches for "refuse any glob that could contain a floor
+#: path" reddens instead of quietly making real disputes unplannable.
 _DECLARATIONS_THAT_NAME_THE_FLOOR: tuple[tuple[tuple[str, ...], str], ...] = (
     ((".dispatcher.yaml",), "the plain spelling"),
     (("./.dispatcher.yaml",), "a leading ./"),
@@ -613,20 +765,46 @@ def test_declaring_a_floor_path_is_refused_at_plan_time(
         ("features/d1/tasks.yaml",),
         ("sub/project/settings.yaml",),
         ("src/claude_dispatcher/role_protocol.py",),
+        # P4, 2026-08-07 — the UPPER bound on the plan-time refusal set. Each of
+        # these three COULD contain a `.dispatcher.yaml` on some tree, and each
+        # is a shape real adjudications take. A rule broad enough to refuse
+        # `sub/**` refuses these too, and there is no override for a floor.
+        ("docs/**",),
+        ("src/claude_dispatcher/**",),
+        ("sub/**",),
     ],
-    ids=["a seal", "a doc", "a tasks file", "a nested yaml", "a source file"],
+    ids=[
+        "a seal",
+        "a doc",
+        "a tasks file",
+        "a nested yaml",
+        "a source file",
+        "a docs subtree",
+        "a source subtree",
+        "an arbitrary subtree",
+    ],
 )
 def test_a_legitimate_disputed_path_still_parses(disputed: tuple[str, ...]) -> None:
-    """The non-vacuity companion to the plan-time refusal.
+    """The non-vacuity companion to the plan-time refusal, and (P4) its upper
+    bound.
 
     Without it, "refuse every adjudicate row" — or "refuse every `*.yaml`" —
-    satisfies the seal above. `features/d1/tasks.yaml` is the row that matters:
-    a real dispute is very often about a tasks file.
+    satisfies the seal above. `features/d1/tasks.yaml` is the row that matters
+    for the original five: a real dispute is very often about a tasks file.
+
+    The last three rows carry the 2026-08-07 P4 ruling on where the plan-time
+    line sits (stated in full above `_DECLARATIONS_THAT_NAME_THE_FLOOR`): plan
+    time refuses declarations that NAME the floor file, and does not refuse
+    subtree globs that merely could contain one, because only the diff knows
+    whether they do — and the diff-time floor catches those for real. Without
+    these rows the ruling would be prose; with them, an implementation that
+    over-reaches reddens instead of making `docs/**` and `src/**` unplannable.
 
     Red now: passes (nothing refuses anything yet). It is the control and must
     STILL pass after P3.
     Falsify: implement the plan-time rule as "no yaml in disputed_paths" — the
-    two yaml rows go red.
+    two yaml rows go red. Implement it as "refuse any glob that could match a
+    floor path" — the last three rows go red.
     """
     row = {"key": "D1-P4", "role": "adjudicate", "disputed_paths": list(disputed)}
     spec = parse_task_role_spec(row, task_key="D1-P4")

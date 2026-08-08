@@ -828,20 +828,56 @@ def test_a_changed_signature_is_a_violation_even_with_no_forbidden_path() -> Non
     assert result.verdict is DiffVerdict.VIOLATION
 
 
-def test_legacy_is_clean_on_any_non_empty_diff() -> None:
+def test_legacy_is_clean_on_any_non_empty_diff_except_a_floor_path() -> None:
     """A pre-protocol task has no immutable paths, and this function must not
-    become a new gate on legacy work.
+    become a new gate on legacy work — with exactly one exception, the floor.
 
-    Red now: NotImplementedError.
-    Green when: LEGACY is CLEAN even for paths every other role is denied.
-    Falsify: give LEGACY a deny list — this goes red (and so does the
-    UNRESTRICTED row in the table seals).
+    **AMENDED BY P4, 2026-08-07.** The original body asserted LEGACY +
+    `.dispatcher.yaml` ⇒ CLEAN with `violations == ()`. The operator has ruled
+    that the non-overridable floor (`role_protocol.FLOOR_GLOBS`) applies to
+    LEGACY too, and the reason is that the alternative is not a floor at all: a
+    floor LEGACY escapes is bypassed by DELETING one line — omit `role:` and the
+    row is LEGACY, and a LEGACY row may then rewrite the file that configures
+    every role's permissions. The seal author could not make this change (a seal
+    author may not amend a seal) and raised it as a dispute; this is the ruling.
+
+    What this seal exists to protect — backward compatibility for the role-less
+    rows that every `features/*/tasks.yaml` in this repo carries — survives
+    intact, narrowed to "clean on any non-empty diff EXCEPT a floor path". That
+    narrowing is asserted as two calls with OPPOSITE answers, not as one relaxed
+    assertion: a relaxed assertion that both CLEAN and VIOLATION satisfy would
+    seal nothing.
+
+    This overrides the sentence in `check_branch`'s docstring reading "LEGACY
+    always returns CLEAN when the diff read succeeded and was non-empty"; P3
+    updates that contract line in the commit that implements the floor.
+
+    Red now: the second half. `check_branch` short-circuits LEGACY to CLEAN
+    before the changed paths are evaluated at all (verified against the built
+    worktree), which is the exact place the floor has to be unioned in.
+    Green when: LEGACY is CLEAN for everything off the floor and VIOLATION for a
+    floor path.
+    Falsify: give LEGACY a deny list — the first half goes red (and so does the
+    UNRESTRICTED row in the table seals). Exempt LEGACY from the floor — the
+    second half goes red. Refuse legacy work wholesale — the first half goes red.
     """
-    result = _check(
+    clean = _check(Role.LEGACY, ["tests/test_x.py", "schema/merge.yaml"])
+    assert clean.verdict is DiffVerdict.CLEAN, (
+        "a role-less row was refused for paths that are not on the floor; the "
+        "pre-protocol guarantee is narrowed by the floor, not withdrawn"
+    )
+    assert clean.violations == ()
+
+    floored = _check(
         Role.LEGACY, ["tests/test_x.py", ".dispatcher.yaml", "schema/merge.yaml"]
     )
-    assert result.verdict is DiffVerdict.CLEAN
-    assert result.violations == ()
+    assert [(v.path, v.matched_glob) for v in floored.violations] == [
+        (".dispatcher.yaml", "**/.dispatcher.yaml")
+    ], (
+        "a row bought write access to the policy file by having no `role:` "
+        "key; a floor that LEGACY escapes is bypassed by deleting one line"
+    )
+    assert floored.verdict is DiffVerdict.VIOLATION
 
 
 def test_legacy_with_an_empty_diff_is_still_undetermined() -> None:

@@ -23,6 +23,23 @@ survive a table rewrite:
     2026-08-04 D1 P1 rulings, which POSTDATE this scaffold, so they are red both
     for the stubs and because the table still disagrees. See the P2 report's
     dispute list; the table is not this author's to edit.
+
+P4 amendments, 2026-08-07 (the adjudicator is the only role that may amend a
+seal; each is justified in the seal's own docstring):
+
+  * `test_dispatcher_yaml_is_denied_to_all_four_authorable_roles` was the sixth
+    vacuous seal found in this unit — its ADJUDICATE row passed only because
+    that role's STATIC entry is an empty allowlist, so every path was a miss and
+    the row would have passed for `docs/anything.md`. Split into
+    `test_dispatcher_yaml_is_denied_to_every_role_the_table_can_deny_it_to`
+    (the three deny roles, now with a writable-path control and a matched-glob
+    assertion) and
+    `test_the_table_cannot_deny_dispatcher_yaml_to_adjudicate_and_this_says_so`
+    (why the fourth role is not answerable here, and where it is sealed).
+  * the UNRESTRICTED row of
+    `test_evaluate_changed_paths_is_total_over_every_rule_kind` probed
+    `.dispatcher.yaml` and expected no violation, which sealed the LEGACY escape
+    the 2026-08-07 operator ruling closes. Probes changed and a guard added.
 """
 
 from __future__ import annotations
@@ -36,6 +53,7 @@ from claude_dispatcher.role_protocol import (
     AUTHORABLE_ROLES,
     CONFIG_SECTION,
     DEFAULT_ROLE_RULES,
+    FLOOR_GLOBS,
     FORBIDDEN_DISPUTED_GLOBS,
     MANDATORY_PHASE_ORDER,
     PolicySource,
@@ -45,7 +63,9 @@ from claude_dispatcher.role_protocol import (
     RoleRule,
     RuleKind,
     TEST_PATH_DELEGATED_ROLES,
+    TaskRoleSpec,
     built_in_policy,
+    effective_rule,
     evaluate_changed_paths,
     first_matching_glob,
     validate_rule,
@@ -257,8 +277,10 @@ def test_rule_kind_set_is_closed() -> None:
             ["src/a.py", "src/b.py"],
             ["src/b.py"],
         ),
-        # UNRESTRICTED: nothing is ever a violation, however alarming.
-        (RuleKind.UNRESTRICTED, (), ["tests/a.py", ".dispatcher.yaml"], []),
+        # UNRESTRICTED: nothing is ever a violation, however alarming — but see
+        # the P4 amendment below for why the probes here are deliberately not
+        # floor paths.
+        (RuleKind.UNRESTRICTED, (), ["tests/a.py", "schema/merge.yaml"], []),
     ],
 )
 def test_evaluate_changed_paths_is_total_over_every_rule_kind(
@@ -266,11 +288,34 @@ def test_evaluate_changed_paths_is_total_over_every_rule_kind(
 ) -> None:
     """Each of the three kinds is exercised and produces its documented answer.
 
+    **AMENDED BY P4, 2026-08-07.** The UNRESTRICTED row read
+    ``(RuleKind.UNRESTRICTED, (), ["tests/a.py", ".dispatcher.yaml"], [])`` — it
+    asserted that the policy file produces no violation under the one kind
+    LEGACY holds, which is precisely the escape the operator has ruled out (a
+    floor LEGACY escapes is bypassed by omitting the `role:` key). The row was
+    NOT simply relaxed: its probes were changed to two paths that are protected
+    for other roles and are not on the floor, so it still asserts exactly `[]`,
+    and the guard below stops the floor path being put back.
+
+    Where the floor lives — inside `evaluate_changed_paths` or inside
+    `check_branch` — is P3's to choose and is deliberately unsealed here; the
+    floor is unioned into the DECISION, so it is not a property of a
+    :class:`RuleKind`. The behaviour that is sealed, for every role including
+    LEGACY, is in `tests/test_role_protocol_floor.py`.
+
     Red now: `evaluate_changed_paths` raises NotImplementedError.
     Green when: it dispatches over all three kinds as documented.
     Falsify: make ALLOW_ONLY_GLOBS share DENY_GLOBS' branch — the middle row
-    inverts and goes red.
+    inverts and goes red. Put a floor path back into an UNRESTRICTED row that
+    expects no violation — the guard goes red.
     """
+    if kind is RuleKind.UNRESTRICTED and not expect_violating:
+        assert all(first_matching_glob(p, FLOOR_GLOBS) is None for p in changed), (
+            "an UNRESTRICTED row must not probe a floor path and expect it to "
+            "pass. UNRESTRICTED is held solely by LEGACY, and LEGACY's "
+            "exemption from the deny table is not an exemption from the floor "
+            f"(2026-08-07 operator ruling): {changed} vs {list(FLOOR_GLOBS)}"
+        )
     rule = RoleRule(role=Role.BODIES, kind=kind, globs=globs, rationale="probe")
     violations = evaluate_changed_paths(rule, changed)
     assert [v.path for v in violations] == expect_violating
@@ -562,29 +607,147 @@ def test_every_seal_verify_test_path_is_denied_to_every_delegated_role(
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize("role", sorted(AUTHORABLE_ROLES, key=lambda r: r.value))
-def test_dispatcher_yaml_is_denied_to_all_four_authorable_roles(role: Role) -> None:
+#: The real paths git emits for `**/.dispatcher.yaml` — a root config and a
+#: nested one.
+_CONFIG_FILE_PROBES: tuple[str, ...] = (
+    ".dispatcher.yaml",
+    "sub/project/.dispatcher.yaml",
+)
+
+#: A path NO deny-table role denies. This is the control that makes the seal
+#: below able to fail: without it, "the config file is denied" and "every path
+#: is denied" are the same passing test.
+_A_PATH_NO_DENY_ROLE_DENIES = "docs/anything.md"
+
+#: The roles whose TABLE ENTRY can answer "is `.dispatcher.yaml` denied?" —
+#: written out, not derived from `AUTHORABLE_ROLES` or from the table. Same P4
+#: lesson as `_EXPECTED_TABLE_PAIRS`: a parametrization comprehended over the
+#: constant it pins deletes its rows instead of reddening them.
+#:
+#: ADJUDICATE is absent BY RULING and not by omission — see the seal below it.
+_DENY_TABLE_ROLES_WRITTEN_OUT: tuple[str, ...] = ("bodies", "scaffold", "seals")
+
+
+@pytest.mark.parametrize("role_value", _DENY_TABLE_ROLES_WRITTEN_OUT)
+def test_dispatcher_yaml_is_denied_to_every_role_the_table_can_deny_it_to(
+    role_value: str,
+) -> None:
     """Ruling: `.dispatcher.yaml` is denied to all four roles, scaffold included.
 
     A role that can edit the file configuring its own permissions is the
     self-widening shape this unit exists to remove. A unit's per-task override
     lives in its task row, so no role needs to edit the policy file.
 
-    Red now: (a) the stubs, and (b) the SCAFFOLD row deliberately omits
-    `**/.dispatcher.yaml` (the scaffold's own comment flags this as a considered
-    choice) — the 2026-08-04 ruling overrides that choice, and the SCAFFOLD row
-    of this seal is the dispute.
-    Green when: `**/.dispatcher.yaml` is in every authorable role's deny set.
-    Falsify: delete `**/.dispatcher.yaml` from any role's globs — that role's
-    row goes red.
+    **AMENDED BY P4, 2026-08-07** (was
+    `test_dispatcher_yaml_is_denied_to_all_four_authorable_roles`, parametrized
+    over `AUTHORABLE_ROLES`). Two defects, one of them the sixth vacuous seal
+    found in this unit:
+
+      * the ADJUDICATE row passed only because ADJUDICATE's STATIC table entry
+        is an empty allowlist, under which every path is a miss. It would have
+        passed identically for `docs/anything.md`, and it never saw a task row —
+        the only way ADJUDICATE ever gets a writable set. A seal named after the
+        hole is how the hole survived. It is now excluded by ruling, its absence
+        is itself sealed by the next test, and the real question is sealed
+        RED against a task row in `tests/test_role_protocol_floor.py`.
+      * every row, ADJUDICATE's included, asserted only that the config paths
+        were violations. `_A_PATH_NO_DENY_ROLE_DENIES` is now asserted writable
+        in the same call, so a rule that denies everything cannot satisfy this,
+        and the matched glob is asserted so a denial that came from some
+        unrelated pattern cannot either.
+
+    Green when: `**/.dispatcher.yaml` is in each deny role's set.
+    Falsify: delete `**/.dispatcher.yaml` from any of the three roles' globs —
+    that row goes red. Point `_CONFIG_FILE_PROBES` at `docs/anything.md` — every
+    row goes red (under the pre-amendment seal the ADJUDICATE row went on
+    passing, which is what "vacuous" meant here).
     """
+    role = Role(role_value)
+    assert role in AUTHORABLE_ROLES, role_value
     rule = _table_rule(role)
-    for path in (".dispatcher.yaml", "sub/project/.dispatcher.yaml"):
+    assert rule.kind is RuleKind.DENY_GLOBS, (
+        f"{role_value} is no longer a deny-table role; this seal cannot answer "
+        "the question for it — see the ADJUDICATE seal below"
+    )
+
+    # The control, first: a rule that denies everything must not pass this.
+    assert evaluate_changed_paths(rule, [_A_PATH_NO_DENY_ROLE_DENIES]) == (), (
+        f"{role_value} may not write {_A_PATH_NO_DENY_ROLE_DENIES}; this seal "
+        "would then pass for any path at all"
+    )
+
+    for path in _CONFIG_FILE_PROBES:
         violations = evaluate_changed_paths(rule, [path])
         assert [v.path for v in violations] == [path], (
-            f"{role.value} may write {path}: the role can widen its own policy"
+            f"{role_value} may write {path}: the role can widen its own policy"
+        )
+        assert violations[0].matched_glob == "**/.dispatcher.yaml", (
+            f"{path} was denied to {role_value} by "
+            f"{violations[0].matched_glob!r} rather than by the config glob; "
+            "the ruling is about the policy file, not a side effect"
         )
     assert CONFIG_SECTION == "roles"
+
+
+def test_the_table_cannot_deny_dispatcher_yaml_to_adjudicate_and_this_says_so(
+) -> None:
+    """Why ADJUDICATE is not in the parametrization above — sealed, not assumed.
+
+    ADJUDICATE is `ALLOW_ONLY_GLOBS` and its static entry carries no globs: the
+    writable set arrives per task in `disputed_paths:`. So at the table level
+    "`.dispatcher.yaml` is denied to ADJUDICATE" is indistinguishable from
+    "every path is denied to ADJUDICATE", and the distinguishing case — a row
+    that DECLARES the config file, which is the actual exploit — is granted by
+    `effective_rule` and can only be refused by the floor, which is unioned into
+    the decision rather than into the table. That question therefore belongs to
+    `check_branch` and is sealed there:
+    `tests/test_role_protocol_floor.py::test_an_adjudicate_task_cannot_declare_its_way_into_the_policy_file`
+    plus the `adjudicate` rows of `_FLOOR_x_ROLE_ROWS`.
+
+    This seal exists so that exclusion cannot silently rot back into a vacuous
+    row: it pins the two facts the exclusion rests on.
+
+    Green now, and it must stay green.
+    Falsify: give ADJUDICATE's table entry a non-empty allowlist, or make an
+    empty allow-only set stop meaning "everything is a miss" — either reddens
+    this, and the first also means ADJUDICATE belongs in the parametrization
+    above.
+    """
+    static = _table_rule(Role.ADJUDICATE)
+    assert static.kind is RuleKind.ALLOW_ONLY_GLOBS
+    assert static.globs == (), (
+        "ADJUDICATE's static entry now carries an allowlist; the seal above can "
+        "answer the config-file question for it and should cover it"
+    )
+    # Fact 1: under the static entry the config file and an innocuous doc are
+    # violated identically — this is what made the old ADJUDICATE row vacuous.
+    assert [v.path for v in evaluate_changed_paths(static, [".dispatcher.yaml"])] == [
+        ".dispatcher.yaml"
+    ]
+    assert [
+        v.path for v in evaluate_changed_paths(static, [_A_PATH_NO_DENY_ROLE_DENIES])
+    ] == [_A_PATH_NO_DENY_ROLE_DENIES]
+
+    # Fact 2: with a task row — the only way ADJUDICATE ever gets a writable set
+    # — the declaration is what governs, and the table has no say. A row that
+    # declares the config file therefore GETS it, which is the exploit the floor
+    # closes elsewhere.
+    granted = effective_rule(
+        TaskRoleSpec(
+            task_key="D1-P4",
+            role=Role.ADJUDICATE,
+            disputed_paths=("docs/adr/0007.md",),
+        ),
+        built_in_policy(),
+    )
+    assert granted.globs == ("docs/adr/0007.md",), (
+        "the table's globs leaked into ADJUDICATE's effective rule; for an "
+        "allow-only kind a union WIDENS"
+    )
+    assert evaluate_changed_paths(granted, ["docs/adr/0007.md"]) == ()
+    assert [
+        v.path for v in evaluate_changed_paths(granted, [".dispatcher.yaml"])
+    ] == [".dispatcher.yaml"]
 
 
 def test_generated_paths_are_absent_from_the_deny_table_for_every_role() -> None:
