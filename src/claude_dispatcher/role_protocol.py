@@ -57,12 +57,21 @@ Immutable paths: one table, additive only
 lived only in `.dispatcher.yaml` would evaporate with the file, and an absent
 policy would read as "no restrictions" — invariant 4's exact failure mode.
 Config and per-task overrides may therefore only **ADD** denied paths, never
-remove one, which is also why this module needs no separate "floor" tier the
-way `risk.py` does (`risk.FORBIDDEN_FLOOR_GLOBS` exists because a repo may
-*replace* `risk:` lists wholesale; here nothing can be replaced, so every
-default entry is already a floor). A narrowing override is a self-weakening
-policy — the defect class this whole project exists to close — and is a typed
-error, not a silently-ignored line.
+remove one. A narrowing override is a self-weakening policy — the defect class
+this whole project exists to close — and is a typed error, not a
+silently-ignored line.
+
+That additive argument used to be stated here as the reason this module "needs
+no separate 'floor' tier the way `risk.py` does". **It was wrong, and
+:data:`FLOOR_GLOBS` is the correction** (2026-08-07 operator ruling). The
+argument covers only the three DENY_GLOBS roles: :data:`Role.ADJUDICATE` is
+ALLOW_ONLY_GLOBS and :func:`effective_rule` builds its writable set out of the
+task's own `disputed_paths:`, so an adjudicate row that declared
+`.dispatcher.yaml` got that path *allowed* — the most privileged role granted
+the file that configures every role's permissions, its own included, by naming
+it. There is now a real floor tier, matched at decision time against the paths
+git reported and applying to all five roles, LEGACY included; see
+:data:`FLOOR_GLOBS`.
 
 The one escape hatch is a reviewed edit to :data:`DEFAULT_ROLE_RULES` on the
 protected base, i.e. a plan amendment. That is intentional: see the
@@ -460,12 +469,31 @@ FORBIDDEN_DISPUTED_GLOBS: frozenset[str] = frozenset(
 #:     ``disputed_paths:`` contains no trace of the floor path and still cannot
 #:     buy ``sub/project/.dispatcher.yaml``.
 #:
-#: **BEHAVIOUR NOT IMPLEMENTED — D1 P2 stub.** Nothing reads this constant yet.
-#: It is declared here so the seals in ``tests/test_role_protocol_floor.py``
-#: have a typed name to bind to; those seals are committed RED and P3 makes
-#: them pass. Adding a glob here without adding its literal rows to that file
-#: reddens the totality seal.
+#: Read at exactly two places, one per enforcement point (D1 P3):
+#: :func:`_floor_violations`, called from :func:`check_branch` for EVERY role
+#: including :data:`Role.LEGACY`, and :func:`_floor_glob_named_by`, called from
+#: :func:`parse_task_role_spec` so a row that declares a floor path is refused
+#: at plan time instead of after a build cycle. Adding a glob here without
+#: adding its literal rows to ``tests/test_role_protocol_floor.py`` reddens the
+#: totality seal.
 FLOOR_GLOBS: tuple[str, ...] = ("**/.dispatcher.yaml",)
+
+#: What a floor violation prints, and deliberately NOT the violated role's own
+#: rationale. For :data:`Role.ADJUDICATE` the role's rationale reads "its
+#: writable set is the task's ``disputed_paths:``" — which, for a floor path, is
+#: the one sentence that cannot explain the refusal: the path IS in
+#: ``disputed_paths:``, and that is exactly why it is refused. Printing it would
+#: tell the agent the opposite of the truth. The floor reports its own reason,
+#: for every role, so the report never has to be read against the rule it did
+#: not come from.
+FLOOR_RATIONALE = (
+    "this path is on the non-overridable floor (FLOOR_GLOBS): it configures "
+    "every role's permissions, so no role may write it — not through the "
+    "repo's `roles:` section, not through a per-task `immutable_paths:` or "
+    "`disputed_paths:` declaration, and not by omitting `role:` and becoming "
+    "legacy. The floor is matched against the path git reported, so how the "
+    "declaration was spelled makes no difference"
+)
 
 
 class PolicySource(Enum):
@@ -646,6 +674,46 @@ def _reject_negation_shape(entry: str, *, where: str) -> None:
         )
 
 
+def _floor_glob_named_by(entry: str) -> str | None:
+    """The floor glob a ``disputed_paths:`` entry NAMES, or None.
+
+    The plan-time half of the floor (point 2 of the 2026-08-07 operator
+    ruling), and deliberately narrower than the diff-time half. It asks one
+    question — *does this declaration name the floor FILE?* — by comparing the
+    declaration's last path segment, as a pattern, against each floor glob's
+    last segment. So ``.dispatcher.yaml``, ``./.dispatcher.yaml``,
+    ``**/.dispatcher.yaml``, ``sub/project/.dispatcher.yaml``,
+    ``.dispatcher.*`` and ``**/.dispatcher.yam?`` all name it.
+
+    What it deliberately does NOT answer is "could this declaration CONTAIN a
+    floor path", which is why a tail that is nothing but wildcards (``docs/**``,
+    ``src/claude_dispatcher/**``, ``sub/**``) is not a hit: such a glob names a
+    TREE, not a file, and whether the tree holds a config file is a fact about a
+    branch that does not exist yet. Only the diff knows, and
+    :func:`_floor_violations` answers it there for real — that is what makes the
+    two enforcement points independent rather than two attempts at one check. A
+    false refusal here would make the two commonest shapes a real adjudication
+    takes (``docs/**``, ``src/**``) unplannable, with no override, because a
+    floor has no override.
+
+    The comparison runs through :func:`first_matching_glob`, so this function
+    introduces no second glob translator (invariant 5): the declaration's
+    basename is the pattern and the floor's basename is the probe.
+    """
+    candidate = entry.strip().rstrip("/")
+    if not candidate:
+        return None
+    basename = candidate.rsplit("/", 1)[-1]
+    if not basename.strip("*?[]"):
+        # A tail of pure wildcards names a tree, not a file — see above.
+        return None
+    for floor in FLOOR_GLOBS:
+        floor_basename = floor.rstrip("/").rsplit("/", 1)[-1]
+        if first_matching_glob(floor_basename, (basename,)) is not None:
+            return floor
+    return None
+
+
 def parse_role_field(row: Mapping[str, object], *, task_key: str) -> Role:
     """The :class:`Role` a task row declares.
 
@@ -757,7 +825,12 @@ def parse_task_role_spec(
         here.
       * ``disputed_paths:`` — REQUIRED and non-empty for ADJUDICATE, forbidden
         on every other role (including LEGACY). Entries must be non-blank
-        strings and must not appear in :data:`FORBIDDEN_DISPUTED_GLOBS`.
+        strings and must not appear in :data:`FORBIDDEN_DISPUTED_GLOBS`. An
+        entry that NAMES a floor path (:func:`_floor_glob_named_by`) is refused
+        too — the plan-time half of the 2026-08-07 floor ruling, so the mistake
+        surfaces at planning rather than after a build cycle. It is an
+        independent early warning, not the enforcement: the enforcement is
+        :func:`check_branch`, over the paths git reports.
       * ``agent:`` — recorded verbatim, validated by ``plan.load_tasks``
         against ``plan.KNOWN_AGENTS`` (not re-validated here: one fact, one
         place).
@@ -809,6 +882,18 @@ def parse_task_role_spec(
                     f"{entry!r}; a wildcard adjudication is not an "
                     "adjudication — it converts allow-only into unrestricted "
                     "with extra steps"
+                )
+            floor = _floor_glob_named_by(entry)
+            if floor is not None:
+                raise RoleProtocolError(
+                    f"task {task_key} has {DISPUTED_PATHS_FIELD} entry "
+                    f"{entry!r}, which names a path on the non-overridable "
+                    f"floor ({floor!r}). The file that configures every role's "
+                    "permissions is not an adjudicable artifact: declaring it "
+                    "is how the most privileged role would grant itself the "
+                    "policy, and the floor has no override, so the task could "
+                    "never have landed. Refused here rather than after a build "
+                    "cycle has been spent on it"
                 )
     elif DISPUTED_PATHS_FIELD in row:
         raise RoleProtocolError(
@@ -2397,7 +2482,14 @@ def check_branch(
          touch anything".
       3. :func:`changed_paths_between`. Zero paths ⇒ UNDETERMINED with a
          detail saying so.
-      4. :func:`evaluate_changed_paths`.
+      3b. :func:`_floor_violations` over those paths — the non-overridable
+         floor, unioned into the decision HERE rather than merged into a
+         :class:`RolePolicy`, so a caller-supplied or base-pinned policy that
+         omits it still gets it, and matched against the paths git reported
+         rather than against anything a task declared.
+      4. :func:`evaluate_changed_paths`, unioned with 3b: a path on the floor
+         is reported as a floor violation whatever the role's own rule said
+         about it, and every other violation is the role rule's, unchanged.
       5. for BODIES only, :func:`compare_signatures` over every changed
          ``*.py`` path that exists at ``base_ref``; other roles get
          :data:`SignatureCheckStatus.NOT_APPLICABLE`.
@@ -2409,9 +2501,17 @@ def check_branch(
     role whose gate that is, is not a pass; CLEAN only when the diff was read,
     was non-empty, produced no violation, and every applicable check ran.
 
-    LEGACY always returns CLEAN when the diff read succeeded and was
-    non-empty: a pre-protocol task has no immutable paths, and this function
-    must not become a new gate on legacy work.
+    LEGACY returns CLEAN when the diff read succeeded, was non-empty and
+    touched no floor path: a pre-protocol task has no immutable paths, and this
+    function must not become a new gate on legacy work. **The floor is the one
+    exception** (2026-08-07 operator ruling, overriding this contract line as it
+    was originally written — "LEGACY always returns CLEAN when the diff read
+    succeeded and was non-empty"). The alternative is not a floor: LEGACY is not
+    a role anyone is granted, it is what a row IS when the ``role:`` key is
+    absent, so a floor LEGACY escapes is bypassed by deleting one line — and the
+    deleted line would buy the right to rewrite the file that configures every
+    role's permissions. The narrowing costs role-less rows nothing outside
+    :data:`FLOOR_GLOBS`.
 
     **P3 implementation notes**, each an addition the contract implies rather
     than states, and every one of them fails *closed*:
@@ -2516,7 +2616,28 @@ def check_branch(
             policy_source=source,
         )
 
+    # 3b. The floor, unioned into the DECISION rather than into any policy, and
+    #     matched against the paths git just reported. Computed before the
+    #     LEGACY short-circuit because LEGACY is subject to it too.
+    floor_violations = _floor_violations(changed)
+
     if role is Role.LEGACY:
+        if floor_violations:
+            return RoleDiffResult(
+                verdict=DiffVerdict.VIOLATION,
+                role=role,
+                base_ref=base_ref,
+                branch_ref=branch_ref,
+                violations=floor_violations,
+                signature=_not_applicable_signature(role),
+                checked_paths=changed,
+                policy_source=source,
+                detail=(
+                    f"{len(floor_violations)} path(s) on the non-overridable "
+                    "floor; a row with no `role:` key is exempt from the deny "
+                    "table, not from the floor"
+                ),
+            )
         return RoleDiffResult(
             verdict=DiffVerdict.CLEAN,
             role=role,
@@ -2527,13 +2648,16 @@ def check_branch(
             policy_source=source,
             detail=(
                 "legacy: a pre-protocol single-role task has no immutable "
-                "paths, and this check must not become a new gate on it"
+                "paths outside the floor, and this check must not become a "
+                "new gate on it"
             ),
         )
 
-    # 4. The paths.
+    # 4. The paths: the role's own rule, then the floor unioned over it.
     try:
-        violations = evaluate_changed_paths(rule, changed)
+        violations = _union_with_floor(
+            evaluate_changed_paths(rule, changed), floor_violations, changed
+        )
     except RoleProtocolError as exc:
         return _undetermined(
             f"cannot evaluate the changed paths for role {role.value!r}: "
@@ -2588,7 +2712,8 @@ def check_branch(
         verdict = DiffVerdict.CLEAN
         detail = (
             f"{len(changed)} changed path(s) checked against the "
-            f"{rule.kind.value} rule for {role.value!r}; signatures: "
+            f"{rule.kind.value} rule for {role.value!r} and against the "
+            f"{len(FLOOR_GLOBS)}-glob floor; signatures: "
             f"{signature.status.value}"
         )
 
@@ -2609,6 +2734,74 @@ def check_branch(
 # Private helpers for the diff-time path (no decisions of their own — every
 # rule they serve is stated in the public function that calls them)
 # --------------------------------------------------------------------------- #
+
+def _floor_violations(changed_paths: Sequence[str]) -> tuple[PathViolation, ...]:
+    """Every changed path on :data:`FLOOR_GLOBS`, with the floor's own reason.
+
+    Read against the paths GIT REPORTED, never against a declaration, which is
+    the whole content of the 2026-08-07 ruling: the floor cannot be spelled
+    around because it never reads the spelling. A ``disputed_paths:`` of
+    ``sub/**`` contains no trace of the config file and still cannot buy
+    ``sub/project/.dispatcher.yaml``.
+
+    The floor is a deny set and is therefore NOT expressible as a union into a
+    :class:`RoleRule`'s ``globs``: :data:`Role.ADJUDICATE`'s rule is
+    ALLOW_ONLY_GLOBS, where adding a glob *widens*. It is a second, separate
+    pass — which is also why it can carry :data:`FLOOR_RATIONALE` instead of
+    whatever text the rule it overrode happened to hold.
+
+    ``rule_kind`` is DENY_GLOBS on every floor violation, because that is what
+    the floor is, regardless of the kind of the role rule it overrode. Pure;
+    order follows ``changed_paths``; one violation per matching path.
+    """
+    return tuple(
+        PathViolation(
+            path=path,
+            matched_glob=matched,
+            rule_kind=RuleKind.DENY_GLOBS,
+            rationale=FLOOR_RATIONALE,
+        )
+        for path, matched in (
+            (p, first_matching_glob(p, FLOOR_GLOBS)) for p in changed_paths
+        )
+        if matched is not None
+    )
+
+
+def _union_with_floor(
+    rule_violations: Sequence[PathViolation],
+    floor_violations: Sequence[PathViolation],
+    changed_paths: Sequence[str],
+) -> tuple[PathViolation, ...]:
+    """The role's violations with the floor's laid over them, in diff order.
+
+    Per path the floor WINS, so a path on the floor is reported once and with
+    the floor's reason. It has to win rather than merely be appended: for a
+    DENY role the table already denies the config file, so appending would
+    report one path twice, and for ADJUDICATE the rule that "explains" the
+    refusal would be the one saying the writable set is ``disputed_paths:`` —
+    the sentence that cannot explain it.
+
+    A path NOT on the floor keeps the role rule's own violation verbatim: a
+    floor hit must not turn the innocent rest of the diff into violations and
+    send an agent hunting for a rule that does not exist.
+    """
+    floor_by_path = {v.path: v for v in floor_violations}
+    rule_by_path: dict[str, PathViolation] = {}
+    for violation in rule_violations:
+        rule_by_path.setdefault(violation.path, violation)
+
+    ordered: list[PathViolation] = []
+    reported: set[str] = set()
+    for path in changed_paths:
+        if path in reported:
+            continue
+        violation = floor_by_path.get(path) or rule_by_path.get(path)
+        if violation is not None:
+            ordered.append(violation)
+            reported.add(path)
+    return tuple(ordered)
+
 
 #: How long any single git read on the gating path may take. A gate that hangs
 #: is a gate that is not enforcing anything, and CI would report the hang as an
