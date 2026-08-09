@@ -85,10 +85,17 @@ from claude_dispatcher.role_protocol import (
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-#: The gate's two halves, as git spells them. Written out; nothing here reads
-#: them off `FLOOR_GLOBS`.
+#: The gate's three artifacts, as git spells them. Written out; nothing here
+#: reads them off `FLOOR_GLOBS`.
+#:
+#: The third arrived with unit D2 (2026-08-09): the signature half of the gate
+#: stopped being pure Python, and the helper's output is what
+#: `compare_signatures` compares. "Two halves, one artifact" is now three, and
+#: the reasoning is unchanged — an artifact the verdict is computed from is
+#: machinery, not work.
 GATE_ENTRYPOINT = "scripts/check_body_branch.sh"
 GATE_LIBRARY = "src/claude_dispatcher/role_protocol.py"
+GATE_GO_HELPER = "src/claude_dispatcher/go_signature_fingerprint/main.go"
 
 
 # --------------------------------------------------------------------------- #
@@ -490,6 +497,117 @@ def test_rewriting_the_entrypoint_is_itself_refused_by_a_trusted_run(
     )
 
 
+def test_the_go_helper_is_read_from_the_base_not_from_the_branch(
+    ci_checkout_template: Path, tmp_path: Path
+) -> None:
+    """The gate's THIRD artifact travels from `<base>` like the other two
+    (P4, 2026-08-09, unit D2).
+
+    `src/claude_dispatcher/go_signature_fingerprint/` is a Go program whose
+    output IS what `compare_signatures` compares, so a bodies branch that
+    rewrote it to report no symbols would have every Go file in its diff read as
+    unchanged. Being on `FLOOR_GLOBS` makes that edit a VIOLATION *when a
+    trusted run reads the diff*; this row is the other half — the helper the
+    trusted run actually EXECUTES must be the base's, not the branch's, or the
+    branch neuters the comparison in the same invocation that is supposed to
+    catch it.
+
+    **It already holds, and it holds by ACCIDENT** — the helper lives under the
+    `src/` prefix that the base-pinned block copies with a whole-subtree
+    `ls-tree -r`, so no line in the script mentions it. That is exactly why it
+    is sealed: move the helper to `tools/` (the placement D2 considered and
+    rejected) and it silently stops travelling, the branch's copy runs, and
+    nothing else in this suite notices.
+
+    HOW IT IS OBSERVED. The other S1 seals cannot look at what the gate
+    imported, and say so. This one can, because it does not need a trusted
+    oracle — it needs to know which BYTES the script put on `PYTHONPATH`, and
+    the script hands that to `$PYTHON`. So `$PYTHON` is a stand-in that reports
+    the helper's first line and exits 0. It is a probe of the SCRIPT's
+    behaviour, not of the gate's verdict, which is the only thing in question
+    here. `go_helper_source_dir()` resolves relative to the package that is
+    imported, so whichever `src/` reaches `PYTHONPATH` is the helper that would
+    run.
+
+    Green when: the trusted tree carries the BASE's helper.
+
+    Falsify: narrow the base-pinned read to
+    `ls-tree ... -- "${_src_rel}/claude_dispatcher/role_protocol.py"`, or move
+    the helper outside `${_src_rel}` — both go red (measured).
+
+    The final assertion is POSITIVE — the base's own first line must appear —
+    and that is not a stylistic choice. Written as `"TAMPERED" not in stdout`
+    alone it was VACUOUS, measured: narrowing the `ls-tree` to the one named
+    library file leaves the trusted tree with no helper at all, `head` fails to
+    stderr, the marker is absent from stdout for the wrong reason, and the seal
+    stayed green through exactly the regression it exists to catch. Absence of
+    the branch's bytes is not presence of the base's. The expected line is read
+    out of `main` rather than hardcoded, so it cannot rot when the helper's
+    banner is reworded.
+    """
+    checkout = _checkout(ci_checkout_template, tmp_path)
+    helper = checkout / GATE_GO_HELPER
+    assert helper.is_file(), "the fixture has no Go helper to tamper with"
+    base_first_line = helper.read_text(encoding="utf-8").splitlines()[0]
+    assert base_first_line.strip(), "the base helper's first line is blank"
+    marker = "// TAMPERED: this helper reports no symbols, so nothing changed\n"
+    helper.write_text(marker, encoding="utf-8")
+    _commit(checkout, "body work, and a quieter helper")
+
+    probe = tmp_path / "which_helper.sh"
+    probe.write_text(
+        "#!/usr/bin/env bash\n"
+        'src="${PYTHONPATH%%:*}"\n'
+        'printf "TRUSTED_SRC=%s\\n" "$src"\n'
+        'head -1 "$src/claude_dispatcher/go_signature_fingerprint/main.go"\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    probe.chmod(0o755)
+
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    env["PYTHON"] = str(probe)
+    seen = subprocess.run(
+        ["bash", str(checkout / GATE_ENTRYPOINT), "main", "feat/x", "bodies"],
+        cwd=str(checkout),
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=180,
+    )
+
+    # The fixture exhibits the defect: the branch really did rewrite the helper.
+    assert helper.read_text(encoding="utf-8") == marker
+
+    # And the run really did take the base-pinned path, or this proves nothing
+    # about provenance — it would just be reading an untampered working tree.
+    assert "TRUSTED_SRC=" in seen.stdout, (
+        f"the probe never ran\nstdout={seen.stdout}\nstderr={seen.stderr}"
+    )
+    trusted_src = seen.stdout.split("TRUSTED_SRC=", 1)[1].splitlines()[0]
+    assert not trusted_src.startswith(str(checkout)), (
+        "the gate was handed the judged checkout's own `src/`, so the helper "
+        f"question is moot and the library is compromised too: {trusted_src}"
+    )
+
+    assert "TAMPERED" not in seen.stdout, (
+        "the trusted run was handed the BRANCH's Go signature helper. A bodies "
+        "branch can make it report no symbols, and then every Go file in its "
+        "diff reads as an unchanged signature — the gate cleared by the thing "
+        f"it is gating.\nstdout={seen.stdout}\nstderr={seen.stderr}"
+    )
+    # POSITIVE, not merely "the marker is gone": a trusted tree with no helper
+    # in it at all also lacks the marker, and that is a regression, not a pass.
+    assert base_first_line in seen.stdout, (
+        "the trusted tree does not carry the BASE's Go signature helper. "
+        "Either it was not copied out of the protected base at all — in which "
+        "case the helper that runs is whatever the branch, the install or the "
+        "working tree happens to provide — or it was copied from somewhere "
+        f"else.\nexpected first line: {base_first_line!r}\n"
+        f"stdout={seen.stdout}\nstderr={seen.stderr}"
+    )
+
+
 def test_the_gate_still_clears_an_untampered_legal_branch_from_either_entrypoint(
     ci_checkout_template: Path, tmp_path: Path
 ) -> None:
@@ -702,33 +820,55 @@ def _spec(role: Role, *disputed: str) -> TaskRoleSpec:
 
 
 #: (role, changed path). WRITTEN OUT, one row per pair — five roles times the
-#: four probes of the gate's two halves. Derived from nothing: not from `Role`,
+#: six probes of the gate's three halves. Derived from nothing: not from `Role`,
 #: not from `FLOOR_GLOBS`, not from a product comprehension. The nested probes
 #: follow the precedent `test_role_protocol_floor.py` set for
 #: `sub/project/.dispatcher.yaml`: the repo can be vendored inside another tree
 #: and one pattern must cover both layouts, which is the reason
 #: `DEFAULT_ROLE_RULES` spells its globs `**/x/**` rather than `x/**`.
+#:
+#: P4, 2026-08-09 (unit D2): the third artifact, the Go signature helper, 10
+#: rows. "Two halves, one artifact" became three the moment the verdict started
+#: being computed from a program's output: the library decides the rules, the
+#: entrypoint runs them, and the helper decides what a Go signature IS. A branch
+#: that rewrites the helper to report no symbols clears the signature gate for
+#: every Go file in its diff without touching either of the other two, so a
+#: table that stopped at two would be a table that protects the parts of the
+#: gate that were expensive to attack and not the part that is cheap.
 _GATE_ROWS: tuple[tuple[str, str], ...] = (
     ("scaffold", "scripts/check_body_branch.sh"),
     ("scaffold", "sub/project/scripts/check_body_branch.sh"),
     ("scaffold", "src/claude_dispatcher/role_protocol.py"),
     ("scaffold", "sub/project/src/claude_dispatcher/role_protocol.py"),
+    ("scaffold", "src/claude_dispatcher/go_signature_fingerprint/main.go"),
+    ("scaffold", "sub/project/src/claude_dispatcher/go_signature_fingerprint/main.go"),
     ("seals", "scripts/check_body_branch.sh"),
     ("seals", "sub/project/scripts/check_body_branch.sh"),
     ("seals", "src/claude_dispatcher/role_protocol.py"),
     ("seals", "sub/project/src/claude_dispatcher/role_protocol.py"),
+    ("seals", "src/claude_dispatcher/go_signature_fingerprint/main.go"),
+    ("seals", "sub/project/src/claude_dispatcher/go_signature_fingerprint/main.go"),
     ("bodies", "scripts/check_body_branch.sh"),
     ("bodies", "sub/project/scripts/check_body_branch.sh"),
     ("bodies", "src/claude_dispatcher/role_protocol.py"),
     ("bodies", "sub/project/src/claude_dispatcher/role_protocol.py"),
+    ("bodies", "src/claude_dispatcher/go_signature_fingerprint/main.go"),
+    ("bodies", "sub/project/src/claude_dispatcher/go_signature_fingerprint/main.go"),
     ("adjudicate", "scripts/check_body_branch.sh"),
     ("adjudicate", "sub/project/scripts/check_body_branch.sh"),
     ("adjudicate", "src/claude_dispatcher/role_protocol.py"),
     ("adjudicate", "sub/project/src/claude_dispatcher/role_protocol.py"),
+    ("adjudicate", "src/claude_dispatcher/go_signature_fingerprint/main.go"),
+    (
+        "adjudicate",
+        "sub/project/src/claude_dispatcher/go_signature_fingerprint/main.go",
+    ),
     ("legacy", "scripts/check_body_branch.sh"),
     ("legacy", "sub/project/scripts/check_body_branch.sh"),
     ("legacy", "src/claude_dispatcher/role_protocol.py"),
     ("legacy", "sub/project/src/claude_dispatcher/role_protocol.py"),
+    ("legacy", "src/claude_dispatcher/go_signature_fingerprint/main.go"),
+    ("legacy", "sub/project/src/claude_dispatcher/go_signature_fingerprint/main.go"),
 )
 
 

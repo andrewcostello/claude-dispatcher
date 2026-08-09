@@ -295,6 +295,43 @@ def _spec(role: Role, *disputed: str) -> TaskRoleSpec:
 #: `test_role_protocol_provenance.py` (twenty rows, five roles, both probes of
 #: both halves). A second copy here would be two notions of one fact, which is
 #: invariant 5's failure mode, and the two copies would drift.
+#:
+#: THE GATE'S THIRD ARTIFACT — the Go signature helper (P4 ruling, 2026-08-09,
+#: unit D2). **P3: use this string, or escalate — do not edit this table.**
+#:
+#:     **/src/claude_dispatcher/go_signature_fingerprint/**
+#:
+#: The same standing before the same two constraints, decided the same way:
+#:
+#:   1. PATH-QUALIFIED, not basename-only. `**/go_signature_fingerprint/**`
+#:      would permanently forbid every directory that ever acquires that name
+#:      anywhere in the tree — a vendored copy, a fixture holding a deliberately
+#:      broken helper for a seal to point at, a second implementation under
+#:      `tools/` — with nothing able to buy any of them back, because a floor
+#:      has no override. Measured 2026-08-09 under the module's own glob lens:
+#:      the path-qualified spelling matches `src/claude_dispatcher/
+#:      go_signature_fingerprint/main.go`, its `go.mod`, a nested
+#:      `internal/deep/x.go` under it, and the vendored
+#:      `sub/project/...` layout — and does NOT match
+#:      `tools/go_signature_fingerprint/main.go` or
+#:      `vendor/go_signature_fingerprint/main.go`, which is precisely the
+#:      difference the basename spelling would erase.
+#:   2. The trailing `/**` is a SUBTREE, and that is the ruling rather than a
+#:      typing convenience. The helper is a Go module: `go.mod` fixes the
+#:      language version the parse runs under, so it is a parser input as much
+#:      as `main.go` is, and any file a later unit adds beside them is too. A
+#:      floor naming `.../go_signature_fingerprint/main.go` would protect the
+#:      file while leaving the module that configures it writable — the same
+#:      shape as protecting `role_protocol.py` and leaving `.dispatcher.yaml`
+#:      open, which is the hole S2/S3 closed.
+#:
+#: Because `_FLOOR_ROWS` is a set difference against `FLOOR_GLOBS`, this
+#: spelling is BINDING on P3: a glob P3 writes that is not this exact string
+#: reddens `test_the_floor_is_exactly_the_written_out_set_of_globs`, and P3 may
+#: not amend a seal. The probes below are files UNDER the directory, never the
+#: directory itself — git reports files, and `**` matches no path component at
+#: the bare directory (measured: `.../go_signature_fingerprint` alone does not
+#: match). A probe naming the bare directory would be a row that can never fire.
 _FLOOR_ROWS: tuple[tuple[str, str], ...] = (
     ("**/.dispatcher.yaml", ".dispatcher.yaml"),
     ("**/.dispatcher.yaml", "sub/project/.dispatcher.yaml"),
@@ -310,6 +347,26 @@ _FLOOR_ROWS: tuple[tuple[str, str], ...] = (
     (
         "**/src/claude_dispatcher/role_protocol.py",
         "sub/project/src/claude_dispatcher/role_protocol.py",
+    ),
+    (
+        "**/src/claude_dispatcher/go_signature_fingerprint/**",
+        "src/claude_dispatcher/go_signature_fingerprint/main.go",
+    ),
+    (
+        "**/src/claude_dispatcher/go_signature_fingerprint/**",
+        "sub/project/src/claude_dispatcher/go_signature_fingerprint/main.go",
+    ),
+    # The subtree half of the ruling, as its own rows rather than as prose: a
+    # spelling that named `main.go` alone would leave the module definition and
+    # anything nested writable, and these two are the only rows that would
+    # catch it.
+    (
+        "**/src/claude_dispatcher/go_signature_fingerprint/**",
+        "src/claude_dispatcher/go_signature_fingerprint/go.mod",
+    ),
+    (
+        "**/src/claude_dispatcher/go_signature_fingerprint/**",
+        "src/claude_dispatcher/go_signature_fingerprint/internal/parse/decl.go",
     ),
 )
 
@@ -336,6 +393,20 @@ def test_the_floor_is_exactly_the_written_out_set_of_globs() -> None:
     The length bound below moved 2 -> 6 in the same edit, so DELETING a written
     row still reddens something even when the matching constant entry is deleted
     with it, which is the 18-of-28 failure mode this table exists to avoid.
+
+    P4, 2026-08-09 (unit D2): a THIRD gate artifact, the Go signature helper,
+    with four rows and the bound 6 -> 10. Four and not two because this glob is
+    a SUBTREE, and the extra two rows are what makes the subtree half of the
+    ruling falsifiable rather than decorative. Measured, both ways:
+
+      * narrow ONLY `FLOOR_GLOBS` to `.../go_signature_fingerprint/main.go` and
+        the set-difference above fires first, naming the unsealed glob;
+      * narrow the constant AND this table together — the edit someone
+        "tidying" both would make — and the set difference is satisfied, so the
+        NON-VACUITY LOOP is the only thing left: the `go.mod` row goes red
+        because it no longer matches. Without that row the narrowing lands
+        silently and the module definition that fixes the Go language version
+        the parse runs under becomes writable by the branch being parsed.
     """
     written = {glob for glob, _probe in _FLOOR_ROWS}
     unsealed = sorted(set(FLOOR_GLOBS) - written)
@@ -351,7 +422,7 @@ def test_the_floor_is_exactly_the_written_out_set_of_globs() -> None:
             f"{probe!r} does not match floor glob {glob!r} — the probe, not "
             "the floor, is wrong"
         )
-    assert len(_FLOOR_ROWS) >= 6, _FLOOR_ROWS
+    assert len(_FLOOR_ROWS) >= 10, _FLOOR_ROWS
 
 
 def test_the_config_file_is_on_the_floor() -> None:
