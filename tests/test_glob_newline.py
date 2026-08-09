@@ -61,11 +61,20 @@ One translator, not two
 The brief was written expecting two independent glob→regex translators. There
 is ONE. ``role_protocol.first_matching_glob`` delegates to
 ``risk.matches_any_glob`` one pattern at a time (invariant 5, already
-implemented), so a single fix inside ``risk`` closes both gates — and, usefully,
-``risk.py`` is NOT on ``FLOOR_GLOBS`` while ``role_protocol.py`` is, so the fix
-needs no floor edit. ``test_both_gates_answer_the_same_question_the_same_way``
-seals the shared PROPERTY (the two entry points agree) and deliberately does not
-seal the mechanism: which module owns the translation is the fixer's call.
+implemented), so a single fix inside ``risk`` closes both gates.
+``test_both_gates_answer_the_same_question_the_same_way`` seals the shared
+PROPERTY (the two entry points agree) and deliberately does not seal the
+mechanism: which module owns the translation is the fixer's call.
+
+Amended by P4, 2026-08-09 — prose only; no assertion here depended on it. As
+written this paragraph continued "``risk.py`` is NOT on ``FLOOR_GLOBS`` while
+``role_protocol.py`` is, so the fix needs no floor edit". Both halves are now
+false. ``tests/test_floor_closure.py`` seals the floor's DELEGATION CLOSURE, and
+``risk.py`` is on it precisely BECAUSE of the delegation this paragraph
+describes: the single translator every floor decision runs through was writable
+by the roles it judges. The fix recorded below landed before that ruling; a
+future one inside ``risk`` is a reviewed edit on the protected base, not a line
+in a branch under review.
 
 Vacuity discipline
 ------------------
@@ -336,10 +345,17 @@ def test_both_gates_answer_the_same_question_the_same_way() -> None:
     `role_protocol.first_matching_glob` today delegates to
     `risk.matches_any_glob`, so there is ONE translator and a fix in `risk`
     closes both gates. That is a fact about the current code, not a requirement
-    this seal may impose: `role_protocol.py` is on `FLOOR_GLOBS` and `risk.py`
-    is not, which constrains where a fix can live. So what is sealed is the
-    PROPERTY — the two entry points give the same answer for the same path —
-    and not the mechanism.
+    this seal may impose. So what is sealed is the PROPERTY — the two entry
+    points give the same answer for the same path — and not the mechanism.
+
+    Amended by P4, 2026-08-09 (prose only; nothing asserted here changes). This
+    docstring used to add "`role_protocol.py` is on `FLOOR_GLOBS` and `risk.py`
+    is not, which constrains where a fix can live". `risk.py` is on the floor
+    now — `tests/test_floor_closure.py` seals the floor's delegation closure,
+    and the delegation described in the sentence above is exactly why. The
+    constraint on where a fix may live has not disappeared, it has inverted:
+    both modules are protected, so a change to either is a reviewed edit on the
+    protected base. This seal still asserts only that the two answers agree.
 
     Probe pairs written out literally; neither module's constants are read to
     generate them.

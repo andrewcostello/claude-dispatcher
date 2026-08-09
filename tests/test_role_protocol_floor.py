@@ -92,6 +92,17 @@ entry from the constant deletes the test row instead of reddening it. Every
 table below (`_FLOOR_ROWS`, `_FLOOR_x_ROLE_ROWS`, `_SPELLING_ROWS`,
 `_DECLARATIONS_THAT_NAME_THE_FLOOR`) is written out literally, and the live
 constant is checked AGAINST the written list, never derived from it.
+
+P4, 2026-08-09 (second ruling) — one row in this file is RED on purpose
+-----------------------------------------------------------------------
+Every seal here was green before this edit and forty-six of the forty-seven
+still are. `test_every_floor_glob_the_ruling_wrote_out_is_in_the_constant` is
+new and RED: `_FLOOR_ROWS` now writes out the five delegation-closure globs
+that `tests/test_floor_closure.py` requires, and `FLOOR_GLOBS` does not carry
+them yet. It goes green on exactly the P3 edit that turns that file's 62 rows
+green — appending the five strings written out below, verbatim, and nothing
+else. Its second job outlives that edit: it states the floor's membership as
+DATA in the deletion direction, which no row here did.
 """
 
 from __future__ import annotations
@@ -295,6 +306,44 @@ def _spec(role: Role, *disputed: str) -> TaskRoleSpec:
 #: `test_role_protocol_provenance.py` (twenty rows, five roles, both probes of
 #: both halves). A second copy here would be two notions of one fact, which is
 #: invariant 5's failure mode, and the two copies would drift.
+#:
+#: **P4, 2026-08-09 (second ruling) — the DELEGATION CLOSURE joins the floor,
+#: and this table fixes its spelling too.** `tests/test_floor_closure.py` seals,
+#: in 62 red rows, that the floor delegates every floor decision to five
+#: in-package modules it does not protect: `first_matching_glob` hands every
+#: glob decision to `risk.matches_any_glob`, the deny table hands "is this a
+#: test file" to `seal_verify.is_test_path`, `check_branch` reads the
+#: base-pinned policy and every base blob the signature half compares through
+#: `repo_config` (+ `yaml_io`), and `seal_verify` imports `mechanical_verify` at
+#: MODULE level so its body runs on the gate path. That file asserts the
+#: path-qualification PROPERTY and no glob STRING, deliberately leaving the
+#: spelling here, because the seal below is a set difference against
+#: `FLOOR_GLOBS` and a string P3 invents that is not written here reddens it.
+#: **P3: use these five strings verbatim, or escalate — do not edit this
+#: table.**
+#:
+#:   4. Same path-qualified reasoning as points 1-3, and it now carries more
+#:      weight, not less: the floor previously named three UNUSUAL basenames
+#:      (`.dispatcher.yaml`, `check_body_branch.sh`, `role_protocol.py`) and now
+#:      names eight, including `risk.py`, `repo_config.py` and `yaml_io.py` —
+#:      names an unrelated file is genuinely likely to acquire. Measured
+#:      2026-08-09 under this module's own lens: `**/risk.py` also swallows
+#:      `vendor/thirdparty/risk.py` AND `notsrc/claude_dispatcher/risk.py`,
+#:      while `**/src/claude_dispatcher/risk.py` covers the real path and the
+#:      vendored `sub/project/...` layout and neither of those two. All five
+#:      globs measured the same way.
+#:   5. FIVE SEPARATE STRINGS, not one brace alternation. Measured: this glob
+#:      engine has NO brace expansion —
+#:      `**/src/claude_dispatcher/{risk,seal_verify,...}.py` matches exactly one
+#:      path, the one literally named `{risk,seal_verify,...}.py`, and covers
+#:      none of the five modules. A floor written that way is a silent no-op,
+#:      which is the one failure mode a floor may not have.
+#:   6. Measured joint satisfiability, 2026-08-09, in a `.git`-less `cp -a`
+#:      clone with a fresh repo: appending exactly these five strings to
+#:      `FLOOR_GLOBS` and changing NOTHING else turns all 62 `test_floor_
+#:      closure.py` rows green and leaves the rest of the suite untouched —
+#:      1663 passed, 13 skipped, and the single remaining failure is the seal
+#:      below, which is exactly the coordination P3 may not perform.
 _FLOOR_ROWS: tuple[tuple[str, str], ...] = (
     ("**/.dispatcher.yaml", ".dispatcher.yaml"),
     ("**/.dispatcher.yaml", "sub/project/.dispatcher.yaml"),
@@ -310,6 +359,46 @@ _FLOOR_ROWS: tuple[tuple[str, str], ...] = (
     (
         "**/src/claude_dispatcher/role_protocol.py",
         "sub/project/src/claude_dispatcher/role_protocol.py",
+    ),
+    (
+        "**/src/claude_dispatcher/risk.py",
+        "src/claude_dispatcher/risk.py",
+    ),
+    (
+        "**/src/claude_dispatcher/risk.py",
+        "sub/project/src/claude_dispatcher/risk.py",
+    ),
+    (
+        "**/src/claude_dispatcher/seal_verify.py",
+        "src/claude_dispatcher/seal_verify.py",
+    ),
+    (
+        "**/src/claude_dispatcher/seal_verify.py",
+        "sub/project/src/claude_dispatcher/seal_verify.py",
+    ),
+    (
+        "**/src/claude_dispatcher/repo_config.py",
+        "src/claude_dispatcher/repo_config.py",
+    ),
+    (
+        "**/src/claude_dispatcher/repo_config.py",
+        "sub/project/src/claude_dispatcher/repo_config.py",
+    ),
+    (
+        "**/src/claude_dispatcher/yaml_io.py",
+        "src/claude_dispatcher/yaml_io.py",
+    ),
+    (
+        "**/src/claude_dispatcher/yaml_io.py",
+        "sub/project/src/claude_dispatcher/yaml_io.py",
+    ),
+    (
+        "**/src/claude_dispatcher/mechanical_verify.py",
+        "src/claude_dispatcher/mechanical_verify.py",
+    ),
+    (
+        "**/src/claude_dispatcher/mechanical_verify.py",
+        "sub/project/src/claude_dispatcher/mechanical_verify.py",
     ),
 )
 
@@ -336,6 +425,15 @@ def test_the_floor_is_exactly_the_written_out_set_of_globs() -> None:
     The length bound below moved 2 -> 6 in the same edit, so DELETING a written
     row still reddens something even when the matching constant entry is deleted
     with it, which is the 18-of-28 failure mode this table exists to avoid.
+
+    P4, 2026-08-09 (second ruling): the five delegation-closure globs joined
+    `_FLOOR_ROWS` and the bound moved 6 -> 16. This seal stays GREEN across that
+    edit, because it only runs `FLOOR_GLOBS - written`; the other direction is
+    now its own row, `test_every_floor_glob_the_ruling_wrote_out_is_in_the
+    _constant`, added in the same edit and RED until P3 lands the five globs.
+    Two rows rather than one compound row on purpose: this direction must stay
+    independently observable — a compound row already red for a MISSING glob
+    could not also report an UNSEALED one.
     """
     written = {glob for glob, _probe in _FLOOR_ROWS}
     unsealed = sorted(set(FLOOR_GLOBS) - written)
@@ -351,7 +449,66 @@ def test_the_floor_is_exactly_the_written_out_set_of_globs() -> None:
             f"{probe!r} does not match floor glob {glob!r} — the probe, not "
             "the floor, is wrong"
         )
-    assert len(_FLOOR_ROWS) >= 6, _FLOOR_ROWS
+    assert len(_FLOOR_ROWS) >= 16, _FLOOR_ROWS
+
+
+def test_every_floor_glob_the_ruling_wrote_out_is_in_the_constant() -> None:
+    """The OTHER direction of the same set difference. P4, 2026-08-09 (second
+    ruling), closing what M9 found. RED TODAY, five globs missing.
+
+    M9 reported that deleting `**/src/claude_dispatcher/role_protocol.py` from
+    `FLOOR_GLOBS` is caught only by `test_role_protocol_provenance.py` and by
+    nothing in this file. **Re-measured 2026-08-09 against the committed tree,
+    that is not quite right, and the correction is why this row is worth having
+    rather than a reason to skip it.** The deletion does redden one row here —
+    `test_declaring_a_floor_path_is_refused_at_plan_time[the gate library,
+    named exactly]`, from `_DECLARATIONS_THAT_NAME_THE_FLOOR`. What M9 saw is
+    the real shape of the gap: the set difference above runs ONE way, so no row
+    in this file stated the floor's membership as DATA, and every catch in the
+    deletion direction was BEHAVIOURAL and per-glob — `_FLOOR_x_ROLE_ROWS` for
+    the config glob, `_DECLARATIONS_THAT_NAME_THE_FLOOR` for the two gate globs,
+    `_DELEGATION_TARGETS` in another file for the five closure globs. Three
+    tables of bookkeeping, one entry at a time, and a glob whose bookkeeping
+    nobody remembered would be deletable in silence.
+
+    This row is structural instead: it fires for every glob in `_FLOOR_ROWS`,
+    the eight there now and every one written later, with no per-glob row to
+    remember. A floor's membership is data; the file that owns it states it as
+    data, in both directions, and does not borrow the answer from a behavioural
+    probe in another file that a later narrowing could take away.
+
+    What this costs, stated because it is the reason the seal author left it
+    open: P4 can no longer write a glob's rows AHEAD of P3 for free — this row
+    reddens for the interval. That is the right price. A red row naming the
+    globs a ruling requires and the code does not have is the ruling, visible;
+    the alternative was silence.
+
+    Red now (measured 2026-08-09): the five delegation-closure globs are in
+    `_FLOOR_ROWS` and not in `FLOOR_GLOBS`.
+    Green when: `FLOOR_GLOBS` carries every glob written out above — the same
+    P3 edit that turns `tests/test_floor_closure.py` green.
+    Falsify (measured, in a clone with the five globs added): delete any one
+    glob from `FLOOR_GLOBS` — this reddens naming it. Measured for
+    `**/scripts/check_body_branch.sh` and `**/src/claude_dispatcher/
+    role_protocol.py`; in both runs this row is one of exactly two rows in this
+    file that redden, and it is the only one that reddens on the CONSTANT
+    rather than on a declaration the deleted glob happened to have a probe for.
+    """
+    written = {glob for glob, _probe in _FLOOR_ROWS}
+    # Non-vacuity: an emptied `_FLOOR_ROWS` would make the difference below
+    # trivially empty. The sibling seal bounds the ROW count; this one bounds
+    # the distinct-GLOB count, because that is what it consumes.
+    assert len(written) >= 8, (
+        f"_FLOOR_ROWS no longer writes out eight distinct floor globs, so this "
+        f"seal is measuring a shrunken table rather than the floor: {written}"
+    )
+    missing = sorted(written - set(FLOOR_GLOBS))
+    assert not missing, (
+        "these globs are written out as floor globs in this file and are not "
+        "in `FLOOR_GLOBS`, so the floor does not carry them. Either the "
+        "constant is missing them (P3: add them verbatim) or one was deleted "
+        f"from the constant without this table saying so: {missing}"
+    )
 
 
 def test_the_config_file_is_on_the_floor() -> None:

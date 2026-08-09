@@ -67,6 +67,17 @@ that import function-local removes it from the closure and these seals go green
 without it ever being floored. The seal pushes toward a small trusted base, not
 merely a large floor.
 
+**P4, 2026-08-09: the property is ENDORSED and the discharge is bounded, and
+the paragraph above is corrected on one word.** Leaving the gate path is a real
+fix and the only thing that stops this floor growing monotonically. But
+"function-local" is not the same fact as "does not execute": measured, moving
+that import into `seal_verify.is_test_path` instead — the function the deny
+table calls — also removes the row from the derived closure, with the body
+still running on every gate decision, and no seal here tells the two apart. So
+a module leaves the closure by leaving the GATE PATH, not by relocating an
+import; and the claim that it did is a P4 ruling, not a green run. Dispute 3
+below carries the measurement and the checklist is on `_DELEGATION_TARGETS`.
+
 WHAT THIS CAN DETECT
   * A new `from . import X` added inside any function reachable from a floor
     decision — the derived closure grows and both
@@ -103,6 +114,24 @@ WHAT THIS CANNOT DETECT
     CRITICALs the same panel found in these very modules — `is_test_path`'s
     regex anchor bypass and `risk.py`'s quoted-path escalation bypass — are
     other work and are not touched here.
+  * **Whether a module that LEFT the derived closure actually left the gate
+    path.** Added by P4, 2026-08-09, and measured, because the escape hatch
+    described above is the first place a fixer will reach. Step 1 walks
+    `role_protocol`'s call graph and step 3 reads only the MODULE-LEVEL imports
+    of closure members, so an import moved INTO a closure member's function is
+    invisible to both. Two branches were built and run in full, differing in
+    one line — the honest discharge, with `seal_verify`'s
+    `from . import mechanical_verify as mv_mod` function-local inside
+    `run_seal_inversion` (which `is_test_path` does not call, so nothing on the
+    gate path executes it), and the bypass, with the same import ALSO inside
+    `is_test_path` itself (so its body runs on every gate decision). Both drop
+    `mechanical_verify` from the derived closure. With the P4 table amendments
+    a discharge requires, the two runs are IDENTICAL: 1653 passed, 13 skipped,
+    no failures, in both. Nothing in this suite distinguishes the fix from the
+    defect. See dispute 3 for what follows from that, and note what does NOT:
+    a P3 cannot reach either state alone, because all three tables that have to
+    shrink (`_DELEGATION_TARGETS`, `_CLOSURE_ROWS`, and `_FLOOR_ROWS` in
+    `test_role_protocol_floor.py`) are seals.
   * The provenance question. `scripts/check_body_branch.sh` already materialises
     the WHOLE of `<base>:src/` when the gate lives inside the judged tree, so a
     trusted run of that script does not import the branch's `risk.py` today.
@@ -142,33 +171,148 @@ So: the literal table pins the derivation, the derivation pins the literal
 table, and the two of them jointly pin the constant. There is no cycle in which
 a single deletion is self-consistent.
 
-Disputes for P4 (raised, not resolved here — see the report)
-------------------------------------------------------------
-  1. `test_role_protocol_floor.py::test_the_floor_is_exactly_the_written_out_
-     set_of_globs` is a set difference against `FLOOR_GLOBS` and REDDENS BY
-     DESIGN the moment P3 adds a glob. P4 must write the new globs' rows into
-     `_FLOOR_ROWS` (which P3 is forbidden to edit) and raise the
-     `len(_FLOOR_ROWS) >= 6` bound. This file deliberately does NOT assert the
-     glob STRINGS, only the path-qualification property, so that P4 owns the
-     spelling exactly as it did on 2026-08-09. Recommended, following that
-     ruling's shape: `**/src/claude_dispatcher/risk.py`,
-     `**/src/claude_dispatcher/seal_verify.py`,
-     `**/src/claude_dispatcher/repo_config.py`,
-     `**/src/claude_dispatcher/yaml_io.py`,
-     `**/src/claude_dispatcher/mechanical_verify.py`.
-  2. The closure contains THREE modules beyond the two the panel named. Their
-     cost is real and P4 may wish to rule on the ROOT set (which is written
-     out and therefore a decision), but not on the derivation, which is what
-     makes the class closed.
-  3. `test_glob_newline.py::test_both_gates_answer_the_same_question_the_same_
-     way` carries a docstring stating "`risk.py` is not on `FLOOR_GLOBS`". No
-     assertion depends on it; the prose goes stale. It is a documentation
-     amendment, not a seal conflict.
-  4. Plan time refuses declarations by BASENAME (`_floor_glob_named_by`) while
-     diff time refuses by path-qualified glob. Flooring `risk.py` therefore
-     makes `vendor/thirdparty/risk.py` unDECLARABLE while leaving it WRITABLE —
-     the same asymmetry P4 already accepted for `role_protocol.py`. Sealed as
-     it is, not silently reconciled.
+Disputes — ADJUDICATED by P4, 2026-08-09
+-----------------------------------------
+  1. **The spelling. RULED, and it is binding on P3.** The five globs are, one
+     string each and in this order:
+
+         **/src/claude_dispatcher/risk.py
+         **/src/claude_dispatcher/seal_verify.py
+         **/src/claude_dispatcher/repo_config.py
+         **/src/claude_dispatcher/yaml_io.py
+         **/src/claude_dispatcher/mechanical_verify.py
+
+     Written into `_FLOOR_ROWS` in `test_role_protocol_floor.py` with both
+     probes each (6 rows -> 16) and the bound raised 6 -> 16, which is the
+     coordination P3 may not perform. The recommendation was verified, not
+     accepted: measured under `first_matching_glob`, each covers the real path
+     and the vendored `sub/project/...` layout and covers neither
+     `vendor/thirdparty/<name>.py` nor `src/claude_dispatcher/plan.py`, while
+     the basename-only form `**/<name>.py` swallows both
+     `vendor/thirdparty/risk.py` and `notsrc/claude_dispatcher/risk.py`.
+     One correction to the recommendation's shorthand: this engine has NO brace
+     expansion, so `**/src/claude_dispatcher/{risk,seal_verify,...}.py` is a
+     silent no-op that matches only a file literally named that. Five strings.
+     Joint satisfiability measured in a `.git`-less clone: appending exactly
+     these five to `FLOOR_GLOBS` and changing nothing else turns all 62 rows
+     here green with 1663 passed / 13 skipped elsewhere, the only remaining
+     failure being the coordination seal P4 has now amended.
+
+  2. **The scope. The root set stands; the derivation is untouched.** The three
+     modules beyond the two the panel named are kept, and the reasons differ in
+     kind, so they are recorded separately rather than as one bloc:
+
+       * `repo_config` and `yaml_io` are NOT merely import-time collateral.
+         `check_branch` reads the base-pinned policy through them and reads,
+         through `repo_config.blob_text_at`, every base blob the scaffolded-
+         signature half compares. A branch that rewrites either one controls
+         what the gate believes the protected base says — the same authority as
+         rewriting the matcher, reached one call further out. They are decision
+         delegates and would belong on the floor even if nothing were imported
+         at module level.
+       * `mechanical_verify` is the one weak row: import-time reachability
+         only, floored because `seal_verify` executes its body on the gate
+         path. It is kept, and it is also the row with a discharge that costs
+         no floor width — see dispute 3.
+
+     The root set (`check_branch`, `_floor_glob_named_by`) is endorsed
+     unchanged. Seeding lower would be the narrowing the seal author warns
+     about and would reopen the class; seeding higher would drag `plan.py` in
+     and floor the unit's ordinary-source probe. And the measured cost of the
+     full closure is not a reason to narrow it: the whole suite outside this
+     file is unaffected by flooring all five.
+
+     What the ruling DOES cost, recorded because the next author will hit it:
+     the two sibling CRITICALs live inside the closure — `is_test_path`'s
+     anchor bypass in `seal_verify` and the quoted-path escalation in `risk` —
+     so once these globs land, neither can be fixed by a branch under review.
+     Both become reviewed edits on the protected base. That is the floor
+     working as designed (`FLOOR_RATIONALE` says so in as many words), not an
+     accident of this ruling, and it is the strongest practical argument for
+     dispute 3's escape hatch.
+
+  3. **Leave-by-lazy-import: the PROPERTY is ENDORSED, the DISCHARGE is
+     bounded.** Endorsed because a floor has no override and therefore no way
+     to shrink: without this property every delegation discovered forever is a
+     permanent addition, and the incentive runs the wrong way — toward a large
+     floor rather than a small trusted base. It is also the only route by which
+     the two CRITICALs above become ordinarily fixable again.
+
+     Bounded because no seal can check the claim, which was measured rather
+     than argued. Two full-suite runs differing in one line (detailed in the
+     last entry under WHAT THIS CANNOT DETECT): the honest discharge, where
+     `mechanical_verify`'s import is function-local inside a `seal_verify`
+     function the gate never calls, and the bypass, where it is ALSO inside
+     `is_test_path`, so its body runs on every gate decision. Both leave the
+     derived closure; with the table amendments a discharge requires, both are
+     1653 passed / 0 failed. **The seals cannot tell the fix from the defect.**
+
+     So the escape hatch's wording matters and is corrected here: a module
+     leaves the closure by leaving the GATE PATH — its body no longer executes
+     while a floor decision is reached — and NOT by relocating an import
+     inward. Relocating changes what the analyzer reports and changes nothing
+     about whose code runs.
+
+     **The control is procedural, and it already exists.** Reaching either
+     state requires deleting rows from `_DELEGATION_TARGETS`, from
+     `_CLOSURE_ROWS`, and from `_FLOOR_ROWS` in `test_role_protocol_floor.py` —
+     three tables, all seals, none of them P3's to edit. The discharge
+     therefore cannot be taken, only REQUESTED, and the request lands on P4.
+     What P4 owes it is the check the analyzer cannot do: read the enclosing
+     function and establish that nothing the gate calls into that module
+     reaches it. The checklist is on `_DELEGATION_TARGETS`.
+
+     Two alternatives were considered and rejected. Widening the derivation to
+     walk closure members' call graphs would grow the floor on any in-package
+     import anywhere inside a member — over-reach in a floor is permanent and
+     unappealable, the same asymmetry dispute 4 turns on. And a seal refusing
+     every function-local in-package import inside a closure member was
+     written, run and WITHDRAWN: measured, it reddens on the honest discharge
+     exactly as it reddens on the bypass, so it is a row the correct fix cannot
+     turn green. A permanent red is not a control; it is a seal the next author
+     learns to amend away.
+
+  4. **The basename/path-qualified asymmetry: ACCEPTED again, on the record.**
+     Plan time (`_floor_glob_named_by`) compares BASENAMES; diff time
+     (`_floor_violations`) matches the path-qualified glob. So once `risk.py`
+     is floored, `vendor/thirdparty/risk.py` is unDECLARABLE and still
+     WRITABLE. Three reasons it is not the fail-open it resembles:
+
+       * The asymmetry runs in the SAFE direction. Plan time is STRICTER than
+         diff time, so it can only produce a false refusal, never a false
+         clearance. The dangerous shape — plan time laxer than diff time —
+         does not exist here, and could not, because plan time has no diff to
+         consult and deliberately over-approximates.
+       * `vendor/thirdparty/risk.py` being writable is the floor CORRECTLY
+         SCOPED, not the floor leaking. The gate imports `claude_dispatcher
+         .risk`, resolved under the package root; a vendored copy at another
+         root is never executed while a floor decision is reached, and
+         rewriting it changes no floor decision. `_STILL_WRITABLE_ROWS` seals
+         that as a required property, so "closing" this direction would mean
+         deliberately reddening a control written to bound the fix.
+       * The false-refusal side has a spelling that works. `_floor_glob_named_
+         by` returns None for a tail of pure wildcards, so an adjudication that
+         genuinely needs a vendored file declares the TREE (`vendor/**`,
+         `vendor/thirdparty/**`) rather than the file, and diff time then
+         clears it because the path is not floored. Measured 2026-08-09.
+
+     Accepted, not free. The false-refusal surface is materially wider than it
+     was when this asymmetry was accepted for `role_protocol.py`: the floor
+     named three unusual basenames and now names eight, three of which
+     (`risk.py`, `repo_config.py`, `yaml_io.py`) an unrelated file could
+     plausibly acquire. The mitigation is that the refusal lands at PLAN time,
+     names the entry, and has the subtree spelling above; if that proves
+     insufficient in practice the fix is to give plan time the path-qualified
+     comparison as a SECOND question — not to remove the basename one, which is
+     what catches `risk.py` and `.dispatcher.*` and is the whole point of the
+     2026-08-07 ruling.
+
+  5. **The stale prose in `test_glob_newline.py`: FIXED.** Two places said
+     "`risk.py` is not on `FLOOR_GLOBS`" (the module docstring's "One
+     translator, not two" section, which also concluded "the fix needs no floor
+     edit", and `test_both_gates_answer_the_same_question_the_same_way`'s
+     docstring). No assertion depended on either. Both now state the fact this
+     change establishes and the consequence for where a future fix may live.
 """
 
 from __future__ import annotations
@@ -427,11 +571,36 @@ def _reachable_functions(source: str) -> frozenset[str]:
 #: `mechanical_verify`'s reason is worth reading twice. It is in the closure
 #: only because `seal_verify` imports it at MODULE level, so importing the
 #: test-path matcher executes it on the gate path. It is the one row a fixer
-#: can discharge without flooring anything: make that import function-local and
-#: the derived closure loses the row, at which point THIS table has to lose it
-#: too or `test_the_delegation_closure_is_exactly_the_written_out_table`
-#: reddens. Either resolution is a real fix; a silent divergence is not
-#: available.
+#: can discharge without flooring anything: DELETE that import, and the derived
+#: closure loses the row, at which point THIS table has to lose it too or
+#: `test_the_delegation_closure_is_exactly_the_written_out_table` reddens.
+#: Either resolution is a real fix; a silent divergence is not available.
+#:
+#: **P4, 2026-08-09 — one correction, and a checklist for whoever amends this
+#: table.** As originally written the paragraph above said "make that import
+#: function-local". Measured, that is not a fix: an import relocated into
+#: `seal_verify.is_test_path` — the function the deny table calls — leaves the
+#: derived closure and still executes on every gate decision, and no seal in
+#: this suite distinguishes it from the honest deletion (dispute 3 records both
+#: runs). Deleting a row here is therefore the ONLY route to that state, which
+#: makes this table the control. Before deleting a row on a "left the gate
+#: path" claim, P4 must establish, by reading the code and not by reading a
+#: green run:
+#:
+#:   a. the module is not imported at MODULE level by any closure member — the
+#:      derivation checks this one, and it is the only one it checks;
+#:   b. every function-local import of it inside a closure member sits in a
+#:      function that nothing the gate calls into that member can reach.
+#:      `role_protocol` enters `risk` at `matches_any_glob`, `seal_verify` at
+#:      `is_test_path`, and `repo_config`/`yaml_io` through the policy and blob
+#:      reads in `check_branch`; the reachable set is those entry points'
+#:      intra-module call graphs;
+#:   c. the same two rows in `_CLOSURE_ROWS` and `_FLOOR_ROWS` come out in the
+#:      same commit, so the three tables cannot disagree about which modules
+#:      are in the trusted base.
+#:
+#: Deleting a row on any weaker basis converts this seal from a protection into
+#: a record of one.
 _DELEGATION_TARGETS: tuple[tuple[str, str, str, str, str], ...] = (
     (
         "risk",
@@ -747,8 +916,11 @@ def test_the_floor_glob_over_a_delegation_target_is_path_qualified(
     No glob STRING is asserted. The spelling is P4's, because `_FLOOR_ROWS` in
     `test_role_protocol_floor.py` is a set difference against `FLOOR_GLOBS` and
     a string P3 invents that P4 has not written there reddens that seal. This
-    row pins what the string must DO; dispute 1 in this module's docstring asks
-    P4 for the strings.
+    row pins what the string must DO; P4 ruled the strings on 2026-08-09 and
+    they are written out in `_FLOOR_ROWS` and quoted under dispute 1 in this
+    module's docstring. **P3: use them verbatim.** Note in particular that they
+    are five separate strings — this engine has no brace expansion, and a
+    `{a,b,c}` alternation is a floor that matches nothing.
 
     Red now (measured): the first assertion fails — no glob covers the path.
     Green when: all three hold.
