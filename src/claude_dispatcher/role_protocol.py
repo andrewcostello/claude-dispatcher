@@ -190,6 +190,7 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import json
 import sys
 from dataclasses import dataclass
 from enum import Enum
@@ -2962,7 +2963,18 @@ def encode_go_helper_request(path: str, source: str) -> str:
     accepted — because normalising here would make the Python and Go sides
     disagree about what the file says.
     """
-    raise NotImplementedError("D2 P3: encode the helper request")
+    return json.dumps(
+        {"schema": GO_HELPER_SCHEMA, "path": path, "source": source},
+        # ASCII on purpose, and not a style choice. `source` is whatever the
+        # git read accepted, which can include lone surrogates from a blob that
+        # is not valid UTF-8; `ensure_ascii=False` would raise on encoding
+        # those and turn a bad FILE into an environment fault. Escaped, the
+        # payload is pure ASCII and always encodable.
+        ensure_ascii=True,
+        # Deterministic separators, so two runs over one file produce one
+        # request byte for byte.
+        separators=(",", ":"),
+    )
 
 
 def decode_go_helper_response(stdout: str) -> GoHelperResponse:
@@ -2984,7 +2996,96 @@ def decode_go_helper_response(stdout: str) -> GoHelperResponse:
     :meth:`GoSignatureFingerprinter.fingerprints` that turns it into
     :class:`SourceUnparseable`. One place per decision.
     """
-    raise NotImplementedError("D2 P3: decode and validate the helper response")
+
+    def invalid(reason: str) -> ComparatorUnavailable:
+        return ComparatorUnavailable(
+            ComparatorFault.HELPER_OUTPUT_INVALID,
+            f"{reason}; a response this function half-understood would drop "
+            "symbols, and a dropped symbol reads as a REMOVED one",
+        )
+
+    if not stdout.strip():
+        raise invalid(
+            "the helper wrote nothing to stdout. 'no symbols' and 'no output' "
+            "are not the same answer: the first clears one file and the "
+            "second would clear every branch"
+        )
+    try:
+        document = json.loads(stdout)
+    except ValueError as exc:
+        raise invalid(f"stdout is not JSON ({exc})") from exc
+    if not isinstance(document, dict):
+        raise invalid(
+            f"stdout is a JSON {type(document).__name__}, not the response object"
+        )
+
+    schema = document.get("schema")
+    if schema != GO_HELPER_SCHEMA:
+        raise invalid(
+            f"the response schema is {schema!r}, not {GO_HELPER_SCHEMA!r}. A "
+            "helper from a different version of this protocol is a fault, "
+            "never a best-effort read: fingerprints are compared for equality "
+            "across two runs and a grammar change would read as a rewrite"
+        )
+
+    raw_parse_error = document.get("parse_error")
+    if raw_parse_error is not None and not isinstance(raw_parse_error, str):
+        raise invalid(
+            f"parse_error is a {type(raw_parse_error).__name__}, not a string"
+        )
+    parse_error = raw_parse_error or None
+
+    raw_symbols = document.get("symbols")
+    if raw_symbols is not None and not isinstance(raw_symbols, list):
+        raise invalid(
+            f"symbols is a {type(raw_symbols).__name__}, not a list. An empty "
+            "LIST is the answer for a file that declares nothing; a missing "
+            "one is not an answer at all"
+        )
+
+    if (raw_symbols is None) == (parse_error is None):
+        raise invalid(
+            "symbols and parse_error are mutually exclusive and this document "
+            + ("carries both" if parse_error is not None else "carries neither")
+        )
+
+    if parse_error is not None:
+        return GoHelperResponse(schema=schema, parse_error=parse_error)
+
+    symbols: list[GoHelperSymbol] = []
+    seen: set[str] = set()
+    for index, entry in enumerate(raw_symbols or ()):
+        if not isinstance(entry, dict):
+            raise invalid(f"symbols[{index}] is not an object")
+        name = entry.get("symbol")
+        fingerprint = entry.get("fingerprint")
+        kind = entry.get("kind")
+        for field, value in (
+            ("symbol", name),
+            ("fingerprint", fingerprint),
+            ("kind", kind),
+        ):
+            if not isinstance(value, str) or not value:
+                raise invalid(
+                    f"symbols[{index}].{field} is {value!r}, not a non-empty "
+                    "string"
+                )
+        assert isinstance(name, str)  # narrowed by the loop above
+        if name in seen:
+            raise invalid(
+                f"symbols carries {name!r} twice. Two fingerprints for one key "
+                "means one of them is unreachable, and which one is decided by "
+                "dict insertion order rather than by this protocol"
+            )
+        seen.add(name)
+        symbols.append(
+            GoHelperSymbol(
+                symbol=name,
+                fingerprint=str(fingerprint),
+                kind=str(kind),
+            )
+        )
+    return GoHelperResponse(schema=schema, symbols=tuple(symbols))
 
 
 def go_helper_source_dir() -> Path:
@@ -3028,8 +3129,367 @@ def go_helper_source_dir() -> Path:
     Until both hold, :data:`GO_SUPPORT` must not be enrolled. Coverage a branch
     can switch off is not coverage, and enrolling first would trade a gate that
     protects zero Go files for one that appears to protect 2,288.
+
+    **P3: ``go.mod`` is checked as well as ``main.go``.** Both are entry points
+    in the sense that matters — ``go.mod`` fixes the language version the parse
+    runs under and pins the module to stdlib-only, which is why
+    :data:`FLOOR_GLOBS` covers the whole subtree rather than the one file. An
+    install that dropped it would reach ``go build`` and fail there as
+    HELPER_FAILED with a module error, which names the wrong party.
     """
-    raise NotImplementedError("D2 P3: resolve the packaged helper source")
+    directory = Path(__file__).parent / GO_HELPER_PACKAGE_DIR
+    if not directory.is_dir():
+        raise ComparatorUnavailable(
+            ComparatorFault.HELPER_MISSING,
+            f"the Go signature helper's source directory is not at "
+            f"{directory}. An install that dropped the asset is a broken "
+            "install, never 'this build has no Go support': the second "
+            "reading hands every Go branch a clean bill of health",
+        )
+    missing = [
+        name
+        for name in ("main.go", "go.mod")
+        if not (directory / name).is_file()
+    ]
+    if missing:
+        raise ComparatorUnavailable(
+            ComparatorFault.HELPER_MISSING,
+            f"the Go signature helper at {directory} is missing "
+            f"{', '.join(missing)}; it is a program that cannot be built, "
+            "which is a broken install and not a language nobody can read",
+        )
+    return directory
+
+
+#: How long the ONE-OFF ``go build`` of the helper may take. Separate from
+#: :data:`_HELPER_TIMEOUT_SECONDS` because it bounds different work: that one is
+#: a per-file budget paid once per revision, this one is paid once per process
+#: and a cold Go build cache is a different order of magnitude. Measured
+#: 2026-08-09 on the reference machine: 1.9s with an empty ``GOCACHE``, 0.04s
+#: warm. Deliberately generous against those numbers — what this bounds is a
+#: HUNG toolchain, not a slow one, and a build killed on a loaded CI box would
+#: be a HELPER_TIMEOUT nobody can reproduce.
+_HELPER_BUILD_TIMEOUT_SECONDS = 120
+
+#: The helper this PROCESS prepared: ``(binary, None)`` or ``(None, fault)``,
+#: whichever the first call produced, and None before there has been one.
+#:
+#: **Why the build is cached and the run is not** (P3, measured 2026-08-09).
+#: The gate runs the helper TWICE per changed Go file — base revision and head
+#: — so a 200-file Go branch is 400 invocations on the post-implementer hot
+#: path. ``go run .`` compiles before each one: measured 59ms per invocation,
+#: **24 seconds** added to every such gate run. Building once and executing the
+#: binary is 0.7ms per invocation, **0.3s** for the same branch, which is why
+#: this global exists. The wire contract is untouched — still one JSON request
+#: per file on a fresh process's stdin, still a per-file timeout, still "which
+#: file" answerable — so this is a cost fix and not a protocol change.
+#:
+#: Per PROCESS and never on disk between runs. A binary cached under ``/tmp``
+#: across runs would be a file outside :data:`FLOOR_GLOBS` whose bytes decide
+#: what a Go signature is, which is the self-judgement hole at
+#: :func:`go_helper_source_dir` reopened somewhere the floor cannot reach.
+#:
+#: The FAULT is cached too, so a machine with no ``go`` pays one ``which`` and
+#: not one per file, and so every file in the diff is refused with the same
+#: message. A seal that needs a second preparation sets this back to None.
+_GO_HELPER_PREPARED: (
+    tuple[Path, None] | tuple[None, ComparatorUnavailable] | None
+) = None
+
+
+def _go_toolchain_environment() -> dict[str, str]:
+    """The environment the ``go`` toolchain is invoked under.
+
+    Isolated from the ambient one on the axes that would otherwise let the
+    machine — or the repository under judgement — change what the helper is:
+
+      * ``GOWORK=off``: the target repo is itself a Go module and may carry a
+        ``go.work``. Inheriting it would pull the helper into the judged
+        repository's workspace, which is the provenance defect
+        :func:`go_helper_source_dir` exists to close, arriving by another door.
+      * ``GOFLAGS=``: an inherited ``-mod=vendor`` from a shell profile fails a
+        module that has no vendor directory, and the failure would read as
+        HELPER_FAILED on a helper that is fine.
+      * ``GOPROXY=off`` and ``GOTOOLCHAIN=local``: the helper is stdlib-only and
+        must not consult the network. Both make that structural rather than
+        true-by-inspection, and a build that suddenly needs a fetch fails
+        loudly here instead of hanging into HELPER_TIMEOUT.
+      * ``GOOS``/``GOARCH`` removed: a cross-compiling shell would produce a
+        binary this process cannot exec.
+
+    ``GOCACHE`` and ``HOME`` are deliberately INHERITED. Pointing the cache at
+    a temporary directory would make every run a cold build; an unwritable one
+    is a real fault with a name (:attr:`ComparatorFault.TOOLCHAIN_UNUSABLE`)
+    and :func:`_probe_go_toolchain` reports it as one.
+    """
+    import os
+
+    env = dict(os.environ)
+    env.update(
+        {
+            "GOWORK": "off",
+            "GOFLAGS": "",
+            "GOPROXY": "off",
+            "GOTOOLCHAIN": "local",
+            "GO111MODULE": "on",
+        }
+    )
+    env.pop("GOOS", None)
+    env.pop("GOARCH", None)
+    return env
+
+
+def _go_module_language_version(go_mod: Path) -> tuple[int, ...] | None:
+    """The ``go`` directive of the helper's ``go.mod``, or None if unreadable.
+
+    None rather than a raise: the directive is used only to REFUSE a toolchain
+    older than the helper needs, so a version this cannot read must not become
+    a fault of its own — ``go build`` is still the authority and will say so.
+    """
+    try:
+        text = go_mod.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        fields = line.strip().split()
+        if len(fields) >= 2 and fields[0] == "go":
+            try:
+                return tuple(int(part) for part in fields[1].split("."))
+            except ValueError:
+                return None
+    return None
+
+
+def _probe_go_toolchain(go: str, source: Path) -> None:
+    """Refuse a ``go`` that is on PATH but cannot do the job.
+
+    On PATH is not the same as working, and a gate that assumes it is fails
+    open the first time a container drops ``$HOME``. Three refusals, all
+    :attr:`ComparatorFault.TOOLCHAIN_UNUSABLE`:
+
+      * the probe does not run, times out, or exits non-zero;
+      * ``GOCACHE`` is unset or ``off`` — which is exactly what ``go env``
+        reports when there is no writable ``HOME`` (measured), and a build
+        under it cannot cache and will not run;
+      * the installed version is older than the helper's ``go`` directive. A
+        toolchain that predates the syntax the helper is written against
+        reports a COMPILE error, and a compile error is HELPER_FAILED — which
+        blames the helper for the machine's age.
+
+    One subprocess, once per process: ``go env`` answers both questions.
+    """
+    import subprocess
+
+    try:
+        probe = subprocess.run(
+            [go, "env", "GOVERSION", "GOCACHE"],
+            capture_output=True,
+            timeout=_HELPER_TIMEOUT_SECONDS,
+            env=_go_toolchain_environment(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ComparatorUnavailable(
+            ComparatorFault.TOOLCHAIN_UNUSABLE,
+            f"`{go} env` did not answer within {_HELPER_TIMEOUT_SECONDS}s; a "
+            "toolchain that hangs on its own version probe cannot be used to "
+            "clear a branch",
+        ) from exc
+    except OSError as exc:
+        raise ComparatorUnavailable(
+            ComparatorFault.TOOLCHAIN_UNUSABLE,
+            f"`{go} env` could not be run: {type(exc).__name__}: {exc}",
+        ) from exc
+
+    if probe.returncode != 0:
+        raise ComparatorUnavailable(
+            ComparatorFault.TOOLCHAIN_UNUSABLE,
+            f"`{go} env` exited {probe.returncode}: "
+            f"{_helper_diagnostic_text(probe.stderr)}",
+        )
+
+    lines = probe.stdout.decode("utf-8", "replace").splitlines()
+    version_text = lines[0].strip() if lines else ""
+    cache = lines[1].strip() if len(lines) > 1 else ""
+
+    if not cache or cache == "off":
+        raise ComparatorUnavailable(
+            ComparatorFault.TOOLCHAIN_UNUSABLE,
+            f"`{go} env GOCACHE` reports {cache or 'nothing'!r}, which is what "
+            "it says when there is no writable HOME. A build cannot run "
+            "without a cache, and a container that dropped $HOME must not read "
+            "as a repository with no Go in it",
+        )
+
+    installed = None
+    if version_text.startswith("go"):
+        try:
+            installed = tuple(
+                int(part) for part in version_text[2:].split("-")[0].split(".")
+            )
+        except ValueError:
+            installed = None
+    if installed is None:
+        raise ComparatorUnavailable(
+            ComparatorFault.TOOLCHAIN_UNUSABLE,
+            f"`{go} env GOVERSION` answered {version_text!r}, which is not a "
+            "version this gate can compare against the helper's own",
+        )
+
+    required = _go_module_language_version(source / "go.mod")
+    if required is not None and installed < required:
+        installed_text = ".".join(str(part) for part in installed)
+        required_text = ".".join(str(part) for part in required)
+        raise ComparatorUnavailable(
+            ComparatorFault.TOOLCHAIN_UNUSABLE,
+            f"the installed toolchain is go{installed_text} and the helper "
+            f"declares go{required_text}. A toolchain older than the language "
+            "the helper is written in fails as a COMPILE error, which would "
+            "blame the helper for the age of the machine",
+        )
+
+
+def _helper_diagnostic_text(raw: bytes | None) -> str:
+    """Helper stderr for a fault message. Lossy and bounded on purpose.
+
+    A diagnostic that cannot be decoded must not mask the failure it describes,
+    and a compile-error dump must not become the whole report.
+    """
+    if not raw:
+        return "(nothing on stderr)"
+    text = bytes(raw).decode("utf-8", "replace").strip()
+    if len(text) > 2000:
+        text = text[:2000] + " …(truncated)"
+    return text or "(nothing on stderr)"
+
+
+def _build_go_helper() -> Path:
+    """Resolve, probe and compile the helper once. Returns the binary's path.
+
+    Total: every failure leaves here as a :class:`ComparatorUnavailable`
+    carrying the named fault, in the order
+    :meth:`GoSignatureFingerprinter.fingerprints` documents — HELPER_MISSING,
+    then TOOLCHAIN_MISSING, then TOOLCHAIN_UNUSABLE, then the build's own.
+    """
+    import atexit
+    import shutil
+    import subprocess
+    import tempfile
+
+    source = go_helper_source_dir()
+
+    go = shutil.which("go")
+    if go is None:
+        raise ComparatorUnavailable(
+            ComparatorFault.TOOLCHAIN_MISSING,
+            "no `go` on PATH, so the Go signature comparator could not run. "
+            "This is a fact about this machine and not about the branch: a "
+            "broken CI image must never clear a Go branch",
+        )
+
+    _probe_go_toolchain(go, source)
+
+    workspace = Path(tempfile.mkdtemp(prefix="claude-dispatcher-go-helper-"))
+    atexit.register(shutil.rmtree, workspace, ignore_errors=True)
+    binary = workspace / "go-signature-fingerprint"
+
+    try:
+        built = subprocess.run(
+            [go, "build", "-o", str(binary), "."],
+            cwd=str(source),
+            capture_output=True,
+            timeout=_HELPER_BUILD_TIMEOUT_SECONDS,
+            env=_go_toolchain_environment(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ComparatorUnavailable(
+            ComparatorFault.HELPER_TIMEOUT,
+            f"building the helper in {source} exceeded "
+            f"{_HELPER_BUILD_TIMEOUT_SECONDS}s. A gate that hangs is a gate "
+            "that is not enforcing anything",
+        ) from exc
+    except OSError as exc:
+        raise ComparatorUnavailable(
+            ComparatorFault.HELPER_FAILED,
+            f"`{go} build` in {source} could not be run: "
+            f"{type(exc).__name__}: {exc}",
+        ) from exc
+
+    if built.returncode != 0 or not binary.is_file():
+        raise ComparatorUnavailable(
+            ComparatorFault.HELPER_FAILED,
+            f"building the helper in {source} exited {built.returncode}: "
+            f"{_helper_diagnostic_text(built.stderr)}",
+        )
+    return binary
+
+
+def _go_helper_binary() -> Path:
+    """The built helper for this process, or re-raise the fault that stopped it.
+
+    See :data:`_GO_HELPER_PREPARED` for why this is cached and why the cache is
+    per-process and in memory.
+    """
+    global _GO_HELPER_PREPARED
+
+    if _GO_HELPER_PREPARED is None:
+        try:
+            _GO_HELPER_PREPARED = (_build_go_helper(), None)
+        except ComparatorUnavailable as exc:
+            _GO_HELPER_PREPARED = (None, exc)
+
+    binary, failure = _GO_HELPER_PREPARED
+    if failure is not None:
+        raise failure
+    assert binary is not None  # the two arms of the tuple are exclusive
+    return binary
+
+
+def _run_go_helper(binary: Path, path: str, text: str) -> str:
+    """One request in, the helper's stdout out, or the named fault.
+
+    Exit status and document are separate channels: a non-zero exit is
+    HELPER_FAILED and stdout is **not read at all**, because a document from a
+    run that failed is a partial answer and a partial answer manufactures
+    removed symbols.
+    """
+    import subprocess
+
+    request = encode_go_helper_request(path, text).encode("utf-8")
+    try:
+        finished = subprocess.run(
+            [str(binary)],
+            input=request,
+            capture_output=True,
+            timeout=_HELPER_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ComparatorUnavailable(
+            ComparatorFault.HELPER_TIMEOUT,
+            f"the helper took longer than {_HELPER_TIMEOUT_SECONDS}s on "
+            f"{path}. There is no retry and no degraded mode: a fallback is "
+            "how a gate ends up reporting a pass it did not earn",
+        ) from exc
+    except OSError as exc:
+        raise ComparatorUnavailable(
+            ComparatorFault.HELPER_FAILED,
+            f"the helper binary at {binary} could not be executed: "
+            f"{type(exc).__name__}: {exc}",
+        ) from exc
+
+    if finished.returncode != 0:
+        raise ComparatorUnavailable(
+            ComparatorFault.HELPER_FAILED,
+            f"the helper exited {finished.returncode} on {path}: "
+            f"{_helper_diagnostic_text(finished.stderr)}",
+        )
+
+    try:
+        return finished.stdout.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ComparatorUnavailable(
+            ComparatorFault.HELPER_OUTPUT_INVALID,
+            f"the helper's stdout for {path} is not valid UTF-8: {exc}",
+        ) from exc
 
 
 class GoSignatureFingerprinter:
@@ -3196,8 +3656,27 @@ class GoSignatureFingerprinter:
         Every one of those is terminal for this file: there is no retry, no
         fallback comparator and no degraded mode. A fallback is how a gate ends
         up reporting a pass it did not earn.
+
+        **P3: the first three steps happen once per PROCESS, not once per
+        file.** The probe and the compile are cached in
+        :data:`_GO_HELPER_PREPARED`; only the run and the decode are per-file.
+        That is a cost decision with a measurement behind it — see that
+        global — and it changes nothing the contract promises: the helper still
+        receives one file per invocation on a fresh process's stdin, and the
+        timeout is still per-file.
         """
-        raise NotImplementedError("D2 P3: fingerprint Go via the go/ast helper")
+        response = decode_go_helper_response(
+            _run_go_helper(_go_helper_binary(), path, text)
+        )
+        if response.parse_error is not None:
+            # A fact about the FILE, established by working apparatus — so it
+            # is not a fault, and `compare_signatures` reports it as
+            # UNCHECKED_UNPARSEABLE rather than as a broken machine.
+            raise SourceUnparseable(path, f"go: {response.parse_error}")
+        # Declaration order, which the helper guarantees and dicts preserve.
+        return {
+            symbol.symbol: symbol.fingerprint for symbol in response.symbols
+        }
 
 
 @dataclass(frozen=True)
@@ -3387,7 +3866,29 @@ PYTHON_SUPPORT = LanguageSupport(
 #:   1. :class:`GoSignatureFingerprinter` is implemented (P3), to the rulings
 #:      in :data:`GO_SIGNATURE_EDIT_RULINGS` — which is the acceptance
 #:      criterion, not a suggestion, and settles the parameter-name question
-#:      the scaffold sent to P4. **OUTSTANDING.**
+#:      the scaffold sent to P4. **DONE**, P3 2026-08-09. All four ruled edits
+#:      are produced by the live comparator, and the helper was soaked over
+#:      6,035 real ``.go`` files (GOROOT/src, 68,809 symbols) with no fault.
+#:
+#:      Two ordinary Go constructs had to be excluded to get there, both
+#:      because a file may legally hold SEVERAL of each and duplicate symbol
+#:      keys are :attr:`ComparatorFault.HELPER_OUTPUT_INVALID` at the caller —
+#:      so emitting them would have blamed the machine for generated code.
+#:      Neither is callable surface: ``func _()``/``type _`` cannot be referred
+#:      to at all, and ``func init`` cannot either and has a signature the spec
+#:      fixes, so its fingerprint could never report a change. See ``isBlank``
+#:      and ``isPackageInit`` in the helper. A METHOD named ``init`` is kept.
+#:
+#:      **What is still NOT sealed, and it is the gap worth naming**
+#:      (measured 2026-08-09): nothing in ``tests/`` exercises this
+#:      implementation, before or after enrolment. Dropping parameter names
+#:      from the Go fingerprint — the exact defect
+#:      :data:`GO_SIGNATURE_EDIT_RULINGS` exists to forbid — leaves the suite
+#:      at its usual 1630 passed unenrolled, and enrolled it produces the same
+#:      eight failures as the unmutated tree and not one more. The eight seals
+#:      in item 4 pin Go as UNREADABLE; none of them pins it as read
+#:      CORRECTLY, and enrolment alone does not buy that. Seals against the
+#:      rulings table are a P2 job that has not happened.
 #:   2. ``SignatureCheckStatus.UNCHECKED_COMPARATOR_UNAVAILABLE`` exists and is
 #:      in both status sets, with the seal amendment that lets it exist (P4 —
 #:      see :func:`signature_status_for_fault`). Enrolling first would make a
@@ -3416,6 +3917,14 @@ PYTHON_SUPPORT = LanguageSupport(
 #:      (``tests/test_role_protocol_inputs.py``), which the scaffold's list
 #:      omits. A checklist that undercounts is worse than none, because the
 #:      unit that works through it stops when the named ones are green.
+#:
+#:      **Re-measured 2026-08-09 with item 1 DONE, and both halves of the
+#:      adjudicator's correction hold.** Enrolling the row in a clone of an
+#:      IMPLEMENTED tree fails exactly EIGHT, and they are exactly the eight
+#:      named below — the scaffold's seven plus
+#:      ``test_a_skipped_non_python_file_is_not_reported_as_a_checked_signature``.
+#:      The two provenance rows below stay GREEN, which is the prediction that
+#:      paragraph makes and the reason item 1 had to come first.
 #:
 #:      The two that are NOT this class:
 #:      ``test_no_role_gets_a_clean_verdict_for_editing_the_gate`` and
