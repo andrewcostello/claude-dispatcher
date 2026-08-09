@@ -150,11 +150,36 @@ class _RunResult(tuple):
         return self[2]
 
 
-def _run_stub(changed: list[str]):
+def _run_stub(changed: list[str], *, base_ref: str = "main"):
+    """P4 (2026-08-08), adjudicating D1-inputs blocker 1: `merge-base` answers,
+    and nothing else was added.
+
+    Fixing I4 — the signature baseline is read at the base ref's TIP, not at the
+    merge-base the three-dot diff measured from — needs a third git read that no
+    seal here had modelled, and a BODIES implementer may not edit `tests/**` to
+    model it. The answer is the BASE REF, because that is what the merge-base IS
+    in a stub that models no advanced base: these rows are about the floor, and
+    must not go red or green according to how I4 is fixed.
+
+    It is answered explicitly rather than by echoing whichever argument follows
+    `merge-base`, so a call spelled with a flag or with the refs reversed cannot
+    collect a rubber stamp; a `merge-base` between refs this stub does not model
+    raises like any other unscripted read; and a blob read is STILL unscripted
+    here, which is the property that makes these floor rows prove the floor was
+    applied to the path list rather than to some file's contents.
+    """
+
     def run(cmd, *_args, **_kwargs):
         argv = [str(c) for c in cmd]
         if "diff" in argv:
             return _RunResult(0, "".join(p + "\n" for p in changed), "")
+        if "merge-base" in argv:
+            if base_ref not in argv:
+                raise AssertionError(
+                    f"merge-base asked for refs this stub does not model "
+                    f"(it models {base_ref!r} as the merge-base): {argv}"
+                )
+            return _RunResult(0, base_ref + "\n", "")
         raise AssertionError(f"unscripted git command: {argv}")
 
     return run

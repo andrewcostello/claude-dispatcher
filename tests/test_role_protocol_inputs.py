@@ -55,29 +55,100 @@ was reported as possibly already closed):
     fix that merely strips the surrounding quotes without unescaping does not.
 
 TWO THINGS THE FIXER MUST HAVE RULED BEFORE I4 AND I5 CAN LAND, both found by
-turning these seals green against a throwaway implementation in a clone:
+turning these seals green against a throwaway implementation in a clone, and
+both RULED by P4 on 2026-08-08. The rulings are recorded here rather than in a
+document because the next panel reads the seals, not the docket:
 
   1. I4 cannot be fixed without a THIRD git read. The merge-base the three-dot
      diff measured from is not derivable from any command this module already
      runs, and `_run_stub` in `test_role_protocol_diff.py` and
      `test_role_protocol_floor.py` raises `AssertionError: unscripted git
      command` on anything but a diff and a blob spec — so adding
-     `git merge-base` reddens ten existing BODIES rows in files a BODIES agent
-     may not edit. Those stubs need one row each (answer `merge-base` with the
-     base ref, which is what it IS in a stub that models no advanced base).
-     That is an extension of a helper, not a weakening of a seal, but it is not
-     the implementer's to make unilaterally. The stub in THIS file already
-     answers it.
+     `git merge-base` reddens existing BODIES rows in files a BODIES agent may
+     not edit.
+
+     GRANTED (P4, 2026-08-08). Both stubs now answer `merge-base` with the base
+     ref and nothing else. Verified rather than accepted:
+
+       * The count in this docstring was ten; it is not a constant. A throwaway
+         fix that reads the merge-base once at the top of
+         `_compare_branch_signatures` reddens 14 rows (12 in
+         `test_role_protocol_diff.py`, 2 in `test_role_protocol_floor.py`); one
+         that reads it lazily, only when a `.py` path is actually about to be
+         compared, reddens 7 of those same 14. The remedy is one stub row
+         either way.
+       * Not one assertion in those 14 rows was touched. The whole change is
+         confined to the two `_run_stub` bodies and their docstrings.
+       * The strictness those fixtures are worth survives. With the module made
+         to run `git rev-parse` — a command the extended stubs do NOT answer —
+         the identical 14 rows go red again, and both stubs still raise on
+         `rev-parse`, `rev-list` and `log`. The extension buys exactly one
+         command.
+       * The answer is not a rubber stamp. `merge-base` is answered with the
+         base ref explicitly, not by echoing whichever argument follows it, so
+         a call spelled with a flag or with the refs reversed cannot be
+         satisfied by accident; a `merge-base` between refs the stub does not
+         model raises like any other unscripted read; and answering it with a
+         ref that is NOT the base reddens the two rows that consume the
+         resulting blob, so the answer is load-bearing.
+       * `rev-parse` was deliberately NOT added, though the stub in THIS file
+         answers it. I3 is satisfiable without it — re-reading the diff and
+         comparing is one of the shapes its seal permits — so a row for it
+         would be pre-authorising a fix shape the I3 seal deliberately leaves
+         open. If the I3 fixer needs it, that is a fresh ruling, not this one.
+
   2. I5's "examined nothing" has a boundary an existing seal already fixes.
      `test_the_ci_script_delegates_instead_of_reporting_not_implemented` runs a
      BODIES branch whose only changed path is a NEWLY ADDED `src/app.py` and
      requires CLEAN with exit 0 — a comparison that also examined zero files.
-     So "zero files examined" cannot be turned into a non-CHECKED state
-     wholesale; the seals below are scoped to zero-examined-because-nothing-
-     was-comparable, which is the state the enum already names. Whether the
-     new-file case should also stop reporting `checked` is a live question and
-     is deliberately NOT sealed here, because sealing it would contradict a
-     seal this author may not amend.
+
+     RULED (P4, 2026-08-08): the new-file case KEEPS reporting `checked`, and
+     the seal author was right not to touch it. It is not the same lie in a
+     nicer hat, for three reasons:
+
+       * I5's complaint is that the aggregate CONTRADICTS the per-file
+         contract. `compare_signatures('cmd/x/main.go', ...)` returns
+         UNCHECKED_UNSUPPORTED_LANGUAGE and `compare_signatures(
+         'docs/notes.md', ...)` returns it too, and yet
+         `_compare_branch_signatures` `continue`s past both before that state
+         can be produced and reports CHECKED. For a new file the aggregate
+         AGREES with the per-file contract: `compare_signatures('src/app.py',
+         None, text)` returns CHECKED, by a clause the 2026-08-04 P2 ruling
+         wrote deliberately — the same ruling that carved out the genuinely
+         vacuous both-texts-None case as a RAISE. The line has been drawn here
+         once already, on the same reasoning.
+       * They differ in what the gate knows. For a new file the gate MADE a
+         determination: it read the base tree and established that the file is
+         absent from it, and `file_text_at` guarantees None means "not in that
+         tree" and nothing else, because a read error raises. "There was no
+         scaffolded signature to preserve, so none was broken" is knowledge.
+         For the skipped Go file the gate established nothing: a Go parameter
+         list could have been widened under it and it would never know.
+         CHECKED means "`changes` is authoritative" — which is true of the
+         new-file case and false of the skipped one.
+       * The cost of ruling the other way is a false refusal. `check_branch`
+         maps every UNCHECKED_* status to UNDETERMINED on BODIES, so a body
+         branch whose Python work is all in new files would become permanently
+         UNDETERMINED — never CLEAN, and non-zero out of the CI face — for work
+         that could not have violated anything. A floor has no override and
+         neither does this; that is the 2026-08-07 harm, bought for no
+         knowledge.
+
+     So the boundary is now SEALED rather than left live, in
+     `test_a_new_file_with_no_base_signature_is_still_a_real_check` below: the
+     I5 fixer may not satisfy I5 by turning zero-comparisons-ran into a
+     non-CHECKED state wholesale.
+
+TWO PANEL DISPUTES RULED BY P4 (2026-08-08), recorded where the next panel will
+read them rather than in a docket:
+
+  * "the frozen signature check ignores default values" — OVERTURNED. The
+    disposition and the evidence are in the docstring of
+    `test_honest_body_work_is_not_a_signature_change` in
+    `test_role_protocol_diff.py`, which is the live row the finding would have
+    required deleting.
+  * which rule owns `**/*.*` and `*.yaml` — SPLIT. See the note above
+    `_WILDCARD_ESCAPES` below.
 """
 
 from __future__ import annotations
@@ -384,6 +455,49 @@ def test_a_quoted_parent_directory_does_not_buy_a_path_past_the_FLOOR(
 #   contribution: three spellings out of at least nine.
 # --------------------------------------------------------------------------- #
 
+#: P4 (2026-08-08) — WHICH RULE OWNS `**/*.*` AND `*.yaml`. Both are refused
+#: today, but by the FLOOR's plan-time name check (`_floor_glob_named_by`):
+#: their basenames pattern-match `.dispatcher.yaml`, so both are refused with
+#: the floor's message. The seal author left both out of this list and asked
+#: whether the wildcard rule should own them. Ruled, and the two go different
+#: ways — established by execution against `first_matching_glob`, over the same
+#: seven-path probe set the section header above uses:
+#:
+#:   `**/*.*` matches 7/7. It is the whole repo and it names nothing, which is
+#:   this list's own criterion, and its refusal today is an ACCIDENT of what
+#:   `FLOOR_GLOBS` happens to contain — it is caught only because
+#:   `.dispatcher.yaml` has a dot in it. Rename the floor glob and `**/*.*`
+#:   sails through. That coupling is exactly what "open set" means here, so the
+#:   wildcard rule must own it. It is added to
+#:   `test_check_branch_does_not_bless_a_wildcard_adjudication` below, and NOT
+#:   to this list: at plan time the floor already refuses it with a message
+#:   naming both the task and the entry, so a row here would be green today for
+#:   a reason unrelated to what it claims to seal, which is a vacuous seal.
+#:   `check_branch` takes its `TaskRoleSpec` directly and never consults the
+#:   plan-time floor check, so the row there is red today for the right reason.
+#:
+#:   `*.yaml` matches 2/7 — the two config files, no source, no tests, no docs.
+#:   The wildcard rule must NOT own it. `*` crosses `/` in this repo's glob
+#:   engine (`risk._glob_to_regex`), so `*.yaml` is "every YAML file", a real
+#:   and bounded class of artifacts; it is the same shape as `docs/*.md`, which
+#:   this file's upper bound deliberately ALLOWS. Refusing it from here means
+#:   refusing extension-only declarations, and `*.md` and `**/*.md` — every
+#:   markdown file, in a repo whose docs live both under `docs/` and at the
+#:   root — parse today and would stop. A floor has no override, so that is the
+#:   2026-08-07 harm exactly. Its refusal today is CORRECT and is the floor's
+#:   business, on the floor's own grounds: `*.yaml` does name `.dispatcher.yaml`
+#:   and "this declaration names the floor file" is the true and useful reason.
+#:   Two independent rules refusing for two different reasons is the design; one
+#:   rule refusing for the other's reason is not.
+#:
+#: Existence proof that both edges are still satisfiable together, offered so
+#: the next fixer knows this docket is not over-constrained, and NOT a mandate —
+#: these seals pin edges, not a rule: "the declaration must contain at least one
+#: literal alphanumeric character outside its wildcards" refuses all six rows
+#: below plus `**/*.*` plus all six literals in `FORBIDDEN_DISPUTED_GLOBS`, and
+#: allows every row in `_NAMED_ARTIFACTS` plus `*.md`, `*.yaml` and
+#: `**/conftest.py`.
+#:
 #: (declaration, why it is not an adjudication). Written out literally, one row
 #: per spelling, NOT derived from `FORBIDDEN_DISPUTED_GLOBS` — a row derived
 #: from the constant it pins vanishes when the constant is emptied instead of
@@ -519,7 +633,7 @@ def test_effective_rule_does_not_build_an_allowlist_it_would_refuse_to_validate(
     )
 
 
-@pytest.mark.parametrize("declaration", ["**", "**/**"])
+@pytest.mark.parametrize("declaration", ["**", "**/**", "**/*.*"])
 def test_check_branch_does_not_bless_a_wildcard_adjudication(
     declaration: str,
 ) -> None:
@@ -527,10 +641,16 @@ def test_check_branch_does_not_bless_a_wildcard_adjudication(
     adjudicate branch that rewrote the role-protocol module itself and a seal,
     under a declaration that named neither, must not be told it is CLEAN.
 
-    Both spellings are here on purpose. `**` is in the denylist and still gets
-    through, because the denylist is only ever consulted at plan time; `**/**`
-    is not in the denylist at all. One fix must close both, and they fail for
-    different reasons — which is why they are two rows and not one.
+    All three spellings are here on purpose, and they fail for three different
+    reasons — which is why they are three rows and not one. `**` is in the
+    denylist and still gets through, because the denylist is only ever consulted
+    at plan time. `**/**` is not in the denylist at all. `**/*.*` (added by P4,
+    2026-08-08, ruling dispute 2 — see the note above `_WILDCARD_ESCAPES`) is
+    not in the denylist either, and is refused at plan time only by accident:
+    the floor's name check catches it because `.dispatcher.yaml` has a dot in
+    it. Here, where the `TaskRoleSpec` is constructed directly and the plan-time
+    floor check never runs, nothing catches it at all. One fix must close all
+    three.
 
     Red now: CLEAN with `violations == ()` for both (verified against the built
     worktree).
@@ -854,3 +974,51 @@ def test_a_comparison_that_examined_nothing_is_not_reported_as_checked() -> None
         "the control: one real comparison must still report checked, or the row "
         "above is satisfied by never reporting checked at all"
     )
+
+
+def test_a_new_file_with_no_base_signature_is_still_a_real_check() -> None:
+    """P4 (2026-08-08). The boundary the two rows above stop at, sealed rather
+    than left live — the ruling and its reasoning are in this module's
+    docstring, item 2.
+
+    A BODIES branch whose only changed path is a NEWLY ADDED `src/app.py` also
+    runs zero comparisons: `_compare_branch_signatures` reads the base tree,
+    finds the file absent, and skips it. That is NOT the state the two rows
+    above forbid, and it must keep reporting CHECKED and CLEAN. The gate made a
+    determination here — the file did not exist at base, so it had no scaffolded
+    signature to preserve and none was broken — which is what `compare_signatures`
+    answers for this exact input and what CHECKED ("`changes` is authoritative")
+    means. The skipped Go file and the Python-free diff above are ignorance
+    wearing the same word.
+
+    Green now, and it must STAY green. This is the twin of the two rows above,
+    and the pair is what makes either non-vacuous: they forbid a fix that always
+    reports CHECKED, and this forbids the wholesale fix that stops reporting
+    CHECKED whenever zero files were compared. Falsify: make
+    `_compare_branch_signatures` report a non-CHECKED status when it opened no
+    file — this goes red, and so does
+    `test_the_ci_script_delegates_instead_of_reporting_not_implemented`, whose
+    branch is this same fixture end to end and which requires exit 0. That
+    second casualty is the cost of the other ruling, made visible: a body branch
+    whose Python work is all new files would be permanently UNDETERMINED, since
+    `check_branch` maps every unchecked status to UNDETERMINED on BODIES.
+    """
+    run = _run_stub(["src/app.py"], {"feat/x:src/app.py": _STUB_PY})
+
+    # Fixture check: the base really does not hold the file, so this really is
+    # the zero-comparisons case and not an accidental comparison of two texts.
+    assert file_text_at("/x", "main", "src/app.py", run=run) is None, (
+        "the fixture must model a file absent at base, or this seals nothing"
+    )
+
+    added = check_branch(
+        "/x", "main", "feat/x", Role.BODIES, policy=built_in_policy(), run=run
+    )
+    assert added.signature is not None
+    assert added.signature.status is SignatureCheckStatus.CHECKED, (
+        "a file that did not exist at base has no scaffolded signature to "
+        "preserve; reporting that as unchecked turns every body branch that "
+        f"adds a module into UNDETERMINED: {added.detail}"
+    )
+    assert added.signature.changes == ()
+    assert added.verdict is DiffVerdict.CLEAN, added.detail

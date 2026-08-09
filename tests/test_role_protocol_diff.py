@@ -87,12 +87,32 @@ def _run_stub(
     diff_stderr: str = "",
     blobs: dict[str, str] | None = None,
     raise_on: str | None = None,
+    base_ref: str = "main",
 ):
-    """A git seam that answers only the two reads this module is allowed to do.
+    """A git seam that answers only the reads this module is allowed to do.
 
     `blobs` is keyed `"<ref>:<path>"`, exactly as git spells the argument, so a
     stub answer cannot be mistaken for a different revision of the same file. An
     unscripted command raises, so a seal cannot pass on a path it never modelled.
+
+    P4 (2026-08-08), adjudicating D1-inputs blocker 1. `merge-base` was added,
+    and nothing else was: fixing I4 (the signature baseline is the base ref's
+    TIP, not the merge-base the three-dot diff measured from) needs a third git
+    read that no seal here had modelled, and a BODIES implementer may not edit
+    `tests/**` to model it. Depending on where the fix places the call this
+    reddens between 7 and 14 rows across these two files, every one of them by
+    the seam raising and `_run_git_capture` turning that into UNDETERMINED.
+
+    The answer is the BASE REF, and only for a `merge-base` naming it. That is
+    what the merge-base IS in a stub that models no advanced base — these rows
+    are about which paths the rule forbids, and must not go red or green
+    according to how I4 is fixed. It is answered explicitly rather than by
+    echoing whichever argument follows `merge-base`, so a call spelled with a
+    flag or with the refs reversed cannot collect a rubber stamp; and a
+    `merge-base` between refs this stub does not model raises like any other
+    unscripted read, so the extension buys exactly one command and no leniency.
+    A base that really did advance cannot be stubbed at all and is sealed
+    against a real repository, in `test_role_protocol_inputs.py`.
     """
     blobs = blobs or {}
 
@@ -103,6 +123,13 @@ def _run_stub(
                 raise OSError("git not on PATH")
             out = "" if changed is None else "".join(p + "\n" for p in changed)
             return _RunResult(diff_rc, out, diff_stderr)
+        if "merge-base" in argv:
+            if base_ref not in argv:
+                raise AssertionError(
+                    f"merge-base asked for refs this stub does not model "
+                    f"(it models {base_ref!r} as the merge-base): {argv}"
+                )
+            return _RunResult(0, base_ref + "\n", "")
         spec = next((a for a in argv if ":" in a and not a.startswith("-")), None)
         if spec is not None:
             if raise_on == "blob":
@@ -398,6 +425,33 @@ def test_honest_body_work_is_not_a_signature_change(head: str, why: str) -> None
     Green when: the fingerprint is AST-derived and excludes bodies, docstrings
     and default VALUES.
     Falsify: fingerprint the source text — every row here goes red.
+
+    P4 (2026-08-08) — DISPOSITION of the panel finding "the frozen signature
+    check ignores default values" (filed against `role_protocol.py:2221`).
+    OVERTURNED. Not a defect; do not re-raise it, and do not delete the
+    `count: int = 0` -> `count: int = 5` row above to make it true.
+
+      * It contradicts `compare_signatures`' own contract, which states the
+        exclusion as a decision and not an oversight: "whether each parameter
+        has a default (the default's *value* is a body concern and is NOT part
+        of the fingerprint)". Sealing the finding would require deleting a
+        correct row — the tell that the finding, not the row, is wrong.
+      * The has-default FLAG is in the fingerprint, and is sealed in BOTH
+        directions and on BOTH kinds of symbol: the "a default was removed" row
+        and the "a default added to a parameter that had none" row in
+        `test_a_widened_or_altered_signature_is_a_change` below (the second
+        added by this ruling so the disposition is self-evident rather than
+        asserted), plus the dataclass-field rows. Confirmed by execution:
+        `count: int = 0` fingerprints as `count: int = <default>`, so adding or
+        removing a default IS a change and only the value is invisible.
+        Dropping `_HAS_DEFAULT` from `_parameter_fingerprint` reddens both rows.
+      * A default's value is body behaviour, and body behaviour is the whole
+        category this seal protects. It is also the category the SEALS already
+        cover: a seal that cares what the default is asserts it and goes red.
+        The signature gate exists for the changes no seal CAN see — widening a
+        parameter list breaks no existing seal — and pulling the value into the
+        fingerprint would make the scaffold's placeholder defaults unchangeable
+        by the role whose job is to choose them.
     """
     _result, changed = _changed_symbols(_BASE_PY, head)
     assert changed == set(), why
@@ -426,6 +480,14 @@ def test_honest_body_work_is_not_a_signature_change(head: str, why: str) -> None
         (_BASE_PY.replace("def top(a: int, *, b: str = \"x\")",
                           "def top(a: int, *, b: str)"), {"top"},
          "a default was removed — has-default is part of the fingerprint"),
+        # P4 (2026-08-08): the other direction of the same flag, added while
+        # overturning the panel's "ignores default values" finding — see the
+        # disposition in `test_honest_body_work_is_not_a_signature_change`. The
+        # VALUE is invisible and the FLAG is not, in both directions, which is
+        # the whole of what that finding disputed.
+        (_BASE_PY.replace("def top(a: int, *, b: str = \"x\")",
+                          "def top(a: int = 1, *, b: str = \"x\")"), {"top"},
+         "a default was added to a parameter that had none"),
         (_BASE_PY.replace("def top(", "@staticmethod\ndef top("), {"top"},
          "decorator added"),
         # Frozen dataclass FIELDS are the contract in this codebase.
