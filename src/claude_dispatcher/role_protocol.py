@@ -2723,7 +2723,9 @@ def check_branch(
          ``*.py`` path that exists at the **merge-base** of ``base_ref`` and
          ``branch_ref`` — the revision step 3's three-dot diff measured the
          branch's work from, not ``base_ref``'s tip (D1-inputs I4). Other
-         roles get :data:`SignatureCheckStatus.NOT_APPLICABLE`.
+         roles get :data:`SignatureCheckStatus.NOT_APPLICABLE`. A changed path
+         this module did not compare leaves the aggregate UNCHECKED_\\*, which
+         on BODIES is UNDETERMINED (D1-inputs I5).
 
     Verdict: VIOLATION if any path violation or any signature change;
     UNDETERMINED on any :class:`RoleDiffError`, unreadable policy, missing
@@ -3098,6 +3100,29 @@ def _compare_branch_signatures(
     the caller maps it to UNDETERMINED, because "I could not read the base"
     reported as "newly added" would suppress every signature change in it.
 
+    **A file this module did not compare is not reported as checked**
+    (D1-inputs I5). Every non-``*.py`` path used to be ``continue``d past
+    before a status could be produced, so the aggregate said CHECKED —
+    "``changes`` is authoritative" — for a diff in which a Go file's parameter
+    list could have been widened underneath it, and for a diff of nothing but
+    Markdown in which zero files were opened. That contradicts the per-file
+    contract, where :func:`compare_signatures` answers
+    UNCHECKED_UNSUPPORTED_LANGUAGE for both of those paths. It is now the
+    aggregate's answer too, so "checked", "not applicable" and "examined
+    nothing" are three reports rather than one word. On BODIES the caller maps
+    any UNCHECKED_\\* to UNDETERMINED, which is what an unchecked signature on
+    the role whose gate that is has always been worth.
+
+    The boundary that ruling stops at (P4, 2026-08-08): a ``*.py`` path absent
+    at the merge-base still counts as EXAMINED, and a diff of nothing but new
+    Python files is still CHECKED. The gate made a determination there — it
+    read the base tree and established the file is not in it, so there was no
+    scaffolded signature to preserve and none was broken — which is exactly
+    what :func:`compare_signatures` answers for that input. The skipped Go
+    file is ignorance wearing the same word; this is knowledge. Ruling
+    otherwise would make a body branch whose Python work is all new files
+    permanently UNDETERMINED, for work that could not have violated anything.
+
     Aggregation: the FIRST non-CHECKED status wins and the changes of every
     file are unioned, so one unparseable file cannot hide a changed signature
     in another and a partial check never reports as CHECKED.
@@ -3106,14 +3131,27 @@ def _compare_branch_signatures(
     changes: list[SignatureChange] = []
     details: list[str] = []
     merge_base: str | None = None
+    examined = 0
 
     for path in changed_paths:
         if not path.endswith(".py"):
+            # NOT `continue` on its own: this module cannot compare this file,
+            # nothing else did either, and an unchecked file must not report as
+            # an unchanged signature. Same state `compare_signatures` gives
+            # this path, named at the aggregate so the two agree.
+            if status is SignatureCheckStatus.CHECKED:
+                status = SignatureCheckStatus.UNCHECKED_UNSUPPORTED_LANGUAGE
+            details.append(
+                f"{path} is not a Python file; its signatures were compared by "
+                "nothing, and the plan's non-Python side needs its own "
+                "comparator"
+            )
             continue
         if merge_base is None:
             merge_base = _merge_base_of(
                 repo_root, base_ref, branch_ref, run=run
             )
+        examined += 1
         base_text = file_text_at(repo_root, merge_base, path, run=run)
         if base_text is None:
             continue
@@ -3127,6 +3165,17 @@ def _compare_branch_signatures(
             status = comparison.status
         if comparison.detail:
             details.append(comparison.detail)
+
+    if status is SignatureCheckStatus.CHECKED and not examined:
+        # Only reachable for an EMPTY path list — a non-empty diff with no
+        # Python in it has already been answered by the loop. `check_branch`
+        # refuses an empty diff before it gets here, so this is the state
+        # named rather than left to fall through to CHECKED, which would be
+        # "I compared them and they agree" about nothing at all.
+        status = SignatureCheckStatus.UNCHECKED_UNSUPPORTED_LANGUAGE
+        details.append(
+            "no path was examined, so there is no comparison to report"
+        )
 
     return SignatureComparison(
         status=status, changes=tuple(changes), detail="; ".join(details)
