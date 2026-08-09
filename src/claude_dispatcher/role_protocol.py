@@ -2720,8 +2720,10 @@ def check_branch(
          is reported as a floor violation whatever the role's own rule said
          about it, and every other violation is the role rule's, unchanged.
       5. for BODIES only, :func:`compare_signatures` over every changed
-         ``*.py`` path that exists at ``base_ref``; other roles get
-         :data:`SignatureCheckStatus.NOT_APPLICABLE`.
+         ``*.py`` path that exists at the **merge-base** of ``base_ref`` and
+         ``branch_ref`` — the revision step 3's three-dot diff measured the
+         branch's work from, not ``base_ref``'s tip (D1-inputs I4). Other
+         roles get :data:`SignatureCheckStatus.NOT_APPLICABLE`.
 
     Verdict: VIOLATION if any path violation or any signature change;
     UNDETERMINED on any :class:`RoleDiffError`, unreadable policy, missing
@@ -3074,8 +3076,23 @@ def _compare_branch_signatures(
 ) -> SignatureComparison:
     """:func:`compare_signatures` over every changed ``*.py`` path at base.
 
-    A path absent at ``base_ref`` is skipped: a file that did not exist at
-    base has no scaffolded signature to preserve. Absence comes from
+    **The baseline is the MERGE-BASE, not ``base_ref``'s tip** (D1-inputs I4).
+    :func:`changed_paths_between` takes a three-dot diff, so the path list is
+    the branch's own work measured from the merge-base; reading the baseline
+    text at ``base_ref`` itself made the two halves of one check describe two
+    different revisions. A base that advanced since the branch forked is the
+    ordinary case, not an exotic one, and when it advanced to carry the very
+    signature the branch widened, the gate compared the branch against a tip
+    that already agreed with it, found no change, and reported CLEAN on the
+    change §2a's gate exists to catch. The merge-base is what the diff
+    measured from, so it is what the blobs are read at.
+
+    The merge-base is resolved LAZILY — on the first ``*.py`` path about to be
+    compared, and once — so a diff with no Python in it runs no third git
+    command at all, and the read happens only where its answer is used.
+
+    A path absent at the merge-base is skipped: a file that did not exist
+    there has no scaffolded signature to preserve. Absence comes from
     :func:`file_text_at` returning None, which that function guarantees means
     "not in that tree" and nothing else — a read error raises out of here and
     the caller maps it to UNDETERMINED, because "I could not read the base"
@@ -3088,11 +3105,16 @@ def _compare_branch_signatures(
     status = SignatureCheckStatus.CHECKED
     changes: list[SignatureChange] = []
     details: list[str] = []
+    merge_base: str | None = None
 
     for path in changed_paths:
         if not path.endswith(".py"):
             continue
-        base_text = file_text_at(repo_root, base_ref, path, run=run)
+        if merge_base is None:
+            merge_base = _merge_base_of(
+                repo_root, base_ref, branch_ref, run=run
+            )
+        base_text = file_text_at(repo_root, merge_base, path, run=run)
         if base_text is None:
             continue
         head_text = file_text_at(repo_root, branch_ref, path, run=run)
@@ -3109,6 +3131,48 @@ def _compare_branch_signatures(
     return SignatureComparison(
         status=status, changes=tuple(changes), detail="; ".join(details)
     )
+
+
+def _merge_base_of(
+    repo_root: str | Path,
+    base_ref: str,
+    branch_ref: str,
+    *,
+    run: Callable[..., object] | None,
+) -> str:
+    """The commit ``base_ref...branch_ref`` measures the branch's work from.
+
+    ``git merge-base base_ref branch_ref`` — the third and last git read on
+    the gate path, and the one that makes the signature half of the check
+    describe the same revision as the path half (D1-inputs I4). Spelled
+    positionally with the base first, which is what the two ``_run_stub``
+    helpers were extended to answer and nothing wider.
+
+    Every failure raises :class:`RoleDiffError`, which :func:`check_branch`
+    maps to UNDETERMINED: no merge-base (unrelated histories), several (a
+    criss-cross merge, where picking one would be a guess about which history
+    the branch forked from), an unreadable ref. A baseline this cannot
+    establish is never silently replaced with ``base_ref``'s tip — that
+    substitution IS the defect.
+    """
+    argv = ["git", "merge-base", base_ref, branch_ref]
+    rc, out, err = _run_git_capture(argv, str(repo_root), run)
+    if rc != 0:
+        raise RoleDiffError(
+            f"git merge-base {base_ref} {branch_ref} in {repo_root} exited "
+            f"{rc}: {err.strip() or '(no stderr)'}; the signature baseline is "
+            "the revision the diff measured from, and falling back to the "
+            "base ref's tip is the defect this read exists to close"
+        )
+    candidates = [line for line in out.split("\n") if line.strip()]
+    if len(candidates) != 1:
+        raise RoleDiffError(
+            f"git merge-base {base_ref} {branch_ref} in {repo_root} named "
+            f"{len(candidates)} commits ({candidates!r}); a baseline that is "
+            "not exactly one revision cannot be chosen here without guessing "
+            "which history the branch forked from"
+        )
+    return candidates[0].strip()
 
 
 def _run_git_capture(
