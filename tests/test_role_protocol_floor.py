@@ -228,9 +228,64 @@ def _spec(role: Role, *disputed: str) -> TaskRoleSpec:
 #: comprehension over the constant it pins, deleting an entry from the constant
 #: deleted the row rather than reddening it, and 18 of 28 deletions went
 #: undetected across the five D1 seal files. Derive nothing here.
+#:
+#: **P4, 2026-08-09 — the gate's own two halves join the floor, and this table
+#: fixes their SPELLING.** `test_role_protocol_provenance.py` seals in twenty
+#: literal rows, under a policy stripped of every relevant glob, that no role may
+#: write `scripts/check_body_branch.sh` or
+#: `src/claude_dispatcher/role_protocol.py`; only a tier no supplied policy can
+#: lower satisfies that, which is `FLOOR_GLOBS`. That file deliberately asserts
+#: nothing about the glob STRING ("the fixer chooses the mechanism"), but the
+#: seal below is a set difference AGAINST `FLOOR_GLOBS` and so cannot be
+#: spelling-neutral: a glob P3 writes that is not a string written here reddens
+#: it, and P3 may not amend a seal. P4 therefore rules the spelling rather than
+#: leaving P3 to guess it and be blocked. **P3: use these two strings, or
+#: escalate — do not edit this table.**
+#:
+#: Path-qualified (`**/src/claude_dispatcher/role_protocol.py`), NOT
+#: basename-only (`**/role_protocol.py`):
+#:
+#:   1. A floor has no override, which the 2026-08-07 ruling weighs as the
+#:      dominant cost. A basename-only glob permanently forbids every file that
+#:      ever acquires that basename anywhere in the tree — a vendored copy, a
+#:      fixture, an unrelated future module — and nothing can buy it back. The
+#:      panel named TWO artifacts, and `_STILL_WRITABLE_ROWS` in the provenance
+#:      seals says so in as many words: "the protection is about TWO named
+#:      artifacts, not about the directories they live in".
+#:   2. The nested layout costs no extra width, because a leading `**/` matches
+#:      zero directories in this module's translation — the same
+#:      one-pattern-two-layouts reasoning `DEFAULT_ROLE_RULES` states for
+#:      `**/x/**`. Measured 2026-08-09: both probes of each glob match, and
+#:      `src/claude_dispatcher/plan.py` and `scripts/some_other_helper.sh` (the
+#:      provenance controls) match neither.
+#:   3. The move-then-edit bypass a path-qualified glob might seem to leave open
+#:      is closed elsewhere: `changed_paths_between` runs `--no-renames`, "so
+#:      each side of a move is its own path", and the old path is a floor hit. A
+#:      move sanctioned on the protected base must edit `FLOOR_GLOBS`, and this
+#:      literal table makes that edit visible instead of silent.
+#:
+#: `_FLOOR_x_ROLE_ROWS` is deliberately NOT extended with these globs. Its job —
+#: every role times every probe, under a policy that omits the floor — already
+#: exists for the gate, written out, as `_GATE_ROWS` in
+#: `test_role_protocol_provenance.py` (twenty rows, five roles, both probes of
+#: both halves). A second copy here would be two notions of one fact, which is
+#: invariant 5's failure mode, and the two copies would drift.
 _FLOOR_ROWS: tuple[tuple[str, str], ...] = (
     ("**/.dispatcher.yaml", ".dispatcher.yaml"),
     ("**/.dispatcher.yaml", "sub/project/.dispatcher.yaml"),
+    ("**/scripts/check_body_branch.sh", "scripts/check_body_branch.sh"),
+    (
+        "**/scripts/check_body_branch.sh",
+        "sub/project/scripts/check_body_branch.sh",
+    ),
+    (
+        "**/src/claude_dispatcher/role_protocol.py",
+        "src/claude_dispatcher/role_protocol.py",
+    ),
+    (
+        "**/src/claude_dispatcher/role_protocol.py",
+        "sub/project/src/claude_dispatcher/role_protocol.py",
+    ),
 )
 
 
@@ -249,6 +304,13 @@ def test_the_floor_is_exactly_the_written_out_set_of_globs() -> None:
     (glob, probe) pair through the module's real glob lens.
     Green when: the constant and the written list agree.
     Falsify: append a glob to `FLOOR_GLOBS` — this goes red naming it.
+
+    P4, 2026-08-09: the written list now also carries the two globs the gate's
+    own halves need (see the ruling on `_FLOOR_ROWS`), so P3 can extend
+    `FLOOR_GLOBS` without this reddening — provided it uses those two strings.
+    The length bound below moved 2 -> 6 in the same edit, so DELETING a written
+    row still reddens something even when the matching constant entry is deleted
+    with it, which is the 18-of-28 failure mode this table exists to avoid.
     """
     written = {glob for glob, _probe in _FLOOR_ROWS}
     unsealed = sorted(set(FLOOR_GLOBS) - written)
@@ -264,7 +326,7 @@ def test_the_floor_is_exactly_the_written_out_set_of_globs() -> None:
             f"{probe!r} does not match floor glob {glob!r} — the probe, not "
             "the floor, is wrong"
         )
-    assert len(_FLOOR_ROWS) >= 2, _FLOOR_ROWS
+    assert len(_FLOOR_ROWS) >= 6, _FLOOR_ROWS
 
 
 def test_the_config_file_is_on_the_floor() -> None:
@@ -711,6 +773,55 @@ def test_legacy_still_writes_everything_that_is_not_on_the_floor() -> None:
 #: carries `docs/**`, `src/claude_dispatcher/**` and `sub/**` as rows, so an
 #: implementation that reaches for "refuse any glob that could contain a floor
 #: path" reddens instead of quietly making real disputes unplannable.
+#:
+#: **P4 RULING, 2026-08-09 — point 2 covers the WHOLE floor, not just the config
+#: file.** The seal author raised, and correctly refused to decide, that once the
+#: gate library joins `FLOOR_GLOBS` the row
+#: `("src/claude_dispatcher/role_protocol.py",)` in
+#: `test_a_legitimate_disputed_path_still_parses` reddens, because
+#: `_floor_glob_named_by` compares basenames and reads the whole of
+#: `FLOOR_GLOBS`. The question put was whether the floor should refuse
+#: *declaring* the gate library or only refuse *writing* it — the two points
+#: being separable, and not obliged to cover the same path set.
+#:
+#: Ruled: they cover the same set, the row's premise is void, and the row is
+#: RETARGETED (below) rather than deleted. Three reasons, each answering the
+#: 2026-08-07 ruling on its own terms:
+#:
+#:   1. **The refusal is TRUE, not false.** 2026-08-07 refused to extend point 2
+#:      to `docs/**` and `sub/**` because such a declaration *might* contain a
+#:      floor path — the refusal would be a guess about a tree that does not
+#:      exist. A declaration naming `src/claude_dispatcher/role_protocol.py` is
+#:      not a guess: `disputed_paths:` is ADJUDICATE's WRITABLE set, the
+#:      decision-time floor refuses that exact write for every role
+#:      (`_GATE_ROWS`), so the task could not have landed. Unplannable and
+#:      unlandable are the same set here, and point 2 exists precisely to say so
+#:      a build cycle earlier.
+#:   2. **The cost cited is a cost of the seals, not of this ruling.** "An
+#:      adjudication genuinely about `role_protocol.py` becomes unplannable"
+#:      conflates subject with write authority. Declaring a path claims the right
+#:      to WRITE it; an adjudication may rule on the gate all day — this very
+#:      ruling does — while writing only its seals. What the provenance seals
+#:      remove is the right to write the gate, from every role including
+#:      ADJUDICATE, and the escape stays where `DEFAULT_ROLE_RULES` already puts
+#:      it: a reviewed edit on the protected base, i.e. a plan amendment.
+#:      Refusing at plan time removes no authority the diff-time floor leaves.
+#:   3. **One floor, one meaning.** A `FLOOR_GLOBS` some of whose members are
+#:      refused at plan time and some of which are not needs a second constant
+#:      saying which — two notions of "is this on the floor" that can disagree,
+#:      invariant 5's failure mode, in the module whose docstring names it. And
+#:      2026-08-07's own reason 3 points this way: "your declaration names the
+#:      gate library, which is on the floor" is a fact about the row, which is
+#:      the actionable kind of refusal it asked for.
+#:
+#: The upper bound is untouched: `docs/**`, `src/claude_dispatcher/**` and
+#: `sub/**` remain legitimate rows below, and `src/claude_dispatcher/**` is worth
+#: noting — a subtree glob that CONTAINS the gate library is still plannable,
+#: because its tail is pure wildcards and names a tree, not a file. The line
+#: 2026-08-07 drew has not moved; the floor underneath it grew.
+#:
+#: The two rows added here are RED until P3 lands the floor globs, exactly like
+#: the fifty rows they belong with.
 _DECLARATIONS_THAT_NAME_THE_FLOOR: tuple[tuple[tuple[str, ...], str], ...] = (
     ((".dispatcher.yaml",), "the plain spelling"),
     (("./.dispatcher.yaml",), "a leading ./"),
@@ -719,6 +830,14 @@ _DECLARATIONS_THAT_NAME_THE_FLOOR: tuple[tuple[tuple[str, ...], str], ...] = (
     ((".dispatcher.*",), "an extension wildcard over the same basename"),
     (("**/.dispatcher.yam?",), "a ? inside the extension"),
     (("docs/adr/0007.md", ".dispatcher.yaml"), "hidden behind a genuine artifact"),
+    # P4, 2026-08-09 — the ruling above, as data. Without these the ruling is
+    # prose and "refuse a declaration of the config file only" satisfies the
+    # file.
+    (
+        ("src/claude_dispatcher/role_protocol.py",),
+        "the gate library, named exactly",
+    ),
+    (("scripts/check_body_branch.sh",), "the gate entrypoint, named exactly"),
 )
 
 
@@ -764,7 +883,20 @@ def test_declaring_a_floor_path_is_refused_at_plan_time(
         # config-shaped names, and not about nesting.
         ("features/d1/tasks.yaml",),
         ("sub/project/settings.yaml",),
-        ("src/claude_dispatcher/role_protocol.py",),
+        # P4, 2026-08-09. This row was `src/claude_dispatcher/role_protocol.py`.
+        # Once the gate library is on the floor that path is no longer an
+        # ordinary source file, and the row asserted the opposite of
+        # `_DECLARATIONS_THAT_NAME_THE_FLOOR`'s new gate-library row — two seals
+        # that cannot both hold. RETARGETED, not deleted: the property the row
+        # carries is "the plan-time refusal is about the floor FILE, not about
+        # `.py`, not about `src/`, and not about the dispatcher package", and
+        # `plan.py` states it exactly as well. Deleting it would have dropped
+        # that upper bound, which is the one that keeps a fix from refusing
+        # every source path an adjudication can name. `plan.py` is the unit's
+        # established ordinary-source probe (`_GLOB_PROBES["**/src/**"]`,
+        # `_STILL_WRITABLE_ROWS`, the LEGACY control below), and is on no floor
+        # glob — measured, not assumed.
+        ("src/claude_dispatcher/plan.py",),
         # P4, 2026-08-07 — the UPPER bound on the plan-time refusal set. Each of
         # these three COULD contain a `.dispatcher.yaml` on some tree, and each
         # is a shape real adjudications take. A rule broad enough to refuse
@@ -799,6 +931,14 @@ def test_a_legitimate_disputed_path_still_parses(disputed: tuple[str, ...]) -> N
     whether they do — and the diff-time floor catches those for real. Without
     these rows the ruling would be prose; with them, an implementation that
     over-reaches reddens instead of making `docs/**` and `src/**` unplannable.
+
+    **AMENDED BY P4, 2026-08-09**: the "a source file" row was retargeted from
+    `src/claude_dispatcher/role_protocol.py` to `src/claude_dispatcher/plan.py`,
+    because the gate library joins the floor and a floor path is not a
+    legitimate declaration. The row's assertion is unchanged in kind and the
+    reasoning is recorded in full above `_DECLARATIONS_THAT_NAME_THE_FLOOR`. The
+    upper bound is untouched: `src/claude_dispatcher/**` still parses, so a
+    subtree that CONTAINS the gate library is still plannable.
 
     Red now: passes (nothing refuses anything yet). It is the control and must
     STILL pass after P3.

@@ -138,6 +138,21 @@ _GLOB_PROBES: dict[str, str] = {
 #     goes red (the row still exists, and `first_matching_glob` now returns None)
 #   * ADDING one -> `test_every_table_glob_has_exactly_one_probe_and_one_cover`
 #     goes red, because the live table carries a pair this list does not.
+#
+# P4 (2026-08-09): the three `scaffold` rows for `**/roles/*.md`,
+# `**/reviewer_prompts/**` and `**/verifier_prompts/**` were added AHEAD of the
+# table change that will justify them. S4 of `test_role_protocol_provenance.py`
+# seals that SCAFFOLD may not rewrite the machine-read instructions the review
+# gate executes over its own branch; SEALS and BODIES already carry those three
+# globs and SCAFFOLD carries none of them. Extending `DEFAULT_ROLE_RULES` is
+# P3's move, but by the design stated just above, an ADDITION reddens
+# `test_every_table_glob_has_exactly_one_probe_and_one_cover` — and P3 may not
+# edit a seal to clear it. So the rows are written here by the one role that may
+# write them. They are an EXTENSION, not a relaxation: each is red until P3 adds
+# the glob (`covers` is empty, `first_matching_glob` returns None), and none of
+# the twenty-eight rows below it changes. No `_GLOB_PROBES` entry is needed —
+# all three globs already have one, and each probe is verified by the row itself
+# to be covered by exactly one SCAFFOLD glob.
 _EXPECTED_TABLE_PAIRS: tuple[tuple[str, str], ...] = (
     ("bodies", "**/*.spec.*"),
     ("bodies", "**/*.test.*"),
@@ -158,9 +173,12 @@ _EXPECTED_TABLE_PAIRS: tuple[tuple[str, str], ...] = (
     ("scaffold", "**/*_test.py"),
     ("scaffold", "**/.dispatcher.yaml"),
     ("scaffold", "**/conftest.py"),
+    ("scaffold", "**/reviewer_prompts/**"),
+    ("scaffold", "**/roles/*.md"),
     ("scaffold", "**/test_*.py"),
     ("scaffold", "**/testdata/**"),
     ("scaffold", "**/tests/**"),
+    ("scaffold", "**/verifier_prompts/**"),
     ("seals", "**/.dispatcher.yaml"),
     ("seals", "**/reviewer_prompts/**"),
     ("seals", "**/roles/*.md"),
