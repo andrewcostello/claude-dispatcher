@@ -2388,9 +2388,38 @@ def changed_paths_between(
     than read with ``-z`` because git still C-quotes (and therefore never
     emits a raw newline inside) a path containing a control character.
 
-    Duplicate lines are collapsed, order preserved: the diff of a merge-shaped
-    range can name a path twice, and a doubled violation report would read as
-    two offences.
+    **Every quoted line is DECODED (D1-inputs I1).** ``core.quotePath=false``
+    buys one thing and only one: it stops git octal-escaping non-ASCII bytes.
+    Git C-quotes a path containing ``"``, ``\\`` or a control character
+    *whatever that setting says*, because the setting governs the high bytes
+    and those three classes are ASCII. Measured against a real repo, the raw
+    output of this very argv is::
+
+        tests/plain.py                <- matched by `**/tests/**`
+        tests/tést.py                 <- matched; this is what quotePath=false bought
+        "tests/a\\tb.py"               <- matched NOTHING
+        "tests/back\\\\slash.py"         <- matched NOTHING
+        "tests/say\\"hi\\".py"           <- matched NOTHING
+
+    A quoted rendering is not a path: it matches no glob, so three of those
+    five bypassed the BODIES deny table, and a parent directory with a quote
+    in its name (``sub"x/.dispatcher.yaml``) bypassed the non-overridable
+    FLOOR — a branch could rewrite the file configuring every role's
+    permissions by choosing where to put it. So each line goes through
+    :func:`_unquote_git_path`, which reverses git's ``quote_c_style``
+    (surrounding quotes, ``\\`` escapes, ``\\NNN`` octal bytes) rather than
+    merely stripping the quotes: stripping alone leaves ``tests/back\\\\slash.py``
+    and ``tests/say\\"hi\\".py``, which are neither glob-matchable nor readable
+    by :func:`file_text_at`. The decoded name is the one git would accept
+    back, so the path this reports is also the path the signature half can
+    read. A line that will not decode raises rather than being passed on
+    half-rendered: a path the gate cannot match is a hole that reports as a
+    pass.
+
+    Duplicate lines are collapsed AFTER decoding, order preserved: the diff of
+    a merge-shaped range can name a path twice, and a doubled violation report
+    would read as two offences. (Dedup must follow the decode, or one
+    rendering of a name would not be recognised as the other.)
     """
     argv = [
         "git",
@@ -2419,11 +2448,96 @@ def changed_paths_between(
                 f"git diff {base_ref}...{branch_ref} in {repo_root} emitted a "
                 f"blank path {line!r}; unparseable output is not an empty diff"
             )
-        if line in seen:
+        try:
+            path = _unquote_git_path(line)
+        except ValueError as exc:
+            raise RoleDiffError(
+                f"git diff {base_ref}...{branch_ref} in {repo_root} emitted "
+                f"{line!r}, which is not a decodable C-quoted path: {exc}; a "
+                "path the gate cannot render is a path it cannot match, and an "
+                "unmatchable path reports as a pass"
+            ) from exc
+        if path in seen:
             continue
-        seen.add(line)
-        paths.append(line)
+        seen.add(path)
+        paths.append(path)
     return tuple(paths)
+
+
+#: git's ``quote_c_style`` escapes, inverted. The keys are the characters that
+#: may follow a backslash inside a C-quoted path; an octal ``\\NNN`` run is
+#: handled separately because it carries a raw BYTE, not a character.
+_C_QUOTE_ESCAPES: Mapping[str, bytes] = {
+    "a": b"\a",
+    "b": b"\b",
+    "f": b"\f",
+    "n": b"\n",
+    "r": b"\r",
+    "t": b"\t",
+    "v": b"\v",
+    "\\": b"\\",
+    '"': b'"',
+}
+
+
+def _unquote_git_path(line: str) -> str:
+    """One ``git diff --name-only`` line as the real path it names.
+
+    Git prints a path verbatim unless it must quote it; when it must, it wraps
+    the whole thing in ``"`` and applies C-style escaping. ``core.quotePath``
+    governs only whether high bytes become ``\\NNN``: a path containing ``"``,
+    ``\\`` or a control character is quoted either way. A quoted rendering is
+    not a path — it matches no glob and no object-store read resolves it — so
+    this reverses the rendering.
+
+    An unquoted line is returned unchanged, and that test is safe in both
+    directions: git quotes any path containing a ``"``, so a line that starts
+    with one was quoted by git and never merely happens to begin with a quote
+    character.
+
+    Octal escapes are accumulated as BYTES and the whole result decoded as
+    UTF-8 once, so a multi-byte character split across two ``\\NNN`` runs
+    survives; a byte string that is not UTF-8, an unterminated backslash, a
+    short octal run and an escape git never emits all raise
+    :class:`ValueError`. Half-decoding is the one outcome that must not
+    happen: the caller reports what this returns to the glob engine AND to the
+    blob reader, and a name only one of them accepts is a hole.
+    """
+    if len(line) < 2 or not line.startswith('"') or not line.endswith('"'):
+        return line
+
+    body = line[1:-1]
+    out = bytearray()
+    index = 0
+    while index < len(body):
+        char = body[index]
+        if char != "\\":
+            out.extend(char.encode("utf-8"))
+            index += 1
+            continue
+        index += 1
+        if index >= len(body):
+            raise ValueError("a trailing backslash escapes nothing")
+        escape = body[index]
+        if escape in _C_QUOTE_ESCAPES:
+            out.extend(_C_QUOTE_ESCAPES[escape])
+            index += 1
+            continue
+        if escape in "01234567":
+            digits = body[index : index + 3]
+            if len(digits) != 3 or any(d not in "01234567" for d in digits):
+                raise ValueError(
+                    f"\\{digits} is not a three-digit octal byte escape"
+                )
+            out.append(int(digits, 8))
+            index += 3
+            continue
+        raise ValueError(f"\\{escape} is not an escape git emits")
+
+    try:
+        return out.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"the decoded path is not valid UTF-8: {exc}") from exc
 
 
 def file_text_at(
