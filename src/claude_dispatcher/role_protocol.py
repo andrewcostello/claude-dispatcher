@@ -110,8 +110,12 @@ Wired by P3 (invariant 7 — each claim here has its call site):
   * `plan.runnable_now` → consults :func:`dispatch_satisfied_statuses` per
     `blockedBy` edge instead of the module-level `_DISPATCH_SATISFIED_*`
     sets, which is what makes the seals→bodies narrowing real in `pr` mode.
-  * `orchestrator.run` → :func:`agent_correlation_warnings` alongside the
-    preflight warnings (printed and replayed into run.log).
+  * `orchestrator.execute` → :func:`agent_correlation_warnings` alongside the
+    preflight warnings (printed at run start and replayed into run.log once
+    it exists). The subject read `orchestrator.run` until P3 wired it, and
+    that module defines no top-level `run`: the entry point is `execute`, so
+    the claim named a function that does not exist. Corrected rather than
+    deleted — the claim was true about the intent and wrong about the name.
   * `repo_config.load` → validates a `roles:` section via
     :func:`role_policy_from_mapping`, so an invalid or narrowing section is a
     load failure rather than a line dropped into `RepoConfig.unknown_keys`.
@@ -1274,6 +1278,9 @@ def validate(tasks: Sequence[plan_mod.Task]) -> RoleValidation:
         a task of a LATER mandatory phase from its own unit (a phase
         inversion inside one unit that is not a cycle — e.g. seals blocked by
         a sibling bodies task of the same unit).
+      * OVERRIDE: a row whose ``immutable_paths:`` narrows its role's
+        protected set, via :func:`validate_override` against
+        :func:`built_in_policy`. Collected per row like the rest.
 
     Note what is NOT an error, and why: a BODIES task cannot be refused here
     for "touching tests/**", because task rows do not declare the paths they
@@ -1389,8 +1396,24 @@ def validate(tasks: Sequence[plan_mod.Task]) -> RoleValidation:
                         "detection cannot see it",
                     ))
 
-    # --- warnings: reported, never refusing ------------------------------- #
     defaults = built_in_policy()
+
+    # --- illegal (narrowing) overrides ------------------------------------ #
+    # The declared half of the immutable-paths rule, and the only half plan
+    # time can see: a row does not declare the paths it will touch, but it
+    # does declare the ones it claims are no longer its role's to protect.
+    # Held against the COMPILED-IN defaults, which is the only policy a pure
+    # function of the task list has and also the right one — a repo `roles:`
+    # section may itself only ADD, so an entry that narrows the built-in set
+    # narrows every policy derived from it. Collected, never raised on the
+    # first, for the same reason the per-row failures above are.
+    for spec in specs:
+        try:
+            validate_override(spec, defaults)
+        except RoleProtocolError as exc:
+            errors.append((spec.task_key, "OVERRIDE", str(exc)))
+
+    # --- warnings: reported, never refusing ------------------------------- #
     for spec in specs:
         if not spec.added_immutable_globs:
             continue
@@ -3011,7 +3034,17 @@ _CLI_ROLE_SUBJECT = "<the role argument>"
 
 #: The script face's usage line. One string, so the shell wrapper never has to
 #: restate the arity or the legal roles (which is how the two drift apart).
-_USAGE = "usage: check_body_branch <base> <branch> <role>"
+_USAGE = (
+    "usage: check_body_branch <base> <branch> <role> "
+    "[--tasks PATH --task-key KEY]"
+)
+
+#: The two options that name the task row whose :class:`TaskRoleSpec` is
+#: applied. Given together or not at all — half a row reference names no row,
+#: and honouring the half that was given is how a caller comes to believe a
+#: spec was applied when none was.
+_TASKS_OPTION = "--tasks"
+_TASK_KEY_OPTION = "--task-key"
 
 #: Verdict → exit code. A mapping rather than a chain of ifs so a new
 #: :class:`DiffVerdict` member is an *unmapped* verdict — caught below and
@@ -3048,18 +3081,123 @@ def parse_role_value(text: str) -> Role:
     )
 
 
+def _split_row_reference(
+    argv: Sequence[str],
+) -> tuple[list[str], str | None, str | None, str | None]:
+    """``(positional, tasks_rel, task_key, usage error)`` over ``argv``.
+
+    Hand-rolled rather than ``argparse``: :func:`main`'s contract is "exactly
+    three positional arguments, anything else is USAGE", and argparse answers
+    a wrong arity by printing its own message and raising ``SystemExit`` —
+    which a CLI face that returns an exit code must not do.
+
+    The two options are given TOGETHER or not at all. Honouring whichever half
+    arrived is how a caller comes to believe a spec was applied when none was,
+    so half a reference is a usage error and not a silent ``spec=None``.
+    """
+    values: dict[str, str] = {}
+    positional: list[str] = []
+    tokens = list(argv)
+    idx = 0
+    while idx < len(tokens):
+        token = tokens[idx]
+        if token in (_TASKS_OPTION, _TASK_KEY_OPTION):
+            if token in values:
+                return positional, None, None, f"{token} given more than once"
+            if idx + 1 >= len(tokens):
+                return positional, None, None, f"{token} needs a value"
+            values[token] = tokens[idx + 1]
+            idx += 2
+            continue
+        positional.append(token)
+        idx += 1
+
+    tasks_rel = values.get(_TASKS_OPTION)
+    task_key = values.get(_TASK_KEY_OPTION)
+    if (tasks_rel is None) != (task_key is None):
+        return (
+            positional,
+            None,
+            None,
+            f"{_TASKS_OPTION} PATH and {_TASK_KEY_OPTION} KEY are given "
+            "together or not at all: half a row reference names no row",
+        )
+    return positional, tasks_rel, task_key, None
+
+
+def _task_role_spec_at_base(
+    repo_root: str | Path, base_ref: str, tasks_rel: str, task_key: str
+) -> TaskRoleSpec:
+    """One worklist row's :class:`TaskRoleSpec`, read out of ``base_ref``'s
+    object store — never the working tree.
+
+    Invariant 6 by the same route as :func:`load_role_policy_from_base`, and
+    it bites hardest on the most privileged role: an ADJUDICATE row's
+    ``disputed_paths:`` **is** its writable set, so a branch that supplied its
+    own row would widen its own gate by editing one line — including the line
+    that hands it the worklist file. ``tasks_rel`` is therefore repo-relative
+    and resolved against the protected base, and a worklist the branch merely
+    added is not one this gate will read.
+
+    The blob read goes through :func:`file_text_at` — the module's one reader
+    of a path out of a ref (invariant 5) — so a ref that will not resolve
+    raises :class:`RoleDiffError`, which :func:`main` maps to UNDETERMINED.
+    Everything else (an absent file, an unparseable worklist, a key that names
+    no row, a row the protocol rejects) is a :class:`RoleProtocolError`: "I
+    could not find the row" is never answered with "no spec, carry on", which
+    is the fail-open shape a typo reaches.
+    """
+    from ruamel.yaml.error import YAMLError
+
+    from . import yaml_io
+
+    text = file_text_at(repo_root, base_ref, tasks_rel)
+    if text is None:
+        raise RoleProtocolError(
+            f"{tasks_rel!r} is not in {base_ref!r}. The row is read from the "
+            "protected base, never from the branch under judgement"
+        )
+    try:
+        doc = yaml_io.loads(text)
+    except YAMLError as exc:
+        raise RoleProtocolError(
+            f"malformed YAML in {tasks_rel} at {base_ref}: {exc}"
+        ) from exc
+    rows = doc.get("tasks") if isinstance(doc, Mapping) else None
+    if rows is None:
+        raise RoleProtocolError(
+            f"{tasks_rel} at {base_ref} has no 'tasks:' sequence, so it names "
+            "no rows at all"
+        )
+    for row in rows:
+        if isinstance(row, Mapping) and str(row.get("key")) == task_key:
+            return parse_task_role_spec(row, task_key=task_key)
+    raise RoleProtocolError(
+        f"no task {task_key!r} in {tasks_rel} at {base_ref}"
+    )
+
+
 def main(argv: Sequence[str]) -> int:
-    """``check_body_branch <base> <branch> <role>`` — returns an
-    :class:`ExitCode` value.
+    """``check_body_branch <base> <branch> <role> [--tasks PATH --task-key
+    KEY]`` — returns an :class:`ExitCode` value.
 
     Prints a human-readable report to stdout (every violated path with its
     matching glob and the rule's rationale, every changed signature) and
-    diagnostics to stderr. Exactly three positional arguments; anything else
+    diagnostics to stderr. Exactly three POSITIONAL arguments; anything else
     is :data:`ExitCode.USAGE`. Maps :func:`check_branch`'s verdict to OK /
     VIOLATION / UNDETERMINED, and never maps UNDETERMINED to OK.
 
     ``repo_root`` is the current working directory: the script runs inside the
     checkout being judged, as CI does.
+
+    ``--tasks PATH --task-key KEY`` name the worklist row whose
+    :class:`TaskRoleSpec` is applied. Without them there is no spec, and the
+    branch is judged by its role's default rule alone — which is right for
+    the three deny-based roles and is *not* an answer for ADJUDICATE, whose
+    writable set lives on the row (:func:`check_branch` returns UNDETERMINED
+    rather than guessing). ``PATH`` is repo-relative and the row is read out
+    of ``<base>``'s object store by :func:`_task_role_spec_at_base`; see there
+    for why the working tree is not an option.
 
     **P3 implementation notes.**
 
@@ -3069,6 +3207,17 @@ def main(argv: Sequence[str]) -> int:
       would be a lie about *which* step failed. The P2 seal only pins "never
       OK" and names the choice as an open dispute; this is the resolution and
       the reason for it.
+    * A ``--task-key`` that names no row takes that same resolution: USAGE,
+      because nothing was checked and the argument is the thing that was
+      wrong. What it must never be is OK — degrading a missing row to
+      ``spec=None`` would let a typo turn the ADJUDICATE gate into the BODIES
+      one, and turn a per-task ``immutable_paths:`` addition into a comment.
+      An unreadable *ref* is different: git ran and could not answer, which
+      is UNDETERMINED (3).
+    * A ``spec`` whose role disagrees with the ``role`` argument is NOT
+      reconciled here; :func:`check_branch` answers it (UNDETERMINED). Two
+      places deciding which of the two names the rule is how they come to
+      disagree.
     * The rationale printed for a violation is
       :attr:`PathViolation.rationale`, carried on the violation itself. It is
       deliberately not re-derived from the policy here: a second policy read
@@ -3079,8 +3228,13 @@ def main(argv: Sequence[str]) -> int:
     """
     import sys
 
-    args = list(argv)
-    if len(args) != 3:
+    positional, tasks_rel, task_key, option_error = _split_row_reference(argv)
+    if option_error is not None:
+        print(f"check_body_branch: {option_error}", file=sys.stderr)
+        print(_USAGE, file=sys.stderr)
+        return ExitCode.USAGE.value
+
+    if len(positional) != 3:
         print(_USAGE, file=sys.stderr)
         print(
             f"  roles: {_authorable_values()} "
@@ -3088,10 +3242,13 @@ def main(argv: Sequence[str]) -> int:
             "paths, and accepting the word here would disable the gate)",
             file=sys.stderr,
         )
-        print(f"  got {len(args)} argument(s): {args!r}", file=sys.stderr)
+        print(
+            f"  got {len(positional)} positional argument(s): {positional!r}",
+            file=sys.stderr,
+        )
         return ExitCode.USAGE.value
 
-    base_ref, branch_ref, role_text = args
+    base_ref, branch_ref, role_text = positional
     try:
         role = parse_role_value(role_text)
     except RoleProtocolError as exc:
@@ -3099,7 +3256,28 @@ def main(argv: Sequence[str]) -> int:
         print(_USAGE, file=sys.stderr)
         return ExitCode.USAGE.value
 
-    result = check_branch(Path.cwd(), base_ref, branch_ref, role)
+    spec: TaskRoleSpec | None = None
+    if tasks_rel is not None and task_key is not None:
+        try:
+            spec = _task_role_spec_at_base(
+                Path.cwd(), base_ref, tasks_rel, task_key
+            )
+        except RoleProtocolError as exc:
+            print(f"check_body_branch: {exc}", file=sys.stderr)
+            print(_USAGE, file=sys.stderr)
+            return ExitCode.USAGE.value
+        except RoleDiffError as exc:
+            # git ran and could not answer. That is 3, not 64: the invocation
+            # was well-formed and the check did not conclude.
+            print(f"check_body_branch: {exc}", file=sys.stderr)
+            print(
+                "check_body_branch: UNDETERMINED is not a pass — the branch "
+                "was not cleared",
+                file=sys.stderr,
+            )
+            return ExitCode.UNDETERMINED.value
+
+    result = check_branch(Path.cwd(), base_ref, branch_ref, role, spec=spec)
 
     _print_report(result)
 

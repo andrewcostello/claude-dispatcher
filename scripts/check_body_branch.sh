@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_body_branch.sh <base> <branch> <role>
+# check_body_branch.sh <base> <branch> <role> [--tasks PATH --task-key KEY]
 #
 # Unit D1. P1 wrote this contract as a stub; P3 replaced the marked block at
 # the bottom with the delegation described below. The contract is unchanged —
@@ -27,6 +27,20 @@
 #             ("legacy" is NOT accepted: a role-less task has no immutable
 #             paths, and accepting the word here would let a caller disable
 #             the gate by passing it.)
+#
+#   Options (both or neither — half a row reference names no row):
+#     --tasks PATH     a REPO-RELATIVE path to the worklist. The row is read
+#                      out of <base>'s object store, never the working tree:
+#                      an adjudicate row's `disputed_paths:` IS its writable
+#                      set, so a branch that supplied its own row would widen
+#                      its own gate by editing one line (invariant 6 again).
+#     --task-key KEY   the row whose per-task facts are applied — its
+#                      `immutable_paths:` addition, or, for an adjudicate
+#                      branch, the `disputed_paths:` that ARE its writable
+#                      set. Without them there is no per-task spec, which is
+#                      right for the three deny-based roles and is exit 3 for
+#                      adjudicate: the writable set lives on the row and the
+#                      gate will not guess "nothing" or "anything".
 #
 #   Runs in the checkout to be judged (cwd = repo root), as CI does.
 #

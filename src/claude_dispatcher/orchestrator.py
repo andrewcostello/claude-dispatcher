@@ -47,6 +47,7 @@ from . import push_verify as pv_mod
 from . import design as design_mod
 from . import quality_levels as ql_mod
 from . import repo_config as repo_config_mod
+from . import role_protocol as role_protocol_mod
 from . import routing as routing_mod
 from . import seal_verify as sv_mod
 from . import endpoint_agents as endpoint_agents_mod
@@ -465,12 +466,29 @@ def execute(args: argparse.Namespace) -> int:
         for warning in pf.warnings:
             print(f"warning: preflight: {warning}", file=sys.stderr)
 
+    # Build-protocol correlation warnings (D1). Never a refusal, and never
+    # gated on --skip-preflight: everything the protocol REFUSES was already
+    # refused by `plan.load_tasks` above (which raises), so what is left here
+    # is the one fact `validate` cannot decide on its own — whether a unit's
+    # seals and bodies tasks share a model family. That needs the run-level
+    # implementer, which is a property of the run and not of the file, so it
+    # is resolved here and passed in. Same lifecycle as the preflight
+    # warnings: printed now (no run.log yet) and replayed into run.log below.
+    role_warnings = role_protocol_mod.agent_correlation_warnings(
+        role_protocol_mod.validate(plan_mod.load_tasks(doc)),
+        default_agent=_effective_implementer(cfg),
+    )
+    for warning in role_warnings:
+        print(f"warning: role protocol: {warning}", file=sys.stderr)
+
     run_dir = cfg.runs_dir / cfg.run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     log_path = run_dir / "run.log"
     _log(log_path, f"start run {cfg.run_id} mode={cfg.mode} max_parallel={cfg.max_parallel}")
     for warning in pf.warnings:
         _log(log_path, f"preflight warning: {warning}")
+    for warning in role_warnings:
+        _log(log_path, f"role protocol warning: {warning}")
 
     # Resolve the integration mode and, in pr mode, create the run-level
     # feature branch and repoint base_branch to it (PRF-1). Done AFTER
@@ -796,6 +814,20 @@ def _maybe_merge_pass(
 
 # Agents that expose an effort / reasoning-level CLI flag. gemini/agy does not.
 _EFFORT_CAPABLE_AGENTS = frozenset({"claude", "codex", "grok"})
+
+
+def _effective_implementer(cfg: RunConfig) -> str:
+    """The agent family a row with no ``agent:`` will actually be run by.
+
+    Never a guess and never blank: `role_protocol.agent_correlation_warnings`
+    compares each row's EFFECTIVE family, so an absent `agent:` has to resolve
+    to the same name the dispatcher will really spawn — which under
+    ``--no-claude`` is grok, not claude. Mirrors the fallback ladder
+    :func:`_capture_run_agent_version` already applies to the version probe.
+    """
+    if cfg.implementer and cfg.implementer.strip():
+        return cfg.implementer.strip().lower()
+    return "grok" if cfg.no_claude else "claude"
 
 
 def _capture_run_agent_version(cfg: RunConfig) -> str | None:

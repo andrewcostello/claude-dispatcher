@@ -252,6 +252,28 @@ def load_tasks(doc: Any) -> list[Task]:
         )
 
     _validate_blocked_by(tasks)
+
+    # Plan-time enforcement of the build protocol (D1). This is THE point at
+    # which a worklist that breaks phase order or declares a narrowing
+    # `immutable_paths:` is refused — before `load_tasks` returns, so a failing
+    # worklist never partially plans (invariant 2). `role_protocol.validate`
+    # collects errors for EVERY row rather than raising on the first, and all
+    # of them are reported here: raising on `errors[0]` would throw that away
+    # and cost one round trip per broken row.
+    #
+    # Imported inside the function on purpose: `role_protocol` reads
+    # `plan.Task`, so a module-level import in either direction is a cycle
+    # (that module's own TYPE_CHECKING note names this call site as the
+    # reason). `preflight.run_preflight` imports `spawn` the same way.
+    from . import role_protocol as role_protocol_mod
+
+    validation = role_protocol_mod.validate(tasks)
+    if validation.errors:
+        raise ValidationError(
+            "the build-protocol role check refused this worklist "
+            f"({len(validation.errors)} error(s)):\n  - "
+            + "\n  - ".join(validation.errors)
+        )
     return tasks
 
 
@@ -396,17 +418,48 @@ def runnable_now(tasks: list[Task], *, integration: str = "branch") -> list[Task
     before. In ``pr`` mode it widens to Done/Awaiting Review/Merged (PRF-2):
     a dependency whose PR is open-but-unmerged has still produced its commits,
     which reach this task's worktree via the dispatch-time dependency merge.
+
+    "Done-or-later" is answered **per edge** by
+    :func:`role_protocol.dispatch_satisfied_statuses`, not by one set chosen
+    per call: an edge whose DEPENDENCY is a ``seals`` task narrows back to
+    ``{Merged}`` in ``pr`` mode (2026-08-04 P2 ruling), because the seals gate
+    is a review gate rather than a code-availability gate. The narrowing is
+    keyed on the dependency, never on the waiter — an Awaiting-Review seals
+    task has not finished its phase no matter who is waiting on it. Every
+    other edge, including every role-less (LEGACY) one, keeps today's
+    behaviour byte-identically; ``_DISPATCH_SATISFIED_BRANCH`` /
+    ``_DISPATCH_SATISFIED_PR`` are still the source of those two sets and are
+    read back out of this module by that function.
     """
-    satisfied = (
-        _DISPATCH_SATISFIED_PR if integration == "pr"
-        else _DISPATCH_SATISFIED_BRANCH
-    )
+    # Imported inside the function for the same reason `load_tasks` does it:
+    # `role_protocol` reads `plan.Task`, so a module-level import is a cycle.
+    from . import role_protocol as role_protocol_mod
+
+    # Roles come off the rows through role_protocol's ONE parser. A row whose
+    # `role:` does not parse is deliberately NOT ordered as though it were
+    # role-less: `load_tasks` refuses such a worklist, so reaching here means
+    # the loader was bypassed, and guessing LEGACY is exactly how a typo would
+    # buy a task its way out of the gate. `parse_role_field` raises instead.
+    roles = {
+        t.key: role_protocol_mod.parse_role_field(t.raw or {}, task_key=t.key)
+        for t in tasks
+    }
+
     by_key = {t.key: t for t in tasks}
     runnable: list[Task] = []
     for t in tasks:
         if not t.is_runnable_status:
             continue
-        if all(by_key[dep].status in satisfied for dep in t.blocked_by):
+        # An unrecognised `integration` is refused by the per-edge call, not
+        # here: a task with no blockedBy edges has no ordering to get wrong,
+        # and both modes answer it identically.
+        if all(
+            by_key[dep].status
+            in role_protocol_mod.dispatch_satisfied_statuses(
+                roles[t.key], roles[dep], integration=integration
+            )
+            for dep in t.blocked_by
+        ):
             runnable.append(t)
     return runnable
 
