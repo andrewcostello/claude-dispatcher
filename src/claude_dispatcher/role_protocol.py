@@ -443,9 +443,23 @@ DEFAULT_ROLE_RULES: tuple[RoleRule, ...] = (
 #: Globs a `disputed_paths:` entry may never be, in any role. A wildcard
 #: adjudication is not an adjudication: it converts ALLOW_ONLY into
 #: UNRESTRICTED with extra steps.
+#:
+#: This is a NAMED denylist and it is not the enforcement. Six literals is an
+#: OPEN set in the unit whose whole doctrine is closed ones (D1-inputs I2):
+#: `**/**`, `**/**/*`, `**/**/**`, `*/**`, `**/*/**` and `*/*` are none of
+#: them, all parse today, and each grants the whole repo. The closed rule is
+#: :func:`_names_no_artifact`, which refuses every one of these six literals
+#: too — so a deletion from this set changes no verdict, and the rows in
+#: `test_role_protocol_table.py` and `test_role_protocol_parse.py` that pin
+#: these six by name keep pinning the spellings the doctrine calls out
+#: explicitly.
 FORBIDDEN_DISPUTED_GLOBS: frozenset[str] = frozenset(
     {"*", "**", "**/*", "/", "./**", "."}
 )
+
+#: The glob metacharacters this repo's engine (``risk._glob_to_regex``) reads.
+#: Everything else in a declaration is literal text — a name.
+_GLOB_METACHARACTERS = "*?[]"
 
 #: The non-overridable floor: globs NO authorable role may write, whatever the
 #: policy says and whatever the task declared (2026-08-07 operator ruling).
@@ -657,6 +671,49 @@ def _string_list(
             )
         out.append(entry)
     return tuple(out)
+
+
+def _names_no_artifact(entry: str) -> bool:
+    """True when ``entry`` is wildcards and separators only — it names nothing.
+
+    The CLOSED form of "a wildcard adjudication is not an adjudication"
+    (D1-inputs I2). :data:`FORBIDDEN_DISPUTED_GLOBS` states that sentence as
+    six literals, so it is true of six strings and false of every other
+    spelling of the same thing: `**/**`, `**/**/*`, `**/**/**`, `*/**`,
+    `**/*/**` and `*/*` all parse today and all grant the entire repo, and so
+    does `**/*.*`, which is refused right now only by the accident that
+    `.dispatcher.yaml` happens to contain a dot.
+
+    The test is one sentence: **strike out the wildcards and at least one
+    literal alphanumeric character must remain.** A declaration is an
+    adjudication when it NAMES something — a tree, a file, a class of files —
+    and `/` and `.` are structure, not names.
+
+    Where the boundary sits, and why it sits there rather than anywhere
+    broader (P4, 2026-08-08; a floor has no override, so a false refusal makes
+    a path permanently unplannable):
+
+      * refused: `**/*.*` — matches every path in the probe set, and after the
+        strike-out only `/.` remains. It names nothing.
+      * ALLOWED: `*.yaml` — `*` crosses `/` in this repo's glob engine, so this
+        is "every YAML file", a real and bounded class of artifacts,
+        structurally identical to `docs/*.md`. Refusing extension-only
+        declarations would also stop `*.md` and `**/*.md` in a repo whose docs
+        live both under `docs/` and at the root. Its refusal today is the
+        FLOOR's business and on the floor's own grounds — it does name
+        `.dispatcher.yaml` — which is two independent rules refusing for two
+        different reasons, the design; not one rule refusing for the other's.
+      * ALLOWED: `sub/**`, one wildcard segment away from the refused `*/**`.
+        An implementation that cannot tell those apart has not closed the set,
+        it has closed the door.
+
+    A bracket expression counts as literal text, on the same reading
+    :func:`_floor_glob_named_by` already uses: `[abc]` enumerates names.
+    """
+    residue = entry.strip()
+    for metacharacter in _GLOB_METACHARACTERS:
+        residue = residue.replace(metacharacter, "")
+    return not any(character.isalnum() for character in residue)
 
 
 def _reject_negation_shape(entry: str, *, where: str) -> None:
@@ -880,12 +937,16 @@ def parse_task_role_spec(
                 "adjudicate task rules on at least one artifact"
             )
         for entry in disputed:
-            if entry.strip() in FORBIDDEN_DISPUTED_GLOBS:
+            if entry.strip() in FORBIDDEN_DISPUTED_GLOBS or _names_no_artifact(
+                entry
+            ):
                 raise RoleProtocolError(
                     f"task {task_key} has {DISPUTED_PATHS_FIELD} entry "
                     f"{entry!r}; a wildcard adjudication is not an "
                     "adjudication — it converts allow-only into unrestricted "
-                    "with extra steps"
+                    "with extra steps. Strike out the wildcards and nothing "
+                    "is left: an adjudication names the tree, the file or the "
+                    "class of files it rules on"
                 )
             floor = _floor_glob_named_by(entry)
             if floor is not None:
@@ -952,10 +1013,14 @@ def validate_rule(rule: RoleRule) -> None:
         # Empty is legal ONLY here: the static table entry's writable set
         # arrives per task via `disputed_paths:`.
         for glob in rule.globs:
-            if glob.strip() in FORBIDDEN_DISPUTED_GLOBS:
+            if glob.strip() in FORBIDDEN_DISPUTED_GLOBS or _names_no_artifact(
+                glob
+            ):
                 raise RoleProtocolError(
                     f"rule for {role_name} allows {glob!r}; a wildcard "
-                    "allow-only set is an unrestricted rule with extra steps"
+                    "allow-only set is an unrestricted rule with extra steps. "
+                    "Strike out the wildcards and nothing is left: an "
+                    "allow-only rule names what it allows"
                 )
         return
     if rule.kind is RuleKind.UNRESTRICTED:
@@ -1034,23 +1099,50 @@ def effective_rule(spec: TaskRoleSpec, policy: RolePolicy) -> RoleRule:
         rejected by :func:`parse_task_role_spec`.
 
     Calls :func:`validate_override` first, so an illegal override cannot
-    produce a rule at all (validate before apply — invariant 2).
+    produce a rule at all (validate before apply — invariant 2), and
+    :func:`validate_rule` on the rule it BUILT before handing it back — the
+    second half of D1-inputs I2.
+
+    That second call is not belt-and-braces. ALLOW_ONLY's globs come straight
+    off ``spec.disputed_paths`` and were validated by nothing: an adjudicate
+    spec declaring ``**`` produced ``RoleRule(kind=ALLOW_ONLY_GLOBS,
+    globs=('**',))`` — an allow-only rule that allows the whole repo, which is
+    UNRESTRICTED with extra steps and is the exact glob :func:`validate_rule`
+    exists to refuse. :func:`parse_task_role_spec` is no defence: nothing
+    obliges a :class:`TaskRoleSpec` reaching :func:`check_branch` to have come
+    through it, and the plan-time denylist is never consulted there. The rule
+    a branch is judged by is validated at the point it is built, so the two
+    entry points cannot disagree. :func:`check_branch` turns the raise into
+    UNDETERMINED, which fails closed.
     """
     validate_override(spec, policy)
     rule = policy.rule_for(spec.role)
 
     if rule.kind is RuleKind.DENY_GLOBS:
-        return dataclasses.replace(
+        built = dataclasses.replace(
             rule, globs=_dedup((*rule.globs, *spec.added_immutable_globs))
         )
-    if rule.kind is RuleKind.ALLOW_ONLY_GLOBS:
-        return dataclasses.replace(rule, globs=tuple(spec.disputed_paths))
-    if rule.kind is RuleKind.UNRESTRICTED:
-        return rule
-    raise RoleProtocolError(
-        f"task {spec.task_key}: cannot build an effective rule for unknown "
-        f"kind {rule.kind!r}"
-    )
+    elif rule.kind is RuleKind.ALLOW_ONLY_GLOBS:
+        built = dataclasses.replace(rule, globs=tuple(spec.disputed_paths))
+    elif rule.kind is RuleKind.UNRESTRICTED:
+        built = rule
+    else:
+        raise RoleProtocolError(
+            f"task {spec.task_key}: cannot build an effective rule for unknown "
+            f"kind {rule.kind!r}"
+        )
+
+    try:
+        validate_rule(built)
+    except RoleProtocolError as exc:
+        raise RoleProtocolError(
+            f"task {spec.task_key}'s effective rule is one this module would "
+            f"refuse to validate: {exc}. A rule is validated where it is "
+            "BUILT, not only where it is declared — nothing obliges a spec "
+            "reaching the diff-time check to have been parsed by "
+            "`parse_task_role_spec`"
+        ) from exc
+    return built
 
 
 # --------------------------------------------------------------------------- #
