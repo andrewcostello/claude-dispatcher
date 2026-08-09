@@ -3200,6 +3200,173 @@ class GoSignatureFingerprinter:
         raise NotImplementedError("D2 P3: fingerprint Go via the go/ast helper")
 
 
+@dataclass(frozen=True)
+class GoSignatureEditRuling:
+    """One ruled edit: does it change a Go signature, or is it body work?
+
+    A row of :data:`GO_SIGNATURE_EDIT_RULINGS`. The point of the dataclass is
+    that a ruling stops being prose in a docstring — which the last three units
+    each had a seal author derive a guess from — and becomes something P2 can
+    assert against and P3 can implement to.
+
+    ``before``/``after`` are complete, minimal Go files. ``is_a_change`` is the
+    ruled answer. ``python_analogue`` carries the same edit transliterated to
+    Python when the edit HAS an analogue, so the row can be checked against a
+    live comparator today, years before the Go one exists; it is None for the
+    rows where Go and Python genuinely differ, and that None is itself the
+    claim that they differ.
+    """
+
+    name: str
+    before: str
+    after: str
+    is_a_change: bool
+    rationale: str
+    python_analogue: tuple[str, str] | None = None
+
+
+#: **P4 ruling, 2026-08-09: Go parameter NAMES are part of the fingerprint.**
+#: The scaffold flagged this as the first question to send to P4 and it is
+#: settled here, with the boundary rows that make the criterion checkable.
+#:
+#: THE SCAFFOLD'S TWO ARGUMENTS ARE BOTH WEAKER THAN THEY LOOK, and the ruling
+#: does not rest on either.
+#:
+#:   * *For*: "parameter names are the scaffold's declared shape, they appear in
+#:     godoc, and the Python side fingerprints them." Godoc is documentation,
+#:     not contract. And bare parity is the argument this whole unit exists to
+#:     distrust — :class:`GoSignatureFingerprinter` already BREAKS parity for
+#:     the receiver name, so "Python does it" cannot be doing the work.
+#:   * *Against*: "it is stricter than Go's own compatibility rules and will
+#:     flag a rename that breaks no caller." True, and correct as far as it
+#:     goes.
+#:
+#: WORSE, the scaffold is internally inconsistent. It excludes the receiver name
+#: on the ground that a receiver "cannot be named at any call site" — a
+#: CALLABLE-SURFACE test — and then includes parameter names two sentences
+#: later, when a Go parameter cannot be named at a call site either. Applied
+#: honestly, the scaffold's own stated criterion excludes parameter names. That
+#: criterion is the one being replaced.
+#:
+#: THE CRITERION THIS RULING USES: **a fingerprint must distinguish two
+#: declarations that mean different things to a caller.** Not "can the caller
+#: type this name" — "can the caller be silently wrong if this changes".
+#:
+#: What forces the answer is the SAME-TYPE REORDER. ``func Move(src, dst
+#: string)`` becoming ``func Move(dst, src string)`` is type-identical: a
+#: fingerprint built from types alone sees nothing, every existing call site
+#: compiles, and every one of them now means the opposite of what it says.
+#: That is the struct-tag defect exactly — a semantic inversion with no compile
+#: error anywhere — and names are the only thing that catches it.
+#:
+#: AND THE TWO CANNOT BE SEPARATED. ``(src, dst)`` -> ``(dst, src)`` is a
+#: reorder and is equally two renames; a syntactic, single-file, no-``go/types``
+#: comparator cannot tell them apart, because there is no fact in the text that
+#: distinguishes them. So "catch reorders but not renames" is not a stricter
+#: rule this unit declined to write — it is not implementable at all. The choice
+#: is binary, and the rename false positive is the PRICE of the reorder catch,
+#: not a design goal.
+#:
+#: WHY THAT PRICE IS ACCEPTABLE, given the against-argument is real:
+#:
+#:   * the severities are not comparable. A false VIOLATION is visible, names
+#:     the symbol, and costs one round trip or one ruling — the same escape
+#:     hatch the added-struct-field rule already relies on. A missed same-type
+#:     reorder is silent, ships, and is the SMG-3966 shape.
+#:   * this contract ALREADY accepts a strictly noisier false positive without
+#:     complaint: renaming an import alias rewrites every ``pkg.T`` that
+#:     mentions it and every one reads as a change. If that noise is tolerable,
+#:     a parameter rename — one symbol, one line — is.
+#:   * the noise is bounded by what a body agent is FOR. It fills bodies against
+#:     a signature it was handed. Renaming a parameter of a function someone
+#:     else declared is not the common case; it is a body agent editing the
+#:     declaration, which is the thing being gated.
+#:
+#: THE RECEIVER EXCEPTION SURVIVES, and that is the check on the criterion
+#: rather than a carve-out bolted onto it: a receiver cannot be silently swapped
+#: with anything, because there is exactly one and it has no position. It
+#: carries no ordering information, so renaming it cannot make a caller wrong.
+#: Same criterion, opposite answer, which is how you tell a criterion from a
+#: preference.
+#:
+#: The table is the acceptance criterion for :class:`GoSignatureFingerprinter`
+#: (P3) and the thing P2 seals against. Rows with a ``python_analogue`` are
+#: checked against the live Python comparator TODAY — see
+#: ``tests/test_role_protocol_faults.py`` — so the parity claim is measured
+#: rather than asserted, and the receiver row's None is the recorded claim that
+#: Go and Python differ there on purpose.
+GO_SIGNATURE_EDIT_RULINGS: tuple[GoSignatureEditRuling, ...] = (
+    GoSignatureEditRuling(
+        name="parameter renamed",
+        before="package m\n\nfunc Move(src, dst string) error { return nil }\n",
+        after="package m\n\nfunc Move(source, target string) error { return nil }\n",
+        is_a_change=True,
+        rationale=(
+            "THE RULING. Indistinguishable, in a syntactic single-file "
+            "comparison, from the same-type reorder below — so it is ruled "
+            "the same way. Breaks no caller on its own; that is the accepted "
+            "price of the row below, not an oversight"
+        ),
+        python_analogue=(
+            "def move(src, dst):\n    pass\n",
+            "def move(source, target):\n    pass\n",
+        ),
+    ),
+    GoSignatureEditRuling(
+        name="same-type parameters reordered",
+        before="package m\n\nfunc Move(src, dst string) error { return nil }\n",
+        after="package m\n\nfunc Move(dst, src string) error { return nil }\n",
+        is_a_change=True,
+        rationale=(
+            "THE REASON FOR THE RULING. Type-identical, so a names-free "
+            "fingerprint reports no change; every existing call site still "
+            "compiles and every one now means the opposite. A silent semantic "
+            "inversion with no compile error — the struct-tag defect in the "
+            "parameter list"
+        ),
+        python_analogue=(
+            "def move(src, dst):\n    pass\n",
+            "def move(dst, src):\n    pass\n",
+        ),
+    ),
+    GoSignatureEditRuling(
+        name="receiver variable renamed",
+        before="package m\n\ntype S struct{}\n\nfunc (s *S) Do() {}\n",
+        after="package m\n\ntype S struct{}\n\nfunc (svc *S) Do() {}\n",
+        is_a_change=False,
+        rationale=(
+            "THE BOUNDARY, and the check on the criterion. There is exactly "
+            "one receiver and it has no position, so it carries no ordering "
+            "information and no caller can be made silently wrong by renaming "
+            "it. Same criterion as the two rows above, opposite answer. NO "
+            "python_analogue: Python fingerprints `self` like any other "
+            "parameter (measured), and this row is the recorded claim that the "
+            "two languages differ here deliberately"
+        ),
+        python_analogue=None,
+    ),
+    GoSignatureEditRuling(
+        name="body rewritten, declaration untouched",
+        before="package m\n\nfunc Move(src, dst string) error { return nil }\n",
+        after=(
+            "package m\n\nfunc Move(src, dst string) error {\n"
+            "\t_ = src\n\t_ = dst\n\treturn nil\n}\n"
+        ),
+        is_a_change=False,
+        rationale=(
+            "THE CONTROL, and the row without which this table proves "
+            "nothing. Every other row here is a change, so a comparator that "
+            "answered 'changed' to everything would satisfy them all. This is "
+            "the work the gate EXISTS to permit, and it must stay silent"
+        ),
+        python_analogue=(
+            "def move(src, dst):\n    pass\n",
+            "def move(src, dst):\n    del src, dst\n    return None\n",
+        ),
+    ),
+)
+
+
 #: Python's row, and the whole of what this gate reads today.
 PYTHON_SUPPORT = LanguageSupport(
     language=Language.PYTHON,
@@ -3217,17 +3384,51 @@ PYTHON_SUPPORT = LanguageSupport(
 #: not happen until all four of these hold. They are listed as a checklist
 #: because three of them are somebody else's commit:
 #:
-#:   1. :class:`GoSignatureFingerprinter` is implemented (P3).
+#:   1. :class:`GoSignatureFingerprinter` is implemented (P3), to the rulings
+#:      in :data:`GO_SIGNATURE_EDIT_RULINGS` — which is the acceptance
+#:      criterion, not a suggestion, and settles the parameter-name question
+#:      the scaffold sent to P4. **OUTSTANDING.**
 #:   2. ``SignatureCheckStatus.UNCHECKED_COMPARATOR_UNAVAILABLE`` exists and is
 #:      in both status sets, with the seal amendment that lets it exist (P4 —
 #:      see :func:`signature_status_for_fault`). Enrolling first would make a
 #:      missing ``go`` binary raise ``NotImplementedError`` out of
-#:      :func:`check_branch`, which is documented never to raise.
+#:      :func:`check_branch`, which is documented never to raise. **DONE**, P4
+#:      2026-08-09, and it also acquired a RANK, which the scaffold did not
+#:      foresee because it predates the ranked fold: without one,
+#:      :func:`_worst_signature_status` raises on it and every faulted diff is
+#:      UNDETERMINED-by-exception rather than by classification.
 #:   3. :data:`FLOOR_GLOBS` covers the helper source and
 #:      ``scripts/check_body_branch.sh`` reads it from the protected base (P4 —
-#:      see :func:`go_helper_source_dir`).
-#:   4. The SEVEN seals that pin Go as unreadable are amended by P4, because
-#:      enrolment reddens every one of them and P3 may not touch a seal. In
+#:      see :func:`go_helper_source_dir`). **DONE**, P4 2026-08-09. The script
+#:      needed no change: the helper lives under the ``src/`` prefix the
+#:      base-pinned block already copies wholesale, which was MEASURED and then
+#:      sealed, because it is true by location and a later move to ``tools/``
+#:      would silently undo it.
+#:   4. The seals that pin Go as unreadable are amended by P4, because
+#:      enrolment reddens every one of them and P3 may not touch a seal.
+#:      **OUTSTANDING**, and deliberately so: this is a later step, not an
+#:      oversight.
+#:
+#:      **The scaffold said SEVEN. Measured 2026-08-09 by actually enrolling
+#:      the row in a clone and reading the failures: EIGHT, plus two that are
+#:      not this class at all.** The eighth is
+#:      ``test_a_skipped_non_python_file_is_not_reported_as_a_checked_signature``
+#:      (``tests/test_role_protocol_inputs.py``), which the scaffold's list
+#:      omits. A checklist that undercounts is worse than none, because the
+#:      unit that works through it stops when the named ones are green.
+#:
+#:      The two that are NOT this class:
+#:      ``test_no_role_gets_a_clean_verdict_for_editing_the_gate`` and
+#:      ``test_the_gate_is_refused_under_the_policy_the_gate_actually_runs_with``
+#:      (``tests/test_role_protocol_provenance.py``), whose probes include the
+#:      Go helper's own path since it joined :data:`FLOOR_GLOBS`. They redden
+#:      today only because enrolling an UNIMPLEMENTED
+#:      :class:`GoSignatureFingerprinter` raises ``NotImplementedError`` out of
+#:      :func:`check_branch` — item 1 of this list, not item 4. Do item 1
+#:      first and they never go red; they need no amendment and must not be
+#:      given one.
+#:
+#:      The seven the scaffold named, unchanged. In
 #:      ``tests/test_role_protocol_diff.py``:
 #:      ``test_an_unchecked_comparison_is_named_never_reported_as_unchanged``
 #:      (its ``cmd/classify/main.go`` row) and

@@ -29,20 +29,29 @@ anything the day CI installs Go.
 The patched row uses Go's own `.go` extension, so these seals are indifferent to
 whether `GO_SUPPORT` is enrolled — before enrolment the row supplies the
 language, after enrolment it overrides it, and in both cases the fingerprinter
-that raises is the one written here. The UNREADABLE probes are `.sql`, `.java`
-and `.md`, following the standing convention (a prior adjudicator's, for the
-seals that must survive enrolment): they are languages with no comparator
-planned here, 1,097 files of them in the target repo, so enrolling Go cannot
-turn an "unreadable" probe readable underneath a seal.
+that raises is the one written here. Every UNREADABLE probe is `.sql`, following
+the standing convention (a prior adjudicator's, for the seals that must survive
+enrolment): it is a language with no comparator planned here, 781 files of it in
+the target repo, so enrolling Go cannot turn an "unreadable" probe readable
+underneath a seal. `.java` and `.md` are equally available and unused — one
+unreadable language is enough to make every pair here, and a second would be a
+second thing to keep true.
 
-THE VACUITY TRAP IN THIS UNIT
------------------------------
-It is `assert _SIGNATURE_STATUS_PRECEDENCE == (...)`. That pins the tuple and
-proves nothing about a verdict: it is satisfied by a build where the fold is
-never called, where the rank is read from a different tuple, or where
-`check_branch` ignores the status entirely. Every rank row here is therefore
-asserted through `check_branch` on a real mixed diff, and the tuple's SHAPE is
-asserted only where the shape is itself the property (the exhaustiveness rows).
+THE TWO VACUITY TRAPS IN THIS FILE
+----------------------------------
+For the rank (sections 1-5): `assert _SIGNATURE_STATUS_PRECEDENCE == (...)`.
+That pins the tuple and proves nothing about a verdict — it is satisfied by a
+build where the fold is never called, where the rank is read from a different
+tuple, or where `check_branch` ignores the status entirely. Every rank row here
+is therefore asserted through `check_branch` on a real mixed diff, and the
+tuple's SHAPE is asserted only where the shape is itself the property.
+
+For the ruling (section 6): a table of ruled edits in which every row is a
+CHANGE. That is satisfied by a comparator which reports everything as a
+violation — a gate nobody can pass, and therefore a gate everybody routes
+around, which is precisely the failure the against-argument predicted. The
+control row (`body rewritten, declaration untouched`) is asserted by name, and
+removing it reddens.
 """
 
 from __future__ import annotations
@@ -54,6 +63,7 @@ from claude_dispatcher.role_protocol import (
     ComparatorFault,
     ComparatorUnavailable,
     DiffVerdict,
+    GoSignatureEditRuling,
     Language,
     LanguageSupport,
     Role,
@@ -61,6 +71,7 @@ from claude_dispatcher.role_protocol import (
     SignatureCheckStatus,
     built_in_policy,
     check_branch,
+    compare_signatures,
     signature_status_for_fault,
 )
 
@@ -564,6 +575,135 @@ def test_a_wholly_faulted_diff_is_refused_where_a_wholly_unreadable_one_clears(
     assert faulted.signature is not None
     assert unreadable.signature is not None
     assert faulted.signature.status is not unreadable.signature.status
+
+
+# --------------------------------------------------------------------------- #
+# 6 — the parameter-name ruling, as data
+#
+# P4, 2026-08-09. The scaffold sent this question to P4 first and it is settled
+# at `GO_SIGNATURE_EDIT_RULINGS`: Go parameter NAMES are part of the
+# fingerprint, because the same-type reorder is a silent semantic inversion and
+# a syntactic comparator cannot tell a reorder from a rename.
+#
+# The comparator does not exist, so these rows cannot execute the Go half. What
+# they CAN do is keep the ruling honest in three ways that do not need it: the
+# table must rule both ways (or it is a table that says "everything is a
+# change"), each row must be a real edit, and every row that HAS a Python
+# analogue must get the ruled answer out of the comparator that IS implemented.
+# That last one is what turns "the Python side fingerprints them" from a claim
+# in a docstring into a measurement.
+# --------------------------------------------------------------------------- #
+
+
+def test_the_parameter_name_ruling_is_recorded_and_rules_both_ways() -> None:
+    """The table exists, decides the question it was asked, and is not vacuous.
+
+    Vacuity is the whole risk here: a rulings table whose every row says
+    "change" is satisfied by a comparator that reports every edit as a
+    violation, which is a gate nobody can pass and therefore a gate everybody
+    routes around — the exact failure the against-argument predicted. So the
+    control row is asserted to exist, by name, and both answers must be
+    present.
+
+    Green when: the rename and reorder rows rule CHANGE, and at least one row
+    rules NOT a change.
+    Falsify: flip `is_a_change` on the rename row — the ruling is reversed and
+    this goes red. Delete the body-rewrite row — the both-ways assertion goes
+    red, and so does the analogue row below that pins body work as silent.
+    """
+    rulings = {r.name: r for r in role_protocol.GO_SIGNATURE_EDIT_RULINGS}
+
+    assert rulings["parameter renamed"].is_a_change is True, (
+        "the P4 ruling is that a renamed Go parameter IS a signature change; "
+        "see GO_SIGNATURE_EDIT_RULINGS for why, and reopen it there rather "
+        "than by editing this row"
+    )
+    assert rulings["same-type parameters reordered"].is_a_change is True, (
+        "a type-identical reorder is the silent inversion the ruling exists "
+        "for; if this is not a change, the rename row has no justification"
+    )
+    assert rulings["receiver variable renamed"].is_a_change is False, (
+        "the receiver exception is the check on the criterion, not a "
+        "carve-out; losing it means the rule is 'names are contract' rather "
+        "than 'a caller must not be silently wrong'"
+    )
+    assert rulings["body rewritten, declaration untouched"].is_a_change is False, (
+        "the control row is gone, so a comparator that calls everything a "
+        "change satisfies this table"
+    )
+
+    answers = {r.is_a_change for r in role_protocol.GO_SIGNATURE_EDIT_RULINGS}
+    assert answers == {True, False}, (
+        f"a rulings table that only ever says {answers} rules nothing"
+    )
+
+
+@pytest.mark.parametrize(
+    "ruling", role_protocol.GO_SIGNATURE_EDIT_RULINGS, ids=lambda r: r.name
+)
+def test_every_ruled_edit_is_a_real_edit(
+    ruling: GoSignatureEditRuling,
+) -> None:
+    """Each row's `before` and `after` must actually differ, and both must be
+    non-trivial Go.
+
+    Without this a row can be "ruled" with `before == after`, which no
+    comparator can fail and which reads, in a report, exactly like a row that
+    passed. Parametrised over the live tuple rather than a written-out copy on
+    purpose: this row's job is a property of every row that EXISTS, so a new
+    ruling is covered the moment it is added — the opposite trade-off from
+    `_FLOOR_ROWS`, which is written out because deleting an entry there must
+    redden rather than remove a row.
+
+    Green when: every row is a genuine edit of a plausible Go file.
+    Falsify: set any row's `after` equal to its `before`.
+    """
+    assert ruling.before != ruling.after, f"{ruling.name}: not an edit at all"
+    assert ruling.before.startswith("package "), ruling.before
+    assert ruling.after.startswith("package "), ruling.after
+    assert ruling.rationale.strip(), f"{ruling.name}: ruled with no reason given"
+
+
+@pytest.mark.parametrize(
+    "ruling",
+    [r for r in role_protocol.GO_SIGNATURE_EDIT_RULINGS if r.python_analogue],
+    ids=lambda r: r.name,
+)
+def test_the_ruled_answer_is_what_the_live_comparator_already_gives(
+    ruling: GoSignatureEditRuling,
+) -> None:
+    """The parity claim, MEASURED against the comparator that exists.
+
+    Every ruled edit that has a Python analogue is run through the real Python
+    fingerprinter, and the answer must be the one the Go table rules. This is
+    the strongest thing available today: it cannot check the Go comparator, but
+    it can prove that the ruling is not inventing a standard Go alone would be
+    held to — the rename IS a change in Python, the same-type reorder IS a
+    change in Python, and a body rewrite is NOT, all three measured rather than
+    asserted.
+
+    The receiver row is deliberately absent from this parametrisation (it has
+    no analogue), and that absence is itself sealed by the row above, which
+    pins its ruled answer. Python fingerprints `self` like any other parameter,
+    so including it here would assert the OPPOSITE of the ruling and the two
+    languages differing there is the point.
+
+    Green when: all three analogues agree with the ruling.
+    Falsify: rule the rename NOT a change while Python still reports one — this
+    goes red, which is what stops the ruling drifting away from the language it
+    claims parity with.
+    """
+    before, after = ruling.python_analogue
+    result = compare_signatures("pkg/m.py", before, after)
+
+    assert result.status is SignatureCheckStatus.CHECKED, (
+        f"the analogue for {ruling.name!r} did not even parse: {result.detail}"
+    )
+    assert bool(result.changes) is ruling.is_a_change, (
+        f"{ruling.name!r} is ruled "
+        f"{'a change' if ruling.is_a_change else 'NOT a change'} for Go, but "
+        f"the live Python comparator says the opposite: {result.changes}"
+    )
 
 
 def test_a_fault_does_not_stop_the_other_roles_from_clearing(
