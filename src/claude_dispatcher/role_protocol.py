@@ -83,6 +83,17 @@ on `_DECLARATIONS_THAT_NAME_THE_FLOOR`). Declaring a floor path claims the
 right to WRITE it; an adjudication may still RULE on the gate while writing
 only its seals.
 
+Naming the two halves was still not enough, for the same reason naming the
+config file alone was not: this module decides nothing by itself. Every glob
+decision it makes — the floor's own included — is handed to
+`risk.matches_any_glob`, so a branch whose only change was
+`src/claude_dispatcher/risk.py` was CLEAN and could dissolve the floor while
+touching nothing the floor named. The floor therefore holds the whole
+DELEGATION CLOSURE of its decision (five more modules, derived from source by
+AST in `tests/test_floor_closure.py`, not enumerated by hand); see
+:data:`FLOOR_GLOBS`. A module leaves the closure by leaving the gate path, not
+by being trusted.
+
 The one escape hatch is a reviewed edit to :data:`DEFAULT_ROLE_RULES` on the
 protected base, i.e. a plan amendment. That is intentional: see the
 `**/generated/**` note on :data:`DEFAULT_ROLE_RULES`.
@@ -552,10 +563,50 @@ _GLOB_METACHARACTERS = "*?[]"
 #: :func:`changed_paths_between`'s ``--no-renames``: each side of a move is its
 #: own path, and the old path is a floor hit, so a sanctioned move must edit
 #: this tuple on the protected base rather than happen silently.
+#:
+#: **The DELEGATION CLOSURE, 2026-08-09 (P4, second ruling).** Naming the two
+#: halves protected the file that CALLS the matcher and not the matcher. This
+#: module delegates every glob decision — including every floor decision — to
+#: ``risk.matches_any_glob``; the deny table delegates "is this a test file" to
+#: ``seal_verify.is_test_path``; :func:`check_branch` reads the base-pinned
+#: policy and every base blob the signature half compares through
+#: ``repo_config`` (and ``yaml_io``, which parses the pinned ``roles:``); and
+#: ``seal_verify`` imports ``mechanical_verify`` at MODULE level, so that body
+#: executes on the gate path and can rebind anything the gate is about to call.
+#: All five are on the floor for the same reason this module is. The closure is
+#: DERIVED by AST from this module's source in ``tests/test_floor_closure.py``
+#: rather than listed, so a delegation added later reddens instead of widening
+#: the trusted base in silence; a module leaves it by leaving the gate path.
+#:
+#: Two costs, recorded because they were accepted rather than avoided. Both
+#: sibling CRITICALs (``seal_verify.is_test_path``'s regex anchor bypass,
+#: ``risk.py``'s quoted-path escalation) are now inside the closure, so neither
+#: is fixable by a branch under review — each is a protected-base edit. And the
+#: floor went from three unusual basenames to eight including ``risk.py`` and
+#: ``yaml_io.py``: :func:`_floor_glob_named_by` matches by BASENAME, so
+#: declaring a path called ``risk.py`` anywhere is now refused at plan time
+#: while ``vendor/thirdparty/risk.py`` stays writable at diff time. That
+#: asymmetry runs in the safe direction — plan time strictly stricter than diff
+#: time, so it can only false-refuse — and the false refusal has a spelling
+#: that works (``vendor/**``).
 FLOOR_GLOBS: tuple[str, ...] = (
     "**/.dispatcher.yaml",
     "**/scripts/check_body_branch.sh",
     "**/src/claude_dispatcher/role_protocol.py",
+    # The delegation closure (D1 P4 ruling, 2026-08-09). FIVE SEPARATE STRINGS
+    # — do NOT compress them into `**/src/claude_dispatcher/{risk,seal_verify,
+    # repo_config,yaml_io,mechanical_verify}.py`. Measured under this module's
+    # own lens (`risk._glob_to_regex`): this engine has NO brace expansion, so
+    # that alternation is literal text and matches exactly one path — a file
+    # named `{risk,seal_verify,repo_config,yaml_io,mechanical_verify}.py` —
+    # covering none of the five modules. A floor written that way is a silent
+    # no-op that reads as protection, which is the one failure mode a floor may
+    # not have.
+    "**/src/claude_dispatcher/risk.py",
+    "**/src/claude_dispatcher/seal_verify.py",
+    "**/src/claude_dispatcher/repo_config.py",
+    "**/src/claude_dispatcher/yaml_io.py",
+    "**/src/claude_dispatcher/mechanical_verify.py",
 )
 
 #: What a floor violation prints, and deliberately NOT the violated role's own
@@ -569,7 +620,10 @@ FLOOR_GLOBS: tuple[str, ...] = (
 FLOOR_RATIONALE = (
     "this path is on the non-overridable floor (FLOOR_GLOBS): it is part of "
     "the machinery that decides every role's permissions — the policy file, "
-    "the module that implements the rules, or the entrypoint that runs them — "
+    "the module that implements the rules, the entrypoint that runs them, or "
+    "one of the modules that machinery delegates a decision to (the glob "
+    "matcher, the test-path matcher, the config and YAML readers it pins its "
+    "policy through, and anything they import at module level) — "
     "so no role may write it, not through the repo's `roles:` section, not "
     "through a per-task `immutable_paths:` or `disputed_paths:` declaration, "
     "and not by omitting `role:` and becoming legacy. A change here is a "
@@ -825,6 +879,23 @@ def _floor_glob_named_by(entry: str) -> str | None:
     The comparison runs through :func:`first_matching_glob`, so this function
     introduces no second glob translator (invariant 5): the declaration's
     basename is the pattern and the floor's basename is the probe.
+
+    **What the delegation closure did to this function (2026-08-09).** It reads
+    the WHOLE of :data:`FLOOR_GLOBS`, so the five closure globs arrived here
+    with no edit — which is the point ("one floor, one meaning"), and is sealed
+    rather than assumed in ``tests/test_floor_closure.py``. But the floor's
+    basenames are no longer unusual: comparing by basename means a declaration
+    of ``risk.py``, ``yaml_io.py`` or ``repo_config.py`` ANYWHERE is now refused
+    at plan time, including ``vendor/thirdparty/risk.py``, which the diff-time
+    half would let through because the floor globs are path-qualified. That
+    asymmetry is accepted, not overlooked: this half is deliberately narrower in
+    one direction and now stricter in another, and being stricter at plan time
+    is the safe direction — it can only false-refuse, never let a floor edit
+    land, and the false refusal has a spelling that works (``vendor/**``, whose
+    pure-wildcard tail is not a hit). Do not "fix" it by path-qualifying the
+    comparison; that would make this half read the declaration's DIRECTORY, and
+    "could this tree contain a floor path" is the question the paragraph above
+    exists to refuse.
     """
     candidate = entry.strip().rstrip("/")
     if not candidate:
