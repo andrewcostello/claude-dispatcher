@@ -2726,13 +2726,21 @@ def check_branch(
          roles get :data:`SignatureCheckStatus.NOT_APPLICABLE`. A changed path
          this module did not compare leaves the aggregate UNCHECKED_\\*, which
          on BODIES is UNDETERMINED (D1-inputs I5).
+      5b. for BODIES only, :func:`changed_paths_between` again — the path gate
+         ran against the revision step 3 read, and step 5 re-resolved
+         ``branch_ref`` for every blob. A branch that advanced in between is
+         UNDETERMINED rather than CLEAN in its own name (D1-inputs I3). No
+         other role reads anything after step 3, so no other role has the
+         window.
 
     Verdict: VIOLATION if any path violation or any signature change;
     UNDETERMINED on any :class:`RoleDiffError`, unreadable policy, missing
-    required ``spec``, empty diff, or a signature status of
-    UNCHECKED_\\* **when the role is BODIES** — an unchecked signature on the
-    role whose gate that is, is not a pass; CLEAN only when the diff was read,
-    was non-empty, produced no violation, and every applicable check ran.
+    required ``spec``, empty diff, a branch that moved mid-check, or a
+    signature status of UNCHECKED_\\* **when the role is BODIES** — an
+    unchecked signature on the role whose gate that is, is not a pass; CLEAN
+    only when the diff was read, was non-empty, still described the same
+    branch when the reads finished, produced no violation, and every
+    applicable check ran.
 
     LEGACY returns CLEAN when the diff read succeeded, was non-empty and
     touched no floor path: a pre-protocol task has no immutable paths, and this
@@ -2911,6 +2919,50 @@ def check_branch(
                 f"{base_ref}...{branch_ref}: {exc}",
                 policy_source=source,
                 checked_paths=changed,
+            )
+
+        # 5b. Time of check, time of use (D1-inputs I3). Step 3 resolved
+        #     `branch_ref` for the diff and step 5 resolved it again, once per
+        #     blob, and the orchestrator makes this call the instant the
+        #     implementer returns — while the implementer's own session still
+        #     holds the worktree. A branch that advanced in between got its
+        #     paths judged at the old commit and its blobs read at the new one,
+        #     so a branch that gutted its own seal in that window was told
+        #     CLEAN, in the name `feat/x`, on a path list that predated the
+        #     edit. The diff is re-read AFTER the last ref-dependent read and
+        #     the two lists must agree; a branch that moved is UNDETERMINED,
+        #     which is what "I do not know what I just judged" is worth.
+        #
+        #     BODIES only, because BODIES is the only role that reads anything
+        #     after the diff: for every other role `changed_paths_between` is
+        #     the single read and there is no window between it and itself.
+        #     Comparing the path LISTS rather than resolving the commit is
+        #     deliberate — the path list is the whole input to the path gate,
+        #     so it is the thing whose staleness can change a verdict, and
+        #     `git rev-parse` is a fourth read on the gate path that the seals
+        #     covering this module do not model.
+        try:
+            recheck = changed_paths_between(
+                repo_root, base_ref, branch_ref, run=run
+            )
+        except RoleDiffError as exc:
+            return _undetermined(
+                f"cannot re-read the branch diff {base_ref}...{branch_ref} to "
+                f"confirm it did not move mid-check: {exc}",
+                policy_source=source,
+                checked_paths=changed,
+            )
+        if recheck != changed:
+            return _undetermined(
+                f"{branch_ref} moved while it was being checked: the path gate "
+                f"judged {list(changed)!r} and the branch now reports "
+                f"{list(recheck)!r}. A verdict in the branch's NAME would be a "
+                "claim about a revision that no longer exists, and the paths "
+                "the gate never saw are exactly the ones a branch would move "
+                "to hide",
+                policy_source=source,
+                checked_paths=changed,
+                signature=signature,
             )
     elif role in (Role.SCAFFOLD, Role.SEALS, Role.ADJUDICATE):
         signature = _not_applicable_signature(role)
