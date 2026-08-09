@@ -694,7 +694,22 @@ def test_a_clean_branch_records_what_it_actually_checked() -> None:
         (Role.BODIES, "roles/reviewer.md", "**/roles/*.md"),
         # A seal author who may edit the implementation can make its own seal
         # pass — the definition of a vacuous seal.
-        (Role.SEALS, "src/claude_dispatcher/role_protocol.py", "**/src/**"),
+        #
+        # P4 ruling (2026-08-09), and the SAME class of amendment as the row
+        # below: this probe was `src/claude_dispatcher/role_protocol.py`. Once
+        # the gate library is on `FLOOR_GLOBS`, that path is covered by TWO
+        # protections — SEALS' `**/src/**` and the floor — and `_union_with_floor`
+        # makes the floor win per path, by design, so `matched_glob` becomes the
+        # floor glob. Exactly the 2026-08-07 finding recorded two lines down: the
+        # fixture, not the table and not the matcher, is the defect, because a
+        # doubly-covered probe cannot distinguish the protection its row names.
+        # Retargeted to `src/claude_dispatcher/plan.py`, where `**/src/**` is the
+        # SOLE cover under SEALS (measured: no other SEALS glob and no floor glob
+        # matches it), so this row can again only be satisfied by the glob it
+        # names. The property is unchanged and so is the point it makes — a seal
+        # author editing the implementation — and `plan.py` is the unit's
+        # established ordinary-source probe.
+        (Role.SEALS, "src/claude_dispatcher/plan.py", "**/src/**"),
         # P4 ruling (2026-08-07). This row was `Role.SEALS` and expected
         # `**/reviewer_prompts/**`; the gate answered `**/src/**`, which is
         # correct under the FIRST-match contract because SEALS denies `**/src/**`
