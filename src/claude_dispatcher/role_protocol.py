@@ -561,10 +561,36 @@ _GLOB_METACHARACTERS = "*?[]"
 #: :func:`changed_paths_between`'s ``--no-renames``: each side of a move is its
 #: own path, and the old path is a floor hit, so a sanctioned move must edit
 #: this tuple on the protected base rather than happen silently.
+#:
+#: **The gate's THIRD artifact, 2026-08-09 (D2 P4): the Go signature helper.**
+#: The signature half of this gate stopped being pure Python the moment a
+#: language needed a toolchain. `src/claude_dispatcher/go_signature_fingerprint/`
+#: is a program that decides what a Go signature IS, and its answer is what
+#: `compare_signatures` compares — so a bodies branch that rewrote it to emit an
+#: empty symbol list would have every Go file in its diff report as unchanged
+#: and would walk through the signature gate it had just switched off. That is
+#: the 2026-08-08 measurement (`FLOOR_GLOBS = ()` appended to the branch's own
+#: `role_protocol.py`, told `CLEAN … against the 0-glob floor`) one file to the
+#: left, and the same reasoning that put the library and the entrypoint here
+#: applies to it unchanged: an artifact whose output the verdict is computed
+#: from is part of the machinery, not part of the work.
+#:
+#: A DIRECTORY glob, not a file glob, and the whole subtree: the helper is a Go
+#: module, so its `go.mod` chooses the language version the parse is done
+#: against and any future file under it is a parser input. A floor that covered
+#: `main.go` alone would leave the rest of the program writable, which protects
+#: the shape of the helper and not its behaviour — the struct-tag lesson at
+#: :class:`GoSignatureFingerprinter`, applied to the gate's own source.
+#:
+#: It is deliberately NOT enrolled yet (:data:`GO_SUPPORT` is in
+#: :data:`PENDING_COMPARATORS`), and the floor entry lands FIRST on purpose: a
+#: floor that arrives with enrolment is a floor that was absent for every commit
+#: that built the thing it protects.
 FLOOR_GLOBS: tuple[str, ...] = (
     "**/.dispatcher.yaml",
     "**/scripts/check_body_branch.sh",
     "**/src/claude_dispatcher/role_protocol.py",
+    "**/src/claude_dispatcher/go_signature_fingerprint/**",
 )
 
 #: What a floor violation prints, and deliberately NOT the violated role's own
@@ -577,8 +603,9 @@ FLOOR_GLOBS: tuple[str, ...] = (
 #: not come from.
 FLOOR_RATIONALE = (
     "this path is on the non-overridable floor (FLOOR_GLOBS): it is part of "
-    "the machinery that decides every role's permissions — the policy file, "
-    "the module that implements the rules, or the entrypoint that runs them — "
+    "the machinery that decides every role's permissions or that computes the "
+    "verdict — the policy file, the module that implements the rules, the "
+    "entrypoint that runs them, or a comparator the verdict is derived from — "
     "so no role may write it, not through the repo's `roles:` section, not "
     "through a per-task `immutable_paths:` or `disputed_paths:` declaration, "
     "and not by omitting `role:` and becoming legacy. A change here is a "

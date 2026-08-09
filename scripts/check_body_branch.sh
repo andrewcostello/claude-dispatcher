@@ -120,6 +120,31 @@ _dispatcher_src="$(dirname -- "${_script_dir}")/src"
 # rules — under which rewriting the gate is itself a floor violation
 # (`FLOOR_GLOBS`), reported as such, rather than a mystery.
 #
+# WHAT "THE GATE'S CODE" MEANS SINCE D2, AND WHY NO CODE CHANGED HERE. The gate
+# grew a third artifact when the signature half acquired a toolchain:
+# `src/claude_dispatcher/go_signature_fingerprint/`, a Go program whose output IS
+# what `compare_signatures` compares. A branch that rewrote it to report no
+# symbols would have every Go file in its diff read as unchanged and would walk
+# through the signature gate it had just switched off — the 2026-08-08
+# measurement, one file to the left.
+#
+# It is already read from `<base>` by the block below, and that is MEASURED (P4,
+# 2026-08-09: a self-judging checkout whose branch replaced `main.go` was run
+# with a `$PYTHON` that dumps what it was handed, and it was handed the BASE's
+# bytes). Nothing was added, because nothing needs to be: the helper lives under
+# `${_src_rel}`, and the read below is a whole-subtree `ls-tree -r` of that
+# prefix, not a list of named files. The one named file is the existence check
+# further down, which stays pointed at `role_protocol.py` deliberately — a base
+# that predates D2 legitimately carries no helper, Go is not enrolled, and
+# demanding one would refuse honest runs against an older base.
+#
+# So the property is TRUE BY LOCATION, which is exactly why it is sealed rather
+# than left as a comment: move the helper out from under `${_src_rel}` — to
+# `tools/`, the placement D2 explicitly considered and rejected — and it silently
+# stops travelling, the branch's copy runs, and nothing here says a word. See
+# `test_the_go_helper_is_read_from_the_base_not_from_the_branch` in
+# `tests/test_role_protocol_provenance.py`.
+#
 # WHY THE ANCHOR HOLDS. `<base>` is a ref, and a commit on the branch cannot
 # move a ref it is not on; CI fetches the base from the remote. An attacker who
 # can move the protected base can merge anything anyway. Note what is NOT
