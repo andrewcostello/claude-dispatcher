@@ -32,7 +32,12 @@ where = ["src"]
 # gpa-wave1 verifier_unavailable on verifier_prompts/, then gpa-wave1b
 # cross_family_panel_error on reviewer_prompts/). tests/test_packaging.py
 # walks the source tree and fails on any non-.py asset this glob misses.
-claude_dispatcher = ["*_prompts/*.md"]
+# The Go signature helper (unit D2) is a non-.py asset under the package for
+# the same reason: the gate judges branches in OTHER repositories, so the
+# helper must travel with the dispatcher rather than be read out of the tree
+# under judgement. An install that drops it is
+# ComparatorFault.HELPER_MISSING — a named, blocking state, never "no Go here".
+claude_dispatcher = ["*_prompts/*.md", "go_signature_fingerprint/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

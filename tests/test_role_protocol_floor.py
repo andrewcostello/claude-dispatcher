@@ -93,16 +93,25 @@ table below (`_FLOOR_ROWS`, `_FLOOR_x_ROLE_ROWS`, `_SPELLING_ROWS`,
 `_DECLARATIONS_THAT_NAME_THE_FLOOR`) is written out literally, and the live
 constant is checked AGAINST the written list, never derived from it.
 
-P4, 2026-08-09 (second ruling) — one row in this file is RED on purpose
------------------------------------------------------------------------
-Every seal here was green before this edit and forty-six of the forty-seven
-still are. `test_every_floor_glob_the_ruling_wrote_out_is_in_the_constant` is
-new and RED: `_FLOOR_ROWS` now writes out the five delegation-closure globs
-that `tests/test_floor_closure.py` requires, and `FLOOR_GLOBS` does not carry
-them yet. It goes green on exactly the P3 edit that turns that file's 62 rows
-green — appending the five strings written out below, verbatim, and nothing
-else. Its second job outlives that edit: it states the floor's membership as
-DATA in the deletion direction, which no row here did.
+P4, 2026-08-09 (second ruling) — one row in this file was RED on purpose
+------------------------------------------------------------------------
+`test_every_floor_glob_the_ruling_wrote_out_is_in_the_constant` was written
+RED: `_FLOOR_ROWS` wrote out the five delegation-closure globs that
+`tests/test_floor_closure.py` requires and `FLOOR_GLOBS` did not carry them
+yet. It went green on exactly the P3 edit that turned that file's 62 rows green
+— appending the five strings written out below, verbatim, and nothing else. Its
+second job outlives that edit: it states the floor's membership as DATA in the
+deletion direction, which no row here did.
+
+P4, 2026-08-09 (floor integration) — two rulings, one floor
+------------------------------------------------------------
+That ruling and unit D2's Go-signature-helper ruling extended this file in
+parallel from the same three-glob base, and both raised the SAME length bound
+from 6. The union is nine globs and twenty rows; the reasoning for each half is
+recorded on `_FLOOR_ROWS`, and the one place the two rulings genuinely disagree
+— whether the floor's plan-time half is now strictly stricter than its
+diff-time half, which holds for the eight file globs and not for the Go subtree
+— is recorded there too rather than left for a keep-both merge to bury.
 """
 
 from __future__ import annotations
@@ -307,6 +316,53 @@ def _spec(role: Role, *disputed: str) -> TaskRoleSpec:
 #: both halves). A second copy here would be two notions of one fact, which is
 #: invariant 5's failure mode, and the two copies would drift.
 #:
+#: **TWO RULINGS, ONE FLOOR (P4 adjudication, 2026-08-09).** What follows is
+#: the union of two P4 rulings that extended this table in parallel, each from
+#: the same three-glob base: unit D2's Go signature helper and unit D1's
+#: delegation closure. They do not conflict on any string — they add disjoint
+#: globs for the same reason — but they cannot be appended textually, because
+#: each renumbered the point list above and each raised the length bound on the
+#: seal below to a value that describes its own half and not the union. Both
+#: are recorded below under one continuous numbering, and the bound is set once,
+#: for the union, at the seal itself.
+#:
+#: **THE GATE'S THIRD ARTIFACT — the Go signature helper (P4 ruling, 2026-08-09,
+#: unit D2). P3: use this string, or escalate — do not edit this table.**
+#:
+#:     **/src/claude_dispatcher/go_signature_fingerprint/**
+#:
+#: The same standing before the same two constraints, decided the same way:
+#:
+#:   4. PATH-QUALIFIED, not basename-only. `**/go_signature_fingerprint/**`
+#:      would permanently forbid every directory that ever acquires that name
+#:      anywhere in the tree — a vendored copy, a fixture holding a deliberately
+#:      broken helper for a seal to point at, a second implementation under
+#:      `tools/` — with nothing able to buy any of them back, because a floor
+#:      has no override. Measured 2026-08-09 under the module's own glob lens:
+#:      the path-qualified spelling matches `src/claude_dispatcher/
+#:      go_signature_fingerprint/main.go`, its `go.mod`, a nested
+#:      `internal/deep/x.go` under it, and the vendored
+#:      `sub/project/...` layout — and does NOT match
+#:      `tools/go_signature_fingerprint/main.go` or
+#:      `vendor/go_signature_fingerprint/main.go`, which is precisely the
+#:      difference the basename spelling would erase.
+#:   5. The trailing `/**` is a SUBTREE, and that is the ruling rather than a
+#:      typing convenience. The helper is a Go module: `go.mod` fixes the
+#:      language version the parse runs under, so it is a parser input as much
+#:      as `main.go` is, and any file a later unit adds beside them is too. A
+#:      floor naming `.../go_signature_fingerprint/main.go` would protect the
+#:      file while leaving the module that configures it writable — the same
+#:      shape as protecting `role_protocol.py` and leaving `.dispatcher.yaml`
+#:      open, which is the hole S2/S3 closed.
+#:
+#: Because `_FLOOR_ROWS` is a set difference against `FLOOR_GLOBS`, this
+#: spelling is BINDING on P3: a glob P3 writes that is not this exact string
+#: reddens `test_the_floor_is_exactly_the_written_out_set_of_globs`, and P3 may
+#: not amend a seal. The probes below are files UNDER the directory, never the
+#: directory itself — git reports files, and `**` matches no path component at
+#: the bare directory (measured: `.../go_signature_fingerprint` alone does not
+#: match). A probe naming the bare directory would be a row that can never fire.
+#:
 #: **P4, 2026-08-09 (second ruling) — the DELEGATION CLOSURE joins the floor,
 #: and this table fixes its spelling too.** `tests/test_floor_closure.py` seals,
 #: in 62 red rows, that the floor delegates every floor decision to five
@@ -322,7 +378,7 @@ def _spec(role: Role, *disputed: str) -> TaskRoleSpec:
 #: **P3: use these five strings verbatim, or escalate — do not edit this
 #: table.**
 #:
-#:   4. Same path-qualified reasoning as points 1-3, and it now carries more
+#:   6. Same path-qualified reasoning as points 1-3, and it now carries more
 #:      weight, not less: the floor previously named three UNUSUAL basenames
 #:      (`.dispatcher.yaml`, `check_body_branch.sh`, `role_protocol.py`) and now
 #:      names eight, including `risk.py`, `repo_config.py` and `yaml_io.py` —
@@ -332,18 +388,34 @@ def _spec(role: Role, *disputed: str) -> TaskRoleSpec:
 #:      while `**/src/claude_dispatcher/risk.py` covers the real path and the
 #:      vendored `sub/project/...` layout and neither of those two. All five
 #:      globs measured the same way.
-#:   5. FIVE SEPARATE STRINGS, not one brace alternation. Measured: this glob
+#:   7. FIVE SEPARATE STRINGS, not one brace alternation. Measured: this glob
 #:      engine has NO brace expansion —
 #:      `**/src/claude_dispatcher/{risk,seal_verify,...}.py` matches exactly one
 #:      path, the one literally named `{risk,seal_verify,...}.py`, and covers
 #:      none of the five modules. A floor written that way is a silent no-op,
 #:      which is the one failure mode a floor may not have.
-#:   6. Measured joint satisfiability, 2026-08-09, in a `.git`-less `cp -a`
+#:   8. Measured joint satisfiability, 2026-08-09, in a `.git`-less `cp -a`
 #:      clone with a fresh repo: appending exactly these five strings to
 #:      `FLOOR_GLOBS` and changing NOTHING else turns all 62 `test_floor_
 #:      closure.py` rows green and leaves the rest of the suite untouched —
 #:      1663 passed, 13 skipped, and the single remaining failure is the seal
 #:      below, which is exactly the coordination P3 may not perform.
+#:
+#: Point 6's arithmetic is stated for the closure ruling's own half and is
+#: still right under the union, for a reason worth writing down: the union puts
+#: NINE globs on the floor, and eight of them — every one but the Go subtree —
+#: contribute a basename. `_floor_glob_named_by` probes each floor glob's LAST
+#: SEGMENT, and the Go entry's last segment is `**`, which only a pure-wildcard
+#: declaration could name and which that function refuses by design. Measured
+#: 2026-08-09 against the merged tuple: `go_signature_fingerprint`, `main.go`,
+#: `go.mod` and the full `src/claude_dispatcher/go_signature_fingerprint/
+#: main.go` all return None. The Go glob is therefore the one floor glob that
+#: is DIFF-TIME ONLY: the other eight are refused at plan time as well, and
+#: `_floor_violations` — the enforcement point — reads the whole tuple, so the
+#: floor is not weaker for it. Recorded because the two rulings disagree here
+#: without either being wrong, and a textual merge would have left the closure
+#: ruling's "plan time strictly stricter than diff time" reading as if it held
+#: across a floor it does not describe.
 _FLOOR_ROWS: tuple[tuple[str, str], ...] = (
     ("**/.dispatcher.yaml", ".dispatcher.yaml"),
     ("**/.dispatcher.yaml", "sub/project/.dispatcher.yaml"),
@@ -360,6 +432,32 @@ _FLOOR_ROWS: tuple[tuple[str, str], ...] = (
         "**/src/claude_dispatcher/role_protocol.py",
         "sub/project/src/claude_dispatcher/role_protocol.py",
     ),
+    # The gate's third artifact (D2 P4 ruling). Four rows, not two: the glob is
+    # a SUBTREE, and the extra pair is what makes the subtree half of the
+    # ruling falsifiable rather than decorative.
+    (
+        "**/src/claude_dispatcher/go_signature_fingerprint/**",
+        "src/claude_dispatcher/go_signature_fingerprint/main.go",
+    ),
+    (
+        "**/src/claude_dispatcher/go_signature_fingerprint/**",
+        "sub/project/src/claude_dispatcher/go_signature_fingerprint/main.go",
+    ),
+    # The subtree half of the ruling, as its own rows rather than as prose: a
+    # spelling that named `main.go` alone would leave the module definition and
+    # anything nested writable, and these two are the only rows that would
+    # catch it.
+    (
+        "**/src/claude_dispatcher/go_signature_fingerprint/**",
+        "src/claude_dispatcher/go_signature_fingerprint/go.mod",
+    ),
+    (
+        "**/src/claude_dispatcher/go_signature_fingerprint/**",
+        "src/claude_dispatcher/go_signature_fingerprint/internal/parse/decl.go",
+    ),
+    # The delegation closure (D1 P4 ruling). Five globs, two probes each — the
+    # real path and the nested `sub/project/...` layout — same as every glob
+    # above.
     (
         "**/src/claude_dispatcher/risk.py",
         "src/claude_dispatcher/risk.py",
@@ -426,14 +524,42 @@ def test_the_floor_is_exactly_the_written_out_set_of_globs() -> None:
     row still reddens something even when the matching constant entry is deleted
     with it, which is the 18-of-28 failure mode this table exists to avoid.
 
+    P4, 2026-08-09 (unit D2): a THIRD gate artifact, the Go signature helper,
+    with four rows. Four and not two because this glob is a SUBTREE, and the
+    extra two rows are what makes the subtree half of the ruling falsifiable
+    rather than decorative. Measured, both ways:
+
+      * narrow ONLY `FLOOR_GLOBS` to `.../go_signature_fingerprint/main.go` and
+        the set-difference above fires first, naming the unsealed glob;
+      * narrow the constant AND this table together — the edit someone
+        "tidying" both would make — and the set difference is satisfied, so the
+        NON-VACUITY LOOP is the only thing left: the `go.mod` row goes red
+        because it no longer matches. Without that row the narrowing lands
+        silently and the module definition that fixes the Go language version
+        the parse runs under becomes writable by the branch being parsed.
+
     P4, 2026-08-09 (second ruling): the five delegation-closure globs joined
-    `_FLOOR_ROWS` and the bound moved 6 -> 16. This seal stays GREEN across that
-    edit, because it only runs `FLOOR_GLOBS - written`; the other direction is
+    `_FLOOR_ROWS`, two rows each. This seal stays GREEN across that edit,
+    because it only runs `FLOOR_GLOBS - written`; the other direction is
     now its own row, `test_every_floor_glob_the_ruling_wrote_out_is_in_the
     _constant`, added in the same edit and RED until P3 lands the five globs.
     Two rows rather than one compound row on purpose: this direction must stay
     independently observable — a compound row already red for a MISSING glob
     could not also report an UNSEALED one.
+
+    **The BOUND is the adjudicator's, not either ruling's (P4, 2026-08-09).**
+    Both rulings raised it from 6 against the same base — D2 to 10 for its four
+    rows, the closure ruling to 16 for its ten — and both numbers are wrong for
+    the union, which carries 6 + 4 + 10 = TWENTY rows. Keeping both assertions,
+    as a keep-both merge does, is strictly worse than keeping either: the
+    binding bound is the LOOSER one, so the table would sit at twenty while the
+    seal accepted ten, and deleting the entire delegation closure from this file
+    would have passed it. There is therefore exactly ONE bound below, set to the
+    union at 20, and the redundant assertion is deleted rather than left as
+    documentation. The bound's whole job is that DELETING a written row reddens
+    something even when the matching constant entry is deleted with it — the
+    18-of-28 failure mode — and a bound looser than the table does not do that
+    job for the rows between the two numbers.
     """
     written = {glob for glob, _probe in _FLOOR_ROWS}
     unsealed = sorted(set(FLOOR_GLOBS) - written)
@@ -449,12 +575,12 @@ def test_the_floor_is_exactly_the_written_out_set_of_globs() -> None:
             f"{probe!r} does not match floor glob {glob!r} — the probe, not "
             "the floor, is wrong"
         )
-    assert len(_FLOOR_ROWS) >= 16, _FLOOR_ROWS
+    assert len(_FLOOR_ROWS) >= 20, _FLOOR_ROWS
 
 
 def test_every_floor_glob_the_ruling_wrote_out_is_in_the_constant() -> None:
     """The OTHER direction of the same set difference. P4, 2026-08-09 (second
-    ruling), closing what M9 found. RED TODAY, five globs missing.
+    ruling), closing what M9 found. GREEN as of the floor-integration merge.
 
     M9 reported that deleting `**/src/claude_dispatcher/role_protocol.py` from
     `FLOOR_GLOBS` is caught only by `test_role_protocol_provenance.py` and by
@@ -472,7 +598,7 @@ def test_every_floor_glob_the_ruling_wrote_out_is_in_the_constant() -> None:
     nobody remembered would be deletable in silence.
 
     This row is structural instead: it fires for every glob in `_FLOOR_ROWS`,
-    the eight there now and every one written later, with no per-glob row to
+    the nine there now and every one written later, with no per-glob row to
     remember. A floor's membership is data; the file that owns it states it as
     data, in both directions, and does not borrow the answer from a behavioural
     probe in another file that a later narrowing could take away.
@@ -483,23 +609,30 @@ def test_every_floor_glob_the_ruling_wrote_out_is_in_the_constant() -> None:
     globs a ruling requires and the code does not have is the ruling, visible;
     the alternative was silence.
 
-    Red now (measured 2026-08-09): the five delegation-closure globs are in
-    `_FLOOR_ROWS` and not in `FLOOR_GLOBS`.
-    Green when: `FLOOR_GLOBS` carries every glob written out above — the same
-    P3 edit that turns `tests/test_floor_closure.py` green.
-    Falsify (measured, in a clone with the five globs added): delete any one
-    glob from `FLOOR_GLOBS` — this reddens naming it. Measured for
-    `**/scripts/check_body_branch.sh` and `**/src/claude_dispatcher/
-    role_protocol.py`; in both runs this row is one of exactly two rows in this
-    file that redden, and it is the only one that reddens on the CONSTANT
-    rather than on a declaration the deleted glob happened to have a probe for.
+    Was red when written (2026-08-09): the five delegation-closure globs were
+    in `_FLOOR_ROWS` and not in `FLOOR_GLOBS`. It went green on the P3 edit
+    that landed them, exactly as specified — and the floor-integration merge
+    that unioned this ruling with unit D2's added a ninth glob without touching
+    the seal, which is the "no per-glob row to remember" property doing its job.
+    Green when: `FLOOR_GLOBS` carries every glob written out above.
+    Falsify (measured, in a clone): delete any one glob from `FLOOR_GLOBS` —
+    this reddens naming it. Measured for `**/scripts/check_body_branch.sh` and
+    `**/src/claude_dispatcher/role_protocol.py`; in both runs this row is one of
+    exactly two rows in this file that redden, and it is the only one that
+    reddens on the CONSTANT rather than on a declaration the deleted glob
+    happened to have a probe for.
     """
     written = {glob for glob, _probe in _FLOOR_ROWS}
     # Non-vacuity: an emptied `_FLOOR_ROWS` would make the difference below
     # trivially empty. The sibling seal bounds the ROW count; this one bounds
     # the distinct-GLOB count, because that is what it consumes.
-    assert len(written) >= 8, (
-        f"_FLOOR_ROWS no longer writes out eight distinct floor globs, so this "
+    #
+    # 8 -> 9 at the floor-integration merge, for the same reason the row bound
+    # moved: this ruling counted its own eight and unit D2's Go subtree glob
+    # makes nine. A distinct-glob bound left at 8 would let the whole Go entry —
+    # constant, rows and all — be deleted with this seal still green.
+    assert len(written) >= 9, (
+        f"_FLOOR_ROWS no longer writes out nine distinct floor globs, so this "
         f"seal is measuring a shrunken table rather than the floor: {written}"
     )
     missing = sorted(written - set(FLOOR_GLOBS))

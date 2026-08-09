@@ -620,7 +620,36 @@ def test_an_unchecked_comparison_is_named_never_reported_as_unchanged(
         assert path in result.detail, "the unchecked path must be reportable"
 
 
-def test_every_signature_check_status_is_reachable() -> None:
+def _faulting_support(
+    fault: role_protocol.ComparatorFault | None = None,
+) -> role_protocol.LanguageSupport:
+    """A registry row whose comparator EXISTS and cannot run.
+
+    The seam by which a `ComparatorFault` is reachable without a Go toolchain
+    and without `GoSignatureFingerprinter` being implemented. Deliberately a
+    real `LanguageSupport` in the real registry rather than a patch of
+    `signature_status_for_fault`: the state has to be produced by the gate
+    doing its job, and patching the mapping under test would be the vacuity
+    this file's header warns about.
+    """
+    fault = fault or role_protocol.ComparatorFault.TOOLCHAIN_MISSING
+
+    class _Unavailable:
+        def fingerprints(self, path: str, text: str) -> dict[str, str]:
+            raise role_protocol.ComparatorUnavailable(
+                fault, f"probe: no toolchain for {path}"
+            )
+
+    return role_protocol.LanguageSupport(
+        language=role_protocol.Language.GO,
+        extensions=(".go",),
+        fingerprinter=_Unavailable(),
+    )
+
+
+def test_every_signature_check_status_is_reachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Closed set 4 of 4, sealed by PRODUCTION rather than by enumeration: a
     status nothing can produce is a state the gate cannot report.
 
@@ -628,7 +657,7 @@ def test_every_signature_check_status_is_reachable() -> None:
     place it can be), so this seal spans both functions.
 
     Red now: both functions raise NotImplementedError.
-    Green when: all five statuses are produced.
+    Green when: all six statuses are produced.
 
     AMENDED by P4 on 2026-08-09, and by P4 only, because this seal pins
     `SignatureCheckStatus` by VALUE-SET EQUALITY: adding a member reddens it,
@@ -646,11 +675,42 @@ def test_every_signature_check_status_is_reachable() -> None:
     no Python in it — not by naming it, so a member the code cannot reach still
     fails here. The two ways this could have been weakened were `>=` on the
     value set and `produced.add(SignatureCheckStatus.<new>)`; neither was used.
+
+    AMENDED AGAIN by P4 on 2026-08-09 for the SIXTH member,
+    UNCHECKED_COMPARATOR_UNAVAILABLE (unit D2). The member and its ruling are at
+    `SignatureCheckStatus` and `signature_status_for_fault`; the rank, the
+    blocking classification and the fail-open it closes are sealed in
+    `tests/test_role_protocol_faults.py`. This seal owns one question only —
+    can the gate REACH the state — and the amendment answers it the same way
+    the fifth did:
+
+      * the written value set gains exactly one literal and stays an EQUALITY,
+        so a seventh member reddens this exactly as the sixth did. Not `>=`,
+        not `issubset`, not derived from the enum;
+      * the member reaches `produced` through `check_branch` — the whole gate,
+        on a BODIES diff, with a real fault raised by a real fingerprinter
+        through the real registry — and NOT through `produced.add(...)` and NOT
+        through a direct call to `signature_status_for_fault`, either of which
+        would prove only that the member is spelled correctly. Falsify it:
+        make `_comparator_unavailable_comparison` return
+        UNCHECKED_UNPARSEABLE and this goes red on the final equality, with the
+        sixth member unproduced.
+
+    The registry is monkeypatched rather than the seal waiting for a real Go
+    toolchain, because the fault must be reachable on a machine that HAS `go`
+    just as much as on one that does not — a seal that produced this state by
+    the runner lacking a binary would be green for the wrong reason on half the
+    fleet and would silently stop testing anything the day CI installed Go. The
+    patched row is Go's own extension, so the seal is indifferent to whether
+    `GO_SUPPORT` is enrolled: before enrolment it supplies the row, after
+    enrolment it overrides it, and either way the fingerprinter that raises is
+    the one this seal wrote.
     """
     assert {s.value for s in SignatureCheckStatus} == {
         "checked",
         "unchecked_unsupported_language",
         "unchecked_unparseable",
+        "unchecked_comparator_unavailable",
         "unchecked_no_supported_file",
         "not_applicable",
     }
@@ -682,6 +742,25 @@ def test_every_signature_check_status_is_reachable() -> None:
     )
     assert unreadable.signature is not None
     produced.add(unreadable.signature.status)
+
+    # The sixth: a comparator that EXISTS and could not run. Produced through
+    # the whole gate, like every other row here, rather than named.
+    monkeypatch.setattr(
+        role_protocol, "COMPARATORS", (_faulting_support(),), raising=True
+    )
+    faulted = check_branch(
+        "/x",
+        "main",
+        "feat/x",
+        Role.BODIES,
+        policy=built_in_policy(),
+        run=_run_stub(
+            changed=["cmd/x/main.go"],
+            blobs={"main:cmd/x/main.go": "package m\n"},
+        ),
+    )
+    assert faulted.signature is not None
+    produced.add(faulted.signature.status)
 
     assert produced == set(SignatureCheckStatus)
 
