@@ -6,6 +6,15 @@ docstrings remain the contract; where a 2026-08-04 operator ruling overrode
 one, the ruling is named at that spot. See "Wiring, and what is enforced
 today" for the call sites that exist and the ones that do not.**
 
+**Unit D2 (P1 scaffold, in progress) adds the comparator registry: the section
+headed "Unit D2 — the comparator registry" and everything it names. Its
+contents are contracts, not behaviour, with two exceptions stated at their
+definitions (:func:`validate_registry`, :func:`support_for_path`) and one move
+(the Python comparator, now behind :class:`SignatureFingerprinter`, unchanged).
+Read that section's header before adding a language: the signature half of this
+gate protects zero files in the target repo today, and the registry's existence
+is not coverage.**
+
 Why this module exists
 ----------------------
 `docs/plans/2026-08-03-classification-gating-implementation-plan.md` §2a
@@ -185,7 +194,7 @@ import sys
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Callable, Mapping, Protocol, Sequence
 
 if TYPE_CHECKING:  # `plan` imports this module at its own call site (P3), so a
     # module-level import here would be a cycle. plan.load_tasks must import
@@ -2292,6 +2301,953 @@ def _is_test_path(path: str) -> bool:
     return seal_verify_mod.is_test_path(path)
 
 
+# --------------------------------------------------------------------------- #
+# Unit D2 — the comparator registry
+#
+# **P1 SCAFFOLD. Contracts only.** Everything in this section is a typed
+# signature plus a normative docstring; the bodies that are present are either
+# (a) the existing Python comparator MOVED behind the new interface, unchanged
+# in behaviour, or (b) one of the two small pure helpers a seal must import to
+# express itself, named as such at their definitions
+# (:func:`validate_registry`, :func:`support_for_path`). Everything Go-side
+# raises ``NotImplementedError``.
+#
+# WHY A REGISTRY AND NOT AN ``elif``
+# ----------------------------------
+# The signature half of this gate protects **zero files in the target repo**:
+# `compare_signatures` dispatched on ``endswith(".py")`` and evenplay-mono holds
+# 2,288 Go files, 996 TS/TSX, 781 SQL, 316 Java and 0 Python. The next target
+# (awevana) is 231 Go / 75 TS / 8 Python. Both target families are
+# Go-then-TypeScript, so a per-language ``elif`` chain in
+# :func:`compare_signatures` would be the two-copies problem returning by
+# another door: the language rule was DELIBERATELY collapsed to exactly one
+# spelling on 2026-08-09 (one ``endswith`` in the whole module, proved by a
+# mutation that moves 41 rows), and an ``elif`` chain re-scatters it.
+#
+# HOW THE ONE-SPELLING PROPERTY IS PRESERVED
+# ------------------------------------------
+# Two questions, one answer site each, and no third site may ask either:
+#
+#   * **"what language is this path?"** — :func:`support_for_path`, reading
+#     :data:`COMPARATORS` and nothing else. The ``".py"`` literal moved OUT of
+#     :func:`_supported_language_refusal` and INTO the Python row's
+#     ``extensions``; that function now calls this one. There is still exactly
+#     one place in this module where a file extension decides anything.
+#   * **"who can read that language?"** — the row's ``fingerprinter``. Adding
+#     TypeScript is one new row in :data:`COMPARATORS` plus one class; no
+#     dispatch site changes, because there is no dispatch site to change —
+#     :func:`compare_signatures` asks the registry and calls what it is handed.
+#
+# The registry is a TABLE, not a chain. A mutation that deletes a row removes
+# a language's coverage and can be measured; a mutation that adds one cannot
+# quietly widen what the gate claims, because :func:`validate_registry` runs at
+# import and :func:`enrolled_languages` is the public, sealable answer to "what
+# does this build actually cover today".
+#
+# WHAT THIS REGISTRY DOES **NOT** COVER, STATED SO ITS EXISTENCE IMPLIES NOTHING
+# -----------------------------------------------------------------------------
+# SQL (781 files in the target repo) and Java (316) are real contract surface —
+# a changed column type or a changed method signature is a contract change in
+# exactly the sense §2a means — and this unit does not read either. Neither does
+# it read TypeScript (996). Those extensions appear in NO table here, on
+# purpose: a "languages we know about but cannot read" table would be a second
+# place answering "what language is this path", which is the property this
+# section exists to protect. They are reported the way every unreadable file has
+# been reported since the 2026-08-09 ruling — by PATH, in
+# :attr:`SignatureComparison.unsupported_paths` and in the verdict's own detail
+# — so a diff containing them says which files nobody opened, without this
+# module having to hold an opinion about what SQL is.
+#
+# The consequence, written down rather than left to be discovered: on a diff of
+# nothing but SQL and Java, the BODIES verdict is CLEAN
+# (UNCHECKED_NO_SUPPORTED_FILE) and no signature was compared. That is the
+# 2026-08-09 ruling applied to languages the ruling did not name, and it is the
+# correct application of it — but it is coverage this gate does not have, and
+# nobody should read the existence of a registry as coverage.
+#
+# NOTES FOR THE SEAL AUTHOR (P2)
+# ------------------------------
+# The docstrings in this section are the specification; where one is vague, say
+# so and get a ruling rather than guessing — the last three units each had a
+# seal author derive a ruling from prose and a P4 adjudicate the guess.
+# Specifically:
+#
+#   * **The one-spelling property is sealable and should be sealed.** There is
+#     exactly one ``endswith`` over a file extension in this module and it is in
+#     :func:`support_for_path`. A seal that greps this module's source for a
+#     second extension literal is legitimate and precedented (the provenance
+#     seals already read source). The stronger seal is behavioural: monkeypatch
+#     :data:`COMPARATORS` to a registry with a fake language and assert that
+#     :func:`compare_signatures`, :func:`_supported_language_refusal` and
+#     :func:`check_branch` ALL change their answer — a second copy of the rule
+#     somewhere else shows up as one of the three not moving.
+#   * **The vacuity trap here is a registry seal that asserts on the table.**
+#     ``COMPARATORS == (PYTHON_SUPPORT,)`` proves nothing about dispatch. Assert
+#     through :func:`support_for_path` and through
+#     :func:`compare_signatures`, and include a row for a language NOT in the
+#     table (``.sql``, ``.java``) that asserts the refusal names the path.
+#   * **What counts as a change** is unchanged by this unit and is stated once,
+#     in :func:`compare_signatures`: added symbol → not a change; removed →
+#     change with ``after`` None; differing fingerprint → change; comment or
+#     docstring edit → not a change; reformat → not a change. A language row
+#     may not re-decide any of those, and a seal that pins them should pin them
+#     against the DRIVER, not against a fingerprinter.
+#   * **What counts as honest body work** on the Go side, so the seal author
+#     does not have to infer it: adding a top-level declaration, editing any
+#     function body, editing doc comments, renaming a receiver variable,
+#     reformatting. NOT honest: changing a struct tag, adding or reordering a
+#     struct field, renaming a parameter, changing a named result to unnamed,
+#     making a variadic non-variadic, changing a type alias to a definition.
+#     See :class:`GoSignatureFingerprinter`, which rules each of those and says
+#     why the receiver-name exception is the one place Go does not follow
+#     Python.
+#   * **Which states are terminal.** None of the UNDETERMINED signature states
+#     is terminal for a branch: unparseable → fix the source; a fault → fix the
+#     environment; unsupported-language-in-a-mixed-diff → write the comparator
+#     (or split the branch). UNCHECKED_NO_SUPPORTED_FILE is the only state
+#     nothing a branch can commit will change, which is precisely why the
+#     2026-08-09 ruling made it CLEAN. The full status → verdict table is in
+#     :func:`check_branch`.
+#   * **Seals written against faults will be RED until a P4 commit exists** —
+#     :func:`signature_status_for_fault` names a status member that P1 may not
+#     create. Write them anyway and say so in the docstring, as this project's
+#     seals already do ("Red now: the member does not exist"); a seal deferred
+#     until the member lands is a seal written by the author of the code.
+# --------------------------------------------------------------------------- #
+
+
+class Language(Enum):
+    """A language this gate has, or is being given, a signature comparator for.
+
+    A closed set, and deliberately SMALL: membership here is a claim that the
+    repo intends to read the language, not that it can today. What it can read
+    today is :func:`enrolled_languages`, which is derived from
+    :data:`COMPARATORS` and cannot disagree with the dispatch.
+
+    SQL, Java and TypeScript are absent. See this section's header: naming them
+    here would create a second table that answers a language question, and the
+    honest report of an unread SQL file is its PATH in
+    :attr:`SignatureComparison.unsupported_paths`, not a language label.
+    """
+
+    PYTHON = "python"
+    GO = "go"
+
+
+class ComparatorFault(Enum):
+    """Why a comparator that EXISTS could not run. A closed, exhaustive set.
+
+    The gate acquires a **toolchain dependency** with the Go comparator: a
+    subprocess, a ``go`` binary, a helper program, a JSON document. Every way
+    that can fail is named here, and none of them resolves to a silent CLEAN.
+
+    **A fault is not an unsupported language, and the difference is the whole
+    reason this enum exists.** A language nobody can read is a permanent fact
+    about the gate; a missing binary is a fact about the machine the gate ran
+    on. Conflating them is not a naming preference — it is a live fail-open:
+    after the 2026-08-09 ruling a diff whose every path is *unsupported* is
+    promoted to :attr:`SignatureCheckStatus.UNCHECKED_NO_SUPPORTED_FILE` and
+    the branch is **CLEAN**. So a Go-only branch built in a CI image with no
+    ``go`` on PATH would, under the conflated reading, be handed a clean bill of
+    health by the broken image — every Go branch, silently, for as long as the
+    image stayed broken. Faults therefore map to their own status and NEVER
+    into ``unsupported_paths``; see :func:`signature_status_for_fault`.
+
+    A fault is also not an unparseable source file. Unparseable Go is
+    :class:`SourceUnparseable`: the gate opened the file, read it, and the file
+    is bad. The remediation differs (fix the branch vs fix the environment) and
+    so does the party who can act.
+
+    TOOLCHAIN_MISSING
+        The external program the comparator needs (``go``) is not on PATH.
+    TOOLCHAIN_UNUSABLE
+        It is on PATH and did not answer: a version probe that fails or exits
+        non-zero, a version older than the helper's language version, a
+        ``GOCACHE``/``HOME`` the process cannot write. On PATH is not the same
+        as working, and a gate that assumes it is fails open the first time a
+        container drops ``$HOME``.
+    HELPER_MISSING
+        The helper program's source is not where
+        :func:`go_helper_source_dir` looked. An install that dropped the
+        non-Python asset (the failure mode ``tests/test_packaging.py`` exists
+        for, hit live twice on 2026-07-13) must not read as "no Go here".
+    HELPER_FAILED
+        The helper ran and exited non-zero: a compile error, a panic, a write
+        to stderr with no document on stdout.
+    HELPER_TIMEOUT
+        The helper exceeded :data:`_HELPER_TIMEOUT_SECONDS`. A gate that hangs
+        is a gate that is not enforcing anything, and CI would report the hang
+        as infrastructure rather than as an unchecked branch — the same
+        reasoning as :data:`_GIT_TIMEOUT_SECONDS`.
+    HELPER_OUTPUT_INVALID
+        The helper exited 0 and stdout is not a well-formed response document
+        of the expected schema: not JSON, the wrong ``schema`` string, a missing
+        field, a duplicate symbol key. **Including an EMPTY document** where a
+        symbol list was expected — "the helper returned no symbols" and "the
+        helper returned nothing" must not be the same answer, because the first
+        clears a branch and the second is a broken helper clearing every branch.
+        The schema string is checked rather than assumed: a helper from a
+        different version of this protocol is a fault, not a best-effort read.
+    """
+
+    TOOLCHAIN_MISSING = "toolchain_missing"
+    TOOLCHAIN_UNUSABLE = "toolchain_unusable"
+    HELPER_MISSING = "helper_missing"
+    HELPER_FAILED = "helper_failed"
+    HELPER_TIMEOUT = "helper_timeout"
+    HELPER_OUTPUT_INVALID = "helper_output_invalid"
+
+
+class ComparatorError(Exception):
+    """Base for the two things a fingerprinter may raise.
+
+    Deliberately NOT a subclass of :class:`RoleDiffError`. ``RoleDiffError`` is
+    caught in four places on the gate path and mapped to UNDETERMINED with a
+    message about git; a comparator failure that inherited it would be swept
+    into those handlers and reported as a diff-read failure, losing both the
+    fault and the path. Two different failures with one name is invariant 5's
+    shape.
+    """
+
+
+class SourceUnparseable(ComparatorError):
+    """One revision of one file is not valid source in its own language.
+
+    A fact about the FILE. The comparator opened it, read it, and the text is
+    not parseable; ``path`` and ``message`` say which and why.
+    :func:`compare_signatures` maps this to
+    :attr:`SignatureCheckStatus.UNCHECKED_UNPARSEABLE` and — as it already does
+    for Python — leaves ``unsupported_paths`` EMPTY: that file was read, not
+    skipped, and naming it as unread would send a reader off to write a
+    comparator that already exists.
+    """
+
+    def __init__(self, path: str, message: str) -> None:
+        super().__init__(f"{path}: {message}")
+        self.path = path
+        self.message = message
+
+
+class ComparatorUnavailable(ComparatorError):
+    """A comparator that exists could not run. Carries the named fault.
+
+    A fact about the ENVIRONMENT, never about the file or the language. See
+    :class:`ComparatorFault` for why that distinction is load-bearing and not
+    cosmetic.
+    """
+
+    def __init__(self, fault: ComparatorFault, message: str) -> None:
+        super().__init__(f"{fault.value}: {message}")
+        self.fault = fault
+        self.message = message
+
+
+#: How long the Go helper may take for ONE file revision. Mirrors
+#: :data:`_GIT_TIMEOUT_SECONDS` and exists for the same reason: a gate that
+#: hangs enforces nothing, and the hang must surface as
+#: :attr:`ComparatorFault.HELPER_TIMEOUT` — a named, blocking state — rather
+#: than as a CI job somebody cancels.
+_HELPER_TIMEOUT_SECONDS = 30
+
+
+def signature_status_for_fault(fault: ComparatorFault) -> SignatureCheckStatus:
+    """The ONE mapping from a comparator fault to a reportable status.
+
+    Normative table. Every member of :class:`ComparatorFault` maps to:
+
+      ``SignatureCheckStatus.UNCHECKED_COMPARATOR_UNAVAILABLE``
+
+    — a status that **does not exist yet**, and cannot be added by P1. See "The
+    P4 amendment this unit requires" below. There is no second row: every fault
+    in that enum is an environment fault, they share a verdict and they share a
+    remediation (fix the machine, not the branch), so splitting them across
+    statuses would put a distinction in the status that the FAULT already
+    carries. The fault travels in the detail; the status carries the verdict.
+
+    **Totality.** A :class:`ComparatorFault` member with no row here raises
+    rather than returning a default. A fault that fell out of the bottom into
+    ``UNCHECKED_UNSUPPORTED_LANGUAGE`` would be promoted to
+    UNCHECKED_NO_SUPPORTED_FILE on a Go-only diff and clear the branch — the
+    broken-CI-image fail-open in one line. There is no permissive default here
+    and there must never be one.
+
+    **The BODIES verdict.** UNCHECKED_COMPARATOR_UNAVAILABLE is BLOCKING: it
+    belongs in both :data:`_UNCHECKED_SIGNATURE_STATUSES` (the comparison did
+    not run) and :data:`_BODIES_BLOCKING_SIGNATURE_STATUSES` (and the branch is
+    therefore not cleared) ⇒ :attr:`DiffVerdict.UNDETERMINED` on BODIES,
+    ignored on every other role, which has no signature duty. It must NOT be
+    promotable to UNCHECKED_NO_SUPPORTED_FILE, which is what makes it different
+    from an unsupported language in the only way that shows up in a verdict.
+
+    **The bookkeeping that makes the non-promotion true**, because it is not
+    automatic — :func:`_compare_branch_signatures` promotes when it examined
+    NOTHING and skipped at least one path for its language. A path whose
+    comparator exists and faulted counts as **examined**: the gate tried to read
+    it. So a Go-only diff on a machine with no ``go`` has ``examined == 1``, no
+    promotion, and UNDETERMINED. The same path contributes NOTHING to
+    ``unsupported_paths``, so the two mechanisms agree: it was not skipped for
+    its language and it is not reported as such.
+
+    **The P4 amendment this unit requires, flagged and NOT made here.** Adding
+    the member reddens ``test_every_signature_check_status_is_reachable``
+    (``tests/test_role_protocol_diff.py``), which pins
+    :class:`SignatureCheckStatus` by VALUE-SET EQUALITY — deliberately, so that
+    a sixth member cannot land without a ruling, exactly as the fifth could not.
+    P1 may not amend a seal and P3 may not either. So this function is a
+    contract with no body: the member, the amendment (a sixth literal in the
+    written value set plus a PRODUCING call that reaches the new state — never
+    ``produced.add(...)``, never ``>=`` on the set) and this body land in ONE
+    P4-authored commit, or none of them do.
+
+    Until then no fault is reachable: the only fingerprinter that can raise one
+    is :class:`GoSignatureFingerprinter`, which is not implemented and not
+    enrolled. The ``NotImplementedError`` is therefore dead code today and a
+    hard error the moment it is not — which is the correct failure for "this
+    build cannot even name what just happened".
+    """
+    raise NotImplementedError(
+        "signature_status_for_fault: SignatureCheckStatus has no member for a "
+        f"comparator fault ({fault.value}). Adding "
+        "UNCHECKED_COMPARATOR_UNAVAILABLE requires the P4 amendment to "
+        "test_every_signature_check_status_is_reachable described in this "
+        "function's contract; a fault must never fall back to an existing "
+        "member, because UNCHECKED_UNSUPPORTED_LANGUAGE is promoted to CLEAN "
+        "on a diff this gate can read nothing in"
+    )
+
+
+class SignatureFingerprinter(Protocol):
+    """One language's answer to "what are this file's declared signatures?".
+
+    The ONLY thing a language contributes. Everything else about the comparison
+    — what counts as a change, what an added symbol means, what a removed one
+    means, how a deletion is reported — is language-independent, lives once in
+    :func:`compare_signatures`, and is NOT re-decided per language. That split
+    is deliberate: a registry of whole comparators would let the Go entry
+    quietly rule that an added symbol is a violation, or that a removed one is
+    not, and the two languages' answers to the same protocol question would
+    drift. A registry of fingerprinters cannot.
+
+    ``fingerprints`` returns ``{qualified symbol: fingerprint string}`` for ONE
+    revision of ONE file, in **declaration order** (dicts preserve it, and
+    :func:`_scaffolded_signatures` already relies on that so a report reads
+    top-to-bottom). The strings are opaque to everything above: they are
+    compared for equality and printed, never parsed. Two revisions that mean
+    the same thing must fingerprint identically — that is what makes a reformat
+    not a change — and two revisions that differ in the contract must not.
+
+    Raises :class:`SourceUnparseable` when the text is not valid source, and
+    :class:`ComparatorUnavailable` when the comparator itself could not run.
+    It must raise ONE of those rather than return an empty mapping for either:
+    an empty mapping is a legitimate answer ("this file declares nothing"), and
+    a comparator that answers it for a failure hands the caller a CHECKED
+    comparison with no changes — a pass bought by having read nothing, which is
+    the exact defect class this protocol exists to close.
+
+    Must be a pure function of ``(path, text)`` in the sense that matters:
+    same inputs, same fingerprints, whatever else is on the machine. ``path``
+    is passed for MESSAGES and for language-dialect decisions a suffix implies;
+    a fingerprinter must not read the file off disk — at the revisions this gate
+    compares, the file is not on disk at all (see :func:`file_text_at`, which
+    reads blobs out of git's object store).
+    """
+
+    def fingerprints(self, path: str, text: str) -> dict[str, str]:
+        ...
+
+
+@dataclass(frozen=True)
+class LanguageSupport:
+    """One row of the comparator registry: a language, its extensions, its
+    reader.
+
+    ``extensions`` is **the** spelling of what that language's files look like
+    — lowercase, dot-prefixed, matched as a case-sensitive suffix by
+    :func:`support_for_path` (which is exactly what ``endswith(".py")`` did, so
+    the move changes no behaviour). Case sensitivity is inherited rather than
+    chosen: ``FOO.PY`` was unsupported before this unit and still is. It is a
+    known gap, not a decision, and neither target repo contains one.
+
+    ``fingerprinter`` is the row's reader. One row per language, one reader per
+    row: :func:`validate_registry` refuses a registry where two rows claim the
+    same language or the same extension, because "who can read Go" having two
+    answers is how a mutation deletes coverage without deleting a row.
+    """
+
+    language: Language
+    extensions: tuple[str, ...]
+    fingerprinter: SignatureFingerprinter
+
+
+class PythonSignatureFingerprinter:
+    """Python, moved behind the interface unchanged.
+
+    The definition of a Python signature is :func:`compare_signatures`'
+    contract and :func:`_scaffolded_signatures`' implementation, both
+    pre-existing and both untouched by this unit. This class is the adapter: it
+    translates ``ast``'s two refusals into :class:`SourceUnparseable` so the
+    driver above it never handles a language-specific exception type.
+
+    That translation is the whole of the change, and it is why the Python side
+    is a moved body rather than a scaffold: a language the registry cannot
+    already serve would make the registry's first entry unexercised, and an
+    unexercised interface is a guess about what the second entry needs.
+    """
+
+    def fingerprints(self, path: str, text: str) -> dict[str, str]:
+        """:func:`_scaffolded_signatures`, with ``ast``'s refusals renamed."""
+        try:
+            return _scaffolded_signatures(text)
+        except SyntaxError as exc:
+            raise SourceUnparseable(path, f"python: {exc}") from exc
+        except ValueError as exc:  # null bytes and similar ast.parse refusals
+            raise SourceUnparseable(path, f"python: {exc}") from exc
+
+
+# --------------------------------------------------------------------------- #
+# Go — the second entry, contract only
+# --------------------------------------------------------------------------- #
+
+#: The helper's protocol version, on every request and every response. Checked
+#: rather than assumed: a helper source that a branch, an install or a partial
+#: upgrade left at a different version is :attr:`ComparatorFault.
+#: HELPER_OUTPUT_INVALID`, never a best-effort read of whatever came back.
+#: Bump it whenever the fingerprint GRAMMAR changes, because a fingerprint is
+#: compared for equality across two invocations of the helper and a grammar
+#: change would otherwise read as every symbol having changed.
+GO_HELPER_SCHEMA = "claude-dispatcher/go-signature-fingerprint/v1"
+
+#: Where the helper's source lives, relative to this package. Inside
+#: ``src/claude_dispatcher/`` and NOT in ``tools/`` for one reason: the gate
+#: judges branches in OTHER repositories (evenplay-mono, awevana), so the helper
+#: must travel with the dispatcher, not with the tree under judgement — a helper
+#: read out of the judged repo would be supplied by the branch it is judging.
+#: It is a non-``.py`` asset under the package, so ``pyproject.toml`` must ship
+#: it (``tests/test_packaging.py`` is the seal, and the failure it exists for —
+#: a pipx install missing an asset — is precisely
+#: :attr:`ComparatorFault.HELPER_MISSING`).
+GO_HELPER_PACKAGE_DIR = "go_signature_fingerprint"
+
+
+@dataclass(frozen=True)
+class GoHelperRequest:
+    """What the Python side sends the helper: ONE revision of ONE file.
+
+    Serialised as a single JSON object on the helper's **stdin**, which is then
+    closed. Source travels as TEXT, never as a filename: the revisions this
+    gate compares are a merge-base blob and a branch blob, and neither is on
+    disk. A helper that took a path would force the caller to materialise
+    temporary files and would make the comparison depend on the working tree —
+    the working tree being exactly what the branch controls.
+
+    One file per invocation, not a batch. A batch would be faster and would
+    make one bad file's fault ambiguous across the set; per-file keeps
+    "which file" answerable, and the timeout per-file rather than per-diff.
+    """
+
+    schema: str
+    path: str
+    source: str
+
+
+@dataclass(frozen=True)
+class GoHelperSymbol:
+    """One declared symbol and its fingerprint, as the helper reports it.
+
+    ``symbol`` is the qualified key :func:`compare_signatures` matches across
+    revisions; ``fingerprint`` is the opaque string it compares. ``kind`` is
+    reportage only — ``"func"``, ``"method"``, ``"type"``, ``"interface_method"``
+    — and is never part of the comparison: a symbol that changed kind changed
+    its fingerprint too, and a second comparison surface is a second thing to
+    keep in agreement.
+    """
+
+    symbol: str
+    fingerprint: str
+    kind: str
+
+
+@dataclass(frozen=True)
+class GoHelperResponse:
+    """What the helper writes to **stdout**: exactly one JSON object, always.
+
+    Exit status and document are two different channels and mean two different
+    things:
+
+      * **exit 0** ⇒ stdout holds a valid response document. That includes the
+        document reporting a PARSE ERROR: unparseable Go is a successful run of
+        the helper and a fact about the file
+        (:class:`SourceUnparseable` ⇒ UNCHECKED_UNPARSEABLE), not a helper
+        malfunction.
+      * **non-zero** ⇒ :attr:`ComparatorFault.HELPER_FAILED`, whatever is on
+        stdout. Diagnostics go to stderr and are folded into the fault message;
+        stdout is never partially parsed on a non-zero exit.
+
+    ``parse_error`` and ``symbols`` are mutually exclusive: a document carrying
+    both, or neither, is :attr:`ComparatorFault.HELPER_OUTPUT_INVALID`. So is a
+    document whose ``schema`` is not :data:`GO_HELPER_SCHEMA`, or whose
+    ``symbols`` repeat a key. ``symbols`` may be empty **only** when the file
+    genuinely declares nothing; the helper distinguishes that from "I produced
+    no output" by always emitting the object, which is why an empty stdout is a
+    fault and an empty ``symbols`` list is an answer.
+
+    Order is DECLARATION order, as the Python side's is, so a report reads
+    top-to-bottom and two runs of the helper over identical text produce
+    identical documents. Determinism is part of the contract: a map iteration
+    that reorders symbols would make every diff look like a change.
+    """
+
+    schema: str
+    symbols: tuple[GoHelperSymbol, ...] = ()
+    parse_error: str | None = None
+
+
+def encode_go_helper_request(path: str, source: str) -> str:
+    """The JSON document for one file revision, ready for the helper's stdin.
+
+    Contract: a single JSON object with exactly the fields of
+    :class:`GoHelperRequest`, ``schema`` set to :data:`GO_HELPER_SCHEMA`, UTF-8,
+    no trailing newline required. ``source`` is passed through verbatim —
+    including a BOM, CRLF line endings, or invalid UTF-8 the git read already
+    accepted — because normalising here would make the Python and Go sides
+    disagree about what the file says.
+    """
+    raise NotImplementedError("D2 P3: encode the helper request")
+
+
+def decode_go_helper_response(stdout: str) -> GoHelperResponse:
+    """Parse the helper's stdout, or raise the named fault.
+
+    Raises :class:`ComparatorUnavailable` with
+    :attr:`ComparatorFault.HELPER_OUTPUT_INVALID` for every way the document
+    can be wrong — not JSON, not an object, wrong or missing ``schema``, empty
+    string, missing fields, wrong types, both ``symbols`` and ``parse_error``,
+    neither, duplicate symbol keys. Every one of those is a fault and not a
+    partial result: a response this function half-understood would produce a
+    fingerprint set missing a symbol, and a MISSING symbol is reported by
+    :func:`compare_signatures` as a REMOVED one — a bad parse would manufacture
+    violations, and a bad parse that dropped everything would manufacture a
+    pass.
+
+    Does **not** decide anything about the comparison: a document carrying
+    ``parse_error`` is returned intact, and it is
+    :meth:`GoSignatureFingerprinter.fingerprints` that turns it into
+    :class:`SourceUnparseable`. One place per decision.
+    """
+    raise NotImplementedError("D2 P3: decode and validate the helper response")
+
+
+def go_helper_source_dir() -> Path:
+    """Where this build's Go helper source is, or the named fault.
+
+    Resolves :data:`GO_HELPER_PACKAGE_DIR` **relative to this package** —
+    ``Path(__file__).parent`` — never relative to ``repo_root`` and never
+    relative to the CWD. The gate's normal job is judging a branch in another
+    repository; resolving the helper against that repository would let the
+    branch under judgement supply the program that judges it, which is the
+    defect ``scripts/check_body_branch.sh`` closes for this module and must not
+    be reopened for the helper.
+
+    Raises :class:`ComparatorUnavailable` with
+    :attr:`ComparatorFault.HELPER_MISSING` when the directory or its entry
+    point is absent — an install that dropped the asset, which
+    ``tests/test_packaging.py`` exists to prevent and which has happened twice
+    live. Absence is a fault, never "no Go support here": the second reading
+    would turn a broken wheel into a clean bill of health for every Go branch.
+
+    **The self-judgement hole, flagged for P4 and NOT closed here.** When this
+    repository judges ITSELF (the shape CI has, and the shape
+    ``scripts/check_body_branch.sh`` already handles for the module and the
+    policy), the helper source IS in the tree under judgement, and
+    :data:`FLOOR_GLOBS` does not cover it. A bodies branch could rewrite the
+    helper to emit an empty symbol list for every file and walk through the
+    signature gate it just neutered — the 2026-08-08 measurement, one file to
+    the left. Two things are required and neither is P1's to do:
+
+      * :data:`FLOOR_GLOBS` must grow
+        ``**/src/claude_dispatcher/go_signature_fingerprint/**``. That reddens
+        ``test_the_floor_is_exactly_the_written_out_set_of_globs``
+        (``tests/test_role_protocol_floor.py``), whose ``_FLOOR_ROWS`` table P4
+        already ruled that P3 **may not edit** — so the glob and its literal
+        rows are one P4 commit, like the module's own two globs were.
+      * ``scripts/check_body_branch.sh`` must read the helper out of
+        ``<base>``'s object store in the self-judging case, by the same rule it
+        already applies to this module: "when its own ``src/`` lies inside the
+        checkout under judgement, the branch supplied the library".
+
+    Until both hold, :data:`GO_SUPPORT` must not be enrolled. Coverage a branch
+    can switch off is not coverage, and enrolling first would trade a gate that
+    protects zero Go files for one that appears to protect 2,288.
+    """
+    raise NotImplementedError("D2 P3: resolve the packaged helper source")
+
+
+class GoSignatureFingerprinter:
+    """Go signatures, via ``go/ast`` in a helper program. Contract only.
+
+    **One parser, not two.** The fingerprints come from a small Go program
+    built on ``go/ast``, never from a Go parser written in Python. A second
+    parser would be a second definition of what a Go signature is, and the two
+    would drift the first time the language gained syntax — generics being the
+    worked example: a hand-rolled Python reader written before 1.18 would have
+    silently dropped every type parameter, and dropping a type parameter is a
+    contract change reported as no change.
+
+    WHAT A GO SIGNATURE IS
+    ----------------------
+    By analogy with the Python contract in :func:`compare_signatures`, whose
+    docstring is the model. Read off the FILE's top level and off type
+    declarations only; function bodies are never descended into, so a helper a
+    body agent defines inside a function is invisible here — which is the point.
+
+    Symbol keys, in declaration order:
+
+      * a top-level ``func`` → ``Name``
+      * a method → ``Recv.Name``, where ``Recv`` is the receiver's base type
+        name with any ``*`` and any type arguments stripped (``func (s *Svc[T])
+        Do()`` → ``Svc.Do``). Pointer-ness is in the FINGERPRINT, not the key,
+        so changing a value receiver to a pointer receiver is a change to a
+        symbol rather than the removal of one and the addition of another.
+      * a type declaration → ``Name``
+      * an interface method → ``Iface.Method``
+
+    Fingerprints, all rendered from the AST through ``go/printer`` so gofmt-able
+    differences, comments and redundant parens are not changes:
+
+      * ``func``/method: the keyword, the receiver (pointer-ness and base type
+        with its type parameters), the name, the type parameter list (name and
+        constraint), the parameter list (name, type, and ``...`` variadic
+        marker) and the result list (names when named, types always).
+      * ``struct`` type: the type parameter list, then every field in
+        DECLARATION ORDER — name, type, **struct tag verbatim**, and whether
+        the field is embedded.
+      * ``interface`` type: the type parameter list, its embedded interfaces,
+        and its method NAMES. The method signatures are not repeated here
+        because each is its own ``Iface.Method`` symbol; repeating them would
+        report one change twice. This mirrors the Python side, whose class
+        fingerprint carries fields while methods are separate symbols.
+      * any other type declaration: whether it is an alias (``type A = B``) or a
+        definition (``type A B``) — the ``=`` is semantic, not spelling — and
+        the right-hand type expression.
+
+    **Struct tags are part of the fingerprint, and this is not a detail.** A
+    changed ``json:"amount"`` is a wire-contract change: it silently rewrites
+    every payload the type serialises and every payload it accepts, with no
+    compile error anywhere. It is the single most consequential edit a body
+    agent can make to a Go type without touching a function signature, and a
+    comparator that ignored tags would protect the shape of the contract while
+    leaving its meaning writable. Tags are compared as the raw literal
+    including quoting, because a tag is a string the runtime parses and the gate
+    is not in the business of deciding which of two spellings a reflection
+    library agrees with.
+
+    IN SCOPE, INCLUDING UNEXPORTED
+    ------------------------------
+    **Every top-level declaration, exported or not**, and **every struct field,
+    exported or not, in declaration order.** Both are parity decisions with the
+    Python side and both are deliberate:
+
+      * ``_scaffolded_signatures`` collects underscore-prefixed module symbols,
+        so P2 can seal a private helper and P3 may not then change it. Go's
+        equivalent is real and common: an in-package ``_test.go`` seal binds to
+        unexported identifiers, so an unexported func IS sealable contract, and
+        an export-only comparator would leave every one of those seals
+        unenforced.
+      * ``_class_fingerprint`` carries every annotated class field in order,
+        with the explicit rationale that "frozen dataclass fields ARE the
+        contract in this codebase, so a reordered or retyped field is a
+        signature change". A Go struct is the same object. So inserting a field
+        into a scaffolded struct — even an unexported one — IS a change here.
+
+    That second one is the strictest thing in this contract and the seal author
+    should treat it as ruled, not as an accident: **adding a field to a
+    scaffolded struct is a signature change, adding a top-level declaration is
+    not.** The asymmetry is inherited whole from Python, where an added symbol
+    is explicitly allowed ("a body may add private helpers") and an added class
+    field is explicitly not. A body agent that needs new state puts it in a new
+    type, or gets a P4 ruling.
+
+    DELIBERATELY EXCLUDED, each with its reason
+    -------------------------------------------
+      * **Function bodies, and anything declared inside one.** Body work is the
+        thing this gate exists to permit.
+      * **Doc comments and any other comment.** Parity: "a docstring edit → not
+        a change; the docstring is P1's contract and P3 may extend it, and an
+        over-strict rule here would make honest work fail."
+      * **The receiver's variable NAME** (``func (s *Svc)`` ≡ ``func (svc
+        *Svc)``). The one place this contract does NOT take parity with Python,
+        which fingerprints ``self`` like any other parameter. The reason is that
+        the analogy breaks: Python's ``self`` is a real entry in the parameter
+        list and an unbound call can pass it positionally, so it is callable
+        surface; a Go receiver cannot be named at any call site, does not
+        participate in interface satisfaction, and is scoped to the body — it is
+        the closest thing Go has to a local variable. Parameter names, by
+        contrast, ARE fingerprinted: they are the scaffold's declared shape and
+        they appear in godoc, and the Python side fingerprints them.
+      * **Package-level ``const`` and ``var``.** Parity: the Python comparator
+        reads ``def`` and ``class`` and ignores module-level assignments. This
+        is a known gap and worth naming as one — an exported ``const
+        MaxRetries`` is real API — but closing it on the Go side alone would
+        make the two languages mean different things by "signature", and this
+        unit's whole subject is two definitions of one thing drifting.
+      * **Imports and import aliases as declarations.** But note the
+        consequence, which is a real false positive: type expressions are
+        compared AS WRITTEN, so renaming an import alias rewrites every
+        ``pkg.T`` that mentions it and every one of those reads as a change.
+        Python has the identical property (annotations are compared as
+        ``ast.unparse`` source, so a renamed import changes them all). Same
+        class of noise, same remedy — it is visible, it names the symbols, and
+        it is a VIOLATION rather than a silent pass.
+      * **Type identity and resolution.** The helper parses one file with
+        ``go/parser``, without ``go/types`` and without the rest of the package,
+        so ``T`` and ``mypkg.T`` are different fingerprints even when they
+        denote the same type, and a type alias is not followed. Syntactic, like
+        the Python side, and for the same reason: resolution needs a buildable
+        package, and the revisions being compared are two blobs out of git that
+        may not build in isolation.
+      * **Build constraints.** ``//go:build`` lines are comments; a file
+        excluded from the current platform is fingerprinted like any other. That
+        is the conservative answer — the gate reads what the branch wrote, not
+        what one GOOS would compile.
+      * **``//go:generate`` output and vendored trees.** No special case. If
+        they must be exempt, that is the path gate's job
+        (:data:`DEFAULT_ROLE_RULES` already denies ``**/generated/**``), not the
+        comparator's — one notion of "which paths are protected", in the table
+        that owns it.
+
+    FAILURE
+    -------
+    Raises :class:`SourceUnparseable` when the helper reports a parse error, and
+    :class:`ComparatorUnavailable` carrying the named :class:`ComparatorFault`
+    for every environment failure. It may return an empty mapping ONLY for a
+    file that genuinely declares nothing (``package main`` and no more); it may
+    never return one to signal a failure. See
+    :func:`signature_status_for_fault` for what each of those is worth to the
+    BODIES verdict.
+
+    Not implemented, and not enrolled: see :data:`GO_SUPPORT`.
+    """
+
+    def fingerprints(self, path: str, text: str) -> dict[str, str]:
+        """One revision of one Go file → symbol → fingerprint.
+
+        The steps, so the seal author knows which fault belongs to which:
+        probe the toolchain (:attr:`ComparatorFault.TOOLCHAIN_MISSING`,
+        :attr:`ComparatorFault.TOOLCHAIN_UNUSABLE`), resolve the helper
+        (:attr:`ComparatorFault.HELPER_MISSING` — :func:`go_helper_source_dir`),
+        run it with :func:`encode_go_helper_request` on stdin under
+        :data:`_HELPER_TIMEOUT_SECONDS`
+        (:attr:`ComparatorFault.HELPER_TIMEOUT`,
+        :attr:`ComparatorFault.HELPER_FAILED`), decode stdout
+        (:attr:`ComparatorFault.HELPER_OUTPUT_INVALID` —
+        :func:`decode_go_helper_response`), and finally turn a
+        ``parse_error`` document into :class:`SourceUnparseable`.
+
+        Every one of those is terminal for this file: there is no retry, no
+        fallback comparator and no degraded mode. A fallback is how a gate ends
+        up reporting a pass it did not earn.
+        """
+        raise NotImplementedError("D2 P3: fingerprint Go via the go/ast helper")
+
+
+#: Python's row, and the whole of what this gate reads today.
+PYTHON_SUPPORT = LanguageSupport(
+    language=Language.PYTHON,
+    extensions=(".py",),
+    fingerprinter=PythonSignatureFingerprinter(),
+)
+
+#: Go's row, complete and **deliberately not enrolled** — it is not in
+#: :data:`COMPARATORS`, so :func:`support_for_path` never returns it and a
+#: ``.go`` path is answered exactly as it was before this unit
+#: (UNCHECKED_UNSUPPORTED_LANGUAGE, promoted to UNCHECKED_NO_SUPPORTED_FILE on a
+#: diff with nothing else in it, CLEAN on BODIES).
+#:
+#: Enrolment is ONE edit — adding this row to :data:`COMPARATORS` — and it may
+#: not happen until all four of these hold. They are listed as a checklist
+#: because three of them are somebody else's commit:
+#:
+#:   1. :class:`GoSignatureFingerprinter` is implemented (P3).
+#:   2. ``SignatureCheckStatus.UNCHECKED_COMPARATOR_UNAVAILABLE`` exists and is
+#:      in both status sets, with the seal amendment that lets it exist (P4 —
+#:      see :func:`signature_status_for_fault`). Enrolling first would make a
+#:      missing ``go`` binary raise ``NotImplementedError`` out of
+#:      :func:`check_branch`, which is documented never to raise.
+#:   3. :data:`FLOOR_GLOBS` covers the helper source and
+#:      ``scripts/check_body_branch.sh`` reads it from the protected base (P4 —
+#:      see :func:`go_helper_source_dir`).
+#:   4. The SEVEN seals that pin Go as unreadable are amended by P4, because
+#:      enrolment reddens every one of them and P3 may not touch a seal. In
+#:      ``tests/test_role_protocol_diff.py``:
+#:      ``test_an_unchecked_comparison_is_named_never_reported_as_unchanged``
+#:      (its ``cmd/classify/main.go`` row) and
+#:      ``test_every_signature_check_status_is_reachable`` (its ``m.go`` probe
+#:      and its Go-only BODIES probe — the latter is how the fifth status is
+#:      PRODUCED, so it needs a replacement language, not a deletion). In
+#:      ``tests/test_role_protocol_inputs.py``:
+#:      ``test_a_bodies_diff_this_gate_cannot_read_is_clean_and_names_what_it_missed``,
+#:      ``test_cannot_read_this_language_and_no_duty_here_stay_two_different_states``,
+#:      ``test_the_paths_named_unread_are_the_skipped_ones_not_the_whole_diff``,
+#:      ``test_the_per_file_comparator_names_the_file_it_could_not_read`` and
+#:      ``test_the_ci_face_clears_a_go_only_branch_and_names_the_file_it_could_not_read``.
+#:      Those seals are CORRECT today and state the ruled behaviour; what
+#:      changes underneath them is which languages are unreadable, so each needs
+#:      its Go probe REPLACED by one in a language this gate still cannot read —
+#:      SQL and Java are the honest choices, 1,097 files in the target repo and
+#:      no comparator planned — never deleted. A seal deleted because the fact
+#:      it rested on moved is a seal the next unit does not have.
+#:
+#: The row exists now, unenrolled, rather than being written by P3, because the
+#: extension belongs in the table that owns extensions and because a reader can
+#: check what this build covers by reading one place. :func:`validate_registry`
+#: checks the pending rows against the enrolled ones, so a pending row cannot
+#: collide with a live one and cannot be enrolled twice.
+GO_SUPPORT = LanguageSupport(
+    language=Language.GO,
+    extensions=(".go",),
+    fingerprinter=GoSignatureFingerprinter(),
+)
+
+#: **THE registry.** The one table that says what this gate can read, and the
+#: only input to :func:`support_for_path`. Adding a language is adding a row;
+#: no dispatch site changes, because there is no dispatch site.
+COMPARATORS: tuple[LanguageSupport, ...] = (PYTHON_SUPPORT,)
+
+#: Rows that are written but not live. Nothing dispatches on this tuple — it
+#: exists so that "scaffolded but not enrolled" is a NAMED state with a
+#: mechanism (`skills/explicit-state.md`: absence is a state and must be
+#: nameable) rather than a row someone forgot, and so
+#: :func:`validate_registry` can refuse a pending row that collides with a live
+#: one before anybody tries to enrol it.
+PENDING_COMPARATORS: tuple[LanguageSupport, ...] = (GO_SUPPORT,)
+
+
+def validate_registry(
+    enrolled: Sequence[LanguageSupport],
+    pending: Sequence[LanguageSupport] = (),
+) -> None:
+    """Refuse a registry that could give one language two answers. Pure.
+
+    One of the two small helpers this scaffold implements rather than stubs
+    (the other is :func:`support_for_path`), because a seal cannot express
+    "the registry is well formed" without calling it, and because it runs at
+    import over a literal: it either always passes or always fails, and a
+    failure is visible on the first test collection rather than on the first Go
+    branch.
+
+    Raises :class:`RoleProtocolError` when, across ``enrolled`` and ``pending``
+    together:
+
+      * a :class:`Language` appears in more than one row — two readers for one
+        language is the drift this unit removes;
+      * an extension appears in more than one row, or one extension is a SUFFIX
+        of another (``.go`` and ``.cgo`` would both match ``x.cgo``). Suffix
+        matching is what :func:`support_for_path` does, so an ambiguity there is
+        a silent first-row-wins and the second language quietly loses coverage;
+      * an extension is empty, does not start with ``.``, or is not lowercase —
+        matching is a case-sensitive suffix, so an uppercase entry would match
+        nothing and read as coverage that does not exist;
+      * a row's ``extensions`` is empty — a language nothing can select;
+      * a row does not satisfy :class:`SignatureFingerprinter`.
+
+    Never raises for a row being unimplemented: ``NotImplementedError`` is a
+    runtime fact and this is a shape check. That is why the Go row can sit in
+    ``pending`` and be validated.
+    """
+    seen_languages: dict[Language, str] = {}
+    seen_extensions: dict[str, Language] = {}
+    for row in tuple(enrolled) + tuple(pending):
+        if not isinstance(row.language, Language):
+            raise RoleProtocolError(
+                f"comparator row {row!r} does not carry a Language member; a "
+                "registry keyed by anything else has no closed set to be "
+                "exhaustive over"
+            )
+        if row.language in seen_languages:
+            raise RoleProtocolError(
+                f"language {row.language.value!r} has two comparator rows; "
+                "two readers for one language is exactly the drift this "
+                "registry exists to prevent"
+            )
+        seen_languages[row.language] = row.language.value
+        if not row.extensions:
+            raise RoleProtocolError(
+                f"comparator row for {row.language.value!r} declares no "
+                "extensions, so no path can ever select it — coverage that "
+                "reads as coverage and is not"
+            )
+        if not hasattr(row.fingerprinter, "fingerprints"):
+            raise RoleProtocolError(
+                f"comparator row for {row.language.value!r} has no "
+                "`fingerprints` method and cannot satisfy "
+                "SignatureFingerprinter"
+            )
+        for extension in row.extensions:
+            if (
+                not extension
+                or not extension.startswith(".")
+                or extension != extension.lower()
+            ):
+                raise RoleProtocolError(
+                    f"comparator extension {extension!r} for "
+                    f"{row.language.value!r} must be a lowercase, "
+                    "dot-prefixed suffix; matching is a case-sensitive "
+                    "`endswith`, so anything else silently matches nothing"
+                )
+            for other, owner in seen_extensions.items():
+                if extension.endswith(other) or other.endswith(extension):
+                    raise RoleProtocolError(
+                        f"comparator extension {extension!r} "
+                        f"({row.language.value!r}) is ambiguous with "
+                        f"{other!r} ({owner.value!r}): suffix matching would "
+                        "give the first row silently and the second none"
+                    )
+            seen_extensions[extension] = row.language
+
+
+validate_registry(COMPARATORS, PENDING_COMPARATORS)
+
+
+def support_for_path(path: str) -> LanguageSupport | None:
+    """The registry row that can read ``path``, or None. **The one place that
+    decides what language a file is.**
+
+    The second of the two helpers this scaffold implements rather than stubs:
+    it is the move of the pre-existing ``endswith(".py")``, not new behaviour,
+    and :func:`_supported_language_refusal` — which used to hold that literal —
+    is now its only caller inside this module. A case-sensitive suffix match
+    against each row's ``extensions``, rows in registry order, first match
+    wins; :func:`validate_registry` has already refused a registry in which
+    "first" could be ambiguous.
+
+    Reads :data:`COMPARATORS` — the enrolled table — and never
+    :data:`PENDING_COMPARATORS`. A scaffolded-but-unenrolled row is not
+    coverage, and a lookup that consulted it would report Go as readable while
+    the reader raises.
+
+    ``path`` is posix form, as git emits. Directory structure is irrelevant: a
+    language is a property of the file, and any path-shaped exemption belongs to
+    the path gate, which owns that question.
+    """
+    for row in COMPARATORS:
+        for extension in row.extensions:
+            if path.endswith(extension):
+                return row
+    return None
+
+
+def enrolled_languages() -> tuple[Language, ...]:
+    """What this build actually reads, in registry order.
+
+    Derived from :data:`COMPARATORS`, so it cannot disagree with the dispatch —
+    which is the point of it existing at all. The claim "the signature half of
+    the protocol covers Go" is falsifiable by calling this, and a report or a
+    doctor check that wants to state coverage must state it from here rather
+    than from prose that ages.
+    """
+    return tuple(row.language for row in COMPARATORS)
+
+
 def _supported_language_refusal(path: str) -> SignatureComparison | None:
     """None when this gate can read ``path``; otherwise the refusal, complete.
 
@@ -2311,16 +3267,26 @@ def _supported_language_refusal(path: str) -> SignatureComparison | None:
     status, the prose and ``unsupported_paths`` are written once and cannot
     drift from each other: the aggregate unions what this returns instead of
     re-deriving any part of it.
+
+    **D2:** the ``endswith`` this function used to hold moved into the Python
+    row of :data:`COMPARATORS`, and the question is now asked of
+    :func:`support_for_path`. The property is unchanged and so is the answer for
+    every input: one place decides what a language is, and this is still the one
+    place that turns "no comparator" into a refusal document. What this function
+    does NOT report is a comparator that exists and failed — that is a
+    :class:`ComparatorFault`, it is not a language fact, and it must never reach
+    ``unsupported_paths``.
     """
-    if path.endswith(".py"):
+    if support_for_path(path) is not None:
         return None
+    readable = ", ".join(language.value for language in enrolled_languages())
     return SignatureComparison(
         status=SignatureCheckStatus.UNCHECKED_UNSUPPORTED_LANGUAGE,
         detail=(
-            f"{path} is not a Python file; this module compares Python "
-            "signatures only, so this file's signatures were compared by "
-            "nothing and will not be reported as unchanged — the plan's "
-            "non-Python side needs its own comparator"
+            f"{path} is not in a language this gate has a comparator for "
+            f"(it reads: {readable}), so this file's signatures were compared "
+            "by nothing and will not be reported as unchanged — the languages "
+            "this repo has no comparator for still need one"
         ),
         unsupported_paths=(path,),
     )
@@ -2355,13 +3321,31 @@ def compare_signatures(
     change; the docstring is P1's contract and P3 may extend it, and an
     over-strict rule here would make honest work fail.
 
-    Statuses: both texts parse → CHECKED. ``path`` is not ``*.py`` →
-    UNCHECKED_UNSUPPORTED_LANGUAGE with the path in ``detail`` **and in
-    ``unsupported_paths``** — this is the one function that knows a file was
+    **D2 — the language-specific half moved out.** The fingerprint above is
+    Python's, and it is now produced by :class:`PythonSignatureFingerprinter`
+    behind :class:`SignatureFingerprinter`; this function selects the row with
+    :func:`support_for_path` and applies the rules below to whatever
+    fingerprints it is handed. What is language-specific is the fingerprint of
+    a symbol and nothing else. What is NOT — added is not a change, removed is,
+    a differing fingerprint is, a new file has nothing to preserve, both
+    revisions absent is a caller bug — is decided HERE, once, for every
+    language, so a second entry in the registry cannot answer a protocol
+    question differently from the first. See :class:`GoSignatureFingerprinter`
+    for what a Go signature is; that docstring is the Go-side contract and this
+    one stays the protocol.
+
+    Statuses: both texts parse → CHECKED. ``path`` is in no registered
+    language → UNCHECKED_UNSUPPORTED_LANGUAGE with the path in ``detail`` **and
+    in ``unsupported_paths``** — this is the one function that knows a file was
     skipped for its language, so it is where that fact is recorded, and
     :func:`_compare_branch_signatures` unions rather than re-deriving. Either
     text fails to parse → UNCHECKED_UNPARSEABLE, and ``unsupported_paths``
-    stays empty: that file was read, not skipped. ``base_text`` None **and
+    stays empty: that file was read, not skipped. The comparator for a
+    registered language could not RUN (D2) → the status
+    :func:`signature_status_for_fault` gives the fault, ``unsupported_paths``
+    empty for the same reason and one more: an environment fault is not a
+    language this gate cannot read, and letting it look like one clears the
+    branch (:func:`_comparator_unavailable_comparison`). ``base_text`` None **and
     ``head_text`` not None** (the file is new on the branch) → CHECKED with no
     changes: a file that did not exist at base has no scaffolded signature to
     preserve. ``head_text`` None (the file was deleted) → every base symbol is
@@ -2374,7 +3358,14 @@ def compare_signatures(
     both-absent case a silent pass). :func:`check_branch` turns the raise into
     UNDETERMINED.
 
-    Pure function of the two texts.
+    Pure function of ``(path, base_text, head_text)`` in the sense the gate
+    needs: same inputs, same verdict, no reads of the working tree, no
+    dependence on ``repo_root`` or on any ref. **Not** free of the environment
+    once a language needs a toolchain (D2): the Go comparator runs a
+    subprocess, so the same inputs on a machine without ``go`` produce a FAULT
+    rather than a different answer. That is the distinction the fault states
+    exist to keep — the function never returns a different comparison because
+    of the environment, it returns "I could not compare", which is not a pass.
 
     Implementation notes (P3), none of which change what the contract above
     promises:
@@ -2392,9 +3383,9 @@ def compare_signatures(
         choice: UNDETERMINED is the honest verdict for a path git named but
         neither tree holds.
     """
-    unsupported = _supported_language_refusal(path)
-    if unsupported is not None:
-        return unsupported
+    support = support_for_path(path)
+    if support is None:
+        return _supported_language_refusal(path)
 
     if base_text is None and head_text is None:
         raise RoleDiffError(
@@ -2410,34 +3401,28 @@ def compare_signatures(
         )
 
     try:
-        base_symbols = _scaffolded_signatures(base_text)
-    except SyntaxError as exc:
+        base_symbols = support.fingerprinter.fingerprints(path, base_text)
+    except SourceUnparseable as exc:
         return SignatureComparison(
             status=SignatureCheckStatus.UNCHECKED_UNPARSEABLE,
-            detail=f"{path} does not parse as Python at base: {exc}",
+            detail=f"{path} does not parse at base: {exc.message}",
         )
-    except ValueError as exc:  # null bytes and similar ast.parse refusals
-        return SignatureComparison(
-            status=SignatureCheckStatus.UNCHECKED_UNPARSEABLE,
-            detail=f"{path} could not be parsed at base: {exc}",
-        )
+    except ComparatorUnavailable as exc:
+        return _comparator_unavailable_comparison(path, "base", exc)
 
     if head_text is None:
         head_symbols: dict[str, str] = {}
         detail = f"{path} was deleted on the branch"
     else:
         try:
-            head_symbols = _scaffolded_signatures(head_text)
-        except SyntaxError as exc:
+            head_symbols = support.fingerprinter.fingerprints(path, head_text)
+        except SourceUnparseable as exc:
             return SignatureComparison(
                 status=SignatureCheckStatus.UNCHECKED_UNPARSEABLE,
-                detail=f"{path} does not parse as Python at head: {exc}",
+                detail=f"{path} does not parse at head: {exc.message}",
             )
-        except ValueError as exc:
-            return SignatureComparison(
-                status=SignatureCheckStatus.UNCHECKED_UNPARSEABLE,
-                detail=f"{path} could not be parsed at head: {exc}",
-            )
+        except ComparatorUnavailable as exc:
+            return _comparator_unavailable_comparison(path, "head", exc)
         detail = ""
 
     changes = tuple(
@@ -2452,6 +3437,37 @@ def compare_signatures(
     )
     return SignatureComparison(
         status=SignatureCheckStatus.CHECKED, changes=changes, detail=detail
+    )
+
+
+def _comparator_unavailable_comparison(
+    path: str, revision: str, exc: ComparatorUnavailable
+) -> SignatureComparison:
+    """The ONE place a :class:`ComparatorFault` becomes a comparison result.
+
+    Assembly only: the status comes from :func:`signature_status_for_fault`,
+    which owns that decision, and the fault's own name and message go into the
+    detail so the report says which environment failure happened and on which
+    revision of which file.
+
+    ``unsupported_paths`` stays EMPTY, and that is the load-bearing line. The
+    file was not skipped for its language — a reader for it exists and the
+    machine could not run it — so it must not join the list of paths nobody can
+    read. If it did, a diff of nothing but Go on a box with no ``go`` binary
+    would satisfy :func:`_compare_branch_signatures`' promotion condition
+    (nothing examined, something skipped for its language), become
+    UNCHECKED_NO_SUPPORTED_FILE, and be reported CLEAN. The companion half of
+    that invariant lives in the aggregate: a path whose comparator faulted
+    counts as EXAMINED.
+    """
+    return SignatureComparison(
+        status=signature_status_for_fault(exc.fault),
+        detail=(
+            f"{path}: the {revision} revision could not be compared — "
+            f"{exc.fault.value}: {exc.message}. This is an environment fault, "
+            "not a language this gate cannot read and not a bad source file, "
+            "so it clears nothing"
+        ),
     )
 
 
@@ -2896,6 +3912,39 @@ def check_branch(
     :attr:`SignatureComparison.unsupported_paths`, because the signature gate
     is Python-only and on a Go/TypeScript tree this verdict means the gate
     opened no file at all.
+
+    **The whole signature-status → BODIES verdict table (D2), in one place,
+    because a state whose verdict has to be inferred is a state somebody will
+    infer wrongly.** Read it as the specification; the two frozensets below are
+    its mechanism.
+
+      ============================== ============= ==================
+      status                         BODIES        every other role
+      ============================== ============= ==================
+      CHECKED (no changes)           CLEAN         n/a
+      CHECKED (with changes)         VIOLATION     n/a
+      UNCHECKED_UNPARSEABLE          UNDETERMINED  n/a
+      UNCHECKED_UNSUPPORTED_LANGUAGE UNDETERMINED  n/a
+      UNCHECKED_NO_SUPPORTED_FILE    CLEAN         n/a
+      UNCHECKED_COMPARATOR_UNAVAIL.  UNDETERMINED  n/a
+      NOT_APPLICABLE                 n/a           CLEAN
+      ============================== ============= ==================
+
+    The last row of the unchecked group does not exist yet: see
+    :func:`signature_status_for_fault` for the member it names, why every
+    :class:`ComparatorFault` maps to it, and the P4 amendment that must land
+    with it. It is UNDETERMINED and not CLEAN because a toolchain that could not
+    run is not a language nobody can read: the first is an environment fault
+    somebody can fix and the second is a permanent fact about this gate. Give
+    the fault the language answer and a CI image with no ``go`` binary clears
+    every Go branch it builds — loudly wrong replaced by quietly wrong, which is
+    the trade the 2026-08-09 ruling was careful NOT to make.
+
+    None of the four UNDETERMINED rows is terminal for the branch: each names
+    something an author or an operator can act on (fix the source, fix the
+    image, write the comparator) and re-running clears it. UNCHECKED_NO_SUPPORTED
+    _FILE is the one state nothing the branch commits can change, which is
+    exactly why it is CLEAN — that was the ruling.
 
     LEGACY returns CLEAN when the diff read succeeded, was non-empty and
     touched no floor path: a pre-protocol task has no immutable paths, and this
@@ -3384,6 +4433,28 @@ def _compare_branch_signatures(
     Aggregation: the FIRST non-CHECKED status wins and the changes of every
     file are unioned, so one unparseable file cannot hide a changed signature
     in another and a partial check never reports as CHECKED.
+
+    **D2 — a path whose comparator FAULTED counts as EXAMINED, and contributes
+    nothing to ``unsupported_paths``.** Normative, and the promotion above is
+    why it has to be: the promotion fires when the loop examined NOTHING and
+    skipped at least one path for its language. A registered language whose
+    reader could not run (no ``go`` binary, a helper that died, a timeout) was
+    not skipped for its language — the gate reached for it and the machine
+    failed — so it must not satisfy either half of that condition. Get this
+    wrong in either place and a Go-only diff built in a broken CI image is
+    promoted to UNCHECKED_NO_SUPPORTED_FILE and reported CLEAN, which is a
+    broken image handing out clean bills of health. The two halves must agree:
+    ``examined`` counts every path a registry row claimed, whatever happened
+    next, and ``unsupported_paths`` holds only what
+    :func:`_supported_language_refusal` named. See
+    :func:`_comparator_unavailable_comparison` for the other side of the same
+    invariant.
+
+    Unchanged by D2: SQL and Java have no row in :data:`COMPARATORS`, so their
+    paths are skipped for their language exactly as before, are named in
+    ``unsupported_paths``, and on a diff of nothing else are CLEAN. That is the
+    2026-08-09 ruling applied to languages it did not name, and it is coverage
+    this gate does not have rather than a decision it made.
     """
     status = SignatureCheckStatus.CHECKED
     changes: list[SignatureChange] = []
