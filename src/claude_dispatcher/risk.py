@@ -198,7 +198,29 @@ def _glob_to_regex(pattern: str) -> str:
 
 @lru_cache(maxsize=512)
 def _compiled(pattern: str) -> re.Pattern[str]:
-    return re.compile(_glob_to_regex(pattern) + r"\Z")
+    """The anchored regex for one glob. A path is one string, not a document.
+
+    ``re.DOTALL`` is load-bearing, not a tidy-up. Without it ``.`` — which is
+    what ``*``, ``**`` and ``?`` all translate to above — excludes exactly one
+    character, ``\\n``, so a path containing a line feed matched NO glob and
+    walked past every deny table, every allowlist and the non-overridable floor
+    (``role_protocol.FLOOR_GLOBS``), all of which are built on this function.
+    ``\\r``, ``\\f``, ``\\v``, ``\\t``, NUL, ESC, NEL and U+2028 were always
+    matched; the line feed was the whole hole, and it is a hole in the matcher,
+    not in any one caller.
+
+    Two things this must NOT become, each sealed in
+    ``tests/test_glob_newline.py``:
+
+      * ``re.MULTILINE`` — the opposite fix. It makes every line break an
+        anchor point rather than making the pattern indifferent to one.
+      * ``$`` in place of ``\\Z`` — the "handle line endings" reflex. ``$``
+        also matches immediately BEFORE a string-final newline, so an
+        ALLOW_ONLY declaration of ``sub/x.py`` would start granting the
+        different file ``sub/x.py\\n``. ``\\Z`` matches only the true end of
+        the string, which is why a trailing ``\\r`` was never a bypass.
+    """
+    return re.compile(_glob_to_regex(pattern) + r"\Z", re.DOTALL)
 
 
 def matches_any_glob(path: str, patterns: Sequence[str]) -> bool:
