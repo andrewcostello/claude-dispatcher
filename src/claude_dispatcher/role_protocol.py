@@ -443,9 +443,23 @@ DEFAULT_ROLE_RULES: tuple[RoleRule, ...] = (
 #: Globs a `disputed_paths:` entry may never be, in any role. A wildcard
 #: adjudication is not an adjudication: it converts ALLOW_ONLY into
 #: UNRESTRICTED with extra steps.
+#:
+#: This is a NAMED denylist and it is not the enforcement. Six literals is an
+#: OPEN set in the unit whose whole doctrine is closed ones (D1-inputs I2):
+#: `**/**`, `**/**/*`, `**/**/**`, `*/**`, `**/*/**` and `*/*` are none of
+#: them, all parse today, and each grants the whole repo. The closed rule is
+#: :func:`_names_no_artifact`, which refuses every one of these six literals
+#: too — so a deletion from this set changes no verdict, and the rows in
+#: `test_role_protocol_table.py` and `test_role_protocol_parse.py` that pin
+#: these six by name keep pinning the spellings the doctrine calls out
+#: explicitly.
 FORBIDDEN_DISPUTED_GLOBS: frozenset[str] = frozenset(
     {"*", "**", "**/*", "/", "./**", "."}
 )
+
+#: The glob metacharacters this repo's engine (``risk._glob_to_regex``) reads.
+#: Everything else in a declaration is literal text — a name.
+_GLOB_METACHARACTERS = "*?[]"
 
 #: The non-overridable floor: globs NO authorable role may write, whatever the
 #: policy says and whatever the task declared (2026-08-07 operator ruling).
@@ -657,6 +671,49 @@ def _string_list(
             )
         out.append(entry)
     return tuple(out)
+
+
+def _names_no_artifact(entry: str) -> bool:
+    """True when ``entry`` is wildcards and separators only — it names nothing.
+
+    The CLOSED form of "a wildcard adjudication is not an adjudication"
+    (D1-inputs I2). :data:`FORBIDDEN_DISPUTED_GLOBS` states that sentence as
+    six literals, so it is true of six strings and false of every other
+    spelling of the same thing: `**/**`, `**/**/*`, `**/**/**`, `*/**`,
+    `**/*/**` and `*/*` all parse today and all grant the entire repo, and so
+    does `**/*.*`, which is refused right now only by the accident that
+    `.dispatcher.yaml` happens to contain a dot.
+
+    The test is one sentence: **strike out the wildcards and at least one
+    literal alphanumeric character must remain.** A declaration is an
+    adjudication when it NAMES something — a tree, a file, a class of files —
+    and `/` and `.` are structure, not names.
+
+    Where the boundary sits, and why it sits there rather than anywhere
+    broader (P4, 2026-08-08; a floor has no override, so a false refusal makes
+    a path permanently unplannable):
+
+      * refused: `**/*.*` — matches every path in the probe set, and after the
+        strike-out only `/.` remains. It names nothing.
+      * ALLOWED: `*.yaml` — `*` crosses `/` in this repo's glob engine, so this
+        is "every YAML file", a real and bounded class of artifacts,
+        structurally identical to `docs/*.md`. Refusing extension-only
+        declarations would also stop `*.md` and `**/*.md` in a repo whose docs
+        live both under `docs/` and at the root. Its refusal today is the
+        FLOOR's business and on the floor's own grounds — it does name
+        `.dispatcher.yaml` — which is two independent rules refusing for two
+        different reasons, the design; not one rule refusing for the other's.
+      * ALLOWED: `sub/**`, one wildcard segment away from the refused `*/**`.
+        An implementation that cannot tell those apart has not closed the set,
+        it has closed the door.
+
+    A bracket expression counts as literal text, on the same reading
+    :func:`_floor_glob_named_by` already uses: `[abc]` enumerates names.
+    """
+    residue = entry.strip()
+    for metacharacter in _GLOB_METACHARACTERS:
+        residue = residue.replace(metacharacter, "")
+    return not any(character.isalnum() for character in residue)
 
 
 def _reject_negation_shape(entry: str, *, where: str) -> None:
@@ -880,12 +937,16 @@ def parse_task_role_spec(
                 "adjudicate task rules on at least one artifact"
             )
         for entry in disputed:
-            if entry.strip() in FORBIDDEN_DISPUTED_GLOBS:
+            if entry.strip() in FORBIDDEN_DISPUTED_GLOBS or _names_no_artifact(
+                entry
+            ):
                 raise RoleProtocolError(
                     f"task {task_key} has {DISPUTED_PATHS_FIELD} entry "
                     f"{entry!r}; a wildcard adjudication is not an "
                     "adjudication — it converts allow-only into unrestricted "
-                    "with extra steps"
+                    "with extra steps. Strike out the wildcards and nothing "
+                    "is left: an adjudication names the tree, the file or the "
+                    "class of files it rules on"
                 )
             floor = _floor_glob_named_by(entry)
             if floor is not None:
@@ -952,10 +1013,14 @@ def validate_rule(rule: RoleRule) -> None:
         # Empty is legal ONLY here: the static table entry's writable set
         # arrives per task via `disputed_paths:`.
         for glob in rule.globs:
-            if glob.strip() in FORBIDDEN_DISPUTED_GLOBS:
+            if glob.strip() in FORBIDDEN_DISPUTED_GLOBS or _names_no_artifact(
+                glob
+            ):
                 raise RoleProtocolError(
                     f"rule for {role_name} allows {glob!r}; a wildcard "
-                    "allow-only set is an unrestricted rule with extra steps"
+                    "allow-only set is an unrestricted rule with extra steps. "
+                    "Strike out the wildcards and nothing is left: an "
+                    "allow-only rule names what it allows"
                 )
         return
     if rule.kind is RuleKind.UNRESTRICTED:
@@ -1034,23 +1099,50 @@ def effective_rule(spec: TaskRoleSpec, policy: RolePolicy) -> RoleRule:
         rejected by :func:`parse_task_role_spec`.
 
     Calls :func:`validate_override` first, so an illegal override cannot
-    produce a rule at all (validate before apply — invariant 2).
+    produce a rule at all (validate before apply — invariant 2), and
+    :func:`validate_rule` on the rule it BUILT before handing it back — the
+    second half of D1-inputs I2.
+
+    That second call is not belt-and-braces. ALLOW_ONLY's globs come straight
+    off ``spec.disputed_paths`` and were validated by nothing: an adjudicate
+    spec declaring ``**`` produced ``RoleRule(kind=ALLOW_ONLY_GLOBS,
+    globs=('**',))`` — an allow-only rule that allows the whole repo, which is
+    UNRESTRICTED with extra steps and is the exact glob :func:`validate_rule`
+    exists to refuse. :func:`parse_task_role_spec` is no defence: nothing
+    obliges a :class:`TaskRoleSpec` reaching :func:`check_branch` to have come
+    through it, and the plan-time denylist is never consulted there. The rule
+    a branch is judged by is validated at the point it is built, so the two
+    entry points cannot disagree. :func:`check_branch` turns the raise into
+    UNDETERMINED, which fails closed.
     """
     validate_override(spec, policy)
     rule = policy.rule_for(spec.role)
 
     if rule.kind is RuleKind.DENY_GLOBS:
-        return dataclasses.replace(
+        built = dataclasses.replace(
             rule, globs=_dedup((*rule.globs, *spec.added_immutable_globs))
         )
-    if rule.kind is RuleKind.ALLOW_ONLY_GLOBS:
-        return dataclasses.replace(rule, globs=tuple(spec.disputed_paths))
-    if rule.kind is RuleKind.UNRESTRICTED:
-        return rule
-    raise RoleProtocolError(
-        f"task {spec.task_key}: cannot build an effective rule for unknown "
-        f"kind {rule.kind!r}"
-    )
+    elif rule.kind is RuleKind.ALLOW_ONLY_GLOBS:
+        built = dataclasses.replace(rule, globs=tuple(spec.disputed_paths))
+    elif rule.kind is RuleKind.UNRESTRICTED:
+        built = rule
+    else:
+        raise RoleProtocolError(
+            f"task {spec.task_key}: cannot build an effective rule for unknown "
+            f"kind {rule.kind!r}"
+        )
+
+    try:
+        validate_rule(built)
+    except RoleProtocolError as exc:
+        raise RoleProtocolError(
+            f"task {spec.task_key}'s effective rule is one this module would "
+            f"refuse to validate: {exc}. A rule is validated where it is "
+            "BUILT, not only where it is declared — nothing obliges a spec "
+            "reaching the diff-time check to have been parsed by "
+            "`parse_task_role_spec`"
+        ) from exc
+    return built
 
 
 # --------------------------------------------------------------------------- #
@@ -2388,9 +2480,38 @@ def changed_paths_between(
     than read with ``-z`` because git still C-quotes (and therefore never
     emits a raw newline inside) a path containing a control character.
 
-    Duplicate lines are collapsed, order preserved: the diff of a merge-shaped
-    range can name a path twice, and a doubled violation report would read as
-    two offences.
+    **Every quoted line is DECODED (D1-inputs I1).** ``core.quotePath=false``
+    buys one thing and only one: it stops git octal-escaping non-ASCII bytes.
+    Git C-quotes a path containing ``"``, ``\\`` or a control character
+    *whatever that setting says*, because the setting governs the high bytes
+    and those three classes are ASCII. Measured against a real repo, the raw
+    output of this very argv is::
+
+        tests/plain.py                <- matched by `**/tests/**`
+        tests/tést.py                 <- matched; this is what quotePath=false bought
+        "tests/a\\tb.py"               <- matched NOTHING
+        "tests/back\\\\slash.py"         <- matched NOTHING
+        "tests/say\\"hi\\".py"           <- matched NOTHING
+
+    A quoted rendering is not a path: it matches no glob, so three of those
+    five bypassed the BODIES deny table, and a parent directory with a quote
+    in its name (``sub"x/.dispatcher.yaml``) bypassed the non-overridable
+    FLOOR — a branch could rewrite the file configuring every role's
+    permissions by choosing where to put it. So each line goes through
+    :func:`_unquote_git_path`, which reverses git's ``quote_c_style``
+    (surrounding quotes, ``\\`` escapes, ``\\NNN`` octal bytes) rather than
+    merely stripping the quotes: stripping alone leaves ``tests/back\\\\slash.py``
+    and ``tests/say\\"hi\\".py``, which are neither glob-matchable nor readable
+    by :func:`file_text_at`. The decoded name is the one git would accept
+    back, so the path this reports is also the path the signature half can
+    read. A line that will not decode raises rather than being passed on
+    half-rendered: a path the gate cannot match is a hole that reports as a
+    pass.
+
+    Duplicate lines are collapsed AFTER decoding, order preserved: the diff of
+    a merge-shaped range can name a path twice, and a doubled violation report
+    would read as two offences. (Dedup must follow the decode, or one
+    rendering of a name would not be recognised as the other.)
     """
     argv = [
         "git",
@@ -2419,11 +2540,96 @@ def changed_paths_between(
                 f"git diff {base_ref}...{branch_ref} in {repo_root} emitted a "
                 f"blank path {line!r}; unparseable output is not an empty diff"
             )
-        if line in seen:
+        try:
+            path = _unquote_git_path(line)
+        except ValueError as exc:
+            raise RoleDiffError(
+                f"git diff {base_ref}...{branch_ref} in {repo_root} emitted "
+                f"{line!r}, which is not a decodable C-quoted path: {exc}; a "
+                "path the gate cannot render is a path it cannot match, and an "
+                "unmatchable path reports as a pass"
+            ) from exc
+        if path in seen:
             continue
-        seen.add(line)
-        paths.append(line)
+        seen.add(path)
+        paths.append(path)
     return tuple(paths)
+
+
+#: git's ``quote_c_style`` escapes, inverted. The keys are the characters that
+#: may follow a backslash inside a C-quoted path; an octal ``\\NNN`` run is
+#: handled separately because it carries a raw BYTE, not a character.
+_C_QUOTE_ESCAPES: Mapping[str, bytes] = {
+    "a": b"\a",
+    "b": b"\b",
+    "f": b"\f",
+    "n": b"\n",
+    "r": b"\r",
+    "t": b"\t",
+    "v": b"\v",
+    "\\": b"\\",
+    '"': b'"',
+}
+
+
+def _unquote_git_path(line: str) -> str:
+    """One ``git diff --name-only`` line as the real path it names.
+
+    Git prints a path verbatim unless it must quote it; when it must, it wraps
+    the whole thing in ``"`` and applies C-style escaping. ``core.quotePath``
+    governs only whether high bytes become ``\\NNN``: a path containing ``"``,
+    ``\\`` or a control character is quoted either way. A quoted rendering is
+    not a path — it matches no glob and no object-store read resolves it — so
+    this reverses the rendering.
+
+    An unquoted line is returned unchanged, and that test is safe in both
+    directions: git quotes any path containing a ``"``, so a line that starts
+    with one was quoted by git and never merely happens to begin with a quote
+    character.
+
+    Octal escapes are accumulated as BYTES and the whole result decoded as
+    UTF-8 once, so a multi-byte character split across two ``\\NNN`` runs
+    survives; a byte string that is not UTF-8, an unterminated backslash, a
+    short octal run and an escape git never emits all raise
+    :class:`ValueError`. Half-decoding is the one outcome that must not
+    happen: the caller reports what this returns to the glob engine AND to the
+    blob reader, and a name only one of them accepts is a hole.
+    """
+    if len(line) < 2 or not line.startswith('"') or not line.endswith('"'):
+        return line
+
+    body = line[1:-1]
+    out = bytearray()
+    index = 0
+    while index < len(body):
+        char = body[index]
+        if char != "\\":
+            out.extend(char.encode("utf-8"))
+            index += 1
+            continue
+        index += 1
+        if index >= len(body):
+            raise ValueError("a trailing backslash escapes nothing")
+        escape = body[index]
+        if escape in _C_QUOTE_ESCAPES:
+            out.extend(_C_QUOTE_ESCAPES[escape])
+            index += 1
+            continue
+        if escape in "01234567":
+            digits = body[index : index + 3]
+            if len(digits) != 3 or any(d not in "01234567" for d in digits):
+                raise ValueError(
+                    f"\\{digits} is not a three-digit octal byte escape"
+                )
+            out.append(int(digits, 8))
+            index += 3
+            continue
+        raise ValueError(f"\\{escape} is not an escape git emits")
+
+    try:
+        return out.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"the decoded path is not valid UTF-8: {exc}") from exc
 
 
 def file_text_at(
@@ -2514,15 +2720,27 @@ def check_branch(
          is reported as a floor violation whatever the role's own rule said
          about it, and every other violation is the role rule's, unchanged.
       5. for BODIES only, :func:`compare_signatures` over every changed
-         ``*.py`` path that exists at ``base_ref``; other roles get
-         :data:`SignatureCheckStatus.NOT_APPLICABLE`.
+         ``*.py`` path that exists at the **merge-base** of ``base_ref`` and
+         ``branch_ref`` — the revision step 3's three-dot diff measured the
+         branch's work from, not ``base_ref``'s tip (D1-inputs I4). Other
+         roles get :data:`SignatureCheckStatus.NOT_APPLICABLE`. A changed path
+         this module did not compare leaves the aggregate UNCHECKED_\\*, which
+         on BODIES is UNDETERMINED (D1-inputs I5).
+      5b. for BODIES only, :func:`changed_paths_between` again — the path gate
+         ran against the revision step 3 read, and step 5 re-resolved
+         ``branch_ref`` for every blob. A branch that advanced in between is
+         UNDETERMINED rather than CLEAN in its own name (D1-inputs I3). No
+         other role reads anything after step 3, so no other role has the
+         window.
 
     Verdict: VIOLATION if any path violation or any signature change;
     UNDETERMINED on any :class:`RoleDiffError`, unreadable policy, missing
-    required ``spec``, empty diff, or a signature status of
-    UNCHECKED_\\* **when the role is BODIES** — an unchecked signature on the
-    role whose gate that is, is not a pass; CLEAN only when the diff was read,
-    was non-empty, produced no violation, and every applicable check ran.
+    required ``spec``, empty diff, a branch that moved mid-check, or a
+    signature status of UNCHECKED_\\* **when the role is BODIES** — an
+    unchecked signature on the role whose gate that is, is not a pass; CLEAN
+    only when the diff was read, was non-empty, still described the same
+    branch when the reads finished, produced no violation, and every
+    applicable check ran.
 
     LEGACY returns CLEAN when the diff read succeeded, was non-empty and
     touched no floor path: a pre-protocol task has no immutable paths, and this
@@ -2702,6 +2920,50 @@ def check_branch(
                 policy_source=source,
                 checked_paths=changed,
             )
+
+        # 5b. Time of check, time of use (D1-inputs I3). Step 3 resolved
+        #     `branch_ref` for the diff and step 5 resolved it again, once per
+        #     blob, and the orchestrator makes this call the instant the
+        #     implementer returns — while the implementer's own session still
+        #     holds the worktree. A branch that advanced in between got its
+        #     paths judged at the old commit and its blobs read at the new one,
+        #     so a branch that gutted its own seal in that window was told
+        #     CLEAN, in the name `feat/x`, on a path list that predated the
+        #     edit. The diff is re-read AFTER the last ref-dependent read and
+        #     the two lists must agree; a branch that moved is UNDETERMINED,
+        #     which is what "I do not know what I just judged" is worth.
+        #
+        #     BODIES only, because BODIES is the only role that reads anything
+        #     after the diff: for every other role `changed_paths_between` is
+        #     the single read and there is no window between it and itself.
+        #     Comparing the path LISTS rather than resolving the commit is
+        #     deliberate — the path list is the whole input to the path gate,
+        #     so it is the thing whose staleness can change a verdict, and
+        #     `git rev-parse` is a fourth read on the gate path that the seals
+        #     covering this module do not model.
+        try:
+            recheck = changed_paths_between(
+                repo_root, base_ref, branch_ref, run=run
+            )
+        except RoleDiffError as exc:
+            return _undetermined(
+                f"cannot re-read the branch diff {base_ref}...{branch_ref} to "
+                f"confirm it did not move mid-check: {exc}",
+                policy_source=source,
+                checked_paths=changed,
+            )
+        if recheck != changed:
+            return _undetermined(
+                f"{branch_ref} moved while it was being checked: the path gate "
+                f"judged {list(changed)!r} and the branch now reports "
+                f"{list(recheck)!r}. A verdict in the branch's NAME would be a "
+                "claim about a revision that no longer exists, and the paths "
+                "the gate never saw are exactly the ones a branch would move "
+                "to hide",
+                policy_source=source,
+                checked_paths=changed,
+                signature=signature,
+            )
     elif role in (Role.SCAFFOLD, Role.SEALS, Role.ADJUDICATE):
         signature = _not_applicable_signature(role)
     else:
@@ -2868,12 +3130,50 @@ def _compare_branch_signatures(
 ) -> SignatureComparison:
     """:func:`compare_signatures` over every changed ``*.py`` path at base.
 
-    A path absent at ``base_ref`` is skipped: a file that did not exist at
-    base has no scaffolded signature to preserve. Absence comes from
+    **The baseline is the MERGE-BASE, not ``base_ref``'s tip** (D1-inputs I4).
+    :func:`changed_paths_between` takes a three-dot diff, so the path list is
+    the branch's own work measured from the merge-base; reading the baseline
+    text at ``base_ref`` itself made the two halves of one check describe two
+    different revisions. A base that advanced since the branch forked is the
+    ordinary case, not an exotic one, and when it advanced to carry the very
+    signature the branch widened, the gate compared the branch against a tip
+    that already agreed with it, found no change, and reported CLEAN on the
+    change §2a's gate exists to catch. The merge-base is what the diff
+    measured from, so it is what the blobs are read at.
+
+    The merge-base is resolved LAZILY — on the first ``*.py`` path about to be
+    compared, and once — so a diff with no Python in it runs no third git
+    command at all, and the read happens only where its answer is used.
+
+    A path absent at the merge-base is skipped: a file that did not exist
+    there has no scaffolded signature to preserve. Absence comes from
     :func:`file_text_at` returning None, which that function guarantees means
     "not in that tree" and nothing else — a read error raises out of here and
     the caller maps it to UNDETERMINED, because "I could not read the base"
     reported as "newly added" would suppress every signature change in it.
+
+    **A file this module did not compare is not reported as checked**
+    (D1-inputs I5). Every non-``*.py`` path used to be ``continue``d past
+    before a status could be produced, so the aggregate said CHECKED —
+    "``changes`` is authoritative" — for a diff in which a Go file's parameter
+    list could have been widened underneath it, and for a diff of nothing but
+    Markdown in which zero files were opened. That contradicts the per-file
+    contract, where :func:`compare_signatures` answers
+    UNCHECKED_UNSUPPORTED_LANGUAGE for both of those paths. It is now the
+    aggregate's answer too, so "checked", "not applicable" and "examined
+    nothing" are three reports rather than one word. On BODIES the caller maps
+    any UNCHECKED_\\* to UNDETERMINED, which is what an unchecked signature on
+    the role whose gate that is has always been worth.
+
+    The boundary that ruling stops at (P4, 2026-08-08): a ``*.py`` path absent
+    at the merge-base still counts as EXAMINED, and a diff of nothing but new
+    Python files is still CHECKED. The gate made a determination there — it
+    read the base tree and established the file is not in it, so there was no
+    scaffolded signature to preserve and none was broken — which is exactly
+    what :func:`compare_signatures` answers for that input. The skipped Go
+    file is ignorance wearing the same word; this is knowledge. Ruling
+    otherwise would make a body branch whose Python work is all new files
+    permanently UNDETERMINED, for work that could not have violated anything.
 
     Aggregation: the FIRST non-CHECKED status wins and the changes of every
     file are unioned, so one unparseable file cannot hide a changed signature
@@ -2882,11 +3182,29 @@ def _compare_branch_signatures(
     status = SignatureCheckStatus.CHECKED
     changes: list[SignatureChange] = []
     details: list[str] = []
+    merge_base: str | None = None
+    examined = 0
 
     for path in changed_paths:
         if not path.endswith(".py"):
+            # NOT `continue` on its own: this module cannot compare this file,
+            # nothing else did either, and an unchecked file must not report as
+            # an unchanged signature. Same state `compare_signatures` gives
+            # this path, named at the aggregate so the two agree.
+            if status is SignatureCheckStatus.CHECKED:
+                status = SignatureCheckStatus.UNCHECKED_UNSUPPORTED_LANGUAGE
+            details.append(
+                f"{path} is not a Python file; its signatures were compared by "
+                "nothing, and the plan's non-Python side needs its own "
+                "comparator"
+            )
             continue
-        base_text = file_text_at(repo_root, base_ref, path, run=run)
+        if merge_base is None:
+            merge_base = _merge_base_of(
+                repo_root, base_ref, branch_ref, run=run
+            )
+        examined += 1
+        base_text = file_text_at(repo_root, merge_base, path, run=run)
         if base_text is None:
             continue
         head_text = file_text_at(repo_root, branch_ref, path, run=run)
@@ -2900,9 +3218,62 @@ def _compare_branch_signatures(
         if comparison.detail:
             details.append(comparison.detail)
 
+    if status is SignatureCheckStatus.CHECKED and not examined:
+        # Only reachable for an EMPTY path list — a non-empty diff with no
+        # Python in it has already been answered by the loop. `check_branch`
+        # refuses an empty diff before it gets here, so this is the state
+        # named rather than left to fall through to CHECKED, which would be
+        # "I compared them and they agree" about nothing at all.
+        status = SignatureCheckStatus.UNCHECKED_UNSUPPORTED_LANGUAGE
+        details.append(
+            "no path was examined, so there is no comparison to report"
+        )
+
     return SignatureComparison(
         status=status, changes=tuple(changes), detail="; ".join(details)
     )
+
+
+def _merge_base_of(
+    repo_root: str | Path,
+    base_ref: str,
+    branch_ref: str,
+    *,
+    run: Callable[..., object] | None,
+) -> str:
+    """The commit ``base_ref...branch_ref`` measures the branch's work from.
+
+    ``git merge-base base_ref branch_ref`` — the third and last git read on
+    the gate path, and the one that makes the signature half of the check
+    describe the same revision as the path half (D1-inputs I4). Spelled
+    positionally with the base first, which is what the two ``_run_stub``
+    helpers were extended to answer and nothing wider.
+
+    Every failure raises :class:`RoleDiffError`, which :func:`check_branch`
+    maps to UNDETERMINED: no merge-base (unrelated histories), several (a
+    criss-cross merge, where picking one would be a guess about which history
+    the branch forked from), an unreadable ref. A baseline this cannot
+    establish is never silently replaced with ``base_ref``'s tip — that
+    substitution IS the defect.
+    """
+    argv = ["git", "merge-base", base_ref, branch_ref]
+    rc, out, err = _run_git_capture(argv, str(repo_root), run)
+    if rc != 0:
+        raise RoleDiffError(
+            f"git merge-base {base_ref} {branch_ref} in {repo_root} exited "
+            f"{rc}: {err.strip() or '(no stderr)'}; the signature baseline is "
+            "the revision the diff measured from, and falling back to the "
+            "base ref's tip is the defect this read exists to close"
+        )
+    candidates = [line for line in out.split("\n") if line.strip()]
+    if len(candidates) != 1:
+        raise RoleDiffError(
+            f"git merge-base {base_ref} {branch_ref} in {repo_root} named "
+            f"{len(candidates)} commits ({candidates!r}); a baseline that is "
+            "not exactly one revision cannot be chosen here without guessing "
+            "which history the branch forked from"
+        )
+    return candidates[0].strip()
 
 
 def _run_git_capture(
