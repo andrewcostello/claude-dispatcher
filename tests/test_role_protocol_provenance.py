@@ -617,7 +617,7 @@ class _RunResult(tuple):
 _UNCHANGED_BLOB = "VALUE = 1\n"
 
 
-def _run_stub(changed: list[str]):
+def _run_stub(changed: list[str], *, base_ref: str = "main"):
     """A git seam answering the diff read and blob reads; anything else raises,
     so a seal cannot pass on a code path it never modelled.
 
@@ -626,12 +626,58 @@ def _run_stub(changed: list[str]):
     answer would make every BODIES row UNDETERMINED. UNDETERMINED is not a pass,
     so the refusal rows would go green without any protection existing — the
     exact vacuity this file is written against.
+
+    P4 (2026-08-09), the third instance of the D1-inputs blocker-1 grant.
+    `merge-base` answers, and nothing else was added. This file was authored
+    concurrently with the I4 work, so it did not exist when the same grant was
+    made for `test_role_protocol_diff.py` and `test_role_protocol_floor.py` on
+    2026-08-08; the landed I4 fix reads the merge-base the three-dot diff
+    measured from, this seam raised on it, and `_run_git_capture` turned the
+    raise into UNDETERMINED — which is not a pass, so the REFUSAL rows would
+    have gone green with no protection existing, and the STILL-WRITABLE rows
+    went red. Both directions are the vacuity this file is written against.
+
+    Verified by measurement rather than assumed, on the shape this file
+    actually has (2026-08-09, in a clone):
+
+      * the figure carried over from the earlier grant does not transfer. With
+        the LIVE lazy fix — the merge-base resolved only when a `*.py` path is
+        about to be compared — exactly 6 rows here are affected: the four
+        `bodies` rows of `_GATE_ROWS` (two seals x two `role_protocol.py`
+        probes) and the two `bodies` `*.py` rows of `_STILL_WRITABLE_ROWS`. The
+        other 2 of this file's 8 reds are NOT a stub problem and this row does
+        not fix them; they are the non-Python BODIES diff ruled on below.
+      * the fix shape changes the count but not the remedy: with the merge-base
+        read once at the top of `_compare_branch_signatures` instead, 20 rows
+        here go red, and this same single stub row takes all 20 back to green.
+      * not one assertion in any affected row was touched. The whole change is
+        this function's signature, this docstring and the branch below.
+      * the strictness survives, which is the only reason these fixtures are
+        worth anything. With the module made to run `git rev-parse` as well —
+        a command this stub does NOT answer — the identical 6 rows go red
+        again; and `rev-parse`, `rev-list`, `log` and `show` all still raise.
+        The extension buys exactly one command.
+      * the answer is not a rubber stamp. It is the BASE REF, which is what the
+        merge-base IS in a seam that models no advanced base (a base that
+        really advanced cannot be stubbed and is sealed against a real
+        repository in `test_role_protocol_inputs.py`), and it is answered
+        explicitly rather than by echoing whichever argument follows
+        `merge-base`. Measured: pointing the module's read at `origin/main`
+        instead of `main` puts all 6 rows back to red on this guard, and
+        `merge-base --fork-point` collects nothing.
     """
 
     def run(cmd, *_args, **_kwargs):
         argv = [str(c) for c in cmd]
         if "diff" in argv:
             return _RunResult(0, "".join(p + "\n" for p in changed), "")
+        if "merge-base" in argv:
+            if base_ref not in argv:
+                raise AssertionError(
+                    f"merge-base asked for refs this stub does not model "
+                    f"(it models {base_ref!r} as the merge-base): {argv}"
+                )
+            return _RunResult(0, base_ref + "\n", "")
         if "ls-tree" in argv:
             # `repo_config.blob_text_at` refuses anything that is not a
             # regular-file blob, so the entry has to be well-formed.
@@ -851,9 +897,21 @@ def test_protecting_the_gate_costs_the_rest_of_the_tree_nothing(
     every legitimate change to the dispatcher unplannable, with no override,
     because a floor has no override.
 
-    Green now, and it must STILL be green afterwards.
+    Green now for eighteen of the twenty rows, and they must STILL be green
+    afterwards.
     Falsify: protect the directory instead of the file — these go red while the
     table above stays green.
+
+    P4 (2026-08-09): two rows — `bodies`/`scripts/some_other_helper.sh` and
+    `bodies`/`docs/adr/0007.md` — are RED, and not for a reason this table is
+    about. Their diffs contain no Python, so after I5 the signature aggregate is
+    UNCHECKED_UNSUPPORTED_LANGUAGE and `check_branch` maps every unchecked
+    status to UNDETERMINED on BODIES. The paths are writable and this file says
+    so correctly; the verdict is a false refusal arriving from the other half of
+    the gate. Ruled CLEAN on 2026-08-09 and sealed in the I6 section of
+    `test_role_protocol_inputs.py`; these two rows are the same ruling seen from
+    the path side and go green with it. Nothing here was changed to accommodate
+    that — the assertion they already carried is the ruled behaviour.
     """
     result = _check(Role(role_value), [changed])
     assert result.verdict is DiffVerdict.CLEAN, (

@@ -628,12 +628,30 @@ def test_every_signature_check_status_is_reachable() -> None:
     place it can be), so this seal spans both functions.
 
     Red now: both functions raise NotImplementedError.
-    Green when: all four statuses are produced.
+    Green when: all five statuses are produced.
+
+    AMENDED by P4 on 2026-08-09, and by P4 only, because this seal pins
+    `SignatureCheckStatus` by VALUE-SET EQUALITY: adding a member reddens it,
+    which is the whole point of writing it that way, and the fifth member could
+    not land without a ruling. The ruling — a BODIES diff this gate has no
+    comparator for is CLEAN, in its own named state, and must say what it could
+    not read — and the argument for a new member rather than a reuse of
+    NOT_APPLICABLE are in the I6 section header of
+    `test_role_protocol_inputs.py`, where the behaviour is sealed.
+
+    The amendment does not relax anything. The written set gains exactly one
+    literal, still spelled out rather than derived; the equality is still an
+    equality, so a sixth member reddens this the same way the fifth did; and the
+    new member is added to `produced` by a PRODUCING call — a BODIES diff with
+    no Python in it — not by naming it, so a member the code cannot reach still
+    fails here. The two ways this could have been weakened were `>=` on the
+    value set and `produced.add(SignatureCheckStatus.<new>)`; neither was used.
     """
     assert {s.value for s in SignatureCheckStatus} == {
         "checked",
         "unchecked_unsupported_language",
         "unchecked_unparseable",
+        "unchecked_no_supported_file",
         "not_applicable",
     }
     produced = {
@@ -651,6 +669,20 @@ def test_every_signature_check_status_is_reachable() -> None:
     )
     assert result.signature is not None
     produced.add(result.signature.status)
+
+    # The fifth: a BODIES diff with nothing in it this gate can read. Produced,
+    # like every other row here, rather than named.
+    unreadable = check_branch(
+        "/x",
+        "main",
+        "feat/x",
+        Role.BODIES,
+        policy=built_in_policy(),
+        run=_run_stub(changed=["cmd/x/main.go"]),
+    )
+    assert unreadable.signature is not None
+    produced.add(unreadable.signature.status)
+
     assert produced == set(SignatureCheckStatus)
 
 

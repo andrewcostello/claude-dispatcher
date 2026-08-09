@@ -18,6 +18,14 @@ Five findings from the five-seat panel's REJECT on D1, all of them about inputs:
       diff was taken against.
   I5  the signature gate reports `signatures: checked` for work it did not do.
 
+and one finding that is I5's own shadow, ruled by P4 on 2026-08-09 and sealed in
+the I6 section at the foot of this file:
+
+  I6  after I5, a BODIES diff containing no Python at all is UNDETERMINED
+      forever — a false refusal with no override, on most of the operator's
+      real work. Ruled CLEAN, in a NEW named state, and required to say which
+      paths it could not read and that the reason is language support.
+
 **The non-vacuity technique used throughout is the benign twin.** Every seal
 runs the gate twice on fixtures that differ in exactly the property under seal —
 an ASCII filename next to a quote-bearing one, a base that advanced next to one
@@ -167,6 +175,7 @@ from claude_dispatcher.role_protocol import (
     built_in_policy,
     changed_paths_between,
     check_branch,
+    compare_signatures,
     effective_rule,
     evaluate_changed_paths,
     file_text_at,
@@ -1022,3 +1031,383 @@ def test_a_new_file_with_no_base_signature_is_still_a_real_check() -> None:
     )
     assert added.signature.changes == ()
     assert added.verdict is DiffVerdict.CLEAN, added.detail
+
+
+# --------------------------------------------------------------------------- #
+# I6 — a diff this gate cannot READ is a false refusal, not an unchecked pass
+#
+# P4 ruling, 2026-08-09 (operator). After I5 a changed non-`.py` file sets
+# UNCHECKED_UNSUPPORTED_LANGUAGE, and `check_branch` maps every unchecked status
+# to UNDETERMINED on BODIES. So a BODIES branch that changed only
+# `docs/adr/0007.md`, or only `scripts/some_other_helper.sh`, or only
+# `cmd/x/main.go`, is UNDETERMINED **forever**. Nothing the branch can do makes
+# it CLEAN, the CI face never returns 0, and there is no override — the same
+# harm the 2026-08-08 ruling used to keep the new-file case out of I5's scope
+# ("a body branch whose Python work is all new files could never be CLEAN"), in
+# a case that ruling did not consider.
+#
+# RULED: the verdict is CLEAN. **It must not be silently CLEAN.**
+#
+# Why the loudness is the substance of this ruling and not decoration. The
+# signature gate is Python-only — a recorded limitation from 2026-08-04, "a
+# widened Go signature on a bodies branch passes" — and this repository's
+# operator writes Go and TypeScript. So for most real work the ruling means the
+# signature half of the protocol returns CLEAN having opened no file at all.
+# Turning a loud-but-wrong UNDETERMINED into a quiet-and-wrong CLEAN would be a
+# downgrade, so the verdict is only half of what is sealed here: the other half
+# is that the result NAMES the paths it could not read and says the reason is
+# language support.
+#
+# THE STATE NAME. Ruled: a NEW `SignatureCheckStatus` member,
+# `UNCHECKED_NO_SUPPORTED_FILE` (value `"unchecked_no_supported_file"`), and
+# NOT a reuse of `NOT_APPLICABLE`. Adding a member reddens
+# `test_every_signature_check_status_is_reachable`, which pins the enum by
+# value-set equality; that seal is amended in `test_role_protocol_diff.py` in
+# the same commit, by P4, which is the only role that may. The justification,
+# because "add a member" is the lazy answer and had to be argued for:
+#
+#   * the ruled verdict DIFFERS between a Go-only diff (CLEAN) and a
+#     Go-plus-Python diff (still UNDETERMINED — see rule 4 below). Both are
+#     UNCHECKED_UNSUPPORTED_LANGUAGE today. `check_branch` decides the verdict
+#     from the status, so with one status it would have to re-derive the
+#     distinction from the path list — i.e. spell `path.endswith(".py")` a
+#     second time, outside the function that owns that rule. Two copies of
+#     "which languages can this gate read" is precisely the drift this unit
+#     exists to remove, and the day a Go comparator lands, the copy that is not
+#     updated fails towards a silent CLEAN.
+#   * reusing NOT_APPLICABLE would give the right verdict for the wrong reason.
+#     NOT_APPLICABLE is a fact about the ROLE — "this role has no
+#     scaffolded-signature obligation", true of every role but BODIES. The new
+#     state is a fact about the LANGUAGE — "this role has the obligation and
+#     this gate cannot discharge it". They diverge the moment a Go comparator
+#     exists: the role fact survives, the language fact disappears. Collapsing
+#     them would also make every consumer that reads `not_applicable` as "no
+#     duty here" start reading it over BODIES branches, which is exactly the
+#     conflation the operator forbade.
+#   * the `UNCHECKED_` prefix is deliberate even though the verdict is CLEAN.
+#     The comparison genuinely did not run. The ruling is about what the
+#     VERDICT is worth, not about pretending the check happened, and a name
+#     that hid the non-check would reintroduce the I5 lie one level up.
+#
+# WHAT THE FIXER STILL OWNS. `_UNCHECKED_SIGNATURE_STATUSES` means "the
+# comparison did not run" and the new member is one of those, so it belongs in
+# that set and the BODIES verdict mapping needs a second, separately named
+# notion — "which unchecked states block a pass". Nothing below pins that
+# private shape; it is named here so the fix is not forced to lie in its own
+# constant to satisfy a seal.
+#
+# NOT SEALED, deliberately: which status `_compare_branch_signatures` gives an
+# EMPTY path list. `check_branch` refuses an empty diff at step 3, so no public
+# call can reach it, and a seal on a state no entrypoint can produce is a seal
+# on a private implementation detail. The reasoning, for the fixer: an empty
+# diff has no unsupported path to NAME, so it is not this state; keeping it
+# UNCHECKED_UNSUPPORTED_LANGUAGE fails closed if it ever becomes reachable.
+#
+# THE BOUNDARY THIS RULING STOPS AT, stated because the next reader will hit it
+# and should not mistake silence for a decision. Ruled here: a diff with NO
+# supported file. NOT ruled, and still UNDETERMINED with no override: a diff
+# with one `.go` and one `.py`. That is deliberate — the gate examined
+# something, and a partial check on the one role whose gate this is has been
+# refused since I5 — but it means that in a repository where Go and Python
+# coexist, a body branch touching both is blocked exactly as it was before this
+# ruling. On the operator's own tree that is the likely shape, and it is a
+# question for a fresh ruling (a per-file verdict, or a Go comparator), not
+# something to be settled by widening this one. Measured, so the size of what
+# is being left open is on the record: `compare_signatures` dispatches on
+# `path.endswith(".py")` and on nothing else, and `_scaffolded_signatures` is
+# built on `ast`, so the signature half of this protocol is 0% implemented for
+# Go and TypeScript — a widened Go signature on a bodies branch passes, exactly
+# as recorded on 2026-08-04, and this ruling does not change that. What it
+# changes is that the branch is no longer refused for it, and that the report
+# now says which files nobody read.
+#
+# HOW THE RESULT NAMES WHAT IT COULD NOT READ. `SignatureComparison` grows
+# `unsupported_paths: tuple[str, ...] = ()` — the changed paths this gate has no
+# comparator for, in diff order. A field and not only prose, because prose is
+# the claim and the field is the mechanism, and because for a wholly-unsupported
+# diff every path is unsupported, so a prose seal there is satisfied equally by
+# an honest report and by dumping the path list. The field is sealed on the
+# MIXED diff too, where those two answers differ — that is the row that makes
+# the naming non-vacuous. An unparseable `*.py` is NOT in it: that file was
+# opened and read, the gate failed on it rather than skipping it, and its reason
+# is not language support.
+# --------------------------------------------------------------------------- #
+
+
+def test_a_bodies_diff_this_gate_cannot_read_is_clean_and_names_what_it_missed(
+) -> None:
+    """The ruling, stated at `check_branch`: a BODIES diff with no Python in it
+    is CLEAN, in a named state that is neither CHECKED nor NOT_APPLICABLE, and
+    the result says which paths went unread and why.
+
+    The three probes are the operator's real tree: a Go file, a TypeScript file
+    and a document. Under today's code all three are
+    UNCHECKED_UNSUPPORTED_LANGUAGE, which `check_branch` maps to UNDETERMINED on
+    BODIES with no way out.
+
+    Red now (measured against the built worktree, 2026-08-09):
+    `AttributeError: UNCHECKED_NO_SUPPORTED_FILE` — the member does not exist;
+    and with the status assertion removed, `verdict=UNDETERMINED`.
+    Green when: the verdict is CLEAN, the status is the new member, and both
+    the comparison and the top-level result name all three paths.
+    Falsify: map the new state to CLEAN without populating
+    `unsupported_paths` — the naming assertions go red while the verdict one
+    stays green, which is the quiet-and-wrong CLEAN this ruling exists to
+    prevent. Delete the `.ts` row from whatever produces the list — the
+    equality goes red rather than the seal shrinking.
+    """
+    unreadable = ["cmd/x/main.go", "web/app.ts", "docs/adr/0007.md"]
+    result = check_branch(
+        "/x", "main", "feat/x", Role.BODIES, policy=built_in_policy(),
+        run=_run_stub(unreadable),
+    )
+
+    assert result.signature is not None
+    assert result.signature.status is (
+        SignatureCheckStatus.UNCHECKED_NO_SUPPORTED_FILE
+    ), (
+        "a diff this gate has no comparator for is its own state: not CHECKED "
+        "(nothing was compared), not NOT_APPLICABLE (bodies HAS the "
+        f"obligation), and not a permanent refusal: {result.signature.status}"
+    )
+    assert result.verdict is DiffVerdict.CLEAN, (
+        "a bodies branch that changed only files this gate cannot read was "
+        f"refused with no override available: {result.detail}"
+    )
+    assert result.violations == ()
+
+    # ...and it is not SILENTLY clean. Both halves of the report name every
+    # path that went unread, and say the reason is language support.
+    assert result.signature.unsupported_paths == tuple(unreadable), (
+        "the CLEAN verdict does not say which paths it could not read; a "
+        "claim without the mechanism is what this unit exists to remove"
+    )
+    for path in unreadable:
+        assert path in result.signature.detail, path
+        assert path in result.detail, (
+            f"{path} went unexamined and the verdict's own detail — the line "
+            f"`_print_report` puts on stdout — does not mention it: "
+            f"{result.detail}"
+        )
+    assert "signatures: checked" not in result.detail, result.detail
+    assert result.signature.status.value in result.detail, (
+        "the report must carry the state it is reporting, or a reader cannot "
+        f"tell a real check from an unread one: {result.detail}"
+    )
+
+
+def test_cannot_read_this_language_and_no_duty_here_stay_two_different_states(
+) -> None:
+    """`NOT_APPLICABLE` and the new state are not interchangeable, sealed on the
+    one input where a fix would be tempted to merge them: the SAME unreadable
+    diff, judged once as BODIES and once as SCAFFOLD.
+
+    SCAFFOLD has no scaffolded-signature obligation at all, so its answer is
+    NOT_APPLICABLE and stays so. BODIES has the obligation and could not
+    discharge it, which is a different fact and must have a different name — the
+    operator's rule 1. Both are CLEAN, so the VERDICT cannot distinguish them
+    and the status is the only place the difference can live.
+
+    Red now: the new member does not exist.
+    Green when: the two statuses differ and each is the right one.
+    Falsify: implement the ruling by returning NOT_APPLICABLE for an unreadable
+    BODIES diff — the inequality and the BODIES row both go red.
+    """
+    unreadable = ["cmd/x/main.go"]
+    as_bodies = check_branch(
+        "/x", "main", "feat/x", Role.BODIES, policy=built_in_policy(),
+        run=_run_stub(unreadable),
+    )
+    as_scaffold = check_branch(
+        "/x", "main", "feat/x", Role.SCAFFOLD, policy=built_in_policy(),
+        run=_run_stub(unreadable),
+    )
+    assert as_bodies.signature is not None
+    assert as_scaffold.signature is not None
+
+    assert as_scaffold.signature.status is SignatureCheckStatus.NOT_APPLICABLE
+    assert as_bodies.signature.status is (
+        SignatureCheckStatus.UNCHECKED_NO_SUPPORTED_FILE
+    )
+    assert as_bodies.signature.status is not as_scaffold.signature.status, (
+        "'this role has no signature duty' and 'this role has the duty and "
+        "this gate cannot read the language' were reported as one fact"
+    )
+    # The role with no duty has nothing to confess; the role with the duty does.
+    assert as_scaffold.signature.unsupported_paths == ()
+    assert as_bodies.signature.unsupported_paths == ("cmd/x/main.go",)
+
+
+def test_the_paths_named_unread_are_the_skipped_ones_not_the_whole_diff(
+) -> None:
+    """The row that makes the naming worth anything, and the row that stops the
+    ruling widening past what was ruled.
+
+    A MIXED diff — one `.py` this gate compared, one `.go` it could not read.
+    Two things at once:
+
+      * `unsupported_paths` is the Go file ALONE. A fix that satisfies the
+        naming requirement by handing back `checked_paths` passes the
+        wholly-unreadable row above (where every path is unsupported) and dies
+        here, which is why that row is not sufficient on its own.
+      * the verdict is STILL UNDETERMINED. The operator's rule 4: a diff with
+        one `.go` and one `.py` is not a diff with only `.go`. Here the gate
+        examined something, and one file it could not read alongside files it
+        could is a PARTIAL check — the I5 finding, unchanged. The existing I5
+        row `test_a_skipped_non_python_file_is_not_reported_as_a_checked_
+        signature` pins only that the STATUS is not CHECKED; nothing pinned the
+        verdict, so the new ruling could have widened into the mixed case with
+        the whole I5 section still green. It is pinned here.
+
+    The all-Python control in the same body forbids "always report something
+    unsupported".
+
+    Red now: `AttributeError: unsupported_paths` — the field does not exist.
+    Green when: the Go file alone is named, the verdict is UNDETERMINED, and an
+    all-Python diff names nothing and reports CHECKED.
+    Falsify: name every changed path instead of the skipped ones — the first
+    equality goes red. Extend the CLEAN ruling to any diff containing an
+    unreadable file — the UNDETERMINED assertion goes red.
+    """
+    blobs = {"main:src/app.py": _STUB_PY, "feat/x:src/app.py": _STUB_PY}
+
+    mixed = check_branch(
+        "/x", "main", "feat/x", Role.BODIES, policy=built_in_policy(),
+        run=_run_stub(["src/app.py", "cmd/x/main.go"], blobs),
+    )
+    assert mixed.signature is not None
+    assert mixed.signature.unsupported_paths == ("cmd/x/main.go",), (
+        "the report must name the file the gate could not read and only that "
+        f"file: {mixed.signature.unsupported_paths}"
+    )
+    assert mixed.signature.status is not SignatureCheckStatus.CHECKED
+    assert mixed.signature.status is not (
+        SignatureCheckStatus.UNCHECKED_NO_SUPPORTED_FILE
+    ), (
+        "a diff in which one file WAS compared is not a diff with no supported "
+        "file in it; the new state must not absorb the partial-check case"
+    )
+    assert mixed.verdict is DiffVerdict.UNDETERMINED, (
+        "the 2026-08-09 ruling covers a diff this gate cannot read AT ALL. A "
+        "diff it read half of is the I5 partial check, and a partial check on "
+        f"the one role whose gate that is, is not a pass: {mixed.detail}"
+    )
+
+    all_python = check_branch(
+        "/x", "main", "feat/x", Role.BODIES, policy=built_in_policy(),
+        run=_run_stub(["src/app.py"], blobs),
+    )
+    assert all_python.signature is not None
+    assert all_python.signature.unsupported_paths == (), (
+        "the control: a diff the gate read in full has nothing to confess, or "
+        "the row above is satisfied by always naming something"
+    )
+    assert all_python.signature.status is SignatureCheckStatus.CHECKED
+    assert all_python.verdict is DiffVerdict.CLEAN
+
+
+def test_the_per_file_comparator_names_the_file_it_could_not_read() -> None:
+    """The aggregate and the per-file contract agree about the naming, the same
+    way I5 made them agree about the status.
+
+    `compare_signatures` already answers UNCHECKED_UNSUPPORTED_LANGUAGE for a
+    non-Python path and already puts the path in `detail`. The new field is the
+    machine-readable half of that same fact, so it is populated in the one
+    function that KNOWS a file was skipped for its language — and the aggregate
+    unions rather than re-deriving. An unparseable Python file is the control:
+    it was opened and read, the gate failed ON it rather than skipping it, and
+    its reason is not language support.
+
+    Red now: `AttributeError: unsupported_paths`.
+    Green when: the unsupported rows name their path and the unparseable row
+    names none.
+    Falsify: populate the field for every non-CHECKED status — the unparseable
+    row goes red.
+    """
+    go = compare_signatures("cmd/x/main.go", "package main\n", "package main\n")
+    assert go.status is SignatureCheckStatus.UNCHECKED_UNSUPPORTED_LANGUAGE
+    assert go.unsupported_paths == ("cmd/x/main.go",)
+
+    ts = compare_signatures("web/app.ts", "export const a = 1;\n", "const a=2;\n")
+    assert ts.status is SignatureCheckStatus.UNCHECKED_UNSUPPORTED_LANGUAGE
+    assert ts.unsupported_paths == ("web/app.ts",)
+
+    unparseable = compare_signatures("src/m.py", "def broken(:\n", _STUB_PY)
+    assert unparseable.status is SignatureCheckStatus.UNCHECKED_UNPARSEABLE
+    assert unparseable.unsupported_paths == (), (
+        "an unparseable Python file was read, not skipped for its language; "
+        "naming it as unsupported would tell the reader to go write a "
+        "comparator that already exists"
+    )
+
+    checked = compare_signatures("src/m.py", _STUB_PY, _STUB_PY)
+    assert checked.status is SignatureCheckStatus.CHECKED
+    assert checked.unsupported_paths == ()
+
+
+def test_the_ci_face_clears_a_go_only_branch_and_names_the_file_it_could_not_read(
+    git_repo: Path,
+) -> None:
+    """The ruling end to end, through the real script, real git and a real
+    checkout — because the harm is in CI, not in a stub.
+
+    A BODIES branch whose only change is `cmd/x/main.go`: ordinary Go work, no
+    forbidden path, nothing this gate has any comparator for. Today
+    `scripts/check_body_branch.sh` exits 3 on it and prints UNDETERMINED, and no
+    commit the author can write changes that. This is the operator's own
+    workload — Go and TypeScript — so it is the shape the protocol actually
+    meets, and it is sealed against the entrypoint CI runs rather than against
+    `check_branch` alone: exit 0 is the whole of the ruling's benefit, and the
+    named paths on stdout are the whole of its price.
+
+    Red now (measured, 2026-08-09): rc=3, stdout carries `UNDETERMINED`.
+    Green when: rc=0, the headline says CLEAN, and stdout still names
+    `cmd/x/main.go` as a file that was not read.
+    Falsify: return CLEAN with `unsupported_paths` empty and no detail — rc
+    goes green and every naming assertion goes red. Keep the refusal — the rc
+    assertion goes red.
+    """
+    import os
+    import sys
+
+    src_root = Path(__file__).resolve().parent.parent / "src"
+    _git(["checkout", "-q", "-b", "feat/x"], git_repo)
+    (git_repo / "cmd" / "x").mkdir(parents=True)
+    (git_repo / "cmd" / "x" / "main.go").write_text(
+        "package main\n\nfunc Widened(a int, b int) {}\n", encoding="utf-8"
+    )
+    _git(["add", "."], git_repo)
+    _git(["commit", "-q", "-m", "go work, which this gate cannot read"], git_repo)
+
+    script = Path(__file__).resolve().parent.parent / "scripts" / "check_body_branch.sh"
+    proc = subprocess.run(
+        ["bash", str(script), "main", "feat/x", "bodies"],
+        cwd=str(git_repo),
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHON": sys.executable, "PYTHONPATH": str(src_root)},
+        timeout=180,
+    )
+    assert proc.returncode == 0, (
+        "a bodies branch doing ordinary Go work is refused by the CI face and "
+        "no commit its author can write will clear it — a false refusal with "
+        f"no override\nstdout={proc.stdout}\nstderr={proc.stderr}"
+    )
+    assert "check_body_branch: CLEAN role=bodies" in proc.stdout, proc.stdout
+    # Twice, and the count is the whole assertion. `_print_report` lists every
+    # path under "changed paths examined:" whatever happened to it, so a single
+    # occurrence is printed by a gate that read the file and by one that never
+    # opened it alike — measured (2026-08-09): with both the per-path detail and
+    # the verdict's own detail stripped, `"cmd/x/main.go" in stdout` was still
+    # true and this seal stayed green. A seal two different answers satisfy is
+    # not a seal.
+    assert proc.stdout.count("cmd/x/main.go") >= 2, (
+        "the branch was cleared and the only mention of the one file it "
+        "changed is the bare path listing every run prints; nothing on stdout "
+        f"says that file was never read\nstdout={proc.stdout}"
+    )
+    assert SignatureCheckStatus.UNCHECKED_NO_SUPPORTED_FILE.value in proc.stdout, (
+        "the report announces CLEAN without announcing that the signature half "
+        f"of the check did not run\nstdout={proc.stdout}"
+    )
+    assert "scaffolded signatures: checked" not in proc.stdout, proc.stdout
