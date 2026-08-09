@@ -2112,6 +2112,32 @@ class SignatureCheckStatus(Enum):
         not finish, so on BODIES this still refuses (D1-inputs I5) — "I can
         read this language and this file is broken" is not "I cannot read
         this language", and the per-file ruling touches only the second.
+    UNCHECKED_COMPARATOR_UNAVAILABLE
+        A comparator this gate HAS could not RUN: the ``go`` binary is missing
+        or unusable, the packaged helper is absent, died, timed out, or
+        answered with a document this protocol does not recognise. Every
+        member of :class:`ComparatorFault` maps here and nowhere else — see
+        :func:`signature_status_for_fault`, which owns that mapping.
+
+        A fact about the MACHINE, and the third distinct kind of "not
+        compared" this enum now carries. Its two neighbours are a fact about
+        the LANGUAGE (permanent, nobody can fix it by committing) and a fact
+        about the FILE (the branch author fixes it). This one is fixed by
+        whoever owns the image, and neither of the other two names them.
+
+        BLOCKING on BODIES, and this is the member's whole reason for
+        existing rather than reusing UNCHECKED_UNSUPPORTED_LANGUAGE: that
+        status is promoted to UNCHECKED_NO_SUPPORTED_FILE on a diff with
+        nothing readable in it, and UNCHECKED_NO_SUPPORTED_FILE is CLEAN. Give
+        a missing ``go`` binary the language answer and a broken CI image
+        silently clears every Go branch it builds, for as long as the image
+        stays broken — the loudly-wrong refusal the 2026-08-09 ruling removed,
+        replaced by a quietly-wrong pass, which is the trade that ruling was
+        careful NOT to make. It is therefore in
+        :data:`_BODIES_BLOCKING_SIGNATURE_STATUSES`, and ranked FIRST in
+        :data:`_SIGNATURE_STATUS_PRECEDENCE` so no neighbour's clearing status
+        can outrank it on a mixed diff (P4, 2026-08-09 — the rank's own
+        rationale is at the precedence tuple).
     UNCHECKED_NO_SUPPORTED_FILE
         **Nothing** in the diff is a file this gate has a comparator for — a
         Go-only, TypeScript-only or docs-only branch. Distinct from both of
@@ -2146,6 +2172,7 @@ class SignatureCheckStatus(Enum):
     CHECKED = "checked"
     UNCHECKED_UNSUPPORTED_LANGUAGE = "unchecked_unsupported_language"
     UNCHECKED_UNPARSEABLE = "unchecked_unparseable"
+    UNCHECKED_COMPARATOR_UNAVAILABLE = "unchecked_comparator_unavailable"
     UNCHECKED_NO_SUPPORTED_FILE = "unchecked_no_supported_file"
     NOT_APPLICABLE = "not_applicable"
 
@@ -2561,6 +2588,33 @@ class ComparatorUnavailable(ComparatorError):
 _HELPER_TIMEOUT_SECONDS = 30
 
 
+#: Fault -> reportable status, one row per :class:`ComparatorFault` member,
+#: written out rather than defaulted. Every row is the same answer today and
+#: that is the point of writing them: see :func:`signature_status_for_fault`
+#: for why a single ``return`` is refused here, and
+#: ``test_every_comparator_fault_has_a_row_and_a_new_one_raises`` for the seal.
+_FAULT_SIGNATURE_STATUS: dict[ComparatorFault, SignatureCheckStatus] = {
+    ComparatorFault.TOOLCHAIN_MISSING: (
+        SignatureCheckStatus.UNCHECKED_COMPARATOR_UNAVAILABLE
+    ),
+    ComparatorFault.TOOLCHAIN_UNUSABLE: (
+        SignatureCheckStatus.UNCHECKED_COMPARATOR_UNAVAILABLE
+    ),
+    ComparatorFault.HELPER_MISSING: (
+        SignatureCheckStatus.UNCHECKED_COMPARATOR_UNAVAILABLE
+    ),
+    ComparatorFault.HELPER_FAILED: (
+        SignatureCheckStatus.UNCHECKED_COMPARATOR_UNAVAILABLE
+    ),
+    ComparatorFault.HELPER_TIMEOUT: (
+        SignatureCheckStatus.UNCHECKED_COMPARATOR_UNAVAILABLE
+    ),
+    ComparatorFault.HELPER_OUTPUT_INVALID: (
+        SignatureCheckStatus.UNCHECKED_COMPARATOR_UNAVAILABLE
+    ),
+}
+
+
 def signature_status_for_fault(fault: ComparatorFault) -> SignatureCheckStatus:
     """The ONE mapping from a comparator fault to a reportable status.
 
@@ -2568,19 +2622,32 @@ def signature_status_for_fault(fault: ComparatorFault) -> SignatureCheckStatus:
 
       ``SignatureCheckStatus.UNCHECKED_COMPARATOR_UNAVAILABLE``
 
-    — a status that **does not exist yet**, and cannot be added by P1. See "The
-    P4 amendment this unit requires" below. There is no second row: every fault
-    in that enum is an environment fault, they share a verdict and they share a
-    remediation (fix the machine, not the branch), so splitting them across
-    statuses would put a distinction in the status that the FAULT already
-    carries. The fault travels in the detail; the status carries the verdict.
+    There is no second row: every fault in that enum is an environment fault,
+    they share a verdict and they share a remediation (fix the machine, not the
+    branch), so splitting them across statuses would put a distinction in the
+    status that the FAULT already carries. The fault travels in the detail; the
+    status carries the verdict.
 
-    **Totality.** A :class:`ComparatorFault` member with no row here raises
-    rather than returning a default. A fault that fell out of the bottom into
-    ``UNCHECKED_UNSUPPORTED_LANGUAGE`` would be promoted to
-    UNCHECKED_NO_SUPPORTED_FILE on a Go-only diff and clear the branch — the
-    broken-CI-image fail-open in one line. There is no permissive default here
-    and there must never be one.
+    **Totality, and why it is spelled as a TABLE and not as one ``return``**
+    (P4, 2026-08-09). Every row of that table says the same thing today, so an
+    unconditional ``return UNCHECKED_COMPARATOR_UNAVAILABLE`` would be shorter
+    and would pass every test written against today's six faults. It is refused
+    for one reason: a function with no rows has no row that can be MISSING, so
+    the seventh :class:`ComparatorFault` — added by whoever writes the
+    TypeScript comparator, in a unit that has not read this docstring — would
+    be absorbed silently at whatever the single return happens to say. Today
+    that absorption is harmless because there is only one answer; the day a
+    fault appears that should NOT block (a comparator legitimately skipping a
+    generated file, say) the silent absorption is a fail-open with nobody's
+    name on it. The table makes the seventh fault a loud
+    :class:`RoleProtocolError` on the first call, which is a decision somebody
+    has to make rather than one the code makes for them. This is the same
+    discipline :func:`_worst_signature_status` applies to statuses.
+
+    A fault that fell out of the bottom into ``UNCHECKED_UNSUPPORTED_LANGUAGE``
+    would be promoted to UNCHECKED_NO_SUPPORTED_FILE on a Go-only diff and
+    clear the branch — the broken-CI-image fail-open in one line. There is no
+    permissive default here and there must never be one.
 
     **The BODIES verdict.** UNCHECKED_COMPARATOR_UNAVAILABLE is BLOCKING: it
     belongs in both :data:`_UNCHECKED_SIGNATURE_STATUSES` (the comparison did
@@ -2590,41 +2657,86 @@ def signature_status_for_fault(fault: ComparatorFault) -> SignatureCheckStatus:
     promotable to UNCHECKED_NO_SUPPORTED_FILE, which is what makes it different
     from an unsupported language in the only way that shows up in a verdict.
 
-    **The bookkeeping that makes the non-promotion true**, because it is not
-    automatic — :func:`_compare_branch_signatures` promotes when it examined
-    NOTHING and skipped at least one path for its language. A path whose
-    comparator exists and faulted counts as **examined**: the gate tried to read
-    it. So a Go-only diff on a machine with no ``go`` has ``examined == 1``, no
+    **The bookkeeping that makes the non-promotion true.**
+    :func:`_compare_branch_signatures` promotes when it examined NOTHING and
+    skipped at least one path for its language. A path whose comparator exists
+    and faulted counts as **examined** — the gate tried to read it — so a
+    Go-only diff on a machine with no ``go`` has ``examined == 1``, no
     promotion, and UNDETERMINED. The same path contributes NOTHING to
     ``unsupported_paths``, so the two mechanisms agree: it was not skipped for
     its language and it is not reported as such.
 
-    **The P4 amendment this unit requires, flagged and NOT made here.** Adding
-    the member reddens ``test_every_signature_check_status_is_reachable``
+    **P4, 2026-08-09: the above is CORRECT as a conclusion and WRONG about
+    which half does the work.** It was checked by breaking each half in a clone
+    and reading the verdict, rather than by reading the argument. Both halves
+    are also already true and cost nothing: ``examined`` is incremented for
+    every path a registry row CLAIMED, before ``compare_signatures`` is called
+    and whatever it answers; and the aggregate extends ``unsupported_paths``
+    only from ``_supported_language_refusal``'s refusal document, never from a
+    comparison's, so a faulted path has no route into that list at all. What
+    needed adding was not code but SEALS, because both properties are
+    structural and a P3 refactor can undo either without touching a line that
+    looks like a gate.
+
+    Measured (BODIES; the ``.go`` row's comparator raises TOOLCHAIN_MISSING)::
+
+        broken           go-only faulted   .go faulted + .sql unreadable
+        ---------------- ----------------  ----------------------------
+        nothing          undetermined      undetermined
+        (a) unsup_paths  undetermined      undetermined
+        (b) examined     undetermined      CLEAN  <- fail-open
+        (a) and (b)      CLEAN  <- open    CLEAN  <- fail-open
+        rank demoted     undetermined      CLEAN  <- fail-open
+
+    Three corrections fall out:
+
+      * **(a) alone is not a verdict property.** A fault filed in
+        ``unsupported_paths`` does not clear anything on its own; it produces a
+        report that calls a broken toolchain "a language this gate has no
+        comparator for", which is a lie with a future in it, but the branch is
+        still refused. It is sealed as an honesty requirement, not as the
+        fail-open.
+      * **(b) alone IS the fail-open, and not on the diff the scaffold cited.**
+        The Go-only diff survives (b) being broken, because with nothing in
+        ``unsupported_paths`` the promotion's second half cannot fire either.
+        The diff that falls over is the MIXED one, where an innocent ``.sql``
+        supplies ``unsupported_paths`` and the miscounted fault supplies
+        ``examined == 0``. A seal written only against the Go-only case — the
+        case the scaffold argued from — would have been green with (b) broken.
+      * **The RANK is a third, independent mechanism**, and the one the
+        scaffold could not have known about: it predates the ranked fold. With
+        both halves correct, demoting this status below
+        UNCHECKED_UNSUPPORTED_LANGUAGE clears the same mixed diff by a
+        different route. See :data:`_SIGNATURE_STATUS_PRECEDENCE`.
+
+    All five rows are sealed in ``tests/test_role_protocol_faults.py``.
+
+    **The P4 amendment this required.** Adding the member reddens
+    ``test_every_signature_check_status_is_reachable``
     (``tests/test_role_protocol_diff.py``), which pins
     :class:`SignatureCheckStatus` by VALUE-SET EQUALITY — deliberately, so that
     a sixth member cannot land without a ruling, exactly as the fifth could not.
-    P1 may not amend a seal and P3 may not either. So this function is a
-    contract with no body: the member, the amendment (a sixth literal in the
-    written value set plus a PRODUCING call that reaches the new state — never
-    ``produced.add(...)``, never ``>=`` on the set) and this body land in ONE
-    P4-authored commit, or none of them do.
+    P1 may not amend a seal and P3 may not either, so the member, the seal
+    amendment (a sixth literal in the written value set plus a PRODUCING call
+    that reaches the new state — never ``produced.add(...)``, never ``>=`` on
+    the set) and this body landed in ONE P4-authored commit. They did; this is
+    it.
 
-    Until then no fault is reachable: the only fingerprinter that can raise one
-    is :class:`GoSignatureFingerprinter`, which is not implemented and not
-    enrolled. The ``NotImplementedError`` is therefore dead code today and a
-    hard error the moment it is not — which is the correct failure for "this
-    build cannot even name what just happened".
+    No fault is reachable in this build through an enrolled row: the only
+    fingerprinter that can raise one is :class:`GoSignatureFingerprinter`,
+    which is not implemented and not enrolled. It is reachable through the
+    registry seam, which is how it is sealed and how the status is produced.
     """
-    raise NotImplementedError(
-        "signature_status_for_fault: SignatureCheckStatus has no member for a "
-        f"comparator fault ({fault.value}). Adding "
-        "UNCHECKED_COMPARATOR_UNAVAILABLE requires the P4 amendment to "
-        "test_every_signature_check_status_is_reachable described in this "
-        "function's contract; a fault must never fall back to an existing "
-        "member, because UNCHECKED_UNSUPPORTED_LANGUAGE is promoted to CLEAN "
-        "on a diff this gate can read nothing in"
-    )
+    status = _FAULT_SIGNATURE_STATUS.get(fault)
+    if status is None:
+        raise RoleProtocolError(
+            f"comparator fault {fault!r} has no row in the fault -> signature "
+            "status table; a fault absorbed into whatever the previous row "
+            "said is a verdict nobody chose, and the one it would most likely "
+            "be absorbed into (UNCHECKED_UNSUPPORTED_LANGUAGE) is promoted to "
+            "CLEAN on a diff this gate can read nothing in. Classify it here"
+        )
+    return status
 
 
 class SignatureFingerprinter(Protocol):
@@ -3958,33 +4070,46 @@ def check_branch(
     infer wrongly.** Read it as the specification; the two frozensets below are
     its mechanism.
 
-      ============================== ============= ==================
-      status                         BODIES        every other role
-      ============================== ============= ==================
-      CHECKED (no changes)           CLEAN         n/a
-      CHECKED (with changes)         VIOLATION     n/a
-      UNCHECKED_UNPARSEABLE          UNDETERMINED  n/a
-      UNCHECKED_UNSUPPORTED_LANGUAGE UNDETERMINED  n/a
-      UNCHECKED_NO_SUPPORTED_FILE    CLEAN         n/a
-      UNCHECKED_COMPARATOR_UNAVAIL.  UNDETERMINED  n/a
-      NOT_APPLICABLE                 n/a           CLEAN
-      ============================== ============= ==================
+      ================================ ============= ================
+      status                           BODIES        every other role
+      ================================ ============= ================
+      CHECKED (no changes)             CLEAN         n/a
+      CHECKED (with changes)           VIOLATION     n/a
+      UNCHECKED_UNPARSEABLE            UNDETERMINED  n/a
+      UNCHECKED_COMPARATOR_UNAVAILABLE UNDETERMINED  n/a
+      UNCHECKED_UNSUPPORTED_LANGUAGE   CLEAN [1]     n/a
+      UNCHECKED_NO_SUPPORTED_FILE      CLEAN [1]     n/a
+      NOT_APPLICABLE                   n/a           CLEAN
+      ================================ ============= ================
 
-    The last row of the unchecked group does not exist yet: see
-    :func:`signature_status_for_fault` for the member it names, why every
-    :class:`ComparatorFault` maps to it, and the P4 amendment that must land
-    with it. It is UNDETERMINED and not CLEAN because a toolchain that could not
-    run is not a language nobody can read: the first is an environment fault
-    somebody can fix and the second is a permanent fact about this gate. Give
-    the fault the language answer and a CI image with no ``go`` binary clears
-    every Go branch it builds — loudly wrong replaced by quietly wrong, which is
-    the trade the 2026-08-09 ruling was careful NOT to make.
+      [1] and the paths it could not read are named — in
+          ``signature.unsupported_paths`` AND on the verdict's own detail
+          line. That naming is what the 2026-08-09 ruling bought the CLEAN
+          with; a CLEAN on either of those rows that confesses nothing is the
+          ruling misapplied.
 
-    None of the four UNDETERMINED rows is terminal for the branch: each names
-    something an author or an operator can act on (fix the source, fix the
-    image, write the comparator) and re-running clears it. UNCHECKED_NO_SUPPORTED
-    _FILE is the one state nothing the branch commits can change, which is
-    exactly why it is CLEAN — that was the ruling.
+    P4, 2026-08-09: the two CLEAN rows above were spelled UNDETERMINED when
+    this table arrived with the D2 scaffold, which was branched before the
+    per-file verdict landed. Corrected against
+    :data:`_BODIES_BLOCKING_SIGNATURE_STATUSES`, which is the mechanism, and
+    sealed as DATA in ``tests/test_role_protocol_faults.py`` so the table and
+    the frozenset cannot drift again — a specification table that disagrees
+    with the code is worse than no table, because it is the thing a reader
+    reaches for instead of the code.
+
+    UNCHECKED_COMPARATOR_UNAVAILABLE is UNDETERMINED and not CLEAN because a
+    toolchain that could not run is not a language nobody can read: the first
+    is an environment fault somebody can fix and the second is a permanent fact
+    about this gate. Give the fault the language answer and a CI image with no
+    ``go`` binary clears every Go branch it builds — loudly wrong replaced by
+    quietly wrong, which is the trade the 2026-08-09 ruling was careful NOT to
+    make. See :func:`signature_status_for_fault`.
+
+    Neither UNDETERMINED row is terminal for the branch: each names something
+    an author or an operator can act on (fix the source, fix the image) and
+    re-running clears it. UNCHECKED_NO_SUPPORTED_FILE is the one state nothing
+    the branch commits can change, which is exactly why it is CLEAN — that was
+    the ruling.
 
     LEGACY returns CLEAN when the diff read succeeded, was non-empty and
     touched no floor path: a pre-protocol task has no immutable paths, and this
@@ -4395,6 +4520,7 @@ _UNCHECKED_SIGNATURE_STATUSES: frozenset[SignatureCheckStatus] = frozenset(
     {
         SignatureCheckStatus.UNCHECKED_UNSUPPORTED_LANGUAGE,
         SignatureCheckStatus.UNCHECKED_UNPARSEABLE,
+        SignatureCheckStatus.UNCHECKED_COMPARATOR_UNAVAILABLE,
         SignatureCheckStatus.UNCHECKED_NO_SUPPORTED_FILE,
     }
 )
@@ -4405,19 +4531,33 @@ _UNCHECKED_SIGNATURE_STATUSES: frozenset[SignatureCheckStatus] = frozenset(
 #: unread files are unread for their LANGUAGE did not run the comparison over
 #: them and is nonetheless CLEAN.
 #:
-#: One member, since the per-file ruling. What refuses is a check that started
-#: on a file this gate is responsible for and could not finish; what does not is
-#: a file this gate was never able to open in the first place — named instead,
-#: in :attr:`SignatureComparison.unsupported_paths`, because no commit its
-#: author can write would clear a refusal for it.
+#: What refuses is a check that started on a file this gate is responsible for
+#: and could not finish; what does not is a file this gate was never able to
+#: open in the first place — named instead, in
+#: :attr:`SignatureComparison.unsupported_paths`, because no commit its author
+#: can write would clear a refusal for it.
 #:
 #: Spelled as the blocking set rather than as `_UNCHECKED_SIGNATURE_STATUSES -
 #: {the cleared ones}` so a future member has to be classified deliberately, and
 #: so that the two sets can be read side by side and seen to differ by exactly
 #: the states the rulings cleared.
+#:
+#: **Two members, since D2** (P4, 2026-08-09). It was one, and the second is
+#: UNCHECKED_COMPARATOR_UNAVAILABLE, which reaches the same conclusion by a
+#: different route: the check did not merely fail to finish, it never started,
+#: because the machine could not run the reader. The test above — "did this gate
+#: START on a file it is responsible for" — is the one that puts it here, and it
+#: is worth stating that the OTHER plausible test would have got it wrong. "Can
+#: the branch author fix it?" answers NO for a fault (the author cannot install
+#: ``go`` on the runner) and NO for an unsupported language, which would have
+#: grouped the fault with the CLEARING state and handed a broken image the
+#: authority to clear every Go branch it built. Remediability is not the
+#: criterion. Responsibility is: this gate CLAIMED the file, so silence about it
+#: is a claim it did not earn.
 _BODIES_BLOCKING_SIGNATURE_STATUSES: frozenset[SignatureCheckStatus] = frozenset(
     {
         SignatureCheckStatus.UNCHECKED_UNPARSEABLE,
+        SignatureCheckStatus.UNCHECKED_COMPARATOR_UNAVAILABLE,
     }
 )
 
@@ -4435,13 +4575,46 @@ _BODIES_BLOCKING_SIGNATURE_STATUSES: frozenset[SignatureCheckStatus] = frozenset
 #: migration sorted. So the blocking reason outranks the language one and the
 #: language one outranks CHECKED, per file rather than by position.
 #:
-#: Only the three statuses a per-file comparison can PRODUCE are ranked.
+#: Only the statuses a per-file comparison can PRODUCE are ranked.
 #: UNCHECKED_NO_SUPPORTED_FILE is the aggregate's own conclusion about the whole
 #: diff and NOT_APPLICABLE is a fact about the role; neither is ever handed to
 #: :func:`_worst_signature_status`, which raises rather than guess a rank for a
 #: state it was not taught — a new member must be classified here deliberately,
 #: not absorbed at whatever end of the order it happens to land.
+#:
+#: **UNCHECKED_COMPARATOR_UNAVAILABLE ranks FIRST** (P4, 2026-08-09, D2). Two
+#: separate questions, answered separately, because only the first has a forced
+#: answer:
+#:
+#: 1. *Above UNCHECKED_UNSUPPORTED_LANGUAGE — forced, and the reason the member
+#:    exists.* Below it, a mixed diff of one faulted ``.go`` and one unreadable
+#:    ``.sql`` folds to the language status, which clears BODIES: the broken CI
+#:    image gets its clean bill of health back through the fold instead of
+#:    through the promotion. Neither the ``examined`` counter nor
+#:    ``unsupported_paths`` reaches that case — measured — so this line is the
+#:    only thing refusing it.
+#: 2. *Above UNCHECKED_UNPARSEABLE — a judgement, since both block and the
+#:    verdict is UNDETERMINED either way.* What the rank decides is which reason
+#:    the report LEADS with, and the tie-break is which claim the reader can
+#:    trust. UNPARSEABLE was produced by working apparatus: the gate read the
+#:    file and established a fact. A fault says the apparatus itself did not
+#:    run, so nothing about the faulted paths was established at all and the
+#:    completeness of the whole run is in question — including, on a Go/Python
+#:    diff, whether the Go files hid a real violation. Leading with the
+#:    trustworthy sub-claim while the instrument is broken understates the
+#:    situation. It is also the report that names the right owner: an author
+#:    told only "your file does not parse" fixes it, re-pushes, and hits a wall
+#:    nobody mentioned, whereas a broken image is a FLEET condition that wants
+#:    finding on the first branch rather than on the first branch with clean
+#:    Python. Both reasons still reach the reader — ``details`` accumulates
+#:    every per-file line — so what the rank moves is the headline, and the
+#:    headline should be the one nobody can act on from inside the diff.
+#:
+#: The two are recorded apart on purpose: a later unit may re-argue 2 (nothing
+#: fails open if it flips) but must not re-argue 1 without reopening the whole
+#: member.
 _SIGNATURE_STATUS_PRECEDENCE: tuple[SignatureCheckStatus, ...] = (
+    SignatureCheckStatus.UNCHECKED_COMPARATOR_UNAVAILABLE,
     SignatureCheckStatus.UNCHECKED_UNPARSEABLE,
     SignatureCheckStatus.UNCHECKED_UNSUPPORTED_LANGUAGE,
     SignatureCheckStatus.CHECKED,
@@ -4615,29 +4788,33 @@ def _compare_branch_signatures(
     the per-file verdict).** The scaffold was branched while this paragraph
     still read "the FIRST non-CHECKED status wins", so it described the
     examined/``unsupported_paths`` bookkeeping as the whole of what keeps a
-    fault off the CLEAN path. It is not, any more: there are now THREE
-    mechanisms and a fault has to clear all three.
+    fault off the CLEAN path. Under ranking it is not. THREE mechanisms now
+    stand between a comparator fault and a CLEAN, and the diff that exercises
+    all three is the MIXED one — one faulted ``.go`` beside one unreadable
+    ``.sql`` — not the Go-only diff the scaffold argued from:
 
-      1. ``examined`` is incremented for it, so the promotion to
-         UNCHECKED_NO_SUPPORTED_FILE cannot fire (this loop).
-      2. It is absent from ``unsupported_paths``, so the promotion's other half
-         cannot fire either (:func:`_comparator_unavailable_comparison`).
-      3. It is RANKED, and ranked ABOVE UNCHECKED_UNSUPPORTED_LANGUAGE in
-         :data:`_SIGNATURE_STATUS_PRECEDENCE`, so on a MIXED diff the fold does
-         not let a neighbour's clearing status win. Neither 1 nor 2 reaches
-         that case: one ``.go`` that faulted beside one ``.sql`` that nobody
-         can read has ``examined == 1`` and one entry in ``unsupported_paths``,
-         so no promotion fires — and a rank BELOW the language status would
-         then hand back UNCHECKED_UNSUPPORTED_LANGUAGE anyway and clear the
-         branch, with the broken image invisible. The rank, not the
-         bookkeeping, is what refuses that diff.
+      1. ``examined`` counts the faulted path, so the promotion to
+         UNCHECKED_NO_SUPPORTED_FILE cannot fire (this loop). **Necessary for
+         the mixed diff**: the ``.sql`` already supplies the promotion's other
+         half, so a miscounted fault is enough to clear the branch on its own.
+      2. The faulted path is absent from ``unsupported_paths``
+         (:func:`_comparator_unavailable_comparison`, and this loop, which
+         extends that list only from a language refusal). Necessary for the
+         Go-only diff and for the honesty of the report; measured NOT to be
+         sufficient or independently load-bearing for the verdict.
+      3. The status is RANKED ABOVE UNCHECKED_UNSUPPORTED_LANGUAGE in
+         :data:`_SIGNATURE_STATUS_PRECEDENCE`. Necessary for the mixed diff and
+         reached only when 1 and 2 hold: with no promotion, the fold decides,
+         and a demoted rank hands back the ``.sql``'s clearing status.
 
-         Omitting the rank entirely is fail-CLOSED rather than fail-open —
-         :func:`_worst_signature_status` raises on an unranked status and
-         :func:`check_branch` maps the raise to UNDETERMINED — so the trap here
-         is not forgetting the rank, which is loud. It is choosing the wrong
-         one, which is silent. That is why the rank is sealed against a mixed
-         diff and not merely asserted as a tuple.
+    The measured verdict for every one of those broken, singly and together, is
+    tabulated at :func:`signature_status_for_fault` and sealed in
+    ``tests/test_role_protocol_faults.py``. Note that OMITTING the rank
+    entirely is fail-CLOSED — :func:`_worst_signature_status` raises on an
+    unranked status and :func:`check_branch` maps the raise to UNDETERMINED —
+    so the trap is not forgetting to rank a new status, which is loud, but
+    ranking it wrongly, which is silent. That is why the rank is sealed against
+    a mixed diff and not merely asserted as a tuple.
 
     Raises :class:`RoleProtocolError` on an empty ``changed_paths``.
     :func:`check_branch` refuses an empty diff at step 3, so no public call can
