@@ -1075,6 +1075,17 @@ def test_a_new_file_with_no_base_signature_is_still_a_real_check() -> None:
 #     "which languages can this gate read" is precisely the drift this unit
 #     exists to remove, and the day a Go comparator lands, the copy that is not
 #     updated fails towards a silent CLEAN.
+#
+#     P4, 2026-08-09: the PREMISE of this bullet has been overruled — under the
+#     per-file ruling both diffs are CLEAN, so the verdicts no longer differ.
+#     The conclusion survives, on stronger ground: with the verdict unable to
+#     tell "read nothing" from "read some", the STATUS is now the ONLY place
+#     that distinction can live, and collapsing the two would leave the gate
+#     with no way to report which it did. Re-pinned independently in
+#     `test_role_protocol_perfile.py`
+#     ::test_read_nothing_read_some_and_no_duty_stay_three_states. The
+#     one-copy-of-the-language-rule argument is untouched and is why
+#     `_supported_language_refusal` is the single dispatch point.
 #   * reusing NOT_APPLICABLE would give the right verdict for the wrong reason.
 #     NOT_APPLICABLE is a fact about the ROLE — "this role has no
 #     scaffolded-signature obligation", true of every role but BODIES. The new
@@ -1103,17 +1114,33 @@ def test_a_new_file_with_no_base_signature_is_still_a_real_check() -> None:
 # diff has no unsupported path to NAME, so it is not this state; keeping it
 # UNCHECKED_UNSUPPORTED_LANGUAGE fails closed if it ever becomes reachable.
 #
-# THE BOUNDARY THIS RULING STOPS AT, stated because the next reader will hit it
-# and should not mistake silence for a decision. Ruled here: a diff with NO
-# supported file. NOT ruled, and still UNDETERMINED with no override: a diff
-# with one `.go` and one `.py`. That is deliberate — the gate examined
-# something, and a partial check on the one role whose gate this is has been
-# refused since I5 — but it means that in a repository where Go and Python
-# coexist, a body branch touching both is blocked exactly as it was before this
-# ruling. On the operator's own tree that is the likely shape, and it is a
-# question for a fresh ruling (a per-file verdict, or a Go comparator), not
-# something to be settled by widening this one. Measured, so the size of what
-# is being left open is on the record: `compare_signatures` dispatches on
+# THE BOUNDARY THIS RULING STOPPED AT — **AND HOW IT WAS CLOSED.** This section
+# ruled only the diff with NO supported file, and left the diff with one `.go`
+# and one `.py` refused, calling it "a question for a fresh ruling (a per-file
+# verdict, or a Go comparator), not something to be settled by widening this
+# one".
+#
+# That fresh ruling arrived the same day. **Operator, 2026-08-09: the verdict is
+# PER FILE.** Each changed path is judged by whether its language is supported;
+# supported files are compared and their changes decide the verdict; unsupported
+# files are named and do not block. The ruling, the argument for it (every
+# comparator added later is then a MONOTONIC improvement — enrolling a language
+# can turn a CLEAN into a VIOLATION for a real finding but can never newly block
+# a class of branch) and its seals are in `tests/test_role_protocol_perfile.py`.
+#
+# So the paragraph that used to stand here argued a position that has been
+# overruled, and `test_the_paths_named_unread_are_the_skipped_ones_not_the_whole_diff`
+# below — whose verdict assertion was this section's rule 4 in force — is
+# AMENDED to CLEAN by P4, 2026-08-09. Measured before amending, by turning the
+# per-file rows green against a throwaway reference implementation in a clone
+# and running the whole suite: that one assertion is the ONLY thing in the suite
+# that contradicts the per-file ruling. Nothing else in this section moves —
+# UNCHECKED_NO_SUPPORTED_FILE keeps its own state and its own argument, and the
+# naming discipline this section created is what the per-file ruling now rests
+# its whole weight on.
+#
+# The measurement this section made of what it was leaving open still stands and
+# is what the per-file ruling acted on: `compare_signatures` dispatches on
 # `path.endswith(".py")` and on nothing else, and `_scaffolded_signatures` is
 # built on `ast`, so the signature half of this protocol is 0% implemented for
 # Go and TypeScript — a widened Go signature on a bodies branch passes, exactly
@@ -1131,6 +1158,51 @@ def test_a_new_file_with_no_base_signature_is_still_a_real_check() -> None:
 # the naming non-vacuous. An unparseable `*.py` is NOT in it: that file was
 # opened and read, the gate failed on it rather than skipping it, and its reason
 # is not language support.
+#
+# FOR WHOEVER LANDS THE FIRST GO COMPARATOR — P4, 2026-08-09, and a standing
+# convention for this unit, ENDORSED after re-measuring it.
+#
+# A seal that probes "a language this gate cannot read" with a `.go` file is a
+# seal that reddens the day Go becomes readable, on behaviour that is CORRECT.
+# That is a false alarm, and a suite that cries wolf at the first comparator is
+# a suite whose assertions get deleted by the person landing the comparator —
+# which is how a real seal dies. THE CONVENTION: a seal about unreadability
+# must probe with a language that will still be unreadable when the comparator
+# lands. `.sql` (781 files) and `.java` (316) have no plausible signature
+# comparator in this codebase — there is no scaffolded-stub discipline in a
+# migration or a POJO to preserve — and a `.md` file has no signatures at all.
+# `.go` (2,288) and `.ts` (996) are the obvious first enrolments and are the
+# wrong probe. `tests/test_role_protocol_perfile.py` was written to this
+# convention and it works: with a stub Go comparator enrolled, ZERO of its nine
+# rows redden.
+#
+# The existing Go-probing seals are the debt. MEASURED (2026-08-09, throwaway
+# clone carrying the per-file ruling and a stub Go comparator that moves `.go`
+# from unsupported to supported and finds nothing) — EIGHT redden, not the seven
+# an earlier scaffold reported:
+#
+#   test_role_protocol_diff.py
+#     ::test_an_unchecked_comparison_is_named_never_reported_as_unchanged
+#       [cmd/classify/main.go-...]
+#     ::test_every_signature_check_status_is_reachable
+#   test_role_protocol_inputs.py
+#     ::test_a_skipped_non_python_file_is_not_reported_as_a_checked_signature
+#     ::test_a_bodies_diff_this_gate_cannot_read_is_clean_and_names_what_it_missed
+#     ::test_cannot_read_this_language_and_no_duty_here_stay_two_different_states
+#     ::test_the_paths_named_unread_are_the_skipped_ones_not_the_whole_diff
+#     ::test_the_per_file_comparator_names_the_file_it_could_not_read
+#     ::test_the_ci_face_clears_a_go_only_branch_and_names_the_file_it_could_not_read
+#
+# NONE of the eight contradicts the per-file ruling — they pin Go as unreadable,
+# which that ruling does not change — so they are untouched here and are a
+# problem for Go enrolment, not for the per-file fix. **They are re-languaged,
+# not deleted.** `test_every_signature_check_status_is_reachable` is the one to
+# read first: it pins the enum by VALUE-SET EQUALITY and produces its members by
+# CALL, and two of those producing calls are Go. Delete the Go probes there and
+# UNCHECKED_UNSUPPORTED_LANGUAGE and UNCHECKED_NO_SUPPORTED_FILE stop being
+# producible, `produced == set(SignatureCheckStatus)` reddens, and the closed-set
+# seal is gone. Swap the probes to `.sql`/`.java` and the row is untouched by
+# every future enrolment.
 # --------------------------------------------------------------------------- #
 
 
@@ -1240,8 +1312,7 @@ def test_cannot_read_this_language_and_no_duty_here_stay_two_different_states(
 
 def test_the_paths_named_unread_are_the_skipped_ones_not_the_whole_diff(
 ) -> None:
-    """The row that makes the naming worth anything, and the row that stops the
-    ruling widening past what was ruled.
+    """The row that makes the naming worth anything.
 
     A MIXED diff — one `.py` this gate compared, one `.go` it could not read.
     Two things at once:
@@ -1250,24 +1321,51 @@ def test_the_paths_named_unread_are_the_skipped_ones_not_the_whole_diff(
         naming requirement by handing back `checked_paths` passes the
         wholly-unreadable row above (where every path is unsupported) and dies
         here, which is why that row is not sufficient on its own.
-      * the verdict is STILL UNDETERMINED. The operator's rule 4: a diff with
-        one `.go` and one `.py` is not a diff with only `.go`. Here the gate
-        examined something, and one file it could not read alongside files it
-        could is a PARTIAL check — the I5 finding, unchanged. The existing I5
-        row `test_a_skipped_non_python_file_is_not_reported_as_a_checked_
-        signature` pins only that the STATUS is not CHECKED; nothing pinned the
-        verdict, so the new ruling could have widened into the mixed case with
-        the whole I5 section still green. It is pinned here.
+      * the verdict is CLEAN. The compared file decides; the file nobody can
+        read is NAMED and does not block.
 
-    The all-Python control in the same body forbids "always report something
-    unsupported".
+    AMENDED by P4 on 2026-08-09, and by P4 only. This row previously required
+    UNDETERMINED here, on the operator's rule 4 ("a diff with one `.go` and one
+    `.py` is not a diff with only `.go`"), and the I6 section header below
+    argued for leaving the mixed case refused. **The operator has closed that
+    boundary the other way**: the signature gate's verdict is PER FILE. The
+    ruling, the measured composition of the target trees that forced it, and
+    the seals for it are in `tests/test_role_protocol_perfile.py`; the boundary
+    paragraph in the I6 header carries the closure. This was a deliberate
+    assertion overruled by a later ruling, not an oversight, which is why the
+    prose it stood on is rewritten here rather than left contradicting the line
+    below it.
 
-    Red now: `AttributeError: unsupported_paths` — the field does not exist.
-    Green when: the Go file alone is named, the verdict is UNDETERMINED, and an
+    WHAT THE AMENDMENT DID NOT TOUCH, verified by mutation on 2026-08-09
+    against a throwaway reference implementation in a clone (each mutation
+    applied downward, `__pycache__` cleared before every run, restored after):
+
+      * `unsupported_paths == ("cmd/x/main.go",)` — hand back the whole changed
+        list and this row is the only place in the suite that reddens.
+      * `status is not CHECKED` — report CHECKED for the mixed diff and this
+        reddens (I5 is unchanged by the per-file ruling: a file nobody compared
+        is not a checked signature).
+      * `status is not UNCHECKED_NO_SUPPORTED_FILE` — collapse the two states
+        and this reddens. Now that BOTH verdicts are CLEAN, the status is the
+        only thing left that separates "read nothing" from "read some", so this
+        inequality carries strictly more weight after the amendment than
+        before. `test_read_nothing_read_some_and_no_duty_stay_three_states` in
+        the per-file file re-pins the same separation independently.
+      * the all-Python control — always name something and it reddens.
+
+    Each of those four was individually broken and individually restored; none
+    is carried by the verdict assertion, and none was relaxed.
+
+    Red now: CLEAN is not what today's gate answers — `check_branch` maps
+    UNCHECKED_UNSUPPORTED_LANGUAGE through `_BODIES_BLOCKING_SIGNATURE_STATUSES`
+    to UNDETERMINED on BODIES.
+    Green when: the Go file alone is named, the verdict is CLEAN, and an
     all-Python diff names nothing and reports CHECKED.
     Falsify: name every changed path instead of the skipped ones — the first
-    equality goes red. Extend the CLEAN ruling to any diff containing an
-    unreadable file — the UNDETERMINED assertion goes red.
+    equality goes red. Keep the mixed diff blocking (leave
+    UNCHECKED_UNSUPPORTED_LANGUAGE in the blocking set) — the CLEAN assertion
+    goes red, measured. Reach the CLEAN by giving the mixed diff the
+    NO_SUPPORTED_FILE state — the third assertion goes red.
     """
     blobs = {"main:src/app.py": _STUB_PY, "feat/x:src/app.py": _STUB_PY}
 
@@ -1287,10 +1385,12 @@ def test_the_paths_named_unread_are_the_skipped_ones_not_the_whole_diff(
         "a diff in which one file WAS compared is not a diff with no supported "
         "file in it; the new state must not absorb the partial-check case"
     )
-    assert mixed.verdict is DiffVerdict.UNDETERMINED, (
-        "the 2026-08-09 ruling covers a diff this gate cannot read AT ALL. A "
-        "diff it read half of is the I5 partial check, and a partial check on "
-        f"the one role whose gate that is, is not a pass: {mixed.detail}"
+    assert mixed.verdict is DiffVerdict.CLEAN, (
+        "the signature gate's verdict is PER FILE (operator, 2026-08-09): the "
+        "`.py` was compared and found nothing, so it decides, and the `.go` "
+        "nobody can read is named rather than blocking. Refusing this branch "
+        "refuses the ordinary shape of a diff on a tree with 2,288 Go files "
+        f"and no Python comparator for them: {mixed.detail}"
     )
 
     all_python = check_branch(

@@ -87,11 +87,16 @@ the constant it pins: every path list and every expected tuple is written out.
 
 WHAT THESE SEALS DO **NOT** PIN, deliberately:
 
-  * which `SignatureCheckStatus` a mixed diff reports. It must not be CHECKED
-    (I5: a file nobody compared is not a checked signature) and must not be
-    UNCHECKED_NO_SUPPORTED_FILE (the gate examined something). Between those,
-    keeping UNCHECKED_UNSUPPORTED_LANGUAGE and removing it from the blocking set
-    is the obvious shape, and so is a new member; the choice is the fixer's.
+  * which `SignatureCheckStatus` a mixed diff **that clears** reports. It must
+    not be CHECKED (I5: a file nobody compared is not a checked signature) and
+    must not be UNCHECKED_NO_SUPPORTED_FILE (the gate examined something).
+    Between those, keeping UNCHECKED_UNSUPPORTED_LANGUAGE and removing it from
+    the blocking set is the obvious shape, and so is a new member; the choice is
+    the fixer's. **Scoped by P4, 2026-08-09** (the words "that clears" are the
+    amendment): a mixed diff on which a SUPPORTED file failed the check is a
+    different input and its status IS pinned, by row 3, to the reason the branch
+    was refused. See the adjudication section below — as written, this bullet
+    and row 3 read as a contradiction, and they are not one.
   * the private name of the blocking set. `_BODIES_BLOCKING_SIGNATURE_STATUSES`
     exists today; whether the per-file rule empties it, deletes it, or moves the
     decision into the aggregate is not sealed here.
@@ -116,6 +121,119 @@ being neither CHECKED nor UNCHECKED_NO_SUPPORTED_FILE, and the all-Python
 control — is still true under this ruling and must survive the amendment. Row 8
 below re-pins the status distinction independently, so that if the amendment
 takes the whole row out, the three-way separation is not lost with it.
+
+=============================================================================
+P4 ADJUDICATION — 2026-08-09. Read this before changing anything below.
+=============================================================================
+
+Everything in this section was re-measured by P4 against its own throwaway
+reference implementation in a `cp -a` clone, mutating downward, clearing
+`__pycache__` before EVERY run and restoring after. Nothing here was accepted
+on the strength of the report above.
+
+THE AMENDMENT — DONE, and it is the only one. The full suite was run against a
+per-file reference implementation with all nine rows below green: exactly ONE
+test fails, `test_the_paths_named_unread_are_the_skipped_ones_not_the_whole_diff`
+in `test_role_protocol_inputs.py`, on exactly the verdict assertion. Amending
+that one line to CLEAN takes the suite to zero failures. The other four
+assertions in that row were each broken and restored separately and each is
+load-bearing; the amended line itself reddens when the mixed diff is put back
+in the blocking set, so it can still fail. The stale prose in that row and the
+overruled boundary paragraph in the I6 section header were rewritten in the
+same commit: a seal whose prose contradicts its assertion is the drift this
+unit exists to remove, and leaving the old argument standing would have left
+the next reader with two live rulings and no way to tell which won.
+
+DISPUTE 1 — may the verdict's `detail` list every changed path? **NO. The
+assertions stand**: `"src/app.py" not in result.detail` (rows 1 and 5) and
+`stdout.count("src/app.py") == 1` (row 9) are upheld as written.
+
+  The reason is not economy of output. A `detail` that lists every changed path
+  is satisfied IDENTICALLY by an honest gate and by one that has lost track of
+  which files it skipped — the two answers are indistinguishable. That is the
+  whole reason the naming seals were placed on a mixed diff instead of a
+  wholly-unreadable one, and permitting the dump would hand back exactly the
+  vacuity the placement was chosen to remove. It would also make the field and
+  the prose disagree — `unsupported_paths` is pinned to the skipped paths alone
+  by row 1, so a detail listing everything is the gate contradicting itself on
+  one line — and it would restage the I6 failure one level down: not a silent
+  CLEAN, but a CLEAN whose confession cannot be read.
+
+  The cost to a fixer is nil, and this was checked rather than assumed.
+  `_print_report` already prints every changed path under "changed paths
+  examined:", so no information is lost by keeping `detail` to the skipped
+  ones; today's CLEAN and VIOLATION details already carry counts and not paths,
+  so the assertions forbid nothing the code does now; and the reference
+  implementation satisfies all three assertions with all nine rows green, so
+  the constraint is demonstrably satisfiable and not merely defensible.
+
+  The prohibition is correctly SCOPED and must stay scoped: it is asserted on
+  CLEAN results, where the compared file has nothing to report. Row 2 does not
+  assert it on the VIOLATION half, and it must not be extended there — a
+  VIOLATION detail naming the path of the changed symbol is the report doing
+  its job.
+
+DISPUTE 2 — is row 3's `UNCHECKED_UNPARSEABLE` in both path orders an
+over-reach into the fixer's design space? **NO. The pin stands.**
+
+  The two claims are not in conflict, because they are about different inputs,
+  and the bullet above has been amended to say so in words. "The mixed status
+  is the fixer's choice" is about a mixed diff whose supported files were
+  compared successfully and which therefore CLEARS. Row 3's diffs are mixed
+  diffs on which a supported file FAILED the check. The report must name the
+  reason the branch was refused; "unsupported language" on a branch refused for
+  a Python file that does not parse sends the author to write a SQL comparator
+  for a fault in their own Python.
+
+  The pin also does work that row 3's verdict assertion does not, which is the
+  test of whether a constraint is an over-reach. MEASURED: an implementation
+  that recovers the right verdict in BOTH orders while reporting
+  UNCHECKED_UNSUPPORTED_LANGUAGE for the refusal — the shape a fixer reaches
+  for by re-deriving the refusal in `check_branch` from the path list or the
+  prose instead of from the state — passes every other test in the suite. Row
+  3's status assertion is the only thing anywhere that catches it. And that
+  shape is precisely the second copy of "which languages can this gate read"
+  that `_supported_language_refusal` was collapsed into one place to prevent.
+
+  What row 3 does NOT pin, and must not be read as pinning: the private shape
+  of the aggregate. Rank the reasons in the loop, keep a per-file list, add a
+  field — the constraint is on the reported state for one class of input, not
+  on how it is arrived at.
+
+THE FIRST-STATUS-WINS TRAP — CONFIRMED, and row 3 is the SOLE guard. The
+cheapest per-file fix is to leave today's first-non-CHECKED-status-wins
+aggregate alone and merely drop UNCHECKED_UNSUPPORTED_LANGUAGE from the
+blocking set. Built and measured:
+
+    _bodies(["src/app.py", "db/migrate/001_bay.sql"], _UNPARSEABLE)
+        -> undetermined   unchecked_unparseable
+    _bodies(["db/migrate/001_bay.sql", "src/app.py"], _UNPARSEABLE)
+        -> CLEAN          unchecked_unsupported_language
+
+A branch whose Python does not parse is CLEARED, on nothing but where git
+happened to sort the migration. Run against the whole suite with the amendment
+applied, that fix fails ONE test: row 3. Rows 1, 2, 4, 5, 6, 7, 8 and 9 all
+pass. So the aggregate must rank the blocking reason above the language one,
+and row 3 is the entire margin between the per-file ruling and a gate that
+clears unparseable Python. **Do not weaken row 3's wording, and do not "fix"
+its second call as a duplicate of the first — the second call IS the seal.**
+
+THE PROBE-LANGUAGE CONVENTION — **ENDORSED**, as a standing convention for this
+unit and not just for this file. A seal about unreadability must be written in
+a language that will still be unreadable when the next comparator lands; `.go`
+and `.ts` are the obvious first enrolments and are therefore the wrong probe,
+and `.sql`, `.java` and `.md` are the right ones. Re-measured: with a stub Go
+comparator enrolled, EIGHT existing seals redden and ZERO of the nine rows
+below do. That is the convention paying for itself on its first test. The count
+is eight and not the seven an earlier scaffold reported; the one it missed,
+`test_role_protocol_diff.py::test_every_signature_check_status_is_reachable`,
+is the worst of them, because it pins the enum by value-set equality and
+PRODUCES its members by call, so a comparator author cannot simply delete its
+Go probes — doing so makes two statuses unproducible and destroys the
+closed-set seal. The full list and the instruction to re-language rather than
+delete are recorded in the I6 section header of `test_role_protocol_inputs.py`,
+where the person landing a comparator will be reading. None of the eight
+contradicts the per-file ruling, so none is amended here.
 """
 
 from __future__ import annotations
