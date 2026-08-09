@@ -2087,12 +2087,38 @@ class SignatureCheckStatus(Enum):
         Both revisions of every candidate file parsed; ``changes`` is
         authoritative.
     UNCHECKED_UNSUPPORTED_LANGUAGE
-        At least one changed source file is not Python, so this module cannot
-        compare its signatures. Named, not silent: an unchecked file must not
-        report as an unchanged signature. Callers surface it; the plan's Go
-        side needs its own comparator.
+        At least one changed source file is not Python **and at least one
+        was** — a PARTIAL check. This module cannot compare the first kind.
+        Named, not silent: an unchecked file must not report as an unchanged
+        signature. Callers surface it; the plan's Go side needs its own
+        comparator. On BODIES this blocks: the gate examined something and
+        could not finish (D1-inputs I5).
     UNCHECKED_UNPARSEABLE
         A revision would not parse as Python. Same reasoning.
+    UNCHECKED_NO_SUPPORTED_FILE
+        **Nothing** in the diff is a file this gate has a comparator for — a
+        Go-only, TypeScript-only or docs-only branch. Distinct from both of
+        its neighbours, by the 2026-08-09 operator ruling (see the I6 section
+        of ``tests/test_role_protocol_inputs.py``):
+
+          * not UNCHECKED_UNSUPPORTED_LANGUAGE, because the ruled VERDICT
+            differs — this one is CLEAN and the partial check is still
+            UNDETERMINED. :func:`check_branch` decides from the status, so
+            with one member it would have to re-derive the difference from the
+            path list, i.e. spell the supported-language rule a second time
+            outside :func:`_supported_language_refusal`, which owns it. Two
+            copies of "which languages can this gate read" fail towards a
+            silent CLEAN the day a Go comparator lands.
+          * not NOT_APPLICABLE, which is a fact about the ROLE ("no signature
+            duty"). This is a fact about the LANGUAGE: the role HAS the duty
+            and this gate cannot discharge it. The two diverge the moment a
+            comparator exists.
+
+        The ``UNCHECKED_`` prefix is deliberate even though the verdict is
+        CLEAN: the comparison genuinely did not run, and a name that hid that
+        would reintroduce the I5 lie one level up. What makes the CLEAN
+        honest is :attr:`SignatureComparison.unsupported_paths` and the
+        detail, not the state's name.
     NOT_APPLICABLE
         The role has no signature obligation (every role except BODIES).
     """
@@ -2100,6 +2126,7 @@ class SignatureCheckStatus(Enum):
     CHECKED = "checked"
     UNCHECKED_UNSUPPORTED_LANGUAGE = "unchecked_unsupported_language"
     UNCHECKED_UNPARSEABLE = "unchecked_unparseable"
+    UNCHECKED_NO_SUPPORTED_FILE = "unchecked_no_supported_file"
     NOT_APPLICABLE = "not_applicable"
 
 
@@ -2120,11 +2147,26 @@ class SignatureChange:
 
 @dataclass(frozen=True)
 class SignatureComparison:
-    """Result of comparing one file's signatures across two revisions."""
+    """Result of comparing one file's signatures across two revisions.
+
+    ``unsupported_paths`` is the changed paths this gate has NO comparator
+    for, in diff order — the machine-readable half of "which files did nobody
+    read". A field and not only prose, because prose is the claim and the
+    field is the mechanism: for a wholly-unreadable diff every path is
+    unsupported, so a report that dumps the whole path list is
+    indistinguishable from an honest one. They differ only on a MIXED diff,
+    where this field names the skipped file alone (2026-08-09 ruling).
+
+    An unparseable ``*.py`` is NOT in it. That file was opened and read; the
+    gate failed ON it rather than skipping it, and its reason is not language
+    support — naming it would send the reader off to write a comparator that
+    already exists.
+    """
 
     status: SignatureCheckStatus
     changes: tuple[SignatureChange, ...] = ()
     detail: str = ""
+    unsupported_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -2250,6 +2292,40 @@ def _is_test_path(path: str) -> bool:
     return seal_verify_mod.is_test_path(path)
 
 
+def _supported_language_refusal(path: str) -> SignatureComparison | None:
+    """None when this gate can read ``path``; otherwise the refusal, complete.
+
+    **THE one place that answers "which languages can this gate read".** It was
+    spelled twice — once here in :func:`compare_signatures`, once again in
+    :func:`_compare_branch_signatures`'s loop — and the 2026-08-09 ruling made
+    a third copy tempting, because :func:`check_branch`'s verdict now differs
+    between a Go-only diff and a Go-plus-Python one. That difference is
+    carried by the STATUS instead (see
+    :attr:`SignatureCheckStatus.UNCHECKED_NO_SUPPORTED_FILE`), and the two
+    pre-existing copies were collapsed into this function rather than joined
+    by a third, so the day a Go comparator lands there is exactly one
+    ``endswith`` to update and no copy left behind to fail towards a silent
+    CLEAN.
+
+    Returns the whole :class:`SignatureComparison` rather than a bool so the
+    status, the prose and ``unsupported_paths`` are written once and cannot
+    drift from each other: the aggregate unions what this returns instead of
+    re-deriving any part of it.
+    """
+    if path.endswith(".py"):
+        return None
+    return SignatureComparison(
+        status=SignatureCheckStatus.UNCHECKED_UNSUPPORTED_LANGUAGE,
+        detail=(
+            f"{path} is not a Python file; this module compares Python "
+            "signatures only, so this file's signatures were compared by "
+            "nothing and will not be reported as unchanged — the plan's "
+            "non-Python side needs its own comparator"
+        ),
+        unsupported_paths=(path,),
+    )
+
+
 def compare_signatures(
     path: str, base_text: str | None, head_text: str | None
 ) -> SignatureComparison:
@@ -2280,8 +2356,12 @@ def compare_signatures(
     over-strict rule here would make honest work fail.
 
     Statuses: both texts parse → CHECKED. ``path`` is not ``*.py`` →
-    UNCHECKED_UNSUPPORTED_LANGUAGE with the path in ``detail``. Either text
-    fails to parse → UNCHECKED_UNPARSEABLE. ``base_text`` None **and
+    UNCHECKED_UNSUPPORTED_LANGUAGE with the path in ``detail`` **and in
+    ``unsupported_paths``** — this is the one function that knows a file was
+    skipped for its language, so it is where that fact is recorded, and
+    :func:`_compare_branch_signatures` unions rather than re-deriving. Either
+    text fails to parse → UNCHECKED_UNPARSEABLE, and ``unsupported_paths``
+    stays empty: that file was read, not skipped. ``base_text`` None **and
     ``head_text`` not None** (the file is new on the branch) → CHECKED with no
     changes: a file that did not exist at base has no scaffolded signature to
     preserve. ``head_text`` None (the file was deleted) → every base symbol is
@@ -2312,15 +2392,9 @@ def compare_signatures(
         choice: UNDETERMINED is the honest verdict for a path git named but
         neither tree holds.
     """
-    if not path.endswith(".py"):
-        return SignatureComparison(
-            status=SignatureCheckStatus.UNCHECKED_UNSUPPORTED_LANGUAGE,
-            detail=(
-                f"{path} is not a Python file; this module compares Python "
-                "signatures only and will not report an unchecked file as "
-                "unchanged"
-            ),
-        )
+    unsupported = _supported_language_refusal(path)
+    if unsupported is not None:
+        return unsupported
 
     if base_text is None and head_text is None:
         raise RoleDiffError(
@@ -2790,7 +2864,11 @@ def check_branch(
          branch's work from, not ``base_ref``'s tip (D1-inputs I4). Other
          roles get :data:`SignatureCheckStatus.NOT_APPLICABLE`. A changed path
          this module did not compare leaves the aggregate UNCHECKED_\\*, which
-         on BODIES is UNDETERMINED (D1-inputs I5).
+         on BODIES is UNDETERMINED (D1-inputs I5) — **except** when NO changed
+         path is in a language this gate can read, which is
+         :data:`SignatureCheckStatus.UNCHECKED_NO_SUPPORTED_FILE` and is CLEAN
+         (2026-08-09 operator ruling, D1 I6). See
+         :data:`_BODIES_BLOCKING_SIGNATURE_STATUSES`.
       5b. for BODIES only, :func:`changed_paths_between` again — the path gate
          ran against the revision step 3 read, and step 5 re-resolved
          ``branch_ref`` for every blob. A branch that advanced in between is
@@ -2801,11 +2879,23 @@ def check_branch(
     Verdict: VIOLATION if any path violation or any signature change;
     UNDETERMINED on any :class:`RoleDiffError`, unreadable policy, missing
     required ``spec``, empty diff, a branch that moved mid-check, or a
-    signature status of UNCHECKED_\\* **when the role is BODIES** — an
-    unchecked signature on the role whose gate that is, is not a pass; CLEAN
-    only when the diff was read, was non-empty, still described the same
-    branch when the reads finished, produced no violation, and every
-    applicable check ran.
+    BLOCKING unchecked signature status **when the role is BODIES** — a
+    signature check that started and could not finish, on the role whose gate
+    that is, is not a pass; CLEAN otherwise, when the diff was read, was
+    non-empty, still described the same branch when the reads finished, and
+    produced no violation.
+
+    The one unchecked status that does NOT refuse a bodies branch (2026-08-09
+    operator ruling, D1 I6): UNCHECKED_NO_SUPPORTED_FILE — a diff in which not
+    one path is in a language this gate has a comparator for. The check did not
+    start, rather than failing partway, and refusing it was a false refusal
+    with no override: nothing the branch could commit would clear it, because
+    the whole of its work is in a language this module cannot read. **The CLEAN
+    is not silent.** ``detail`` — the line :func:`_print_report` puts on stdout
+    — carries the unread paths and the language reason, alongside
+    :attr:`SignatureComparison.unsupported_paths`, because the signature gate
+    is Python-only and on a Go/TypeScript tree this verdict means the gate
+    opened no file at all.
 
     LEGACY returns CLEAN when the diff read succeeded, was non-empty and
     touched no floor path: a pre-protocol task has no immutable paths, and this
@@ -3049,7 +3139,10 @@ def check_branch(
             f"{len(violations)} forbidden path(s) and "
             f"{len(signature.changes)} changed scaffolded signature(s)"
         )
-    elif role is Role.BODIES and signature.status in _UNCHECKED_SIGNATURE_STATUSES:
+    elif (
+        role is Role.BODIES
+        and signature.status in _BODIES_BLOCKING_SIGNATURE_STATUSES
+    ):
         verdict = DiffVerdict.UNDETERMINED
         detail = (
             f"the scaffolded-signature comparison did not run "
@@ -3066,6 +3159,21 @@ def check_branch(
             f"{len(FLOOR_GLOBS)}-glob floor; signatures: "
             f"{signature.status.value}"
         )
+        if signature.status is SignatureCheckStatus.UNCHECKED_NO_SUPPORTED_FILE:
+            # The price of the 2026-08-09 ruling, paid on the same line that
+            # announces the pass. A CLEAN reached without opening a file says
+            # so HERE, in the verdict's own detail — the line `_print_report`
+            # puts on stdout and the only line a caller that logs the verdict
+            # keeps — and not only in the signature sub-report a caller may
+            # never reach for. The signature gate is Python-only, so on a
+            # Go/TypeScript tree this is most branches: a quiet CLEAN would be
+            # a downgrade from the loud-but-wrong refusal it replaces.
+            detail += (
+                "; NOTHING in this diff is in a language this gate can read, "
+                "so no scaffolded signature was compared and none could have "
+                "been caught — unread: "
+                + ", ".join(signature.unsupported_paths)
+            )
 
     return RoleDiffResult(
         verdict=verdict,
@@ -3165,6 +3273,22 @@ _UNCHECKED_SIGNATURE_STATUSES: frozenset[SignatureCheckStatus] = frozenset(
     {
         SignatureCheckStatus.UNCHECKED_UNSUPPORTED_LANGUAGE,
         SignatureCheckStatus.UNCHECKED_UNPARSEABLE,
+        SignatureCheckStatus.UNCHECKED_NO_SUPPORTED_FILE,
+    }
+)
+
+#: The subset of those that REFUSE a bodies branch. A second, separately named
+#: notion, because after the 2026-08-09 ruling "the comparison did not run" and
+#: "the branch is not cleared" stopped being the same question: a diff with no
+#: supported file in it did not run the comparison and is nonetheless CLEAN.
+#: Spelled as the blocking set rather than as `_UNCHECKED_SIGNATURE_STATUSES -
+#: {the new one}` so a future member has to be classified deliberately, and so
+#: that the two sets can be read side by side and seen to differ by exactly the
+#: state the ruling created.
+_BODIES_BLOCKING_SIGNATURE_STATUSES: frozenset[SignatureCheckStatus] = frozenset(
+    {
+        SignatureCheckStatus.UNCHECKED_UNSUPPORTED_LANGUAGE,
+        SignatureCheckStatus.UNCHECKED_UNPARSEABLE,
     }
 )
 
@@ -3240,6 +3364,23 @@ def _compare_branch_signatures(
     otherwise would make a body branch whose Python work is all new files
     permanently UNDETERMINED, for work that could not have violated anything.
 
+    **A diff with NO supported file in it is its own state** (P4, 2026-08-09).
+    When the loop examined nothing and skipped at least one path for its
+    language, the aggregate is UNCHECKED_NO_SUPPORTED_FILE rather than
+    UNCHECKED_UNSUPPORTED_LANGUAGE, and :func:`check_branch` clears it. The
+    distinction is exactly "did this gate examine anything": one `.go` beside
+    one `.py` is the partial check I5 refuses and keeps the older status; one
+    `.go` alone is a gate that never started. It is derived from this loop's
+    own counters, not from a second reading of the path list — see
+    :func:`_supported_language_refusal`, which is the only place the language
+    rule is spelled.
+
+    ``unsupported_paths`` collects, in diff order, every path skipped for its
+    language — taken verbatim from the per-file refusal, so the aggregate and
+    :func:`compare_signatures` cannot disagree about what went unread. On a
+    mixed diff it holds the skipped file ALONE, which is what distinguishes an
+    honest report from one that hands back the whole path list.
+
     Aggregation: the FIRST non-CHECKED status wins and the changes of every
     file are unioned, so one unparseable file cannot hide a changed signature
     in another and a partial check never reports as CHECKED.
@@ -3247,22 +3388,23 @@ def _compare_branch_signatures(
     status = SignatureCheckStatus.CHECKED
     changes: list[SignatureChange] = []
     details: list[str] = []
+    unsupported_paths: list[str] = []
     merge_base: str | None = None
     examined = 0
 
     for path in changed_paths:
-        if not path.endswith(".py"):
+        refusal = _supported_language_refusal(path)
+        if refusal is not None:
             # NOT `continue` on its own: this module cannot compare this file,
             # nothing else did either, and an unchecked file must not report as
-            # an unchanged signature. Same state `compare_signatures` gives
-            # this path, named at the aggregate so the two agree.
+            # an unchanged signature. The state, the prose and the named path
+            # all come from `compare_signatures`' own refusal, so the aggregate
+            # and the per-file contract cannot disagree and the aggregate does
+            # not spell the language rule a second time.
             if status is SignatureCheckStatus.CHECKED:
-                status = SignatureCheckStatus.UNCHECKED_UNSUPPORTED_LANGUAGE
-            details.append(
-                f"{path} is not a Python file; its signatures were compared by "
-                "nothing, and the plan's non-Python side needs its own "
-                "comparator"
-            )
+                status = refusal.status
+            details.append(refusal.detail)
+            unsupported_paths.extend(refusal.unsupported_paths)
             continue
         if merge_base is None:
             merge_base = _merge_base_of(
@@ -3283,19 +3425,47 @@ def _compare_branch_signatures(
         if comparison.detail:
             details.append(comparison.detail)
 
-    if status is SignatureCheckStatus.CHECKED and not examined:
+    if not examined and unsupported_paths:
+        # NOTHING in this diff is a file this gate has a comparator for. That
+        # is not the partial check I5 refuses — it is its own state, and
+        # `check_branch` clears it (2026-08-09 ruling). Derived from the
+        # counters this loop already keeps, not from a second reading of the
+        # path list: `examined` and `unsupported_paths` are both written by the
+        # one branch that consults `_supported_language_refusal`, so "which
+        # languages can this gate read" is still asked in exactly one place.
+        #
+        # The promotion is unconditional on the status because it cannot
+        # collide: reaching here with `examined == 0` means no comparison ran,
+        # so the only status the loop can have set is the refusal's own.
+        status = SignatureCheckStatus.UNCHECKED_NO_SUPPORTED_FILE
+        # The aggregate fact, on top of the per-path lines above, which have
+        # already named every one of them — so this counts rather than
+        # re-listing. The enumeration a reader needs on one line is in
+        # `check_branch`'s own detail, which is the line that reaches stdout
+        # and a caller's log.
+        details.append(
+            f"not one of the {len(unsupported_paths)} changed path(s) is in a "
+            "language this gate can read, so no signature was compared at all"
+        )
+    elif status is SignatureCheckStatus.CHECKED and not examined:
         # Only reachable for an EMPTY path list — a non-empty diff with no
-        # Python in it has already been answered by the loop. `check_branch`
-        # refuses an empty diff before it gets here, so this is the state
-        # named rather than left to fall through to CHECKED, which would be
-        # "I compared them and they agree" about nothing at all.
+        # Python in it is the branch above. `check_branch` refuses an empty
+        # diff before it gets here, so this is the state named rather than
+        # left to fall through to CHECKED, which would be "I compared them and
+        # they agree" about nothing at all. It is deliberately NOT the new
+        # 2026-08-09 state: an empty diff has no unsupported path to name, and
+        # the blocking status is the one that fails closed if this ever
+        # becomes reachable.
         status = SignatureCheckStatus.UNCHECKED_UNSUPPORTED_LANGUAGE
         details.append(
             "no path was examined, so there is no comparison to report"
         )
 
     return SignatureComparison(
-        status=status, changes=tuple(changes), detail="; ".join(details)
+        status=status,
+        changes=tuple(changes),
+        detail="; ".join(details),
+        unsupported_paths=tuple(unsupported_paths),
     )
 
 
