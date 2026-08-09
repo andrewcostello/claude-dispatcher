@@ -73,6 +73,16 @@ it. There is now a real floor tier, matched at decision time against the paths
 git reported and applying to all five roles, LEGACY included; see
 :data:`FLOOR_GLOBS`.
 
+The floor's first version held the policy FILE and not the code, which made it
+exactly as strong as the weakest role's write permission on `src/`: a branch
+could delete the floor from this module and then walk through it (measured,
+2026-08-08). Since 2026-08-09 the floor also holds the gate's own two halves —
+this module and `scripts/check_body_branch.sh` — and the plan-time point
+covers the whole floor rather than the config file alone (P4 ruling, recorded
+on `_DECLARATIONS_THAT_NAME_THE_FLOOR`). Declaring a floor path claims the
+right to WRITE it; an adjudication may still RULE on the gate while writing
+only its seals.
+
 The one escape hatch is a reviewed edit to :data:`DEFAULT_ROLE_RULES` on the
 protected base, i.e. a plan amendment. That is intentional: see the
 `**/generated/**` note on :data:`DEFAULT_ROLE_RULES`.
@@ -122,8 +132,17 @@ Wired by P3 (invariant 7 — each claim here has its call site):
     It deliberately does not *use* the parsed policy: `load` reads the
     working tree, and the gating path takes its policy from the protected
     base (:func:`load_role_policy_from_base`, invariant 6).
-  * `scripts/check_body_branch.sh` → execs :func:`main`, so CI, PR time and
-    any hand invocation go through :func:`check_branch`.
+  * `scripts/check_body_branch.sh` → runs :func:`main` and passes its exit
+    code through, so CI, PR time and any hand invocation go through
+    :func:`check_branch`. Since 2026-08-09 that script also decides WHICH copy
+    of this module runs: when its own `src/` lies inside the checkout under
+    judgement — the shape CI has when this repository judges itself — the
+    branch supplied the library, so the script reads the gate's code out of
+    `<base>`'s object store instead, exactly as it already reads the policy
+    and the task row from there. The one hole it cannot close is itself: a
+    branch that rewrites the script owns the exit code, so the CALLER must
+    invoke a copy of the script the branch cannot write. Stated in the script;
+    this repository tracks no CI configuration to pin it against.
 
 **NOT wired, stated rather than implied:** the post-implementer call the P1
 rulings name as the point that actually saves a build cycle —
@@ -299,10 +318,18 @@ class RoleRule:
     ``globs`` is gitignore-style, matched by :func:`first_matching_glob` via
     ``risk.matches_any_glob`` — this module owns no second glob translator.
     Patterns are written ``**/x/**`` rather than ``x/**``: a leading ``**/``
-    matches zero directories in that translation, so one pattern covers both
-    the root and nested layouts and a root-anchored twin would be dead weight
-    (the same one-pattern-one-fact reasoning as
-    ``risk.AUTHORITY_FLOOR_GLOBS``).
+    matches zero directories in ``risk._glob_to_regex``'s translation
+    (``(?:.*/)?``), so one pattern covers both the root and the vendored
+    ``sub/project/...`` layout and a root-anchored twin would be dead weight —
+    one pattern, one fact. :data:`FLOOR_GLOBS` is spelled the same way for the
+    same reason.
+
+    (Until 2026-08-09 this paragraph cited ``risk.AUTHORITY_FLOOR_GLOBS`` as the
+    precedent. No such constant exists in this repository — it lives on an
+    unmerged branch — so the citation sent the reader to code they could not
+    read, which is the claim-without-mechanism shape this unit exists to
+    remove. Replaced with the mechanism itself and with a constant that is
+    actually here.)
 
     ``rationale`` is not decoration: it is the disposition a violated row
     prints, so an agent that trips the gate is told *why* the path is not its
@@ -353,9 +380,15 @@ class RoleRule:
 #     overrides gave no escape. Any unit with generated output carries that
 #     gate in its seals instead.
 #   * ``**/roles/*.md`` + ``**/reviewer_prompts/**`` + ``**/verifier_prompts/**``
-#     for BODIES and SEALS: those are machine-read instructions that the review
-#     gate executes, so editing them edits the reviewer that is about to judge
-#     the change.
+#     for all three DENY_GLOBS roles: those are machine-read instructions that
+#     the review gate executes, so editing them edits the reviewer that is about
+#     to judge the change. SCAFFOLD was added 2026-08-09 (S4): the rationale is
+#     not role-specific, and `src/` — where both prompt directories live — is
+#     the one tree SCAFFOLD exists to write in, so it was the role with the
+#     easiest reach and the only one without the deny. `_shared.md` is
+#     concatenated into EVERY reviewer seat's prompt by
+#     `cross_family_reviewer._load_prompt`, which is why the directory glob is
+#     the right grain and a list of family names would have missed it.
 DEFAULT_ROLE_RULES: tuple[RoleRule, ...] = (
     RoleRule(
         role=Role.SCAFFOLD,
@@ -370,11 +403,15 @@ DEFAULT_ROLE_RULES: tuple[RoleRule, ...] = (
             "**/testdata/**",
             "**/conftest.py",
             "**/.dispatcher.yaml",
+            "**/roles/*.md",
+            "**/reviewer_prompts/**",
+            "**/verifier_prompts/**",
         ),
         rationale=(
-            "P1 must not write the seals it will be judged by; a scaffold "
-            "author who writes tests re-creates the circular oracle that "
-            "produced 24 vacuous seals (plan §5)"
+            "P1 must not write the seals it will be judged by, nor the "
+            "instructions the reviewer and verifier execute over its own "
+            "branch; a scaffold author who writes tests re-creates the "
+            "circular oracle that produced 24 vacuous seals (plan §5)"
         ),
     ),
     RoleRule(
@@ -480,7 +517,32 @@ FORBIDDEN_DISPUTED_GLOBS: frozenset[str] = frozenset(
 #: at plan time instead of after a build cycle. Adding a glob here without
 #: adding its literal rows to ``tests/test_role_protocol_floor.py`` reddens the
 #: totality seal.
-FLOOR_GLOBS: tuple[str, ...] = ("**/.dispatcher.yaml",)
+#:
+#: **The gate's own two halves, 2026-08-09 (S2/S3).** The config file was on the
+#: floor and the code that *implements* every rule the config merely tunes was
+#: not, so the floor was exactly as strong as the weakest role's write
+#: permission on ``src/``: a branch that rewrote this module deleted the floor
+#: and then walked through it. The entrypoint is here for the same reason and
+#: cannot be separated from it — protecting the library while leaving the script
+#: writable protects nothing (the branch replaces the script), and protecting
+#: the script while leaving the library writable protects nothing either (the
+#: script faithfully executes the branch's rules). One artifact, two files.
+#:
+#: Both are spelled PATH-QUALIFIED rather than by basename (P4 ruling,
+#: 2026-08-09, recorded on ``_FLOOR_ROWS``): a floor has no override, so
+#: ``**/role_protocol.py`` would permanently forbid every file that ever
+#: acquires that basename — a vendored copy, a fixture, an unrelated future
+#: module — with nothing able to buy it back. The leading ``**/`` still covers
+#: the nested layout, because it matches zero directories in this module's
+#: translation. The move-then-edit bypass is closed by
+#: :func:`changed_paths_between`'s ``--no-renames``: each side of a move is its
+#: own path, and the old path is a floor hit, so a sanctioned move must edit
+#: this tuple on the protected base rather than happen silently.
+FLOOR_GLOBS: tuple[str, ...] = (
+    "**/.dispatcher.yaml",
+    "**/scripts/check_body_branch.sh",
+    "**/src/claude_dispatcher/role_protocol.py",
+)
 
 #: What a floor violation prints, and deliberately NOT the violated role's own
 #: rationale. For :data:`Role.ADJUDICATE` the role's rationale reads "its
@@ -491,12 +553,15 @@ FLOOR_GLOBS: tuple[str, ...] = ("**/.dispatcher.yaml",)
 #: for every role, so the report never has to be read against the rule it did
 #: not come from.
 FLOOR_RATIONALE = (
-    "this path is on the non-overridable floor (FLOOR_GLOBS): it configures "
-    "every role's permissions, so no role may write it — not through the "
-    "repo's `roles:` section, not through a per-task `immutable_paths:` or "
-    "`disputed_paths:` declaration, and not by omitting `role:` and becoming "
-    "legacy. The floor is matched against the path git reported, so how the "
-    "declaration was spelled makes no difference"
+    "this path is on the non-overridable floor (FLOOR_GLOBS): it is part of "
+    "the machinery that decides every role's permissions — the policy file, "
+    "the module that implements the rules, or the entrypoint that runs them — "
+    "so no role may write it, not through the repo's `roles:` section, not "
+    "through a per-task `immutable_paths:` or `disputed_paths:` declaration, "
+    "and not by omitting `role:` and becoming legacy. A change here is a "
+    "reviewed edit on the protected base (a plan amendment), never a line in "
+    "the branch being judged. The floor is matched against the path git "
+    "reported, so how the declaration was spelled makes no difference"
 )
 
 
