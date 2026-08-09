@@ -57,12 +57,56 @@ _EXCLUDE_REF = re.compile(
 )
 
 
+# The `diff --git` header, in both the forms git emits. Git prints the pair
+# verbatim when it can, and wraps EACH side in `"` with C-style escaping when
+# either side contains a `"`, a `\` or a control character:
+#
+#     diff --git a/tests/ab.py b/tests/ab.py
+#     diff --git "a/tests/a\nb.py" "b/tests/a\nb.py"
+#
+# The quoted form is not optional and not configurable: `core.quotePath`
+# governs only whether high bytes become `\NNN`, so `-c core.quotePath=false`
+# — the obvious reflex — changes nothing here (measured). Each side is allowed
+# its own form rather than assuming both-or-neither, so a future git that
+# quotes only the side that needs it still parses.
+_DIFF_HEADER = re.compile(
+    r'^diff --git (?:"a/(?:\\.|[^"\\])*"|a/.+?)'
+    r' (?:"b/(?P<quoted>(?:\\.|[^"\\])*)"|b/(?P<plain>.+))$',
+    re.MULTILINE,
+)
+
+
 def changed_files(diff: str) -> list[str]:
-    """The b-side paths of every file the diff touches, in order."""
+    r"""The b-side paths of every file the diff touches, in order.
+
+    A quoted header is decoded to the path it names, because a rendering is
+    not a path: `"a/tests/a\nb.py"` is fifteen characters ending in `.py"`,
+    and left undecoded it equals no path `git grep` will ever return, so the
+    diff's OWN file gets reported back to the panel as an unexamined sibling
+    surface. Decoding goes through `role_protocol._unquote_git_path`, the
+    repo's one reverse of git's `quote_c_style` — a second decoder here would
+    be free to drift from it, and this defect is what drift looks like.
+
+    Fail open, as the whole module is: a rendering that will not decode
+    (`_unquote_git_path` raises on a truncated octal run, a non-UTF-8 byte
+    string or an escape git does not emit) is kept verbatim rather than
+    dropped or raised. It then matches no real path, which costs the panel one
+    line of noise — never a suppressed sibling surface.
+    """
+    from .role_protocol import _unquote_git_path
+
     out: list[str] = []
-    for m in re.finditer(r"^diff --git a/.+? b/(.+)$", diff, re.MULTILINE):
-        if m.group(1) not in out:
-            out.append(m.group(1))
+    for m in _DIFF_HEADER.finditer(diff):
+        quoted = m.group("quoted")
+        if quoted is None:
+            path = m.group("plain")
+        else:
+            try:
+                path = _unquote_git_path(f'"b/{quoted}"')[2:]
+            except ValueError:
+                path = quoted
+        if path not in out:
+            out.append(path)
     return out
 
 
