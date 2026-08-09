@@ -2091,24 +2091,35 @@ class SignatureCheckStatus(Enum):
         was** — a PARTIAL check. This module cannot compare the first kind.
         Named, not silent: an unchecked file must not report as an unchanged
         signature. Callers surface it; the plan's Go side needs its own
-        comparator. On BODIES this blocks: the gate examined something and
-        could not finish (D1-inputs I5).
+        comparator. On BODIES this **does not block** (2026-08-09 operator
+        ruling, the per-file verdict): the files this gate could read were
+        compared and they decide, and the ones it could not are named instead
+        — see :data:`_BODIES_BLOCKING_SIGNATURE_STATUSES`. It keeps the
+        ``UNCHECKED_`` prefix because part of the diff genuinely went unread,
+        and the naming, not the verdict, is what makes that honest.
     UNCHECKED_UNPARSEABLE
-        A revision would not parse as Python. Same reasoning.
+        A revision of a file this gate CAN read would not parse as Python.
+        The check started on a file this module is responsible for and could
+        not finish, so on BODIES this still refuses (D1-inputs I5) — "I can
+        read this language and this file is broken" is not "I cannot read
+        this language", and the per-file ruling touches only the second.
     UNCHECKED_NO_SUPPORTED_FILE
         **Nothing** in the diff is a file this gate has a comparator for — a
         Go-only, TypeScript-only or docs-only branch. Distinct from both of
         its neighbours, by the 2026-08-09 operator ruling (see the I6 section
         of ``tests/test_role_protocol_inputs.py``):
 
-          * not UNCHECKED_UNSUPPORTED_LANGUAGE, because the ruled VERDICT
-            differs — this one is CLEAN and the partial check is still
-            UNDETERMINED. :func:`check_branch` decides from the status, so
-            with one member it would have to re-derive the difference from the
-            path list, i.e. spell the supported-language rule a second time
-            outside :func:`_supported_language_refusal`, which owns it. Two
-            copies of "which languages can this gate read" fail towards a
-            silent CLEAN the day a Go comparator lands.
+          * not UNCHECKED_UNSUPPORTED_LANGUAGE. Under I6 the ruled VERDICTS
+            differed; under the per-file ruling that replaced it (2026-08-09)
+            both are CLEAN, so the verdict no longer separates them and the
+            STATUS is the only place the difference can live: "this gate
+            examined NOTHING" versus "this gate examined something and skipped
+            the rest". Collapsing them would also force :func:`check_branch`
+            to re-derive the difference from the path list, i.e. spell the
+            supported-language rule a second time outside
+            :func:`_supported_language_refusal`, which owns it. Two copies of
+            "which languages can this gate read" fail towards a silent CLEAN
+            the day a Go comparator lands.
           * not NOT_APPLICABLE, which is a fact about the ROLE ("no signature
             duty"). This is a fact about the LANGUAGE: the role HAS the duty
             and this gate cannot discharge it. The two diverge the moment a
@@ -2297,15 +2308,29 @@ def _supported_language_refusal(path: str) -> SignatureComparison | None:
 
     **THE one place that answers "which languages can this gate read".** It was
     spelled twice — once here in :func:`compare_signatures`, once again in
-    :func:`_compare_branch_signatures`'s loop — and the 2026-08-09 ruling made
-    a third copy tempting, because :func:`check_branch`'s verdict now differs
-    between a Go-only diff and a Go-plus-Python one. That difference is
-    carried by the STATUS instead (see
-    :attr:`SignatureCheckStatus.UNCHECKED_NO_SUPPORTED_FILE`), and the two
-    pre-existing copies were collapsed into this function rather than joined
-    by a third, so the day a Go comparator lands there is exactly one
-    ``endswith`` to update and no copy left behind to fail towards a silent
-    CLEAN.
+    :func:`_compare_branch_signatures`'s loop — and the two 2026-08-09 rulings
+    each made a third copy tempting. Under I6 it was that
+    :func:`check_branch`'s verdict differed between a Go-only diff and a
+    Go-plus-Python one; under the per-file ruling that replaced it both are
+    CLEAN and it is the STATUS that differs (see
+    :attr:`SignatureCheckStatus.UNCHECKED_NO_SUPPORTED_FILE`). Either way the
+    distinction is carried in the state and :func:`check_branch` reads the
+    state, never the suffix. The two pre-existing copies were collapsed here
+    rather than joined by a third, so the day a Go comparator lands there is
+    exactly one ``endswith`` to update and no copy left behind to fail towards
+    a silent CLEAN.
+
+    MEASURED, and the reason the aggregate below ranks reasons instead of
+    re-deriving them: an implementation that recovers the right verdict in both
+    path orders while re-deriving the refusal in :func:`check_branch` from the
+    path list or from the prose — the second copy — passes every test in the
+    suite except the status pin in
+    ``test_a_broken_python_file_still_refuses_even_beside_an_unreadable_one``.
+    ONE suffix test in this module is the invariant — the grep is one hit, and
+    it is the ``if`` below. A mutation flipping it from ``.py`` to ``.go``
+    moves 50 rows: the 41 measured on 2026-08-09 plus all nine of the per-file
+    ones, across the diff, inputs and per-file suites. That is what proves one
+    predicate governs both call sites.
 
     Returns the whole :class:`SignatureComparison` rather than a bool so the
     status, the prose and ``unsupported_paths`` are written once and cannot
@@ -2862,13 +2887,16 @@ def check_branch(
          ``*.py`` path that exists at the **merge-base** of ``base_ref`` and
          ``branch_ref`` — the revision step 3's three-dot diff measured the
          branch's work from, not ``base_ref``'s tip (D1-inputs I4). Other
-         roles get :data:`SignatureCheckStatus.NOT_APPLICABLE`. A changed path
-         this module did not compare leaves the aggregate UNCHECKED_\\*, which
-         on BODIES is UNDETERMINED (D1-inputs I5) — **except** when NO changed
-         path is in a language this gate can read, which is
-         :data:`SignatureCheckStatus.UNCHECKED_NO_SUPPORTED_FILE` and is CLEAN
-         (2026-08-09 operator ruling, D1 I6). See
-         :data:`_BODIES_BLOCKING_SIGNATURE_STATUSES`.
+         roles get :data:`SignatureCheckStatus.NOT_APPLICABLE`. **The verdict
+         is PER FILE** (2026-08-09 operator ruling, the ruling after I6): each
+         changed path is judged by whether its language is supported;
+         supported files are compared and their changes decide; a path in a
+         language this gate has no comparator for is NAMED in
+         :attr:`SignatureComparison.unsupported_paths` and does not block. What
+         still refuses on BODIES is a check that STARTED on a supported file
+         and could not finish —
+         :data:`SignatureCheckStatus.UNCHECKED_UNPARSEABLE`, the sole member of
+         :data:`_BODIES_BLOCKING_SIGNATURE_STATUSES` (D1-inputs I5).
       5b. for BODIES only, :func:`changed_paths_between` again — the path gate
          ran against the revision step 3 read, and step 5 re-resolved
          ``branch_ref`` for every blob. A branch that advanced in between is
@@ -2885,17 +2913,29 @@ def check_branch(
     non-empty, still described the same branch when the reads finished, and
     produced no violation.
 
-    The one unchecked status that does NOT refuse a bodies branch (2026-08-09
-    operator ruling, D1 I6): UNCHECKED_NO_SUPPORTED_FILE — a diff in which not
-    one path is in a language this gate has a comparator for. The check did not
-    start, rather than failing partway, and refusing it was a false refusal
-    with no override: nothing the branch could commit would clear it, because
-    the whole of its work is in a language this module cannot read. **The CLEAN
-    is not silent.** ``detail`` — the line :func:`_print_report` puts on stdout
-    — carries the unread paths and the language reason, alongside
-    :attr:`SignatureComparison.unsupported_paths`, because the signature gate
-    is Python-only and on a Go/TypeScript tree this verdict means the gate
-    opened no file at all.
+    The unchecked statuses that do NOT refuse a bodies branch, both by
+    2026-08-09 operator rulings: UNCHECKED_NO_SUPPORTED_FILE — not one path in
+    the diff is in a language this gate has a comparator for (D1 I6) — and
+    UNCHECKED_UNSUPPORTED_LANGUAGE — some were and some were not, and the ones
+    that were decided (the per-file ruling that closed the boundary I6 left
+    open). Refusing either was a false refusal with no override: nothing the
+    branch could commit would clear it, because a real branch on a tree of
+    2,288 Go / 996 TS / 781 SQL / 316 Java / 0 Python files always carries a
+    path nobody will ever write a comparator for. The consequence the ruling
+    was chosen for: every comparator added later is a MONOTONIC improvement —
+    enrolling a language can turn a CLEAN into a VIOLATION for a real finding,
+    and can never newly block a class of branch.
+
+    **Neither CLEAN is silent.** Whenever any path went unread, ``detail`` —
+    the line :func:`_print_report` puts on stdout, and the only line a caller
+    that logs the verdict keeps — carries those paths and the language reason,
+    alongside :attr:`SignatureComparison.unsupported_paths`. It carries the
+    SKIPPED paths and not the whole diff: a detail that lists everything is
+    satisfied identically by an honest gate and by one that has lost track of
+    what it skipped, and those two answers differ only on a mixed diff (P4
+    dispute 1, 2026-08-09). The full path listing a reader may also want is
+    already printed separately by :func:`_print_report`, under "changed paths
+    examined:".
 
     LEGACY returns CLEAN when the diff read succeeded, was non-empty and
     touched no floor path: a pre-protocol task has no immutable paths, and this
@@ -2925,10 +2965,13 @@ def check_branch(
         set, not the object carrying it, is what step 2 requires. An empty
         allow-only set makes every changed path a violation and loses the
         reason.
-      * step 5's aggregate over several files reports the FIRST non-CHECKED
-        status and the union of the changes: one unparseable file must not be
-        able to hide a changed signature in another, and a partial check is
-        not a CHECKED one.
+      * step 5's aggregate over several files reports the WORST reason any one
+        file produced — :data:`_SIGNATURE_STATUS_PRECEDENCE` — and the union of
+        the changes: one unparseable file must not be able to hide a changed
+        signature in another, and a partial check is not a CHECKED one. Worst,
+        and not first, because after the per-file ruling the reasons no longer
+        agree on the verdict: first-wins would clear a branch whose Python does
+        not parse whenever an unreadable file sorted ahead of it.
       * :func:`changed_paths_between`, :func:`file_text_at` and
         :func:`compare_signatures` are called through module globals, so the
         one entrypoint is the one place a caller can substitute the git seam.
@@ -3068,7 +3111,13 @@ def check_branch(
             signature = _compare_branch_signatures(
                 repo_root, base_ref, branch_ref, changed, run=run
             )
-        except RoleDiffError as exc:
+        except (RoleDiffError, RoleProtocolError) as exc:
+            # RoleProtocolError too, because the aggregate is exhaustive over
+            # the per-file statuses and RAISES on one it was never taught to
+            # rank (invariant: no implicit state at a decision boundary). This
+            # function never raises, so that refusal has to land here, as
+            # UNDETERMINED — which is what "I do not know how bad this is" is
+            # worth on the one role whose gate this is.
             return _undetermined(
                 f"cannot compare scaffolded signatures across "
                 f"{base_ref}...{branch_ref}: {exc}",
@@ -3159,21 +3208,45 @@ def check_branch(
             f"{len(FLOOR_GLOBS)}-glob floor; signatures: "
             f"{signature.status.value}"
         )
-        if signature.status is SignatureCheckStatus.UNCHECKED_NO_SUPPORTED_FILE:
-            # The price of the 2026-08-09 ruling, paid on the same line that
-            # announces the pass. A CLEAN reached without opening a file says
-            # so HERE, in the verdict's own detail — the line `_print_report`
-            # puts on stdout and the only line a caller that logs the verdict
-            # keeps — and not only in the signature sub-report a caller may
-            # never reach for. The signature gate is Python-only, so on a
-            # Go/TypeScript tree this is most branches: a quiet CLEAN would be
-            # a downgrade from the loud-but-wrong refusal it replaces.
-            detail += (
-                "; NOTHING in this diff is in a language this gate can read, "
-                "so no scaffolded signature was compared and none could have "
-                "been caught — unread: "
-                + ", ".join(signature.unsupported_paths)
-            )
+        if signature.unsupported_paths:
+            # The price of the two 2026-08-09 rulings, paid on the same line
+            # that announces the pass. A CLEAN reached over files nobody opened
+            # says so HERE, in the verdict's own detail — the line
+            # `_print_report` puts on stdout and the only line a caller that
+            # logs the verdict keeps — and not only in the signature sub-report
+            # a caller may never reach for. The signature gate is Python-only,
+            # so on a Go/TypeScript/SQL tree this is most branches: a quiet
+            # CLEAN would be a downgrade from the loud-but-wrong refusal it
+            # replaces.
+            #
+            # Keyed on `unsupported_paths` and not on the status, because after
+            # the per-file ruling a MIXED diff clears too and it is the one
+            # shape where "name the skipped paths" and "dump the whole diff"
+            # give different answers. Only the skipped ones are listed: the
+            # compared paths are already printed by `_print_report` under
+            # "changed paths examined:", and a detail that listed everything
+            # would be satisfied identically by a gate that had lost track of
+            # what it skipped (P4 dispute 1, 2026-08-09). Scoped to the CLEAN
+            # branch, where the compared files had nothing to report; a
+            # VIOLATION detail naming the path of the changed symbol is the
+            # report doing its job and is not touched here.
+            if signature.status is (
+                SignatureCheckStatus.UNCHECKED_NO_SUPPORTED_FILE
+            ):
+                detail += (
+                    "; NOTHING in this diff is in a language this gate can "
+                    "read, so no scaffolded signature was compared and none "
+                    "could have been caught — unread: "
+                )
+            else:
+                detail += (
+                    f"; {len(signature.unsupported_paths)} of the "
+                    f"{len(changed)} changed path(s) are in a language this "
+                    "gate has no comparator for, so their signatures were "
+                    "compared by nothing and are not covered by this pass — "
+                    "unread: "
+                )
+            detail += ", ".join(signature.unsupported_paths)
 
     return RoleDiffResult(
         verdict=verdict,
@@ -3278,19 +3351,86 @@ _UNCHECKED_SIGNATURE_STATUSES: frozenset[SignatureCheckStatus] = frozenset(
 )
 
 #: The subset of those that REFUSE a bodies branch. A second, separately named
-#: notion, because after the 2026-08-09 ruling "the comparison did not run" and
-#: "the branch is not cleared" stopped being the same question: a diff with no
-#: supported file in it did not run the comparison and is nonetheless CLEAN.
+#: notion, because after the 2026-08-09 rulings "the comparison did not run" and
+#: "the branch is not cleared" stopped being the same question: a diff whose
+#: unread files are unread for their LANGUAGE did not run the comparison over
+#: them and is nonetheless CLEAN.
+#:
+#: One member, since the per-file ruling. What refuses is a check that started
+#: on a file this gate is responsible for and could not finish; what does not is
+#: a file this gate was never able to open in the first place — named instead,
+#: in :attr:`SignatureComparison.unsupported_paths`, because no commit its
+#: author can write would clear a refusal for it.
+#:
 #: Spelled as the blocking set rather than as `_UNCHECKED_SIGNATURE_STATUSES -
-#: {the new one}` so a future member has to be classified deliberately, and so
-#: that the two sets can be read side by side and seen to differ by exactly the
-#: state the ruling created.
+#: {the cleared ones}` so a future member has to be classified deliberately, and
+#: so that the two sets can be read side by side and seen to differ by exactly
+#: the states the rulings cleared.
 _BODIES_BLOCKING_SIGNATURE_STATUSES: frozenset[SignatureCheckStatus] = frozenset(
     {
-        SignatureCheckStatus.UNCHECKED_UNSUPPORTED_LANGUAGE,
         SignatureCheckStatus.UNCHECKED_UNPARSEABLE,
     }
 )
+
+#: How the aggregate ranks the reasons one FILE can come back with, worst
+#: first. It replaces "the first non-CHECKED status wins", which was sound only
+#: while every non-CHECKED status refused a bodies branch: once
+#: UNCHECKED_UNSUPPORTED_LANGUAGE clears and UNCHECKED_UNPARSEABLE refuses,
+#: first-wins makes the verdict a fact about git's path order. MEASURED, on the
+#: shape of the cheapest per-file fix (2026-08-09):
+#:
+#:     ["src/app.py", "db/migrate/001_bay.sql"] -> undetermined  unparseable
+#:     ["db/migrate/001_bay.sql", "src/app.py"] -> CLEAN         unsupported
+#:
+#: — a branch whose Python does not parse, cleared on nothing but where the
+#: migration sorted. So the blocking reason outranks the language one and the
+#: language one outranks CHECKED, per file rather than by position.
+#:
+#: Only the three statuses a per-file comparison can PRODUCE are ranked.
+#: UNCHECKED_NO_SUPPORTED_FILE is the aggregate's own conclusion about the whole
+#: diff and NOT_APPLICABLE is a fact about the role; neither is ever handed to
+#: :func:`_worst_signature_status`, which raises rather than guess a rank for a
+#: state it was not taught — a new member must be classified here deliberately,
+#: not absorbed at whatever end of the order it happens to land.
+_SIGNATURE_STATUS_PRECEDENCE: tuple[SignatureCheckStatus, ...] = (
+    SignatureCheckStatus.UNCHECKED_UNPARSEABLE,
+    SignatureCheckStatus.UNCHECKED_UNSUPPORTED_LANGUAGE,
+    SignatureCheckStatus.CHECKED,
+)
+
+
+def _worst_signature_status(
+    left: SignatureCheckStatus, right: SignatureCheckStatus
+) -> SignatureCheckStatus:
+    """Whichever of two per-file statuses ranks worse in
+    :data:`_SIGNATURE_STATUS_PRECEDENCE`.
+
+    Commutative and associative, so the aggregate folding it over the changed
+    paths cannot depend on their order — which is the whole point (see
+    ``test_the_verdict_does_not_depend_on_where_the_unreadable_files_sort``).
+
+    BOTH arguments are checked against the precedence before either is
+    returned, and an unranked one raises :class:`RoleProtocolError`. Checking
+    only the winner would rank an unknown status LAST by omission — the loop
+    would find the known one first and return it — which is precisely "clear
+    the branch for a reason nobody classified". :func:`check_branch` turns the
+    raise into UNDETERMINED.
+    """
+    for candidate in (left, right):
+        if candidate not in _SIGNATURE_STATUS_PRECEDENCE:
+            raise RoleProtocolError(
+                f"{candidate!r} is not a per-file signature status this "
+                "aggregate knows how to rank against "
+                f"{[s.value for s in _SIGNATURE_STATUS_PRECEDENCE]}; a status "
+                "ranked by accident decides a bodies branch by accident, so a "
+                "new member is classified here or it is not ranked at all"
+            )
+    for status in _SIGNATURE_STATUS_PRECEDENCE:
+        if left is status or right is status:
+            return status
+    raise AssertionError(  # pragma: no cover - both arguments are ranked above
+        f"unreachable: {left!r} and {right!r} both rank"
+    )
 
 
 def _not_applicable_signature(role: Role) -> SignatureComparison:
@@ -3367,11 +3507,13 @@ def _compare_branch_signatures(
     **A diff with NO supported file in it is its own state** (P4, 2026-08-09).
     When the loop examined nothing and skipped at least one path for its
     language, the aggregate is UNCHECKED_NO_SUPPORTED_FILE rather than
-    UNCHECKED_UNSUPPORTED_LANGUAGE, and :func:`check_branch` clears it. The
-    distinction is exactly "did this gate examine anything": one `.go` beside
-    one `.py` is the partial check I5 refuses and keeps the older status; one
-    `.go` alone is a gate that never started. It is derived from this loop's
-    own counters, not from a second reading of the path list — see
+    UNCHECKED_UNSUPPORTED_LANGUAGE. The distinction is exactly "did this gate
+    examine anything": one `.go` beside one `.py` is the partial check and
+    keeps the older status; one `.go` alone is a gate that never started. Both
+    are CLEAN at :func:`check_branch` — the verdict stopped separating them
+    when the per-file ruling landed, which is what makes the two STATES the
+    only place the difference still lives. It is derived from this loop's own
+    counters, not from a second reading of the path list — see
     :func:`_supported_language_refusal`, which is the only place the language
     rule is spelled.
 
@@ -3381,10 +3523,41 @@ def _compare_branch_signatures(
     mixed diff it holds the skipped file ALONE, which is what distinguishes an
     honest report from one that hands back the whole path list.
 
-    Aggregation: the FIRST non-CHECKED status wins and the changes of every
-    file are unioned, so one unparseable file cannot hide a changed signature
-    in another and a partial check never reports as CHECKED.
+    **Aggregation: the WORST reason any one file produced wins** — ranked by
+    :data:`_SIGNATURE_STATUS_PRECEDENCE` — and the changes of every file are
+    unioned, so one unparseable file cannot hide a changed signature in
+    another and a partial check never reports as CHECKED.
+
+    Worst, not first. This paragraph used to say "the FIRST non-CHECKED status
+    wins", and that was sound only while every non-CHECKED status refused a
+    bodies branch: the aggregate reported a reason, and which reason it was did
+    not change the verdict. The per-file ruling split the reasons —
+    UNCHECKED_UNPARSEABLE refuses and UNCHECKED_UNSUPPORTED_LANGUAGE clears —
+    so under first-wins a branch whose Python does not parse is CLEARED
+    whenever an unreadable neighbour sorts ahead of it, which is git's path
+    order deciding a gate. Ranking is also what keeps the reported state the
+    reason the branch was REFUSED: "unsupported language" on a branch refused
+    for a Python file that does not parse sends its author off to write a SQL
+    comparator.
+
+    Raises :class:`RoleProtocolError` on an empty ``changed_paths``.
+    :func:`check_branch` refuses an empty diff at step 3, so no public call can
+    reach it; the raise is here because there is no honest status for it. Every
+    per-file state is a claim about a file, and this input has none — CHECKED
+    would be "I compared them and they agree" about nothing at all, and the
+    older answer of UNCHECKED_UNSUPPORTED_LANGUAGE was chosen to fail CLOSED
+    and stopped doing so the moment that status started clearing branches. The
+    caller maps the raise to UNDETERMINED, which is what the old choice bought
+    and this one keeps.
     """
+    if not changed_paths:
+        raise RoleProtocolError(
+            "the scaffolded-signature aggregate was asked about an empty path "
+            "list; every state it can report is a claim about a file, and "
+            "'checked' about nothing at all is the pass bought by doing "
+            "nothing that this gate exists to refuse"
+        )
+
     status = SignatureCheckStatus.CHECKED
     changes: list[SignatureChange] = []
     details: list[str] = []
@@ -3401,8 +3574,7 @@ def _compare_branch_signatures(
             # all come from `compare_signatures`' own refusal, so the aggregate
             # and the per-file contract cannot disagree and the aggregate does
             # not spell the language rule a second time.
-            if status is SignatureCheckStatus.CHECKED:
-                status = refusal.status
+            status = _worst_signature_status(status, refusal.status)
             details.append(refusal.detail)
             unsupported_paths.extend(refusal.unsupported_paths)
             continue
@@ -3417,11 +3589,7 @@ def _compare_branch_signatures(
         head_text = file_text_at(repo_root, branch_ref, path, run=run)
         comparison = compare_signatures(path, base_text, head_text)
         changes.extend(comparison.changes)
-        if (
-            status is SignatureCheckStatus.CHECKED
-            and comparison.status is not SignatureCheckStatus.CHECKED
-        ):
-            status = comparison.status
+        status = _worst_signature_status(status, comparison.status)
         if comparison.detail:
             details.append(comparison.detail)
 
@@ -3436,7 +3604,10 @@ def _compare_branch_signatures(
         #
         # The promotion is unconditional on the status because it cannot
         # collide: reaching here with `examined == 0` means no comparison ran,
-        # so the only status the loop can have set is the refusal's own.
+        # so the only status the ranking can have settled on is the refusal's
+        # own. It is deliberately NOT ranked against the others — this is not a
+        # per-file reason at all but the aggregate's conclusion about the WHOLE
+        # diff, which is why `_SIGNATURE_STATUS_PRECEDENCE` does not carry it.
         status = SignatureCheckStatus.UNCHECKED_NO_SUPPORTED_FILE
         # The aggregate fact, on top of the per-path lines above, which have
         # already named every one of them — so this counts rather than
@@ -3447,19 +3618,12 @@ def _compare_branch_signatures(
             f"not one of the {len(unsupported_paths)} changed path(s) is in a "
             "language this gate can read, so no signature was compared at all"
         )
-    elif status is SignatureCheckStatus.CHECKED and not examined:
-        # Only reachable for an EMPTY path list — a non-empty diff with no
-        # Python in it is the branch above. `check_branch` refuses an empty
-        # diff before it gets here, so this is the state named rather than
-        # left to fall through to CHECKED, which would be "I compared them and
-        # they agree" about nothing at all. It is deliberately NOT the new
-        # 2026-08-09 state: an empty diff has no unsupported path to name, and
-        # the blocking status is the one that fails closed if this ever
-        # becomes reachable.
-        status = SignatureCheckStatus.UNCHECKED_UNSUPPORTED_LANGUAGE
-        details.append(
-            "no path was examined, so there is no comparison to report"
-        )
+    # There is no third case. Every path either produced a language refusal
+    # (and is in `unsupported_paths`) or was examined, so `examined == 0` with
+    # nothing unsupported means an empty path list — refused at the top of this
+    # function, because the older answer here, UNCHECKED_UNSUPPORTED_LANGUAGE,
+    # was picked to fail CLOSED and stopped doing so when the per-file ruling
+    # took it out of `_BODIES_BLOCKING_SIGNATURE_STATUSES`.
 
     return SignatureComparison(
         status=status,
