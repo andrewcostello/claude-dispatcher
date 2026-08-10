@@ -268,20 +268,31 @@ def run_seal_inversion(
                 # construction does not exist at ``base``; git exits 1 with
                 # "pathspec ... did not match any file(s) known to git". Any fix
                 # containing a `git mv` of a non-test file therefore switched the
-                # whole gate off, silently and non-blocking.
+                # whole gate off, silently and non-blocking — and now hard-blocks
+                # instead, which is no more the gate doing its job.
                 #
-                # Reverting by the OLD name instead — making the gate actually
-                # work on a renaming fix — was measured and does work, but it is
-                # NOT what
-                # `test_a_renamed_non_test_file_does_not_switch_the_gate_off`
-                # accepts: that row also pins `logs == []`, i.e. that no suite is
-                # run, and a real verdict necessarily runs one and comes back
-                # `passed`. Whether the gate should invert renames rather than
-                # block on them is a seal amendment, not a body change.
+                # TWO SEALS ARE RED HERE AND THIS BRANCH OWES BOTH (P4 ruling,
+                # 2026-08-09, `tests/test_seal_verify_failopen.py` RULINGS 2+3):
                 #
-                # git resolves every pathspec against the tree before writing any
-                # of them, so on this path the worktree is untouched and needs no
-                # restore.
+                #   * A rename must NOT reach this branch at all. git names both
+                #     the old and the new path, so the inversion is exact —
+                #     `partition_changed` should file a rename as ``("R", old)``
+                #     for the checkout plus ``("A", new)`` for the unlink, which
+                #     was measured to work end to end. The claim that used to
+                #     stand here — that
+                #     `test_a_renamed_non_test_file_does_not_switch_the_gate_off`
+                #     forbids that by pinning ``logs == []`` — WAS TRUE OF THE
+                #     ROW AS FIRST WRITTEN AND IS NOW REVERSED: that row pins the
+                #     inversion. Do not re-derive the old conclusion from this
+                #     comment.
+                #
+                #   * This branch must `_restore` like its ``OSError`` sibling.
+                #     "git resolves every pathspec against the tree before
+                #     writing any of them" is true of RESOLUTION and false of
+                #     WRITING: with a read-only directory holding the second of
+                #     two changed files, git writes the first and then fails,
+                #     leaving the fix reverted on disk and both files reverted in
+                #     the index while this detail reads as "nothing was touched".
                 return SealVerifyResult(
                     "error",
                     f"could not revert to base for inversion: "
