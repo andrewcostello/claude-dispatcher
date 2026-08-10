@@ -51,18 +51,49 @@ _SEAL_LABELS = frozenset({"type:fix", "seal-check", "kind:fix"})
 _NOT_A_PATH_CHARACTER = "\0"
 
 
-class SealPathError(RuntimeError):
+class SealPartitionError(RuntimeError):
+    """:func:`partition_changed` could not produce a partition at all.
+
+    The base of the two failures below, and the reason they share one: the
+    caller's only honest response to either is the same. ``([], [])`` — the
+    value this class replaced on the git-failure path — is byte-identical to
+    the answer a real code-only branch produces, and
+    :func:`run_seal_inversion` reads it as one, reporting ``skipped, "no test
+    files changed — nothing claims to seal"``. That sentence is a positive
+    claim about the change's contents, and a function that cannot say "git
+    would not tell me" has no way to keep it from being made.
+
+    :func:`run_seal_inversion` maps every subclass to an ``error`` outcome,
+    which the orchestrator blocks on.
+    """
+
+
+class SealDiffError(SealPartitionError):
+    """git would not say what the change contains.
+
+    A bad base ref, a corrupt repository, an index another process holds, a
+    diff that timed out, a git that could not be executed. Until 2026-08-09
+    this failed OPEN, on the argument that "a git failure means we learned
+    nothing about the change" while an undecodable path (below) blocks because
+    "we learned that the change contains a file we cannot classify". P4 ruled
+    the asymmetry runs the wrong way: **there is no reading in which knowing
+    less warrants proceeding while knowing more warrants blocking.** A bad base
+    ref is the worst case — it makes every seal check in the run vacuous,
+    silently, and each one reports that the fix carried no tests.
+
+    The message names the base ref, so a refusal cannot be mistaken for an
+    incidental bug in the caller's own arguments.
+    """
+
+
+class SealPathError(SealPartitionError):
     """A changed path git rendered in a form this gate cannot decode.
 
-    Raised by :func:`partition_changed`; :func:`run_seal_inversion` maps it to
-    an ``error`` outcome. Distinct from the git failures that fail OPEN
-    (``([], [])`` → "nothing claims to seal"): a git failure means we learned
-    nothing about the change, while an undecodable path means we learned that
-    the change contains a file we cannot put on either side of the partition.
-    Guessing puts it on the non-test side, where the inversion would try to
-    revert a name that resolves to nothing — or, for an added file, silently
-    fail to delete it and then run the suite with the "reverted" fix still in
-    place. Both report a judgement that was never made.
+    We learned that the change contains a file we cannot put on either side of
+    the partition. Guessing puts it on the non-test side, where the inversion
+    would try to revert a name that resolves to nothing — or, for an added
+    file, silently fail to delete it and then run the suite with the
+    "reverted" fix still in place. Both report a judgement that was never made.
     """
 
 
@@ -139,9 +170,43 @@ def partition_changed(
     worktree: Path, base: str, *, timeout_seconds: int = 30,
 ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
     r"""The branch's changed files vs ``base`` as (tests, non_tests), each a
-    list of ``(git_status_letter, path)``. Empty-both on git failure (the
-    caller skips — fail open; the gate is an extra check, not the primary
-    verification).
+    list of ``(git_status_letter, path)``. Raises :class:`SealPartitionError`
+    rather than answering when it has no answer.
+
+    **``--no-renames``, so each side of a move is its own path.** This matches
+    ``risk.collect_diff`` and ``role_protocol.changed_paths_between``, the
+    repo's two other diff collectors, both of which pass it for the same
+    reason: a rename is a delete plus an add with full paths, and a collector
+    that has to decode git's two-path rename rendering is a collector with a
+    special case in it. This one did not pass it, and the special case was live
+    twice over, because ``--name-status`` renders a rename as
+    ``R100<TAB>old<TAB>new`` and the loop below keeps ``parts[-1]`` — the NEW
+    name, alone:
+
+      * ``git mv`` of a non-test file put the new name on the non-test side,
+        where :func:`run_seal_inversion` checked it out of ``base``. It does not
+        exist at ``base`` by construction, so git exited 1, and until 2026-08-09
+        that switched the whole gate off (``skipped``); the fix for THAT made it
+        a hard block charged to every fix containing a rename. Neither is the
+        gate doing its job. P4 ruled it must be inverted and judged: git names
+        both paths, so the inversion is exact.
+      * Worse and quieter: ``git mv impl.py tests/impl_test.py``. The new name
+        is the only one the gate sees, :func:`is_test_path` calls it a test,
+        ``non_tests`` comes back EMPTY, and the gate returns ``skipped,
+        "test-only change — no fix to invert"`` — non-blocking — about a change
+        that moved an implementation file. Measured 2026-08-09.
+
+    Both are the same root cause and ``--no-renames`` removes it: the same tree
+    arrives as ``D impl.py`` + ``A tests/impl_test.py``, each side classified on
+    its own name, and :func:`run_seal_inversion` inverts it with no
+    rename-specific code at all — check the deleted name out of ``base``, unlink
+    the added one. A path-swap (``a``→``b`` and ``b``→``a`` in one change) comes
+    through as two ``M`` lines rather than as two renames whose restore and
+    delete sets collide, which is the other special case not written here.
+
+    ``core.quotePath`` is deliberately NOT overridden, unlike
+    ``changed_paths_between``: the decode below is the seal, and turning the
+    quoting off would leave it untested.
 
     **Every path is DECODED.** ``--name-status`` prints a path git must quote
     in its C-quoted rendering — ``"tests/t\303\251st_thing.py"`` for
@@ -163,17 +228,33 @@ def partition_changed(
 
     A path that will not decode raises :class:`SealPathError` rather than being
     filed on a side that was guessed.
+
+    **A git failure raises too** (:class:`SealDiffError`), and does not return
+    ``([], [])`` as it did until 2026-08-09 — see that class for the ruling.
+    ``changed_paths_between``'s docstring already states the rule this now
+    follows: "It must never return an empty tuple to mean failure."
     """
+    argv = ["git", "diff", "--name-status", "--no-renames", f"{base}...HEAD"]
     try:
         proc = subprocess.run(
-            ["git", "diff", "--name-status", f"{base}...HEAD"],
-            cwd=str(worktree), capture_output=True, text=True,
+            argv, cwd=str(worktree), capture_output=True, text=True,
             timeout=timeout_seconds,
         )
-    except (subprocess.TimeoutExpired, OSError):
-        return [], []
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        raise SealDiffError(
+            f"{' '.join(argv)} in {worktree} could not be run to completion: "
+            f"{exc!r}; an empty partition from a command that did not run is "
+            "indistinguishable from a change that really carries no test "
+            "files, and the caller would report it as one"
+        ) from exc
     if proc.returncode != 0:
-        return [], []
+        raise SealDiffError(
+            f"{' '.join(argv)} in {worktree} exited {proc.returncode}: "
+            f"{proc.stderr.strip()[:300] or '(no stderr)'}; git did not say "
+            "what the change contains, and an empty partition is "
+            "indistinguishable from a change that really carries no test "
+            "files, and the caller would report it as one"
+        )
     from .role_protocol import _unquote_git_path
 
     tests: list[tuple[str, str]] = []
@@ -237,10 +318,12 @@ def run_seal_inversion(
     """
     try:
         tests, non_tests = partition_changed(worktree, base)
-    except SealPathError as exc:
-        # Fail closed. The tree is untouched, but the change contains a file
-        # this gate cannot classify, and "skipped — nothing claims to seal"
-        # would be the gate reporting a judgement it never made.
+    except SealPartitionError as exc:
+        # Fail closed, both ways. The tree is untouched, but there is no
+        # partition, and "skipped — nothing claims to seal" would be the gate
+        # reporting a judgement it never made: either the change contains a
+        # file this gate cannot classify (`SealPathError`) or git never said
+        # what the change contains at all (`SealDiffError`).
         return SealVerifyResult("error", str(exc))
     if not tests:
         return SealVerifyResult(
@@ -256,51 +339,61 @@ def run_seal_inversion(
         if existing_at_base:
             proc = _git(worktree, "checkout", base, "--", *existing_at_base)
             if proc.returncode != 0:
-                # Fail closed, for the same reason as SealPathError above: the
-                # tree was never inverted and the suite was never run, so
-                # "skipped" — whose only two messages are "nothing claims to
+                # Fail closed, for the same reason as SealPartitionError above:
+                # the tree was never fully inverted and the suite was never run,
+                # so "skipped" — whose only two messages are "nothing claims to
                 # seal" and "no fix to invert" — would report a judgement about
                 # the change that this gate never made.
                 #
-                # The everyday cause is a RENAME. `--name-status` renders one as
-                # `R100<TAB>old<TAB>new` and :func:`partition_changed` keeps
-                # ``parts[-1]``, so the pathspec here is the NEW name, which by
-                # construction does not exist at ``base``; git exits 1 with
-                # "pathspec ... did not match any file(s) known to git". Any fix
-                # containing a `git mv` of a non-test file therefore switched the
-                # whole gate off, silently and non-blocking — and now hard-blocks
-                # instead, which is no more the gate doing its job.
+                # AND RESTORE, like the ``OSError`` sibling below. The comment
+                # that used to stand here said no restore was needed because
+                # "git resolves every pathspec against the tree before writing
+                # any of them". That is true of pathspec RESOLUTION and false of
+                # WRITING, and resolution failures were the only kind this
+                # branch ever saw, because the rename bug `partition_changed`
+                # used to carry produced nothing else — and that bug is now
+                # gone, so a write failure is the only way in.
+                # Measured 2026-08-09: two fixed files with the second in
+                # a mode-0555 directory — git writes the first, fails on the
+                # second, exits 255, and the fix is left REVERTED on disk with
+                # BOTH files reverted in the INDEX (`M  code.txt` /
+                # `MM locked/helper.txt`). Even a single-file write failure
+                # dirties the index, because git updates the index before the
+                # worktree write can fail. The module's precondition is a
+                # committed-clean worktree and every later gate reads this one,
+                # so a bare "could not revert to base" — which reads as "nothing
+                # was touched" — is the wrong report to leave behind.
                 #
-                # TWO SEALS ARE RED HERE AND THIS BRANCH OWES BOTH (P4 ruling,
-                # 2026-08-09, `tests/test_seal_verify_failopen.py` RULINGS 2+3):
-                #
-                #   * A rename must NOT reach this branch at all. git names both
-                #     the old and the new path, so the inversion is exact —
-                #     `partition_changed` should file a rename as ``("R", old)``
-                #     for the checkout plus ``("A", new)`` for the unlink, which
-                #     was measured to work end to end. The claim that used to
-                #     stand here — that
-                #     `test_a_renamed_non_test_file_does_not_switch_the_gate_off`
-                #     forbids that by pinning ``logs == []`` — WAS TRUE OF THE
-                #     ROW AS FIRST WRITTEN AND IS NOW REVERSED: that row pins the
-                #     inversion. Do not re-derive the old conclusion from this
-                #     comment.
-                #
-                #   * This branch must `_restore` like its ``OSError`` sibling.
-                #     "git resolves every pathspec against the tree before
-                #     writing any of them" is true of RESOLUTION and false of
-                #     WRITING: with a read-only directory holding the second of
-                #     two changed files, git writes the first and then fails,
-                #     leaving the fix reverted on disk and both files reverted in
-                #     the index while this detail reads as "nothing was touched".
-                return SealVerifyResult(
-                    "error",
-                    f"could not revert to base for inversion: "
-                    f"{proc.stderr.strip()[:300]}")
+                # Sealed by `test_a_checkout_that_fails_partway_does_not_leave_
+                # the_tree_mongrel` (P4 ruling 3, 2026-08-09).
+                detail = (f"could not revert to base for inversion: "
+                          f"{proc.stderr.strip()[:300]}")
+                if not _restore(worktree):
+                    return SealVerifyResult(
+                        "error",
+                        "worktree restore after inversion failed — tree state "
+                        f"suspect. {detail}")
+                return SealVerifyResult("error", detail)
         for p in added:
             try:
                 (worktree / p).unlink()
             except FileNotFoundError:
+                # STILL UNREACHABLE after `--no-renames`, re-checked 2026-08-09
+                # and left alone. Every added path exists at HEAD and the
+                # worktree is committed-clean, so the only thing that can have
+                # removed one before this line is the checkout above — and it
+                # removes an added path ONLY by writing a file over one of that
+                # path's ancestor directories, which makes the unlink raise
+                # NotADirectoryError (ENOTDIR), not ENOENT. Measured on the one
+                # shape `--no-renames` newly routes here: base holds FILE `d`,
+                # the branch holds `d/x` with identical content (git called that
+                # `R100 d d/x` and it used to hit the checkout-failure branch);
+                # now it is `D d` + `A d/x`, the checkout writes file `d`, and
+                # the unlink raises `[Errno 20] Not a directory`, caught below
+                # as an OSError and blocked with a restore. The live sibling —
+                # an added file the inversion cannot delete — is sealed by
+                # `test_an_added_file_the_inversion_cannot_delete_is_not_a_
+                # verdict`, which is exactly that ENOTDIR path.
                 pass
     except (subprocess.TimeoutExpired, OSError) as exc:
         _restore(worktree)
