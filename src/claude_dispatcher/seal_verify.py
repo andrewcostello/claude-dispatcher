@@ -285,9 +285,20 @@ class SealVerifyResult:
     ``outcome``: "passed" (suite went red without the fix — the seal is
     real), "failed" (suite stayed GREEN without the fix — the new tests
     prove nothing), "skipped" (gate doesn't apply; reason in detail), or
-    "error" (the change could not be safely inverted/restored, or could not be
-    partitioned at all; detail says why — treated as a block, because either
-    the tree state is now suspect or the judgement was never made).
+    "error" (the change could not be safely inverted/restored, could not be
+    partitioned at all, **or the inverted suite never finished** — it was
+    killed at the timeout bound or never launched, so no verdict about the
+    change exists to report; detail says why — treated as a block, because
+    either the tree state is now suspect or the judgement was never made).
+
+    That fourth case is the one a reader is most likely to file under
+    "failed": a run that did not finish is not a run that went RED. It says
+    nothing about whether the new tests pin the change, so it is a
+    non-judgement and not an accusation. A run that DID finish is a verdict
+    on whatever exit code it produced, including one the kernel chose — a
+    signal death and an ordinary non-zero exit are the same evidence here,
+    and deliberately so: a fix for a crash, inverted, legitimately kills the
+    runner.
     """
     outcome: str
     detail: str
@@ -411,6 +422,36 @@ def run_seal_inversion(
         return SealVerifyResult(
             "error",
             "worktree restore after inversion failed — tree state suspect")
+
+    if result.exit_code is None:
+        # A run that did not finish is not a run that went RED. `run_test_command`
+        # returns no exit code in exactly two cases, named in its result's own
+        # docstring: the command was killed at the bound, or it never launched
+        # (an OSError out of the subprocess machinery — E2BIG on a repo-supplied
+        # `test:` string, a fork that could not be had, a missing worktree).
+        # Neither produced evidence about the change, and both used to fall
+        # through to the `passed` return below — the gate's certificate that the
+        # seal is real — because `MechanicalVerifyResult.passed` is
+        # `exit_code == 0`, so *not green* was read as *red*. A repo whose test
+        # command cannot be launched then gets EVERY seal certified, silently,
+        # for as long as the command stays that way.
+        #
+        # `failed` is not the answer either: that is the accusation that the new
+        # tests are vacuous, and a suite that never ran is evidence for nothing.
+        # `error` is already the outcome for "the judgement was never made" and
+        # the orchestrator already blocks on it, so no new vocabulary is needed.
+        #
+        # WHICH of the two it was lives only in the annotation `run_test_command`
+        # appends to `output_tail`, so the tail is carried into the detail: the
+        # detail is what the orchestrator journals and what the panel's evidence
+        # lens reads, and "it hung" and "it could not be started" want different
+        # answers from a human.
+        return SealVerifyResult(
+            "error",
+            "the inverted suite never reached a verdict: it was killed at the "
+            f"{timeout_seconds}s bound or never launched (no exit code), so it "
+            "said nothing about whether the new tests fail without the fix. "
+            "Tail of the run:\n" + result.output_tail[-500:])
 
     if result.passed:
         return SealVerifyResult(

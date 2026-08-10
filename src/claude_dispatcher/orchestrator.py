@@ -4074,12 +4074,31 @@ def _verify_seal(
     "passed"/"skipped" proceed, "failed"/"error" block. No retry spawn — a
     false-passing seal needs a rethink of the test, not a mechanical nudge,
     and the panel's evidence lens gets the detail either way.
+
+    A config the loader REFUSES is disposed of here rather than merged into
+    the skip below: it returns ``("error", err)`` with the loader's message
+    journaled. The handler used to set ``repo_cfg = None`` and fall through,
+    which made "the file could not be read" indistinguishable from "the repo
+    declares no test command" — so a repo whose ``.dispatcher.yaml`` says
+    ``test: sh tests/run.sh`` had the seal gate switched off for the whole
+    repository and the journal kept a positive claim about the repo that was
+    false. ``_verify_mechanical_and_maybe_retry`` performs the identical read
+    and has always disposed of the failure itself (as ``failed``); this is
+    that shape, with the outcome that says the gate never judged. No retry,
+    for its reason: a fix-the-tests prompt cannot fix a config the dispatcher
+    cannot parse.
     """
     try:
         repo_cfg = repo_config_mod.load(wt.path)
-    except repo_config_mod.RepoConfigError:
-        repo_cfg = None
-    if repo_cfg is None or repo_cfg.test is None:
+    except repo_config_mod.RepoConfigError as exc:
+        err = str(exc)[:500]
+        _log(log_path,
+             f"  {snap.key} seal-verify: invalid .dispatcher.yaml: {err}")
+        _emit_event(cfg, journal_mod.EventType.verification_seal, {
+            "outcome": "error", "error": err,
+        }, task_key=snap.key)
+        return "error", err
+    if repo_cfg.test is None:
         _emit_event(cfg, journal_mod.EventType.verification_seal, {
             "outcome": "skipped", "reason": "no test command",
         }, task_key=snap.key)
