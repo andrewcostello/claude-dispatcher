@@ -2663,8 +2663,8 @@ def _is_test_path(path: str) -> bool:
 # -----------------------------------------------------------------------------
 # SQL (781 files in the target repo) and Java (316) are real contract surface —
 # a changed column type or a changed method signature is a contract change in
-# exactly the sense §2a means — and this unit does not read either. Neither does
-# it read TypeScript (996). Those extensions appear in NO table here, on
+# exactly the sense §2a means — and this unit does not read either. Their
+# extensions appear in NO table here, on
 # purpose: a "languages we know about but cannot read" table would be a second
 # place answering "what language is this path", which is the property this
 # section exists to protect. They are reported the way every unreadable file has
@@ -2672,6 +2672,15 @@ def _is_test_path(path: str) -> bool:
 # :attr:`SignatureComparison.unsupported_paths` and in the verdict's own detail
 # — so a diff containing them says which files nobody opened, without this
 # module having to hold an opinion about what SQL is.
+#
+# TypeScript (996 files) is also unread, and since D4 (2026-08-10) it is unread
+# for a DIFFERENT and nameable reason: it has a row
+# (:data:`TYPESCRIPT_SUPPORT`) and that row is in :data:`PENDING_COMPARATORS`,
+# where nothing dispatches on it. "Written but not enrolled" is a state with a
+# mechanism; "we have not written it" is a state with none. A `.ts` path is
+# answered today exactly as a `.sql` path is — by PATH, unsupported — and
+# :func:`support_for_path` reads :data:`COMPARATORS` alone, so the pending row
+# cannot make the gate claim coverage it does not have.
 #
 # The consequence, written down rather than left to be discovered: on a diff of
 # nothing but SQL and Java, the BODIES verdict is CLEAN
@@ -2739,14 +2748,22 @@ class Language(Enum):
     today is :func:`enrolled_languages`, which is derived from
     :data:`COMPARATORS` and cannot disagree with the dispatch.
 
-    SQL, Java and TypeScript are absent. See this section's header: naming them
-    here would create a second table that answers a language question, and the
-    honest report of an unread SQL file is its PATH in
+    SQL and Java are absent. See this section's header: naming them here would
+    create a second table that answers a language question, and the honest
+    report of an unread SQL file is its PATH in
     :attr:`SignatureComparison.unsupported_paths`, not a language label.
+
+    **TypeScript joined this enum in D4 (2026-08-10) and is NOT enrolled.** It
+    is here for the same reason Go was: it has a written row
+    (:data:`TYPESCRIPT_SUPPORT`) sitting in :data:`PENDING_COMPARATORS`, and a
+    row needs a member. Membership is a claim of intent, never of coverage;
+    :func:`enrolled_languages` is the coverage claim and it reads
+    :data:`COMPARATORS` alone.
     """
 
     PYTHON = "python"
     GO = "go"
+    TYPESCRIPT = "typescript"
 
 
 class ComparatorFault(Enum):
@@ -4261,6 +4278,1510 @@ GO_SUPPORT = LanguageSupport(
     fingerprinter=GoSignatureFingerprinter(),
 )
 
+
+# --------------------------------------------------------------------------- #
+# Unit D4 — TypeScript, the third entry. **P1 SCAFFOLD. Contracts only.**
+#
+# Everything below is a typed signature plus a normative docstring. Two things
+# have bodies and both are named as such at their definitions:
+# :func:`ts_symbol_key` (a seal cannot express the key-collision property
+# without it) and :func:`ts_parser_home` (it IS this unit's answer to the
+# central design problem, and an answer left as ``NotImplementedError`` is a
+# note, not an answer). Everything else raises.
+#
+# THE CENTRAL PROBLEM: THE ONLY TYPESCRIPT PARSER ON THIS MACHINE LIVES INSIDE
+# THE TREE UNDER JUDGEMENT
+# ---------------------------------------------------------------------------
+# Measured 2026-08-10::
+#
+#     require.resolve('typescript', {paths:['<target repo>']})
+#       -> <target repo>/node_modules/typescript/lib/typescript.js   (5.9.3)
+#     require.resolve('typescript', {paths:['<dispatcher>']})  -> MODULE_NOT_FOUND
+#     require.resolve('typescript')                            -> MODULE_NOT_FOUND
+#     npm root -g -> /usr/local/lib/node_modules  (no typescript in it)
+#
+# Go does not have this problem and the asymmetry is the whole of this unit's
+# difficulty. Go's parser is ``go/ast``, which ships inside a ``go`` toolchain
+# that lives outside every repository; the branch cannot reach it. TypeScript's
+# parser is an npm package, and npm's canonical home is ``node_modules`` in the
+# repository root — the directory the branch owns. A comparator that called
+# Node's ordinary module resolution from anywhere inside the judged checkout
+# would let a bodies branch supply the program that decides what a TypeScript
+# signature is. That is *a gate writable by what it gates*, the class this
+# project has closed at real cost twice (``FLOOR_GLOBS = ()`` appended to the
+# branch's own ``role_protocol.py``, 2026-08-08; the Go helper subtree,
+# 2026-08-09), and here it would be designed in from the start rather than
+# discovered.
+#
+# THE RULE THIS UNIT ADOPTS, and it is one sentence:
+#
+#   **The parser's location is a pure function of the DISPATCHER's own
+#   installed location, and of nothing else.**
+#
+# ``Path(__file__).parent`` and nothing else — not the CWD, not ``NODE_PATH``,
+# not an ancestor-directory walk, not ``npm root -g``, not an environment
+# variable, not ``.npmrc``, not ``tsconfig.json``. That is exactly the rule
+# :func:`go_helper_source_dir` already states for the Go helper's source, and
+# the reason to state it as a rule rather than as a habit is that it is the
+# only predicate under which "can the branch write this?" has an answer that
+# does not depend on where the gate happens to be run from.
+#
+# The consequence is that **no parser is configured today**, because nothing is
+# vendored: :func:`ts_parser_home` raises
+# :attr:`ComparatorFault.HELPER_MISSING` on every call, on every machine. That
+# is the honest first answer and it is deliberately the shipped one. See
+# :data:`TYPESCRIPT_SUPPORT` for the enrolment checklist that changes it.
+#
+# WHAT WAS REJECTED, AND WHY
+# --------------------------
+#   * **Resolve ``typescript`` from the target repo** (or from the CWD, or by
+#     letting Node walk up from the source file's directory). Rejected: it is
+#     the defect stated above in its purest form. A bodies branch that runs
+#     ``npm i typescript@my-fork`` — or that edits one function inside the
+#     existing ``node_modules/typescript/lib/typescript.js`` to drop a modifier
+#     — gets every TypeScript file in its diff reported as unchanged. Note that
+#     ``node_modules/`` is **gitignored** in the target, so the branch cannot
+#     *commit* the poisoned parser and a diff-based gate would see nothing at
+#     all; the gate would load it from disk anyway. A hole that leaves no trace
+#     in the diff is worse than one that leaves a reviewable hunk.
+#   * **``npx typescript`` at gate time.** Rejected on three counts. It fetches
+#     from the network *during a judgement*, so whatever the registry serves
+#     that minute becomes the definition of a TypeScript signature — the same
+#     objection ``GOPROXY=off`` already encodes for Go. It caches into
+#     ``~/.npm/_npx``, a mutable path outside :data:`FLOOR_GLOBS` whose bytes
+#     decide a verdict, which is the objection :data:`_GO_HELPER_PREPARED`
+#     already records against caching the built Go binary under ``/tmp``. And
+#     an offline or air-gapped CI image would fail into a fault on every run,
+#     making the gate's availability a function of the network.
+#   * **A globally installed ``typescript``** (``npm i -g``). Not rejected on
+#     the writability test — ``/usr/local/lib/node_modules`` is outside every
+#     repository and passes it exactly as ``go`` does — but rejected because
+#     "global" is not a location the dispatcher can name. ``npm root -g`` is
+#     resolved through npm's config, and npm reads a **project-local
+#     ``.npmrc``** from the CWD, so the branch influences which directory
+#     "global" means. There is no probe that repairs that: the answer would be
+#     trustworthy on the machine you tested and not on the next one. This is
+#     the closest of the rejected options and a later ruling may take it with a
+#     hard-coded, operator-owned absolute path; it is not taken here because a
+#     path this module cannot derive is a path this module cannot defend.
+#   * **An environment variable naming a trusted parser**
+#     (``CLAUDE_DISPATCHER_TS_PARSER=/opt/...``). Rejected, and this is the
+#     rejection worth arguing because it is the one that looks most reasonable.
+#     Anything that redirects the gate's parser is part of the machinery that
+#     computes the verdict, and this project's answer to "who may change the
+#     machinery" is :data:`FLOOR_GLOBS` — a table of PATHS. **An environment
+#     variable cannot be put on the floor.** It is not a path, it has no diff,
+#     no base revision to pin it against, and ``scripts/check_body_branch.sh``
+#     has nothing to read it from. Accepting one would move the trust boundary
+#     from a reviewable file to the ambient process environment, where the
+#     protocol has no vocabulary at all.
+#   * **A dependency-free TypeScript parser written in the helper, or in
+#     Python.** Rejected by :class:`GoSignatureFingerprinter`'s own ruling —
+#     "one parser, not two" — applied to a language where it is strictly more
+#     forceful. Go's grammar gained generics once in a decade; TypeScript's
+#     gained ``satisfies``, ``const`` type parameters, ``accessor``, ``out``/
+#     ``in`` variance annotations and a whole second decorator syntax inside
+#     three years. A hand-rolled reader silently drops what it does not know,
+#     and a dropped MODIFIER (``readonly``, ``?``, ``export``) reads as no
+#     change — a silent pass. The measured argument is in the Go docstring and
+#     it transfers unchanged.
+#   * **Adding a seventh :class:`ComparatorFault`** — ``PARSER_UNTRUSTED``,
+#     which :func:`signature_status_for_fault` explicitly predicts "whoever
+#     writes the TypeScript comparator" will add. NOT added, and the reason is
+#     not timidity: under the rule above, "the parser I found is inside the
+#     tree under judgement" is **unreachable by construction**, because the
+#     resolution never looks there. An enum member for an unreachable state is
+#     the vacuity this codebase keeps paying for. (It would also have reddened
+#     ``tests/test_role_protocol_faults.py``'s hard ``len(list(ComparatorFault))
+#     == 6``, which P1 may not amend — but that is why it would have had to be
+#     a P4 commit, not why it should not exist.) The six existing faults cover
+#     every state this design can reach; the mapping is in
+#     :class:`TypeScriptSignatureFingerprinter`.
+#
+# THE SELF-JUDGEMENT CASE, which is where the rule alone is not enough
+# --------------------------------------------------------------------
+# When this repository judges ITSELF, ``Path(__file__).parent`` IS inside the
+# tree under judgement, so "dispatcher-owned" and "branch-writable" stop being
+# opposites. This is not a new hole — it is precisely the one
+# :func:`go_helper_source_dir` flagged and that P4 closed for Go on 2026-08-09
+# by putting the helper subtree on :data:`FLOOR_GLOBS`. The same close is
+# required here and it is a precondition of enrolment, not of this commit:
+# ``**/src/claude_dispatcher/ts_signature_fingerprint/**`` must be on the floor
+# BEFORE anything is vendored into it, for the reason the Go entry records —
+# "a floor that arrives with enrolment is a floor that was absent for every
+# commit that built the thing it protects".
+#
+# A SECOND, SMALLER INSTANCE OF THE SAME PROBLEM: ``tsconfig.json``
+# ------------------------------------------------------------------
+# The obvious way to parse a TypeScript file is to build a ``ts.Program`` from
+# the repository's ``tsconfig.json``. That file is in the tree under judgement
+# and it chooses ``jsx``, ``target``, ``experimentalDecorators``, path mappings
+# and which files exist at all — so a branch that edits it edits how its own
+# files are read. It is never consulted. Parse options are FIXED by this
+# module (see :class:`TypeScriptSignatureFingerprinter`), which also keeps the
+# comparator single-file and syntactic, exactly as the Go one is and for the
+# same stated reason: the two revisions being compared are blobs out of git
+# that may not resolve in isolation.
+#
+# WAS THIS ONE ROW? NO, AND HERE IS THE LIST
+# ------------------------------------------
+# The registry's claim is that "adding TypeScript is one new row in
+# :data:`COMPARATORS` plus one class; no dispatch site changes". The DISPATCH
+# half of that is true and was verified: :func:`support_for_path`,
+# :func:`_supported_language_refusal`, :func:`compare_signatures` and
+# :func:`check_branch` needed no edit, and the one ``endswith`` in this module
+# is still the one in :func:`support_for_path`. What the claim omits, and what
+# every future language will pay again:
+#
+#   * a :class:`Language` member and an amendment to that enum's docstring,
+#     which asserted TypeScript's absence as a design property;
+#   * an amendment to this section's own header, which asserted that no table
+#     here names a ``.ts`` extension;
+#   * a helper subtree under the package, a :data:`FLOOR_GLOBS` entry for it
+#     (P4-only, because the floor's row table is a seal), and a
+#     ``pyproject.toml`` package-data glob;
+#   * a **third copy of the helper wire protocol** — request encoder, response
+#     decoder, request/response dataclasses. :func:`decode_go_helper_response`
+#     is ~110 lines of language-independent validation whose only Go-shaped
+#     element is a schema string. This is the two-copies problem arriving in
+#     the plumbing rather than in the dispatch, and it is named with its
+#     required fix at :func:`decode_ts_helper_response`.
+#
+# The honest summary is that the registry made the *language question* one row
+# and left the *toolchain question* unfactored. A fourth language should extract
+# the subprocess-helper machinery before adding anything else.
+#
+# WHAT THIS DESIGN CANNOT DO
+# --------------------------
+# Stated here rather than left to be found, and each is a false NEGATIVE unless
+# marked otherwise.
+#
+#   * **Cross-file declaration merging is invisible, and it is a real bypass.**
+#     The gate compares one file at a time. TypeScript lets a second file widen
+#     an existing interface (``interface Bet { newField: string }`` in any file
+#     that imports it into scope) or augment another module outright (``declare
+#     module './bet' { … }``). A NEW file has no base revision, so every symbol
+#     in it is an ADDED symbol, and an added symbol is not a change. A body
+#     agent can therefore widen a sealed type without editing the file it was
+#     sealed in. Go has a weaker version of this (a new file adding methods to
+#     an existing type); TypeScript's is a first-class language feature and is
+#     the single largest hole in this contract. Closing it needs a whole-diff
+#     comparison rather than a per-file one, which is a change to
+#     :func:`_compare_branch_signatures`, not to a comparator.
+#   * **Inferred types are not read.** ``export const config = { retries: 3 }``
+#     has a public type this comparator cannot see; see the ruled row in
+#     :data:`TS_SIGNATURE_EDIT_RULINGS`. Inference needs a checker and a
+#     resolvable program, and a resolvable program needs the branch's own
+#     ``tsconfig.json``.
+#   * **No type identity.** Two different ``Foo``s fingerprint alike; an alias
+#     is not followed; a barrel file's ``export * from './v2'`` swapped for
+#     ``'./v1'`` changes the meaning of every downstream annotation and the
+#     downstream files' fingerprints do not move.
+#   * **``.mts``, ``.cts`` and all JavaScript are uncovered**, and ``.mts`` is
+#     not reached by the ``.ts`` entry because matching is a suffix match.
+#   * **Uppercase extensions are uncovered** (``FOO.TS``), inherited from
+#     :class:`LanguageSupport`'s case-sensitive matching rather than chosen.
+#   * **FALSE POSITIVES, accepted deliberately**: a renamed import alias moves
+#     every annotation that mentions it; a reordered union or intersection
+#     moves the type that contains it; a renamed parameter or type parameter is
+#     a change even when no caller breaks; and an edit to a class method is
+#     reported twice, once as the member and once through the class. Each is
+#     argued where it is ruled.
+#
+# WHERE THIS DESIGN IS SILENT, named so nobody reads silence as a ruling:
+# ``as const`` assertions outside a top-level binding; ``abstract`` constructor
+# types; ``unique symbol``; ``asserts this is T`` predicates on class methods;
+# the ``T[]`` / ``Array<T>`` and ``A|B`` / ``B|A`` normalisation pairs (ruled
+# NOT normalised, but the reasoning is thinner than the rest); triple-slash
+# directives (``/// <reference …>``), which are comments to the parser and
+# module graph edges to the compiler; and whether a ``.d.ts`` should be held to
+# a stricter standard than a ``.ts`` given that all of it is signature.
+# --------------------------------------------------------------------------- #
+
+
+#: The TS helper's protocol version, on every request and every response.
+#: Same discipline as :data:`GO_HELPER_SCHEMA` and same reason: a fingerprint
+#: is compared for equality across two invocations, so a grammar change would
+#: read as every symbol having been rewritten. Bump it whenever the fingerprint
+#: GRAMMAR changes — which, for this comparator, includes changing the vendored
+#: parser's MAJOR/MINOR version, because the rendering is derived from the
+#: parser's AST and TypeScript adds node shapes in minor releases.
+TS_HELPER_SCHEMA = "claude-dispatcher/ts-signature-fingerprint/v1"
+
+#: Where the TS helper and its vendored parser live, relative to this package.
+#: Inside ``src/claude_dispatcher/`` for the reason
+#: :data:`GO_HELPER_PACKAGE_DIR` records — the gate judges branches in OTHER
+#: repositories, so its apparatus must travel with the dispatcher.
+#:
+#: **FLAT, and that is a measured constraint, not a preference.**
+#: ``pyproject.toml``'s ``package-data`` glob for the Go helper is
+#: ``go_signature_fingerprint/*``; setuptools package-data globs do not recurse,
+#: so a vendored parser laid out as ``node_modules/typescript/lib/...`` would be
+#: dropped from the wheel and every install would be
+#: :attr:`ComparatorFault.HELPER_MISSING`. It happens that this costs nothing:
+#: ``typescript/lib/typescript.js`` is a self-contained CommonJS bundle that
+#: ``require``s nothing else (measured 2026-08-10 — copied alone into an empty
+#: directory it parses ``.ts`` and ``.tsx`` and prints nodes), so the vendored
+#: tree is three flat files: the helper, the parser, and the parser's LICENSE.
+TS_HELPER_PACKAGE_DIR = "ts_signature_fingerprint"
+
+#: The helper program Node executes. A ``.cjs`` suffix, not ``.js``, so that a
+#: ``package.json`` with ``"type": "module"`` anywhere above the install cannot
+#: change how the file is interpreted. The extension is the only way to state
+#: "this is CommonJS" that no ancestor directory can override.
+TS_HELPER_ENTRY_POINT = "main.cjs"
+
+#: The vendored parser, beside the helper and loaded by absolute path.
+TS_VENDORED_PARSER = "typescript.js"
+
+#: The parser's license text. Vendoring third-party source into this package is
+#: new for this repository and the license travels with it; it is also the
+#: cheapest available evidence that what was vendored is what it claims to be.
+TS_VENDORED_PARSER_LICENSE = "LICENSE.typescript.txt"
+
+#: The lowest ``ts.version`` this grammar is defined against. A parser older
+#: than this does not know syntax the target repo contains (``satisfies``,
+#: ``const`` type parameters, ``in``/``out`` variance) and would either
+#: parse-error on it — which is survivable, it reads as UNPARSEABLE — or, for
+#: modifiers it predates, drop it silently, which is not. Checked, not assumed:
+#: :attr:`ComparatorFault.TOOLCHAIN_UNUSABLE` when the vendored parser reports
+#: less, by the same argument :func:`_probe_go_toolchain` uses for a ``go``
+#: older than the helper's language version.
+TS_PARSER_MINIMUM_VERSION = (5, 5)
+
+#: The lowest Node this helper is defined against. Node is to this comparator
+#: what ``go`` is to the Go one: a RUNTIME found on PATH, and a fact about the
+#: machine. It is not the parser — the vendored ``typescript.js`` is — and the
+#: split matters for which fault a failure gets: no ``node`` is
+#: TOOLCHAIN_MISSING, no vendored parser is HELPER_MISSING.
+TS_NODE_MINIMUM_VERSION = (18,)
+
+
+def ts_parser_home() -> Path:
+    """Where this build's trusted TypeScript parser is, or the named fault.
+
+    **This function IS this unit's answer to the untrusted-parser problem**, and
+    it is implemented rather than stubbed for that reason: an answer expressed
+    only in prose is a note. It is also, today, a refusal — nothing is vendored,
+    so every call raises :attr:`ComparatorFault.HELPER_MISSING`. That is the
+    designed first state, not an omission.
+
+    THE RULE, and the whole of it: the directory is
+    :data:`TS_HELPER_PACKAGE_DIR` resolved against ``Path(__file__).parent``.
+    Never against ``repo_root``, never against the CWD, never against an
+    environment variable, and never by asking Node to resolve ``typescript``.
+    The section header above argues each rejection; the code here is the
+    argument's only enforceable form.
+
+    Three refusals, all :attr:`ComparatorFault.HELPER_MISSING`, because all
+    three are the same fact — *the trusted parser this build claims to ship is
+    not there*:
+
+      * the directory is absent (the shipped state today, and the state of any
+        install that dropped the asset);
+      * :data:`TS_HELPER_ENTRY_POINT`, :data:`TS_VENDORED_PARSER` or
+        :data:`TS_VENDORED_PARSER_LICENSE` is missing from it;
+      * any of those three resolves, after following symlinks, to a path
+        OUTSIDE this package directory. A symlink from the vendored parser to
+        ``<target>/node_modules/typescript/lib/typescript.js`` would satisfy
+        every existence check while restoring the exact defect this unit
+        exists to prevent, and it would do so with a one-byte artifact. The
+        containment check is the one place where "is the parser trusted" is
+        decided by measurement rather than by construction, and it is deliberate
+        belt-and-braces: under the resolution rule the escape should be
+        impossible, and a check that never fires costs one ``resolve()`` per
+        process.
+
+    Absence is a FAULT and never "this build has no TypeScript support". The
+    second reading is the broken-wheel fail-open
+    :class:`ComparatorFault` exists to name: it would hand every TypeScript
+    branch a clean bill of health for as long as the install stayed broken.
+
+    **Not implemented here, and not P1's to do — the enrolment preconditions.**
+    See :data:`TYPESCRIPT_SUPPORT` for the full checklist. The two that belong
+    with this function:
+
+      * :data:`FLOOR_GLOBS` must grow
+        ``**/src/claude_dispatcher/ts_signature_fingerprint/**`` BEFORE
+        anything is vendored into it, and that reddens
+        ``test_the_floor_is_exactly_the_written_out_set_of_globs``
+        (``tests/test_role_protocol_floor.py``), whose ``_FLOOR_ROWS`` table P4
+        already ruled P3 may not edit — so the glob and its rows are one P4
+        commit, as the Go subtree's were.
+      * ``pyproject.toml`` must ship ``ts_signature_fingerprint/*``. It is a
+        FLAT glob and the vendored layout must stay flat to match; see
+        :data:`TS_HELPER_PACKAGE_DIR`.
+    """
+    package = Path(__file__).parent.resolve()
+    directory = package / TS_HELPER_PACKAGE_DIR
+    if not directory.is_dir():
+        raise ComparatorUnavailable(
+            ComparatorFault.HELPER_MISSING,
+            f"no trusted TypeScript parser is installed at {directory}. This "
+            "gate resolves its parser ONLY from its own package directory, "
+            "never from the repository under judgement — the only TypeScript "
+            "parser on a typical machine lives in that repository's "
+            "node_modules, which the branch owns. Until one is vendored here, "
+            "TypeScript is UNCHECKED and blocking, never clean",
+        )
+    for name in (
+        TS_HELPER_ENTRY_POINT,
+        TS_VENDORED_PARSER,
+        TS_VENDORED_PARSER_LICENSE,
+    ):
+        candidate = directory / name
+        if not candidate.is_file():
+            raise ComparatorUnavailable(
+                ComparatorFault.HELPER_MISSING,
+                f"the TypeScript helper at {directory} is missing {name}; it "
+                "is an apparatus that cannot run, which is a broken install "
+                "and not a language nobody can read",
+            )
+        if not str(candidate.resolve()).startswith(f"{package}/"):
+            raise ComparatorUnavailable(
+                ComparatorFault.HELPER_MISSING,
+                f"{candidate} resolves to {candidate.resolve()}, outside "
+                f"{package}. A parser reached by a link out of this package is "
+                "a parser this gate cannot vouch for, and the destination is "
+                "very likely the judged repository's own node_modules",
+            )
+    return directory
+
+
+def _node_toolchain_environment() -> dict[str, str]:
+    """The environment the helper's ``node`` process is invoked under. Contract.
+
+    :func:`_go_toolchain_environment`'s counterpart, and it carries more weight
+    than that one does, because Node's default behaviour is to load code from
+    directories it discovers at run time. Every entry below closes one route by
+    which the tree under judgement could inject a module into the process that
+    decides what its signatures are. Normative:
+
+      * ``NODE_OPTIONS`` **removed**. It can carry ``--require`` /
+        ``--import``, which executes arbitrary code before the helper's first
+        line. An operator shell that sets it for an unrelated project would
+        silently join the trusted base.
+      * ``NODE_PATH`` **removed**. It is a module search root taken from the
+        environment; the whole of this unit's rule is that search roots come
+        from ``__file__``.
+      * ``NODE_REPL_EXTERNAL_MODULE``, ``NODE_EXTRA_CA_CERTS`` and any other
+        ``NODE_*`` **removed**. Enumerating what is dangerous is the wrong
+        shape: the helper needs NO ``NODE_*`` variable to do its job, so the
+        contract is *strip them all* and a future one is closed in advance.
+      * ``NPM_CONFIG_*`` **removed**. The helper never invokes npm; a variable
+        that only npm reads can only redirect something.
+      * ``cwd`` set to :func:`ts_parser_home`. Not cosmetic: Node resolves
+        ``require`` by walking UP from the requiring file and, for some
+        lookups, from the CWD, and it reads ``package.json`` from ancestor
+        directories to decide CommonJS-vs-ESM. Left at the judged checkout, the
+        ancestor chain is the branch's.
+
+    ``PATH`` and ``HOME`` are INHERITED, as the Go side inherits ``GOCACHE`` and
+    ``HOME``: ``node`` is found on ``PATH`` like ``go`` is, and an unusable
+    ``HOME`` is a real fault with a name rather than something to paper over.
+
+    The helper itself must also ``require`` the parser by ABSOLUTE PATH — not
+    ``require('typescript')`` — so that even a process whose environment was
+    scrubbed incorrectly still cannot reach an ancestor ``node_modules``. Two
+    independent mechanisms for one property, on purpose: the environment can be
+    got wrong by a caller, the absolute path cannot.
+    """
+    raise NotImplementedError("D4 P1 scaffold: contract only")
+
+
+@dataclass(frozen=True)
+class TsHelperRequest:
+    """What the Python side sends the TS helper: ONE revision of ONE file.
+
+    Field-for-field :class:`GoHelperRequest`, with :data:`TS_HELPER_SCHEMA` in
+    ``schema``, and for the same reasons: source travels as TEXT because the
+    revisions compared are git blobs that are not on disk, and one file per
+    invocation because a batch makes "which file faulted" unanswerable.
+
+    ``path`` is load-bearing here in a way it is not for Go: it selects the
+    parse DIALECT. ``.tsx`` and ``.ts`` are different grammars for the same
+    bytes — measured 2026-08-10, ``const x = <T>(y);`` parses clean as ``.ts``
+    and produces two diagnostics as ``.tsx``, where ``<T>`` opens a JSX element
+    — so a helper that guessed, or that used one setting for both, would
+    manufacture parse errors on half the target repo.
+    """
+
+    schema: str
+    path: str
+    source: str
+
+
+@dataclass(frozen=True)
+class TsHelperSymbol:
+    """One declared symbol and its fingerprint, as the TS helper reports it.
+
+    ``symbol`` is the key :func:`compare_signatures` matches across revisions
+    and it is built by :func:`ts_symbol_key`, never by string concatenation in
+    the helper. ``kind`` (``"function"``, ``"class"``, ``"interface"``,
+    ``"type"``, ``"enum"``, ``"variable"``, ``"member"``, ``"export"``,
+    ``"module"``) is reportage only and is never compared, for the reason
+    :class:`GoHelperSymbol` gives: a second comparison surface is a second
+    thing to keep in agreement.
+    """
+
+    symbol: str
+    fingerprint: str
+    kind: str
+
+
+@dataclass(frozen=True)
+class TsHelperResponse:
+    """What the TS helper writes to stdout: exactly one JSON object, always.
+
+    The contract is :class:`GoHelperResponse`'s, unchanged: exit 0 means the
+    document is valid *including* when it reports a parse error; non-zero is
+    :attr:`ComparatorFault.HELPER_FAILED` and stdout is not read at all;
+    ``symbols`` and ``parse_error`` are mutually exclusive; an empty
+    ``symbols`` LIST is an answer and an empty stdout is a fault.
+
+    **One TypeScript-specific rule, and it is the most important sentence in
+    this class.** ``ts.createSourceFile`` is an ERROR-RECOVERING parser: given
+    ``export function ok(a: string): void {}\\nexport class`` it returns one
+    diagnostic *and a syntax tree containing two statements* (measured
+    2026-08-10). Go's parser recovers too, but TypeScript's is designed for an
+    editor and recovers aggressively. So the helper must report
+    ``parse_error`` whenever the parse produced **any** diagnostic, and must
+    never return the symbols it recovered alongside it. The reason is a silent
+    pass, not a noisy failure: if the BASE revision parses partially and drops
+    a declaration, that declaration is *added* at head, an added symbol is not a
+    change, and a body agent's widening walks through. A recovered tree is not a
+    conservative answer — it is a smaller one, and smaller is the direction that
+    clears branches.
+
+    A corollary the helper author must not miss: the diagnostics channel is
+    load-bearing, so a helper that cannot read it (a parser build that does not
+    expose it) must **exit non-zero** — HELPER_FAILED — rather than proceed
+    assuming the parse was clean.
+    """
+
+    schema: str
+    symbols: tuple[TsHelperSymbol, ...] = ()
+    parse_error: str | None = None
+
+
+def encode_ts_helper_request(path: str, source: str) -> str:
+    """The JSON document for one file revision, ready for the helper's stdin.
+
+    Byte-for-byte the contract of :func:`encode_go_helper_request` with
+    :data:`TS_HELPER_SCHEMA` substituted: exactly the fields of
+    :class:`TsHelperRequest`, ``ensure_ascii=True`` (a blob that is not valid
+    UTF-8 must not turn a bad FILE into an environment fault), deterministic
+    separators, and ``source`` passed through verbatim including BOM and CRLF.
+
+    **P3 must not copy** :func:`encode_go_helper_request`. See
+    :func:`decode_ts_helper_response` for the ruling and the refactor it names;
+    the same applies here, where the duplication is smaller and therefore more
+    tempting.
+    """
+    raise NotImplementedError("D4 P1 scaffold: contract only")
+
+
+def decode_ts_helper_response(stdout: str) -> TsHelperResponse:
+    """Parse the TS helper's stdout, or raise the named fault.
+
+    The contract is :func:`decode_go_helper_response`'s, entirely: every way the
+    document can be wrong — not JSON, not an object, wrong or missing
+    ``schema``, empty string, missing fields, wrong types, both ``symbols`` and
+    ``parse_error``, neither, duplicate symbol keys — is
+    :attr:`ComparatorFault.HELPER_OUTPUT_INVALID` and never a partial result,
+    because a dropped symbol is reported as a REMOVED one and a wholly dropped
+    document manufactures a pass.
+
+    **THE DUPLICATION RULING, and it is this unit's clearest evidence that the
+    registry did not make TypeScript one row.** :func:`decode_go_helper_response`
+    is ~110 lines of pure, language-independent validation whose only Go-shaped
+    element is the schema string it compares against. Copying it here would
+    create two implementations of one protocol, which is the two-copies problem
+    this whole section was built to refuse — and it would do so in the exact
+    place where a divergence is a fail-open, since the copy that forgets the
+    duplicate-key check clears branches the original refuses.
+
+    P3 **may not copy it and may not implement it independently.** The required
+    shape is a P4-authored extraction: one ``_decode_helper_response(stdout,
+    schema)`` taking the expected schema as an argument, with
+    :func:`decode_go_helper_response` and this function as thin, schema-fixing
+    wrappers. That is a change to shipped Go code and to seals that name it, so
+    it is neither P1's nor P3's; it is named here so the seal author can write
+    the seal that FORCES it — assert that both decoders reject the same
+    malformed documents with the same fault, over one shared table of bad
+    inputs, so a divergent second copy reddens.
+
+    The duplication is real and it is not an artifact of the wire format being
+    poorly chosen. Both helpers are subprocesses that speak one JSON object; a
+    third language would make it three copies. That is worth writing down as
+    the answer to "was this one row": the *dispatch* was one row, the
+    *plumbing* was not.
+    """
+    raise NotImplementedError("D4 P1 scaffold: contract only")
+
+
+#: The tag vocabulary for one segment of a TypeScript symbol key. A closed set;
+#: :func:`ts_symbol_key` refuses anything else.
+#:
+#: ``i``  an identifier-named declaration or member (``foo``, ``#secret``)
+#: ``s``  a string-literal member name, or a module specifier
+#: ``c``  a computed member name (``[Symbol.iterator]``), rendered as source
+#: ``k``  a KEYWORD SLOT — a position the language has but no identifier names:
+#:        ``default`` (an anonymous default export), ``global`` (``declare
+#:        global``), ``call`` / ``new`` / ``index`` (call, construct and index
+#:        signatures), ``ctor`` (a class constructor), ``export`` (the module's
+#:        export-surface subtree), ``star`` (``export * from``).
+TS_KEY_TAGS: frozenset[str] = frozenset({"i", "s", "c", "k"})
+
+
+def ts_symbol_key(segments: Sequence[tuple[str, str]]) -> str:
+    """Build one TypeScript symbol key from ``(tag, text)`` segments. Pure.
+
+    One of the two things this scaffold implements rather than stubs, because a
+    seal cannot express the property below without calling it, and because it is
+    a total function of its arguments that either always works or always does
+    not.
+
+    **THE COLLISION PROPERTY, which is trap 1 from the Go unit restated for a
+    language that makes it much easier to hit.** Go's embed marker was defeated
+    by a struct field literally named ``embedded``: a marker a name can spell is
+    not a marker. TypeScript is worse, because a member name is not required to
+    be an identifier at all —
+
+        interface I { "a/b": string; "i:x": number; [Symbol.iterator](): void }
+
+    — so ``/`` and ``:`` and every other separator are spellable *in the member
+    position*. The grammar here is therefore:
+
+      * a key is its segments joined by ``/``;
+      * each segment is ``<tag>:<text>`` with ``tag`` from :data:`TS_KEY_TAGS`;
+      * inside ``text``, ``\\`` becomes ``\\\\`` and ``/`` becomes ``\\/``.
+
+    Both markers are then unspellable **in the position they occupy**, which is
+    the property Go's fix established and the only one that counts. A tag is
+    one character followed by ``:`` at offset 0 of a segment, and no TypeScript
+    identifier may contain ``:`` — so ``i:``, ``s:``, ``c:`` and ``k:`` cannot
+    be produced by a name. An unescaped ``/`` cannot be produced by a name
+    either, because every ``/`` a name contains is escaped here. A member
+    literally named ``i:x`` keys as ``i:I/s:i:x`` — the LEADING tag is what is
+    read, and the rest of the segment is data.
+
+    The ``k`` tag is the piece that has no Go analogue and it is the reason
+    tags exist at all rather than a bare escape. TypeScript has declaration
+    positions with no name: an anonymous ``export default class {}``, a call
+    signature, an index signature. Those need keys, the obvious keys
+    (``default``, ``index``) are ordinary spellable identifiers, and
+    ``k:default`` is not.
+
+    Raises :class:`RoleProtocolError` on an empty segment list, an unknown tag,
+    or an empty ``text``. All three are helper bugs rather than facts about a
+    file, and a key built from a bug is a key that matches nothing across
+    revisions — which reports every symbol in the file as removed and added.
+    """
+    if not segments:
+        raise RoleProtocolError(
+            "a TypeScript symbol key needs at least one segment; an empty key "
+            "matches nothing across revisions, which reports every symbol in "
+            "the file as removed"
+        )
+    parts: list[str] = []
+    for tag, text in segments:
+        if tag not in TS_KEY_TAGS:
+            raise RoleProtocolError(
+                f"unknown TypeScript symbol key tag {tag!r}; the tag set is "
+                f"closed ({', '.join(sorted(TS_KEY_TAGS))}) so that no member "
+                "name can spell one"
+            )
+        if not text:
+            raise RoleProtocolError(
+                f"empty text for a {tag!r} segment of a TypeScript symbol key"
+            )
+        escaped = text.replace("\\", "\\\\").replace("/", "\\/")
+        parts.append(f"{tag}:{escaped}")
+    return "/".join(parts)
+
+
+class TypeScriptSignatureFingerprinter:
+    """TypeScript signatures, via a vendored parser in a Node helper. Contract.
+
+    **One parser, not two**, as :class:`GoSignatureFingerprinter` rules for Go —
+    and the parser is ``typescript.js`` itself, vendored into this package. The
+    section header above says why it is vendored rather than resolved, and what
+    was rejected.
+
+    Syntactic and single-file. ``ts.createSourceFile`` with
+    ``ScriptTarget.Latest``, ``setParentNodes=true``, and ``ScriptKind`` taken
+    from the path: ``.tsx`` → ``ScriptKind.TSX``, ``.ts`` → ``ScriptKind.TS``.
+    **No ``ts.Program``, no type checker, no ``tsconfig.json``, no file
+    system.** The reason is the Go one — the revisions compared are two blobs
+    out of git that may not resolve in isolation — plus a second one specific
+    to this language: ``tsconfig.json`` lives in the tree under judgement and
+    choosing parse options from it would let a branch decide how its own files
+    are read.
+
+    WHAT A TYPESCRIPT SIGNATURE IS
+    ------------------------------
+    Read off the file's top level, off the members of declared types and
+    classes, and off the module's export statements. Function and method bodies
+    and all other expression positions are never descended into.
+
+    **Symbol keys** are built by :func:`ts_symbol_key`; see it for the escaping
+    and for why ``/`` and a tag prefix are the separators. In declaration
+    order:
+
+      * a top-level declaration named ``f`` → ``i:f``, whatever its kind
+        (function, class, interface, type alias, enum, namespace, variable);
+      * a member ``m`` of a top-level declaration ``C`` → ``i:C/i:m``, and a
+        namespace's exported declarations nest the same way to any depth;
+      * a call, construct or index signature of a type → ``i:I/k:call``,
+        ``i:I/k:new``, ``i:I/k:index``; a class constructor → ``i:C/k:ctor``;
+      * ``declare module "foo"`` → ``s:foo``; ``declare global`` → ``k:global``;
+      * an anonymous ``export default …`` → ``k:default``;
+      * the module's export surface → ``k:export/…`` (below).
+
+    **ONE KEY PER NAME, and every declaration of that name folds into it.**
+    This is the ruling that makes the scheme total, and it answers three
+    TypeScript shapes at once that would otherwise each need their own rule and
+    would each otherwise produce a DUPLICATE KEY — which
+    :func:`decode_ts_helper_response` refuses as
+    :attr:`ComparatorFault.HELPER_OUTPUT_INVALID`, i.e. the gate would fault on
+    ordinary, legal, compiling code:
+
+      * **Function overloads.** ``function f(x: string): string; function f(x:
+        number): number; function f(x: any): any {…}`` is three
+        ``FunctionDeclaration`` nodes named ``f`` (measured). One symbol
+        ``i:f``; its fingerprint is the ORDERED list of all three signatures,
+        each marked as an overload declaration or as the implementation.
+      * **Declaration merging.** ``interface I {…}`` twice, ``class C`` plus
+        ``interface C``, ``namespace N`` twice, ``enum E`` twice. One symbol,
+        fingerprint is the ordered list of each contributing declaration's
+        rendering, each prefixed by its kind.
+      * **A name in both declaration spaces.** ``interface Foo {}`` beside
+        ``const Foo = 1`` is legal and common. Folding them into one key means
+        the scheme never has to model TypeScript's type/value split — which is
+        a real simplification and also, honestly, a real loss of precision: a
+        change to either is reported against the one name, and the fingerprint
+        text is what says which.
+
+    ORDER, and where it is and is not semantic
+    ------------------------------------------
+    Go rules struct fields in declaration order because that order is memory
+    and wire layout. TypeScript is not uniform and each position is ruled:
+
+      * **Parameters: ordered.** The Go ruling transfers with its argument
+        intact — ``move(src, dst)`` → ``move(dst, src)`` is type-identical,
+        compiles everywhere, inverts every call, and is indistinguishable in a
+        syntactic comparison from two renames. So **parameter NAMES are IN**,
+        for the reason the Go table records: the choice is binary and the
+        rename false positive is the price of the reorder catch.
+      * **Type parameters: ordered, and their NAMES are IN**, by the identical
+        argument one level up. ``<K, V>`` → ``<V, K>`` silently inverts every
+        ``Map<A, B>`` in the codebase. Their constraints (``extends``),
+        defaults (``=``) and variance annotations (``in`` / ``out`` /
+        ``const``) are all IN.
+      * **Overload signatures: ordered.** TypeScript resolves an overload set
+        in declaration order, so swapping two overloads changes which one a
+        call selects, with no error. Same shape as the parameter reorder.
+      * **Enum members: ordered, with their explicit initialisers.** ``enum E {
+        X, Y }`` gives ``X = 0, Y = 1``; reordering rewrites both values, and a
+        ``const enum``'s values are INLINED into consumers, so this is a wire
+        change of the struct-tag kind.
+      * **Tuple type elements: ordered** — ``[string, number]`` is not
+        ``[number, string]``.
+      * **Members of interfaces, type literals and classes: SORTED by rendered
+        key, not declaration order.** A deliberate parity break with the Go
+        struct-field rule, and the criterion is the one the Go table used
+        rather than the habit: object member order carries no information a
+        caller can be made wrong by — ``{a: string; b: number}`` and ``{b:
+        number; a: string}`` are the same type to every consumer — so ordering
+        them buys no reorder catch and costs a false positive on every
+        alphabetise-the-interface edit. Where the criterion says order matters
+        it is kept; where it says order is spelling it is normalised. That
+        asymmetry is the check on the criterion, exactly as the receiver row is
+        in the Go table.
+      * **Union and intersection constituents: as written.** The honest answer
+        rather than the tidy one. ``A | B`` and ``B | A`` are the same type, so
+        sorting them would be a legitimate normalisation — but intersection
+        order can affect which overload of a merged callable is selected, and
+        this comparator has no type checker with which to tell a union from an
+        intersection of callables in every position. Rendering both as written
+        costs a false positive on a reorder; sorting one and not the other
+        would be a rule nobody can state. The false positive is the same class
+        as the import-alias noise the Go contract already accepts.
+
+    IN, each with its reason
+    ------------------------
+      * **Modifiers**, all of them: ``export``, ``declare``, ``abstract``,
+        ``static``, ``readonly``, ``public``/``private``/``protected``,
+        ``override``, ``async``, ``accessor``, the optional marker ``?`` and
+        the definite-assignment marker ``!``. ``export`` is the one to argue:
+        removing it deletes a declaration from the module's public API with **no
+        error anywhere in the file**, which is the archetypal silent narrowing
+        and precisely what a P3 body agent tidying "unused exports" would do.
+      * **The export surface**, as symbols under ``k:export``. ``export { a as
+        b }`` renames a public name without touching a declaration; ``export
+        type { T }`` versus ``export { T }`` changes what survives
+        ``verbatimModuleSyntax``; ``export * from './m'`` republishes another
+        module's surface. All three are contract changes that a
+        declaration-only reader cannot see. Keys: ``k:export/i:b`` for a named
+        export, ``k:export/k:star/s:./m`` for a star re-export; the fingerprint
+        carries the local name, the source specifier and the type-only flag.
+      * **Ambient declarations.** ``declare module "foo"``, ``declare global``,
+        and everything in a ``.d.ts``. A ``.d.ts`` file is nothing but
+        signature; it is read through the ``.ts`` row (``.d.ts`` cannot be its
+        own registry row — :func:`validate_registry` refuses an extension that
+        is a suffix of another, and ``.d.ts`` ends with ``.ts``) and needs no
+        special case.
+      * **Decorators, rendered in full including their arguments.** A parity
+        break with Python, which fingerprints decorator NAMES only, and the
+        reason is the struct-tag reason verbatim: ``@Column({ name: 'amount'
+        })`` → ``@Column({ name: 'amt' })`` renames a database column, rewrites
+        every row this type reads and writes, and produces no error anywhere.
+        The Go contract calls tags "the single most consequential edit a body
+        agent can make to a type without touching a function signature"; in a
+        TypeScript codebase with an ORM or a validation decorator, this is that
+        edit. Class, method, property, accessor and parameter decorators alike.
+      * **Parameter properties.** ``constructor(private readonly x: string)``
+        declares a class property and a parameter at once; it appears in both
+        renderings.
+      * **``this`` parameters.** ``function f(this: HTMLElement, x: string)``.
+        The TYPE is contract; the name is fixed by the grammar and cannot be
+        renamed, so the receiver question the Go table settles does not arise.
+      * **Getters and setters**, folded into ONE member key with a marker for
+        which accessors exist. Deleting a setter makes a property read-only to
+        every consumer, with no error in this file.
+      * **Top-level ``const`` / ``let`` / ``var``**, which is the largest
+        deliberate departure from both the Python and the Go contracts, both of
+        which ignore module-level and package-level bindings. It is departed
+        from because bare parity is the argument this section exists to
+        distrust, and here the analogy breaks outright: in TypeScript —
+        overwhelmingly so in the 475 ``.tsx`` files of the primary target —
+        ``export const Button: React.FC<Props> = props => …`` **is** how a
+        function is declared. ``function f() {}`` and ``const f = () => {}``
+        are two spellings of one declaration, and a comparator that reads the
+        first and ignores the second is not a parity decision, it is a hole
+        with a syntax key. Every top-level binding is a symbol; the fingerprint
+        is:
+
+          1. the declared type annotation, if there is one; else
+          2. the type of a ``satisfies`` expression, if the initialiser is one
+             (``const config = {…} satisfies Config`` is the author declaring
+             the contract in the only place TypeScript lets them declare it
+             without widening — the brief's ``satisfies`` question, ruled in);
+             else
+          3. the signature — type parameters, parameters, return annotation —
+             of the initialiser when it is an arrow function or a function
+             expression; else
+          4. the marker meaning **no declared type**.
+
+        In no case is the initialiser's VALUE fingerprinted; that is a body
+        concern, exactly as the Python contract rules a parameter default's
+        value to be. Rendering ``no declared type`` as a marker rather than
+        omitting the symbol is what keeps the rule total: adding or removing an
+        annotation is then a fingerprint change on a stable key rather than the
+        addition or removal of a symbol, and "added symbol" would have meant
+        "not a change".
+
+        A destructuring binding (``const { a, b } = obj``) yields one symbol
+        per bound identifier, all carrying the declaration's annotation if it
+        has one and the ``no declared type`` marker otherwise. That is a coarse
+        answer and it is named as one.
+
+    THE POSITIONS WHERE A TYPE HAS NO SUB-SYMBOL — trap 2, and the rule that
+    retires the whole class
+    -----------------------------------------------------------------------
+    The Go unit lost interface-literal signatures in six positions because the
+    name/signature split was right for the one shape that has sub-symbols and
+    wrong everywhere else. TypeScript has far more such positions, because an
+    anonymous object type, function type, mapped type or conditional type may
+    appear anywhere a type may appear. Enumerated, so the enumeration can be
+    checked rather than trusted — a structural type with no sub-symbol behind
+    it occurs in:
+
+      1. a type alias' right-hand side, at any depth
+         (``type A = { m(): void } | ((a: string) => void)``);
+      2. a parameter's type; 3. a return type; 4. a property's type;
+      5. a type parameter's ``extends`` constraint; 6. its default;
+      7. an index signature's key or value type;
+      8. a type argument anywhere (``Promise<{ m(): void }>``);
+      9. a ``extends`` / ``implements`` clause's type arguments;
+      10. a variable, parameter-property or class-property annotation;
+      11. the body of a mapped type (``{ [K in keyof T]: () => T[K] }``);
+      12. either branch of a conditional type, and its ``infer`` positions;
+      13. a tuple element, including labelled and optional ones;
+      14. a ``typeof`` / ``keyof`` / indexed-access operand;
+      15. a template-literal type's placeholders;
+      16. an overload signature's parameter and return types;
+      17. a rest parameter's element type;
+      18. a type predicate's asserted type (``x is { m(): void }``);
+      19. a ``satisfies`` operand under the ``const`` rule above.
+
+    Rather than rule on nineteen positions, this contract adopts the rule that
+    makes the list moot and states it as an invariant P2 should seal directly:
+
+      **No rendering position in this grammar is name-only. Every type
+      expression renders its full structure wherever it appears, and
+      sub-symbols are ADDITIONAL reporting granularity, never the sole storage
+      of a signature.**
+
+    That is strictly stronger than the Go contract, which renders a top-level
+    interface definition's methods by name only *because* each has an
+    ``Iface.Method`` sub-symbol — the split that produced the defect. The price
+    is paid in exactly one place and it is small: a member of an interface is
+    stored in the interface's own fingerprint, which is why interface members
+    are NOT emitted as separate symbols here. A class's methods ARE separate
+    symbols, and there the price is real — an edit to ``C.m`` changes both
+    ``i:C/i:m`` and, through the class rendering, ``i:C`` — so a report may
+    carry two rows for one edit. That redundancy is accepted deliberately: the
+    Go unit took the other trade and it cost six lost positions, and this
+    project's stated stance is that a visible duplicate row is cheaper than a
+    silent pass.
+
+    That choice also settles what "adding a member" means, and the two answers
+    differ for a stated reason rather than by accident:
+
+      * **adding a member to an interface, type literal or enum IS a change** —
+        it is inside the containing type's fingerprint. This is correct on its
+        own merits: an added required member breaks every implementor.
+      * **adding a method to a class is NOT a change** — it is a new
+        sub-symbol, and Python's "a body may add private helpers" applies.
+        **Adding a class PROPERTY is a change**, because properties are
+        rendered inside the class fingerprint, which is Python's rule for
+        annotated class-level assignments transferred intact.
+
+    JSX — 475 of the 996 target files, and the ruling is that it is out
+    ------------------------------------------------------------------
+    **No JSX syntax appears in any fingerprint, and this is not a gap.** A JSX
+    element is an EXPRESSION. Expressions occur in initialisers and in function
+    bodies, and bodies are the work this gate exists to permit. There is no
+    declaration form in TypeScript whose JSX content is part of a contract.
+
+    What ``.tsx`` does change is the PARSE, and that is the whole of its effect
+    on this comparator: the dialect must come from the path, because the same
+    bytes mean different things (measured — ``const x = <T>(y);`` is a type
+    assertion in ``.ts`` and an unterminated JSX element in ``.tsx``, and the
+    ``<T,>`` trailing comma is the ``.tsx`` idiom for a generic arrow that
+    would be a syntax oddity elsewhere). This is exactly the case
+    :class:`SignatureFingerprinter` means when it says ``path`` is passed "for
+    language-dialect decisions a suffix implies".
+
+    A consequence worth stating so nobody reads the JSX exclusion as
+    ``.tsx`` coverage being thin: a React component's contract is its **props
+    type** and its **declared signature**, both of which are fingerprinted in
+    full by the ``const`` rule and the interface rule above. What is not read is
+    the markup it returns, which is its body.
+
+    JSX *type* declarations are a different thing and are IN by the ordinary
+    path: ``declare global { namespace JSX { interface IntrinsicElements {…} } }``
+    is a namespace and an interface, and is read as such.
+
+    DELIBERATELY EXCLUDED, each with its reason
+    -------------------------------------------
+      * **Function and method bodies, and anything declared inside one.** The
+        work the gate exists to permit.
+      * **Comments and JSDoc.** Parity with both other contracts: a docstring
+        is P1's and P3 may extend it.
+      * **``import`` declarations, including ``import type``.** Parity with the
+        Go contract, and for its reason: imports are not this module's
+        declarations. The same recorded consequence follows — type expressions
+        are compared AS WRITTEN, so renaming an import alias rewrites every
+        annotation mentioning it and every one reads as a change. Visible,
+        named, and a violation rather than a silent pass. Note the asymmetry
+        with the export surface, which IS read: an import is what this module
+        consumes, an export is what it promises.
+      * **Type identity and resolution.** ``Foo`` from two different modules
+        fingerprints identically; an alias is not followed; a type is not
+        expanded. Syntactic, like both other contracts, and for the same
+        reason.
+      * **Initialiser values, default values, and every other expression.**
+      * **``.mts``, ``.cts``, ``.js``, ``.jsx``, ``.mjs``, ``.cjs``.** Not in
+        :data:`TYPESCRIPT_SUPPORT`'s ``extensions``. The primary target contains
+        zero of the first two (measured) and this contract has no opinion about
+        JavaScript. Named as a gap so its absence is a state rather than an
+        oversight; note that ``.mts`` would NOT be picked up by the ``.ts``
+        entry, since matching is a suffix match and ``".mts".endswith(".ts")``
+        is false.
+
+    NORMALISATION, and the one measurement P3 must not skip
+    -------------------------------------------------------
+    Two revisions that mean the same thing must fingerprint identically. The
+    Go side gets this from ``go/printer``. **TypeScript's printer does not
+    provide it**, and this was measured on 2026-08-10 rather than assumed:
+    ``ts.createPrinter().printNode(…, sourceFile)`` reuses the original source
+    text for many nodes, so ``type A = 'x'`` and ``type B = "x"`` print with
+    their original quotes. A fingerprint built naively on ``printNode`` would
+    report a signature change for every string-literal type in the repository
+    the day someone changes a Prettier setting.
+
+    So the renderer is this unit's own, and it must not depend on original
+    source text. At minimum it must normalise: string-literal quoting; numeric
+    literal spelling (``1``, ``1.0``, ``0x1``, ``1_000``); redundant
+    parenthesisation; ``;`` versus ``,`` versus newline as an object-type member
+    separator; trailing commas; line breaks and indentation inside parameter
+    and type-parameter lists; and the ``T[]`` / ``Array<T>`` pair is
+    deliberately NOT normalised, because they differ under ``readonly`` and
+    this comparator has no checker with which to know when they do not.
+
+    FAILURE
+    -------
+    Raises :class:`SourceUnparseable` when the helper reports a parse error —
+    which, per :class:`TsHelperResponse`, means **any** parse diagnostic — and
+    :class:`ComparatorUnavailable` carrying the named fault otherwise. The
+    mapping uses the existing six and adds none:
+
+      * ``node`` not on PATH → :attr:`ComparatorFault.TOOLCHAIN_MISSING`;
+      * ``node`` present but its version probe fails, times out, exits
+        non-zero, or reports less than :data:`TS_NODE_MINIMUM_VERSION`; or the
+        vendored parser loads and reports a ``ts.version`` below
+        :data:`TS_PARSER_MINIMUM_VERSION` →
+        :attr:`ComparatorFault.TOOLCHAIN_UNUSABLE`. A parser present but too
+        old is the direct analogue of :func:`_probe_go_toolchain`'s
+        language-version refusal: it would fail as a parse error and blame the
+        branch for the age of the install;
+      * the helper directory, entry point, vendored parser or license is
+        missing, or escapes the package by symlink →
+        :attr:`ComparatorFault.HELPER_MISSING` (:func:`ts_parser_home`);
+      * the helper exits non-zero → :attr:`ComparatorFault.HELPER_FAILED`;
+      * it exceeds :data:`_HELPER_TIMEOUT_SECONDS` →
+        :attr:`ComparatorFault.HELPER_TIMEOUT`;
+      * its stdout is not a well-formed document of :data:`TS_HELPER_SCHEMA` →
+        :attr:`ComparatorFault.HELPER_OUTPUT_INVALID`
+        (:func:`decode_ts_helper_response`).
+
+    Every one is terminal for the file: no retry, no fallback parser, no
+    degraded mode. **And the load-bearing consequence of the whole design: a
+    parser the branch can write never produces a CHECKED verdict, because a
+    parser the branch can write is never reached.** The reachable states are "a
+    trusted parser answered" and "a fault", and every fault maps through
+    :func:`signature_status_for_fault` to
+    ``UNCHECKED_COMPARATOR_UNAVAILABLE``, which is blocking on BODIES.
+
+    Not implemented, and not enrolled: see :data:`TYPESCRIPT_SUPPORT`.
+    """
+
+    def fingerprints(self, path: str, text: str) -> dict[str, str]:
+        """One revision of one TypeScript file → symbol → fingerprint.
+
+        The steps, so the seal author knows which fault belongs to which:
+        resolve the trusted parser (:func:`ts_parser_home` →
+        :attr:`ComparatorFault.HELPER_MISSING`), find and probe ``node``
+        (:attr:`ComparatorFault.TOOLCHAIN_MISSING`,
+        :attr:`ComparatorFault.TOOLCHAIN_UNUSABLE`), run the helper under
+        :func:`_node_toolchain_environment` with
+        :func:`encode_ts_helper_request` on stdin and
+        :data:`_HELPER_TIMEOUT_SECONDS` as the budget
+        (:attr:`ComparatorFault.HELPER_TIMEOUT`,
+        :attr:`ComparatorFault.HELPER_FAILED`), decode stdout
+        (:attr:`ComparatorFault.HELPER_OUTPUT_INVALID`), and turn a
+        ``parse_error`` document into :class:`SourceUnparseable`.
+
+        Ordering the parser resolution FIRST is deliberate and differs from the
+        Go helper's order, which probes the toolchain before the helper source.
+        Here the parser is the thing whose provenance is in question, so the
+        first message an operator sees on an unconfigured machine names it:
+        "no trusted TypeScript parser is installed", not "no node on PATH".
+
+        The resolution, the probe and any warm-up are once per PROCESS, cached
+        in memory and never on disk between runs — see
+        :data:`_GO_HELPER_PREPARED` for the argument, which transfers whole: a
+        cache under ``/tmp`` would be a file outside :data:`FLOOR_GLOBS` whose
+        bytes decide what a signature is. Unlike Go there is no compile step,
+        so the cached object is the resolved directory and the probe result.
+
+        May return an empty mapping ONLY for a file that genuinely declares
+        nothing. Never to signal a failure: an empty mapping is a CHECKED
+        comparison with no changes, which is a pass bought by having read
+        nothing.
+        """
+        raise NotImplementedError("D4 P1 scaffold: contract only")
+
+
+@dataclass(frozen=True)
+class TsSignatureEditRuling:
+    """One ruled edit: does it change a TypeScript signature, or is it body work?
+
+    A row of :data:`TS_SIGNATURE_EDIT_RULINGS`, and the same instrument as
+    :class:`GoSignatureEditRuling` — a ruling that is a table row is something
+    P2 asserts against and P3 implements to, where a ruling that is a paragraph
+    is something a seal author guesses at and a P4 adjudicates.
+
+    ``path`` is part of the row because it selects the parse dialect, and the
+    ``.tsx`` rows would parse differently without it. ``python_analogue``
+    carries the same edit transliterated to Python where the edit HAS one, so
+    the row is checkable against a live comparator today; None is the recorded
+    claim that the languages differ there, or that Python has no such shape.
+    """
+
+    name: str
+    path: str
+    before: str
+    after: str
+    is_a_change: bool
+    rationale: str
+    python_analogue: tuple[str, str] | None = None
+
+
+#: The acceptance criterion for :class:`TypeScriptSignatureFingerprinter` and
+#: the thing P2 seals against. Rows with a ``python_analogue`` are checkable
+#: against the live Python comparator today, as the Go table's are, so the
+#: parity claims are measured rather than asserted.
+#:
+#: Every row is a complete file. The CONTROL rows (a body rewritten, JSX
+#: rewritten, a string requoted, an un-annotated initialiser changed) are not
+#: filler: without them a comparator that answered "changed" to everything
+#: would satisfy the table, which is the failure mode the Go table names.
+TS_SIGNATURE_EDIT_RULINGS: tuple[TsSignatureEditRuling, ...] = (
+    TsSignatureEditRuling(
+        name="parameter renamed",
+        path="m.ts",
+        before="export function move(src: string, dst: string): void {}\n",
+        after="export function move(source: string, target: string): void {}\n",
+        is_a_change=True,
+        rationale=(
+            "THE TRANSFERRED RULING. Checked rather than assumed: the Go "
+            "argument holds unchanged in TypeScript, because a syntactic "
+            "single-file comparison cannot distinguish this from the same-type "
+            "reorder below. Breaks no caller on its own; that is the accepted "
+            "price of the next row"
+        ),
+        python_analogue=(
+            "def move(src, dst):\n    pass\n",
+            "def move(source, target):\n    pass\n",
+        ),
+    ),
+    TsSignatureEditRuling(
+        name="same-type parameters reordered",
+        path="m.ts",
+        before="export function move(src: string, dst: string): void {}\n",
+        after="export function move(dst: string, src: string): void {}\n",
+        is_a_change=True,
+        rationale=(
+            "THE REASON FOR THE RULING ABOVE. Type-identical, every call site "
+            "compiles, every one now means the opposite. TypeScript has no "
+            "named arguments, so there is no compiler check anywhere"
+        ),
+        python_analogue=(
+            "def move(src, dst):\n    pass\n",
+            "def move(dst, src):\n    pass\n",
+        ),
+    ),
+    TsSignatureEditRuling(
+        name="type parameters reordered",
+        path="m.ts",
+        before="export type Pair<K, V> = { key: K; value: V };\n",
+        after="export type Pair<V, K> = { key: K; value: V };\n",
+        is_a_change=True,
+        rationale=(
+            "The parameter-reorder argument one level up the type system. "
+            "Every `Pair<A, B>` in the codebase silently swaps meaning and "
+            "most will still typecheck when A and B are structurally similar"
+        ),
+        python_analogue=None,
+    ),
+    TsSignatureEditRuling(
+        name="destructured parameter's bindings reordered",
+        path="m.ts",
+        before=(
+            "export function draw({ x, y }: { x: number; y: number }): void {}\n"
+        ),
+        after=(
+            "export function draw({ y, x }: { x: number; y: number }): void {}\n"
+        ),
+        is_a_change=False,
+        rationale=(
+            "THE BOUNDARY, and the check on the criterion — the receiver row "
+            "of this table. Destructuring binds BY NAME, so the pattern "
+            "carries no ordering information and no caller can be made "
+            "silently wrong by permuting it. The binding names are body-local "
+            "and are not fingerprinted; the parameter's TYPE is. Same "
+            "criterion as the two rows above, opposite answer"
+        ),
+        python_analogue=None,
+    ),
+    TsSignatureEditRuling(
+        name="body rewritten, declaration untouched",
+        path="m.ts",
+        before="export function move(src: string, dst: string): void {}\n",
+        after=(
+            "export function move(src: string, dst: string): void {\n"
+            "  const from = src;\n  const to = dst;\n  void from;\n  void to;\n"
+            "}\n"
+        ),
+        is_a_change=False,
+        rationale=(
+            "THE CONTROL. This is the work the gate EXISTS to permit and it "
+            "must stay silent. Without this row a comparator that answered "
+            "'changed' to every other row here would pass the table"
+        ),
+        python_analogue=(
+            "def move(src, dst):\n    pass\n",
+            "def move(src, dst):\n    _ = src\n    _ = dst\n    return None\n",
+        ),
+    ),
+    TsSignatureEditRuling(
+        name="JSX markup rewritten in a component body",
+        path="Button.tsx",
+        before=(
+            "export interface Props { label: string }\n"
+            "export const Button = (p: Props) => <button>{p.label}</button>;\n"
+        ),
+        after=(
+            "export interface Props { label: string }\n"
+            "export const Button = (p: Props) => (\n"
+            "  <button className=\"primary\" onClick={() => undefined}>\n"
+            "    <span>{p.label}</span>\n  </button>\n);\n"
+        ),
+        is_a_change=False,
+        rationale=(
+            "THE JSX RULING, as a control. A JSX element is an EXPRESSION and "
+            "expressions live in bodies. 475 of the target's 996 TypeScript "
+            "files are .tsx and none of them has JSX in a declaration "
+            "position. What .tsx changes is the PARSE DIALECT, nothing else — "
+            "which is why `path` is on the row and on "
+            "`SignatureFingerprinter.fingerprints`"
+        ),
+        python_analogue=None,
+    ),
+    TsSignatureEditRuling(
+        name="a component's props type gains a required member",
+        path="Button.tsx",
+        before=(
+            "export interface Props { label: string }\n"
+            "export const Button = (p: Props) => <button>{p.label}</button>;\n"
+        ),
+        after=(
+            "export interface Props { label: string; onClick: () => void }\n"
+            "export const Button = (p: Props) => <button>{p.label}</button>;\n"
+        ),
+        is_a_change=True,
+        rationale=(
+            "The other half of the JSX ruling: .tsx coverage is real. An "
+            "interface member is inside the interface's own fingerprint (no "
+            "sub-symbols for interface members — see the trap-2 rule), so "
+            "adding one is a change, and it should be: every existing "
+            "`<Button label=…/>` call site now fails to compile, which is the "
+            "contract break a body agent is not allowed to make unilaterally"
+        ),
+        python_analogue=None,
+    ),
+    TsSignatureEditRuling(
+        name="an overload added",
+        path="m.ts",
+        before=(
+            "export function f(x: string): string;\n"
+            "export function f(x: any): any { return x; }\n"
+        ),
+        after=(
+            "export function f(x: string): string;\n"
+            "export function f(x: number): number;\n"
+            "export function f(x: any): any { return x; }\n"
+        ),
+        is_a_change=True,
+        rationale=(
+            "Widening, which is the half of the build protocol this gate "
+            "enforces, and it hides here better than anywhere else: no "
+            "existing signature changed. It is a change because an overload "
+            "set folds into ONE symbol whose fingerprint is the ordered list "
+            "of its signatures — so 'an added symbol is not a change' does not "
+            "apply, and must not"
+        ),
+        python_analogue=None,
+    ),
+    TsSignatureEditRuling(
+        name="two overloads reordered",
+        path="m.ts",
+        before=(
+            "export function f(x: string): string;\n"
+            "export function f(x: unknown): number;\n"
+            "export function f(x: any): any { return x; }\n"
+        ),
+        after=(
+            "export function f(x: unknown): number;\n"
+            "export function f(x: string): string;\n"
+            "export function f(x: any): any { return x; }\n"
+        ),
+        is_a_change=True,
+        rationale=(
+            "TypeScript resolves an overload set in DECLARATION ORDER. After "
+            "this edit `f('a')` returns number rather than string, at every "
+            "call site, with no error. The parameter-reorder inversion moved "
+            "up to the overload set"
+        ),
+        python_analogue=None,
+    ),
+    TsSignatureEditRuling(
+        name="export removed from a declaration",
+        path="m.ts",
+        before="export function helper(a: string): void {}\n",
+        after="function helper(a: string): void {}\n",
+        is_a_change=True,
+        rationale=(
+            "Silent narrowing with no error in this file: the declaration is "
+            "unchanged and the module's API lost a member. `export` is a "
+            "modifier and modifiers are IN. This is what 'tidy up unused "
+            "exports' looks like from inside a body task"
+        ),
+        python_analogue=None,
+    ),
+    TsSignatureEditRuling(
+        name="a public name re-exported under a different alias",
+        path="m.ts",
+        before="function h(): void {}\nexport { h as handle };\n",
+        after="function h(): void {}\nexport { h as run };\n",
+        is_a_change=True,
+        rationale=(
+            "No declaration changed at all — a declaration-only comparator "
+            "sees nothing — and every importer breaks. The export surface is "
+            "read as symbols under `k:export` for exactly this row"
+        ),
+        python_analogue=None,
+    ),
+    TsSignatureEditRuling(
+        name="a required property made optional",
+        path="m.ts",
+        before="export interface Bet { amountCents: number }\n",
+        after="export interface Bet { amountCents?: number }\n",
+        is_a_change=True,
+        rationale=(
+            "`?` is a modifier and modifiers are IN. It widens the type for "
+            "producers and narrows every consumer that reads the field, and "
+            "on a money field it is the difference between a required amount "
+            "and undefined"
+        ),
+        python_analogue=None,
+    ),
+    TsSignatureEditRuling(
+        name="a decorator's argument changed",
+        path="m.ts",
+        before=(
+            "export class Bet {\n"
+            "  @Column({ name: 'amount_cents' })\n"
+            "  amountCents!: number;\n}\n"
+        ),
+        after=(
+            "export class Bet {\n"
+            "  @Column({ name: 'amount' })\n"
+            "  amountCents!: number;\n}\n"
+        ),
+        is_a_change=True,
+        rationale=(
+            "THE STRUCT-TAG ROW. The declared shape is identical and the "
+            "storage contract is not: every read and write of this type now "
+            "names a different column, with no error anywhere. Decorators are "
+            "rendered in FULL including arguments — a parity break with "
+            "Python, which fingerprints decorator names only, for the reason "
+            "the Go contract gives for tags"
+        ),
+        python_analogue=None,
+    ),
+    TsSignatureEditRuling(
+        name="enum members reordered",
+        path="m.ts",
+        before="export enum Stage { Draft, Live, Settled }\n",
+        after="export enum Stage { Live, Draft, Settled }\n",
+        is_a_change=True,
+        rationale=(
+            "Implicit numeric values follow declaration order, so this "
+            "rewrites Draft from 0 to 1 and Live from 1 to 0. Anything "
+            "persisted, transmitted or compared numerically inverts. The one "
+            "member list in this contract that is ordered rather than sorted, "
+            "and the boundary that shows the sorting rule is a criterion "
+            "rather than a convenience"
+        ),
+        python_analogue=None,
+    ),
+    TsSignatureEditRuling(
+        name="interface members reordered",
+        path="m.ts",
+        before="export interface Bet { amountCents: number; id: string }\n",
+        after="export interface Bet { id: string; amountCents: number }\n",
+        is_a_change=False,
+        rationale=(
+            "CONTROL for the sorting rule, and a deliberate parity break with "
+            "the Go struct-field rule. A Go struct's field order is memory and "
+            "wire layout; an object type's member order is visible to nobody. "
+            "No caller can be made silently wrong, so ordering buys no reorder "
+            "catch and costs a false positive on every alphabetise edit"
+        ),
+        python_analogue=None,
+    ),
+    TsSignatureEditRuling(
+        name="a class method added",
+        path="m.ts",
+        before="export class Svc {\n  do(a: string): void {}\n}\n",
+        after=(
+            "export class Svc {\n  do(a: string): void {}\n"
+            "  private helper(b: number): void {}\n}\n"
+        ),
+        is_a_change=False,
+        rationale=(
+            "Python's 'a body may add private helpers', transferred. A class "
+            "method is its own sub-symbol and an added symbol is not a change. "
+            "Contrast the class PROPERTY row below and the interface member "
+            "row above — the three together are what the trap-2 rule buys"
+        ),
+        python_analogue=(
+            "class Svc:\n    def do(self, a):\n        pass\n",
+            "class Svc:\n    def do(self, a):\n        pass\n"
+            "    def _helper(self, b):\n        pass\n",
+        ),
+    ),
+    TsSignatureEditRuling(
+        name="a class property added",
+        path="m.ts",
+        before="export class Svc {\n  do(a: string): void {}\n}\n",
+        after=(
+            "export class Svc {\n  private cache: Map<string, number> "
+            "= new Map();\n  do(a: string): void {}\n}\n"
+        ),
+        is_a_change=True,
+        rationale=(
+            "The strictest row here, inherited whole from Python, where class "
+            "field lists ARE the contract. A body agent that needs new state "
+            "puts it in a new type or gets a ruling. Named as ruled rather "
+            "than accidental, exactly as the Go struct-field row is"
+        ),
+        python_analogue=(
+            "class Svc:\n    def do(self, a):\n        pass\n",
+            "class Svc:\n    cache: dict\n    def do(self, a):\n        pass\n",
+        ),
+    ),
+    TsSignatureEditRuling(
+        name="a string-literal type requoted",
+        path="m.ts",
+        before="export type Mode = 'live' | 'draft';\n",
+        after='export type Mode = "live" | "draft";\n',
+        is_a_change=False,
+        rationale=(
+            "CONTROL, and the one P3 is most likely to fail. Measured "
+            "2026-08-10: `ts.createPrinter().printNode(node, sourceFile)` "
+            "reuses ORIGINAL SOURCE TEXT and prints these two differently, so "
+            "a fingerprint built on the TypeScript printer reports a signature "
+            "change for every string-literal type in the repository the day a "
+            "Prettier setting changes. The renderer must not depend on source "
+            "text; see the normalisation list on the fingerprinter"
+        ),
+        python_analogue=None,
+    ),
+    TsSignatureEditRuling(
+        name="an un-annotated const's initialiser changed",
+        path="m.ts",
+        before="export const config = { retries: 3 };\n",
+        after="export const config = { retries: '3' };\n",
+        is_a_change=False,
+        rationale=(
+            "THE BLIND SPOT, ruled rather than left to be discovered. The "
+            "public type of `config` changed from { retries: number } to "
+            "{ retries: string } and this comparator reports nothing, because "
+            "the type is INFERRED and inference is exactly what a syntactic "
+            "single-file reader cannot do. The remedy is a project convention "
+            "(annotate or `satisfies` on exported constants), not a comparator "
+            "change — a comparator that guessed here would need a type checker "
+            "and a resolvable program, and would then be reading the branch's "
+            "own tsconfig"
+        ),
+        python_analogue=None,
+    ),
+    TsSignatureEditRuling(
+        name="an arrow const's declared signature changed",
+        path="m.ts",
+        before="export const parse = (raw: string): number => Number(raw);\n",
+        after="export const parse = (raw: string, radix: number): number =>\n"
+        "  parseInt(raw, radix);\n",
+        is_a_change=True,
+        rationale=(
+            "THE DEPARTURE FROM PARITY, as a row. Python and Go both ignore "
+            "module- and package-level bindings; this contract does not, "
+            "because in TypeScript — and overwhelmingly in the target's 475 "
+            ".tsx files — `const f = () => {}` IS how a function is declared. "
+            "Ignoring one spelling of 'declare a function' while reading the "
+            "other is not parity, it is a hole with a syntax key"
+        ),
+        python_analogue=None,
+    ),
+)
+
+
+#: TypeScript's row: **written, complete as a contract, and deliberately not
+#: enrolled.** It is in :data:`PENDING_COMPARATORS`, so :func:`support_for_path`
+#: never returns it and a ``.ts`` or ``.tsx`` path is answered exactly as it was
+#: before this unit — UNCHECKED_UNSUPPORTED_LANGUAGE, promoted to
+#: UNCHECKED_NO_SUPPORTED_FILE on a diff with nothing else in it, CLEAN on
+#: BODIES.
+#:
+#: ``.d.ts`` is NOT a separate entry and cannot be one:
+#: :func:`validate_registry` refuses an extension that is a suffix of another,
+#: and ``.d.ts`` ends with ``.ts``. It needs none — a declaration file is
+#: nothing but signature and the ``.ts`` row reads it. ``.mts`` and ``.cts`` are
+#: absent and are NOT covered by ``.ts`` either, since matching is a suffix
+#: match; the primary target contains zero of them.
+#:
+#: **ENROLMENT IS A TWO-LINE MOVE** — adding this row to :data:`COMPARATORS`
+#: **and removing it from** :data:`PENDING_COMPARATORS`. Doing only the first
+#: leaves the row in both tuples, :func:`validate_registry` raises at import and
+#: the whole suite fails collection. That correction cost the Go row a P4
+#: amendment on 2026-08-10; it is written here so this row does not repeat it.
+#:
+#: It may not happen until all of these hold. Three of them are somebody else's
+#: commit, and the first is the one that may yet sink the approach:
+#:
+#:   1. **A pinned TypeScript parser is vendored** into
+#:      ``src/claude_dispatcher/ts_signature_fingerprint/`` as a flat trio —
+#:      ``main.cjs``, ``typescript.js``, ``LICENSE.typescript.txt`` — and
+#:      ``pyproject.toml`` ships ``ts_signature_fingerprint/*``. **NOT DONE, and
+#:      not P1's to do.** State the cost honestly rather than let it be
+#:      discovered at review: ``typescript.js`` is **9.1 MB** (measured, 5.9.3),
+#:      it is third-party code, and this repository has never carried a
+#:      vendored dependency. A 9 MB blob entering the git history of the module
+#:      that decides every verdict is a review nobody has yet agreed to do, and
+#:      it recurs at every parser upgrade. If that is refused, the honest
+#:      outcome is that this row stays pending forever and TypeScript stays
+#:      UNCHECKED — which is the state this scaffold ships and is why the
+#:      refusal is designed to be survivable rather than to be a stopgap.
+#:   2. :data:`FLOOR_GLOBS` covers
+#:      ``**/src/claude_dispatcher/ts_signature_fingerprint/**`` **before**
+#:      anything is vendored into it, and ``scripts/check_body_branch.sh`` reads
+#:      it from the protected base. P4's commit, because the floor's
+#:      ``_FLOOR_ROWS`` table is a seal P3 may not edit. The script is expected
+#:      to need no change — the Go helper needed none because it sits under the
+#:      ``src/`` prefix the base-pinned block copies wholesale — but that was
+#:      MEASURED for Go and must be measured again, not inherited.
+#:   3. :class:`TypeScriptSignatureFingerprinter` is implemented (P3) to
+#:      :data:`TS_SIGNATURE_EDIT_RULINGS`, which is the acceptance criterion
+#:      and not a suggestion, and the helper's decoder is the shared extraction
+#:      :func:`decode_ts_helper_response` names rather than a copy of the Go
+#:      one. **NOT DONE.**
+#:   4. Seals exist that pin the comparator as CORRECT, not merely as present.
+#:      The Go row's checklist records that enrolment alone bought nothing:
+#:      dropping parameter names from the Go fingerprint left the suite green
+#:      before and after enrolment. Do not repeat it. The seals that matter are
+#:      the rulings table, the key-collision property
+#:      (:func:`ts_symbol_key`), the parse-diagnostic strictness
+#:      (:class:`TsHelperResponse`) and the resolution rule
+#:      (:func:`ts_parser_home`).
+#:   5. The count of seals that redden on enrolment is taken **that day, by
+#:      enrolling in a clone**. The Go row's count was wrong four times —
+#:      seven, then eight, then nine — and the recorded lesson is that the only
+#:      trustworthy count is a measured one. A first measurement for this row,
+#:      taken 2026-08-10 on the D2 P4 tree: the ``.ts`` probes that would have
+#:      reddened were already replaced with ``.sql`` and ``.java`` during the Go
+#:      enrolment pass, precisely so this job would not be booked twice, and no
+#:      test in the suite enumerates :class:`Language` or pins
+#:      :data:`PENDING_COMPARATORS`'s contents. That is a reason to expect a
+#:      small number, not a reason to skip the count.
+#:
+#: The row exists now, unenrolled, rather than being written by P3, for the
+#: reason :data:`GO_SUPPORT` gives: the extensions belong in the table that owns
+#: extensions, and a reader can check what this build covers by reading one
+#: place. :func:`validate_registry` checks pending rows against enrolled ones,
+#: so this row cannot collide with a live one and cannot be enrolled twice.
+TYPESCRIPT_SUPPORT = LanguageSupport(
+    language=Language.TYPESCRIPT,
+    extensions=(".ts", ".tsx"),
+    fingerprinter=TypeScriptSignatureFingerprinter(),
+)
+
+
 #: **THE registry.** The one table that says what this gate can read, and the
 #: only input to :func:`support_for_path`. Adding a language is adding a row;
 #: no dispatch site changes, because there is no dispatch site.
@@ -4272,7 +5793,16 @@ COMPARATORS: tuple[LanguageSupport, ...] = (PYTHON_SUPPORT,)
 #: nameable) rather than a row someone forgot, and so
 #: :func:`validate_registry` can refuse a pending row that collides with a live
 #: one before anybody tries to enrol it.
-PENDING_COMPARATORS: tuple[LanguageSupport, ...] = (GO_SUPPORT,)
+#:
+#: Two rows now (D4, 2026-08-10), which is the first evidence that this tuple is
+#: a table rather than a place to park one thing: ``.go`` and ``.ts``/``.tsx``
+#: are validated against each other and against the live ``.py`` row at import,
+#: so an extension collision between two pending languages is refused before
+#: either is enrolled.
+PENDING_COMPARATORS: tuple[LanguageSupport, ...] = (
+    GO_SUPPORT,
+    TYPESCRIPT_SUPPORT,
+)
 
 
 def validate_registry(
