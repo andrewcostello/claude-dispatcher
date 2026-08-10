@@ -95,6 +95,104 @@ as ruling on them; both are in the P2 report's dispute list:
     rule keyed on ``is_test_path``. Judged harmless (``_load_prompt`` reads
     named files, not a testdata subtree) but it is a real coverage loss and
     P4's to rule on, so no row here requires either answer.
+
+P4 RULINGS, 2026-08-10 — inversion ACCEPTED; the three disputes
+================================================================
+Not one assertion in this file was amended. The ten reds stand as written; the
+eight coordinated amendments this file's recommendation requires were applied to
+the four sibling seal files (`test_role_protocol_table.py`,
+`test_role_protocol_diff.py`, `test_role_protocol_config.py`,
+`test_role_protocol_parse.py`), each with its own note. Verified in a clone: the
+inverted table plus the two machinery fixes takes the whole suite — this file's
+35 rows included — to GREEN, and no ninth site exists.
+
+RULING 0 — INVERSION. `Role.SEALS` becomes `ALLOW_ONLY_GLOBS`, writable set
+`(SEAL_VERIFY_TEST_PATHS, "**/docs/**")`. The alternatives were re-measured
+rather than accepted: adding `**/cmd/**`, `**/internal/**` and `**/pkg/**` to
+the deny row turns exactly 3 rows of
+:func:`test_seals_cannot_write_implementation_source_in_the_target_layouts`
+green (the three Go bodies) and exactly 4 rows of
+:func:`test_seals_can_write_the_seal_that_sits_beside_the_implementation` red
+(the three `_test.go` seals and `internal/wallet/testdata/ledger_golden.json`),
+for a net 10 -> 11 reds. The seal author's figure is confirmed to the row.
+
+RULING 1 — `docs/` IS IN THE WRITABLE SET, as `**/docs/**`. This was the
+dispute this file left open, and the measurement closes it: a PURE
+`is_test_path` inversion, with no documentation allowance, reddens EIGHT rows —
+all seven of
+:func:`test_seals_cannot_write_implementation_source_in_the_target_layouts`
+(every one on its CONTROL, `_A_PATH_SEALS_MUST_KEEP = "docs/notes.md"`, not on
+its property) and
+`test_role_protocol_provenance.py::_STILL_WRITABLE_ROWS[("seals",
+"docs/adr/0007.md")]`. The CRITICAL seal cannot go green without it. That is the
+operator's "a false refusal has no override" made concrete, and it is decided by
+this file's own control rather than by preference.
+
+Width: `**/docs/**`, not `docs/**` and not `**/docs/**/*.md`.
+  * `**/x/**` is the table's documented spelling — a leading `**/` matches zero
+    directories, so one pattern covers the root and the vendored/monorepo
+    `services/billing/docs/...` layout. Root-anchoring it would repeat, in
+    documentation, the exact mistake `**/src/**` made in source: a convention
+    written for one repository shape.
+  * An extension filter would refuse `docs/slack-app-manifest.json`,
+    `docs/retroactive_panel_results/panel.json` and `sweep.log` — files that
+    already exist in this tree — and a false refusal has no override.
+  * Narrower than the status quo in one direction worth naming: `README.md` at
+    the root is NOT in `docs/` and becomes unwritable to SEALS. No seal asserts
+    otherwise, and a seal author editing the README is not its job.
+Accepted, unchanged risk: a unit whose DELIVERABLE is documentation would have
+its body writable by the seal author. The inversion neither creates nor worsens
+that — `docs/` is writable to SEALS *and* BODIES today — and the protection that
+actually holds there is the mirror obligation (BODIES may not write a seal),
+which is measured green in section 3 of this file.
+
+RULING 2 — the `**/reviewer_prompts/**` testdata loss is ACCEPTED; the three
+instruction globs do NOT move to the floor in this change. Verified rather than
+taken on trust: `cross_family_reviewer._load_prompt` opens exactly
+`{family}.md` and `_shared.md` by name and `verifier._load_prompt` exactly
+`verifier.md`; nothing globs or walks either directory, so a `testdata/` file
+under them is never executed. One refinement to the seal author's "harmless":
+`journal.hash_tree` DOES `rglob("*")` the reviewer-prompts directory for the
+`reviewer_prompts_hash` provenance field, so such a file would move that digest.
+That is audit noise, not prompt injection, and it is detectable by construction.
+Under the inversion SEALS still cannot write `_shared.md` itself — it is neither
+a test path nor under `docs/` — so the loss is exactly one path shape.
+
+RULING 2b — and a SEPARATE live defect, raised here and deliberately NOT bundled.
+The seal author is right that "ADJUDICATE is currently stopped from writing them
+by nothing at all", and it is worse than a coverage loss: measured 2026-08-10
+against `built_in_policy()`, a task row of
+`disputed_paths: ["src/claude_dispatcher/reviewer_prompts/_shared.md"]` yields
+`effective_rule(...).globs == ("src/claude_dispatcher/reviewer_prompts/_shared.md",)`
+and `evaluate_changed_paths(...) == ()`; `first_matching_glob` of that path
+against `FLOOR_GLOBS` is None, as it is for `roles/reviewer.md` and
+`verifier_prompts/verifier.md`. So an adjudicate branch may today rewrite the
+reviewer prompt that is about to judge it. The remedy — moving `**/roles/*.md`,
+`**/reviewer_prompts/**` and `**/verifier_prompts/**` onto `FLOOR_GLOBS` — is
+correct on its own rationale (they are role-independent, which is why all three
+deny roles carry them), but a floor has no override and binds all five roles
+including LEGACY, so it would stop any dispatched task from ever improving a
+reviewer prompt. That is its own unit with its own blast radius, it is not
+caused by the inversion and not fixed by it, and bundling it here would put a
+red row in this commit that the inversion cannot clear. Raised, measured, and
+left for a separate change.
+
+RULING 3 — `db/migrations/0007_add_bay_flags.sql` STAYS in
+`_IMPLEMENTATION_PATHS`. SQL migrations are not outside the protocol's scope:
+evenplay-mono is 781 SQL files, a migration is the change to the durable store
+that a seed fixture or migration test pins, and a seal author who may write the
+migration can make its own seal pass by exactly the route the SEALS rationale
+describes. One correction to the dispute as filed: the sentence "the schema is
+the sole source" is the BODIES row's rationale, not SEALS' — SEALS' rationale
+speaks only of vacuous seals — so the mismatch between that sentence and
+`**/schema/**` is not evidence about this row. The row's real content is that
+`**/schema/**` reaches no migration path, which is the SAME layout blindness as
+`**/src/**`, in SQL instead of Go; striking it would strike a second instance of
+the fault this file exists to establish. Under the inversion the row needs no
+special handling and no glob of its own — a migration is neither a test path nor
+under `docs/`, so it is refused as an allowlist miss, and `tests/fixtures/
+ledger_seed.sql` (`is_test_path` -> True) stays writable. Both were green in the
+clone.
 """
 
 from __future__ import annotations

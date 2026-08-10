@@ -413,6 +413,14 @@ def test_effective_rule_for_deny_globs_is_policy_first_and_deduplicated() -> Non
 def test_effective_rule_for_allow_only_is_exactly_the_disputed_paths() -> None:
     """For ALLOW_ONLY a union would WIDEN, so the policy globs are not merged in.
 
+    P4 note (2026-08-10): this seal is about a role whose writable set is
+    PER-TASK DATA, which after the SEALS inversion is ADJUDICATE alone — SEALS
+    is allow-only too now, but its writable set is static and it may not carry
+    `disputed_paths:` at all. The property here is unchanged and the fixture
+    still names ADJUDICATE explicitly, so nothing about it generalises to "an
+    allow-only rule's globs are always the spec's"; the seal immediately below
+    is the one that says what happens when a spec declares nothing.
+
     Red now: NotImplementedError.
     Green when: globs == spec.disputed_paths exactly.
     Falsify: union the (empty) table globs in — assertion on identity of the
@@ -427,6 +435,97 @@ def test_effective_rule_for_allow_only_is_exactly_the_disputed_paths() -> None:
     rule = effective_rule(spec, built_in_policy())
     assert rule.kind is RuleKind.ALLOW_ONLY_GLOBS
     assert rule.globs == ("tests/test_x.py", "src/x.py")
+
+
+def test_effective_rule_never_builds_an_allow_only_rule_that_allows_nothing(
+) -> None:
+    """An emptied ALLOW list must not read as a refusal of everything.
+
+    **ADDED BY P4, 2026-08-10.** `tests/test_role_layout_coverage.py`'s
+    `test_an_effective_rule_never_hands_a_role_an_allow_set_that_forbids_everything`
+    seals the first half of this defect: `effective_rule`'s ALLOW_ONLY branch is
+    written to ADJUDICATE's semantics (`globs = tuple(spec.disputed_paths)`), so
+    any OTHER allow-only role has its policy allow set thrown away. That row
+    requires the policy's globs to be honoured. It does NOT require the engine
+    to notice when there is nothing left, and the seal author said so in its own
+    docstring: "`validate_rule` permits an empty ALLOW_ONLY tuple, so nothing
+    raises". P4's ruling is that the silence is the defect, not just the
+    discard, so the second half is sealed here rather than left to the fixer's
+    discretion — a false refusal has no override in this system, and a SILENT
+    total false refusal is the worst verdict this gate can produce.
+
+    The property is role-free and it is exactly the boundary `validate_rule`'s
+    own docstring already draws: an empty ALLOW_ONLY tuple is legal "ONLY for
+    the static table entry (the writable set arrives per task)". The rule
+    `effective_rule` BUILDS is not a static table entry — it is the rule a
+    branch is judged by — and for that rule an empty writable set is never a
+    policy, it is a bug. `RuleKind.UNRESTRICTED`'s docstring states the mirror
+    of this for deny sets ("an accidentally-emptied deny list can never read as
+    a pass"); this is the same sentence read from the other end.
+
+    No role needs to be special-cased to satisfy it. ADJUDICATE with no
+    `disputed_paths:` is already refused one step earlier — `check_branch`
+    returns UNDETERMINED for it with its own message — and `check_branch` wraps
+    this call in `except RoleProtocolError -> UNDETERMINED`, so the raise fails
+    CLOSED and names the reason rather than judging the branch under a rule that
+    forbids the repository.
+
+    Two controls, and they are what stop "refuse every allow-only rule" from
+    passing:
+      * a policy that DOES name an allow set builds, and the built rule is
+        still an allowlist (a non-allowed path is still a violation);
+      * ADJUDICATE with a real declaration builds, unchanged.
+
+    Red until `effective_rule` stops discarding an allow-only role's policy
+    globs AND refuses to hand back an empty writable set.
+    Falsify: return `spec.disputed_paths` unconditionally — the first control
+    goes red. Raise on every allow-only rule — both controls go red.
+    """
+    empty = RoleRule(
+        role=Role.SEALS,
+        kind=RuleKind.ALLOW_ONLY_GLOBS,
+        globs=(),
+        rationale="probe: an allow-only rule that names nothing",
+    )
+    named = RoleRule(
+        role=Role.SEALS,
+        kind=RuleKind.ALLOW_ONLY_GLOBS,
+        globs=("**/tests/**",),
+        rationale="probe: the policy names this role's writable set",
+    )
+
+    def _policy(seals: RoleRule) -> RolePolicy:
+        defaults = built_in_policy()
+        return RolePolicy(
+            rules=(
+                defaults.rule_for(Role.SCAFFOLD),
+                seals,
+                defaults.rule_for(Role.BODIES),
+                defaults.rule_for(Role.ADJUDICATE),
+                defaults.rule_for(Role.LEGACY),
+            ),
+            source=PolicySource.BUILT_IN_DEFAULTS,
+        )
+
+    spec = TaskRoleSpec(task_key=TASK_KEY, role=Role.SEALS)
+    with pytest.raises(RoleProtocolError):
+        effective_rule(spec, _policy(empty))
+
+    # Control 1: a named allow set builds, and is still an allowlist.
+    built = effective_rule(spec, _policy(named))
+    assert built.kind is RuleKind.ALLOW_ONLY_GLOBS
+    assert built.globs == ("**/tests/**",), built.globs
+
+    # Control 2: the role whose writable set is per-task data is untouched.
+    ruled = effective_rule(
+        TaskRoleSpec(
+            task_key=TASK_KEY,
+            role=Role.ADJUDICATE,
+            disputed_paths=("docs/adr/0007.md",),
+        ),
+        _policy(named),
+    )
+    assert ruled.globs == ("docs/adr/0007.md",), ruled.globs
 
 
 def test_effective_rule_for_unrestricted_is_returned_unchanged() -> None:
