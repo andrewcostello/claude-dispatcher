@@ -595,10 +595,16 @@ def test_both_texts_none_is_not_a_silent_pass() -> None:
 @pytest.mark.parametrize(
     "path, base, head, expected_status",
     [
-        # Not Python: named, not silent. The Go side needs its own comparator.
-        ("cmd/classify/main.go", "package main\n", "package main\n",
+        # Not Python: named, not silent. Probed in languages this gate will
+        # still not read after the next comparator lands — see the P4 note in
+        # the docstring. The first row's two revisions are IDENTICAL on
+        # purpose: that is the input a comparator is most tempted to answer
+        # "unchanged" for without having read anything.
+        ("db/migrate/001_bay.sql", "CREATE TABLE bay (id int);\n",
+         "CREATE TABLE bay (id int);\n",
          SignatureCheckStatus.UNCHECKED_UNSUPPORTED_LANGUAGE),
-        ("web/app.ts", "export const a = 1;\n", "export const a = 2;\n",
+        ("svc/Handler.java", "class Handler { void run(int a) {} }\n",
+         "class Handler { void run(long a) {} }\n",
          SignatureCheckStatus.UNCHECKED_UNSUPPORTED_LANGUAGE),
         # Either revision failing to parse is UNCHECKED, never "unchanged".
         ("src/m.py", "def broken(:\n", _BASE_PY,
@@ -613,6 +619,25 @@ def test_an_unchecked_comparison_is_named_never_reported_as_unchanged(
     """Red now: NotImplementedError.
     Green when: each unchecked cause has its own named status and empty changes.
     Falsify: `except SyntaxError: return CHECKED` — the last two rows go red.
+    Falsify the unsupported rows: return CHECKED-with-no-changes for a path no
+    registry row matches — both go red on the status, and the first one is the
+    row that catches it even though its two revisions are byte-identical.
+
+    RE-LANGUAGED by P4 on 2026-08-10, ahead of Go enrolment, and by P4 only.
+    The first row was `cmd/classify/main.go` and the second `web/app.ts`.
+    Enrolling `GO_SUPPORT` makes the Go row report CHECKED, which is CORRECT
+    behaviour and a stale probe — the false alarm the standing convention in
+    the I6 header of `tests/test_role_protocol_inputs.py` exists to prevent.
+    The rows are re-languaged, never deleted: `.sql` (781 files in the target
+    tree) and `.java` (316) have no plausible signature comparator here —
+    there is no scaffolded-stub discipline in a migration or a POJO to
+    preserve — so these two rows survive this enrolment AND the next one.
+    `.ts` went with `.go` because it is the other obvious next enrolment
+    (996 files) and would have made this the same job twice.
+
+    Nothing was relaxed: the row count, the identical-revisions shape of the
+    first row, the differing-revisions shape of the second, the status
+    equality and the `path in result.detail` assertion are all unchanged.
     """
     result = compare_signatures(path, base, head)
     assert result.status is expected_status
@@ -697,6 +722,32 @@ def test_every_signature_check_status_is_reachable(
         UNCHECKED_UNPARSEABLE and this goes red on the final equality, with the
         sixth member unproduced.
 
+    RE-LANGUAGED by P4 on 2026-08-10, ahead of Go enrolment, and by P4 only.
+    **This is the row the standing convention says to read first, because the
+    obvious edit destroys it.** Two of the six members were PRODUCED by Go
+    probes: `compare_signatures("m.go", ...)` produced
+    UNCHECKED_UNSUPPORTED_LANGUAGE and the BODIES `["cmd/x/main.go"]` diff
+    produced UNCHECKED_NO_SUPPORTED_FILE. Enrolling `GO_SUPPORT` makes both
+    read Go and report CHECKED, so the final `produced == set(...)` equality
+    reddens with two members unproduced — and DELETING the probes reddens it
+    the same way, permanently. Neither member has any other producer: they are
+    reachable only from a path no registry row matches.
+
+    So the producers are re-languaged, not deleted. Both are now
+    `db/migrate/001_bay.sql`: `.sql` (781 files in the target tree) has no
+    plausible signature comparator here — there is no scaffolded-stub
+    discipline in a migration to preserve — so both members stay producible
+    through this enrolment AND the next one. The seal is otherwise byte-for-
+    byte what it was: the written value set is still an EQUALITY of six
+    literals, every member still arrives through a real call, and nothing was
+    added to `produced` by naming it.
+
+    The SIXTH member's probe stays Go on purpose and is NOT re-languaged.
+    `_faulting_support` REPLACES the whole registry rather than adding to it,
+    and `Language` is a closed two-member set (PYTHON, GO), so a faulting row
+    has no other honest language to be written in. The paragraph below already
+    covers both enrolment states.
+
     The registry is monkeypatched rather than the seal waiting for a real Go
     toolchain, because the fault must be reachable on a machine that HAS `go`
     just as much as on one that does not — a seal that produced this state by
@@ -717,7 +768,11 @@ def test_every_signature_check_status_is_reachable(
     }
     produced = {
         compare_signatures("src/m.py", _BASE_PY, _BASE_PY).status,
-        compare_signatures("m.go", "package m\n", "package m\n").status,
+        compare_signatures(
+            "db/migrate/001_bay.sql",
+            "CREATE TABLE bay (id int);\n",
+            "CREATE TABLE bay (id int);\n",
+        ).status,
         compare_signatures("src/m.py", "def x(:\n", _BASE_PY).status,
     }
     result = check_branch(
@@ -739,7 +794,7 @@ def test_every_signature_check_status_is_reachable(
         "feat/x",
         Role.BODIES,
         policy=built_in_policy(),
-        run=_run_stub(changed=["cmd/x/main.go"]),
+        run=_run_stub(changed=["db/migrate/001_bay.sql"]),
     )
     assert unreadable.signature is not None
     produced.add(unreadable.signature.status)

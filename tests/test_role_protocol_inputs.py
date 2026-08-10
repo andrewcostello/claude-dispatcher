@@ -901,9 +901,9 @@ def test_an_advanced_base_does_not_turn_a_widened_signature_clean(
 
 
 def test_a_skipped_non_python_file_is_not_reported_as_a_checked_signature() -> None:
-    """A BODIES branch that changed a Go source file and a Python one. The Go
+    """A BODIES branch that changed a SQL migration and a Python file. The SQL
     file's signatures were not compared by anything — this module cannot compare
-    them, and the plan's Go side needs its own comparator — yet the result says
+    them, and nothing here ever will — yet the result says
     `signatures: checked`, which is the one thing the enum member for this exact
     situation exists to prevent.
 
@@ -913,19 +913,30 @@ def test_a_skipped_non_python_file_is_not_reported_as_a_checked_signature() -> N
     Green when: the reported status is not CHECKED. Which named state it is —
     the existing `UNCHECKED_UNSUPPORTED_LANGUAGE`, or a new member — is the
     fixer's choice and is not pinned here.
-    Falsify: the control below is the same call with the Go file removed and
-    requires CHECKED, so this cannot be satisfied by never reporting CHECKED.
+    Falsify: the control below is the same call with the unreadable file removed
+    and requires CHECKED, so this cannot be satisfied by never reporting
+    CHECKED.
+
+    RE-LANGUAGED by P4 on 2026-08-10, ahead of Go enrolment, and by P4 only.
+    The unreadable file was `cmd/x/main.go`. Enrolling `GO_SUPPORT` makes this
+    diff fully readable, the mixed row reports CHECKED, and this seal reddens on
+    behaviour that is CORRECT — the false alarm the standing convention in the
+    I6 header below exists to prevent. `.sql` has no plausible signature
+    comparator in this codebase, so the row survives this enrolment and the
+    next. This is the eighth seal, the one an earlier checklist undercounted.
+    Nothing was relaxed: both halves of the diff, the control, and every
+    assertion are unchanged.
     """
     blobs = {"main:src/app.py": _STUB_PY, "feat/x:src/app.py": _STUB_PY}
 
     mixed = check_branch(
         "/x", "main", "feat/x", Role.BODIES, policy=built_in_policy(),
-        run=_run_stub(["src/app.py", "cmd/x/main.go"], blobs),
+        run=_run_stub(["src/app.py", "db/migrate/001_bay.sql"], blobs),
     )
     assert mixed.signature is not None
     assert mixed.signature.status is not SignatureCheckStatus.CHECKED, (
-        "cmd/x/main.go was skipped and the result still claims the signatures "
-        f"were checked: {mixed.detail}"
+        "db/migrate/001_bay.sql was skipped and the result still claims the "
+        f"signatures were checked: {mixed.detail}"
     )
     assert "signatures: checked" not in mixed.detail, (
         f"the report repeats the claim the status does not support: {mixed.detail}"
@@ -1179,30 +1190,59 @@ def test_a_new_file_with_no_base_signature_is_still_a_real_check() -> None:
 # The existing Go-probing seals are the debt. MEASURED (2026-08-09, throwaway
 # clone carrying the per-file ruling and a stub Go comparator that moves `.go`
 # from unsupported to supported and finds nothing) — EIGHT redden, not the seven
-# an earlier scaffold reported:
+# an earlier scaffold reported.
+#
+# **DISCHARGED by P4 on 2026-08-10, and the count was wrong a fourth time: it is
+# NINE.** Re-measured the only way that settles it — `GO_SUPPORT` moved from
+# `PENDING_COMPARATORS` into `COMPARATORS` in a `cp -a` clone of the IMPLEMENTED
+# tree, `__pycache__` cleared, whole suite run. The ninth is
+# `tests/test_go_comparator.py::test_go_is_still_not_enrolled`, which did not
+# exist when the list above was written: it is not a stale-probe seal at all but
+# a deliberate tripwire asserting the row is UNENROLLED, and it is re-languaged
+# in the only sense available to it — see the note at its replacement,
+# `test_the_go_row_is_in_exactly_one_registry_and_the_lookup_agrees`.
+#
+# Every one of the nine is re-languaged, none deleted. Where they are now:
 #
 #   test_role_protocol_diff.py
 #     ::test_an_unchecked_comparison_is_named_never_reported_as_unchanged
-#       [cmd/classify/main.go-...]
+#       [the `cmd/classify/main.go` row -> `db/migrate/001_bay.sql`; the
+#        `web/app.ts` row, which survived Go enrolment, -> `svc/Handler.java`
+#        so that it survives the next one too]
 #     ::test_every_signature_check_status_is_reachable
+#       [both Go PRODUCERS -> `db/migrate/001_bay.sql`; the faulting-row probe
+#        stays `.go` on purpose, see its note]
 #   test_role_protocol_inputs.py
 #     ::test_a_skipped_non_python_file_is_not_reported_as_a_checked_signature
 #     ::test_a_bodies_diff_this_gate_cannot_read_is_clean_and_names_what_it_missed
 #     ::test_cannot_read_this_language_and_no_duty_here_stay_two_different_states
 #     ::test_the_paths_named_unread_are_the_skipped_ones_not_the_whole_diff
 #     ::test_the_per_file_comparator_names_the_file_it_could_not_read
-#     ::test_the_ci_face_clears_a_go_only_branch_and_names_the_file_it_could_not_read
+#     ::test_the_ci_face_clears_a_wholly_unreadable_branch_and_names_the_file_it_could_not_read
+#       [RENAMED from ...clears_a_go_only_branch...; the name carried the probe]
+#   test_go_comparator.py
+#     ::test_the_go_row_is_in_exactly_one_registry_and_the_lookup_agrees
+#       [RENAMED from test_go_is_still_not_enrolled]
 #
-# NONE of the eight contradicts the per-file ruling — they pin Go as unreadable,
-# which that ruling does not change — so they are untouched here and are a
-# problem for Go enrolment, not for the per-file fix. **They are re-languaged,
-# not deleted.** `test_every_signature_check_status_is_reachable` is the one to
-# read first: it pins the enum by VALUE-SET EQUALITY and produces its members by
-# CALL, and two of those producing calls are Go. Delete the Go probes there and
+# NONE of them contradicts the per-file ruling — they pin a language as
+# unreadable, which that ruling does not change — so the amendment is the probe
+# and the prose, never an assertion. **They are re-languaged, not deleted.**
+# `test_every_signature_check_status_is_reachable` is the one to read first: it
+# pins the enum by VALUE-SET EQUALITY and produces its members by CALL, and two
+# of those producing calls were Go. Delete the Go probes there and
 # UNCHECKED_UNSUPPORTED_LANGUAGE and UNCHECKED_NO_SUPPORTED_FILE stop being
 # producible, `produced == set(SignatureCheckStatus)` reddens, and the closed-set
-# seal is gone. Swap the probes to `.sql`/`.java` and the row is untouched by
-# every future enrolment.
+# seal is gone. Swapped to `.sql`, the row is untouched by every future
+# enrolment.
+#
+# TWO SEALS ARE NOT IN THIS CLASS AND WERE NOT AMENDED:
+# `tests/test_role_protocol_provenance.py::test_no_role_gets_a_clean_verdict_for_editing_the_gate`
+# and `::test_the_gate_is_refused_under_the_policy_the_gate_actually_runs_with`,
+# whose probes include the Go helper's own path since it joined `FLOOR_GLOBS`.
+# They reddened on enrolment only while `GoSignatureFingerprinter` was
+# unimplemented and `check_branch` raised `NotImplementedError`. Re-measured
+# 2026-08-10 on the implemented tree with the row enrolled: both GREEN. They
+# need no amendment and must not be given one.
 # --------------------------------------------------------------------------- #
 
 
@@ -1212,10 +1252,24 @@ def test_a_bodies_diff_this_gate_cannot_read_is_clean_and_names_what_it_missed(
     is CLEAN, in a named state that is neither CHECKED nor NOT_APPLICABLE, and
     the result says which paths went unread and why.
 
-    The three probes are the operator's real tree: a Go file, a TypeScript file
-    and a document. Under today's code all three are
+    The three probes are the operator's real tree: a migration, a Java file and
+    a document. Under today's code all three are
     UNCHECKED_UNSUPPORTED_LANGUAGE, which `check_branch` maps to UNDETERMINED on
     BODIES with no way out.
+
+    RE-LANGUAGED by P4 on 2026-08-10, ahead of Go enrolment, and by P4 only.
+    The trio was `["cmd/x/main.go", "web/app.ts", "docs/adr/0007.md"]`.
+    Enrolling `GO_SUPPORT` makes the Go file readable, so the diff stops being
+    wholly-unreadable, the status stops being UNCHECKED_NO_SUPPORTED_FILE and
+    `unsupported_paths` stops being the whole list — three assertions redden on
+    behaviour that is CORRECT. `.ts` went with it because TypeScript (996
+    files) is the other obvious next enrolment. `.sql` (781) and `.java` (316)
+    have no plausible signature comparator in this codebase and a `.md` file
+    has no signatures at all, so the trio survives this enrolment and the next.
+    It is now the same trio `tests/test_role_protocol_perfile.py` uses, which
+    was written to this convention from the start. Nothing was relaxed: three
+    paths still, the tuple equality is still an equality in diff order, and
+    every naming assertion still runs over all three.
 
     Red now (measured against the built worktree, 2026-08-09):
     `AttributeError: UNCHECKED_NO_SUPPORTED_FILE` — the member does not exist;
@@ -1225,10 +1279,14 @@ def test_a_bodies_diff_this_gate_cannot_read_is_clean_and_names_what_it_missed(
     Falsify: map the new state to CLEAN without populating
     `unsupported_paths` — the naming assertions go red while the verdict one
     stays green, which is the quiet-and-wrong CLEAN this ruling exists to
-    prevent. Delete the `.ts` row from whatever produces the list — the
+    prevent. Delete the `.java` row from whatever produces the list — the
     equality goes red rather than the seal shrinking.
     """
-    unreadable = ["cmd/x/main.go", "web/app.ts", "docs/adr/0007.md"]
+    unreadable = [
+        "db/migrate/001_bay.sql",
+        "svc/Handler.java",
+        "docs/adr/0007.md",
+    ]
     result = check_branch(
         "/x", "main", "feat/x", Role.BODIES, policy=built_in_policy(),
         run=_run_stub(unreadable),
@@ -1284,8 +1342,16 @@ def test_cannot_read_this_language_and_no_duty_here_stay_two_different_states(
     Green when: the two statuses differ and each is the right one.
     Falsify: implement the ruling by returning NOT_APPLICABLE for an unreadable
     BODIES diff — the inequality and the BODIES row both go red.
+
+    RE-LANGUAGED by P4 on 2026-08-10, ahead of Go enrolment, and by P4 only.
+    The probe was `["cmd/x/main.go"]`; enrolling `GO_SUPPORT` makes it readable
+    and the whole seal stops testing what it says it tests — the BODIES status
+    becomes CHECKED and `unsupported_paths` empties. `.sql` has no plausible
+    signature comparator in this codebase, so the probe survives this enrolment
+    and the next. Nothing was relaxed: the same one path, judged twice under
+    two roles in the same seal, and all five assertions unchanged.
     """
-    unreadable = ["cmd/x/main.go"]
+    unreadable = ["db/migrate/001_bay.sql"]
     as_bodies = check_branch(
         "/x", "main", "feat/x", Role.BODIES, policy=built_in_policy(),
         run=_run_stub(unreadable),
@@ -1307,17 +1373,17 @@ def test_cannot_read_this_language_and_no_duty_here_stay_two_different_states(
     )
     # The role with no duty has nothing to confess; the role with the duty does.
     assert as_scaffold.signature.unsupported_paths == ()
-    assert as_bodies.signature.unsupported_paths == ("cmd/x/main.go",)
+    assert as_bodies.signature.unsupported_paths == ("db/migrate/001_bay.sql",)
 
 
 def test_the_paths_named_unread_are_the_skipped_ones_not_the_whole_diff(
 ) -> None:
     """The row that makes the naming worth anything.
 
-    A MIXED diff — one `.py` this gate compared, one `.go` it could not read.
+    A MIXED diff — one `.py` this gate compared, one `.sql` it could not read.
     Two things at once:
 
-      * `unsupported_paths` is the Go file ALONE. A fix that satisfies the
+      * `unsupported_paths` is the unread file ALONE. A fix that satisfies the
         naming requirement by handing back `checked_paths` passes the
         wholly-unreadable row above (where every path is unsupported) and dies
         here, which is why that row is not sufficient on its own.
@@ -1340,8 +1406,8 @@ def test_the_paths_named_unread_are_the_skipped_ones_not_the_whole_diff(
     against a throwaway reference implementation in a clone (each mutation
     applied downward, `__pycache__` cleared before every run, restored after):
 
-      * `unsupported_paths == ("cmd/x/main.go",)` — hand back the whole changed
-        list and this row is the only place in the suite that reddens.
+      * `unsupported_paths` is the one unread path — hand back the whole
+        changed list and this row is the only place in the suite that reddens.
       * `status is not CHECKED` — report CHECKED for the mixed diff and this
         reddens (I5 is unchanged by the per-file ruling: a file nobody compared
         is not a checked signature).
@@ -1366,15 +1432,24 @@ def test_the_paths_named_unread_are_the_skipped_ones_not_the_whole_diff(
     UNCHECKED_UNSUPPORTED_LANGUAGE in the blocking set) — the CLEAN assertion
     goes red, measured. Reach the CLEAN by giving the mixed diff the
     NO_SUPPORTED_FILE state — the third assertion goes red.
+
+    RE-LANGUAGED by P4 on 2026-08-10, ahead of Go enrolment, and by P4 only.
+    The unread half of the mixed diff was `cmd/x/main.go`; enrolling
+    `GO_SUPPORT` makes the diff all-readable, which turns this row into a
+    duplicate of its own all-Python control and deletes the mixed case from the
+    suite silently. `.sql` has no plausible signature comparator in this
+    codebase, so the mixed shape survives this enrolment and the next. Nothing
+    from the 2026-08-09 amendment note below was relaxed: the same four
+    protections, in the same four assertions, over the same two-file diff.
     """
     blobs = {"main:src/app.py": _STUB_PY, "feat/x:src/app.py": _STUB_PY}
 
     mixed = check_branch(
         "/x", "main", "feat/x", Role.BODIES, policy=built_in_policy(),
-        run=_run_stub(["src/app.py", "cmd/x/main.go"], blobs),
+        run=_run_stub(["src/app.py", "db/migrate/001_bay.sql"], blobs),
     )
     assert mixed.signature is not None
-    assert mixed.signature.unsupported_paths == ("cmd/x/main.go",), (
+    assert mixed.signature.unsupported_paths == ("db/migrate/001_bay.sql",), (
         "the report must name the file the gate could not read and only that "
         f"file: {mixed.signature.unsupported_paths}"
     )
@@ -1387,7 +1462,7 @@ def test_the_paths_named_unread_are_the_skipped_ones_not_the_whole_diff(
     )
     assert mixed.verdict is DiffVerdict.CLEAN, (
         "the signature gate's verdict is PER FILE (operator, 2026-08-09): the "
-        "`.py` was compared and found nothing, so it decides, and the `.go` "
+        "`.py` was compared and found nothing, so it decides, and the `.sql` "
         "nobody can read is named rather than blocking. Refusing this branch "
         "refuses the ordinary shape of a diff on a tree with 2,288 Go files "
         f"and no Python comparator for them: {mixed.detail}"
@@ -1423,14 +1498,33 @@ def test_the_per_file_comparator_names_the_file_it_could_not_read() -> None:
     names none.
     Falsify: populate the field for every non-CHECKED status — the unparseable
     row goes red.
-    """
-    go = compare_signatures("cmd/x/main.go", "package main\n", "package main\n")
-    assert go.status is SignatureCheckStatus.UNCHECKED_UNSUPPORTED_LANGUAGE
-    assert go.unsupported_paths == ("cmd/x/main.go",)
 
-    ts = compare_signatures("web/app.ts", "export const a = 1;\n", "const a=2;\n")
-    assert ts.status is SignatureCheckStatus.UNCHECKED_UNSUPPORTED_LANGUAGE
-    assert ts.unsupported_paths == ("web/app.ts",)
+    RE-LANGUAGED by P4 on 2026-08-10, ahead of Go enrolment, and by P4 only.
+    The two unsupported rows were `cmd/x/main.go` and `web/app.ts`; enrolling
+    `GO_SUPPORT` turns the first into a CHECKED comparison and both the status
+    and the naming assertion redden on behaviour that is CORRECT. `.ts` went
+    with `.go` because TypeScript is the other obvious next enrolment. `.sql`
+    and `.java` have no plausible signature comparator in this codebase, so
+    both rows survive this enrolment and the next. Nothing was relaxed: two
+    unsupported rows still, each naming its own path and only its own path,
+    with the unparseable-Python and CHECKED controls untouched — those two are
+    what stop this being satisfied by naming everything or naming nothing.
+    """
+    sql = compare_signatures(
+        "db/migrate/001_bay.sql",
+        "CREATE TABLE bay (id int);\n",
+        "CREATE TABLE bay (id bigint);\n",
+    )
+    assert sql.status is SignatureCheckStatus.UNCHECKED_UNSUPPORTED_LANGUAGE
+    assert sql.unsupported_paths == ("db/migrate/001_bay.sql",)
+
+    java = compare_signatures(
+        "svc/Handler.java",
+        "class Handler { void run(int a) {} }\n",
+        "class Handler { void run(long a) {} }\n",
+    )
+    assert java.status is SignatureCheckStatus.UNCHECKED_UNSUPPORTED_LANGUAGE
+    assert java.unsupported_paths == ("svc/Handler.java",)
 
     unparseable = compare_signatures("src/m.py", "def broken(:\n", _STUB_PY)
     assert unparseable.status is SignatureCheckStatus.UNCHECKED_UNPARSEABLE
@@ -1445,39 +1539,65 @@ def test_the_per_file_comparator_names_the_file_it_could_not_read() -> None:
     assert checked.unsupported_paths == ()
 
 
-def test_the_ci_face_clears_a_go_only_branch_and_names_the_file_it_could_not_read(
+def test_the_ci_face_clears_a_wholly_unreadable_branch_and_names_the_file_it_could_not_read(
     git_repo: Path,
 ) -> None:
     """The ruling end to end, through the real script, real git and a real
     checkout — because the harm is in CI, not in a stub.
 
-    A BODIES branch whose only change is `cmd/x/main.go`: ordinary Go work, no
-    forbidden path, nothing this gate has any comparator for. Today
+    A BODIES branch whose only change is `db/migrate/001_bay.sql`: ordinary
+    work, no forbidden path, nothing this gate has any comparator for. Today
     `scripts/check_body_branch.sh` exits 3 on it and prints UNDETERMINED, and no
     commit the author can write changes that. This is the operator's own
-    workload — Go and TypeScript — so it is the shape the protocol actually
-    meets, and it is sealed against the entrypoint CI runs rather than against
-    `check_branch` alone: exit 0 is the whole of the ruling's benefit, and the
-    named paths on stdout are the whole of its price.
+    workload — 781 SQL files beside 316 Java — so it is the shape the protocol
+    actually meets, and it is sealed against the entrypoint CI runs rather than
+    against `check_branch` alone: exit 0 is the whole of the ruling's benefit,
+    and the named paths on stdout are the whole of its price.
+
+    The WHOLLY-unreadable shape is this row's alone.
+    `tests/test_role_protocol_perfile.py::test_the_ci_face_clears_a_mixed_branch_and_still_names_the_unread_file`
+    runs the same script over a MIXED branch, where the extra assertion is that
+    the file the gate DID read appears exactly once. Neither subsumes the other
+    and both must stay.
 
     Red now (measured, 2026-08-09): rc=3, stdout carries `UNDETERMINED`.
-    Green when: rc=0, the headline says CLEAN, and stdout still names
-    `cmd/x/main.go` as a file that was not read.
+    Green when: rc=0, the headline says CLEAN, and stdout still names the one
+    changed file as a file that was not read.
     Falsify: return CLEAN with `unsupported_paths` empty and no detail — rc
     goes green and every naming assertion goes red. Keep the refusal — the rc
     assertion goes red.
+
+    RE-LANGUAGED AND RENAMED by P4 on 2026-08-10, ahead of Go enrolment, and by
+    P4 only. The branch changed `cmd/x/main.go` and the seal was called
+    `test_the_ci_face_clears_a_go_only_branch_and_names_the_file_it_could_not_read`.
+    Enrolling `GO_SUPPORT` makes the branch fully readable: the status stops
+    being UNCHECKED_NO_SUPPORTED_FILE, the `>= 2` count drops to 1, and this
+    goes red end to end on behaviour that is CORRECT. The name was carrying the
+    probe rather than the property, so it was changed with the probe — a name
+    that says "go" over a branch with no Go in it is the same stale claim the
+    convention exists to remove. The three call sites that referred to it by
+    name (this file's I6 list, and the enrolment checklist at `GO_SUPPORT`) are
+    updated in the same commit. `.sql` has no plausible signature comparator in
+    this codebase, so the branch stays unreadable through this enrolment and
+    the next. Nothing was relaxed: rc, the CLEAN headline, the `>= 2` count and
+    the status-value assertion are unchanged, and the `>= 2` still rests on the
+    same measurement recorded below.
     """
     import os
     import sys
 
     src_root = Path(__file__).resolve().parent.parent / "src"
     _git(["checkout", "-q", "-b", "feat/x"], git_repo)
-    (git_repo / "cmd" / "x").mkdir(parents=True)
-    (git_repo / "cmd" / "x" / "main.go").write_text(
-        "package main\n\nfunc Widened(a int, b int) {}\n", encoding="utf-8"
+    (git_repo / "db" / "migrate").mkdir(parents=True)
+    (git_repo / "db" / "migrate" / "001_bay.sql").write_text(
+        "ALTER TABLE bay ADD COLUMN real_money_capable boolean NOT NULL;\n",
+        encoding="utf-8",
     )
     _git(["add", "."], git_repo)
-    _git(["commit", "-q", "-m", "go work, which this gate cannot read"], git_repo)
+    _git(
+        ["commit", "-q", "-m", "a migration, which this gate cannot read"],
+        git_repo,
+    )
 
     script = Path(__file__).resolve().parent.parent / "scripts" / "check_body_branch.sh"
     proc = subprocess.run(
@@ -1498,10 +1618,10 @@ def test_the_ci_face_clears_a_go_only_branch_and_names_the_file_it_could_not_rea
     # path under "changed paths examined:" whatever happened to it, so a single
     # occurrence is printed by a gate that read the file and by one that never
     # opened it alike — measured (2026-08-09): with both the per-path detail and
-    # the verdict's own detail stripped, `"cmd/x/main.go" in stdout` was still
-    # true and this seal stayed green. A seal two different answers satisfy is
-    # not a seal.
-    assert proc.stdout.count("cmd/x/main.go") >= 2, (
+    # the verdict's own detail stripped, the bare path was still in stdout and
+    # this seal stayed green. A seal two different answers satisfy is not a
+    # seal.
+    assert proc.stdout.count("db/migrate/001_bay.sql") >= 2, (
         "the branch was cleared and the only mention of the one file it "
         "changed is the bare path listing every run prints; nothing on stdout "
         f"says that file was never read\nstdout={proc.stdout}"
