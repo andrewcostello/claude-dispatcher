@@ -3,6 +3,38 @@ r"""D3 seals (P2) — fixture reachability.
 Written against ``src/claude_dispatcher/fixture_reachability.py`` at ``57cf6a9``
 by an author who did not write the scaffold and does not write the bodies.
 
+AMENDED BY P4, 2026-08-10, RULING ON THE FOUR DISPUTES THIS FILE RAISED
+=======================================================================
+Each amendment is named at the row it changed. In summary:
+
+  1. **The two never-observable COLLECTOR rows are REMOVED** from
+     ``BOUNDARIES``. The row that inventoried them is replaced by
+     :func:`test_no_collector_row_calls_its_own_producer`, which asserts the
+     INVARIANT (no row is like that) over the same AST sweep, plus a positive
+     control proving the sweep can still find one — because an inventory that
+     becomes an empty set is passed by a sweep that has stopped working.
+  2. **No replay handle.** ``ObservedFixture`` keeps its five strings.
+     ``check_observation`` instead gains a ``differential`` a caller supplies,
+     and ``(DIVERGED, NOT_MEASURED)`` — the state when nobody can supply one —
+     joins the ruling grid as ABSTAIN rather than raising. The claim ticket
+     this file wrote is redeemed at
+     :func:`test_check_observation_abstains_when_no_differential_is_supplied`
+     and its new partner row.
+  3. **The property was the right thing to seal.** ``observe``'s contract now
+     names the ``sys.modules`` sweep; the seal is unchanged, which is the
+     point of having sealed the property.
+  4. **The over-call is confirmed and corrected.** Exactly ONE stub file has a
+     gap. The scaffold's instance-(B) narrative and ``StubGap``'s docstring now
+     say so.
+
+And on the two items this file sealed around rather than disputing: no
+``extract_value`` was added (reasons on ``Boundary.extract_outcome``, with the
+coupling made loud instead, in
+:func:`test_observe_raises_when_extract_outcome_has_gone_stale`); and
+``classify_value`` no longer discriminates on prose at all, because ``Witness``
+gained a typed ``gap``
+(:func:`test_classify_value_reads_the_gap_and_not_the_prose`).
+
 WHAT A READER SHOULD CHECK FIRST
 ================================
 This module is about seals that cannot fail. A vacuous row *here* is
@@ -70,6 +102,7 @@ from claude_dispatcher.fixture_reachability import (
     ReachabilityDeclaration,
     ValueKind,
     Witness,
+    WitnessGap,
     adjudicate,
     boundary_for,
     check_observation,
@@ -186,11 +219,12 @@ def _risk_level(path: str) -> str:
     ).level
 
 
-def _witness(*, produced=(), detail="") -> Witness:
+def _witness(*, produced=(), gap=None, detail="") -> Witness:
     return Witness(
         recipe="hand-built for a pure-decision seal",
         produced=tuple(produced),
         environment={"sys.platform": sys.platform},
+        gap=gap,
         detail=detail,
     )
 
@@ -338,78 +372,107 @@ def test_boundary_for_raises_when_one_producer_owns_two_rows(monkeypatch):
     assert "claude_dispatcher.risk.something_else" in str(exc.value)
 
 
-#: The COLLECTOR rows whose consumer CALLS its own producer rather than
-#: receiving the producer's value as an argument. Measured, 2026-08-10, by the
-#: AST sweep in the seal below.
-#:
-#: A consumer that calls its own producer has no argument a fixture can be
-#: substituted at, so nothing can ever be observed crossing that row: it is
-#: permanently a member of ``ReachabilityReport.boundaries_never_observed``.
-#: :class:`Boundary`'s own contract says a row that "will never fire" will "be
-#: read as coverage", so the two rows are named here rather than left implicit.
-#: Raised as dispute 1 for P4; NOT repaired here, because BOUNDARIES is the
-#: scaffold's and a seal author may not redesign it.
-_CONSUMER_CALLS_ITS_OWN_PRODUCER = frozenset(
-    {
+def _consumer_calls_producer(producer: str, consumer: str) -> bool:
+    """Does ``consumer``'s own body call ``producer``? Read from ``src/`` by AST.
+
+    The one measurement behind :func:`test_no_collector_row_calls_its_own_producer`
+    and behind its positive control, so both run the identical sweep and a sweep
+    that stops working cannot pass one while the other covers for it.
+    """
+    _, _, prod_name = producer.rpartition(".")
+    cons_mod, _, cons_name = consumer.rpartition(".")
+    source = Path(importlib.import_module(cons_mod).__file__).read_text(
+        encoding="utf-8"
+    )
+    fn = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == cons_name
+    )
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        called = (
+            func.id
+            if isinstance(func, ast.Name)
+            else func.attr
+            if isinstance(func, ast.Attribute)
+            else None
+        )
+        if called == prod_name:
+            return True
+    return False
+
+
+#: Two pairs in ``src/`` in which the consumer calls its own producer inside its
+#: own body. NOT boundaries — they were ``BOUNDARIES`` rows until P4 removed
+#: them on dispute 1, and the code is still there, which is what makes them the
+#: positive control the invariant below needs.
+_SELF_CALLING_PAIRS = (
+    (
         "claude_dispatcher.seal_verify.partition_changed",
+        "claude_dispatcher.seal_verify.run_seal_inversion",
+    ),
+    (
         "claude_dispatcher.blast_radius.changed_files",
-    }
+        "claude_dispatcher.blast_radius.build_blast_radius",
+    ),
 )
 
 
-def test_which_collector_rows_can_ever_be_substituted_at_is_pinned():
-    """Which COLLECTOR rows are substitutable, measured from ``src/`` by AST.
+def test_no_collector_row_calls_its_own_producer():
+    """No COLLECTOR row's consumer calls its own producer. An INVARIANT.
 
-    The half of the two-way pin that a written-out table cannot supply for
-    itself: whether the substitution each ``rationale`` claims exists at all.
-    A consumer that calls its producer inside its own body takes no argument the
-    fixture could replace.
+    P4, 2026-08-10, dispute 1. This file's earlier version INVENTORIED the two
+    rows that were like that and pinned the inventory. P4 removed both rows
+    instead — a consumer that calls its own producer takes no argument a fixture
+    can be substituted at, so the row can never fire, and :class:`Boundary`'s own
+    contract says such a row "will be read as coverage". Keeping them behind a
+    "never observable" marker was refused because it would put two permanent
+    members into ``boundaries_never_observed``, which the report designates as
+    its non-vacuity field.
 
-    This is the sharp form of the question, and it is deliberately a MEASUREMENT
-    against ``src/`` rather than a restatement of the table: adding a row, or
-    changing a consumer so it starts (or stops) calling its producer, reddens
-    this row and forces the author to say which kind it is.
+    So the assertion is now that the measured set is EMPTY, which is a stronger
+    claim than the inventory was: every COLLECTOR row in the table is a row a
+    fixture can really be substituted at, and a new row that isn't — or a
+    consumer refactored to call its producer inline — reddens on the commit that
+    does it.
 
-    Reddens on: deleting either name from ``_CONSUMER_CALLS_ITS_OWN_PRODUCER``;
-    adding a third; hoisting ``partition_changed`` out of ``run_seal_inversion``
-    into a parameter (measured in a clone — the seal goes red and the fix is one
-    line here, which is the point).
+    **An empty-set assertion is passed by a sweep that has stopped working**,
+    which is this module's own subject matter turned on its own seal. Hence the
+    positive control: the same sweep, over the two pairs the removed rows named,
+    which are still in ``src/`` and must still be detected.
+
+    Reddens on: re-adding either removed row to ``BOUNDARIES``; a sweep that
+    only looks at ``ast.Name`` and not ``ast.Attribute``, or that does not walk
+    nested bodies (both measured in a clone — the control goes red and the
+    invariant stays green, which is exactly the pair that catches it).
     """
-    measured: set[str] = set()
-    for b in BOUNDARIES:
-        if b.kind is not BoundaryKind.COLLECTOR:
-            continue
-        prod_mod, _, prod_name = b.producer.rpartition(".")
-        cons_mod, _, cons_name = b.consumer.rpartition(".")
-        source = Path(importlib.import_module(cons_mod).__file__).read_text(
-            encoding="utf-8"
-        )
-        tree = ast.parse(source)
-        fn = next(
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == cons_name
-        )
-        for node in ast.walk(fn):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            called = (
-                func.id
-                if isinstance(func, ast.Name)
-                else func.attr
-                if isinstance(func, ast.Attribute)
-                else None
-            )
-            if called == prod_name:
-                measured.add(b.producer)
-    assert measured == _CONSUMER_CALLS_ITS_OWN_PRODUCER, (
-        "a COLLECTOR row changed its substitutability. Rows whose consumer calls "
-        "its own producer can never be observed and are permanently 'never "
-        "observed'; see dispute 1."
+    measured = {
+        b.producer
+        for b in BOUNDARIES
+        if b.kind is BoundaryKind.COLLECTOR
+        and _consumer_calls_producer(b.producer, b.consumer)
+    }
+    assert measured == set(), (
+        f"{sorted(measured)}: a COLLECTOR row whose consumer calls its own "
+        "producer can never be observed and is permanently 'never observed'. "
+        "Either the row names the wrong pair, or there is no substitution here "
+        "and the row does not belong in BOUNDARIES; see dispute 1."
     )
-    assert prod_mod  # the sweep ran over a real module, not an empty table
+    assert [b for b in BOUNDARIES if b.kind is BoundaryKind.COLLECTOR], (
+        "the sweep ran over no COLLECTOR rows at all, so the empty set above "
+        "means nothing"
+    )
+    for producer, consumer in _SELF_CALLING_PAIRS:
+        assert _consumer_calls_producer(producer, consumer), (
+            f"the positive control failed: {consumer} no longer calls "
+            f"{producer}, so the sweep above proves nothing. Either the sweep "
+            "broke, or that pair became substitutable — in which case it is a "
+            "candidate BOUNDARIES row and this control needs replacing."
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -433,9 +496,13 @@ def test_gate_disposition_reads_the_two_written_out_sets(boundary, outcome, expe
     """Every outcome the table names lands on the side the table puts it.
 
     Parametrized over the table rather than written out, so a row that gains an
-    outcome gains a seal, and every one of the fourteen outcome strings in
-    ``BOUNDARIES`` is exercised. Note in particular ``"skipped"`` on the
-    seal-verify row: it is a PROCEED, which is the whole reason that row exists.
+    outcome gains a seal, and every one of the eleven outcome strings in
+    ``BOUNDARIES`` is exercised. Note in particular ``"absent"`` on the blob
+    seam row: ``None`` means "the tree does not contain it", which suppresses
+    every signature change in the file, so it is a PROCEED.
+
+    Eleven and not seventeen since P4 removed two rows on dispute 1; the
+    ``"skipped"`` example this docstring used to give lived on one of them.
     """
     assert gate_disposition(boundary, outcome) is expected
 
@@ -532,49 +599,71 @@ def test_classify_value_is_equality_and_admits_no_normalisation(value, produced)
     )
 
 
-def test_classify_value_refuses_a_witness_that_neither_produced_nor_explained():
-    """Empty ``produced`` with empty ``detail`` is an ERROR, not a state.
+def test_classify_value_refuses_a_witness_that_says_nothing_or_two_things():
+    """Both contradictions are ERRORS, not states.
 
     "A witness that neither produced nor explained is a non-judgement, and the
     whole point is that a non-judgement must not read as an answer." Note which
-    direction the harm runs: the tempting default is NO_STRATEGY, which is at
-    least an abstention — but it would report an abstention the checker never
-    made, and the abstention count is this mechanism's own coverage figure.
+    direction the harm runs on the first: the tempting default is NO_STRATEGY,
+    which is at least an abstention — but it would report an abstention the
+    checker never made, and the abstention count is this mechanism's own
+    coverage figure.
+
+    P4, 2026-08-10, added the opposite contradiction with
+    :class:`WitnessGap`: a witness that BOTH produced values and carries a gap
+    was assembled by something that did not know which had happened, and a body
+    that resolves it either way (produced wins / gap wins) is picking one of two
+    answers to a question the witness cannot be asked.
     """
     with pytest.raises(FixtureReachabilityError):
-        classify_value(value="src/app.py", witness=_witness(produced=(), detail=""))
+        classify_value(
+            value="src/app.py", witness=_witness(produced=(), gap=None, detail="")
+        )
+    with pytest.raises(FixtureReachabilityError):
+        classify_value(
+            value="src/app.py",
+            witness=_witness(
+                produced=("src/app.py",),
+                gap=WitnessGap.NO_STRATEGY,
+                detail="produced values AND a gap",
+            ),
+        )
 
 
-def test_classify_value_agrees_with_the_witness_that_construct_witness_built(
-    tmp_path,
-):
-    """The two empty-``produced`` states round-trip through a REAL witness.
+def test_classify_value_reads_the_gap_and_not_the_prose(tmp_path):
+    """The two empty-``produced`` states are told apart by ``gap``, ONLY.
 
-    ``classify_value`` has to tell an OS/git refusal from a missing strategy by
-    reading ``Witness.detail``, and the scaffold does not fix that string's
-    wording. So this seal does not guess it: it takes the details
-    :func:`construct_witness` actually produces for the two states and requires
-    ``classify_value`` to agree with them — both when the Witness comes straight
-    from the constructor and when an identical one is rebuilt by hand.
+    P4 ruling, 2026-08-10, on this file's second smaller item. The complaint
+    was that ``classify_value``'s discrimination between an OS refusal and a
+    missing strategy rested on ``Witness.detail`` wording that no contract
+    fixed — two functions in one module agreeing on a prose format, written by
+    the same author, green whatever the strings are, and one reworded error
+    message away from moving an unsuppressible abstention into a DECLARABLE
+    REPORT. The ruling was not to specify the wording but to stop deciding on
+    prose: :class:`Witness` carries a typed ``gap``, and ``detail`` is evidence
+    for a human that no decision reads.
 
-    The hand-rebuilt half is what makes it a seal rather than a tautology: it
-    forbids a body that smuggles the answer through an attribute of the Witness
-    object that is not one of its four declared fields.
+    The seal has three parts and needs all three:
+
+      1. the round trip — the two states as :func:`construct_witness` really
+         builds them still classify as they should, so the contract and the
+         constructor agree;
+      2. the CROSS — a witness carrying the refusal's ``detail`` prose beside
+         the NO_STRATEGY ``gap``, and the reverse. The gap must win both times.
+         This is the row a body that sniffs ``detail`` fails, and it is why
+         this is not a tautological read-back of a field;
+      3. a hand-built witness classifies identically to the real one, which
+         forbids a body smuggling the answer through an attribute that is not
+         one of the Witness's five declared fields.
     """
     unrepresentable = construct_witness(
         _RISK_ROW, "bad\0name.py", workspace=tmp_path / "ws-unrep"
     )
     assert unrepresentable.produced == ()
+    assert unrepresentable.gap is WitnessGap.REFUSED
     assert unrepresentable.detail.strip(), "an unrepresentable witness must explain"
     assert (
         classify_value(value="bad\0name.py", witness=unrepresentable)
-        is Reachability.UNREPRESENTABLE
-    )
-    assert (
-        classify_value(
-            value="bad\0name.py",
-            witness=_witness(detail=unrepresentable.detail),
-        )
         is Reachability.UNREPRESENTABLE
     )
 
@@ -582,20 +671,47 @@ def test_classify_value_agrees_with_the_witness_that_construct_witness_built(
         _BLOB_SEAM_ROW, "tests.test_x._run_stub", workspace=tmp_path / "ws-nostrat"
     )
     assert no_strategy.produced == ()
+    assert no_strategy.gap is WitnessGap.NO_STRATEGY
     assert no_strategy.detail.strip(), "an abstention must say what it abstained on"
     assert (
         classify_value(value="tests.test_x._run_stub", witness=no_strategy)
         is Reachability.NO_STRATEGY
     )
+
+    # The cross. Each prose string is paired with the OTHER state's gap, using
+    # the exact details the constructor emitted, so a body that discriminates on
+    # wording gets both of these backwards.
     assert (
         classify_value(
-            value="tests.test_x._run_stub", witness=_witness(detail=no_strategy.detail)
+            value="bad\0name.py",
+            witness=_witness(
+                gap=WitnessGap.NO_STRATEGY, detail=unrepresentable.detail
+            ),
         )
         is Reachability.NO_STRATEGY
+    ), "detail is prose; the gap decides"
+    assert (
+        classify_value(
+            value="tests.test_x._run_stub",
+            witness=_witness(gap=WitnessGap.REFUSED, detail=no_strategy.detail),
+        )
+        is Reachability.UNREPRESENTABLE
+    ), "detail is prose; the gap decides"
+
+    # Hand-built witnesses agree with the real ones, field for field.
+    assert (
+        classify_value(
+            value="bad\0name.py",
+            witness=_witness(gap=WitnessGap.REFUSED, detail=unrepresentable.detail),
+        )
+        is Reachability.UNREPRESENTABLE
     )
-    assert unrepresentable.detail != no_strategy.detail, (
-        "the two empty-produced states must be distinguishable from the witness "
-        "alone, or classify_value is guessing"
+    assert (
+        classify_value(
+            value="tests.test_x._run_stub",
+            witness=_witness(gap=WitnessGap.NO_STRATEGY, detail=no_strategy.detail),
+        )
+        is Reachability.NO_STRATEGY
     )
 
 
@@ -628,11 +744,15 @@ def test_measure_consequence_compares_by_disposition_not_by_string():
         )
         is Consequence.SAME_DISPOSITION
     )
+    # And on the PROCEED side, which needs a row with two of them. This used to
+    # be the seal-verify row's ``passed``/``skipped``; P4 removed that row on
+    # dispute 1, and the blob seam's ``text``/``absent`` is the surviving pair —
+    # a better one, in fact, since ``absent`` proceeding is the whole reason
+    # instance (B) mattered: None means "the tree does not contain it", which
+    # suppresses every signature change in the file.
     assert (
         measure_consequence(
-            _row("claude_dispatcher.seal_verify.partition_changed"),
-            fixture_outcome="passed",
-            neighbour_outcome="skipped",
+            _BLOB_SEAM_ROW, fixture_outcome="text", neighbour_outcome="absent"
         )
         is Consequence.SAME_DISPOSITION
     )
@@ -698,6 +818,14 @@ _RULING_TABLE = {
         FindingDisposition.REPORT,
         FindingDisposition.ACCEPTED,
     ),
+    # P4, 2026-08-10, dispute 2. This pair used to raise, because nothing could
+    # produce it. It is now the ordinary outcome of a DIVERGED finding whose
+    # caller supplied no ``differential``, and it is UNDECLARABLE: a declaration
+    # that could silence it would buy silence on a measurement never taken.
+    (Reachability.DIVERGED, Consequence.NOT_MEASURED): (
+        FindingDisposition.ABSTAIN,
+        FindingDisposition.ABSTAIN,
+    ),
     (Reachability.UNREPRESENTABLE, Consequence.NOT_MEASURED): (
         FindingDisposition.REPORT,
         FindingDisposition.ACCEPTED,
@@ -730,7 +858,7 @@ def _matching_declaration(finding: fr.Finding) -> ReachabilityDeclaration:
 def test_ruling_table_is_total_over_the_whole_grid(reachability, consequence):
     """Every one of the twelve (Reachability x Consequence) pairs is answered.
 
-    Five are named in the scaffold's ruling table; the other SEVEN must RAISE.
+    SIX are named in the scaffold's ruling table; the other SIX must RAISE.
     This is the row that stops a new enum member falling through to the
     permissive answer — the failure the module docstring warns about twice and
     ``skills/explicit-state.md`` warns about generally.
@@ -739,9 +867,15 @@ def test_ruling_table_is_total_over_the_whole_grid(reachability, consequence):
     declaration may and may not buy is part of the ruling and not a separate
     question: it may turn REPORT into ACCEPTED and it may do nothing else.
 
+    P4, 2026-08-10, dispute 2: ``(DIVERGED, NOT_MEASURED)`` moved from the
+    raising six to the ruled six, as ABSTAIN under both declaration states. It
+    is the state a DIVERGED finding lands in when its caller supplied no
+    ``differential``, which is every caller that holds only an observation list.
+
     Reddens on: a body with an ``else: return FindingDisposition.OK``; a body
-    that lets a declaration touch BREACH or ABSTAIN; a body that answers
-    ``DIVERGED, NOT_MEASURED`` instead of raising on it.
+    that lets a declaration touch BREACH or ABSTAIN; a body that rules
+    ``DIVERGED, NOT_MEASURED`` as REPORT (the tempting reading — it is not a
+    report, nothing was measured to report) or that still raises on it.
     """
     finding = _finding(
         reachability,
@@ -831,6 +965,7 @@ def test_construct_witness_runs_the_real_collector_over_a_built_repository(tmp_p
     assert classify_value(value="src/app.py", witness=witness) is Reachability.REACHED
     assert witness.recipe.strip(), "a finding whose recipe cannot be followed is dead"
     assert set(witness.environment) >= {"git", "platform", "filesystem_encoding"}
+    assert witness.gap is None, "a witness that produced values has no gap"
     assert witness.detail == "", "REACHED explains nothing"
     assert any(tmp_path.iterdir()), "the witness repo must live under workspace"
 
@@ -865,11 +1000,14 @@ def test_construct_witness_reports_unrepresentable_with_the_refusing_layer(
     layer, or the human writing the declaration has nothing to read.
 
     Reddens on: a body that catches ``OSError`` and returns an empty Witness
-    with an empty detail (which ``classify_value`` then has to raise on), and on
-    a body that lets an unrepresentable name fall through to NO_STRATEGY.
+    with no gap (which ``classify_value`` then has to raise on), and on a body
+    that lets an unrepresentable name fall through to NO_STRATEGY — the gap
+    assertion below is what separates those two, since P4 made the gap and not
+    the prose the thing ``classify_value`` reads.
     """
     witness = construct_witness(_RISK_ROW, value, workspace=tmp_path / "ws")
     assert witness.produced == ()
+    assert witness.gap is WitnessGap.REFUSED
     assert witness.detail.strip(), f"{why} must name the layer that refused"
     assert classify_value(value=value, witness=witness) is (
         Reachability.UNREPRESENTABLE
@@ -898,6 +1036,10 @@ def test_git_response_has_no_dynamic_strategy_and_says_so(tmp_path, boundary):
         boundary, "tests.test_x._run_stub", workspace=tmp_path / boundary.consumer[-8:]
     )
     assert witness.produced == ()
+    assert witness.gap is WitnessGap.NO_STRATEGY
+    # The detail is prose and nothing decides on it (P4, 2026-08-10) — but a
+    # human reading an abstention has to be told WHICH value kind abstained, so
+    # it is still required to name one.
     assert ValueKind.GIT_RESPONSE.value in witness.detail or "GIT_RESPONSE" in (
         witness.detail
     )
@@ -1092,36 +1234,42 @@ def test_check_observation_neighbour_is_none_unless_diverged(tmp_path):
     assert adjudicate(seam, None) is FindingDisposition.ABSTAIN
 
 
-def test_check_observation_cannot_run_the_differential_and_must_not_hide_it(
+def test_check_observation_abstains_when_no_differential_is_supplied(
     tmp_path, monkeypatch
 ):
-    """DIVERGED is found and named; the differential over it is DISPUTE 2.
+    """DIVERGED is found and named; with no differential it is an ABSTENTION.
 
-    ``check_observation``'s step 3 — "re-run the consumer with the neighbour
-    substituted and nothing else changed" — is not performable from this
-    function's inputs. :class:`ObservedFixture` records the value, the outcome,
-    the test id, the call site and the cuts, and NOTHING that can replay the
-    original call: not the consumer's other arguments, not the config, not the
-    task row. ``measure_consequence``'s own contract calls "everything else held
-    identical" a real obligation on the caller, and a caller holding five
-    strings cannot meet it.
+    **THE CLAIM TICKET THIS FILE WROTE FOR DISPUTE 2, REDEEMED.** The dispute:
+    ``check_observation``'s step 3 said to "re-run the consumer with the
+    neighbour substituted and nothing else changed", which is not performable
+    from this function's inputs — :class:`ObservedFixture` records five strings
+    and nothing that can replay the original call. This row used to assert that
+    :func:`adjudicate` RAISES on the resulting ``(DIVERGED, NOT_MEASURED)``,
+    because that pair was not in the ruling grid.
 
-    So this row seals the two halves that ARE determinate — the value is
-    DIVERGED and the producible neighbour is git's rendering — and then pins the
-    consequence of the gap in executable form: with no differential there is no
-    Consequence for a DIVERGED finding, ``(DIVERGED, NOT_MEASURED)`` is not in
-    the scaffold's ruling table, and :func:`adjudicate` must therefore RAISE
-    rather than pick a side. Raising is the correct behaviour for the state as
-    scaffolded — it is the one thing that cannot be mistaken for a pass.
+    P4 ruled, 2026-08-10:
 
-    **This seal is a claim ticket.** If P4 rules that ``ObservedFixture`` gains
-    a replay handle, or that ``check_observation`` gains a parameter, this row
-    goes red and whoever changes it has to come here and say what the ruling was.
-    That is the point of writing the dispute as a seal instead of a comment.
+      * **No replay handle**, and the reason is not cost — it is that a handle
+        invoked by ``check_suite`` runs after the ``observe`` block has exited,
+        in a world where the row's ``tmp_path`` is gone and its monkeypatches
+        are undone, so the second call would differ in everything except the
+        one value. ``measure_consequence``'s contract says what that produces:
+        SAME_DISPOSITION, the permissive answer. A handle would manufacture it
+        while appearing to meet the obligation.
+      * **Step 3 is delegated**, to a ``differential`` a caller supplies —
+        the same placement, and the same stated reason, that
+        ``measure_consequence`` already uses for not running the consumer
+        itself. The partner row below seals that half.
+      * **``(DIVERGED, NOT_MEASURED)`` is ABSTAIN**, not a raise. The
+        reachability axis was measured and the consequence axis was not, and
+        that half-measured state is what the two-enum split exists to be able
+        to say. Raising would abort the whole run on the first divergence and
+        leave no report, which for a suite-wide sweep is the same as not having
+        the check.
 
-    The differential itself is sealed where it IS performable, over explicitly
-    held-identical calls, in
-    :func:`test_flagship_pre_fix_collector_is_a_breach`.
+    So what is sealed here is: the two determinate halves, the abstention, and
+    that the abstention is NOT suppressible by a declaration — because an
+    abstention that a declaration could silence is a coverage figure that lies.
     """
     monkeypatch.setattr(risk, "collect_diff", _collect_diff_before_263298d)
     finding = check_observation(
@@ -1130,9 +1278,85 @@ def test_check_observation_cannot_run_the_differential_and_must_not_hide_it(
     assert finding.reachability is Reachability.DIVERGED
     assert finding.neighbour == _LF_RENDERING
     assert finding.consequence is Consequence.NOT_MEASURED
-    assert finding.detail.strip(), "an unmeasurable differential must say so"
-    with pytest.raises(FixtureReachabilityError):
-        adjudicate(finding, None)
+    assert finding.detail.strip(), "an unmeasured differential must say so"
+    assert adjudicate(finding, None) is FindingDisposition.ABSTAIN
+    assert adjudicate(finding, _matching_declaration(finding)) is (
+        FindingDisposition.ABSTAIN
+    )
+
+
+def test_check_observation_runs_a_supplied_differential_and_can_reach_breach(
+    tmp_path, monkeypatch
+):
+    """The other half of the dispute-2 ruling: the delegated differential works.
+
+    Without this row the ``differential`` parameter is a contract nothing
+    checks, and a body that ignored it entirely would pass every other row in
+    this file while making OPPOSITE_DISPOSITION — and therefore BREACH —
+    unreachable from ``check_observation``. That is the module's headline
+    finding, so it gets a row.
+
+    The closure below is what "everything else held identical" looks like when
+    it is really held: it calls the SAME consumer through
+    :func:`_risk_level`, with the same size label, labels, verification state
+    and file count, and changes the path and nothing else. Its obligation
+    cannot be enforced by the mechanism — that is stated on the parameter — but
+    it can be written out, and it is.
+
+    Note the pair with the row above: the identical observation, over the
+    identical pre-fix collector, is ABSTAIN with no differential and BREACH with
+    one. A body that ignores the parameter fails the second; a body that
+    fabricates a differential when none was given fails the first. Neither row
+    alone is satisfiable by both answers.
+    """
+    monkeypatch.setattr(risk, "collect_diff", _collect_diff_before_263298d)
+
+    calls: list[str] = []
+
+    def _held_identical(observed: ObservedFixture, neighbour: str) -> str:
+        calls.append(neighbour)
+        return _risk_level(neighbour)
+
+    observed = _observed(_RISK_ROW, _LF_PATH, "elevated")
+    finding = check_observation(
+        observed, workspace=tmp_path, differential=_held_identical
+    )
+    assert calls == [_LF_RENDERING], (
+        "the differential must be called exactly once, with the neighbour"
+    )
+    assert finding.reachability is Reachability.DIVERGED
+    assert finding.neighbour == _LF_RENDERING
+    assert finding.consequence is Consequence.OPPOSITE_DISPOSITION
+    assert adjudicate(finding, None) is FindingDisposition.BREACH
+    assert adjudicate(finding, _matching_declaration(finding)) is (
+        FindingDisposition.BREACH
+    )
+
+
+def test_a_supplied_differential_is_not_called_unless_diverged(tmp_path):
+    """A REACHED observation runs no second call, differential or not.
+
+    "Every other reachability yields NOT_MEASURED without a second call." A body
+    that calls the differential unconditionally would put a neighbour outcome
+    against a fixture that has no neighbour, and
+    :func:`measure_consequence` would then compare a value against itself and
+    report SAME_DISPOSITION — a DIVERGED-shaped answer for a REACHED value.
+    """
+    called: list[str] = []
+
+    def _must_not_run(observed: ObservedFixture, neighbour: str) -> str:
+        called.append(neighbour)
+        return "low"
+
+    finding = check_observation(
+        _observed(_RISK_ROW, "src/app.py", "low"),
+        workspace=tmp_path,
+        differential=_must_not_run,
+    )
+    assert finding.reachability is Reachability.REACHED
+    assert finding.consequence is Consequence.NOT_MEASURED
+    assert called == [], "no neighbour, no second call"
+    assert adjudicate(finding, None) is FindingDisposition.OK
 
 
 def test_check_observation_lets_a_mechanism_error_propagate(tmp_path):
@@ -1338,6 +1562,53 @@ def test_observe_refuses_a_boundary_whose_consumer_cannot_be_wrapped():
         with observe([unwrappable]):
             pass
     assert not hasattr(risk, "no_such_function")
+
+
+def test_observe_raises_when_extract_outcome_has_gone_stale():
+    """A table path that does not resolve on the return value is an ERROR.
+
+    P4, 2026-08-10, on this file's first smaller item. The complaint was that
+    ``Boundary`` has ``extract_outcome`` but no ``extract_value``, so the
+    observer still holds per-row knowledge — the coupling ``extract_outcome``
+    was introduced to remove. P4 declined to add ``extract_value`` (an honest
+    one is a parameter name plus a per-element attribute plus a per-element
+    rule, i.e. a small expression language, and a parser for it is more surface
+    than the coupling it removes) and ruled instead that the coupling must be
+    LOUD: a row the observer cannot extract from raises, and never silently
+    contributes nothing.
+
+    This is the determinate half of that rule. The row below names a real,
+    wrappable consumer and an outcome path that does not resolve on what it
+    returns — which is what a table row looks like the day after a consumer
+    changes shape.
+
+    A body that records ``""``, or the repr, or ``getattr(..., default)``
+    instead of raising, defers the failure to :func:`gate_disposition` one
+    frame later, where the message can only say "this outcome is in neither
+    set" and cannot say that the TABLE is stale. Reddens on exactly that.
+    """
+    stale = Boundary(
+        producer=_RISK_ROW.producer,
+        consumer=_RISK_ROW.consumer,
+        kind=BoundaryKind.COLLECTOR,
+        value_kind=ValueKind.GIT_PATH,
+        proceed_outcomes=("low",),
+        refuse_outcomes=("elevated",),
+        extract_outcome="verdict.level",  # RiskVerdict has .level, not .verdict
+        rationale="a row whose outcome path went stale under the consumer",
+    )
+    with pytest.raises(FixtureReachabilityError):
+        with observe([stale]) as _seen:
+            risk.evaluate(
+                size_label="S",
+                labels=[],
+                changed_files=[risk.FileDiff("src/app.py", 1, 0)],
+                verified=True,
+                verification_iterations=0,
+            )
+    assert risk.evaluate is _EVALUATE_BOUND_AT_IMPORT, (
+        "the failing observe block must still unwrap on the way out"
+    )
 
 
 def test_observe_records_a_seam_only_when_a_substitute_was_supplied(tmp_path):
@@ -1706,11 +1977,20 @@ def test_the_other_two_stubs_are_clean(which, issued_argv):
         is the totality claim holding. Measured 2026-08-10: its ``_run_stub``
         raises ``AssertionError: unscripted git command`` on both real argvs.
 
-    That second reason is a MEASURED DISAGREEMENT with the scaffold, which says
+    That second reason was a MEASURED DISAGREEMENT with the scaffold, which said
     "Only two of the three files are affected". Under ``stub_gaps``'s own
     definition — unmodelled AND answered — exactly ONE is. Raised as dispute 4;
-    the seal follows the measurement, because the measurement is what a body
+    the seal followed the measurement, because the measurement is what a body
     has to reproduce.
+
+    **P4 CONFIRMED IT, 2026-08-10**, by running all three ``_run_stub``
+    factories against the two argvs ``blob_text_at`` really issues: ``diff``
+    answered both (rc 128 both times), ``floor`` raised ``AssertionError:
+    unscripted git command`` on both, ``provenance`` answered both while naming
+    both. The scaffold's instance-(B) narrative and ``StubGap``'s docstring now
+    both say ONE, and both name the reason the earlier count was wrong — it
+    applied half the definition ("does not name it") as though it were the
+    whole of it.
     """
     gaps = stub_gaps(
         stub_source=_STUB_FILES[which].read_text(encoding="utf-8"),
