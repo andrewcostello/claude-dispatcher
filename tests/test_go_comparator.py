@@ -6,7 +6,9 @@ WHY THIS FILE EXISTS
 body author measured the hole and stated it exactly: dropping parameter names
 from the Go fingerprint — the precise defect `GO_SIGNATURE_EDIT_RULINGS` exists
 to forbid — left the suite at 1630 passed unenrolled, and *enrolled* produced
-the same eight failures and not one more. The eight existing seals pin Go as
+the same failures as the unmutated tree and not one more. (That measurement said
+EIGHT; P4 re-measured on 2026-08-10 and it is NINE, the ninth being this file's
+own section 0 — the count does not change the argument.) Those seals pin Go as
 UNREADABLE; `tests/test_role_protocol_faults.py` pins a fault as not-a-language
 using a stub comparator that raises. Neither class can notice a comparator that
 runs and answers WRONG, and the target repo is 2,288 Go files.
@@ -16,15 +18,23 @@ This file is the missing half: every seal here drives the REAL helper — a real
 
 WHY NOTHING HERE ENROLS GO
 --------------------------
-`GO_SUPPORT` is in `PENDING_COMPARATORS` on purpose and enrolling it reddens
-eight seals a seal author may not amend; that is a later, separate step. So the
-seals drive `GoSignatureFingerprinter.fingerprints` directly, and reach
+`GO_SUPPORT` was in `PENDING_COMPARATORS` when this file was written, and
+enrolling it reddened nine seals a seal author may not amend; that is a later,
+separate step and it is the body author's commit, not this file's. So the seals
+drive `GoSignatureFingerprinter.fingerprints` directly, and reach
 `compare_signatures` only through the `compare_go` fixture, which monkeypatches
 `COMPARATORS` for the duration of one test — the same registry seam
 `tests/test_role_protocol_faults.py` already uses, restored by pytest before the
-next test runs. Nothing here calls `check_branch`, and
-`test_go_is_still_not_enrolled` asserts the shipped registry is untouched, so a
-future enrolment cannot happen quietly underneath this file.
+next test runs. Nothing here calls `check_branch`.
+
+P4, 2026-08-10: this file is now indifferent to whether the row is enrolled, and
+that is deliberate. The fixture PREPENDS the row rather than replacing the
+tuple, so it supplies Go before enrolment and shadows it with the same object
+after; `test_the_go_row_is_in_exactly_one_registry_and_the_lookup_agrees` (which
+was `test_go_is_still_not_enrolled`) pins the registry's internal consistency
+instead of pinning one transient state of it. Every other seal below is
+unchanged, and none of them was measured against the enrolled tree differently
+from the pending one.
 
 THE VACUITY TRAPS, AND WHAT IS DONE ABOUT EACH
 ----------------------------------------------
@@ -131,8 +141,10 @@ def _restore_comparator_globals():
 def compare_go(monkeypatch: pytest.MonkeyPatch):
     """`compare_signatures` with the real Go row registered FOR THIS TEST ONLY.
 
-    Registering is not enrolling: the shipped `COMPARATORS` tuple is unchanged
-    on disk and `test_go_is_still_not_enrolled` says so. What this buys is that
+    Registering is not enrolling: this fixture leaves the shipped `COMPARATORS`
+    tuple unchanged on disk, whatever it holds, and
+    `test_the_go_row_is_in_exactly_one_registry_and_the_lookup_agrees` pins that
+    the registry and the lookup agree either way. What this buys is that
     the ruled answers are measured through the real protocol — added-is-not-a-
     change, removed-is, status CHECKED — instead of through a re-implementation
     of those rules living in this file, which would be a second copy of the
@@ -164,21 +176,89 @@ def _changed(compare, before: str, after: str) -> bool:
 # --------------------------------------------------------------------------- #
 
 
-def test_go_is_still_not_enrolled() -> None:
-    """The shipped registry does not read Go, and this file did not change that.
+def test_the_go_row_is_in_exactly_one_registry_and_the_lookup_agrees() -> None:
+    """The Go row is enrolled or pending, never both and never neither, and what
+    the gate actually READS says the same thing.
 
-    Every seal below registers Go through a fixture. If someone enrols the row
-    for real, the eight seals listed at `GO_SUPPORT` go red and must be amended
-    by P4 — and this seal is the one that makes the enrolment visible from HERE
-    rather than as eight confusing failures elsewhere.
+    Every seal below registers Go through the `compare_go` fixture, so this
+    file's answers do not depend on which of the two states the shipped registry
+    is in. What this row pins is that the two registries and the lookup cannot
+    DISAGREE: `PENDING_COMPARATORS` is the named state for "written but not
+    live" (`skills/explicit-state.md`), and a pending row that
+    `support_for_path` nevertheless returns — or an enrolled row it does not —
+    is coverage reported that does not exist, in exactly the direction that
+    reads as safe.
 
-    Green when: `GO_SUPPORT` is pending and `.go` is unreadable by default.
-    Falsify: add `GO_SUPPORT` to `COMPARATORS`.
+    Green when: membership is exclusive and `support_for_path` and
+    `enrolled_languages` both follow `COMPARATORS` alone.
+    Falsify: make `support_for_path` consult `PENDING_COMPARATORS` as well as
+    `COMPARATORS` — `readable` goes True while `enrolled` is False and the
+    second assertion reddens. Derive `enrolled_languages` from both tuples —
+    the third reddens. Drop the row from both tuples — the first reddens. This
+    cannot be satisfied by two different behaviours: for any one registry there
+    is exactly one set of answers that passes.
+
+    AMENDED AND RENAMED by P4 on 2026-08-10, and by P4 only. It was
+    `test_go_is_still_not_enrolled` and it asserted `GO_SUPPORT in
+    PENDING_COMPARATORS` and `not in COMPARATORS` outright — a tripwire whose
+    stated job was to make an enrolment "visible from HERE rather than as eight
+    confusing failures elsewhere". **It is the NINTH seal that reddens on
+    enrolment**, and no earlier count had it: it postdates the checklist at
+    `GO_SUPPORT`, and it is not a stale-probe seal but a seal on a project state
+    the operator has now decided to leave.
+
+    Its tripwire job is discharged rather than deleted: the eight confusing
+    failures elsewhere are gone — they were re-languaged in the same commit — so
+    enrolment is now a reviewable one-commit body change with no seal edits in
+    it, which is the visibility the operator asked for and a louder signal than
+    a red test in a file about something else.
+
+    What is KEPT is the part that outlives any particular enrolment, and the
+    keeping was MEASURED rather than argued (2026-08-10, each mutation applied
+    to a `cp -a` clone with `__pycache__` cleared, whole suite run, clone
+    discarded). With the row PENDING, each of these reddens this seal and
+    NOTHING ELSE in the suite, so all three properties the old row carried are
+    still carried, and by nothing else:
+
+      * `support_for_path` iterating `COMPARATORS + PENDING_COMPARATORS` — a
+        pending row answering a lookup, which is coverage that does not exist;
+      * `enrolled_languages` derived from both tables — the same lie in the
+        report instead of the dispatch;
+      * the row dropped from both tables — the state with no name.
+
+    And with the row ENROLLED, where the old seal would have been deleted
+    rather than amended, this one still bites: `enrolled_languages` filtered to
+    drop the enrolled Go row reddens it (measured; the same mutation is
+    correctly GREEN while the row is pending, which is why it has to be judged
+    against the registry rather than against a fixed expected answer).
+
+    A THIRD registry state is refused upstream and deliberately not re-asserted
+    here: `GO_SUPPORT` in BOTH tuples cannot reach this seal at all, because
+    `validate_registry(COMPARATORS, PENDING_COMPARATORS)` runs at import and
+    raises `RoleProtocolError` on the duplicate language. Measured 2026-08-10 —
+    adding the row to `COMPARATORS` without removing it from
+    `PENDING_COMPARATORS` fails collection for the whole suite. Enrolment is
+    therefore a two-line MOVE, not the one-line addition the checklist at
+    `GO_SUPPORT` used to claim.
     """
-    assert role_protocol.GO_SUPPORT in role_protocol.PENDING_COMPARATORS
-    assert role_protocol.GO_SUPPORT not in role_protocol.COMPARATORS
-    assert role_protocol.support_for_path("cmd/x/main.go") is None
-    assert Language.GO not in role_protocol.enrolled_languages()
+    enrolled = role_protocol.GO_SUPPORT in role_protocol.COMPARATORS
+    pending = role_protocol.GO_SUPPORT in role_protocol.PENDING_COMPARATORS
+    assert enrolled != pending, (
+        "the Go row is in both registries or in neither; 'scaffolded but not "
+        "enrolled' is a named state and a row in two of them, or none, has no "
+        f"name (enrolled={enrolled}, pending={pending})"
+    )
+    assert (role_protocol.support_for_path("cmd/x/main.go") is not None) is (
+        enrolled
+    ), (
+        "what the gate READS disagrees with the registry it is supposed to be "
+        "derived from — the direction that matters is a PENDING row answering "
+        "a lookup, which reports coverage that does not exist"
+    )
+    assert (Language.GO in role_protocol.enrolled_languages()) is enrolled, (
+        "`enrolled_languages` is the falsifiable statement of what this build "
+        "covers; sourcing it from anything but `COMPARATORS` makes it prose"
+    )
 
 
 # --------------------------------------------------------------------------- #

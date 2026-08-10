@@ -4108,9 +4108,20 @@ PYTHON_SUPPORT = LanguageSupport(
 #: (UNCHECKED_UNSUPPORTED_LANGUAGE, promoted to UNCHECKED_NO_SUPPORTED_FILE on a
 #: diff with nothing else in it, CLEAN on BODIES).
 #:
-#: Enrolment is ONE edit — adding this row to :data:`COMPARATORS` — and it may
-#: not happen until all four of these hold. They are listed as a checklist
-#: because three of them are somebody else's commit:
+#: Enrolment is a two-line MOVE — adding this row to :data:`COMPARATORS` **and
+#: removing it from** :data:`PENDING_COMPARATORS` — and it may not happen until
+#: all four of these hold. They are listed as a checklist because three of them
+#: are somebody else's commit.
+#:
+#: **This paragraph said "ONE edit — adding this row to COMPARATORS" and that
+#: was wrong; corrected by P4 on 2026-08-10 after measuring it.** Doing only the
+#: documented edit leaves the row in BOTH tuples,
+#: :func:`validate_registry` raises ``RoleProtocolError`` ("language 'go' has
+#: two comparator rows") at import, and the entire suite fails collection. The
+#: move is still one commit and one reviewable hunk; it is not one line.
+#: :func:`test_the_go_row_is_in_exactly_one_registry_and_the_lookup_agrees`
+#: (``tests/test_go_comparator.py``) is the seal that states the invariant this
+#: correction rests on:
 #:
 #:   1. :class:`GoSignatureFingerprinter` is implemented (P3), to the rulings
 #:      in :data:`GO_SIGNATURE_EDIT_RULINGS` — which is the acceptance
@@ -4156,55 +4167,71 @@ PYTHON_SUPPORT = LanguageSupport(
 #:      would silently undo it.
 #:   4. The seals that pin Go as unreadable are amended by P4, because
 #:      enrolment reddens every one of them and P3 may not touch a seal.
-#:      **OUTSTANDING**, and deliberately so: this is a later step, not an
-#:      oversight.
+#:      **DONE**, P4 2026-08-10. Every one of them is re-languaged, none is
+#:      deleted, and enrolment now reddens NOTHING: measured by moving the row
+#:      in a ``cp -a`` clone of this tree, clearing ``__pycache__`` and running
+#:      the whole suite — 1989 collected, 13 skipped, 0 failed, the same as
+#:      unenrolled. **This item does not say the comparator is correct** — see
+#:      the gap named in item 1 and the seals in ``tests/test_go_comparator.py``
+#:      that close it.
 #:
-#:      **The scaffold said SEVEN. Measured 2026-08-09 by actually enrolling
-#:      the row in a clone and reading the failures: EIGHT, plus two that are
-#:      not this class at all.** The eighth is
-#:      ``test_a_skipped_non_python_file_is_not_reported_as_a_checked_signature``
-#:      (``tests/test_role_protocol_inputs.py``), which the scaffold's list
-#:      omits. A checklist that undercounts is worse than none, because the
-#:      unit that works through it stops when the named ones are green.
+#:      **The count has now been wrong four times: SEVEN, then EIGHT, and it is
+#:      NINE.** The scaffold said seven. P4 measured eight on 2026-08-09 and
+#:      added ``test_a_skipped_non_python_file_is_not_reported_as_a_checked_signature``
+#:      (``tests/test_role_protocol_inputs.py``). P4 measured NINE on
+#:      2026-08-10; the ninth is
+#:      ``tests/test_go_comparator.py::test_go_is_still_not_enrolled``, which
+#:      did not exist when either earlier count was taken. It is not a
+#:      stale-probe seal — it is a deliberate tripwire asserting this row is
+#:      unenrolled — and it is replaced by
+#:      ``test_the_go_row_is_in_exactly_one_registry_and_the_lookup_agrees``,
+#:      which pins the registry/lookup relation instead of one transient state
+#:      of it. A checklist that undercounts is worse than none, because the
+#:      unit that works through it stops when the named ones are green; the
+#:      lesson that keeps repeating is that the only trustworthy count is one
+#:      taken by enrolling in a clone THAT DAY.
 #:
-#:      **Re-measured 2026-08-09 with item 1 DONE, and both halves of the
-#:      adjudicator's correction hold.** Enrolling the row in a clone of an
-#:      IMPLEMENTED tree fails exactly EIGHT, and they are exactly the eight
-#:      named below — the scaffold's seven plus
-#:      ``test_a_skipped_non_python_file_is_not_reported_as_a_checked_signature``.
-#:      The two provenance rows below stay GREEN, which is the prediction that
-#:      paragraph makes and the reason item 1 had to come first.
-#:
-#:      The two that are NOT this class:
-#:      ``test_no_role_gets_a_clean_verdict_for_editing_the_gate`` and
+#:      **The two that are NOT this class stay green, and must not be
+#:      amended.** ``test_no_role_gets_a_clean_verdict_for_editing_the_gate``
+#:      and
 #:      ``test_the_gate_is_refused_under_the_policy_the_gate_actually_runs_with``
 #:      (``tests/test_role_protocol_provenance.py``), whose probes include the
-#:      Go helper's own path since it joined :data:`FLOOR_GLOBS`. They redden
-#:      today only because enrolling an UNIMPLEMENTED
-#:      :class:`GoSignatureFingerprinter` raises ``NotImplementedError`` out of
-#:      :func:`check_branch` — item 1 of this list, not item 4. Do item 1
-#:      first and they never go red; they need no amendment and must not be
-#:      given one.
+#:      Go helper's own path since it joined :data:`FLOOR_GLOBS`. They reddened
+#:      only while an UNIMPLEMENTED :class:`GoSignatureFingerprinter` raised
+#:      ``NotImplementedError`` out of :func:`check_branch` — item 1 of this
+#:      list, not item 4. Item 1 is done, and both were re-measured GREEN with
+#:      the row enrolled on 2026-08-10. They were not touched.
 #:
-#:      The seven the scaffold named, unchanged. In
+#:      What each probe became, and why those languages. In
 #:      ``tests/test_role_protocol_diff.py``:
 #:      ``test_an_unchecked_comparison_is_named_never_reported_as_unchanged``
-#:      (its ``cmd/classify/main.go`` row) and
+#:      (``cmd/classify/main.go`` -> ``db/migrate/001_bay.sql``, and its
+#:      ``web/app.ts`` row -> ``svc/Handler.java``) and
 #:      ``test_every_signature_check_status_is_reachable`` (its ``m.go`` probe
-#:      and its Go-only BODIES probe — the latter is how the fifth status is
-#:      PRODUCED, so it needs a replacement language, not a deletion). In
-#:      ``tests/test_role_protocol_inputs.py``:
+#:      and its Go-only BODIES probe both -> ``db/migrate/001_bay.sql``; those
+#:      two are the only producers of UNCHECKED_UNSUPPORTED_LANGUAGE and
+#:      UNCHECKED_NO_SUPPORTED_FILE, so deleting them would have destroyed a
+#:      closed-set seal. Its faulting-row probe stays ``.go``: that row
+#:      REPLACES the registry and :class:`Language` is a closed two-member
+#:      set). In ``tests/test_role_protocol_inputs.py``:
+#:      ``test_a_skipped_non_python_file_is_not_reported_as_a_checked_signature``,
 #:      ``test_a_bodies_diff_this_gate_cannot_read_is_clean_and_names_what_it_missed``,
 #:      ``test_cannot_read_this_language_and_no_duty_here_stay_two_different_states``,
 #:      ``test_the_paths_named_unread_are_the_skipped_ones_not_the_whole_diff``,
 #:      ``test_the_per_file_comparator_names_the_file_it_could_not_read`` and
-#:      ``test_the_ci_face_clears_a_go_only_branch_and_names_the_file_it_could_not_read``.
-#:      Those seals are CORRECT today and state the ruled behaviour; what
-#:      changes underneath them is which languages are unreadable, so each needs
-#:      its Go probe REPLACED by one in a language this gate still cannot read —
-#:      SQL and Java are the honest choices, 1,097 files in the target repo and
-#:      no comparator planned — never deleted. A seal deleted because the fact
-#:      it rested on moved is a seal the next unit does not have.
+#:      ``test_the_ci_face_clears_a_wholly_unreadable_branch_and_names_the_file_it_could_not_read``
+#:      (RENAMED from ``...clears_a_go_only_branch...``: the name carried the
+#:      probe rather than the property).
+#:
+#:      Those seals were CORRECT and state the ruled behaviour; what changed
+#:      underneath them is which languages are unreadable, so each Go probe is
+#:      REPLACED by one in a language this gate still cannot read — SQL (781
+#:      files in the target repo) and Java (316), with no comparator planned
+#:      and no scaffolded-stub discipline in a migration or a POJO to preserve
+#:      — never deleted. ``.ts`` probes sitting in the same seals went too:
+#:      TypeScript is 996 files and the obvious NEXT enrolment, so leaving them
+#:      would have booked this same job a second time. A seal deleted because
+#:      the fact it rested on moved is a seal the next unit does not have.
 #:
 #: The row exists now, unenrolled, rather than being written by P3, because the
 #: extension belongs in the table that owns extensions and because a reader can
