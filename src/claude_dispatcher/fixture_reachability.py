@@ -1,8 +1,17 @@
-r"""D3 scaffold (P1) — fixture reachability: can production produce this input?
+r"""D3 — fixture reachability: can production produce this input?
 
-CONTRACTS ONLY. Every function here raises :class:`NotImplementedError`. The
-single exception is :func:`boundary_for`, named again at its definition. A
-separate author writes the seals; a separate author writes the bodies.
+The contracts below are P1's and are unchanged. P2 wrote the seals in
+``tests/test_fixture_reachability.py``, P4 ruled on four disputes and amended
+both, and P3 wrote the BODIES: the twelve functions that read "CONTRACTS ONLY.
+Every function here raises :class:`NotImplementedError`" are implemented as of
+this commit, and the statement is corrected here rather than left standing,
+because a docstring making a claim about its own module that the next author
+would rely on is instance (B) below.
+
+Every docstring in this file is therefore a contract a body has to meet and not
+a description of one that will be met later. What has NOT changed: the module
+is still not enrolled anywhere (see Wiring), and nothing under ``tests/``,
+``schema/`` or ``.dispatcher.yaml`` was touched to make the seals pass.
 
 The defect class this exists for
 ================================
@@ -476,11 +485,20 @@ Two coordinations this scaffold may NOT perform, raised for P4:
 
 from __future__ import annotations
 
-from contextlib import AbstractContextManager
+import ast
+import functools
+import importlib
+import inspect
+import os
+import subprocess
+import sys
+import tempfile
+from collections.abc import Sequence as _AbcSequence
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 __all__ = [
     "FixtureReachabilityError",
@@ -826,6 +844,53 @@ def boundary_for(producer: str) -> Boundary | None:
     return found[0] if found else None
 
 
+def _resolve_dotted(qualified: str) -> tuple[Any, str, Any]:
+    """``(module, attribute, value)`` for a fully-qualified name.
+
+    A SEAM producer is spelled ``git via <injection point>``; the injection
+    point is what resolves, exactly as
+    ``test_every_named_consumer_and_in_repo_producer_resolves`` reads it.
+    Anything that does not resolve to a callable is a
+    :class:`FixtureReachabilityError` and never a silently skipped row.
+    """
+    name = qualified.split(" via ")[-1]
+    module_name, _, attribute = name.rpartition(".")
+    if not module_name or not attribute:
+        raise FixtureReachabilityError(
+            f"{qualified!r} is not a fully-qualified name; BOUNDARIES rows are "
+            "keyed on module-qualified names so two modules may own same-named "
+            "functions"
+        )
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as exc:
+        raise FixtureReachabilityError(
+            f"{qualified!r}: the module {module_name!r} does not import ({exc})"
+        ) from exc
+    try:
+        value = getattr(module, attribute)
+    except AttributeError as exc:
+        raise FixtureReachabilityError(
+            f"{qualified!r}: {module_name!r} has no attribute {attribute!r} — "
+            "the BOUNDARIES table has gone stale under the code"
+        ) from exc
+    if not callable(value):
+        raise FixtureReachabilityError(
+            f"{qualified!r} resolves to {type(value).__name__}, which is not "
+            "callable"
+        )
+    return module, attribute, value
+
+
+def _qualified_callable_name(func: Any) -> str:
+    """A substitute producer's own name, for the ``value`` of a SEAM fixture."""
+    module = getattr(func, "__module__", None) or "?"
+    name = getattr(func, "__qualname__", None) or getattr(func, "__name__", None)
+    if name is None:
+        return f"{module}.{type(func).__name__}"
+    return f"{module}.{name}"
+
+
 # --------------------------------------------------------------------------- #
 # Part 2 — observation: which fixtures actually crossed which boundary
 # --------------------------------------------------------------------------- #
@@ -975,7 +1040,247 @@ def observe(
     and the second unwrap would restore the first wrapper as if it were the
     original.
     """
-    raise NotImplementedError("D3 P1 scaffold: contract only")
+    return _observe(tuple(boundaries))
+
+
+#: The spelling every boundary uses for "the consumer raised". Named once so a
+#: row that gains a different spelling changes the table and not the observer.
+_RAISED = "raised"
+
+#: True while an :func:`observe` block is live. Module-level rather than
+#: per-call because reentrancy is a property of the PACKAGE — two blocks would
+#: patch the same module attributes.
+_OBSERVE_ACTIVE = False
+
+#: The producers whose boundaries are currently mid-call, innermost last. A
+#: value observed while this is non-empty crossed those boundaries on its way
+#: in, which is what ``ObservedFixture.cut_boundaries`` records.
+_CUT_STACK: list[str] = []
+
+
+def _observed_values_risk_evaluate(bound: inspect.BoundArguments) -> list[str]:
+    """One value per element of ``changed_files``: the path it carries."""
+    files = bound.arguments.get("changed_files")
+    if not isinstance(files, _AbcSequence) or isinstance(files, (str, bytes)):
+        return []
+    return [getattr(f, "path", f) for f in files if isinstance(getattr(f, "path", f), str)]
+
+
+def _observed_values_changed_paths(bound: inspect.BoundArguments) -> list[str]:
+    """One value per element of ``changed_paths``: the path itself."""
+    paths = bound.arguments.get("changed_paths")
+    if not isinstance(paths, _AbcSequence) or isinstance(paths, (str, bytes)):
+        return []
+    return [p for p in paths if isinstance(p, str)]
+
+
+def _observed_values_seam(bound: inspect.BoundArguments) -> list[str]:
+    """At a SEAM the fixture IS the substitute; ``run=None`` substitutes nothing."""
+    run = bound.arguments.get("run")
+    return [] if run is None else [_qualified_callable_name(run)]
+
+
+#: How the observer reads the VALUES out of one consumer's call. Written out per
+#: consumer, deliberately: ``Boundary.extract_outcome``'s own contract records
+#: P4's refusal to add an ``extract_value`` beside it, and requires instead that
+#: the residual coupling be LOUD — a row this table has no rule for raises at
+#: :func:`observe` rather than contributing nothing.
+_OBSERVER_VALUE_RULES: Mapping[str, Callable[[inspect.BoundArguments], list[str]]] = {
+    "claude_dispatcher.risk.evaluate": _observed_values_risk_evaluate,
+    "claude_dispatcher.role_protocol.evaluate_changed_paths": (
+        _observed_values_changed_paths
+    ),
+    "claude_dispatcher.repo_config.blob_text_at": _observed_values_seam,
+    "claude_dispatcher.role_protocol.check_branch": _observed_values_seam,
+}
+
+#: The mapping a row with an EMPTY ``extract_outcome`` asks the observer to
+#: apply — the sentinel's real meaning (P4 correction, 2026-08-10). Not "the
+#: return value is the string": it is that the return is not an outcome string
+#: and this row's own mapping decides.
+_OBSERVER_OUTCOME_RULES: Mapping[str, Callable[[Any], str]] = {
+    "claude_dispatcher.role_protocol.evaluate_changed_paths": (
+        lambda result: "clean" if not result else "violation"
+    ),
+    "claude_dispatcher.repo_config.blob_text_at": (
+        lambda result: "absent" if result is None else "text"
+    ),
+}
+
+
+def _extract_outcome(boundary: Boundary, result: Any) -> str:
+    """The outcome string for one consumer return, per the row's own field."""
+    path = boundary.extract_outcome
+    if path:
+        current: Any = result
+        for part in path.split("."):
+            try:
+                current = getattr(current, part)
+            except AttributeError as exc:
+                raise FixtureReachabilityError(
+                    f"{boundary.consumer}: extract_outcome {path!r} does not "
+                    f"resolve on the {type(result).__name__} it returned "
+                    f"({part!r} is missing) — the BOUNDARIES row has gone stale "
+                    "under the code, and recording a default here would defer "
+                    "the failure to gate_disposition, which cannot say that"
+                ) from exc
+        if not isinstance(current, str):
+            raise FixtureReachabilityError(
+                f"{boundary.consumer}: extract_outcome {path!r} resolved to a "
+                f"{type(current).__name__}, not the outcome string the row's "
+                "two outcome sets are written in"
+            )
+        return current
+    rule = _OBSERVER_OUTCOME_RULES.get(boundary.consumer)
+    if rule is None:
+        raise FixtureReachabilityError(
+            f"{boundary.consumer}: extract_outcome is empty and the observer "
+            "holds no mapping for this row; a row it cannot extract from must "
+            "raise, never contribute nothing"
+        )
+    return rule(result)
+
+
+def _current_test_id() -> str:
+    """The pytest node id of the running row, or '' when there is no row.
+
+    Empty is recorded rather than guessed: a finding that names the wrong row
+    sends a human to the wrong file.
+    """
+    raw = os.environ.get("PYTEST_CURRENT_TEST", "")
+    if not raw:
+        return ""
+    return raw.rsplit(" (", 1)[0].strip()
+
+
+def _make_observer(
+    boundary: Boundary, original: Callable[..., Any], seen: list[ObservedFixture]
+) -> Callable[..., Any]:
+    """The transparent wrapper installed over one boundary's consumer.
+
+    ``original`` is a CLOSURE CELL and never a module global: the sweep in
+    :func:`_observe` rebinds every module attribute that is this function, so a
+    body holding its target in a module global would have its own target
+    rebound part-way through the sweep and would silently stop matching.
+    """
+    signature = inspect.signature(original)
+    values_of = _OBSERVER_VALUE_RULES[boundary.consumer]
+
+    @functools.wraps(original)
+    def observer(*args: Any, **kwargs: Any) -> Any:
+        try:
+            bound = signature.bind(*args, **kwargs)
+        except TypeError:
+            # Not a call this consumer accepts. Stay transparent and let the
+            # real function raise the real TypeError.
+            return original(*args, **kwargs)
+        values = values_of(bound)
+        if not values:
+            return original(*args, **kwargs)
+        frame = sys._getframe(1)
+        call_site = f"{frame.f_code.co_filename}:{frame.f_lineno}"
+        test_id = _current_test_id()
+        cut = (*_CUT_STACK, boundary.producer)
+        _CUT_STACK.append(boundary.producer)
+        try:
+            result = original(*args, **kwargs)
+        except BaseException:
+            _CUT_STACK.pop()
+            _append_observations(seen, boundary, values, _RAISED, test_id, call_site, cut)
+            raise
+        _CUT_STACK.pop()
+        outcome = _extract_outcome(boundary, result)
+        _append_observations(seen, boundary, values, outcome, test_id, call_site, cut)
+        return result
+
+    return observer
+
+
+def _append_observations(
+    seen: list[ObservedFixture],
+    boundary: Boundary,
+    values: Sequence[str],
+    outcome: str,
+    test_id: str,
+    call_site: str,
+    cut: tuple[str, ...],
+) -> None:
+    """One :class:`ObservedFixture` per VALUE. A call carrying four yields four."""
+    for value in values:
+        seen.append(
+            ObservedFixture(
+                boundary=boundary,
+                value=value,
+                outcome=outcome,
+                test_id=test_id,
+                call_site=call_site,
+                cut_boundaries=cut,
+            )
+        )
+
+
+@contextmanager
+def _observe(boundaries: tuple[Boundary, ...]):
+    global _OBSERVE_ACTIVE
+    if _OBSERVE_ACTIVE:
+        raise FixtureReachabilityError(
+            "observe() is already active; two live wrappers double-record and "
+            "the second unwrap restores the first wrapper as if it were the "
+            "original"
+        )
+
+    seen: list[ObservedFixture] = []
+    # Validate every row and build every wrapper BEFORE patching anything, so a
+    # bad row leaves the package untouched.
+    plan: dict[int, tuple[Boundary, Any, Any]] = {}
+    for boundary in boundaries:
+        if boundary.consumer not in _OBSERVER_VALUE_RULES:
+            raise FixtureReachabilityError(
+                f"{boundary.consumer}: the observer has no rule for extracting "
+                "the values this consumer receives; an unobservable row must "
+                "raise rather than be silently unobserved"
+            )
+        _module, _attribute, original = _resolve_dotted(boundary.consumer)
+        plan[id(original)] = (boundary, original, _make_observer(boundary, original, seen))
+
+    patched: list[tuple[dict, str, Any]] = []
+    reached: set[int] = set()
+    _OBSERVE_ACTIVE = True
+    del _CUT_STACK[:]
+    try:
+        # The sweep. Rebinding one module's attribute cannot reach a name
+        # another module already bound to the same object, so every module is
+        # visited and every attribute that IS the consumer (identity, not
+        # equality) is rebound. Nothing is skipped for tidiness: a module
+        # skipped is a call unobserved, and an unobserved call is
+        # indistinguishable from a boundary nothing crossed.
+        for module in list(sys.modules.values()):
+            if module is None:
+                continue
+            namespace = getattr(module, "__dict__", None)
+            if not isinstance(namespace, dict):
+                continue
+            for name, value in list(namespace.items()):
+                entry = plan.get(id(value))
+                if entry is None or value is not entry[1]:
+                    continue
+                namespace[name] = entry[2]
+                patched.append((namespace, name, entry[1]))
+                reached.add(id(entry[1]))
+        missed = [
+            entry[0].consumer for key, entry in plan.items() if key not in reached
+        ]
+        if missed:
+            raise FixtureReachabilityError(
+                f"{missed}: the sys.modules sweep rebound no name for these "
+                "consumers, so their boundaries would be silently unobserved"
+            )
+        yield seen
+    finally:
+        _OBSERVE_ACTIVE = False
+        del _CUT_STACK[:]
+        for namespace, name, original in patched:
+            namespace[name] = original
 
 
 # --------------------------------------------------------------------------- #
@@ -1175,7 +1480,257 @@ def construct_witness(
     Cost: one repository per distinct ``(boundary, value)``. Callers dedupe
     before calling; :func:`check_suite` is required to.
     """
-    raise NotImplementedError("D3 P1 scaffold: contract only")
+    kind = boundary.value_kind
+    environment = _environment_fingerprint(workspace)
+    if not isinstance(kind, ValueKind):
+        raise FixtureReachabilityError(
+            f"{boundary.consumer}: value_kind {kind!r} is not a ValueKind. "
+            "construct_witness is total over the enum and raises rather than "
+            "returning an empty produced list, which would classify as DIVERGED "
+            "against a neighbour that does not exist"
+        )
+    if kind is ValueKind.GIT_RESPONSE:
+        return Witness(
+            recipe=(
+                "no state was built: a git response is a function of a "
+                "repository this module cannot infer from the response alone, "
+                "and this boundary row supplies no repository recipe"
+            ),
+            produced=(),
+            environment=environment,
+            gap=WitnessGap.NO_STRATEGY,
+            detail=(
+                f"no dynamic construction strategy for value kind "
+                f"{ValueKind.GIT_RESPONSE.value!r} at {boundary.consumer}; the "
+                "seam face (stub_gaps) is what covers this row"
+            ),
+        )
+    if kind is ValueKind.GIT_PATH:
+        return _git_path_witness(boundary, value, workspace=workspace, environment=environment)
+    raise FixtureReachabilityError(
+        f"construct_witness has no strategy for ValueKind.{kind.name}; adding a "
+        "member without visiting this dispatch is how the permissive value gets "
+        "a new spelling"
+    )
+
+
+#: The two refs every GIT_PATH witness is built between, as the contract spells
+#: the recipe: a seed commit on ``main``, the file added on ``feat/x``.
+_WITNESS_BASE_REF = "main"
+_WITNESS_HEAD_REF = "feat/x"
+
+_GIT_VERSION: str | None = None
+
+
+class _WitnessRefused(Exception):
+    """The OS or git refused to hold the state this value describes."""
+
+
+def _git_version() -> str:
+    global _GIT_VERSION
+    if _GIT_VERSION is None:
+        try:
+            proc = subprocess.run(
+                ["git", "--version"], capture_output=True, text=True, timeout=30
+            )
+            _GIT_VERSION = proc.stdout.strip() or "unknown"
+        except (OSError, subprocess.SubprocessError):  # pragma: no cover - no git
+            _GIT_VERSION = "unavailable"
+    return _GIT_VERSION
+
+
+def _environment_fingerprint(workspace: Path | str | None) -> Mapping[str, str]:
+    """The machine an UNREPRESENTABLE is a property OF (module docstring, limit 5)."""
+    return {
+        "git": _git_version(),
+        "platform": sys.platform,
+        "filesystem_encoding": sys.getfilesystemencoding(),
+        "filesystem_errors": sys.getfilesystemencodeerrors(),
+        "filesystem": _filesystem_limits(workspace),
+    }
+
+
+def _filesystem_limits(workspace: Path | str | None) -> str:
+    if workspace is None:
+        return "unknown"
+    probe = Path(workspace)
+    for candidate in (probe, *probe.parents):
+        try:
+            stats = os.statvfs(candidate)
+        except OSError:
+            continue
+        return f"name_max={stats.f_namemax}"
+    return "unknown"
+
+
+def _git(repo: Path, *args: str) -> None:
+    """One git command over a witness repository; a refusal is the layer's own."""
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        env=_GIT_ENV,
+        timeout=120,
+    )
+    if proc.returncode != 0:
+        raise _WitnessRefused(
+            f"git refused the state: `git {' '.join(args)}` exited "
+            f"{proc.returncode}: {(proc.stderr or proc.stdout).strip()}"
+        )
+
+
+_GIT_ENV = {
+    **os.environ,
+    "GIT_AUTHOR_NAME": "fixture-reachability",
+    "GIT_AUTHOR_EMAIL": "witness@invalid",
+    "GIT_COMMITTER_NAME": "fixture-reachability",
+    "GIT_COMMITTER_EMAIL": "witness@invalid",
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_SYSTEM": os.devnull,
+    "GIT_TERMINAL_PROMPT": "0",
+}
+
+
+def _create_at_raw_bytes(repo: Path, value: str) -> None:
+    """Create a file named EXACTLY ``value``, on the raw bytes of the name.
+
+    Never through a layer that normalises it: the whole defect class is a value
+    that is nearly the right value, and a normalising create would build the
+    state for a DIFFERENT name and then report that name as producible.
+    """
+    if value == "":
+        raise _WitnessRefused(
+            "the operating system refused the name: the empty path names no file"
+        )
+    for component in value.split("/"):
+        if component in ("", ".", ".."):
+            raise _WitnessRefused(
+                "the operating system refused the name: the path component "
+                f"{component!r} cannot name a file"
+            )
+    try:
+        raw = os.fsencode(value)
+    except (UnicodeEncodeError, ValueError) as exc:
+        raise _WitnessRefused(
+            f"the filesystem encoding refused the name: {exc}"
+        ) from exc
+    if b"\0" in raw:
+        raise _WitnessRefused(
+            "the operating system refused the name: embedded NUL byte, which no "
+            "filesystem can hold in a path"
+        )
+    full = os.path.join(os.fsencode(str(repo)), raw)
+    try:
+        parent = os.path.dirname(full)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        descriptor = os.open(full, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o644)
+    except (OSError, ValueError) as exc:
+        raise _WitnessRefused(
+            f"the operating system refused the name: {exc}"
+        ) from exc
+    try:
+        os.write(descriptor, b"witness\n")
+    finally:
+        os.close(descriptor)
+
+
+def _run_producer(boundary: Boundary, repo: Path) -> tuple[str, ...]:
+    """Run the row's real producer over the witness state, resolved at CALL time.
+
+    By module ATTRIBUTE and not bound by value at import, so a seal that swaps
+    the producer (the flagship's pre-``263298d`` collector) really swaps what
+    this interrogates.
+    """
+    module, attribute, _current = _resolve_dotted(boundary.producer)
+    producer = getattr(module, attribute)
+    emitted = producer(repo, _WITNESS_BASE_REF, _WITNESS_HEAD_REF)
+    produced: list[str] = []
+    for item in emitted:
+        if isinstance(item, str):
+            produced.append(item)
+        else:
+            path = getattr(item, "path", None)
+            if not isinstance(path, str):
+                raise FixtureReachabilityError(
+                    f"{boundary.producer} emitted a {type(item).__name__} with "
+                    "no path; the observer cannot compare it against a fixture"
+                )
+            produced.append(path)
+    return tuple(produced)
+
+
+def _git_path_witness(
+    boundary: Boundary,
+    value: str,
+    *,
+    workspace: Path,
+    environment: Mapping[str, str],
+) -> Witness:
+    recipe = (
+        f"a fresh repository: `git init -b {_WITNESS_BASE_REF}`, one seed "
+        f"commit, `git checkout -b {_WITNESS_HEAD_REF}`, one file created on "
+        f"the raw bytes of {value!r}, committed; then "
+        f"{boundary.producer} over {_WITNESS_BASE_REF}...{_WITNESS_HEAD_REF}"
+    )
+    root = Path(workspace)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        repo = Path(tempfile.mkdtemp(prefix="witness-", dir=str(root)))
+    except OSError as exc:
+        raise FixtureReachabilityError(
+            f"the witness workspace {workspace} cannot be created: {exc}"
+        ) from exc
+    try:
+        _git(repo, "init", "-q", "-b", _WITNESS_BASE_REF, ".")
+        (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "seed")
+        _git(repo, "checkout", "-q", "-b", _WITNESS_HEAD_REF)
+        _create_at_raw_bytes(repo, value)
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "add")
+        produced = _run_producer(boundary, repo)
+    except _WitnessRefused as exc:
+        return Witness(
+            recipe=recipe,
+            produced=(),
+            environment=environment,
+            gap=WitnessGap.REFUSED,
+            detail=str(exc),
+        )
+    except FixtureReachabilityError:
+        raise
+    except Exception as exc:
+        return Witness(
+            recipe=recipe,
+            produced=(),
+            environment=environment,
+            gap=WitnessGap.REFUSED,
+            detail=(
+                f"{boundary.producer} refused the state built for {value!r}: "
+                f"{type(exc).__name__}: {exc}"
+            ),
+        )
+    if not produced:
+        return Witness(
+            recipe=recipe,
+            produced=(),
+            environment=environment,
+            gap=WitnessGap.REFUSED,
+            detail=(
+                f"{boundary.producer} emitted nothing over a state built for "
+                f"{value!r}; the state exists but the producer does not report it"
+            ),
+        )
+    return Witness(
+        recipe=recipe,
+        produced=produced,
+        environment=environment,
+        gap=None,
+        detail="",
+    )
 
 
 def classify_value(*, value: str, witness: Witness) -> Reachability:
@@ -1217,7 +1772,34 @@ def classify_value(*, value: str, witness: Witness) -> Reachability:
     a witness that both produced and explained why it could not has been
     assembled by something that did not know which had happened.
     """
-    raise NotImplementedError("D3 P1 scaffold: contract only")
+    produced = tuple(witness.produced)
+    gap = witness.gap
+    if produced and gap is not None:
+        raise FixtureReachabilityError(
+            f"a witness for {value!r} both produced {list(produced)} and carries "
+            f"gap {gap!r}: it was assembled by something that did not know which "
+            "had happened, and resolving it either way picks one of two answers "
+            "to a question the witness cannot be asked"
+        )
+    if produced:
+        # EQUALITY. Not a match, not a normalisation, not a comparison modulo
+        # quoting: every instance of this defect class is a value that is nearly
+        # the right value.
+        return Reachability.REACHED if value in produced else Reachability.DIVERGED
+    if gap is None:
+        raise FixtureReachabilityError(
+            f"a witness for {value!r} neither produced nor explained: a "
+            "non-judgement must not read as an answer, and defaulting it to "
+            "NO_STRATEGY would report an abstention the checker never made"
+        )
+    if gap is WitnessGap.REFUSED:
+        return Reachability.UNREPRESENTABLE
+    if gap is WitnessGap.NO_STRATEGY:
+        return Reachability.NO_STRATEGY
+    raise FixtureReachabilityError(
+        f"classify_value has no rule for WitnessGap member {gap!r}; the dispatch "
+        "is total and raises rather than falling through to a state"
+    )
 
 
 def gate_disposition(boundary: Boundary, outcome: str) -> GateDisposition:
@@ -1234,7 +1816,18 @@ def gate_disposition(boundary: Boundary, outcome: str) -> GateDisposition:
     pair that differs — the differential silently reporting agreement is the
     same shape as the seals this module is written against.
     """
-    raise NotImplementedError("D3 P1 scaffold: contract only")
+    if outcome in boundary.proceed_outcomes:
+        return GateDisposition.PROCEED
+    if outcome in boundary.refuse_outcomes:
+        return GateDisposition.REFUSE
+    raise FixtureReachabilityError(
+        f"{boundary.consumer}: the outcome {outcome!r} is named by neither "
+        f"proceed_outcomes {list(boundary.proceed_outcomes)} nor "
+        f"refuse_outcomes {list(boundary.refuse_outcomes)}. A new outcome must "
+        "be classified by a human editing BOUNDARIES; defaulting it to a side "
+        "would let it compare equal to an already-classified one and make every "
+        "differential over it vacuous"
+    )
 
 
 def measure_consequence(
@@ -1262,7 +1855,13 @@ def measure_consequence(
     ways measures nothing, and a differential that measures nothing reports
     SAME_DISPOSITION, which is the permissive answer.
     """
-    raise NotImplementedError("D3 P1 scaffold: contract only")
+    if neighbour_outcome is None:
+        return Consequence.NOT_MEASURED
+    fixture_side = gate_disposition(boundary, fixture_outcome)
+    neighbour_side = gate_disposition(boundary, neighbour_outcome)
+    if fixture_side is neighbour_side:
+        return Consequence.SAME_DISPOSITION
+    return Consequence.OPPOSITE_DISPOSITION
 
 
 # --------------------------------------------------------------------------- #
@@ -1382,7 +1981,137 @@ def check_observation(
     a finding: "the check could not run" and "the check ran and found nothing"
     must not be the same value, which is the rule this whole effort turns on.
     """
-    raise NotImplementedError("D3 P1 scaffold: contract only")
+    return _check_observation(
+        observed, workspace=workspace, differential=differential
+    )
+
+
+#: "This caller has not built a witness"; distinct from a witness that produced
+#: nothing, which is an ANSWER. :func:`check_suite` builds the deduplicated set
+#: itself and hands each one in.
+_NO_WITNESS = object()
+
+
+def _check_observation(
+    observed: ObservedFixture,
+    *,
+    workspace: Path,
+    differential: Callable[[ObservedFixture, str], str] | None = None,
+    witness: Any = _NO_WITNESS,
+) -> Finding:
+    boundary = observed.boundary
+    # The row's own outcome must be classifiable before anything else is said
+    # about it: an outcome in neither set means the table is stale, and that is
+    # "the check could not run", never a finding.
+    fixture_side = gate_disposition(boundary, observed.outcome)
+
+    cuts = tuple(observed.cut_boundaries)
+    if len(cuts) > 1:
+        # Judged FIRST. The near hop is answerable and answering it would imply
+        # the far one was checked.
+        return Finding(
+            observed=observed,
+            reachability=Reachability.NO_STRATEGY,
+            consequence=Consequence.NOT_MEASURED,
+            neighbour=None,
+            witness=None,
+            detail=(
+                "the value crossed more than one boundary in this call — "
+                + ", ".join(cuts)
+                + " — so its reachability is not decidable one hop at a time"
+            ),
+        )
+
+    if witness is _NO_WITNESS:
+        witness = construct_witness(boundary, observed.value, workspace=workspace)
+    reachability = classify_value(value=observed.value, witness=witness)
+
+    if reachability is Reachability.REACHED:
+        return Finding(
+            observed=observed,
+            reachability=reachability,
+            consequence=measure_consequence(
+                boundary,
+                fixture_outcome=observed.outcome,
+                neighbour_outcome=None,
+            ),
+            neighbour=None,
+            witness=witness,
+            detail=(
+                f"{boundary.producer} emitted {observed.value!r} over the "
+                "witness state; the fixture is a value production produces"
+            ),
+        )
+    if reachability in (Reachability.UNREPRESENTABLE, Reachability.NO_STRATEGY):
+        return Finding(
+            observed=observed,
+            reachability=reachability,
+            consequence=measure_consequence(
+                boundary,
+                fixture_outcome=observed.outcome,
+                neighbour_outcome=None,
+            ),
+            neighbour=None,
+            witness=witness,
+            detail=witness.detail,
+        )
+    if reachability is not Reachability.DIVERGED:
+        raise FixtureReachabilityError(
+            f"check_observation has no rule for Reachability.{reachability.name}"
+        )
+
+    produced = tuple(witness.produced)
+    if differential is None:
+        # The honest answer for every caller that holds only an observation
+        # list. The reachability axis WAS measured; the consequence axis was
+        # not, and adjudicate rules the pair ABSTAIN.
+        return Finding(
+            observed=observed,
+            reachability=reachability,
+            consequence=measure_consequence(
+                boundary,
+                fixture_outcome=observed.outcome,
+                neighbour_outcome=None,
+            ),
+            neighbour=produced[0],
+            witness=witness,
+            detail=(
+                f"{observed.value!r} is not producible; {boundary.producer} "
+                f"emits {produced[0]!r} for the state it describes. The "
+                "differential was NOT run: no `differential` was supplied, so "
+                "whether the two go the same way through the gate is unmeasured"
+            ),
+        )
+
+    # A neighbour whose disposition DIFFERS is chosen over one that agrees, so a
+    # breach is never hidden behind an innocuous sibling in the same call.
+    first: tuple[str, str] | None = None
+    chosen: tuple[str, str] | None = None
+    for candidate in produced:
+        candidate_outcome = differential(observed, candidate)
+        if first is None:
+            first = (candidate, candidate_outcome)
+        if gate_disposition(boundary, candidate_outcome) is not fixture_side:
+            chosen = (candidate, candidate_outcome)
+            break
+    neighbour, neighbour_outcome = chosen if chosen is not None else first
+    return Finding(
+        observed=observed,
+        reachability=reachability,
+        consequence=measure_consequence(
+            boundary,
+            fixture_outcome=observed.outcome,
+            neighbour_outcome=neighbour_outcome,
+        ),
+        neighbour=neighbour,
+        witness=witness,
+        detail=(
+            f"{observed.value!r} is not producible; the neighbour "
+            f"{neighbour!r} is, and the supplied differential returned "
+            f"{neighbour_outcome!r} for it against {observed.outcome!r} for the "
+            "fixture"
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -1469,7 +2198,63 @@ def adjudicate(
     ruling AND reported as stale by :func:`check_suite`. Silently ignoring it
     would let a typo look like an accepted state.
     """
-    raise NotImplementedError("D3 P1 scaffold: contract only")
+    ruled = _RULING_TABLE.get((finding.reachability, finding.consequence))
+    if ruled is None:
+        raise FixtureReachabilityError(
+            f"adjudicate has no ruling for "
+            f"({finding.reachability!r}, {finding.consequence!r}); the grid is "
+            "total and raises rather than falling through to the permissive "
+            "answer"
+        )
+    undeclared, declared = ruled
+    return declared if _declaration_matches(declaration, finding) else undeclared
+
+
+#: The ruling grid, written out. Every pair not named here RAISES. The only
+#: thing a declaration buys is the second column, and it differs from the first
+#: on exactly two rows — the two UNREPRESENTABLE-shaped ones.
+_RULING_TABLE: Mapping[
+    tuple[Reachability, Consequence],
+    tuple[FindingDisposition, FindingDisposition],
+] = {
+    (Reachability.REACHED, Consequence.NOT_MEASURED): (
+        FindingDisposition.OK,
+        FindingDisposition.OK,
+    ),
+    (Reachability.DIVERGED, Consequence.OPPOSITE_DISPOSITION): (
+        FindingDisposition.BREACH,
+        FindingDisposition.BREACH,
+    ),
+    (Reachability.DIVERGED, Consequence.SAME_DISPOSITION): (
+        FindingDisposition.REPORT,
+        FindingDisposition.ACCEPTED,
+    ),
+    (Reachability.DIVERGED, Consequence.NOT_MEASURED): (
+        FindingDisposition.ABSTAIN,
+        FindingDisposition.ABSTAIN,
+    ),
+    (Reachability.UNREPRESENTABLE, Consequence.NOT_MEASURED): (
+        FindingDisposition.REPORT,
+        FindingDisposition.ACCEPTED,
+    ),
+    (Reachability.NO_STRATEGY, Consequence.NOT_MEASURED): (
+        FindingDisposition.ABSTAIN,
+        FindingDisposition.ABSTAIN,
+    ),
+}
+
+
+def _declaration_matches(
+    declaration: ReachabilityDeclaration | None, finding: Finding
+) -> bool:
+    """All THREE keys, exactly. Two of three is a typo that looks accepted."""
+    if declaration is None:
+        return False
+    return (
+        declaration.test_id == finding.observed.test_id
+        and declaration.producer == finding.observed.boundary.producer
+        and declaration.value == finding.observed.value
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -1546,7 +2331,24 @@ def git_subcommand(argv: Sequence[str]) -> str | None:
     to add it to the list, and a seal should pin the current list so a new
     global option in an argv reddens rather than mis-parses.
     """
-    raise NotImplementedError("D3 P1 scaffold: contract only")
+    tokens = [str(token) for token in argv][1:]
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if not token.startswith("-"):
+            return token
+        index += 2 if token in _GLOBAL_OPTIONS_TAKING_A_VALUE else 1
+    return None
+
+
+#: The git global options this rule knows take a SEPARATED value. Written out,
+#: because an option missing from it makes its value read as the subcommand —
+#: recorded on :func:`git_subcommand` and pinned by a seal, so a new global
+#: option in an argv reddens rather than mis-parses. Joined spellings
+#: (``--git-dir=/x``) need no entry: they are one token.
+_GLOBAL_OPTIONS_TAKING_A_VALUE = frozenset(
+    {"-c", "-C", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
+)
 
 
 def modelled_subcommands(source: str, function_name: str) -> frozenset[str]:
@@ -1576,7 +2378,145 @@ def modelled_subcommands(source: str, function_name: str) -> frozenset[str]:
     the empty set would make every stub look maximally under-declared and the
     resulting flood is how a check gets turned off.
     """
-    raise NotImplementedError("D3 P1 scaffold: contract only")
+    function = _find_function(_parse(source), function_name)
+    argv_names = _argv_derived_names(function)
+    dict_literals = _dict_literals(function)
+    named: set[str] = set()
+
+    def _is_argv_expression(node: ast.AST) -> bool:
+        if isinstance(node, ast.Name):
+            return node.id in argv_names
+        if isinstance(node, ast.Subscript):
+            return _is_argv_expression(node.value)
+        return False
+
+    for node in ast.walk(function):
+        if isinstance(node, ast.Compare):
+            lefts = [node.left, *node.comparators[:-1]]
+            for left, operator, right in zip(lefts, node.ops, node.comparators):
+                if isinstance(operator, (ast.In, ast.NotIn)):
+                    # `"diff" in argv`
+                    if _string_constant(left) is not None and _is_argv_expression(right):
+                        named.add(_string_constant(left))
+                    # `subcmd in ("show", "ls-tree")`
+                    elif _is_argv_expression(left) and isinstance(
+                        right, (ast.Tuple, ast.List, ast.Set)
+                    ):
+                        named.update(_string_constants(right.elts))
+                elif isinstance(operator, (ast.Eq, ast.NotEq)):
+                    # `argv[1] == "cat-file"`, either way round.
+                    if _string_constant(left) is not None and _is_argv_expression(right):
+                        named.add(_string_constant(left))
+                    elif _is_argv_expression(left) and _string_constant(right) is not None:
+                        named.add(_string_constant(right))
+        elif isinstance(node, ast.Subscript):
+            # `table[argv[1]]`, where `table` is a dict literal in this source.
+            if (
+                isinstance(node.value, ast.Name)
+                and node.value.id in dict_literals
+                and _is_argv_expression(_subscript_index(node))
+            ):
+                named.update(_string_constants(dict_literals[node.value.id].keys))
+    return frozenset(named)
+
+
+def _parse(source: str) -> ast.Module:
+    try:
+        return ast.parse(source)
+    except SyntaxError as exc:
+        raise FixtureReachabilityError(
+            f"the substitute's source does not parse: {exc}"
+        ) from exc
+
+
+def _find_function(tree: ast.AST, function_name: str) -> ast.AST:
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == function_name
+        ):
+            return node
+    raise FixtureReachabilityError(
+        f"{function_name!r} is not a function in this source; returning the "
+        "empty set would make every stub look maximally under-declared"
+    )
+
+
+def _subscript_index(node: ast.Subscript) -> ast.AST:
+    index = node.slice
+    return getattr(index, "value", index) if isinstance(index, ast.Index) else index
+
+
+def _string_constant(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _string_constants(nodes: Sequence[ast.AST]) -> set[str]:
+    found = set()
+    for node in nodes:
+        value = _string_constant(node)
+        if value is not None:
+            found.add(value)
+    return found
+
+
+def _argv_derived_names(function: ast.AST) -> frozenset[str]:
+    """Names that carry the argv, transitively, inside the substitute.
+
+    Seeded with the parameters of the functions nested INSIDE the factory — the
+    seam callable's own ``cmd`` — and not with the factory's own parameters. A
+    factory parameter (``raise_on``) compared against a string constant declares
+    nothing about git, which is exactly the distinction ``raise_on == "blob"``
+    turns on.
+    """
+    derived: set[str] = set()
+    for node in ast.walk(function):
+        if node is function:
+            continue
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            arguments = node.args
+            for parameter in (
+                *arguments.posonlyargs,
+                *arguments.args,
+                *arguments.kwonlyargs,
+            ):
+                derived.add(parameter.arg)
+            if arguments.vararg:
+                derived.add(arguments.vararg.arg)
+            if arguments.kwarg:
+                derived.add(arguments.kwarg.arg)
+
+    assignments = [n for n in ast.walk(function) if isinstance(n, ast.Assign)]
+    changed = True
+    while changed:
+        changed = False
+        for assignment in assignments:
+            loaded = {
+                n.id
+                for n in ast.walk(assignment.value)
+                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+            }
+            if not loaded & derived:
+                continue
+            for target in assignment.targets:
+                for name in ast.walk(target):
+                    if isinstance(name, ast.Name) and name.id not in derived:
+                        derived.add(name.id)
+                        changed = True
+    return frozenset(derived)
+
+
+def _dict_literals(function: ast.AST) -> Mapping[str, ast.Dict]:
+    """Names bound, in this source, to a dict DISPLAY — the dispatch tables."""
+    tables: dict[str, ast.Dict] = {}
+    for node in ast.walk(function):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    tables[target.id] = node.value
+    return tables
 
 
 def stub_gaps(
@@ -1611,7 +2551,223 @@ def stub_gaps(
     MODELLED answer is one git could produce. A stub that declares ``ls-tree``
     and returns an entry with a mode git never writes is clean here.
     """
-    raise NotImplementedError("D3 P1 scaffold: contract only")
+    modelled = modelled_subcommands(stub_source, stub_name)
+    gaps: list[StubGap] = []
+    seam: Any = None
+    for raw in issued_argv:
+        argv = tuple(str(token) for token in raw)
+        subcommand = git_subcommand(argv)
+        if subcommand is None:
+            # An argv with no subcommand cannot be a modelling gap. Distinct
+            # from "a subcommand I do not know", which is what a gap looks like.
+            continue
+        if subcommand in modelled:
+            continue
+        if seam is None:
+            seam = _instantiate_substitute(stub_source, stub_name)
+        answered, answered_as = _substitute_answers(seam, argv, stub_source)
+        if not answered:
+            # Unmodelled and refused: the totality claim HOLDING.
+            continue
+        gaps.append(
+            StubGap(
+                stub=stub_name,
+                argv=argv,
+                subcommand=subcommand,
+                modelled=modelled,
+                answered_as=answered_as,
+                consumer=consumer,
+            )
+        )
+    return tuple(gaps)
+
+
+#: Executed substitute sources, keyed on the source text. A stub file is a whole
+#: module and executing one twice buys nothing; the cache is what keeps the seam
+#: face off the runtime budget.
+_SUBSTITUTE_NAMESPACES: dict[str, dict] = {}
+_SUBSTITUTE_FILENAMES: dict[str, str] = {}
+
+
+def _substitute_filename(source: str) -> str:
+    filename = _SUBSTITUTE_FILENAMES.get(source)
+    if filename is None:
+        filename = f"<fixture-reachability substitute {len(_SUBSTITUTE_FILENAMES)}>"
+        _SUBSTITUTE_FILENAMES[source] = filename
+    return filename
+
+
+def _instantiate_substitute(source: str, name: str) -> Any:
+    """The seam callable a substitute FACTORY returns.
+
+    Every ``_run_stub`` in this repo is a factory: the fixture at a seam is the
+    callable it returns, and that callable is what has to be interrogated. The
+    factory's required parameters are filled from their annotations, because a
+    factory that cannot be built at all would make every argv look refused —
+    the permissive answer for this face.
+    """
+    namespace = _SUBSTITUTE_NAMESPACES.get(source)
+    if namespace is None:
+        filename = _substitute_filename(source)
+        namespace = {"__name__": "_fixture_reachability_substitute", "__file__": filename}
+        try:
+            exec(compile(source, filename, "exec"), namespace)  # noqa: S102
+        except Exception as exc:
+            raise FixtureReachabilityError(
+                f"the substitute's source could not be executed: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+        _SUBSTITUTE_NAMESPACES[source] = namespace
+    factory = namespace.get(name)
+    if not callable(factory):
+        raise FixtureReachabilityError(
+            f"{name!r} is not a callable in this source, so no seam can be built "
+            "from it"
+        )
+    args, kwargs = _factory_arguments(factory)
+    try:
+        seam = factory(*args, **kwargs)
+    except Exception as exc:
+        raise FixtureReachabilityError(
+            f"the substitute factory {name!r} could not be called: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    if not callable(seam):
+        raise FixtureReachabilityError(
+            f"the substitute factory {name!r} returned {type(seam).__name__}, "
+            "not a seam callable; every argv would then 'raise' and every gap "
+            "would be missed"
+        )
+    return seam
+
+
+_ANNOTATION_PLACEHOLDERS = (
+    ("list", list),
+    ("sequence", list),
+    ("tuple", tuple),
+    ("dict", dict),
+    ("mapping", dict),
+    ("set", set),
+    ("str", str),
+    ("bool", bool),
+    ("int", int),
+)
+
+
+def _factory_arguments(factory: Any) -> tuple[list, dict]:
+    args: list = []
+    kwargs: dict = {}
+    try:
+        signature = inspect.signature(factory)
+    except (TypeError, ValueError):  # pragma: no cover - builtins
+        return args, kwargs
+    for parameter in signature.parameters.values():
+        if parameter.default is not inspect.Parameter.empty:
+            continue
+        if parameter.kind in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        ):
+            continue
+        placeholder = _placeholder_for(parameter.annotation)
+        if parameter.kind is inspect.Parameter.KEYWORD_ONLY:
+            kwargs[parameter.name] = placeholder
+        else:
+            args.append(placeholder)
+    return args, kwargs
+
+
+def _placeholder_for(annotation: Any) -> Any:
+    text = str(annotation).lower()
+    for marker, factory in _ANNOTATION_PLACEHOLDERS:
+        if marker in text:
+            return factory()
+    return None
+
+
+def _substitute_answers(seam: Any, argv: Sequence[str], source: str) -> tuple[bool, str]:
+    """Did the seam ANSWER this argv, and which branch swallowed it?
+
+    The call is spelled as ``repo_config._run_git`` spells it, narrowed to what
+    the seam's own signature accepts — a seam refused for taking the wrong
+    arguments would read as the totality claim holding, which is the permissive
+    answer for this face.
+    """
+    kwargs = {"cwd": ".", "capture_output": True, "text": True, "timeout": 30}
+    try:
+        parameters = inspect.signature(seam).parameters
+    except (TypeError, ValueError):  # pragma: no cover - builtins
+        parameters = {}
+    if not any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()
+    ):
+        kwargs = {k: v for k, v in kwargs.items() if k in parameters}
+
+    filename = _substitute_filename(source)
+    executed: list[int] = []
+    tracing = sys.gettrace() is None
+
+    def _trace(frame, event, _arg):
+        if frame.f_code.co_filename != filename:
+            return None
+
+        def _local(inner, inner_event, _inner_arg):
+            if inner_event == "line":
+                executed.append(inner.f_lineno)
+            return _local
+
+        return _local
+
+    try:
+        if tracing:
+            sys.settrace(_trace)
+        try:
+            seam(list(argv), **kwargs)
+        finally:
+            if tracing:
+                sys.settrace(None)
+    except BaseException:
+        return False, ""
+    return True, _describe_answering_branch(source, executed, argv)
+
+
+def _describe_answering_branch(
+    source: str, executed: Sequence[int], argv: Sequence[str]
+) -> str:
+    """Name the branch that swallowed the argv, so the fix is local."""
+    if not executed:
+        return (
+            f"the substitute answered `{' '.join(argv)}` without raising; the "
+            "branch could not be traced in this interpreter"
+        )
+    last = executed[-1]
+    enclosing: ast.If | None = None
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:  # pragma: no cover - parsed already by this point
+        tree = None
+    if tree is not None:
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.If):
+                continue
+            covered = {
+                inner.lineno
+                for statement in node.body
+                for inner in ast.walk(statement)
+                if hasattr(inner, "lineno")
+            }
+            if last in covered and (
+                enclosing is None or node.test.lineno > enclosing.test.lineno
+            ):
+                enclosing = node
+    if enclosing is not None:
+        return (
+            f"the branch `{ast.unparse(enclosing.test)}` at line "
+            f"{enclosing.test.lineno}"
+        )
+    lines = source.splitlines()
+    text = lines[last - 1].strip() if 0 < last <= len(lines) else ""
+    return f"line {last}: {text}" if text else f"line {last}"
 
 
 # --------------------------------------------------------------------------- #
@@ -1688,4 +2844,66 @@ def check_suite(
     Order is observation order throughout, so two runs over the same suite
     produce byte-identical reports and a diff between them is a real change.
     """
-    raise NotImplementedError("D3 P1 scaffold: contract only")
+    rows = list(observations)
+    root = Path(workspace)
+    root.mkdir(parents=True, exist_ok=True)
+
+    # Dedupe before constructing. One witness per distinct
+    # (producer, value) — the same value at a DIFFERENT producer is a different
+    # pair, because two producers can emit different things for one repository.
+    # Built on first need rather than all up front, so a run that aborts on a
+    # stale table has not already paid for the witnesses it will never judge.
+    witnesses: dict[tuple[str, str], Witness] = {}
+
+    def _witness_for(observed: ObservedFixture) -> Any:
+        # The same check check_observation makes first, made here too so a stale
+        # table aborts the run before a repository is built for a row whose
+        # outcome the mechanism cannot classify.
+        gate_disposition(observed.boundary, observed.outcome)
+        if len(tuple(observed.cut_boundaries)) > 1:
+            return _NO_WITNESS
+        key = (observed.boundary.producer, observed.value)
+        if key not in witnesses:
+            witnesses[key] = construct_witness(
+                observed.boundary, observed.value, workspace=root
+            )
+        return witnesses[key]
+
+    findings = tuple(
+        _check_observation(
+            observed,
+            workspace=root,
+            differential=differential,
+            witness=_witness_for(observed),
+        )
+        for observed in rows
+    )
+
+    # Every member of FindingDisposition is a key, INCLUDING the zeros: a report
+    # that omits ABSTAIN because there were none is indistinguishable from one
+    # that omits it because nobody counted.
+    dispositions = {disposition: 0 for disposition in FindingDisposition}
+    matched: set[int] = set()
+    declared = list(declarations)
+    for finding in findings:
+        declaration = None
+        for index, candidate in enumerate(declared):
+            if _declaration_matches(candidate, finding):
+                declaration = candidate
+                matched.add(index)
+                break
+        dispositions[adjudicate(finding, declaration)] += 1
+
+    observed_boundaries = {observed.boundary for observed in rows}
+    return ReachabilityReport(
+        findings=findings,
+        dispositions=dispositions,
+        stale_declarations=tuple(
+            declaration
+            for index, declaration in enumerate(declared)
+            if index not in matched
+        ),
+        boundaries_never_observed=tuple(
+            boundary for boundary in BOUNDARIES if boundary not in observed_boundaries
+        ),
+    )
