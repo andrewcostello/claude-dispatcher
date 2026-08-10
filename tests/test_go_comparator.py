@@ -51,6 +51,26 @@ WHAT THIS FILE COSTS
 The helper is built ONCE per process (`_warm_helper`), after which a file
 revision costs 0.76 ms (measured). The fault arms deliberately rebuild — that
 is what they are testing — and account for nearly all of this file's runtime.
+
+SECTION 8 IS RED, AND THAT IS THE ANSWER, NOT AN ACCIDENT
+---------------------------------------------------------
+Sections 0-7 are green: they were written against a comparator that is correct
+about everything they ask. Section 8 was added later, from a five-seat panel's
+two findings on the helper, and both findings reproduced under execution — so
+its two defect tables are red and stay red until a body author fixes the helper.
+Eight rows fail. They are the only failures in this file and each names its own
+mechanism in its assertion message.
+
+A red seal has its own vacuity trap, opposite to the four above: a seal that can
+never PASS is as worthless as one that can never fail, and it is harder to
+notice because red looks like work in progress. So each defect seal's docstring
+carries a `Verified satisfiable:` line naming the edit that was applied to a
+throwaway clone of the helper to watch the row go green, and section 8 ships
+`_THE_FIX_MUST_NOT_BREAK` — green today, green after either fix — so that the
+red rows cannot be satisfied by a comparator that simply reports more.
+
+Nothing in section 8 pins a fingerprint string, because each finding has more
+than one honest fix and choosing between them is the body author's job.
 """
 
 from __future__ import annotations
@@ -1323,6 +1343,519 @@ def test_a_fault_is_not_an_unreadable_language_even_on_the_real_path(
     )
     assert ComparatorFault.TOOLCHAIN_MISSING.value in result.detail
     assert result.changes == ()
+
+
+# --------------------------------------------------------------------------- #
+# 8 — THE TWO PANEL FINDINGS THAT GATE ENROLLING GO. RED ON PURPOSE.
+#
+# Everything above this line is green: the comparator is right about it. The two
+# tables immediately below are the only red rows in this file, and they are red
+# because the comparator is WRONG about them. Each row is a real Go change —
+# compile-observable, `go build` disagrees between the two revisions — that the
+# fingerprint reports as no change at all.
+#
+# That is the direction section 5 says this gate may never be wrong in. Section
+# 5's three false positives cost a round trip; these cost a certificate. And the
+# cost is about to be multiplied: the operator has asked to move `GO_SUPPORT`
+# from `PENDING_COMPARATORS` into `COMPARATORS`, live over 2,288 Go files. A
+# comparator that answers "no change" to a real change is worse enrolled than
+# dark, because dark is UNCHECKED_UNSUPPORTED_LANGUAGE — a gap that reads as a
+# gap — and enrolled it is CHECKED with no changes, which reads as a pass.
+# These rows are the gate on that enrolment.
+#
+# NEITHER FINDING IMPLIES A NEW RULING, which is why `GO_SIGNATURE_EDIT_RULINGS`
+# is untouched by this commit — see `test_neither_finding_is_a_question_for_p4`.
+#
+# WHAT A BODY AUTHOR MAY AND MAY NOT CONCLUDE FROM THESE ROWS. The two tables
+# say only "this edit must be reported". They deliberately do not pin a
+# fingerprint STRING, because both defects have more than one honest fix and a
+# seal that pinned one spelling would be a seal that chose the implementation.
+# `_THE_FIX_MUST_NOT_BREAK` is the other side of that freedom: it is green today
+# and pins the properties any fix has to keep, and it exists because the
+# cheapest fix for each finding — render the whole thing through go/printer —
+# passes both tables above and silently reintroduces the reflow and regrouping
+# noise section 2 exists to forbid.
+# --------------------------------------------------------------------------- #
+
+#: FINDING 1 (`main.go:368,383`). `structFields` renders an embedded field as
+#: `"embedded " + type` and a named field as `name + " " + type`. A field name is
+#: an arbitrary identifier, `embedded` is a legal one, and the two branches then
+#: produce the same bytes. Its own docstring names this risk — the marker is
+#: explicit "because a fingerprint that needs to be reasoned about is one two
+#: shapes can collide in" — and the marker collides anyway, because it was put
+#: in the one position a field name can reach.
+#:
+#: `interfaceParts` has the same two branches and does NOT collide, because
+#: there the marker LEADS (`"method " + name`) and a type expression cannot
+#: render as `method X`. That contrast is row 3 of `_THE_FIX_MUST_NOT_BREAK`,
+#: and it is the whole shape of the fix: the marker has to sit where a name
+#: cannot reach it. `fieldSignature` is unaffected — it emits no marker at all —
+#: which is row 4.
+_EMBEDDED_MARKER_COLLISIONS: tuple[tuple[str, str, str], ...] = (
+    (
+        # THE EXACT COLLIDING PAIR, and the one worth having: the field is named
+        # `embedded` in BOTH revisions (implicitly in the second, since an embed
+        # takes its type's name) and has type `embedded` in both. Nothing
+        # differs but the embed-ness. Both fingerprint to
+        #     type S struct{embedded embedded}
+        # byte for byte. Measured with `go build`: `var _ Mer = S{}` compiles
+        # only in the second, because only an embed promotes `M` — so the two
+        # revisions do not satisfy the same interfaces.
+        "an embed added, where the field is named `embedded`",
+        "package m\n\ntype embedded struct{ A int }\n\n"
+        "func (embedded) M() {}\n\ntype S struct {\n\tembedded embedded\n}\n",
+        "package m\n\ntype embedded struct{ A int }\n\n"
+        "func (embedded) M() {}\n\ntype S struct {\n\tembedded\n}\n",
+    ),
+    (
+        # The other direction, and the one that needs no oddly-named type: an
+        # ordinary embed is REPLACED by an ordinary named field that happens to
+        # be called `embedded`. Both fingerprint to
+        #     type S struct{embedded Foo}
+        # The first promotes everything `Foo` has; the second promotes nothing
+        # and renames the field. Two contract changes at once, reported as none.
+        "an embed removed in favour of a field named `embedded`",
+        "package m\n\ntype Foo struct{}\n\ntype S struct {\n\tFoo\n}\n",
+        "package m\n\ntype Foo struct{}\n\ntype S struct {\n\tembedded Foo\n}\n",
+    ),
+)
+
+#: FINDING 2 (`main.go:408,425`). `interfaceParts` puts method NAMES in an
+#: interface's element list and nothing else, on the stated ground that "each
+#: method's signature is its own `Iface.Method` symbol, so repeating it here
+#: would report one change twice". That is true, and sufficient, for exactly one
+#: shape: a top-level `type I interface{...}` DEFINITION, which is the only
+#: place `typeSymbols` emits `Iface.Method` sub-symbols. Measured: `type I
+#: interface{ Read() error }` -> `interface{ Read(n int) (int, error) }` is
+#: caught, at `I.Read`.
+#:
+#: Every OTHER position an interface literal can occupy reaches
+#: `typeFingerprint` -> `interfaceParts` with no sub-symbols behind it, and
+#: there the signature is not stored anywhere at all. Six of them are below.
+#: The alias case is the sharpest because the helper's own comment at
+#: `main.go:425` asserts the opposite in so many words — "the whole right-hand
+#: side is inside this one fingerprint, so a changed method is still a change —
+#: reported against the alias rather than against the method". It is not inside
+#: that fingerprint. The sentence describes an invariant the code does not have.
+#:
+#: What IS caught for these shapes: a method renamed, and a method added or
+#: removed — the element list carries names, so the name set moves. Only the
+#: SIGNATURE is lost. That is why the hole survived: every obvious probe of an
+#: interface literal reports a change.
+_INTERFACE_LITERAL_SIGNATURE_HOLE: tuple[tuple[str, str, str], ...] = (
+    (
+        # `type A = interface{...}`. Both revisions: `type A = interface{method
+        # Read}`. `go build`: an `impl` with `Read() error` satisfies A before
+        # and does not after.
+        "aliased interface literal, method retyped",
+        "package m\n\ntype A = interface{ Read() error }\n",
+        "package m\n\ntype A = interface{ Read(n int) (int, error) }\n",
+    ),
+    (
+        # A struct FIELD typed by an interface literal. Both revisions:
+        # `type S struct{R interface{method Read}}`. This is the one that
+        # reaches ordinary code — a hand-rolled dependency seam on a struct is
+        # the commonest inline interface in a Go service.
+        "inline interface as a struct field type, method retyped",
+        "package m\n\ntype S struct {\n\tR interface{ Read() error }\n}\n",
+        "package m\n\ntype S struct {\n\tR interface{ Read(n int) (int, error) }\n}\n",
+    ),
+    (
+        # A PARAMETER typed by an interface literal. Both revisions:
+        # `func F(r interface{method Read})`. `go build`: the call `F(impl{})`
+        # compiles before and does not after — every caller breaks and the gate
+        # says the signature did not move.
+        "inline interface as a parameter type, method retyped",
+        "package m\n\nfunc F(r interface{ Read() error }) {}\n",
+        "package m\n\nfunc F(r interface{ Read(n int) (int, error) }) {}\n",
+    ),
+    (
+        # A RESULT typed by an interface literal. Both revisions:
+        # `func F() (interface{method Read})`. Narrowing a returned interface
+        # is a source-breaking change to every caller that stored the result.
+        "inline interface as a result type, method retyped",
+        "package m\n\nfunc F() interface{ Read() error } { return nil }\n",
+        "package m\n\nfunc F() interface{ Read(n int) (int, error) } { return nil }\n",
+    ),
+    (
+        # A type-parameter CONSTRAINT written as an interface literal. Both
+        # revisions: `func F[T interface{method Read}](x T)`. The constraint is
+        # the whole contract of a generic function and it is unstored.
+        "inline interface as a type constraint, method retyped",
+        "package m\n\nfunc F[T interface{ Read() error }](x T) {}\n",
+        "package m\n\nfunc F[T interface{ Read(n int) (int, error) }](x T) {}\n",
+    ),
+    (
+        # An interface literal EMBEDDED in a named interface. Both revisions:
+        # `type I interface{embedded interface{method Read}}`. Note what this
+        # row proves about the sub-symbol argument: `I` is a top-level named
+        # interface, so `typeSymbols` DOES walk it — but it emits sub-symbols
+        # only for the fields whose type is an `*ast.FuncType`, and an embedded
+        # literal is not one. The signature has nowhere to live even here.
+        "interface literal embedded in a named interface, method retyped",
+        "package m\n\ntype I interface {\n\tinterface{ Read() error }\n}\n",
+        "package m\n\ntype I interface {\n\tinterface{ Read(n int) (int, error) }\n}\n",
+    ),
+)
+
+#: GREEN TODAY, and the reason the two tables above do not pin a spelling.
+#:
+#: Rows 1-4 are the guard on finding 2. The cheapest fix — drop `interfaceParts`
+#: and render interface literals through `render` — turns every red row above
+#: green and reddens all four of these, because go/printer preserves parameter
+#: GROUPING and this file's section 2 rules grouping to be spelling. A fix has
+#: to carry the SIGNATURE without carrying the SPELLING, which is what
+#: `fieldSignature` already does for every other position.
+#:
+#: Row 5 is the same guard for finding 1: a struct that HAS an embed must still
+#: normalise the grouping of the fields around it.
+#:
+#: Rows 6-8 are the boundary that says finding 1 is a defect in one marker and
+#: not in the idea of markers — an ordinary field name does not collide with an
+#: embed, an interface body's leading `method ` marker cannot be shadowed, and
+#: `fieldSignature` emits no marker to shadow. A fix that reddened these would
+#: have gone looking for the wrong bug.
+_THE_FIX_MUST_NOT_BREAK: tuple[tuple[str, str, str, bool], ...] = (
+    (
+        "aliased interface method parameters regrouped",
+        "package m\n\ntype A = interface{ Do(a, b int) }\n",
+        "package m\n\ntype A = interface{ Do(a int, b int) }\n",
+        False,
+    ),
+    (
+        "aliased interface reflowed across lines",
+        "package m\n\ntype A = interface{ Do(a int) error }\n",
+        "package m\n\ntype A = interface {\n\tDo(\n\t\ta int,\n\t) error\n}\n",
+        False,
+    ),
+    (
+        "inline interface regrouped, as a struct field type",
+        "package m\n\ntype S struct {\n\tR interface{ Do(a, b int) }\n}\n",
+        "package m\n\ntype S struct {\n\tR interface{ Do(a int, b int) }\n}\n",
+        False,
+    ),
+    (
+        "inline interface regrouped, as a parameter type",
+        "package m\n\nfunc F(r interface{ Do(a, b int) }) {}\n",
+        "package m\n\nfunc F(r interface{ Do(a int, b int) }) {}\n",
+        False,
+    ),
+    (
+        "fields around an embed regrouped",
+        "package m\n\ntype Foo struct{}\n\ntype S struct {\n\tFoo\n\tA, B int\n}\n",
+        "package m\n\ntype Foo struct{}\n\ntype S struct {\n\tFoo\n\tA int\n\tB int\n}\n",
+        False,
+    ),
+    (
+        "an embed replaced by a field with an ORDINARY name",
+        "package m\n\ntype Foo struct{}\n\ntype S struct {\n\tFoo\n}\n",
+        "package m\n\ntype Foo struct{}\n\ntype S struct {\n\tFoo Foo\n}\n",
+        True,
+    ),
+    (
+        "an interface member named `embedded` becomes a method",
+        "package m\n\ntype embedded interface{}\n\ntype I interface {\n\tembedded\n}\n",
+        "package m\n\ntype embedded interface{}\n\ntype I interface {\n\tembedded()\n}\n",
+        True,
+    ),
+    (
+        "a PARAMETER named `embedded` loses its name",
+        "package m\n\ntype Foo struct{}\n\nfunc F(embedded Foo) {}\n",
+        "package m\n\ntype Foo struct{}\n\nfunc F(Foo) {}\n",
+        True,
+    ),
+)
+
+
+def _prose(text: str) -> str:
+    """Comment and docstring text with its line wrapping taken back out.
+
+    The two sentences `test_neither_finding_is_a_question_for_p4` cites are both
+    wrapped mid-phrase, so a literal `in` check would be asserting where the
+    author happened to break the line — which reformatting alone would redden,
+    for no reason a reader could act on. Leading `//` goes too, so the helper's
+    comment and the Python docstring can be searched the same way.
+    """
+    return " ".join(text.replace("//", " ").split())
+
+
+def _collision_detail(before: str, after: str) -> str:
+    """Both revisions' fingerprints, for a failure message worth reading.
+
+    A bare "expected True, got False" from one of the two tables above sends a
+    reader back to the helper with nothing to go on. What they need is the
+    single line both revisions produced, because the collision IS that line.
+    Evaluated only when an assertion fails, so it costs nothing while green.
+    """
+    return (
+        f"\n  before -> {_FP.fingerprints(_PATH, before)}"
+        f"\n  after  -> {_FP.fingerprints(_PATH, after)}"
+    )
+
+
+@pytest.mark.parametrize(
+    "name, before, after",
+    _EMBEDDED_MARKER_COLLISIONS,
+    ids=[row[0] for row in _EMBEDDED_MARKER_COLLISIONS],
+)
+def test_an_embed_is_not_interchangeable_with_a_field_named_embedded(
+    name: str, before: str, after: str, compare_go
+) -> None:
+    """FINDING 1, RED. The `embedded ` marker collides with the name `embedded`.
+
+    Whether a field is embedded is IN the contract — the fingerprinter's
+    docstring lists it ("name, type, struct tag verbatim, and whether the field
+    is embedded") and `_CHANGE`'s `field embedded` row seals it for every field
+    name but one. For the name `embedded` the two branches of `structFields`
+    emit identical bytes, so adding or removing an embed is no change at all.
+
+    Not a naming curiosity. An embed is Go's only promotion mechanism: the
+    embedded type's methods and fields become the outer type's, which decides
+    which interfaces the outer type satisfies. Measured with `go build` on both
+    revisions of row 1 — `var _ Mer = S{}` compiles against the embed and fails
+    against the named field with "S does not implement Mer (missing method M)".
+    Two structs that satisfy different interfaces have the same fingerprint.
+
+    Nor is `embedded` a name nobody writes. It is the ordinary word for the
+    thing, and a struct that holds one wrapped dependency gets it by reflex.
+
+    Green when: both revisions of both rows are reported as a change.
+    RED TODAY: row 1 fingerprints `type S struct{embedded embedded}` on both
+    sides; row 2 fingerprints `type S struct{embedded Foo}` on both sides.
+    Verified satisfiable, in a throwaway clone: moving the marker to where a
+    field name cannot reach it — `"embedded:"+rendered+tag` at `main.go:383` —
+    turns both rows green and moves NOTHING ELSE in this file, the verbatim
+    grammar pin included, because `_SAMPLE` has no embedded struct field.
+
+    WHY THERE ARE TWO ROWS, which is the measurement worth keeping. The obvious
+    fix is to infer the embedded field's NAME from its type instead of marking
+    it — `receiverBaseName(field.Type)+" "+rendered+tag`. Applied, that turns
+    row 2 green, leaves row 1 RED (an embedded `embedded` still renders as
+    `embedded embedded`, exactly as the named field does), and reddens
+    `an embed replaced by a field with an ORDINARY name` in the guard table
+    below, because now EVERY embed collides with the field that names its own
+    type. One row and no guard table would have accepted that as a fix.
+    """
+    assert _changed(compare_go, before, after) is True, (
+        f"{name!r} changes which interfaces the type satisfies and this gate "
+        f"reported nothing. The `embedded ` marker at main.go:383 sits in the "
+        f"position a field NAME occupies at main.go:387, so the two branches "
+        f"collide:{_collision_detail(before, after)}"
+    )
+
+
+@pytest.mark.parametrize(
+    "name, before, after",
+    _INTERFACE_LITERAL_SIGNATURE_HOLE,
+    ids=[row[0] for row in _INTERFACE_LITERAL_SIGNATURE_HOLE],
+)
+def test_an_interface_literal_carries_its_method_signatures(
+    name: str, before: str, after: str, compare_go
+) -> None:
+    """FINDING 2, RED. Method names survive; method SIGNATURES do not.
+
+    `interfaceParts` stores a method as `"method " + name`, and the signature
+    lives in the `Iface.Method` sub-symbol instead. `typeSymbols` emits those
+    sub-symbols for one shape only — a top-level interface DEFINITION — so for
+    that shape the split is correct and measured green (`_CHANGE`'s `interface
+    method retyped`, and the `Reader.Read` key in section 3). In all six
+    positions below there is no sub-symbol, and the signature is stored nowhere.
+
+    The alias row is the one to read first, because `main.go:425` states the
+    invariant this seal is asserting and the code does not implement it: "the
+    whole right-hand side is inside this one fingerprint, so a changed method is
+    still a change — reported against the alias rather than against the method".
+    Measured, the right-hand side of `type A = interface{ Read() error }` is
+    inside that fingerprint as the four characters `Read`.
+
+    Retyping a method is the whole of the hole and it is the dangerous half: a
+    RENAMED method and an ADDED or REMOVED one are both caught, because the
+    element list carries names. That is why this survived a panel and a soak —
+    every casual probe of an interface literal does report a change.
+
+    Green when: all six positions report a change.
+    RED TODAY: all six produce byte-identical fingerprints across the two
+    revisions; the fingerprint each pair collapses to is in the table's
+    comments, and `go build` rejects the `after` revision of rows 1 and 3
+    against an implementation that satisfied the `before`.
+    Verified satisfiable, in a throwaway clone: appending the rendered signature
+    in `interfaceParts` — `"method "+field.Names[0].Name+signature("", fn)` —
+    turns all six green, keeps every row of `_THE_FIX_MUST_NOT_BREAK` green, and
+    reddens exactly one other seal in this file: the verbatim grammar pin, which
+    `SchemaVersion` exists to be bumped alongside. The key-and-kind seal in
+    section 3 stays green, because this fix moves a fingerprint and no key.
+
+    That fix double-reports a named interface — `I` and `I.Read` both move for
+    one edit — which is the cost `interfaceParts` was written to avoid, so a
+    body author may prefer to carry signatures only where no sub-symbol will.
+    Both are honest, so this seal pins neither: it asserts the answer, not the
+    rendering.
+    """
+    assert _changed(compare_go, before, after) is True, (
+        f"{name!r} retypes a method of an interface literal — source-breaking "
+        f"for every implementation of it — and this gate stayed silent. The "
+        f"element list at main.go:408 carries the method's NAME and no "
+        f"signature, and there is no Iface.Method sub-symbol behind this "
+        f"shape to carry it:{_collision_detail(before, after)}"
+    )
+
+
+@pytest.mark.parametrize(
+    "name, before, after, is_a_change",
+    _THE_FIX_MUST_NOT_BREAK,
+    ids=[row[0] for row in _THE_FIX_MUST_NOT_BREAK],
+)
+def test_the_fix_for_either_finding_keeps_these_answers(
+    name: str, before: str, after: str, is_a_change: bool, compare_go
+) -> None:
+    """GREEN, and the constraint that stops each finding being "fixed" wrongly.
+
+    A red seal says what must start happening and says nothing about what must
+    keep happening, and for both of these findings the one-line fix is a
+    regression. Drop `interfaceParts` and render interface literals through
+    `render` and every row of finding 2 goes green while rows 1-4 here redden:
+    go/printer preserves parameter grouping, section 2 rules grouping to be
+    spelling, and the gate starts blocking a reflow inside an aliased interface.
+    That is the same mechanism section 2's docstring already explains for
+    `structFields`, arriving at a shape section 2 does not cover.
+
+    Rows 6-8 are the boundary on finding 1 and they are worth stating as
+    evidence rather than as caution: the collision is one marker in one
+    position, not the marker idea. An embed replaced by a field with an ORDINARY
+    name is already caught; an interface member named `embedded` becoming a
+    method is already caught, because `interfaceParts` puts its marker FIRST
+    where no name can shadow it; and a PARAMETER named `embedded` losing its
+    name is already caught, because `fieldSignature` emits no marker at all.
+    Three sibling call sites, same input, no collision — which is what makes
+    `structFields` the defect rather than the contract.
+
+    Green when: all eight answers are as tabled, before and after any fix.
+    Falsify, one measured mutation per row — every one of these was applied to a
+    throwaway clone and the named row watched to redden:
+
+      1,3,4  render interface literals through `render` in `typeFingerprint`.
+             All six rows of finding 2 go green and these three redden, which is
+             the whole reason this table is here.
+      2      the same mutation AND a real file set in `renderFset`. Row 2 is the
+             one row here that NO single edit to today's helper can move, and
+             the reason is worth knowing rather than papering over: today an
+             aliased interface's method signature never reaches `render` at all,
+             so there is no line-break sensitivity to expose yet. It is a guard
+             on the FIX, it reddens as soon as a fix routes signatures through
+             go/printer with real positions, and it is recorded here as a
+             conditional falsifier rather than left to look like a green row
+             nobody checked.
+      3,5    render struct literals through `render` in `typeFingerprint` —
+             which also turns four of the eight red rows above green, and is
+             the second wrong fix this table catches.
+      6      infer the embedded field's name from its type rather than marking
+             it (see the finding 1 seal).
+      7      drop both markers from `interfaceParts`, leaving a bare name and a
+             bare rendered type.
+      8      drop parameter names from `fieldSignature` — this file's canonical
+             mutation, which reddens much of section 2 as well.
+    """
+    assert _changed(compare_go, before, after) is is_a_change, (
+        f"{name!r} is ruled {'a change' if is_a_change else 'NOT a change'} by "
+        f"the sections above and a fix for one of the two findings has moved "
+        f"it. This row is not about the finding — it is the property the fix "
+        f"had to preserve:{_collision_detail(before, after)}"
+    )
+
+
+def test_the_findings_are_stated_in_both_directions() -> None:
+    """Section 8 may not decay into a table with only one answer in it.
+
+    The same trap `test_the_table_rules_both_ways` closes for section 2, closed
+    for this section: the two red tables are all-change, so on their own they
+    are satisfied by a comparator that shouts at everything, and the fix they
+    are pushing for is one that shouts more. `_THE_FIX_MUST_NOT_BREAK` is what
+    makes them safe to be red, so it must keep both answers — and deleting it
+    would leave a section whose only instruction is "report more".
+
+    Green when: both red tables are populated and the guard table carries both
+    answers, with no name colliding across the three.
+    Falsify: empty any of the three tuples, or drop the silent half of the
+    guard table.
+    """
+    assert len(_EMBEDDED_MARKER_COLLISIONS) >= 2, "both directions of the embed edit"
+    assert len(_INTERFACE_LITERAL_SIGNATURE_HOLE) >= 4, "one row per exposed position"
+
+    answers = {row[3] for row in _THE_FIX_MUST_NOT_BREAK}
+    assert answers == {True, False}, (
+        "a guard table with one answer in it cannot notice a fix that traded "
+        "one direction of wrongness for the other"
+    )
+
+    rows = (
+        _EMBEDDED_MARKER_COLLISIONS
+        + _INTERFACE_LITERAL_SIGNATURE_HOLE
+        + tuple(row[:3] for row in _THE_FIX_MUST_NOT_BREAK)
+    )
+    names = [row[0] for row in rows]
+    assert len(names) == len(set(names)), f"duplicate probe names: {names}"
+    for _, before, after in rows:
+        assert before != after, "a probe whose two revisions are equal proves nothing"
+
+
+def test_neither_finding_is_a_question_for_p4() -> None:
+    """Why `GO_SIGNATURE_EDIT_RULINGS` is untouched by the commit that adds this.
+
+    The convention in this file is that a defect implying a RULING is recorded
+    in the rulings table, and the convention was considered for both findings
+    and declined, so the next reader meets the reasoning instead of the absence.
+
+    A ruling settles a question of JUDGEMENT — the parameter-name row exists
+    because "is a rename a change" has two defensible answers and someone had to
+    pick. Neither finding here has two answers. Both are already ruled, by
+    contract text that the implementation does not honour, and this seal pins
+    the two sentences so that "the code is the contract" cannot be the way they
+    get closed:
+
+      * whether a field is embedded is listed in the fingerprinter's own
+        statement of what a struct fingerprint contains;
+      * the alias comment at `main.go:425` asserts that a changed method of an
+        aliased interface literal is still a change.
+
+    So there is nothing for P4 to decide and the rows above are behavioural
+    seals, not proposed criteria. If P4 later rules that one of them is an
+    ACCEPTED cost — the shape section 5 records — then it moves to section 5
+    with its rationale and this seal is the reason that has to be done on
+    purpose rather than by deleting a red row.
+
+    Green when: the table still holds exactly its four ruled edits and the two
+    contract sentences are still where this section cites them.
+    Falsify: add a row to `GO_SIGNATURE_EDIT_RULINGS` for either finding —
+    which is a legitimate P4 act, and this seal is where it gets announced.
+    """
+    assert [r.name for r in role_protocol.GO_SIGNATURE_EDIT_RULINGS] == [
+        "parameter renamed",
+        "same-type parameters reordered",
+        "receiver variable renamed",
+        "body rewritten, declaration untouched",
+    ], (
+        "a ruling was added or removed; if it rules one of the section 8 "
+        "findings, that row moves to section 5 and stops being red — but say "
+        "so here, because a ruling is the only thing that may retire a seal"
+    )
+
+    contract = _prose(role_protocol.GoSignatureFingerprinter.__doc__ or "")
+    assert "whether the field is embedded" in contract, (
+        "the struct contract stopped claiming embed-ness; finding 1 is a "
+        "defect only for as long as this sentence is the contract"
+    )
+
+    helper = _prose(
+        (
+            Path(role_protocol.__file__).parent
+            / role_protocol.GO_HELPER_PACKAGE_DIR
+            / "main.go"
+        ).read_text()
+    )
+    assert "the whole right-hand side is inside this one fingerprint" in helper, (
+        "the alias comment stopped claiming to carry the method signature; "
+        "finding 2 is measured against that claim"
+    )
 
 
 # --------------------------------------------------------------------------- #
