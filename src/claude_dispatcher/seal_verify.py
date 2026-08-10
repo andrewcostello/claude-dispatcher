@@ -44,13 +44,67 @@ _TEST_PATH = re.compile(
 # Labels that opt a task into the gate.
 _SEAL_LABELS = frozenset({"type:fix", "seal-check", "kind:fix"})
 
+#: Appended by :func:`is_test_path` to a probe that ends in a newline, so the
+#: pattern's one ``$`` cannot treat that newline as the end of the string. NUL
+#: is the one byte a POSIX filename cannot contain, so it can never be part of
+#: a real path and appears in no alternative of :data:`_TEST_PATH`.
+_NOT_A_PATH_CHARACTER = "\0"
+
+
+class SealPathError(RuntimeError):
+    """A changed path git rendered in a form this gate cannot decode.
+
+    Raised by :func:`partition_changed`; :func:`run_seal_inversion` maps it to
+    an ``error`` outcome. Distinct from the git failures that fail OPEN
+    (``([], [])`` → "nothing claims to seal"): a git failure means we learned
+    nothing about the change, while an undecodable path means we learned that
+    the change contains a file we cannot put on either side of the partition.
+    Guessing puts it on the non-test side, where the inversion would try to
+    revert a name that resolves to nothing — or, for an added file, silently
+    fail to delete it and then run the suite with the "reverted" fix still in
+    place. Both report a judgement that was never made.
+    """
+
 
 def is_test_path(path: str) -> bool:
-    """Does this repo consider ``path`` one of "the tests"?
+    r"""Does this repo consider ``path`` one of "the tests"?
 
-    The public face of :data:`_TEST_PATH`, including the leading-slash
-    normalisation the pattern's `^`-anchored alternatives need, so that every
-    consumer asks the question the same way. ``path`` is posix, as git emits.
+    The public face of :data:`_TEST_PATH`, so that every consumer asks the
+    question the same way. ``path`` is posix, as git emits.
+
+    **Two normalisations, and the docstring used to be wrong about the first.**
+
+    The leading ``"/"`` is prefixed so that a top-level ``tests/x.py`` exhibits
+    the ``/tests?/`` alternative — the same reason ``pkg/tests/x.py`` does. It
+    is NOT, as this said until 2026-08-09, what the pattern's ``^``-anchored
+    alternatives "need": prefixing a slash puts a ``/`` at position 0, so
+    ``^tests?/`` and ``^spec/`` can never match anything at all. They are dead
+    alternatives, harmless only because ``/tests?/`` and ``/spec/`` cover
+    exactly the paths they were meant to. They are left in place rather than
+    deleted because ``tests/test_role_protocol_table.py::_TEST_PATH_PROBES``
+    keys its table on the literal text of each alternative and checks those
+    keys against the live pattern; removing them is a seal amendment, and the
+    prose correction is the part that can land here.
+
+    The trailing sentinel is the fix for a real over-block. ``_TEST_PATH``'s
+    one end-anchored alternative is ``conftest\.py$``, and Python's ``$``
+    matches at the end of the string OR immediately before a string-final
+    newline — the exact ``$``-for-``\Z`` mistake ``risk._compiled``'s docstring
+    names and forbids, sitting unsealed in this sibling matcher. So
+    ``src/conftest.py<LF>``, a DIFFERENT file that a body agent may
+    legitimately add, was judged one of the repo's tests and denied to it.
+
+    The pattern itself is not touched, for the reason above; instead, when the
+    probe ends with a newline a character no alternative can match is appended,
+    which leaves ``$`` nowhere to land. That is exactly ``\Z`` semantics and
+    not an approximation: ``$`` differs from ``\Z`` only on a string ending in
+    ``\n``, and on such a string a ``$`` match at the TRUE end is impossible
+    (``conftest\.py`` cannot be followed by end-of-string when the string ends
+    in a newline), so every ``$`` match there is the spurious one. Appending
+    can create no new match either — the sentinel appears in no alternative,
+    and no alternative can reach past the end of the old string except through
+    ``$``. Unanchored alternatives are unaffected: ``tests/x.py<LF>`` is still
+    a test, via ``/tests?/``.
 
     There is exactly one matcher for this question and it is here: the build
     protocol's role gate (``role_protocol.evaluate_changed_paths``, deciding
@@ -61,7 +115,10 @@ def is_test_path(path: str) -> bool:
     could add ``web/__tests__/app.js`` — a seal by this module's reckoning —
     and the role gate reported CLEAN (implementation-plan D1 P2 rulings).
     """
-    return bool(_TEST_PATH.search("/" + path))
+    probe = "/" + path
+    if probe.endswith("\n"):
+        probe += _NOT_A_PATH_CHARACTER
+    return bool(_TEST_PATH.search(probe))
 
 
 def applies(task_key: str, labels: list[str] | None) -> bool:
@@ -81,10 +138,32 @@ def applies(task_key: str, labels: list[str] | None) -> bool:
 def partition_changed(
     worktree: Path, base: str, *, timeout_seconds: int = 30,
 ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
-    """The branch's changed files vs ``base`` as (tests, non_tests), each a
+    r"""The branch's changed files vs ``base`` as (tests, non_tests), each a
     list of ``(git_status_letter, path)``. Empty-both on git failure (the
     caller skips — fail open; the gate is an extra check, not the primary
-    verification)."""
+    verification).
+
+    **Every path is DECODED.** ``--name-status`` prints a path git must quote
+    in its C-quoted rendering — ``"tests/t\303\251st_thing.py"`` for
+    ``tests/tést_thing.py`` — and a rendering is not a path:
+    :func:`is_test_path` is a regex over ``/tests?/`` and friends, so a
+    rendering that begins with ``"`` is filed under NON-tests. The consequence
+    was the whole false-passing-seal gate switching itself off by a filename:
+    with no path recognised as a test, :func:`run_seal_inversion` returned
+    ``skipped, "no test files changed — nothing claims to seal"`` and never
+    inverted anything. An accent in a new test's filename was enough.
+
+    Decoding goes through :func:`role_protocol._unquote_git_path` — the repo's
+    one reverse of ``quote_c_style``, shared with ``changed_paths_between``,
+    ``risk.collect_diff`` and ``blast_radius.changed_files``, imported inside
+    the function so this module's import graph is unchanged. NOT a
+    ``strip('"')``: a directory can really be named ``"tests"``, git renders it
+    as ``"\"tests\"/x.py"``, and stripping would start calling an ordinary
+    source file one of the repo's seals.
+
+    A path that will not decode raises :class:`SealPathError` rather than being
+    filed on a side that was guessed.
+    """
     try:
         proc = subprocess.run(
             ["git", "diff", "--name-status", f"{base}...HEAD"],
@@ -95,13 +174,24 @@ def partition_changed(
         return [], []
     if proc.returncode != 0:
         return [], []
+    from .role_protocol import _unquote_git_path
+
     tests: list[tuple[str, str]] = []
     non_tests: list[tuple[str, str]] = []
     for line in proc.stdout.splitlines():
         parts = line.split("\t")
         if len(parts) < 2:
             continue
-        status, path = parts[0][:1], parts[-1]
+        status, rendered = parts[0][:1], parts[-1]
+        try:
+            path = _unquote_git_path(rendered)
+        except ValueError as exc:
+            raise SealPathError(
+                f"git diff --name-status {base}...HEAD in {worktree} named "
+                f"{rendered!r}, which is not a decodable C-quoted path: {exc}; "
+                "a path that cannot be decoded cannot be put on either side of "
+                "the test/non-test partition"
+            ) from exc
         (tests if is_test_path(path) else non_tests).append(
             (status, path))
     return tests, non_tests
@@ -114,8 +204,9 @@ class SealVerifyResult:
     ``outcome``: "passed" (suite went red without the fix — the seal is
     real), "failed" (suite stayed GREEN without the fix — the new tests
     prove nothing), "skipped" (gate doesn't apply; reason in detail), or
-    "error" (the worktree could not be safely inverted/restored; detail
-    says why — treated as a block because the tree state is now suspect).
+    "error" (the change could not be safely inverted/restored, or could not be
+    partitioned at all; detail says why — treated as a block, because either
+    the tree state is now suspect or the judgement was never made).
     """
     outcome: str
     detail: str
@@ -144,7 +235,13 @@ def run_seal_inversion(
     fails the result is "error" so the caller blocks rather than trusting a
     possibly-mongrel tree.
     """
-    tests, non_tests = partition_changed(worktree, base)
+    try:
+        tests, non_tests = partition_changed(worktree, base)
+    except SealPathError as exc:
+        # Fail closed. The tree is untouched, but the change contains a file
+        # this gate cannot classify, and "skipped — nothing claims to seal"
+        # would be the gate reporting a judgement it never made.
+        return SealVerifyResult("error", str(exc))
     if not tests:
         return SealVerifyResult(
             "skipped", "no test files changed — nothing claims to seal")
