@@ -256,8 +256,34 @@ def run_seal_inversion(
         if existing_at_base:
             proc = _git(worktree, "checkout", base, "--", *existing_at_base)
             if proc.returncode != 0:
+                # Fail closed, for the same reason as SealPathError above: the
+                # tree was never inverted and the suite was never run, so
+                # "skipped" — whose only two messages are "nothing claims to
+                # seal" and "no fix to invert" — would report a judgement about
+                # the change that this gate never made.
+                #
+                # The everyday cause is a RENAME. `--name-status` renders one as
+                # `R100<TAB>old<TAB>new` and :func:`partition_changed` keeps
+                # ``parts[-1]``, so the pathspec here is the NEW name, which by
+                # construction does not exist at ``base``; git exits 1 with
+                # "pathspec ... did not match any file(s) known to git". Any fix
+                # containing a `git mv` of a non-test file therefore switched the
+                # whole gate off, silently and non-blocking.
+                #
+                # Reverting by the OLD name instead — making the gate actually
+                # work on a renaming fix — was measured and does work, but it is
+                # NOT what
+                # `test_a_renamed_non_test_file_does_not_switch_the_gate_off`
+                # accepts: that row also pins `logs == []`, i.e. that no suite is
+                # run, and a real verdict necessarily runs one and comes back
+                # `passed`. Whether the gate should invert renames rather than
+                # block on them is a seal amendment, not a body change.
+                #
+                # git resolves every pathspec against the tree before writing any
+                # of them, so on this path the worktree is untouched and needs no
+                # restore.
                 return SealVerifyResult(
-                    "skipped",
+                    "error",
                     f"could not revert to base for inversion: "
                     f"{proc.stderr.strip()[:300]}")
         for p in added:
