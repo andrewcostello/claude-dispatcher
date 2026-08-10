@@ -4264,7 +4264,7 @@ GO_SUPPORT = LanguageSupport(
 #: **THE registry.** The one table that says what this gate can read, and the
 #: only input to :func:`support_for_path`. Adding a language is adding a row;
 #: no dispatch site changes, because there is no dispatch site.
-COMPARATORS: tuple[LanguageSupport, ...] = (PYTHON_SUPPORT,)
+COMPARATORS: tuple[LanguageSupport, ...] = (PYTHON_SUPPORT, GO_SUPPORT)
 
 #: Rows that are written but not live. Nothing dispatches on this tuple — it
 #: exists so that "scaffolded but not enrolled" is a NAMED state with a
@@ -4272,7 +4272,7 @@ COMPARATORS: tuple[LanguageSupport, ...] = (PYTHON_SUPPORT,)
 #: nameable) rather than a row someone forgot, and so
 #: :func:`validate_registry` can refuse a pending row that collides with a live
 #: one before anybody tries to enrol it.
-PENDING_COMPARATORS: tuple[LanguageSupport, ...] = (GO_SUPPORT,)
+PENDING_COMPARATORS: tuple[LanguageSupport, ...] = ()
 
 
 def validate_registry(
