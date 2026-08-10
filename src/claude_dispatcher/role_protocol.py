@@ -73,9 +73,11 @@ silently-ignored line.
 That additive argument used to be stated here as the reason this module "needs
 no separate 'floor' tier the way `risk.py` does". **It was wrong, and
 :data:`FLOOR_GLOBS` is the correction** (2026-08-07 operator ruling). The
-argument covers only the three DENY_GLOBS roles: :data:`Role.ADJUDICATE` is
-ALLOW_ONLY_GLOBS and :func:`effective_rule` builds its writable set out of the
-task's own `disputed_paths:`, so an adjudicate row that declared
+argument covers only the DENY_GLOBS roles — two of them since the 2026-08-10
+SEALS inversion, :data:`Role.SCAFFOLD` and :data:`Role.BODIES`.
+:data:`Role.ADJUDICATE` is ALLOW_ONLY_GLOBS and :func:`effective_rule` builds
+its writable set out of the task's own `disputed_paths:`, so an adjudicate row
+that declared
 `.dispatcher.yaml` got that path *allowed* — the most privileged role granted
 the file that configures every role's permissions, its own included, by naming
 it. There is now a real floor tier, matched at decision time against the paths
@@ -282,6 +284,15 @@ ALLOWLIST_MISS = "<allowlist miss: path is outside the role's writable set>"
 #: rule's ``globs`` turns that delegation on, so the delegation is a property
 #: of the rule (data), not of the role (a hardcode a caller-supplied policy
 #: could not switch off).
+#:
+#: The marker names a FACT — *this repo's test files* — and the rule's KIND is
+#: what turns that fact into a verdict. :func:`evaluate_changed_paths` reads it
+#: in BOTH glob kinds (2026-08-10): on a DENY_GLOBS rule it FORBIDS the test
+#: files and is reported as the ``matched_glob``; on an ALLOW_ONLY_GLOBS rule it
+#: GRANTS them, and a path outside the writable set is still reported as
+#: :data:`ALLOWLIST_MISS`, never as this marker — on the allow side the marker
+#: is the reason a path was permitted, so it can never be the reason one was
+#: refused. :data:`Role.SEALS` is the rule that needs the allow reading.
 SEAL_VERIFY_TEST_PATHS = "<seal_verify.is_test_path: this repo's test files>"
 
 #: The roles whose deny set includes ``seal_verify``'s test-path predicate.
@@ -291,6 +302,14 @@ SEAL_VERIFY_TEST_PATHS = "<seal_verify.is_test_path: this repo's test files>"
 #: root and nested, ``__tests__/``, ``spec/``, ``fixtures/`` — so a body agent
 #: could add a file `seal_verify` already treats as a seal and this gate said
 #: CLEAN. One matcher, one fact.
+#:
+#: :data:`Role.SEALS` is deliberately NOT here, and after the 2026-08-10
+#: inversion that is a ruling rather than an oversight. This constant means
+#: "roles whose **DENY** set delegates" — :func:`built_in_policy` reads it to
+#: APPEND the marker to a deny set — and for SEALS the same marker is an ALLOW.
+#: Adding SEALS here would hand the seal author a rule denying the only files it
+#: exists to write. The marker lives in the SEALS row's own ``globs``, where the
+#: rule's kind decides its verdict.
 TEST_PATH_DELEGATED_ROLES: tuple[Role, ...] = (Role.SCAFFOLD, Role.BODIES)
 
 
@@ -386,12 +405,15 @@ class RoleRule:
 #     edits ``tests/``. Path-shape only — no keyword matching. Everything
 #     `seal_verify` calls a test and these globs miss is caught by the
 #     delegation (:data:`TEST_PATH_DELEGATED_ROLES`).
-#   * ``**/.dispatcher.yaml`` is denied to ALL FOUR authorable roles, scaffold
+#   * ``**/.dispatcher.yaml`` is refused to ALL FOUR authorable roles, scaffold
 #     included (2026-08-04 P1 ruling, overriding P1's own contrary note here).
 #     A unit's per-task override lives in its task row, so no role ever needs
 #     to edit the policy file, and a role that can edit the file configuring
 #     its own permissions is the self-widening shape this unit exists to
-#     remove.
+#     remove. Since the 2026-08-10 SEALS inversion it is a named deny glob on
+#     two rows and an ALLOWLIST MISS on the SEALS row — the same refusal
+#     reached two ways — and :data:`FLOOR_GLOBS` refuses it to all five roles
+#     regardless of what any row says.
 #   * ``**/generated/**`` appears NOWHERE (2026-08-04 P1 ruling, overriding
 #     P1's SEALS/BODIES entries). The property wanted is not "bodies never
 #     touch generated files" but "generated files equal generator output",
@@ -401,7 +423,9 @@ class RoleRule:
 #     overrides gave no escape. Any unit with generated output carries that
 #     gate in its seals instead.
 #   * ``**/roles/*.md`` + ``**/reviewer_prompts/**`` + ``**/verifier_prompts/**``
-#     for all three DENY_GLOBS roles: those are machine-read instructions that
+#     for every DENY_GLOBS role (all three when this was written; SCAFFOLD and
+#     BODIES since SEALS was inverted, which refuses all three trees as an
+#     allowlist miss instead): those are machine-read instructions that
 #     the review gate executes, so editing them edits the reviewer that is about
 #     to judge the change. SCAFFOLD was added 2026-08-09 (S4): the rationale is
 #     not role-specific, and `src/` — where both prompt directories live — is
@@ -435,21 +459,61 @@ DEFAULT_ROLE_RULES: tuple[RoleRule, ...] = (
             "circular oracle that produced 24 vacuous seals (plan §5)"
         ),
     ),
+    # SEALS is the one authorable role stated as an ALLOWLIST (2026-08-10 P4
+    # ruling, `tests/test_role_layout_coverage.py`). It was a deny list of
+    # ``**/src/**``, ``**/schema/**`` and the three instruction trees, and that
+    # list protected NO implementation source in the layouts the target repos
+    # are written in: Go lives in ``cmd/``, ``internal/`` and ``pkg/``, and
+    # evenplay-mono is 2,288 Go / 996 TS+TSX / 781 SQL / 316 Java / 0 Python. A
+    # seal author could write the code its own seal judges — a vacuous seal, by
+    # the row's own rationale. The fault ran both ways: ``**/src/**`` also
+    # DENIED ``web/src/app.test.tsx`` and the Maven-layout Java seal to the one
+    # role that exists to write them, and ``immutable_paths:`` is ADD-only with
+    # no negation form, so nothing could buy them back.
+    #
+    # Extending the deny list is not available and that is a fact about the
+    # LANGUAGE, not about these spellings: Go co-locates ``ledger_test.go`` with
+    # ``ledger.go``, so every directory-shaped glob denies the seal exactly when
+    # it denies the body (measured: adding ``**/cmd/**``, ``**/internal/**`` and
+    # ``**/pkg/**`` turns 3 layout rows green and 4 red). Repo-configurable
+    # ``immutable_paths:`` is the same move through the same monotone engine.
+    #
+    # So the writable set is stated as the CLOSED set it always was: this
+    # repo's test files, plus documentation.
+    #
+    #   * :data:`SEAL_VERIFY_TEST_PATHS` is the repo's ONE matcher for "is this
+    #     a seal", carried in the row's own globs rather than through
+    #     :data:`TEST_PATH_DELEGATED_ROLES` — that constant means "roles whose
+    #     DENY set delegates", and ``built_in_policy`` reads it to append the
+    #     marker to a deny set. Here the same marker is an ALLOW. One marker,
+    #     one fact; the rule's KIND decides the verdict.
+    #   * ``**/docs/**`` is not optional. A seal author writes the ADR and the
+    #     note that go with the seal, and a false refusal has no override in
+    #     this system. Spelled ``**/docs/**`` and not ``docs/**`` for the reason
+    #     given on :class:`RoleRule`: root-anchoring it would repeat, in
+    #     documentation, the exact mistake ``**/src/**`` made in source. No
+    #     extension filter, because ``docs/`` already holds .json and .log.
+    #
+    # What the five departed globs cost, and where each is paid instead: all
+    # five are still refused to SEALS, as an ALLOWLIST MISS rather than by a
+    # named pattern, because none is one of this repo's test files and none is
+    # under ``docs/``. ``**/.dispatcher.yaml`` is refused twice over — the miss
+    # and :data:`FLOOR_GLOBS`. ``README.md`` at the root becomes unwritable to
+    # SEALS, deliberately.
     RoleRule(
         role=Role.SEALS,
-        kind=RuleKind.DENY_GLOBS,
+        kind=RuleKind.ALLOW_ONLY_GLOBS,
         globs=(
-            "**/src/**",
-            "**/schema/**",
-            "**/.dispatcher.yaml",
-            "**/roles/*.md",
-            "**/reviewer_prompts/**",
-            "**/verifier_prompts/**",
+            SEAL_VERIFY_TEST_PATHS,
+            "**/docs/**",
         ),
         rationale=(
             "P2 commits its seals RED against P1's stubs; a seal author who "
             "may edit the implementation can make its own seal pass, which is "
-            "the definition of a vacuous seal"
+            "the definition of a vacuous seal. P2 writes the seal and the "
+            "documentation that goes with it, and nothing else — a deny list "
+            "of implementation directories cannot say that in a repository "
+            "where Go puts ledger_test.go beside ledger.go"
         ),
     ),
     RoleRule(
@@ -523,8 +587,10 @@ _GLOB_METACHARACTERS = "*?[]"
 #: policy says and whatever the task declared (2026-08-07 operator ruling).
 #:
 #: The table above is "effectively a floor" only because config and per-task
-#: overrides may not *remove* a deny entry — and that argument covers the three
-#: DENY_GLOBS roles and nothing else. :data:`Role.ADJUDICATE` is
+#: overrides may not *remove* a deny entry — and that argument covers the
+#: DENY_GLOBS roles and nothing else, which since the 2026-08-10 SEALS
+#: inversion is :data:`Role.SCAFFOLD` and :data:`Role.BODIES` alone.
+#: :data:`Role.ADJUDICATE` is
 #: ALLOW_ONLY_GLOBS, and :func:`effective_rule` builds its writable set out of
 #: the task's own ``disputed_paths:``, so an adjudicate row that declared
 #: ``.dispatcher.yaml`` got that path *allowed* and the gate reported CLEAN —
@@ -1293,10 +1359,41 @@ def effective_rule(spec: TaskRoleSpec, policy: RolePolicy) -> RoleRule:
       * DENY_GLOBS → the policy globs plus ``spec.added_immutable_globs``,
         deduplicated, order preserved (policy first) so the reported
         ``matched_glob`` is stable.
-      * ALLOW_ONLY_GLOBS → globs = ``spec.disputed_paths``. The policy's own
-        (empty) globs are not unioned in: for ALLOW_ONLY a union would *widen*.
+      * ALLOW_ONLY_GLOBS → one of two NAMED states, never a union (for
+        ALLOW_ONLY a union would *widen*):
+
+          - the spec declares ``disputed_paths:`` → globs = exactly those. The
+            role's writable set is per-task data; that is ADJUDICATE, and its
+            static table globs are empty by design.
+          - the spec declares none → globs = the POLICY's own allow set,
+            returned unchanged. That is :data:`Role.SEALS` since the
+            2026-08-10 inversion: a static writable set, and a role that may
+            not carry ``disputed_paths:`` at all.
+
+        Until 2026-08-10 this branch was written to ADJUDICATE's semantics and
+        applied to the KIND — ``globs = tuple(spec.disputed_paths)``
+        unconditionally — so any other allow-only role had its policy allow set
+        thrown away and was judged under an empty allowlist: every path in the
+        repository a violation, for a role that had declared nothing wrong. A
+        false refusal has no override in this system.
+
       * UNRESTRICTED → returned unchanged; an override on it was already
         rejected by :func:`parse_task_role_spec`.
+
+    **An allow-only rule this function builds is never empty.** That is a
+    stricter contract than :func:`validate_rule`'s, deliberately and at the
+    boundary that function's own docstring already draws: an empty ALLOW_ONLY
+    tuple is legal for a STATIC TABLE ENTRY, whose writable set arrives per
+    task, and is never legal for the rule a BRANCH IS JUDGED BY. Reaching
+    evaluation with one is always a bug and never a policy — ADJUDICATE without
+    ``disputed_paths:`` is already refused a step earlier by
+    :func:`check_branch`, so no role can arrive here empty legitimately. It
+    raises rather than returning, because the alternative is the worst verdict
+    this gate can produce: a SILENT total false refusal. The raise is role-free
+    and :func:`check_branch` turns it into UNDETERMINED carrying this reason,
+    which fails closed and says why. (:class:`RuleKind.UNRESTRICTED`'s docstring
+    states the mirror for deny sets — "an accidentally-emptied deny list can
+    never read as a pass". This is that sentence from the other end.)
 
     Calls :func:`validate_override` first, so an illegal override cannot
     produce a rule at all (validate before apply — invariant 2), and
@@ -1323,7 +1420,13 @@ def effective_rule(spec: TaskRoleSpec, policy: RolePolicy) -> RoleRule:
             rule, globs=_dedup((*rule.globs, *spec.added_immutable_globs))
         )
     elif rule.kind is RuleKind.ALLOW_ONLY_GLOBS:
-        built = dataclasses.replace(rule, globs=tuple(spec.disputed_paths))
+        if spec.disputed_paths:
+            # The writable set is per-task data (ADJUDICATE).
+            built = dataclasses.replace(rule, globs=tuple(spec.disputed_paths))
+        else:
+            # The writable set is the policy's own (SEALS). Not a fallthrough:
+            # discarding it here is what handed the role an empty allowlist.
+            built = rule
     elif rule.kind is RuleKind.UNRESTRICTED:
         built = rule
     else:
@@ -1342,6 +1445,21 @@ def effective_rule(spec: TaskRoleSpec, policy: RolePolicy) -> RoleRule:
             "reaching the diff-time check to have been parsed by "
             "`parse_task_role_spec`"
         ) from exc
+
+    # Stricter than `validate_rule` on purpose, and only here. Empty is a legal
+    # STATIC table entry and never a legal judgement rule: under one, every path
+    # in the repository is a violation for a role that declared nothing wrong.
+    if built.kind is RuleKind.ALLOW_ONLY_GLOBS and not built.globs:
+        raise RoleProtocolError(
+            f"task {spec.task_key}'s effective rule for role "
+            f"{spec.role.value!r} is allow-only and allows NOTHING: every path "
+            "in the repository would be a violation, a total false refusal with "
+            "no override. An empty allow-only tuple is legal for a static table "
+            "entry, whose writable set arrives per task, and never for the rule "
+            "a branch is judged by — either the task's "
+            f"{DISPUTED_PATHS_FIELD!r} is missing or the policy names no "
+            "writable set for this role"
+        )
     return built
 
 
@@ -2410,15 +2528,27 @@ def evaluate_changed_paths(
     "is this a test file" — and denied if it answers yes, with
     :data:`SEAL_VERIFY_TEST_PATHS` as the ``matched_glob``. Globs are tried
     first so a violation names the specific pattern when there is one.
+
+    **Both kinds read the marker (2026-08-10).** It used to be read in the
+    DENY_GLOBS branch only, so an ALLOW_ONLY rule whose writable set was "this
+    repo's test files" fell through to :func:`first_matching_glob`, which
+    matches nothing on a marker that carries no wildcard — the rule silently
+    meant "the writable set is empty" and refused every path in the repository,
+    seals included. The marker names a FACT ("this repo's test files"); the
+    rule's KIND is what turns that fact into a denial or a grant. One marker,
+    one meaning, two verdicts — which is exactly what
+    :data:`Role.SEALS`'s inverted row needs, and the reason the split is done
+    once in :func:`_split_delegation_marker` rather than twice by hand.
+
+    An allow-only violation still carries :data:`ALLOWLIST_MISS`, never the
+    marker: on the allow side the marker is the reason a path was PERMITTED, and
+    there is no pattern that "says so" for a path outside the writable set.
     """
     if rule.kind is RuleKind.UNRESTRICTED:
         return ()
 
     if rule.kind is RuleKind.DENY_GLOBS:
-        patterns = tuple(
-            glob for glob in rule.globs if glob != SEAL_VERIFY_TEST_PATHS
-        )
-        delegate = SEAL_VERIFY_TEST_PATHS in rule.globs
+        patterns, delegate = _split_delegation_marker(rule.globs)
         violations: list[PathViolation] = []
         for path in changed_paths:
             matched = first_matching_glob(path, patterns)
@@ -2436,6 +2566,7 @@ def evaluate_changed_paths(
         return tuple(violations)
 
     if rule.kind is RuleKind.ALLOW_ONLY_GLOBS:
+        patterns, delegate = _split_delegation_marker(rule.globs)
         return tuple(
             PathViolation(
                 path=path,
@@ -2444,12 +2575,32 @@ def evaluate_changed_paths(
                 rationale=rule.rationale,
             )
             for path in changed_paths
-            if first_matching_glob(path, rule.globs) is None
+            if first_matching_glob(path, patterns) is None
+            and not (delegate and _is_test_path(path))
         )
 
     raise RoleProtocolError(
         f"cannot evaluate changed paths for unknown rule kind {rule.kind!r}; a "
         "kind that falls out of the bottom would report every diff as clean"
+    )
+
+
+def _split_delegation_marker(
+    globs: Sequence[str],
+) -> tuple[tuple[str, ...], bool]:
+    """Split a rule's ``globs`` into real patterns and the delegation flag.
+
+    :data:`SEAL_VERIFY_TEST_PATHS` is not a glob — it names a fact that
+    ``seal_verify.is_test_path`` answers — so it must never reach
+    :func:`first_matching_glob`, where it would match nothing and quietly
+    disappear. Both :class:`RuleKind` branches of
+    :func:`evaluate_changed_paths` need the same split, and doing it here is
+    what keeps the marker's meaning from being written down twice and drifting
+    apart, which is the defect this function was extracted to close.
+    """
+    return (
+        tuple(glob for glob in globs if glob != SEAL_VERIFY_TEST_PATHS),
+        SEAL_VERIFY_TEST_PATHS in globs,
     )
 
 
@@ -6074,7 +6225,9 @@ def main(argv: Sequence[str]) -> int:
     ``--tasks PATH --task-key KEY`` name the worklist row whose
     :class:`TaskRoleSpec` is applied. Without them there is no spec, and the
     branch is judged by its role's default rule alone — which is right for
-    the three deny-based roles and is *not* an answer for ADJUDICATE, whose
+    every role whose rule is STATIC (the two deny-based roles, and SEALS, whose
+    allow set is static too since the 2026-08-10 inversion) and is *not* an
+    answer for ADJUDICATE, whose
     writable set lives on the row (:func:`check_branch` returns UNDETERMINED
     rather than guessing). ``PATH`` is repo-relative and the row is read out
     of ``<base>``'s object store by :func:`_task_role_spec_at_base`; see there

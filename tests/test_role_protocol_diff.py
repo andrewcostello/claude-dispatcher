@@ -27,6 +27,7 @@ import pytest
 
 from claude_dispatcher import repo_config, role_protocol
 from claude_dispatcher.role_protocol import (
+    ALLOWLIST_MISS,
     DiffVerdict,
     ExitCode,
     PolicySource,
@@ -796,13 +797,16 @@ def test_a_clean_branch_records_what_it_actually_checked() -> None:
 
 
 @pytest.mark.parametrize(
-    "role, path, expected_glob",
+    "role, path, expected_glob, expected_kind",
     [
         # The plan's headline row: a bodies task touching tests/**.
-        (Role.BODIES, "tests/test_role_protocol_diff.py", "**/tests/**"),
-        (Role.BODIES, "src/claude_dispatcher/conftest.py", "**/conftest.py"),
-        (Role.BODIES, "schema/merge.yaml", "**/schema/**"),
-        (Role.BODIES, "roles/reviewer.md", "**/roles/*.md"),
+        (Role.BODIES, "tests/test_role_protocol_diff.py", "**/tests/**",
+         RuleKind.DENY_GLOBS),
+        (Role.BODIES, "src/claude_dispatcher/conftest.py", "**/conftest.py",
+         RuleKind.DENY_GLOBS),
+        (Role.BODIES, "schema/merge.yaml", "**/schema/**", RuleKind.DENY_GLOBS),
+        (Role.BODIES, "roles/reviewer.md", "**/roles/*.md",
+         RuleKind.DENY_GLOBS),
         # A seal author who may edit the implementation can make its own seal
         # pass — the definition of a vacuous seal.
         #
@@ -820,7 +824,30 @@ def test_a_clean_branch_records_what_it_actually_checked() -> None:
         # names. The property is unchanged and so is the point it makes — a seal
         # author editing the implementation — and `plan.py` is the unit's
         # established ordinary-source probe.
-        (Role.SEALS, "src/claude_dispatcher/plan.py", "**/src/**"),
+        #
+        # P4 ruling (2026-08-10). The expected answer is now `ALLOWLIST_MISS`
+        # and the kind is `ALLOW_ONLY_GLOBS`. The SEALS row was inverted
+        # (`tests/test_role_layout_coverage.py`): a deny list of implementation
+        # directories protected nothing in the target repos' layouts, and no
+        # directory glob can be added for Go, which co-locates the seal with the
+        # body. The PROPERTY this row asserts is unchanged and is the same
+        # sentence as before — a seal author may not edit the implementation it
+        # is judging, and `src/claude_dispatcher/plan.py` is that implementation
+        # — but the gate's honest answer to "which pattern forbade it" is now
+        # "none: the path is outside the role's writable set". That is what
+        # `ALLOWLIST_MISS` exists to say, and it is deliberately not
+        # glob-shaped, so this row still cannot be satisfied by a rule that
+        # matched some unrelated pattern.
+        #
+        # Non-vacuity is unchanged and is worth restating, because an allowlist
+        # miss is the answer a rule that refuses EVERYTHING also gives: the
+        # companion path `docs/notes.md` in the call below is asserted to be no
+        # violation on every row, so the inverted SEALS rule has to permit it.
+        # That is exactly the `_A_PATH_SEALS_MUST_KEEP` control in
+        # `test_role_layout_coverage.py`, and it is why the writable set is
+        # this repo's test files PLUS `**/docs/**` rather than test files alone.
+        (Role.SEALS, "src/claude_dispatcher/plan.py", ALLOWLIST_MISS,
+         RuleKind.ALLOW_ONLY_GLOBS),
         # P4 ruling (2026-08-07). This row was `Role.SEALS` and expected
         # `**/reviewer_prompts/**`; the gate answered `**/src/**`, which is
         # correct under the FIRST-match contract because SEALS denies `**/src/**`
@@ -835,26 +862,39 @@ def test_a_clean_branch_records_what_it_actually_checked() -> None:
         # the only thing standing between a body agent and the reviewer prompt
         # that is about to judge it.
         (Role.BODIES, "src/claude_dispatcher/reviewer_prompts/_shared.md",
-         "**/reviewer_prompts/**"),
+         "**/reviewer_prompts/**", RuleKind.DENY_GLOBS),
         # The twin hole, sealed for the same reason and by the same argument.
         (Role.BODIES, "src/claude_dispatcher/verifier_prompts/verifier.md",
-         "**/verifier_prompts/**"),
+         "**/verifier_prompts/**", RuleKind.DENY_GLOBS),
         # P1 must not write the seals it will be judged by.
-        (Role.SCAFFOLD, "tests/test_role_protocol_table.py", "**/tests/**"),
-        (Role.SCAFFOLD, "pkg/testdata/golden.json", "**/testdata/**"),
+        (Role.SCAFFOLD, "tests/test_role_protocol_table.py", "**/tests/**",
+         RuleKind.DENY_GLOBS),
+        (Role.SCAFFOLD, "pkg/testdata/golden.json", "**/testdata/**",
+         RuleKind.DENY_GLOBS),
     ],
 )
 def test_a_forbidden_path_is_a_violation_naming_the_path_and_the_glob(
-    role: Role, path: str, expected_glob: str
+    role: Role, path: str, expected_glob: str, expected_kind: RuleKind
 ) -> None:
     """The anti-vacuity assertion for every deny row: a violation is proven by
     the returned `PathViolation`, not by "the verdict was not CLEAN". A deny row
     that passes because the changed-path list was empty proves nothing, so the
     innocuous companion path is asserted absent from the violations too.
 
+    **AMENDED BY P4, 2026-08-10.** `rule_kind` was asserted once, at the bottom,
+    as `DENY_GLOBS` for every row. That was true while all three refusing roles
+    held deny tables; the SEALS inversion makes it false for one row and, more
+    importantly, makes a SINGLE shared expectation the wrong shape: the kind is
+    a per-row fact about which rule answered, so it is now a parametrized
+    column. Nine of the ten rows still say `DENY_GLOBS`, written out one by one,
+    so the amendment cannot be read as relaxing them — a mutation that made
+    `check_branch` report ALLOW_ONLY for a bodies path reddens that row.
+
     Red now: NotImplementedError.
-    Green when: the violation names the path AND the glob that forbade it.
+    Green when: the violation names the path AND the answer that forbade it.
     Falsify: report violations without `matched_glob` — every row goes red.
+    Point the SEALS row's expectation back at `**/src/**` — it goes red once the
+    table is inverted, and it is the only row that does.
     """
     result = _check(role, [path, "docs/notes.md"])
     assert result.verdict is DiffVerdict.VIOLATION
@@ -862,7 +902,7 @@ def test_a_forbidden_path_is_a_violation_naming_the_path_and_the_glob(
     assert [(v.path, v.matched_glob) for v in result.violations] == [
         (path, expected_glob)
     ]
-    assert result.violations[0].rule_kind is RuleKind.DENY_GLOBS
+    assert result.violations[0].rule_kind is expected_kind
 
 
 def test_every_forbidden_path_is_reported_not_just_the_first() -> None:

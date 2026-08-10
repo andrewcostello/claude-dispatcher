@@ -40,6 +40,28 @@ seal; each is justified in the seal's own docstring):
     `test_evaluate_changed_paths_is_total_over_every_rule_kind` probed
     `.dispatcher.yaml` and expected no violation, which sealed the LEGACY escape
     the 2026-08-07 operator ruling closes. Probes changed and a guard added.
+
+P4 amendments, 2026-08-10 — the SEALS row is INVERTED
+------------------------------------------------------
+`tests/test_role_layout_coverage.py` measured that the SEALS deny set protects
+no implementation source in the target repos' layouts (Go lives in `cmd/`,
+`internal/`, `pkg/`; evenplay-mono is 2,288 Go / 996 TS+TSX / 781 SQL / 0
+Python), and that `**/src/**` simultaneously DENIES the seal author the
+TypeScript and Maven-layout seals it exists to write, with no negation syntax to
+buy them back. Extending the deny list cannot work: Go co-locates
+`ledger_test.go` with `ledger.go`, so every directory glob spends a seal to buy
+a body. RULING: `Role.SEALS` becomes `ALLOW_ONLY_GLOBS`, its writable set is
+this repo's test files (`SEAL_VERIFY_TEST_PATHS`) plus `**/docs/**`.
+
+Four sites in this file are amended, each in place and each with its own note:
+`_EXPECTED_TABLE_PAIRS` (the six `seals` rows go, and where each protection is
+paid instead), `_LIVE_TABLE_PAIRS` (the addition detector is restricted to
+DENY_GLOBS rows — an allow row's globs are grants, not unsealed protections),
+`test_rule_kind_set_is_closed` (SEALS is allow-only, and the two allow-only
+roles are distinguished so an empty SEALS allow set cannot satisfy it), and
+`_DENY_TABLE_ROLES_WRITTEN_OUT` (`seals` leaves for the same reason ADJUDICATE
+was never in it). A fifth site was CONSIDERED AND REFUSED: SEALS does not join
+`_DELEGATED_ROLES_EXPECTED` — see the note there.
 """
 
 from __future__ import annotations
@@ -153,6 +175,45 @@ _GLOB_PROBES: dict[str, str] = {
 # the twenty-eight rows below it changes. No `_GLOB_PROBES` entry is needed —
 # all three globs already have one, and each probe is verified by the row itself
 # to be covered by exactly one SCAFFOLD glob.
+#
+# P4 (2026-08-10): the six `seals` rows are GONE, and their absence is a ruling,
+# not an omission. `tests/test_role_layout_coverage.py` established that the
+# SEALS deny set is blind to the layouts the target repos are written in — Go
+# implementation lives in `cmd/`, `internal/` and `pkg/`, not under `src/` — and
+# that no directory-shaped deny glob can be added to fix it, because Go puts
+# `ledger_test.go` in the same directory as `ledger.go` and DENY_GLOBS is
+# monotone. Re-measured by P4 in a clone rather than taken from the P2 report:
+# adding `**/cmd/**`, `**/internal/**` and `**/pkg/**` to this row turns exactly
+# 3 layout rows green (the Go bodies) and exactly 4 red (the three `_test.go`
+# seals and `internal/wallet/testdata/ledger_golden.json`) — it buys the Go
+# bodies precisely by spending the Go seals. So the SEALS row is INVERTED to
+# `ALLOW_ONLY_GLOBS` and has no deny globs left to write out.
+#
+# What that costs this list, and where each cost is paid instead:
+#   * `**/src/**`, `**/schema/**`, `**/roles/*.md`, `**/reviewer_prompts/**`,
+#     `**/verifier_prompts/**` — all five are still refused to SEALS, by
+#     ALLOWLIST MISS rather than by a named glob, because none of them is one of
+#     this repo's test files and none is under `docs/`. The seal for that is
+#     `test_role_layout_coverage.py::test_seals_cannot_write_implementation_source_in_the_target_layouts`
+#     (which now covers the Go/TS/SQL layouts these globs never reached) and the
+#     `Role.SEALS` row of
+#     `test_role_protocol_diff.py::test_a_forbidden_path_is_a_violation_naming_the_path_and_the_glob`.
+#   * `**/.dispatcher.yaml` — refused twice over, by the allowlist miss and by
+#     `FLOOR_GLOBS`. The seals rows of
+#     `test_role_protocol_floor.py::_FLOOR_x_ROLE_ROWS` are the surviving seal
+#     and they are NOT vacuated by the inversion: `_policy_without_the_floor`
+#     builds its own SEALS rule, so the probe is still proved writable under the
+#     injected policy before the floor is required to refuse it.
+# The two directions this list guards are unchanged for the 26 rows that remain:
+# removing a glob reddens that pair's parametrized row, adding one reddens
+# `test_every_table_glob_has_exactly_one_probe_and_one_cover`.
+#
+# Between this amendment and the table change that justifies it the six `seals`
+# deny globs are genuinely unprobed. That gap is LOUD, not silent, and this is
+# the intended shape (the 2026-08-09 precedent three paragraphs up ran the same
+# way in the other direction): `test_every_table_glob_has_exactly_one_probe_and_
+# one_cover` is RED right now and names all six by hand in its message. The row
+# goes green on exactly the edit that inverts the table and on no other.
 _EXPECTED_TABLE_PAIRS: tuple[tuple[str, str], ...] = (
     ("bodies", "**/*.spec.*"),
     ("bodies", "**/*.test.*"),
@@ -179,19 +240,32 @@ _EXPECTED_TABLE_PAIRS: tuple[tuple[str, str], ...] = (
     ("scaffold", "**/testdata/**"),
     ("scaffold", "**/tests/**"),
     ("scaffold", "**/verifier_prompts/**"),
-    ("seals", "**/.dispatcher.yaml"),
-    ("seals", "**/reviewer_prompts/**"),
-    ("seals", "**/roles/*.md"),
-    ("seals", "**/schema/**"),
-    ("seals", "**/src/**"),
-    ("seals", "**/verifier_prompts/**"),
 )
 
 _TABLE_PAIRS = _EXPECTED_TABLE_PAIRS
 
 #: The same pairs as the live table reports them — used ONLY to detect additions.
+#:
+#: P4 (2026-08-10): restricted to DENY_GLOBS rows. This comprehension is the
+#: ADDITION detector, and "an addition" only means something for a deny set: a
+#: glob added to a role's DENY list widens what that role is refused, and must
+#: be written out and probed below or it is unsealed. An ALLOW_ONLY row's globs
+#: are the opposite object — they are the role's WRITABLE set, so `**/docs/**`
+#: appearing there is not an unsealed protection, it is a grant, and the seals
+#: for a grant are the ones that exercise it (`test_role_layout_coverage.py`,
+#: and `_STILL_WRITABLE_ROWS` in `test_role_protocol_provenance.py`), not a
+#: probe asserting the path is denied. Without this restriction the SEALS
+#: inversion reports `("seals", "**/docs/**")` and the delegation marker as
+#: unsealed additions and demands `_GLOB_PROBES` entries that would have to
+#: assert the exact opposite of what the globs mean.
+#:
+#: ADJUDICATE was already outside this set in effect (its static globs are
+#: empty); it is now outside it by rule, which is the same reason.
 _LIVE_TABLE_PAIRS = sorted(
-    (rule.role.value, glob) for rule in DEFAULT_ROLE_RULES for glob in rule.globs
+    (rule.role.value, glob)
+    for rule in DEFAULT_ROLE_RULES
+    if rule.kind is RuleKind.DENY_GLOBS
+    for glob in rule.globs
 )
 
 
@@ -266,8 +340,31 @@ def test_rule_for_a_role_absent_from_the_table_raises() -> None:
 def test_rule_kind_set_is_closed() -> None:
     """Three kinds, and UNRESTRICTED is not spelled as "deny nothing".
 
-    Red now: `validate_rule` raises NotImplementedError on the last assertion.
-    Green when: every compiled-in rule is well-formed per `validate_rule`.
+    **AMENDED BY P4, 2026-08-10.** `kinds[Role.SEALS]` is now
+    `ALLOW_ONLY_GLOBS`. A deny table cannot express the SEALS property in the
+    layouts the targets use: the deny list would have to enumerate every
+    implementation-directory convention that will ever exist, and for Go it
+    cannot even do that, because the seal and the body share a directory
+    (`test_role_layout_coverage.py::test_no_directory_shaped_rule_can_separate_a_go_seal_from_its_body`).
+    The seal author's writable set is a CLOSED set — this repo's test files,
+    plus documentation — so it is stated as one.
+
+    Two ALLOW_ONLY roles now exist and they are not the same shape, so the two
+    are distinguished here rather than lumped: ADJUDICATE's static allow set is
+    EMPTY because its writable set is per-task data (`disputed_paths:`, and
+    "an absent list means 'nothing', never 'anything'"), while SEALS' is STATIC
+    and must be non-empty. Without that second assertion this seal would be
+    satisfied by `RoleRule(SEALS, ALLOW_ONLY_GLOBS, ())`, which refuses every
+    path in the repository — the exact fail-shape
+    `test_role_layout_coverage.py::test_an_effective_rule_never_hands_a_role_an_allow_set_that_forbids_everything`
+    exists to remove, arriving through the table instead of through
+    `effective_rule`.
+
+    Red until the SEALS row is inverted.
+    Green when: every compiled-in rule is well-formed per `validate_rule` and
+    SEALS is allow-only with a non-empty static writable set.
+    Falsify: leave SEALS as DENY_GLOBS — the kind assertion goes red. Invert it
+    with an empty allow set — the non-emptiness assertion goes red.
     """
     assert {k.value for k in RuleKind} == {
         "deny_globs",
@@ -275,10 +372,24 @@ def test_rule_kind_set_is_closed() -> None:
         "unrestricted",
     }
     kinds = {rule.role: rule.kind for rule in DEFAULT_ROLE_RULES}
+    globs = {rule.role: rule.globs for rule in DEFAULT_ROLE_RULES}
     assert kinds[Role.LEGACY] is RuleKind.UNRESTRICTED
     assert kinds[Role.ADJUDICATE] is RuleKind.ALLOW_ONLY_GLOBS
-    for role in (Role.SCAFFOLD, Role.SEALS, Role.BODIES):
+    assert kinds[Role.SEALS] is RuleKind.ALLOW_ONLY_GLOBS
+    for role in (Role.SCAFFOLD, Role.BODIES):
         assert kinds[role] is RuleKind.DENY_GLOBS
+
+    # The two allow-only roles are opposite shapes and must stay so.
+    assert globs[Role.ADJUDICATE] == (), (
+        "ADJUDICATE's static allow set must stay empty — its writable set is "
+        "the task's `disputed_paths:`, and a static grant would be a writable "
+        "set no task declared"
+    )
+    assert globs[Role.SEALS], (
+        "SEALS is allow-only with an EMPTY writable set: every path in the "
+        "repository is a violation for every seals task, a total false refusal "
+        "with no override. An allow-only rule names what it allows"
+    )
     for rule in DEFAULT_ROLE_RULES:
         validate_rule(rule)
 
@@ -553,6 +664,26 @@ def _test_path_alternatives() -> list[str]:
 #: `spec/models.rb`, `pkg/fixtures/sample.json` or `src/app/handler_test.js` —
 #: every one a file `seal_verify` calls a test — with the gate reporting CLEAN.
 #: P1 must not write the seals it will be judged by any more than P3 may.
+#:
+#: P4 (2026-08-10) — SEALS is NOT added here, and the refusal is the ruling.
+#: When the SEALS row was inverted to `ALLOW_ONLY_GLOBS` its writable set became
+#: `SEAL_VERIFY_TEST_PATHS`, and adding `Role.SEALS` to this tuple looks like
+#: bookkeeping for the same fact. It is not. `TEST_PATH_DELEGATED_ROLES` means
+#: "roles whose DENY set delegates to `seal_verify.is_test_path`" —
+#: `built_in_policy` reads it to APPEND the marker to a deny set, and the seal
+#: below it asserts that every `_TEST_PATH` alternative is DENIED to each listed
+#: role. For SEALS the same marker is an ALLOW. Measured in a clone: adding
+#: `Role.SEALS` to `TEST_PATH_DELEGATED_ROLES` in `role_protocol.py` reddens 26
+#: rows in this file (45 across the suite, against a 10-red baseline) — the
+#: marker lands in SEALS' globs, and under the inverted rule that hands the seal
+#: author a rule that denies the only files it exists to write.
+#:
+#: The marker therefore belongs in the SEALS ROW'S OWN `globs`, where its
+#: meaning is decided by the rule's KIND, which is precisely what
+#: `test_role_layout_coverage.py::test_the_delegation_marker_means_the_same_thing_in_an_allow_only_rule`
+#: seals: one marker, one fact ("this repo's test files"), and the kind says
+#: whether the fact allows or denies. Do not "finish the job" by adding SEALS
+#: here.
 _DELEGATED_ROLES_EXPECTED: tuple[Role, ...] = (Role.SCAFFOLD, Role.BODIES)
 
 
@@ -643,7 +774,26 @@ _A_PATH_NO_DENY_ROLE_DENIES = "docs/anything.md"
 #: constant it pins deletes its rows instead of reddening them.
 #:
 #: ADJUDICATE is absent BY RULING and not by omission — see the seal below it.
-_DENY_TABLE_ROLES_WRITTEN_OUT: tuple[str, ...] = ("bodies", "scaffold", "seals")
+#:
+#: P4 (2026-08-10): `seals` left for the SAME reason ADJUDICATE was never in it,
+#: and it is a ruling, not a relaxation. SEALS is now `ALLOW_ONLY_GLOBS`, so the
+#: question this seal asks — "is `.dispatcher.yaml` denied BY THE NAMED GLOB
+#: `**/.dispatcher.yaml`?" — has no answer for it: the config file is refused as
+#: an allowlist MISS, carrying `ALLOWLIST_MISS`, exactly as `docs/../x.py` and
+#: every other non-seal path is, and this seal's own `matched_glob` assertion is
+#: what makes it worth having. Keeping the row and relaxing that assertion would
+#: turn it into "SEALS may not write .dispatcher.yaml OR anything else", which
+#: is the vacuous shape the 2026-08-07 amendment removed from the ADJUDICATE row
+#: of this very seal.
+#:
+#: The property itself does not move: `.dispatcher.yaml` is refused to SEALS
+#: twice over, by the allowlist miss and by `FLOOR_GLOBS`, and the seal that
+#: survives is the `("seals", "**/.dispatcher.yaml", …)` pair of
+#: `test_role_protocol_floor.py::_FLOOR_x_ROLE_ROWS`. Verified non-vacuous under
+#: the inversion: that file's `_policy_without_the_floor` constructs its OWN
+#: SEALS rule rather than reading the table, so the probe is still proved
+#: writable under the injected policy before the floor is asked to refuse it.
+_DENY_TABLE_ROLES_WRITTEN_OUT: tuple[str, ...] = ("bodies", "scaffold")
 
 
 @pytest.mark.parametrize("role_value", _DENY_TABLE_ROLES_WRITTEN_OUT)

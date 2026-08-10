@@ -16,6 +16,31 @@ Two properties dominate this file:
 Also sealed here: a repo that adds a `roles:` section today lands it in
 `RepoConfig.unknown_keys` and its additions are silently DROPPED. That is a
 protection the repo asked for and did not get, so it must not stay silent.
+
+P4, 2026-08-10 — the config surface a target repo may write CHANGED
+--------------------------------------------------------------------
+The SEALS row is inverted to `ALLOW_ONLY_GLOBS`
+(`tests/test_role_layout_coverage.py`, and the ruling recorded in
+`tests/test_role_protocol_table.py`). `role_policy_from_mapping` refuses
+`immutable_paths:` on any role that is not `DENY_GLOBS`, so `roles: seals:
+immutable_paths:` stops being a legal thing for a repo to write and becomes a
+typed `RoleProtocolError`. No behaviour in `role_policy_from_mapping` changes —
+the same rule now catches one more role — but the SURFACE does, and a surface
+change that only shows up in a target repo's config is the kind that goes
+unnoticed, so it is sealed as a row rather than left as a note.
+
+The knob that goes with it: after the inversion there is no per-repo and no
+per-task way to NARROW the seal author's writable set either. `disputed_paths:`
+is ADJUDICATE-only and `immutable_paths:` only ADDs to a deny set. P4's ruling
+is that this is correct and deliberate — an allow-only role's writable set must
+be the same fact in every repo, or the gate's answer depends on the config of
+the repo it is judging — and that it costs nothing measurable: no
+`.dispatcher.yaml` in this repository carries a `roles:` section, and no task
+row in `features/` carries `immutable_paths:` or `role: seals` (measured
+2026-08-10). Making `immutable_paths:` SUBTRACT from an allow set would be
+coherent under `validate_override`'s stated invariant (removing an allow only
+GROWS the protected set) and is explicitly NOT done here: it is new narrowing
+syntax for a field documented as ADD-only, and no unit has asked for it.
 """
 
 from __future__ import annotations
@@ -114,13 +139,36 @@ def test_absent_section_yields_the_compiled_in_defaults() -> None:
         ({"bodies": {"immutable_paths": ["**/tests/**:allow"]}}, "negation-suffix"),
         # ADJUDICATE is ALLOW_ONLY: an addition there has no meaning.
         ({"adjudicate": {"immutable_paths": ["**/x/**"]}}, "adjudicate"),
+        # P4 (2026-08-10): SEALS is ALLOW_ONLY too, for the same reason and with
+        # the same consequence — see the seal below and the module docstring.
+        ({"seals": {"immutable_paths": ["**/cmd/**"]}}, "seals"),
     ],
 )
 def test_a_malformed_roles_section_is_refused(section: object, case: str) -> None:
     """A policy-bearing value that is not the shape the author thought it was
     must fail, never be coerced (the `repo_config` `test:` precedent).
 
-    Red now: NotImplementedError is not RoleProtocolError.
+    **AMENDED BY P4, 2026-08-10** — the `seals` row is a CONFIG-SURFACE CHANGE,
+    not a new strictness. `role_policy_from_mapping` already refuses
+    `immutable_paths:` on any role whose rule is not `DENY_GLOBS` ("only a
+    deny-based role has a deny set to add to"), and the SEALS inversion moves
+    SEALS across that line. So a target repo that writes
+
+        roles:
+          seals:
+            immutable_paths: ["**/cmd/**"]
+
+    goes from a working, honoured addition to a typed `RoleProtocolError` at
+    policy-load time. It fails loudly rather than silently dropping the
+    protection the repo asked for, which is this file's whole doctrine, but the
+    surface a repo may write DID change and this row is where that is stated.
+
+    Nothing in this repository breaks: `.dispatcher.yaml` here carries no
+    `roles:` section at all, no `features/*/tasks.yaml` row carries
+    `immutable_paths:`, and none carries `role: seals` (all three measured
+    2026-08-10).
+
+    Red until the SEALS row is inverted.
     Green when: every shape above raises.
     Falsify: tolerate unknown nested keys as `repo_config` does at the top
     level — the two nested-key rows go red.
@@ -134,6 +182,18 @@ def test_valid_additions_are_unioned_onto_the_compiled_in_globs() -> None:
     floor, which is why this module needs no separate floor tier the way
     `risk.py` does.
 
+    **AMENDED BY P4, 2026-08-10.** The second fixture was `seals:`, whose rule
+    is now `ALLOW_ONLY_GLOBS` — an addition there is a typed error (the `seals`
+    row of `test_a_malformed_roles_section_is_refused` above), so this seal
+    would have gone red for a reason that has nothing to do with unioning.
+    Retargeted to `scaffold:`, which is a deny role and stays one, and which
+    exercises the identical property. The duplicate-entry half is preserved by
+    naming a glob `scaffold` genuinely carries (`**/tests/**`) alongside a new
+    one, so "redundant, not narrowing" is still asserted.
+
+    Only TWO deny roles remain after the inversion, and both are used here, so
+    this seal now covers the whole deny table rather than two of three.
+
     Red now: NotImplementedError.
     Green when: each role's globs are its defaults first, then the additions,
     with no default dropped and no duplicate appended.
@@ -144,7 +204,7 @@ def test_valid_additions_are_unioned_onto_the_compiled_in_globs() -> None:
     section = {
         "bodies": {"immutable_paths": ["**/fixtures/**"]},
         # An entry that duplicates a compiled-in glob is redundant, not narrowing.
-        "seals": {"immutable_paths": ["**/src/**", "**/cmd/**"]},
+        "scaffold": {"immutable_paths": ["**/tests/**", "**/cmd/**"]},
     }
     policy = role_policy_from_mapping(section)
 
@@ -153,14 +213,18 @@ def test_valid_additions_are_unioned_onto_the_compiled_in_globs() -> None:
     assert bodies[: len(bodies_defaults)] == bodies_defaults
     assert bodies[len(bodies_defaults) :] == ("**/fixtures/**",)
 
-    seals_defaults = defaults.rule_for(Role.SEALS).globs
-    seals = policy.rule_for(Role.SEALS).globs
-    assert seals[: len(seals_defaults)] == seals_defaults
-    assert seals[len(seals_defaults) :] == ("**/cmd/**",)
-    assert len(seals) == len(set(seals)), f"duplicate glob appended: {seals}"
+    scaffold_defaults = defaults.rule_for(Role.SCAFFOLD).globs
+    scaffold = policy.rule_for(Role.SCAFFOLD).globs
+    assert "**/tests/**" in scaffold_defaults, (
+        "the duplicate-entry fixture no longer duplicates anything; this seal "
+        "would then stop asserting that a redundant addition is dropped"
+    )
+    assert scaffold[: len(scaffold_defaults)] == scaffold_defaults
+    assert scaffold[len(scaffold_defaults) :] == ("**/cmd/**",)
+    assert len(scaffold) == len(set(scaffold)), f"duplicate glob appended: {scaffold}"
 
     # Roles the section did not mention keep their defaults exactly.
-    for role in (Role.SCAFFOLD, Role.ADJUDICATE, Role.LEGACY):
+    for role in (Role.SEALS, Role.ADJUDICATE, Role.LEGACY):
         assert policy.rule_for(role) == defaults.rule_for(role)
 
 
