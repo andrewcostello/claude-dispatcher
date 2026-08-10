@@ -70,7 +70,21 @@ import (
 // Bump it whenever the FINGERPRINT GRAMMAR changes, not only when a field
 // moves: fingerprints are compared across two invocations, so a grammar change
 // that went unversioned would make an unchanged file look wholly rewritten.
-const SchemaVersion = "claude-dispatcher/go-signature-fingerprint/v1"
+// v2 (2026-08-10) changed the grammar in two places, both to close a FALSE
+// NEGATIVE the P2 seals reproduced:
+//
+//	struct embed  `embedded T` became `embedded:T`. The old marker sat in the
+//	              exact column a field NAME occupies, and `embedded` is a legal
+//	              identifier, so `struct{ embedded embedded }` and
+//	              `struct{ embedded }` rendered the same bytes while only the
+//	              second promotes. `:` cannot appear in an identifier, so the
+//	              marker is now somewhere a name cannot reach — the same
+//	              property `interfaceParts` already had by putting its marker
+//	              first.
+//	interface     an interface literal's element list carries each method's
+//	              SIGNATURE whenever no `Iface.Method` sub-symbol will carry it
+//	              (see interfaceParts).
+const SchemaVersion = "claude-dispatcher/go-signature-fingerprint/v2"
 
 // Request is the single JSON object this program reads from stdin.
 //
@@ -261,7 +275,12 @@ func typeFingerprint(expr ast.Expr) string {
 	case *ast.StructType:
 		return "struct{" + structFields(t.Fields) + "}"
 	case *ast.InterfaceType:
-		elements, _ := interfaceParts(t.Methods)
+		// withSignatures: an interface literal reached through here is a TYPE
+		// EXPRESSION — an alias' right-hand side, a field, parameter, result or
+		// constraint type, or a literal embedded in another interface — and
+		// nothing above it emits Iface.Method sub-symbols. If the element list
+		// does not carry the signature, nothing does.
+		elements, _ := interfaceParts(t.Methods, true)
 		return "interface{" + elements + "}"
 	}
 	return render(expr)
@@ -365,6 +384,24 @@ func funcSymbol(decl *ast.FuncDecl) Symbol {
 // verbatim, and whether the field is embedded — the last marked explicitly
 // rather than inferred from the absence of a name, because a fingerprint that
 // needs to be reasoned about is one two shapes can collide in.
+//
+// The marker is `embedded:` and the colon is the whole of it. An explicit
+// marker only works while the marker cannot be SPELLED by the other branch, and
+// v1's `embedded ` could be: it sat in the exact position a field name occupies
+// one branch below, and `embedded` is a legal identifier. So
+//
+//	type S struct{ embedded embedded }   // a named field, promoting nothing
+//	type S struct{ embedded }            // an embed, promoting everything
+//
+// rendered the same bytes, and adding or removing an embed — Go's only
+// promotion mechanism, and therefore what decides which interfaces the outer
+// type satisfies — was no change at all. `:` may not appear in an identifier,
+// so the marker now lives where a name cannot reach it, which is the property
+// interfaceParts already had by putting its marker FIRST.
+//
+// Inferring the embed's name from its type instead would not do: every embed
+// would then collide with the field that names its own type (`Foo` vs
+// `Foo Foo`), trading a rare collision for a universal one.
 func structFields(list *ast.FieldList) string {
 	if list == nil {
 		return ""
@@ -380,7 +417,7 @@ func structFields(list *ast.FieldList) string {
 		}
 		rendered := typeFingerprint(field.Type)
 		if len(field.Names) == 0 {
-			parts = append(parts, "embedded "+rendered+tag)
+			parts = append(parts, "embedded:"+rendered+tag)
 			continue
 		}
 		for _, name := range field.Names {
@@ -393,19 +430,51 @@ func structFields(list *ast.FieldList) string {
 // interfaceParts splits an interface body into its rendered element list and
 // its methods.
 //
-// The element list carries method NAMES only. Each method's signature is its
-// own `Iface.Method` symbol, so repeating it here would report one change
-// twice — the same split the Python side makes between a class fingerprint and
-// its methods.
-func interfaceParts(list *ast.FieldList) (elements string, methods []*ast.Field) {
+// The `method ` marker LEADS, and unlike v1's struct marker it cannot be
+// shadowed: the other branch renders a type expression, and no type expression
+// renders as `method X`.
+//
+// EVERY METHOD'S SIGNATURE IS CARRIED SOMEWHERE, EXACTLY ONCE. The two callers
+// differ in where "somewhere" is, which is what withSignatures selects:
+//
+//	false  typeSymbols, for a top-level interface DEFINITION. It emits one
+//	       `Iface.Method` sub-symbol per named method, and that sub-symbol holds
+//	       the signature. Repeating it in the element list would report one edit
+//	       twice — the same split the Python side makes between a class
+//	       fingerprint and its methods.
+//	true   typeFingerprint, for an interface literal in any other position:
+//	       an alias' right-hand side, a struct field, parameter, result or
+//	       constraint type, or a literal embedded in another interface. NOTHING
+//	       above those emits sub-symbols, so v1 stored the signature nowhere at
+//	       all and retyping a method of such a literal — source-breaking for
+//	       every implementation — was reported as no change. A renamed, added or
+//	       removed method was always caught, because the element list carries
+//	       names; only the signature was lost, which is why the hole read as
+//	       "probes report a change" from the outside.
+//
+// A method named `_` gets its signature inline even when withSignatures is
+// false, because typeSymbols skips blank keys and would otherwise leave that
+// one method's signature unstored. The invariant is the point: the signature is
+// in the element list precisely when no sub-symbol will carry it.
+//
+// The signature is rendered by `signature`, never by go/printer, so parameter
+// GROUPING and line breaks stay normalised: `Do(a, b int)` and `Do(a int, b
+// int)` are one declaration spelled twice, and rendering the literal through
+// go/printer to recover the signature would have carried the spelling with it.
+func interfaceParts(list *ast.FieldList, withSignatures bool) (elements string, methods []*ast.Field) {
 	if list == nil {
 		return "", nil
 	}
 	parts := make([]string, 0, len(list.List))
 	for _, field := range list.List {
 		if len(field.Names) == 1 {
-			if _, ok := field.Type.(*ast.FuncType); ok {
-				parts = append(parts, "method "+field.Names[0].Name)
+			if fn, ok := field.Type.(*ast.FuncType); ok {
+				name := field.Names[0].Name
+				if withSignatures || isBlank(field.Names[0]) {
+					parts = append(parts, "method "+signature(name, fn))
+				} else {
+					parts = append(parts, "method "+name)
+				}
 				methods = append(methods, field)
 				continue
 			}
@@ -425,7 +494,9 @@ func typeSymbols(spec *ast.TypeSpec) []Symbol {
 	// the right-hand side. An alias to an interface literal contributes no
 	// Iface.Method symbols: the whole right-hand side is inside this one
 	// fingerprint, so a changed method is still a change — reported against
-	// the alias rather than against the method.
+	// the alias rather than against the method. That is an invariant and not
+	// only a description: it holds because typeFingerprint asks interfaceParts
+	// for the signatures, which is what the branch below deliberately does not.
 	if spec.Assign.IsValid() {
 		return []Symbol{{
 			Symbol:      name,
@@ -434,16 +505,23 @@ func typeSymbols(spec *ast.TypeSpec) []Symbol {
 		}}
 	}
 
-	symbols := []Symbol{{
-		Symbol:      name,
-		Fingerprint: head + " " + typeFingerprint(spec.Type),
-		Kind:        "type",
-	}}
+	// A DEFINITION of an interface is the one shape with sub-symbols, so it is
+	// the one shape whose element list may omit signatures. It is rendered here
+	// rather than through typeFingerprint for exactly that reason.
 	iface, ok := spec.Type.(*ast.InterfaceType)
 	if !ok {
-		return symbols
+		return []Symbol{{
+			Symbol:      name,
+			Fingerprint: head + " " + typeFingerprint(spec.Type),
+			Kind:        "type",
+		}}
 	}
-	_, methods := interfaceParts(iface.Methods)
+	elements, methods := interfaceParts(iface.Methods, false)
+	symbols := []Symbol{{
+		Symbol:      name,
+		Fingerprint: head + " interface{" + elements + "}",
+		Kind:        "type",
+	}}
 	for _, method := range methods {
 		if isBlank(method.Names[0]) {
 			continue

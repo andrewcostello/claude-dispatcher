@@ -3115,7 +3115,14 @@ class PythonSignatureFingerprinter:
 #: Bump it whenever the fingerprint GRAMMAR changes, because a fingerprint is
 #: compared for equality across two invocations of the helper and a grammar
 #: change would otherwise read as every symbol having changed.
-GO_HELPER_SCHEMA = "claude-dispatcher/go-signature-fingerprint/v1"
+#: v2 (2026-08-10) closed two false NEGATIVES the P2 seals reproduced: a struct
+#: embed renders as ``embedded:T`` rather than ``embedded T`` (the old marker
+#: sat in the column a field name occupies, and ``embedded`` is a legal
+#: identifier), and an interface literal's element list carries each method's
+#: signature wherever no ``Iface.Method`` sub-symbol will. Both change the
+#: grammar, so both require this bump; ``main.go`` carries the same constant and
+#: the same note.
+GO_HELPER_SCHEMA = "claude-dispatcher/go-signature-fingerprint/v2"
 
 #: Where the helper's source lives, relative to this package. Inside
 #: ``src/claude_dispatcher/`` and NOT in ``tools/`` for one reason: the gate
@@ -3779,12 +3786,22 @@ class GoSignatureFingerprinter:
         marker) and the result list (names when named, types always).
       * ``struct`` type: the type parameter list, then every field in
         DECLARATION ORDER — name, type, **struct tag verbatim**, and whether
-        the field is embedded.
+        the field is embedded. Embed-ness is marked as ``embedded:T``, with the
+        colon load-bearing: a marker a field NAME can spell is not a marker, and
+        ``embedded`` is a legal field name.
       * ``interface`` type: the type parameter list, its embedded interfaces,
-        and its method NAMES. The method signatures are not repeated here
-        because each is its own ``Iface.Method`` symbol; repeating them would
-        report one change twice. This mirrors the Python side, whose class
-        fingerprint carries fields while methods are separate symbols.
+        and its method names. **A top-level interface DEFINITION carries names
+        only**, because each method is also its own ``Iface.Method`` symbol and
+        repeating the signature would report one change twice — this mirrors the
+        Python side, whose class fingerprint carries fields while methods are
+        separate symbols. **Every other interface literal carries the full
+        signature of each method**: an alias' right-hand side, a struct field,
+        parameter, result or constraint type, and a literal embedded in another
+        interface have no sub-symbols behind them, so a name-only element list
+        would store the signature nowhere and retyping a method of such a
+        literal — source-breaking for every implementation — would be reported
+        as no change. The signature is rendered by the same normalising path as
+        every parameter list, so grouping and line breaks are still spelling.
       * any other type declaration: whether it is an alias (``type A = B``) or a
         definition (``type A B``) — the ``=`` is semantic, not spelling — and
         the right-hand type expression.
