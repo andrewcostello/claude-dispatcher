@@ -2579,3 +2579,931 @@ def test_this_file_cannot_go_green_by_the_comparator_being_absent() -> None:
         "the two red states must stay distinguishable in a failure list: one "
         "says P3 has not started, the other says P4's vendoring is missing"
     )
+
+
+# --------------------------------------------------------------------------- #
+# 13 — TRAP 1 AT THE FINGERPRINT LEVEL: the RENDERING grammar's forgeability
+#
+# GREEN TODAY, and red under the mutations named row by row. Added by the P2
+# second pass, 2026-08-10.
+#
+# WHY THIS SECTION EXISTS AND WHY SECTION 3 IS NOT IT
+# ---------------------------------------------------
+# Section 3 seals the SYMBOL-KEY grammar — `ts_symbol_key`, the `/`-joined
+# segment list — against a member name that spells a separator. It is a good
+# seal and it is only half the surface. A symbol has TWO author-reachable
+# strings: its key, and its FINGERPRINT, and the fingerprint has a grammar of
+# its own, invented in `main.cjs` and recorded nowhere else. Nothing sealed it.
+#
+# The body author disclosed the hole against its own interest and measured it:
+# mutations that each remove one anti-forgery device redden ZERO of the 151 rows
+# above. That was re-measured for this commit and the count is confirmed at zero
+# for all NINE mutations named below (M1, M2, M2b, M3, M4, M4b, M5, M6, M7). A
+# device no seal defends is a device the next refactor deletes for being
+# unreachable.
+#
+# THE GO DEFECT, RESTATED, BECAUSE IT IS THE THING BEING PREVENTED
+# ----------------------------------------------------------------
+# Go shipped `embedded T` as an embed marker and a struct field named `embedded`
+# forged it: "no marker" was spelled by the ABSENCE of a word in a column a name
+# occupies. TypeScript is a far worse language to try this in, because a member
+# name is not required to be an identifier: `{ "a;b": string }`,
+# `{ "content-type": string }`, `{ 1: string }`, `{ [Symbol.iterator](): void }`
+# and `#private` are all ordinary code, and `; + [ ] :` is most of the
+# separator alphabet of the fingerprint grammar.
+#
+# THE PROPERTY, stated once: **no member name, string literal or type-expression
+# text may forge a structural element of a rendered fingerprint.** Two different
+# declarations may not render the same bytes.
+#
+# HOW EVERY ROW BELOW IS KEPT NON-VACUOUS
+# ----------------------------------------
+# This unit has already shipped two vacuous seals — one that passed with the
+# defect present because an error string happened to contain the substring it
+# searched for, and one whose pass condition was satisfiable by executing
+# nothing. So every row here obeys three rules:
+#
+#   1. IT NAMES ITS MUTATION, and that mutation was APPLIED to a `cp -a` clone
+#      (`.git` file removed, `git init` fresh, `__pycache__` cleared between
+#      runs because CPython keys bytecode on `(mtime_seconds, size)` and a
+#      same-size edit restored inside one second is served from cache). Red was
+#      observed, not argued.
+#   2. IT CARRIES ITS CONTROL IN THE SAME CALL. The forging input and the benign
+#      twin it forges are judged together. A green bought by the comparator
+#      answering `{}`, or by every name being quoted including the ones that
+#      must not be, fails the control half.
+#   3. IT SAYS WHERE THE INPUT COMES FROM. Some of these fixtures are ordinary
+#      production TypeScript and the row says so; some are adversarial and the
+#      row says THAT, plainly, rather than dressing an attack up as a soak
+#      finding.
+#
+# WHAT THIS SECTION COULD NOT SEAL — see
+# `test_the_absolute_path_rule_cannot_be_sealed_on_this_machine` at the end. It
+# is the one hole this pass leaves open, and it is open for a reason no seal on
+# this machine can close.
+# --------------------------------------------------------------------------- #
+
+#: THE FORGERIES. Each row is (label, forging source, benign twin, mutation).
+#:
+#: The recipe is the one section 3's `a/s:b` row uses, and it is worth stating,
+#: because it is what makes these rows collisions rather than merely ugly names.
+#: A member always renders `[kind][modifiers]<tag>:<name>…`, so a forger can only
+#: impersonate a member list whose FIRST member carries the forger's own kind and
+#: tag. Every forger below is therefore a non-identifier-named member — tag `s` —
+#: impersonating a list of non-identifier-named members.
+#:
+#: PROVENANCE, stated per side rather than in aggregate:
+#:   * The TWINS are ordinary production TypeScript. Quoted kebab-case members
+#:     are what every HTTP-header, CSS-property and JSON-schema type is made of
+#:     (`{ "content-type": string }`), and the primary target has them.
+#:   * The FORGERS are adversarial. They are legal TypeScript — any string is a
+#:     legal member name — but nothing writes them by accident. Their job is the
+#:     same as `a/s:b`'s in section 3: to make a device falsifiable. Without a
+#:     row built to collide, the device can be deleted with nothing going red,
+#:     which is precisely the state this section found.
+_FORGED_FINGERPRINTS: tuple[tuple[str, str, str, str], ...] = (
+    (
+        "a member name forges the member separator, so two members read as one",
+        'export interface I { "content-type:string;[prop][]s:x-request-id": number }\n',
+        'export interface I { "content-type": string; "x-request-id": number }\n',
+        "M2",
+    ),
+    (
+        "a member name forges a whole extra method into the interface",
+        'export interface I { "a-b():void;[method][]s:c-d"(): number }\n',
+        'export interface I { "a-b"(): void; "c-d"(): number }\n',
+        "M2",
+    ),
+    (
+        "a member name forges the `+` that folds an overload set",
+        'export interface I { "a-b:string+[prop][]s:a-b": number }\n',
+        'export interface I { "a-b": string; "a-b": number }\n',
+        "M2",
+    ),
+    (
+        "a string literal type forges the `,` between two tuple elements",
+        'export type T = ["x),lit(y"];\n',
+        'export type T = ["x", "y"];\n',
+        "M2b",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    "label, forger, twin, mutation",
+    _FORGED_FINGERPRINTS,
+    ids=[r[0] for r in _FORGED_FINGERPRINTS],
+)
+def test_a_member_name_cannot_forge_a_structural_element_of_a_fingerprint(
+    label: str, forger: str, twin: str, mutation: str, compare_ts
+) -> None:
+    """Trap 1, at the level section 3 does not reach: the RENDERED bytes.
+
+    GREEN TODAY. Red under the mutation each row names.
+
+    Two declarations that mean different things to every consumer must not
+    render the same fingerprint. The twin declares two members; the forger
+    declares ONE, whose name contains the bytes the renderer uses to separate
+    the twin's two. If those bytes are not quoted, a body author can delete a
+    member of a published interface and the gate reports no change — which is
+    the Go defect exactly, transplanted into a language where the member
+    position accepts arbitrary text.
+
+    Green when: the two files fingerprint differently AND the edit from the twin
+    to the forger is reported as a change by the live comparator.
+
+    Falsify — MEASURED, in a `cp -a` clone with a fresh `git init`:
+
+      * **M2** — in `renderAtom`, drop the `JSON.stringify` from both quoting
+        arms, so a tag's text is emitted bare::
+
+            return `${tag}:${text}`;
+
+        Rows 1-3 then render byte-identically to their twins and go red. Row 4
+        is untouched, because a tuple's literal text is quoted by `renderExpr`
+        and not by `renderAtom` — which is why row 4 exists and names M2b.
+      * **M2b** — in `renderExpr`, return `node.text` rather than
+        `JSON.stringify(node.text)` for `StringLiteral` /
+        `NoSubstitutionTemplateLiteral`. Row 4 goes red; rows 1-3 do not.
+
+    Both mutations redden ZERO of the 151 rows that predate this section, which
+    is the measurement this section was written to answer.
+
+    THE CONTROLS, and why a bare inequality would not have been one. Asserting
+    only `forger != twin` is satisfiable by a comparator that answers `{}` to
+    one file and something to the other, and by a comparator that faults on one.
+    So the symbol SETS are asserted equal first — both files declare exactly one
+    top-level name — and both are asserted non-empty. The pair is judged in this
+    one call and neither half means anything alone.
+    """
+    forged = _fingerprints(_TS, forger)
+    benign = _fingerprints(_TS, twin)
+
+    assert forged and benign, (
+        f"{label}: one side fingerprinted to nothing ({forged} vs {benign}). An "
+        "empty answer passes every inequality in this file for free"
+    )
+    assert set(forged) == set(benign), (
+        f"{label}: the two revisions declare the same top-level name and must "
+        f"produce the same symbol SET; got {sorted(forged)} vs {sorted(benign)}"
+    )
+    assert forged != benign, (
+        f"{label}: a member NAME forged a structural element of the rendered "
+        "fingerprint, so two different declarations render the same bytes. That "
+        "is the Go embed-marker defect in the one position TypeScript makes "
+        "trivially reachable — a member name is not required to be an "
+        "identifier. Text the parser has not certified an identifier must be "
+        "JSON-quoted; a JSON string is self-delimiting and no author-chosen "
+        "character can reach a structural position from inside one"
+    )
+    assert _ts_changed(compare_ts, twin, forger) is True, (
+        f"{label}: the live comparator reported NO CHANGE for an edit that "
+        "removes a member from a published interface. This is the direction "
+        "that clears a branch, and it clears it silently"
+    )
+
+
+#: Member names the parser will NOT certify as identifiers, so every one of them
+#: must reach the fingerprint inside a JSON string. Each is legal TypeScript in
+#: the member position.
+#:
+#: The first four are the body's own named fixtures. `content-type` is the
+#: production case and it is not exotic: quoted kebab-case members are what
+#: HTTP-header, CSS-property and JSON-schema types are made of. The rest are
+#: chosen for the separator each one reaches: `;` and `+` join members, `[` and
+#: `]` delimit the two slots, `:` separates tag from text and name from type,
+#: `/` is the KEY separator, `"` and `\\` are the JSON string's own delimiters,
+#: and a newline and a space are the two characters a hand-rolled quoting scheme
+#: forgets first.
+_NAMES_THE_PARSER_DID_NOT_CERTIFY: tuple[str, ...] = (
+    "a;b",
+    "[prop][]i:c",
+    "content-type",
+    "k:empty",
+    "a/b",
+    "a+b",
+    "a{b}c",
+    "a b",
+    "1abc",
+    "i:x",
+    'a"b',
+    "a\\b",
+    "a\nb",
+)
+
+
+@pytest.mark.parametrize("name", _NAMES_THE_PARSER_DID_NOT_CERTIFY)
+def test_text_the_parser_did_not_certify_an_identifier_is_json_quoted(
+    name: str,
+) -> None:
+    """Rule 1 of the rendering grammar, sealed as a property over the text.
+
+    GREEN TODAY. Red under M2.
+
+    The rule `main.cjs` states is: bare text is emitted ONLY when the parser has
+    told us it is an identifier, and everything else is `JSON.stringify`d. A
+    JSON string is self-delimiting — it begins and ends with `"` and contains no
+    unescaped `"` or `\\` — so no author-chosen character can reach a structural
+    position from inside one. That rule had no seal.
+
+    This is the general form of the forgery table above: rather than one
+    hand-built collision per separator, it asserts the invariant that makes
+    every such collision impossible at once.
+
+    Green when: the hostile name appears in the fingerprint as `s:` followed by
+    its JSON encoding, AND — in the same call, on the same file — the ordinary
+    member named `plain` appears BARE as `i:plain`.
+
+    THE CONTROL IS THE SECOND HALF AND IT IS NOT DECORATION. A renderer that
+    quoted everything, including certified identifiers, would satisfy the first
+    assertion on every row while breaking the `{foo}` / `{"foo"}` fold that
+    `test_quoting_a_member_name_is_not_a_signature_change` depends on. Both
+    halves are asserted here, because a seal that can be passed by over-quoting
+    is a seal that moves the defect one test to the left.
+
+    Falsify: **M2** — drop `JSON.stringify` from both arms of `renderAtom`.
+    Measured red on every row of this table, with the `i:plain` control still
+    green, which is the pairing doing its job. M2 reddens none of the 151 rows
+    that predate this section.
+
+    A MEASUREMENT WORTH RECORDING, because it corrects the obvious reading of
+    the body's report. The body named `[prop][]i:c` as a needed fixture. It is
+    in this table and it belongs here — but it does NOT collide with the member
+    `c`, not even under M2, because the forger lands on tag `s` and `c` lands on
+    tag `i`, and the LEADING tag is what is read. The tag split is a second,
+    independent device. That is why the collision rows above are built out of
+    non-identifier-named twins rather than out of this fixture: a row that
+    cannot collide cannot falsify anything, and this file has already shipped
+    two seals that could not fail.
+    """
+    source = f"export interface I {{ {json.dumps(name)}: string; plain: string }}\n"
+    fingerprints = _fingerprints(_TS, source)
+
+    assert set(fingerprints) == {"i:I"}, (
+        f"a member named {name!r} moved the SYMBOL SET to {sorted(fingerprints)}; "
+        "an interface is one symbol whatever its members are called"
+    )
+    rendered = fingerprints["i:I"]
+
+    assert f"s:{json.dumps(name)}" in rendered, (
+        f"a member named {name!r} did not reach the fingerprint inside a JSON "
+        f"string. It rendered as {rendered!r}. Text the parser has not certified "
+        "an identifier must be quoted, or the member position — which accepts "
+        "ARBITRARY text in TypeScript — becomes a way to write the renderer's "
+        "own separators into a fingerprint"
+    )
+    assert "i:plain:string" in rendered, (
+        "the control half: a member the parser DID certify an identifier must "
+        f"render bare, and {rendered!r} does not contain `i:plain:string`. "
+        "Quoting everything would pass the assertion above and break the "
+        "`{foo}`/`{\"foo\"}` fold, which is the same defect one test to the left"
+    )
+
+
+#: Class members with and without modifiers. Every one is ordinary production
+#: TypeScript; the last row is the Go defect's exact TypeScript twin, and the
+#: contract at `main.cjs` rule 2 prints both halves of it by name.
+_MEMBER_SHAPES: tuple[tuple[str, str, str], ...] = (
+    ("a plain property", "export class C { x: number = 1; }\n", "[prop][]i:x:number"),
+    (
+        "a static property",
+        "export class C { static x: number = 1; }\n",
+        "[prop][static]i:x:number",
+    ),
+    (
+        "a readonly property",
+        "export class C { readonly x: number = 1; }\n",
+        "[prop][readonly]i:x:number",
+    ),
+    ("a plain method", "export class C { m(): void {} }\n", "[method][]i:m():void"),
+    (
+        "a static async method",
+        "export class C { static async m(): Promise<void> {} }\n",
+        "[method][static,async]i:m():i:Promise<void>",
+    ),
+    (
+        "a getter",
+        "export class C { get g(): number { return 1; } }\n",
+        "[get][]i:g():number",
+    ),
+    (
+        "a constructor",
+        "export class C { constructor(a: string) {} }\n",
+        "[ctor][]([]i:a:string):@inferred",
+    ),
+    (
+        "a property NAMED static — the Go defect's TypeScript twin",
+        "export class C { static: number = 1; }\n",
+        "[prop][]i:static:number",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    "label, source, expected", _MEMBER_SHAPES, ids=[r[0] for r in _MEMBER_SHAPES]
+)
+def test_every_optional_marker_lives_in_an_always_present_bracket_slot(
+    label: str, source: str, expected: str
+) -> None:
+    """Rule 2 of the rendering grammar: `[]` when empty, never omitted.
+
+    GREEN TODAY. Red under M1.
+
+    This is the device that is the LITERAL repair of the Go defect. In Go, "no
+    marker" was spelled by the absence of a word in a column a name occupies, so
+    `type S struct{embedded embedded}` and an embed of that type rendered
+    identically. Here "no marker" is spelled `[]`, and `[` cannot appear in a
+    TypeScript identifier, so `class C { static: number }` renders
+    `[prop][]i:static:number` and `class C { static x: number }` renders
+    `[prop][static]i:x:number`.
+
+    Green when: each member renders EXACTLY the documented bytes, and every
+    member sub-symbol of the class has both slots — `[kind][modifiers]` — with
+    the modifier slot present even when it holds nothing.
+
+    Falsify: **M1** — make `slot()` omit itself when empty and drop its brackets
+    when it does not::
+
+        function slot(words) {
+          return words.length ? `${words.join(' ')} ` : '';
+        }
+
+    Measured: every row of this table goes red, and M1 reddens ZERO of the 151
+    rows that predate this section.
+
+    AN HONEST LIMIT ON WHAT THIS ROW PROVES, recorded because the alternative is
+    a seal that claims more than it measured. Under M1 the two halves of the Go
+    fixture STILL do not converge — `[prop]i:static:number` and
+    `[prop]static i:x:number` differ — because every member name is prefixed by
+    its tag (`i:` / `s:`), which is rule 1's device and not rule 2's. So on the
+    tree as it stands, rule 2 is defence in depth rather than the load-bearing
+    guard, and no fixture found on this machine turns M1 alone into a collision.
+    It is sealed anyway, and sealed as EXACT BYTES rather than as a collision,
+    because that is the honest shape of the claim: the contract prints these
+    strings, the renderer must emit them, and a device deleted for being
+    unreachable is a device that is not there the day rule 1 is weakened. M1 and
+    M2 together are the Go defect restored in full.
+    """
+    import re
+
+    fingerprints = _fingerprints(_TS, source)
+    members = {k: v for k, v in fingerprints.items() if k.startswith("i:C/")}
+
+    assert members, (
+        f"{label}: the class produced no member sub-symbols at all "
+        f"({sorted(fingerprints)}). A class member is a sub-symbol by the "
+        "contract, and an answer with no members passes every byte assertion "
+        "below by having nothing to assert on"
+    )
+    assert expected in fingerprints.get("i:C", ""), (
+        f"{label}: the class fingerprint {fingerprints.get('i:C')!r} does not "
+        f"contain the documented rendering {expected!r}. Rule 2 of the grammar "
+        "is that every optional marker lives in an ALWAYS-PRESENT bracket slot, "
+        "`[]` when empty; omitting the empty slot is how Go shipped a marker a "
+        "field name could spell"
+    )
+    two_slots = re.compile(
+        r"^\[(?:prop|method|get|set|ctor|call|new|index)\]\[[a-z,]*\]"
+    )
+    for key, text in members.items():
+        assert two_slots.match(text), (
+            f"{label}: the member {key} rendered as {text!r}, which does not "
+            "open with a kind slot followed by a modifier slot. Both slots are "
+            "unconditional — the modifier slot is `[]` when there are no "
+            "modifiers — and that is what stops a name occupying the column a "
+            "marker would otherwise have occupied"
+        )
+
+
+def test_quoting_a_member_name_is_not_a_signature_change(compare_ts) -> None:
+    """`{ foo }` and `{ "foo" }` are ONE member, and the fold must say so.
+
+    GREEN TODAY. Red under M3.
+
+    This is the third device the body measured as undefended, and it is the one
+    whose failure is a FALSE POSITIVE rather than a false negative — which makes
+    it the one most likely to ship, because a gate that over-reports looks
+    conservative right up until the 996-file repository it guards stops being
+    read.
+
+    The input is ordinary production churn, not an attack: Prettier's
+    `quoteProps` setting (`"as-needed"`, `"consistent"`, `"preserve"`) rewrites
+    exactly this, in bulk, across every object type in a repository, and
+    switching it is a one-line change to a config file that no reviewer reads as
+    a signature edit. TypeScript agrees the two are one member — `{ foo }` and
+    `{ "foo" }` are the same property — so a comparator that disagrees is simply
+    wrong, not merely noisy.
+
+    Green when: quoting a member name is silent, AND — in the same seal — the
+    partner edit that changes the member's TYPE under the same quoting is still
+    caught.
+
+    THE PARTNER IS THE ANTI-VACUITY DEVICE, by the argument section 6 makes:
+    "quoting is silent" is satisfied by a renderer that drops member names
+    entirely, which would make the retype silent too. The two are asserted
+    together and neither means anything alone.
+
+    Falsify: **M3** — in `nameAtomOf`, drop the `isIdentifierText` guard on the
+    string-literal arm so a quoted name always lands on the `s` tag::
+
+        return segment('s', node.text);
+
+    Measured: the silent half goes red (`i:foo` becomes `s:"foo"`), the partner
+    half stays green, and M3 reddens ZERO of the 151 rows that predate this
+    section.
+    """
+    bare = "export interface I { foo: string }\n"
+    quoted = 'export interface I { "foo": string }\n'
+    retyped = 'export interface I { "foo": number }\n'
+
+    assert _ts_changed(compare_ts, bare, quoted) is False, (
+        "quoting a member name was reported as a signature change. `{ foo }` "
+        'and `{ "foo": … }` are the same member to TypeScript, and the rewrite '
+        "between them is what Prettier's `quoteProps` does in bulk. A gate that "
+        "reports a contract change for a formatter setting reports it across "
+        "every object type at once, and is not read again"
+    )
+    assert _ts_changed(compare_ts, quoted, retyped) is True, (
+        "the partner half: retyping a quoted member was silent too. A "
+        "normalisation that reaches this row is deletion — the member name, or "
+        "the member itself, went out with the quotes"
+    )
+
+
+def test_quoting_a_class_member_name_does_not_move_its_symbol_key() -> None:
+    """The fold is the IDENTITY, so quoting may not move a KEY either.
+
+    GREEN TODAY. Red under M3.
+
+    Separate from the seal above because it fails one level down and fails
+    worse. A class member is a sub-symbol, so its name is part of a KEY. If
+    quoting moves `i:C/i:m` to `i:C/s:m`, the comparator does not report "a
+    member changed" — it reports one symbol REMOVED and another ADDED, and
+    removal is the blocking direction. Prettier's `quoteProps` would then block
+    every branch that touched it, for a rewrite that changes nothing.
+
+    Green when: the two spellings produce identical symbol MAPS — same keys,
+    same fingerprints — and the retype partner still moves the fingerprint while
+    keeping the key.
+
+    Falsify: **M3**, as above. Measured: the key becomes `i:C/s:m` and the first
+    assertion reddens, while the partner half stays green.
+    """
+    bare = _fingerprints(_TS, "export class C { m(): void {} }\n")
+    quoted = _fingerprints(_TS, 'export class C { "m"(): void {} }\n')
+    retyped = _fingerprints(_TS, 'export class C { "m"(): number { return 1; } }\n')
+
+    assert bare and quoted, (
+        f"one spelling fingerprinted to nothing ({bare} vs {quoted}); two empty "
+        "answers are equal, which would pass the assertion below for free"
+    )
+    assert bare == quoted, (
+        "quoting a class member's name moved its SYMBOL KEY. That is not "
+        "reported as a changed member — it is reported as one symbol removed and "
+        f"another added, and removed is the direction that blocks. {bare} vs "
+        f"{quoted}"
+    )
+    assert set(quoted) == set(retyped), (
+        "the partner half: changing a member's RETURN TYPE moved the symbol set, "
+        "so the key is carrying something other than the member's name"
+    )
+    assert quoted != retyped, (
+        "the partner half: changing a member's return type was silent. A "
+        "renderer that made the quoting seal above pass by dropping member names "
+        "would also pass that seal, which is why both are asserted here"
+    )
+
+
+def test_a_private_name_and_a_string_literal_of_the_same_spelling_stay_two_members(
+    compare_ts,
+) -> None:
+    """`#secret` and `"#secret"` are DIFFERENT members and must not fold.
+
+    GREEN TODAY. Red under M7.
+
+    Found while measuring this section rather than named in the body's report,
+    and it is the sharpest of the tag-split cases. `#secret` is not identifier
+    text, so it reaches `renderAtom` quoted — but under tag `i`, deliberately,
+    because a string-literal member spelled `"#secret"` is a different member and
+    belongs on `s`. Route the private identifier through `segment('s', …)` and
+    the two acquire the SAME KEY, and the fold that exists to make declaration
+    merging representable silently swallows one of them: the class loses a
+    member from its symbol set with no error anywhere.
+
+    Provenance: private fields are ordinary production TypeScript and the primary
+    target has them. The pairing with a string-literal `"#secret"` in the same
+    class is adversarial, and this row says so — its job is to make the tag split
+    falsifiable, exactly as the forgery table's forgers do.
+
+    Green when: the class has three symbols — itself and both members — with
+    distinct keys, and deleting the private field is still caught.
+
+    Falsify: **M7** — in `nameAtomOf`, replace the `PrivateIdentifier` arm's
+    `['i', node.text]` with `segment('s', node.text)`. Measured: the two members
+    collapse into the single key `i:C/s:#secret` joined by `+`, this seal
+    reddens, and M7 reddens ZERO of the 151 rows that predate this section.
+    """
+    both = 'export class C {\n  #secret: number = 1;\n  "#secret": string = "x";\n}\n'
+    without_private = 'export class C {\n  "#secret": string = "x";\n}\n'
+
+    fingerprints = _fingerprints(_TS, both)
+    assert set(fingerprints) == {"i:C", "i:C/i:#secret", "i:C/s:#secret"}, (
+        'a private `#secret` and a string-literal member `"#secret"` are two '
+        "different members of one class and must key differently. They produced "
+        f"{sorted(fingerprints)}. Sharing a key means the overload fold merges "
+        "them and the class quietly loses a member — the fold exists to make "
+        "declaration merging representable, not to hide members"
+    )
+    assert _ts_changed(compare_ts, both, without_private) is True, (
+        "the control half: deleting the private field was silent, so the two "
+        "members were never separately represented in the first place"
+    )
+
+
+#: The three positions the EMPTY name reaches, all legal, all found by the soak
+#: in real code rather than by reading — `main.cjs` records the finding at
+#: `segment()`. Each lands on the `k:empty` slot.
+_THE_EMPTY_NAME: tuple[tuple[str, str, str], ...] = (
+    (
+        "an interface member with an empty name",
+        'export interface I { "": number }\n',
+        "i:I",
+    ),
+    ("an ambient module with an empty name", 'declare module "" {}\n', "k:empty"),
+    (
+        "a star re-export from an empty specifier",
+        'export * from "";\n',
+        "k:export/k:star/k:empty",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    "label, source, key", _THE_EMPTY_NAME, ids=[r[0] for r in _THE_EMPTY_NAME]
+)
+def test_the_empty_name_is_representable_rather_than_a_helper_bug(
+    label: str, source: str, key: str
+) -> None:
+    """`interface I { "": number }` compiles, so the gate may not fault on it.
+
+    GREEN TODAY. Red under M6.
+
+    `ts_symbol_key` refuses an empty segment text, correctly — a key built from a
+    bug matches nothing across revisions. But an empty NAME is not a bug, it is
+    legal TypeScript, and all three shapes above were found by the soak in real
+    code. Before the `segment()` guard the helper threw and the caller reported
+    HELPER_FAILED: the gate switching ITSELF OFF on ordinary compiling code,
+    which is the worse of the two ways to be wrong, because a fault is not a
+    lenient answer — it is no answer, over the whole file.
+
+    Green when: each shape fingerprints without a fault, at its `k:empty` key.
+
+    Falsify: **M6** — remove the guard, so `segment()` is the identity::
+
+        function segment(tag, text) { return [tag, text]; }
+
+    Measured: all three rows raise `ComparatorUnavailable(helper_failed: empty
+    text for a s segment)` and `_fingerprints` fails them with the `NO TRUSTED
+    PARSER` marker. M6 reddens ZERO of the 151 rows that predate this section —
+    which is to say the guard that stops the gate faulting on legal code had no
+    seal at all.
+
+    RULING REQUEST FOR P4, recorded here because a seal is the wrong instrument
+    for it and this author may not edit `role_protocol.py`. `k:empty` extends the
+    `k` word list the contract documents at `TS_KEY_TAGS`. The TAG SET itself is
+    closed at `{i,s,c,k}` and sealed shut by
+    `test_a_key_built_from_a_helper_bug_is_refused_rather_than_returned`, and
+    that is untouched. The WORD list is not sealed and not closed, and `empty` is
+    not on it. It fits the tag's stated definition — "a position the language has
+    but no identifier names" — and it cannot be forged: a member named `empty`
+    keys `i:empty`, a string-literal `"empty"` normalises to `i:empty` too, and a
+    string-literal member spelled `k:empty` keys `s:k:empty`, because the LEADING
+    tag is what is read. All three are asserted below. What is missing is a WORD
+    saying so in the contract, and only P4 can write it.
+    """
+    fingerprints = _fingerprints(_TS, source)
+    assert key in fingerprints, (
+        f"{label}: {key!r} is not among {sorted(fingerprints)}. The empty name is "
+        "legal TypeScript in this position and the gate may not fault on it: a "
+        "fault is not a conservative answer, it is no answer over the whole file"
+    )
+
+    # The forgery half of the ruling request, judged in the same call so that a
+    # green above cannot be bought by `k:empty` swallowing its neighbours.
+    named_empty = _fingerprints(_TS, "export interface I { empty: number }\n")
+    spelled = _fingerprints(_TS, 'export interface I { "k:empty": number }\n')
+    unnamed = _fingerprints(_TS, 'export interface I { "": number }\n')
+    assert len({named_empty["i:I"], spelled["i:I"], unnamed["i:I"]}) == 3, (
+        "a member named `empty`, a member spelled `k:empty` and a member with NO "
+        "name must render three different ways. They rendered "
+        f"{named_empty['i:I']!r}, {spelled['i:I']!r} and {unnamed['i:I']!r}. The "
+        "`k` tag exists so that a position no identifier can name is a position "
+        "no identifier can FORGE"
+    )
+
+
+def test_export_equals_keeps_its_own_slot_and_never_the_default_one() -> None:
+    """`export = X` and `export default X` are two different promises.
+
+    GREEN TODAY. Red under M5.
+
+    They are not interchangeable, and the difference is load-bearing for every
+    importer: `export = X` is the CommonJS-shaped export that
+    `import X = require('m')` and `import * as X` consume, `export default X` is
+    the ES one. Swapping them breaks every consumer — at build time for some and
+    at run time for the rest, depending on `esModuleInterop`. They must not share
+    a key, or the swap reads as one symbol whose fingerprint moved rather than as
+    what it is: one promise withdrawn and a different one made.
+
+    Green when: `export = X` keys `k:export`, `export default X` keys
+    `k:default`, a named export keys `k:export/i:b`, and an ambient module NAMED
+    "export" keys `s:export` — four distinct positions, none reachable from
+    another.
+
+    Falsify: **M5** — in the `ExportAssignment` arm of `collectStatement`, key
+    both forms `['k', 'default']`. Measured: `export = X` moves to `k:default`,
+    the first assertion reddens, and M5 reddens ZERO of the 151 rows that predate
+    this section.
+
+    RULING REQUEST FOR P4, the same shape as the `k:empty` one above. The bare
+    `k:export` key that `export = X` produces is a key shape the contract's
+    documented position list does not name — the list names `k:export/i:<name>`
+    for a named export and `k:default` for the anonymous default slot, and stops.
+    `k:export` alone is distinct from both by construction, and is asserted so
+    here, but it is UNRULED: the seal below pins behaviour that no contract
+    sentence currently requires. Only P4 can add the sentence.
+    """
+    equals = _fingerprints(_TS, "declare const X: number;\nexport = X;\n")
+    default = _fingerprints(_TS, "const X: number = 1;\nexport default X;\n")
+    named = _fingerprints(_TS, "declare const b: number;\nexport { b };\n")
+    module = _fingerprints(_TS, 'declare module "export" {}\n')
+
+    assert "k:export" in equals and "k:default" not in equals, (
+        "`export = X` must key `k:export` and must never reach the anonymous "
+        f"default slot; it produced {sorted(equals)}. The two export forms are "
+        "different promises to every importer, and a shared key reports the swap "
+        "between them as one symbol changing rather than as one promise being "
+        "withdrawn and another made"
+    )
+    assert "k:default" in default and "k:export" not in default, (
+        f"`export default X` must key `k:default`; it produced {sorted(default)}"
+    )
+    assert "k:export/i:b" in named, (
+        f"`export {{ b }}` must key `k:export/i:b`; it produced {sorted(named)}"
+    )
+    assert "s:export" in module and "k:export" not in module, (
+        'an ambient module NAMED "export" must land on the `s` tag and must not '
+        f"forge the keyword slot; it produced {sorted(module)}"
+    )
+
+
+def test_the_helper_environment_drops_every_node_and_npm_variable() -> None:
+    """The environment scrub — a gate input the operator's shell can reach.
+
+    GREEN TODAY. Red under M4.
+
+    A different class from the three devices above: this is not a forgery, it is
+    an ENVIRONMENT-CONTROLLED INPUT to the program that decides what a branch's
+    signatures are. `NODE_OPTIONS` can carry `--require`, which executes
+    arbitrary code before the helper's first line; `NODE_PATH` is a module search
+    root taken from the environment, and this unit's whole rule is that search
+    roots come from `__file__`. A shell that exports either for an unrelated
+    project silently joins the trusted base.
+
+    The contract writes the strip as a PREFIX rule rather than a list of the
+    dangerous names, and that choice is what is sealed: `NODE_A_FUTURE_ONE` is in
+    the table below and there is no list it could appear on.
+
+    Green when: every `NODE_*` and `NPM_CONFIG_*` variable is gone, AND — in the
+    same call — `PATH`, `HOME` and an unrelated variable survive.
+
+    THE SURVIVORS ARE THE CONTROL, AND WITHOUT THEM THIS SEAL IS VACUOUS.
+    `return {}` strips every dangerous variable and passes the first half
+    perfectly, while breaking the helper on every machine (`node` is found on
+    `PATH`, exactly as `go` is). Asserting only the removals is asserting that
+    the function is destructive, not that it is correct.
+
+    Falsify: **M4** — replace the comprehension in `_node_toolchain_environment`
+    with `return dict(os.environ)`. Measured red, and M4 reddens ZERO of the 151
+    rows that predate this section: the scrub described in four contract
+    paragraphs had no executable seal anywhere.
+    """
+    import os
+
+    hostile = {
+        "NODE_OPTIONS": "--require /tmp/evil.js",
+        "NODE_PATH": "/repo/node_modules",
+        "NODE_EXTRA_CA_CERTS": "/tmp/ca.pem",
+        "NODE_A_FUTURE_ONE": "whatever it turns out to do",
+        "NPM_CONFIG_PREFIX": "/tmp/npm",
+        "NPM_CONFIG_REGISTRY": "http://127.0.0.1:1/",
+    }
+    survivors = {
+        "PATH": "/usr/bin:/bin",
+        "HOME": "/home/someone",
+        "EVENPLAY_UNRELATED": "kept",
+    }
+
+    saved = os.environ
+    try:
+        os.environ = dict(hostile, **survivors)  # type: ignore[assignment]
+        scrubbed = role_protocol._node_toolchain_environment()
+    finally:
+        os.environ = saved  # type: ignore[assignment]
+
+    for name in hostile:
+        assert name not in scrubbed, (
+            f"{name} survived into the environment the helper runs under. The "
+            "strip is a PREFIX rule — every `NODE_*` and every `NPM_CONFIG_*` — "
+            "rather than a list of the dangerous ones, because the helper needs "
+            "none of them and a future one has to be closed in advance rather "
+            "than discovered"
+        )
+    for name, value in survivors.items():
+        assert scrubbed.get(name) == value, (
+            f"{name} was stripped along with the dangerous variables. `node` is "
+            "found on PATH exactly as `go` is, and a function that returns an "
+            "empty environment passes every removal assertion above while making "
+            "the helper unrunnable — which is the vacuous way to pass this seal"
+        )
+
+
+def test_the_helper_process_is_actually_given_the_scrubbed_environment() -> None:
+    """The scrub is plumbed into the subprocess, not merely computed.
+
+    GREEN TODAY. Red under M4b.
+
+    The seal above proves the function is correct. It does not prove anything
+    calls it, and a correct function nobody calls is exactly the shape of defect
+    this unit keeps finding: `_run_ts_helper` is the only place the property
+    becomes real, and `env=` there is one token wide.
+
+    The `cwd` is asserted in the same call and for the reason it is set: Node
+    resolves `require` by walking UP from the requiring file and, for some
+    lookups, from the CWD, and it reads `package.json` from ancestor directories
+    to decide CommonJS-versus-ESM. Left at the judged checkout, the ancestor
+    chain is the branch's — the untrusted-parser problem arriving by a second
+    door.
+
+    Green when: `subprocess.run` is called with the scrubbed mapping and with
+    `cwd` set to the parser's own directory.
+
+    Falsify: **M4b** — change `env=_node_toolchain_environment()` to `env=None`
+    and `cwd=str(directory)` to `cwd=None` in `_run_ts_helper`. Measured red, and
+    M4b reddens ZERO of the 151 rows that predate this section.
+    """
+    import os
+    import subprocess
+
+    captured: dict[str, object] = {}
+
+    def _fake_run(args, **kwargs):
+        captured["args"] = args
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(args, 0, stdout=b"{}", stderr=b"")
+
+    saved_run = subprocess.run
+    saved_environ = os.environ
+    directory = Path("/nonexistent/parser/home")
+    try:
+        os.environ = dict(  # type: ignore[assignment]
+            {"NODE_OPTIONS": "--require /tmp/evil.js", "NODE_PATH": "/repo/nm"},
+            PATH="/usr/bin",
+        )
+        subprocess.run = _fake_run  # type: ignore[assignment]
+        role_protocol._run_ts_helper("node", directory, _TS, "export const a = 1;\n")
+    finally:
+        subprocess.run = saved_run  # type: ignore[assignment]
+        os.environ = saved_environ  # type: ignore[assignment]
+
+    assert captured.get("args"), (
+        "`_run_ts_helper` never reached `subprocess.run` at all, so every "
+        "assertion below would be checking a mapping nobody built. A pass "
+        "condition satisfiable by executing nothing is the second vacuous seal "
+        "this unit has already shipped"
+    )
+    env = captured.get("env")
+    assert isinstance(env, dict), (
+        f"the helper subprocess was launched with env={env!r}, which means it "
+        "INHERITS the operator's environment. `NODE_OPTIONS` in an inherited "
+        "environment executes arbitrary code before the helper's first line, and "
+        "the helper is the program that decides what a branch's signatures are"
+    )
+    assert "NODE_OPTIONS" not in env and "NODE_PATH" not in env, (
+        f"the scrub is computed but not plumbed: the process was given {sorted(env)}"
+    )
+    assert env.get("PATH") == "/usr/bin", (
+        "the process was given an environment with no PATH; `node` is found on "
+        "PATH, so that would be a helper which cannot run rather than a helper "
+        "which runs safely"
+    )
+    assert captured.get("cwd") == str(directory), (
+        f"the helper's cwd was {captured.get('cwd')!r}, not the parser's own "
+        "directory. Node reads `package.json` from ancestor directories and "
+        "resolves some lookups from the CWD; left at the judged checkout the "
+        "ancestor chain is the branch's, which restores the untrusted-parser "
+        "problem by a second door"
+    )
+
+
+def test_the_forgery_tables_are_intact_and_every_row_is_a_real_probe() -> None:
+    """A structural seal on this section's own tables.
+
+    GREEN TODAY.
+
+    The argument `test_the_normalisation_tables_are_paired_and_rule_both_ways`
+    makes for section 6, and it earns its place for the same reason: a table that
+    quietly loses rows still runs, still reports green for whatever survives, and
+    stops proving what the section claims. The specific failure refused here is a
+    forger row edited until it no longer forges — the fastest way to make a red
+    row green is to make it stop asking.
+
+    Green when: no forger equals its twin, no duplicate labels, every hostile
+    name is genuinely non-identifier text, the member-shape table rules the empty
+    slot in BOTH directions, and every mutation a row names is one this section
+    claims to have measured.
+    """
+    labels = [row[0] for row in _FORGED_FINGERPRINTS]
+    assert len(labels) == len(set(labels)), f"duplicate forgery labels: {labels}"
+    measured = {"M1", "M2", "M2b", "M3", "M4", "M4b", "M5", "M6", "M7"}
+    for label, forger, twin, mutation in _FORGED_FINGERPRINTS:
+        assert forger != twin, (
+            f"{label}: the forger and its twin are the same text, so the row "
+            "proves nothing"
+        )
+        assert mutation in measured, (
+            f"{label}: names the mutation {mutation!r}, which is not one this "
+            "section measured. A falsifier nobody ran is a claim, not a seal"
+        )
+
+    assert len(set(_NAMES_THE_PARSER_DID_NOT_CERTIFY)) == len(
+        _NAMES_THE_PARSER_DID_NOT_CERTIFY
+    ), "duplicate hostile member names"
+    for name in _NAMES_THE_PARSER_DID_NOT_CERTIFY:
+        assert not name.isidentifier(), (
+            f"{name!r} is plain identifier text, so it normalises to the `i` tag "
+            "and the quoting assertion it sits in cannot fail"
+        )
+
+    shapes = [row[0] for row in _MEMBER_SHAPES]
+    assert len(shapes) == len(set(shapes)), f"duplicate member shapes: {shapes}"
+    assert any("[]" in row[2] for row in _MEMBER_SHAPES) and any(
+        "][" in row[2] and "[]" not in row[2] for row in _MEMBER_SHAPES
+    ), (
+        "the member-shape table must contain BOTH a member with no modifiers and "
+        "a member with some, or the always-present-slot rule is asserted in only "
+        "one direction and an unconditional `[]` would pass it"
+    )
+
+
+def test_the_absolute_path_rule_cannot_be_sealed_on_this_machine() -> None:
+    """The one hole this pass leaves open, recorded rather than papered over.
+
+    GREEN TODAY, and it is a seal on a LIMIT rather than on the property.
+
+    `main.cjs` requires the parser as `path.join(__dirname, 'typescript.js')` and
+    never as `require('typescript')`, and that is the central security property
+    of unit D4: `require('typescript')` walks up from the requiring file looking
+    for a `node_modules`, and a branch that edited its own
+    `node_modules/typescript/lib/typescript.js` to drop a modifier would be
+    choosing the program that decides what its signatures are.
+
+    THAT PROPERTY IS NOT SEALED AND CANNOT BE SEALED HERE. The body measured 53
+    rows reddening when the require is mutated to `require('typescript')` — but
+    that redness is an ARTIFACT of this machine having no ambient `typescript` on
+    the resolution path, so the mutant simply fails to load. On a machine that
+    HAS one — a laptop with a global install, a CI image with a hoisted
+    `node_modules`, or the primary target checkout itself, which vendors
+    TypeScript — the mutant would resolve, run, and go GREEN, and the seals would
+    certify the defect. A falsification that depends on the alternative parser
+    being absent is not a falsification of the parser being untrusted.
+
+    Closing it needs a production change, so it is a dispute for P4 rather than
+    something this file can fix. The shape it would need: the helper reporting
+    the RESOLVED path of the module it actually loaded — in the `--probe`
+    document, where the caller already reads the `node` and `typescript` versions
+    — so that `role_protocol` can assert the loaded parser is the vendored one by
+    IDENTITY rather than by hoping the alternative is missing. Today `--probe`
+    carries versions only, and a version string is equally true of the untrusted
+    copy.
+
+    Green when: the limit is still written down where a reader of the seals will
+    meet it. It asserts nothing about the comparator, on purpose.
+    """
+    helper = _prose(
+        Path(role_protocol.__file__)
+        .with_name("ts_signature_fingerprint")
+        .joinpath("main.cjs")
+        .read_text(encoding="utf-8")[:6000]
+    )
+    assert _prose("WHY THE PARSER IS REQUIRED BY ABSOLUTE PATH") in helper, (
+        "the helper stopped explaining why it addresses its parser absolutely. "
+        "That paragraph is the only record of the property, because no seal on "
+        "this machine can test it: a mutation to `require('typescript')` fails "
+        "to resolve here and reddens for the wrong reason, and on a machine with "
+        "an ambient TypeScript it would go green with the defect present"
+    )
+    assert _prose("typescript.js") in helper and _prose("require('typescript')") in helper, (
+        "the header no longer names both halves of the rule — the absolute path "
+        "it uses, and the resolution it refuses"
+    )
