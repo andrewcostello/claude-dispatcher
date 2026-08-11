@@ -539,10 +539,15 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
+	"go/ast"
+	"go/importer"
+	"go/parser"
+	"go/token"
+	"go/types"
 	"io"
 	"os"
+	"strings"
 )
 
 // SchemaVersion is echoed on every response and checked by the caller against
@@ -557,8 +562,31 @@ import (
 // against innocent code.
 const SchemaVersion = "claude-dispatcher/go-call-reachability/v1"
 
-// errNotImplemented is what a P1 scaffold returns. P3 deletes it.
-var errNotImplemented = errors.New("not implemented: this is the D6 P1 scaffold")
+// The three spellings this program shares with the Python side, byte for byte.
+// They are stated once THERE — go_symbol_key, GO_PACKAGE_VAR_SYMBOL and
+// GO_INIT_SYMBOL_TEMPLATE — and these are their Go faces. Two spellings of one
+// key is the failure this whole effort is about, so they are constants here
+// rather than format strings assembled at four call sites.
+const (
+	keyPackageSeparator       = "."
+	packageVarSymbol          = "<vars>"
+	initSymbolTemplate        = "<init:%d>"
+	externalTestPackageSuffix = "_test"
+)
+
+// The four wire `kind` strings of the EDGE GRAMMAR, and the four root kinds.
+// Spelled once so a walk cannot grow a fifth by typing one.
+const (
+	edgeDirect    = "direct"
+	edgeMethod    = "method"
+	edgeInterface = "interface"
+	edgeReference = "reference"
+
+	rootMain       = "go_main"
+	rootInit       = "go_init"
+	rootPackageVar = "go_package_var"
+	rootTest       = "test_function"
+)
 
 // Unit names the package one invocation covers.
 //
@@ -750,15 +778,782 @@ type Response struct {
 //     otherwise read as a false BREACH. Several inits per package are legal, so
 //     their keys must be disambiguated — see go_symbol_key.
 func analyze(request Request) (Response, error) {
-	_ = request
-	return Response{}, fmt.Errorf(
-		"analyze must parse every file of the unit with go/parser, emit one "+
-			"Symbol per declaration, one Root per entrypoint, one Edge per "+
-			"resolved call or reference under the EDGE GRAMMAR, and one Hole "+
-			"per call site it could not name — with a parse_error document "+
-			"and no arrays as the only other permitted answer: %w",
-		errNotImplemented,
-	)
+	fset := token.NewFileSet()
+	parsed := make([]*ast.File, 0, len(request.Files))
+	for _, file := range request.Files {
+		// The FILENAME handed to the parser is the request's tree-relative
+		// path and never an on-disk one: every position this program reports —
+		// symbol lines, call sites, and the parse_error path — is derived from
+		// it, and a caller that got an absolute path back could not join a
+		// site to a file it knows about.
+		syntax, err := parser.ParseFile(fset, file.Path, file.Source, 0)
+		if err != nil {
+			return Response{ParseError: &ParseError{
+				Path:    file.Path,
+				Message: err.Error(),
+			}}, nil
+		}
+		parsed = append(parsed, syntax)
+	}
+
+	// `[]` is an answer and `null` is not, so the four arrays are allocated
+	// before anything can return early with a graph. A unit that declares
+	// nothing is a package clause and imports, and that is a fact about the
+	// package rather than a fault; the whole-tree emptiness guard lives at the
+	// caller's GoReachabilityAnalyzer.graph, which is the only layer that knows
+	// how many Go files the sweep found.
+	response := Response{
+		Symbols:    []Symbol{},
+		Roots:      []Root{},
+		Edges:      []Edge{},
+		Unresolved: []Hole{},
+	}
+	if len(parsed) == 0 {
+		return response, nil
+	}
+
+	info := &types.Info{
+		Types:      make(map[ast.Expr]types.TypeAndValue),
+		Defs:       make(map[*ast.Ident]types.Object),
+		Uses:       make(map[*ast.Ident]types.Object),
+		Selections: make(map[*ast.SelectorExpr]*types.Selection),
+	}
+	var typeErrors []error
+	conf := types.Config{
+		// LOAD-BEARING, and it must not be "simplified" to importer.Default():
+		// that one needs a writable build cache and dies with "GOCACHE is not
+		// defined and neither $XDG_CACHE_HOME nor $HOME are defined" under a
+		// bare environment. The source importer reads GOROOT/src instead. See
+		// the P4 ruling on TYPE RESOLUTION at the top of this file.
+		Importer: importer.ForCompiler(fset, "source", nil),
+		// Non-nil so that Check does not stop at the first error and this
+		// program can COUNT them. types.Config.Error swallowing errors while
+		// Check returns a populated Info is the fail-open the count exists to
+		// close.
+		Error: func(err error) { typeErrors = append(typeErrors, err) },
+	}
+	pkg, _ := conf.Check(qualifierOf(request.Unit), fset, parsed, info)
+	if len(typeErrors) > 0 {
+		// A UNIT THAT DID NOT TYPE-CHECK IS NOT FULLY READ, and it travels the
+		// channel an unparsed unit travels. Emitting the partial graph instead
+		// is how a silently shrunken production closure makes a reached symbol
+		// look unreached, which is a manufactured BREACH.
+		return Response{ParseError: &ParseError{
+			Path:    errorPath(fset, typeErrors[0], request.Files[0].Path),
+			Message: typeErrors[0].Error(),
+		}}, nil
+	}
+	if pkg == nil {
+		return Response{}, fmt.Errorf(
+			"go/types returned no package for %s and reported no error; that is "+
+				"this program failing to do its job, not a fact about the unit",
+			request.Unit.PackageDir,
+		)
+	}
+
+	walk := &walker{
+		unit:      request.Unit,
+		qualifier: qualifierOf(request.Unit),
+		fset:      fset,
+		info:      info,
+		pkg:       pkg,
+		keyOf:     make(map[types.Object]string),
+		declKey:   make(map[*ast.FuncDecl]string),
+		defIdent:  make(map[types.Object]*ast.Ident),
+		methods:   make(map[string][]string),
+		response:  &response,
+	}
+	for ident, obj := range info.Defs {
+		if obj != nil {
+			// One reverse index, built once: the SOLE-BINDING FUNC LITERAL rule
+			// needs the declaring occurrence of a *types.Var and go/types offers
+			// no way back from an object to its identifier.
+			walk.defIdent[obj] = ident
+		}
+	}
+	walk.declare(parsed, request)
+	walk.walk(parsed)
+	return response, nil
+}
+
+// errorPath is the file a type error names, or the unit's first file when the
+// error carries no position. Never empty: the caller records it in
+// CallGraph.unreadable_paths, and a whole-tree abstention with no file to fix
+// is an abstention nobody can act on.
+func errorPath(fset *token.FileSet, err error, fallback string) string {
+	if typed, ok := err.(types.Error); ok && typed.Pos.IsValid() {
+		if name := fset.Position(typed.Pos).Filename; name != "" {
+			return name
+		}
+	}
+	return fallback
+}
+
+// qualifierOf is go_symbol_key's qualifier, and the two must agree byte for
+// byte. It is also what this program hands types.Config.Check as the package
+// path, so every in-unit object's own Pkg().Path() IS the qualifier and an
+// in-package key falls out of go/types rather than being reassembled.
+func qualifierOf(unit Unit) string {
+	qualifier := unit.ModulePath
+	if unit.PackageDir != "" {
+		qualifier = unit.ModulePath + "/" + unit.PackageDir
+	}
+	if strings.HasSuffix(unit.PackageName, externalTestPackageSuffix) {
+		qualifier = qualifier + "[" + unit.PackageName + "]"
+	}
+	return qualifier
+}
+
+// walker holds one unit's answer while it is being derived. Nothing here is
+// ranged over to produce output: symbols, roots and holes come out in
+// declaration order and edges in call-site order, because a nondeterministic
+// document moves the WITNESS PATH a human is asked to check.
+type walker struct {
+	unit      Unit
+	qualifier string
+	fset      *token.FileSet
+	info      *types.Info
+	pkg       *types.Package
+
+	// keyOf maps an in-unit func or method OBJECT to its key. Membership is
+	// this program's whole notion of "declared here": a callee go/types
+	// resolved to an object outside it lives in another package.
+	keyOf    map[types.Object]string
+	declKey  map[*ast.FuncDecl]string
+	defIdent map[types.Object]*ast.Ident
+	// methods indexes in-unit METHOD keys by name, which is what makes the
+	// interface fan-out a superset of the possible in-tree targets rather than
+	// a guess: Go's method-call syntax names the method.
+	methods map[string][]string
+
+	varKey  string
+	varSeen bool
+
+	response *Response
+}
+
+func (w *walker) key(receiver, name string) string {
+	if receiver == "" {
+		return w.qualifier + keyPackageSeparator + name
+	}
+	return w.qualifier + keyPackageSeparator + "(" + receiver + ")" + keyPackageSeparator + name
+}
+
+func (w *walker) position(pos token.Pos) token.Position { return w.fset.Position(pos) }
+
+func (w *walker) site(pos token.Pos) string {
+	at := w.position(pos)
+	return fmt.Sprintf("%s:%d", at.Filename, at.Line)
+}
+
+// declare emits one Symbol per declaration and one Root per entrypoint.
+//
+// Every declaration, including the ones nothing references: a symbol absent
+// from the map cannot be a subject, and a subject that cannot be found is an
+// abstention rather than a pass.
+func (w *walker) declare(files []*ast.File, request Request) {
+	initOrdinal := 0
+	for index, file := range files {
+		path := request.Files[index].Path
+		for _, decl := range file.Decls {
+			switch typed := decl.(type) {
+			case *ast.FuncDecl:
+				w.declareFunc(typed, path, &initOrdinal)
+			case *ast.GenDecl:
+				if typed.Tok == token.VAR {
+					w.declarePackageVar(typed, path)
+				}
+			}
+		}
+	}
+}
+
+func (w *walker) declareFunc(decl *ast.FuncDecl, path string, initOrdinal *int) {
+	name := decl.Name.Name
+	// A blank-named declaration cannot be referred to, by definition of the
+	// language, so it is not callable surface — and one file may legally hold
+	// several, which would be a duplicate key. That is the fingerprinter's
+	// isBlank rule and it transfers unchanged.
+	if name == "_" {
+		return
+	}
+	receiver := receiverText(decl)
+	kind := "func"
+	if receiver != "" {
+		kind = "method"
+	}
+
+	member := name
+	isInit := receiver == "" && name == "init"
+	if isInit {
+		// `func init()` is NOT skipped here, which is the opposite of the
+		// fingerprinter's rule and for an exactly inverted reason: Go RUNS it
+		// before main, so it is a root, and everything only an init reaches
+		// would otherwise read as a false BREACH. Several per package are
+		// legal, so `init` alone is a duplicate key waiting to happen.
+		member = fmt.Sprintf(initSymbolTemplate, *initOrdinal)
+		*initOrdinal++
+	}
+	key := w.key(receiver, member)
+	at := w.position(decl.Pos())
+	w.response.Symbols = append(w.response.Symbols, Symbol{
+		Key:  key,
+		Path: path,
+		Line: at.Line,
+		Kind: kind,
+	})
+	w.declKey[decl] = key
+	if obj := w.info.Defs[decl.Name]; obj != nil {
+		w.keyOf[obj] = key
+	}
+	if receiver != "" {
+		w.methods[name] = append(w.methods[name], key)
+		return
+	}
+
+	evidence := fmt.Sprintf("%s:%d func %s, package %s", path, at.Line, name, w.unit.PackageName)
+	switch {
+	case isInit:
+		w.response.Roots = append(w.response.Roots, Root{
+			Symbol: key, Kind: rootInit, Evidence: evidence,
+		})
+	case name == "main" && w.unit.PackageName == "main":
+		w.response.Roots = append(w.response.Roots, Root{
+			Symbol: key, Kind: rootMain, Evidence: evidence,
+		})
+	case isTestName(name):
+		// The NAMING half only. Whether the declaring FILE is one of the tests
+		// is seal_verify.is_test_path's question and this program does not open
+		// a second matcher for it; the caller applies it and drops a root whose
+		// file disagrees.
+		w.response.Roots = append(w.response.Roots, Root{
+			Symbol: key, Kind: rootTest, Evidence: evidence,
+		})
+	}
+}
+
+// declarePackageVar mints the synthetic package-var initialiser symbol, ONCE
+// PER PACKAGE and not once per file.
+//
+// Synthetic rather than omitted, because a root with no symbol has no outgoing
+// edges and would contribute silently nothing. Per PACKAGE because that is
+// go_symbol_key's spelling, and the difference is measurable: spelling it per
+// FILE reported a 106-symbol production closure over the acceptance fixture
+// where the per-package spelling reports 104.
+func (w *walker) declarePackageVar(decl *ast.GenDecl, path string) {
+	if w.varSeen {
+		return
+	}
+	initialised := false
+	for _, spec := range decl.Specs {
+		if value, ok := spec.(*ast.ValueSpec); ok && len(value.Values) > 0 {
+			initialised = true
+			break
+		}
+	}
+	if !initialised {
+		return
+	}
+	w.varSeen = true
+	w.varKey = w.key("", packageVarSymbol)
+	at := w.position(decl.Pos())
+	w.response.Symbols = append(w.response.Symbols, Symbol{
+		Key:  w.varKey,
+		Path: path,
+		Line: at.Line,
+		Kind: "package_var",
+	})
+	w.response.Roots = append(w.response.Roots, Root{
+		Symbol:   w.varKey,
+		Kind:     rootPackageVar,
+		Evidence: fmt.Sprintf("%s:%d package-level var with an initialiser, package %s", path, at.Line, w.unit.PackageName),
+	})
+}
+
+func receiverText(decl *ast.FuncDecl) string {
+	if decl.Recv == nil || len(decl.Recv.List) == 0 {
+		return ""
+	}
+	// EXACTLY as written, `*Config` and `Config` and `*Set[T]`. Pointer and
+	// value receivers get DIFFERENT keys, which is the deliberate opposite of
+	// the fingerprinter's receiverBaseName: a signature comparison asks "did
+	// this contract change" and a call graph asks "does execution arrive here",
+	// for which `func (T) M` and `func (*T) M` are two bodies.
+	return types.ExprString(decl.Recv.List[0].Type)
+}
+
+// isTestName is cmd/go's isTest: a prefix, then a rune that is not lower-case.
+// So `TestFoo` and a bare `Test` are entrypoints and `Testify` is not, which is
+// the whole reason it is a rune check and not a prefix match.
+func isTestName(name string) bool {
+	for _, prefix := range []string{"Test", "Benchmark", "Fuzz", "Example"} {
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		rest := name[len(prefix):]
+		if rest == "" {
+			return true
+		}
+		first := []rune(rest)[0]
+		return !(first >= 'a' && first <= 'z')
+	}
+	return false
+}
+
+// walk emits the edges and the holes, one owner at a time.
+//
+// The OWNER is the innermost enclosing NAMED declaration, never a synthetic
+// symbol for a func literal: subjects_of_seal defines a seal's subject as what
+// the seal's own body calls directly, including nested closures and t.Run
+// literals, and a symbol per closure would empty the subject set of every
+// table-driven seal in the target repositories.
+func (w *walker) walk(files []*ast.File) {
+	for _, file := range files {
+		for _, decl := range file.Decls {
+			switch typed := decl.(type) {
+			case *ast.FuncDecl:
+				key, ok := w.declKey[typed]
+				if !ok || typed.Body == nil {
+					continue
+				}
+				w.walkOwner(key, typed, typed.Body)
+			case *ast.GenDecl:
+				if typed.Tok != token.VAR || w.varKey == "" {
+					continue
+				}
+				for _, spec := range typed.Specs {
+					value, ok := spec.(*ast.ValueSpec)
+					if !ok {
+						continue
+					}
+					for _, initialiser := range value.Values {
+						// No enclosing named declaration, so the SOLE-BINDING
+						// rule's obligation 1 can never be discharged here —
+						// which is correct: a package-level var of func type is
+						// exactly the shape that rule declines.
+						w.walkOwner(w.varKey, nil, initialiser)
+					}
+				}
+			}
+		}
+	}
+}
+
+func (w *walker) walkOwner(owner string, decl *ast.FuncDecl, body ast.Node) {
+	// Identifiers already ANSWERED as the target of a call. ast.Inspect visits
+	// a CallExpr before its Fun, so the mark is always set before the ident is
+	// reached, and one pass suffices — which keeps edges in call-site order.
+	consumed := make(map[*ast.Ident]bool)
+	ast.Inspect(body, func(node ast.Node) bool {
+		switch typed := node.(type) {
+		case *ast.CallExpr:
+			w.classifyCall(typed, owner, decl, consumed)
+		case *ast.Ident:
+			if consumed[typed] {
+				return true
+			}
+			// A FUNCTION VALUE is "reference" and never "direct":
+			// `sort.Slice(xs, less)` reaches `less` — a real way production
+			// reaches code — but the value may never be invoked, so the fact is
+			// weaker than a call and the path through it is over-approximated.
+			// A method VALUE and a method EXPRESSION are the same kind.
+			if fn, ok := w.info.Uses[typed].(*types.Func); ok {
+				w.edge(owner, w.calleeKey(fn), edgeReference, w.site(typed.Pos()))
+			}
+		}
+		return true
+	})
+}
+
+func (w *walker) edge(caller, callee, kind, site string) {
+	if callee == "" {
+		return
+	}
+	w.response.Edges = append(w.response.Edges, Edge{
+		Caller: caller, Callee: callee, Kind: kind, Site: site,
+	})
+}
+
+func (w *walker) hole(caller string, pos token.Pos, detail string) {
+	w.response.Unresolved = append(w.response.Unresolved, Hole{
+		Caller: caller, Site: w.site(pos), Detail: detail,
+	})
+}
+
+// calleeKey is the key of a resolved func object: the in-unit spelling when the
+// object is declared here, and the object's own package path otherwise.
+//
+// An out-of-package key is emitted rather than dropped because the CALLER is
+// the layer that knows the tree: it keeps an edge only when both ends are
+// declared, so a stdlib target disappears there while a target in another
+// package OF THE SAME TREE survives. Dropping here would decide a question this
+// program cannot see.
+func (w *walker) calleeKey(fn *types.Func) string {
+	if key, ok := w.keyOf[fn]; ok {
+		return key
+	}
+	pkgPath := ""
+	if fn.Pkg() != nil {
+		pkgPath = fn.Pkg().Path()
+	}
+	if pkgPath == "" {
+		return ""
+	}
+	signature, _ := fn.Type().(*types.Signature)
+	if signature != nil && signature.Recv() != nil {
+		return pkgPath + keyPackageSeparator + "(" + receiverSpelling(signature.Recv().Type()) + ")" + keyPackageSeparator + fn.Name()
+	}
+	return pkgPath + keyPackageSeparator + fn.Name()
+}
+
+func receiverSpelling(typ types.Type) string {
+	bare := func(t types.Type) string {
+		return types.TypeString(t, func(*types.Package) string { return "" })
+	}
+	if pointer, ok := typ.(*types.Pointer); ok {
+		return "*" + bare(pointer.Elem())
+	}
+	return bare(typ)
+}
+
+func unparen(expr ast.Expr) ast.Expr {
+	for {
+		paren, ok := expr.(*ast.ParenExpr)
+		if !ok {
+			return expr
+		}
+		expr = paren.X
+	}
+}
+
+// classifyCall is the EDGE GRAMMAR, applied to one *ast.CallExpr.
+//
+// Every form the Fun slot can hold is handled and the default DECLINES into a
+// hole, because three probes in this effort reported a rate over a population
+// that excluded the calls that mattered — a walk that reads only Ident and
+// SelectorExpr turns every generic call `F[T](x)` into a false hole, since an
+// instantiation puts an *ast.IndexExpr there.
+func (w *walker) classifyCall(call *ast.CallExpr, owner string, decl *ast.FuncDecl, consumed map[*ast.Ident]bool) {
+	fun := unparen(call.Fun)
+	// A CONVERSION is not a call. `[]byte(s)`, `Fidelity(n)`, `(*T)(p)`: the
+	// Fun slot holds a TYPE, go/types says so, and there is no callee to name —
+	// an answered question, so neither an edge nor a hole.
+	if tv, ok := w.info.Types[fun]; ok && tv.IsType() {
+		markIdents(fun, consumed)
+		return
+	}
+	switch typed := fun.(type) {
+	case *ast.Ident:
+		w.classifyIdentCall(typed, owner, decl, consumed)
+	case *ast.SelectorExpr:
+		w.classifySelectorCall(typed, owner, decl, consumed)
+	case *ast.IndexExpr:
+		w.classifyInstantiation(typed.X, call, owner, decl, consumed)
+	case *ast.IndexListExpr:
+		w.classifyInstantiation(typed.X, call, owner, decl, consumed)
+	case *ast.FuncLit:
+		// An immediately-invoked literal. Its body's calls are already
+		// attributed to this owner by the ATTRIBUTION rule, so the site is a
+		// fully answered question: no edge, and no hole.
+		return
+	default:
+		w.hole(owner, call.Lparen, fmt.Sprintf(
+			"the call target is a %T, which names no declaration this walk can "+
+				"resolve", fun))
+	}
+}
+
+func (w *walker) classifyIdentCall(ident *ast.Ident, owner string, decl *ast.FuncDecl, consumed map[*ast.Ident]bool) {
+	consumed[ident] = true
+	switch obj := w.info.Uses[ident].(type) {
+	case *types.Builtin:
+		// `println`, `len`, `append`. There is no declaration anywhere to reach,
+		// so it is an answered question and emphatically not a hole: filing
+		// builtins as holes puts every real Go tree into the abstention branch.
+		return
+	case *types.Func:
+		w.edge(owner, w.calleeKey(obj), edgeDirect, w.site(ident.Pos()))
+	case *types.Var:
+		// A call through a func-typed variable. The SOLE-BINDING FUNC LITERAL
+		// rule is the ONE way this stops being a hole, and it is a positive
+		// claim about what the variable holds — never "we could not find
+		// another assignment, so assume there is none".
+		if w.soleBindingFuncLiteral(ident, obj, decl) {
+			return
+		}
+		w.hole(owner, ident.Pos(), fmt.Sprintf(
+			"call through the func-typed variable %q, whose value this walk "+
+				"cannot pin to a single literal", ident.Name))
+	default:
+		w.hole(owner, ident.Pos(), fmt.Sprintf(
+			"the identifier %q names no callable this walk can resolve", ident.Name))
+	}
+}
+
+func (w *walker) classifySelectorCall(sel *ast.SelectorExpr, owner string, decl *ast.FuncDecl, consumed map[*ast.Ident]bool) {
+	consumed[sel.Sel] = true
+	// `pkg.F(x)`, a qualified identifier: the import block of this file names
+	// the import path, so the callee's key is derivable without the callee's
+	// source. That is DIRECT-strength — one declaration, named.
+	if base, ok := sel.X.(*ast.Ident); ok {
+		if _, isPackage := w.info.Uses[base].(*types.PkgName); isPackage {
+			consumed[base] = true
+			switch obj := w.info.Uses[sel.Sel].(type) {
+			case *types.Builtin:
+				return
+			case *types.Func:
+				w.edge(owner, w.calleeKey(obj), edgeDirect, w.site(sel.Sel.Pos()))
+			case *types.Var:
+				w.hole(owner, sel.Sel.Pos(), fmt.Sprintf(
+					"call through the package-level func-typed variable %q",
+					sel.Sel.Name))
+			default:
+				w.hole(owner, sel.Sel.Pos(), fmt.Sprintf(
+					"the qualified identifier %q names no callable this walk can "+
+						"resolve", sel.Sel.Name))
+			}
+			return
+		}
+	}
+
+	selection := w.info.Selections[sel]
+	if selection == nil {
+		w.hole(owner, sel.Sel.Pos(), fmt.Sprintf(
+			"the selector %q resolves to no selection this walk can read", sel.Sel.Name))
+		return
+	}
+	switch selection.Kind() {
+	case types.MethodVal, types.MethodExpr:
+		fn, ok := selection.Obj().(*types.Func)
+		if !ok {
+			w.hole(owner, sel.Sel.Pos(), "a method selection whose object is not a func")
+			return
+		}
+		if key, inUnit := w.keyOf[fn]; inUnit {
+			// The receiver's type is known and the target is ONE declaration
+			// here. A separate kind from `direct` on EdgeKind's own reasoning:
+			// a report must be able to say which resolution it was leaning on.
+			w.edge(owner, key, edgeMethod, w.site(sel.Sel.Pos()))
+			return
+		}
+		// Either interface dispatch, or a method on a type declared outside
+		// this unit. Both take the same honest answer: ONE edge per in-unit
+		// method of that name. Go's method-call syntax NAMES the method, so
+		// that fan-out is a SUPERSET of the possible in-tree targets and the
+		// residue is empty by construction — which is why the site is answered
+		// rather than holed. An empty fan-out is an answer too: no in-unit
+		// method is named `Format`, so `now.Format("")` reaches nothing here.
+		for _, key := range w.methods[sel.Sel.Name] {
+			w.edge(owner, key, edgeInterface, w.site(sel.Sel.Pos()))
+		}
+	case types.FieldVal:
+		// `c.handler(x)`: a struct FIELD of func type. Any file in the program
+		// may store any value in it, so nothing names the target.
+		w.hole(owner, sel.Sel.Pos(), fmt.Sprintf(
+			"call through the struct field %q, which holds a func value",
+			sel.Sel.Name))
+	default:
+		w.hole(owner, sel.Sel.Pos(), fmt.Sprintf(
+			"selector %q has a selection kind this walk does not classify",
+			sel.Sel.Name))
+	}
+}
+
+// classifyInstantiation separates `F[T](x)` — a generic call, whose target is
+// named — from `fns[i](x)`, which indexes a value and names nothing.
+func (w *walker) classifyInstantiation(base ast.Expr, call *ast.CallExpr, owner string, decl *ast.FuncDecl, consumed map[*ast.Ident]bool) {
+	switch typed := unparen(base).(type) {
+	case *ast.Ident:
+		if _, ok := w.info.Uses[typed].(*types.Func); ok {
+			w.classifyIdentCall(typed, owner, decl, consumed)
+			return
+		}
+	case *ast.SelectorExpr:
+		if _, ok := w.info.Uses[typed.Sel].(*types.Func); ok {
+			w.classifySelectorCall(typed, owner, decl, consumed)
+			return
+		}
+	}
+	w.hole(owner, call.Lparen, "call through an indexed value, which names no declaration")
+}
+
+func markIdents(expr ast.Expr, consumed map[*ast.Ident]bool) {
+	ast.Inspect(expr, func(node ast.Node) bool {
+		if ident, ok := node.(*ast.Ident); ok {
+			consumed[ident] = true
+		}
+		return true
+	})
+}
+
+// soleBindingFuncLiteral discharges the four obligations of the SOLE-BINDING
+// FUNC LITERAL rule, or declines.
+//
+// THE POSITIVE CLAIM IT RESTS ON is a theorem about Go: the identifiers that
+// can name a function-local variable are exactly the identifiers inside that
+// function's own declaration. So the region to search is one finite AST subtree
+// and the search over it is EXHAUSTIVE rather than best-effort.
+//
+// Obligation 3 is stated FAIL-CLOSED — every occurrence must be shown to be a
+// READ — and that is deliberate. The first draft of this rule enumerated the
+// ASSIGNING constructs and cleared anything it did not recognise;
+// `for _, f = range fns` is an *ast.RangeStmt and not an *ast.AssignStmt, so it
+// walked straight through and CLEARED a call whose target is rebound every
+// iteration. An enumeration of the forms that WRITE is an open list that grows
+// with the language and defaults to CLEAR; requiring proof of READ is closed
+// under language growth.
+//
+// Keyed on the *types.Var and never on the NAME, which is what makes shadowing
+// clear both calls and bind each to its own literal.
+func (w *walker) soleBindingFuncLiteral(ident *ast.Ident, variable *types.Var, decl *ast.FuncDecl) bool {
+	// OBLIGATION 1 — LOCALITY. Established by FINDING the binding inside D's
+	// body, never by failing to find one elsewhere. A package-level var fails
+	// here (its binding is in no D) and so does a parameter (bound by D's
+	// signature, so its value is the caller's).
+	if decl == nil || decl.Body == nil {
+		return false
+	}
+	def, ok := w.defIdent[variable]
+	if !ok || def.Pos() < decl.Body.Pos() || def.Pos() >= decl.Body.End() {
+		return false
+	}
+
+	// OBLIGATION 2 — THE SOLE BINDING IS A LITERAL, positionally matched. A
+	// TUPLE binding fails: the value comes from one multi-valued expression and
+	// no literal is named — which is where `ctx, cancel := context.WithTimeout`
+	// lands, so the two `cancel` sites never even reach the provenance
+	// question. A named func on the right, a range clause and a declaration
+	// with no initialiser fail here too.
+	binder := w.bindingOf(decl, def)
+	if binder == nil {
+		return false
+	}
+
+	// OBLIGATIONS 3 and 3b — EVERY OCCURRENCE IS A READ, and `&v` is taken
+	// nowhere.
+	return w.everyOccurrenceIsARead(decl, variable, def, binder)
+}
+
+// bindingOf returns the statement that binds `def` to a single *ast.FuncLit, or
+// nil. Nil is the answer for a tuple binding, a range variable, a named-func
+// initialiser and a declaration with no value.
+func (w *walker) bindingOf(decl *ast.FuncDecl, def *ast.Ident) ast.Node {
+	var binder ast.Node
+	ast.Inspect(decl.Body, func(node ast.Node) bool {
+		if binder != nil {
+			return false
+		}
+		switch typed := node.(type) {
+		case *ast.AssignStmt:
+			if typed.Tok != token.DEFINE {
+				return true
+			}
+			for index, target := range typed.Lhs {
+				if target != ast.Expr(def) {
+					continue
+				}
+				if len(typed.Rhs) != len(typed.Lhs) {
+					return false
+				}
+				if _, isLiteral := unparen(typed.Rhs[index]).(*ast.FuncLit); isLiteral {
+					binder = typed
+				}
+				return false
+			}
+		case *ast.ValueSpec:
+			for index, name := range typed.Names {
+				if name != def {
+					continue
+				}
+				if len(typed.Values) != len(typed.Names) {
+					return false
+				}
+				if _, isLiteral := unparen(typed.Values[index]).(*ast.FuncLit); isLiteral {
+					binder = typed
+				}
+				return false
+			}
+		}
+		return true
+	})
+	return binder
+}
+
+// everyOccurrenceIsARead is the fail-closed half: an exhaustive switch on each
+// occurrence's PARENT node that DECLINES on any node type it does not classify.
+func (w *walker) everyOccurrenceIsARead(decl *ast.FuncDecl, variable *types.Var, def *ast.Ident, binder ast.Node) bool {
+	read := true
+	var stack []ast.Node
+	ast.Inspect(decl, func(node ast.Node) bool {
+		if node == nil {
+			stack = stack[:len(stack)-1]
+			return true
+		}
+		if ident, ok := node.(*ast.Ident); ok && len(stack) > 0 {
+			if w.info.Uses[ident] == types.Object(variable) || w.info.Defs[ident] == types.Object(variable) {
+				if !isReadOccurrence(ident, stack[len(stack)-1], def, binder) {
+					read = false
+				}
+			}
+		}
+		stack = append(stack, node)
+		return true
+	})
+	return read
+}
+
+func isReadOccurrence(ident *ast.Ident, parent ast.Node, def *ast.Ident, binder ast.Node) bool {
+	if ident == def && parent == binder {
+		// The binding itself, already established as a single func literal.
+		return true
+	}
+	switch typed := parent.(type) {
+	case *ast.AssignStmt:
+		for _, target := range typed.Lhs {
+			if target == ast.Expr(ident) {
+				return false
+			}
+		}
+		return true
+	case *ast.ValueSpec:
+		for _, name := range typed.Names {
+			if name == ident {
+				return false
+			}
+		}
+		return true
+	case *ast.RangeStmt:
+		// `for _, f = range fns` rebinds f once per iteration and is NOT an
+		// assignment statement. This is the measured defect the fail-closed
+		// form exists to catch.
+		if typed.Key == ast.Expr(ident) || typed.Value == ast.Expr(ident) {
+			return false
+		}
+		return true
+	case *ast.UnaryExpr:
+		// OBLIGATION 3b. Taking the address is the one route by which the value
+		// changes with no syntax naming it (`p := &v; *p = g`), and it is what
+		// makes obligation 3 a claim about the VALUE rather than the syntax.
+		return typed.Op != token.AND
+	case *ast.IncDecStmt:
+		return false
+	case *ast.CallExpr, *ast.BinaryExpr, *ast.ParenExpr, *ast.SelectorExpr,
+		*ast.IndexExpr, *ast.IndexListExpr, *ast.SliceExpr, *ast.StarExpr,
+		*ast.TypeAssertExpr, *ast.KeyValueExpr, *ast.CompositeLit,
+		*ast.ReturnStmt, *ast.ExprStmt, *ast.SendStmt, *ast.IfStmt,
+		*ast.SwitchStmt, *ast.TypeSwitchStmt, *ast.ForStmt, *ast.CaseClause,
+		*ast.CommClause, *ast.SelectStmt, *ast.BlockStmt, *ast.DeferStmt,
+		*ast.GoStmt, *ast.Field, *ast.FuncLit, *ast.LabeledStmt:
+		// Escape BY VALUE — returned, stored in a struct, passed as an
+		// argument, captured read-only by another closure — CLEARS, because a
+		// copy of a func value cannot change the variable it was copied from.
+		return true
+	default:
+		// The decline branch, and the whole point of the inversion: a writing
+		// construct this switch has never heard of still has to NAME the
+		// variable, and its parent lands here.
+		return false
+	}
 }
 
 // respond is main's body, with the streams injected so the protocol is testable

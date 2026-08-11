@@ -310,6 +310,8 @@ are not one either: they name files inside THIS package, and
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -320,12 +322,15 @@ from .call_site_reachability import (
     AnalyzerFault,
     AnalyzerUnavailable,
     CallGraph,
+    Edge,
     EdgeKind,
     EntrypointKind,
     Root,
     Symbol,
+    _ROOT_KIND_BY_ENTRYPOINT,
 )
-from .role_protocol import Language
+from .role_protocol import Language, support_for_path
+from .seal_verify import is_test_path
 
 __all__ = [
     "GO_REACHABILITY_HELPER_ENTRY_POINTS",
@@ -663,15 +668,26 @@ def encode_go_reachability_request(
     nondeterministic request makes the witness path a human is asked to check
     nondeterministic too.
 
-    STUB. Nothing here is untestable without a body: a seal can assert the
-    document's shape against this contract the moment P3 writes it.
+    **Measured under** ``feat/D6-body``, 2026-08-11: ``ensure_ascii=True`` turns
+    a lone surrogate — which ``discover_units`` produces, by ``surrogateescape``,
+    from a source blob that is not valid UTF-8 — into a six-character escape and
+    the whole document into ASCII; with ``ensure_ascii=False`` the same input
+    raises ``UnicodeEncodeError`` on the way to the helper's stdin, which is a
+    bad FILE becoming an environment fault.
     """
-    raise NotImplementedError(
-        "encode_go_reachability_request must emit one JSON object with the "
-        "fields of GoReachabilityRequest, schema set to "
-        f"{GO_REACHABILITY_SCHEMA!r}, ensure_ascii=True and deterministic "
-        "separators"
-    )
+    document = {
+        "schema": GO_REACHABILITY_SCHEMA,
+        "unit": {
+            "module_path": unit.module_path,
+            "package_dir": unit.package_dir,
+            "package_name": unit.package_name,
+        },
+        # The caller's order, kept: ``main.go`` contracts edge order as REQUEST
+        # order, and an encoder that re-sorted would take that decision away
+        # from the layer that owns it.
+        "files": [{"path": file.path, "source": file.source} for file in files],
+    }
+    return json.dumps(document, ensure_ascii=True, separators=(",", ":"))
 
 
 def decode_go_reachability_response(stdout: str) -> GoReachabilityResponse:
@@ -783,13 +799,279 @@ def decode_go_reachability_response(stdout: str) -> GoReachabilityResponse:
     Does NOT decide anything about the analysis: a document carrying
     ``parse_error`` is returned intact, and it is the analyzer that turns it
     into an entry in :attr:`CallGraph.unreadable_paths`. One place per decision.
+
+    Rule 4's "does not echo the unit that was requested" half is NOT checked
+    here and its absence is deliberate: this function is handed one string and
+    has never seen the request. :meth:`GoReachabilityAnalyzer.graph` holds the
+    two together and checks it there, which is the same R1 discriminator that
+    puts the emptiness guard a layer up.
     """
-    raise NotImplementedError(
-        "decode_go_reachability_response must refuse all twelve malformed "
-        "classes in its docstring as AnalyzerFault.HELPER_OUTPUT_INVALID, "
-        "ignore unknown fields, deduplicate identical edges, and return a "
-        "parse_error document intact"
+    if not isinstance(stdout, str) or not stdout.strip():
+        raise _output_invalid(
+            "the helper wrote nothing to stdout. 'No symbols' and 'no output' "
+            "are not the same answer: the first describes one package and the "
+            "second would describe every branch"
+        )
+    try:
+        document = json.loads(stdout)
+    except ValueError as exc:
+        raise _output_invalid(
+            f"the helper's stdout is not well-formed JSON: {exc}"
+        ) from exc
+    if not isinstance(document, dict):
+        raise _output_invalid(
+            f"the helper's stdout is a JSON {type(document).__name__} and not "
+            "an object; one response document, always"
+        )
+
+    # RULE 3, and it is checked BEFORE anything else is read. The
+    # ignore-unknown-fields CHOICE rests on exactly this order: an unknown
+    # field can only arrive from a document that has already lied about its
+    # version.
+    schema = document.get("schema")
+    if schema != GO_REACHABILITY_SCHEMA:
+        raise _output_invalid(
+            f"the response schema is {schema!r} and not "
+            f"{GO_REACHABILITY_SCHEMA!r}; a helper and a caller that disagree "
+            "about the edge grammar would compute reachability over graphs "
+            "that mean different things"
+        )
+
+    unit = _decode_unit(document.get("unit"))
+
+    # RULE 5, under D3's reading: ``null`` is ABSENT and ``[]`` is
+    # PRESENT-and-empty. Every parse_error document the helper can produce
+    # carries the four arrays as ``null`` — Go's encoding/json writes a nil
+    # slice that way and ``,omitempty`` is refused because it writes ``{}`` for
+    # an empty slice too — so a decoder that read ``null`` as present would
+    # refuse every one of them.
+    parse_error = document.get("parse_error")
+    arrays = {name: document.get(name) for name in _RESPONSE_ARRAYS}
+    present = [name for name, value in arrays.items() if value is not None]
+    if parse_error is not None and present:
+        raise _output_invalid(
+            f"the response carries parse_error AND {present}; they are "
+            "mutually exclusive, and half of a graph is the silent partial"
+        )
+    if parse_error is None and not present:
+        raise _output_invalid(
+            "the response carries neither parse_error nor any of the four "
+            f"arrays {list(_RESPONSE_ARRAYS)}; a document that answers nothing "
+            "is not an answer"
+        )
+
+    if parse_error is not None:
+        if not isinstance(parse_error, dict):
+            raise _output_invalid(
+                f"parse_error is a {type(parse_error).__name__} and not an "
+                "object naming the file that would not parse"
+            )
+        return GoReachabilityResponse(
+            schema=schema,
+            unit=unit,
+            parse_error=GoWireParseError(
+                path=_wire_text(parse_error, "path", where="parse_error"),
+                message=_wire_text(parse_error, "message", where="parse_error"),
+            ),
+        )
+
+    # RULE 7. All four, PRESENT and a list. An empty list is the answer for a
+    # package that declares nothing; a missing one is not an answer at all —
+    # and requiring all four is what makes the ignore-unknown-fields ruling
+    # safe, because a field renamed without a schema bump lands here.
+    missing = [name for name in _RESPONSE_ARRAYS if arrays[name] is None]
+    if missing:
+        raise _output_invalid(
+            f"the response is missing the required array(s) {missing}; `[]` is "
+            "an answer and a missing field is not"
+        )
+    not_a_list = [
+        name for name in _RESPONSE_ARRAYS if not isinstance(arrays[name], list)
+    ]
+    if not_a_list:
+        raise _output_invalid(
+            f"the response field(s) {not_a_list} are present and are not lists"
+        )
+
+    symbols: list[GoWireSymbol] = []
+    declared: set[str] = set()
+    for record in arrays["symbols"]:
+        _require_object(record, "symbols")
+        key = _wire_text(record, "key", where="symbols")
+        # RULE 9, and it is sharper here than in the sibling: D5's Symbol
+        # declares path and line as field(compare=False), so identity is over
+        # key ALONE and two records with one key are ONE symbol whose path is
+        # decided by dict insertion order — and path is what is_test_path reads
+        # to decide whether a symbol is excluded from a subject set. A
+        # duplicate key can turn a BREACH into an exclusion.
+        if key in declared:
+            raise _output_invalid(
+                f"symbols repeats the key {key!r}; two records with one key are "
+                "one symbol wearing two declarations, and which path wins is "
+                "decided by insertion order"
+            )
+        declared.add(key)
+        symbols.append(
+            GoWireSymbol(
+                key=key,
+                path=_wire_text(record, "path", where="symbols"),
+                line=_wire_line(record, where="symbols"),
+                kind=_wire_reportage(record, "kind", where="symbols"),
+            )
+        )
+
+    roots: list[GoWireRoot] = []
+    entered: set[str] = set()
+    for record in arrays["roots"]:
+        _require_object(record, "roots")
+        symbol = _wire_text(record, "symbol", where="roots")
+        # RULE 11 — the vocabulary raises rather than defaulting.
+        entrypoint_kind_for_wire(record.get("kind"))
+        if symbol in entered:
+            raise _output_invalid(
+                f"roots repeats the symbol {symbol!r}"
+            )
+        # RULE 10. A root the graph does not declare has no outgoing edges and
+        # would contribute silently nothing.
+        if symbol not in declared:
+            raise _output_invalid(
+                f"root {symbol!r} names a symbol the response does not declare"
+            )
+        entered.add(symbol)
+        roots.append(
+            GoWireRoot(
+                symbol=symbol,
+                kind=record["kind"],
+                evidence=_wire_reportage(record, "evidence", where="roots"),
+            )
+        )
+
+    edges: list[GoWireEdge] = []
+    seen_edges: set[tuple[str, str, str, str]] = set()
+    for record in arrays["edges"]:
+        _require_object(record, "edges")
+        caller = _wire_text(record, "caller", where="edges")
+        callee = _wire_text(record, "callee", where="edges")
+        edge_kind_for_wire(record.get("kind"))  # RULE 11
+        site = _wire_text(record, "site", where="edges")
+        _require_declared(caller, declared, "edges")  # RULE 12
+        # CHOICE, kept: duplicate EDGES are DEDUPLICATED and never refused.
+        # ``f(f(x))`` is ordinary Go and emits two identical tuples; refusing
+        # them would blame the machine for a legal program. A duplicate edge is
+        # the same answer twice, and reachability is a set property, so the
+        # dedup cannot move a verdict.
+        signature = (caller, callee, record["kind"], site)
+        if signature in seen_edges:
+            continue
+        seen_edges.add(signature)
+        edges.append(
+            GoWireEdge(caller=caller, callee=callee, kind=record["kind"], site=site)
+        )
+
+    holes: list[GoWireHole] = []
+    for record in arrays["unresolved"]:
+        _require_object(record, "unresolved")
+        caller = _wire_text(record, "caller", where="unresolved")
+        _require_declared(caller, declared, "unresolved")  # RULE 12
+        holes.append(
+            GoWireHole(
+                caller=caller,
+                site=_wire_text(record, "site", where="unresolved"),
+                detail=_wire_reportage(record, "detail", where="unresolved"),
+            )
+        )
+
+    return GoReachabilityResponse(
+        schema=schema,
+        unit=unit,
+        symbols=tuple(symbols),
+        roots=tuple(roots),
+        edges=tuple(edges),
+        unresolved=tuple(holes),
     )
+
+
+#: The four arrays a graph document must carry, named once so that rule 5, rule
+#: 7 and the ``null``-is-absent reading cannot come to disagree about which four
+#: they are.
+_RESPONSE_ARRAYS = ("symbols", "roots", "edges", "unresolved")
+
+
+def _output_invalid(message: str) -> AnalyzerUnavailable:
+    """Every way a document can be wrong, under ONE fault.
+
+    Never :attr:`AnalyzerFault.HELPER_FAILED`, which blames the process for a
+    document the process delivered successfully.
+    """
+    return AnalyzerUnavailable(AnalyzerFault.HELPER_OUTPUT_INVALID, message)
+
+
+def _decode_unit(raw: object) -> GoUnit:
+    """RULE 4's decodable half: ``unit`` is an object of three strings."""
+    if not isinstance(raw, dict):
+        raise _output_invalid(
+            f"the response unit is {raw!r} and not an object; a response for a "
+            "package nobody asked about would attach one package's edges to "
+            "another package's symbols"
+        )
+    values = {}
+    for field in ("module_path", "package_dir", "package_name"):
+        value = raw.get(field)
+        if not isinstance(value, str):
+            raise _output_invalid(
+                f"the response unit's {field!r} is {value!r} and not a string"
+            )
+        values[field] = value
+    return GoUnit(**values)
+
+
+def _require_object(record: object, where: str) -> None:
+    if not isinstance(record, dict):
+        raise _output_invalid(
+            f"{where} carries {record!r}, which is not an object"
+        )
+
+
+def _wire_text(record: Mapping[str, object], field: str, *, where: str) -> str:
+    value = record.get(field)
+    if not isinstance(value, str) or not value:
+        raise _output_invalid(
+            f"{where}: {field!r} is {value!r} and not a non-empty string"
+        )
+    return value
+
+
+def _wire_reportage(record: Mapping[str, object], field: str, *, where: str) -> str:
+    """A string nothing compares: ``kind`` on a symbol, ``evidence``, ``detail``.
+
+    Typed but not required to be non-empty, because a second comparison surface
+    is a second thing to keep in agreement and these three are not one.
+    """
+    value = record.get(field)
+    if not isinstance(value, str):
+        raise _output_invalid(
+            f"{where}: {field!r} is {value!r} and not a string"
+        )
+    return value
+
+
+def _wire_line(record: Mapping[str, object], *, where: str) -> int:
+    value = record.get("line")
+    # ``isinstance(True, int)`` is True in Python, and a bool here would put a
+    # finding at line 1 of a file nobody wrote.
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise _output_invalid(
+            f"{where}: 'line' is {value!r} and not a positive integer"
+        )
+    return value
+
+
+def _require_declared(caller: str, declared: set[str], where: str) -> None:
+    if caller not in declared:
+        raise _output_invalid(
+            f"{where} names the caller {caller!r}, which the response does not "
+            "declare; an edge from nowhere is not an edge"
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -1139,13 +1421,140 @@ def discover_units(tree: Path) -> tuple[tuple[GoUnit, tuple[GoSourceFile, ...]],
     BREACH. D5's limit 7 already records generated call sites as counting, and
     this keeps the two consistent. What would change it: a measured case where
     a vendored tree's edges made a real BREACH invisible.
+
+    RECORDED, not silent: a Go file with no enclosing module manifest inside
+    ``tree`` is not a unit and is skipped. There is no channel on this signature
+    to return it, so it is named here — a synthesised module path is a key
+    nobody can join to anything, and every decision in D5 is set membership on
+    that key. A file whose package clause cannot be read is NOT skipped: it goes
+    to a unit with an empty package name, where ``go/parser`` refuses it and the
+    whole tree abstains, which is the direction the CHOICE above rules for.
     """
-    raise NotImplementedError(
-        "discover_units must group tree's Go files into one unit per "
-        "(directory, package clause), asking support_for_path which files are "
-        "Go, reading module_path from the nearest enclosing go.mod, and "
-        "emitting a deterministic order"
+    root = Path(tree)
+    grouped: dict[tuple[str, str, str], list[GoSourceFile]] = {}
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root).as_posix()
+        # THE one place in this codebase that decides what language a file is.
+        # A second extension table would drift silently, on files neither gate
+        # had been pointed at yet.
+        support = support_for_path(relative)
+        if support is None or support.language is not Language.GO:
+            continue
+        module_path = _nearest_module_path(root, path.parent)
+        if module_path is None:
+            continue
+        # surrogateescape, deliberately: source travels VERBATIM and a blob that
+        # is not valid UTF-8 is a fact about the branch. The encoder's
+        # ensure_ascii is what keeps it from becoming an environment fault.
+        source = path.read_text(encoding="utf-8", errors="surrogateescape")
+        package_dir = path.parent.relative_to(root).as_posix()
+        if package_dir == ".":
+            package_dir = ""
+        key = (module_path, package_dir, _go_package_clause(source))
+        grouped.setdefault(key, []).append(
+            GoSourceFile(path=relative, source=source)
+        )
+    units: list[tuple[GoUnit, tuple[GoSourceFile, ...]]] = []
+    for module_path, package_dir, package_name in sorted(
+        grouped, key=lambda key: (key[1], key[2], key[0])
+    ):
+        files = grouped[(module_path, package_dir, package_name)]
+        units.append(
+            (
+                GoUnit(
+                    module_path=module_path,
+                    package_dir=package_dir,
+                    package_name=package_name,
+                ),
+                tuple(sorted(files, key=lambda file: file.path)),
+            )
+        )
+    return tuple(units)
+
+
+#: The manifest that fixes a directory's module path. It is taken from
+#: :data:`GO_REACHABILITY_HELPER_ENTRY_POINTS` rather than written a second
+#: time, because this module is permitted exactly the two filename literals that
+#: tuple holds and a third would be a second place where a filename is written
+#: down — which is what
+#: ``test_this_module_asks_role_protocol_what_a_go_file_is_and_never_matches_one``
+#: enforces. The tuple is ordered (program, manifest) and a seal pins it
+#: verbatim, so the index is exactly as stable as the two names are.
+_GO_MODULE_MANIFEST = GO_REACHABILITY_HELPER_ENTRY_POINTS[-1]
+
+#: ``module <path>`` on a line of its own, the manifest's one required directive.
+_MODULE_DIRECTIVE = re.compile(r"^\s*module\s+(\S+)\s*$", re.MULTILINE)
+
+#: ``go <major>.<minor>``, read to refuse a toolchain older than the helper.
+_GO_DIRECTIVE = re.compile(r"^\s*go\s+(\d+)\.(\d+)", re.MULTILINE)
+
+#: The package clause, matched at a position the scanner has already advanced
+#: past every comment to reach.
+_PACKAGE_CLAUSE = re.compile(r"package\s+([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _nearest_module_dir(root: Path, directory: Path) -> Path | None:
+    """The nearest enclosing directory holding a module manifest, or None.
+
+    NEAREST and not outermost. Seven manifests in the acceptance repository,
+    none at its root, and the outermost reading would give two directories one
+    module — inviting exactly the key collision the qualifier exists to prevent.
+    The search stops at ``root``: the tree is the boundary of what is judged.
+    """
+    current = directory
+    while True:
+        if (current / _GO_MODULE_MANIFEST).is_file():
+            return current
+        if current == root:
+            return None
+        parent = current.parent
+        if parent == current:
+            return None
+        current = parent
+
+
+def _nearest_module_path(root: Path, directory: Path) -> str | None:
+    module_dir = _nearest_module_dir(root, directory)
+    if module_dir is None:
+        return None
+    text = (module_dir / _GO_MODULE_MANIFEST).read_text(
+        encoding="utf-8", errors="surrogateescape"
     )
+    match = _MODULE_DIRECTIVE.search(_strip_line_comments(text))
+    return match.group(1) if match else None
+
+
+def _strip_line_comments(text: str) -> str:
+    return "\n".join(line.split("//", 1)[0] for line in text.splitlines())
+
+
+def _go_package_clause(source: str) -> str:
+    """The ``package`` clause, or ``""`` when the file has none.
+
+    A scanner rather than a regex over the whole text: Go's package clause is
+    the first non-comment token, and a doc comment above it may legally carry
+    the word ``package`` at the start of a line — which a line-anchored regex
+    would read as the clause.
+    """
+    index = 0
+    length = len(source)
+    while index < length:
+        if source[index].isspace():
+            index += 1
+            continue
+        if source.startswith("//", index):
+            end = source.find("\n", index)
+            index = length if end < 0 else end + 1
+            continue
+        if source.startswith("/*", index):
+            end = source.find("*/", index + 2)
+            index = length if end < 0 else end + 2
+            continue
+        match = _PACKAGE_CLAUSE.match(source, index)
+        return match.group(1) if match else ""
+    return ""
 
 
 def _build_go_reachability_helper() -> Path:
@@ -1166,17 +1575,213 @@ def _build_go_reachability_helper() -> Path:
     and the full argument is in WHAT THE TRACKED-BINARY QUESTION ACTUALLY IS,
     below :data:`GO_REACHABILITY_ANALYZER`.
     """
-    raise NotImplementedError(
-        "_build_go_reachability_helper must resolve the source, probe the "
-        "toolchain, build once per process into a mkdtemp workspace, and "
-        "return the binary — caching the fault as well as the success"
+    import atexit
+    import shutil
+    import subprocess
+    import tempfile
+
+    source = go_reachability_helper_dir()
+
+    go = shutil.which("go")
+    if go is None:
+        raise AnalyzerUnavailable(
+            AnalyzerFault.TOOLCHAIN_MISSING,
+            "no `go` on PATH, so the Go reachability analyzer could not run. "
+            "This is a fact about this machine and not about the branch: a "
+            "broken CI image must never clear a Go branch",
+        )
+    _probe_go_toolchain(go, source)
+
+    workspace = Path(tempfile.mkdtemp(prefix="claude-dispatcher-go-reachability-"))
+    atexit.register(shutil.rmtree, workspace, ignore_errors=True)
+    binary = workspace / "go-call-reachability"
+    try:
+        built = subprocess.run(
+            [go, "build", "-o", str(binary), "."],
+            cwd=str(source),
+            capture_output=True,
+            timeout=_HELPER_BUILD_TIMEOUT_SECONDS,
+            env=_go_environment(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AnalyzerUnavailable(
+            AnalyzerFault.HELPER_TIMEOUT,
+            f"building the helper in {source} exceeded "
+            f"{_HELPER_BUILD_TIMEOUT_SECONDS}s. A gate that hangs is a gate "
+            "that is not enforcing anything",
+        ) from exc
+    except OSError as exc:
+        raise AnalyzerUnavailable(
+            AnalyzerFault.HELPER_FAILED,
+            f"`{go} build` in {source} could not be run: "
+            f"{type(exc).__name__}: {exc}",
+        ) from exc
+    if built.returncode != 0 or not binary.is_file():
+        raise AnalyzerUnavailable(
+            AnalyzerFault.HELPER_FAILED,
+            f"building the helper in {source} exited {built.returncode}: "
+            f"{_diagnostic_text(built.stderr)}",
+        )
+    return binary
+
+
+#: The build's budget. Generous on purpose: what it bounds is a HUNG toolchain
+#: and not a slow one. The sibling measured its own build at 1.9 s cold and
+#: 0.04 s warm on the reference machine.
+_HELPER_BUILD_TIMEOUT_SECONDS = 120
+
+#: One UNIT's budget, which is the divergence :class:`GoReachabilityRequest`
+#: rules on: the sibling's 30 s is per FILE and this one covers a whole package,
+#: including the source importer's walk over GOROOT for every import.
+#: **Measured under** ``feat/D6-body``, 2026-08-11: the two acceptance modules
+#: (10,454 lines over eight files) answer in 1.2 s and 1.4 s.
+_HELPER_TIMEOUT_SECONDS = 120
+
+#: Built once per PROCESS and cached in memory as ``(binary, None)`` or
+#: ``(None, fault)``, never on disk between runs — ``_GO_HELPER_PREPARED``'s
+#: design, for its reason: a binary cached under ``/tmp`` across runs would be a
+#: file outside ``FLOOR_GLOBS`` whose bytes decide what a Go CALL GRAPH is, and
+#: this module's output is a ``Disposition.BREACH`` that blocks a branch.
+_GO_REACHABILITY_PREPARED: tuple[Path | None, AnalyzerUnavailable | None] | None = None
+
+
+def _go_environment() -> dict[str, str]:
+    """The environment ``go`` is invoked under, for the build and for the run.
+
+    ONE environment for both, because the axes that matter are the same ones:
+    the target repository is itself a Go module and may carry a ``go.work`` or a
+    ``GOFLAGS`` from a shell profile, and inheriting either would let the tree
+    under judgement change what the analysis is.
+
+    ``GOCACHE`` and ``HOME`` are INHERITED. The build genuinely needs a writable
+    cache and :func:`_probe_go_toolchain` reports an unwritable one as
+    :attr:`AnalyzerFault.TOOLCHAIN_UNUSABLE`; the ANALYSIS does not, which is
+    the whole reason ``importer.ForCompiler(fset, "source", nil)`` is ruled and
+    ``importer.Default()`` is refused.
+    """
+    import os
+
+    env = dict(os.environ)
+    env.update(
+        {
+            "GOWORK": "off",
+            "GOFLAGS": "",
+            "GOPROXY": "off",
+            "GOTOOLCHAIN": "local",
+            "GO111MODULE": "on",
+        }
     )
+    for cross in ("GOOS", "GOARCH"):
+        env.pop(cross, None)
+    return env
+
+
+def _diagnostic_text(raw: bytes | None) -> str:
+    """Helper stderr for a fault message. Lossy and bounded on purpose."""
+    if not raw:
+        return "(nothing on stderr)"
+    text = bytes(raw).decode("utf-8", "replace").strip()
+    if len(text) > 2000:
+        text = text[:2000] + " …(truncated)"
+    return text or "(nothing on stderr)"
+
+
+def _probe_go_toolchain(go: str, source: Path) -> None:
+    """Refuse a ``go`` that is on PATH but cannot do the job.
+
+    On PATH is not the same as working, and a gate that assumes it is fails open
+    the first time a container drops ``$HOME``. Three refusals, all
+    :attr:`AnalyzerFault.TOOLCHAIN_UNUSABLE`: the probe does not answer;
+    ``GOCACHE`` is unset or ``off``, which is what ``go env`` reports when there
+    is no writable ``HOME``; or the installed version predates the helper's own
+    ``go`` directive, which would report a COMPILE error and blame the helper
+    for the machine's age.
+    """
+    import subprocess
+
+    try:
+        probe = subprocess.run(
+            [go, "env", "GOVERSION", "GOCACHE"],
+            capture_output=True,
+            timeout=_HELPER_TIMEOUT_SECONDS,
+            env=_go_environment(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AnalyzerUnavailable(
+            AnalyzerFault.TOOLCHAIN_UNUSABLE,
+            f"`{go} env` did not answer within {_HELPER_TIMEOUT_SECONDS}s; a "
+            "toolchain that hangs on its own version probe cannot be used to "
+            "clear a branch",
+        ) from exc
+    except OSError as exc:
+        raise AnalyzerUnavailable(
+            AnalyzerFault.TOOLCHAIN_UNUSABLE,
+            f"`{go} env` could not be run: {type(exc).__name__}: {exc}",
+        ) from exc
+    if probe.returncode != 0:
+        raise AnalyzerUnavailable(
+            AnalyzerFault.TOOLCHAIN_UNUSABLE,
+            f"`{go} env` exited {probe.returncode}: "
+            f"{_diagnostic_text(probe.stderr)}",
+        )
+
+    lines = probe.stdout.decode("utf-8", "replace").splitlines()
+    version_text = lines[0].strip() if lines else ""
+    cache = lines[1].strip() if len(lines) > 1 else ""
+    if not cache or cache == "off":
+        raise AnalyzerUnavailable(
+            AnalyzerFault.TOOLCHAIN_UNUSABLE,
+            f"`{go} env GOCACHE` is {cache!r}, which is what it reports when "
+            "there is no writable HOME; the helper cannot be built",
+        )
+    required = _GO_DIRECTIVE.search(
+        (source / _GO_MODULE_MANIFEST).read_text(encoding="utf-8")
+    )
+    installed = re.search(r"go(\d+)\.(\d+)", version_text)
+    if required and installed:
+        if (int(installed.group(1)), int(installed.group(2))) < (
+            int(required.group(1)),
+            int(required.group(2)),
+        ):
+            raise AnalyzerUnavailable(
+                AnalyzerFault.TOOLCHAIN_UNUSABLE,
+                f"the installed toolchain is {version_text!r} and the helper's "
+                f"module requires go{required.group(1)}.{required.group(2)}; a "
+                "toolchain that predates the syntax the helper is written "
+                "against reports a COMPILE error, which blames the helper for "
+                "the machine's age",
+            )
+
+
+def _go_reachability_binary() -> Path:
+    """The built helper for this process, or re-raise the fault that stopped it."""
+    global _GO_REACHABILITY_PREPARED
+
+    if _GO_REACHABILITY_PREPARED is None:
+        try:
+            _GO_REACHABILITY_PREPARED = (_build_go_reachability_helper(), None)
+        except AnalyzerUnavailable as exc:
+            _GO_REACHABILITY_PREPARED = (None, exc)
+    binary, failure = _GO_REACHABILITY_PREPARED
+    if failure is not None:
+        raise failure
+    assert binary is not None  # the two arms of the tuple are exclusive
+    return binary
+
+
+#: One encoded request and one working directory answer to exactly one stdout,
+#: because the helper is a pure function of them. Cached per PROCESS so that
+#: ``roots`` and ``graph`` over one tree — which D5 calls separately, from
+#: ``discover_roots`` and ``build_call_graph`` — pay for the walk once. It is a
+#: memo and never a fallback: a miss runs the helper, and a fault is not cached
+#: here at all.
+_RESPONSE_CACHE: dict[tuple[str, str], str] = {}
 
 
 def _run_go_reachability_helper(
-    binary: Path, request: GoReachabilityRequest
+    binary: Path, request: GoReachabilityRequest, cwd: Path
 ) -> str:
-    """One request in, the helper's stdout out, or the named fault. STUB.
+    """One request in, the helper's stdout out, or the named fault.
 
     Exit status and document are separate channels: a non-zero exit is
     HELPER_FAILED and stdout is **not read at all**, because a document from a
@@ -1187,12 +1792,192 @@ def _run_go_reachability_helper(
     :class:`GoReachabilityRequest` rules on — and there is no retry and no
     degraded mode: a fallback is how a gate ends up reporting a pass it did not
     earn.
+
+    ``cwd`` is a PARAMETER and its presence is the P4 type-resolution ruling
+    made executable: ``importer.ForCompiler(fset, "source", nil)`` resolves
+    imports through ``go list``, relative to the process working directory, so
+    the helper must run inside the unit's module or every cross-module import
+    fails. It is the exposure that ruling quantifies rather than a convenience,
+    and it is named here so a reader meets it at the site that opens it.
     """
-    raise NotImplementedError(
-        "_run_go_reachability_helper must write one encoded request to a fresh "
-        "process's stdin under a per-unit timeout and return its stdout, "
-        "reading nothing on a non-zero exit"
+    import subprocess
+
+    document = encode_go_reachability_request(request.unit, request.files)
+    memo = (document, str(cwd))
+    cached = _RESPONSE_CACHE.get(memo)
+    if cached is not None:
+        return cached
+    try:
+        finished = subprocess.run(
+            [str(binary)],
+            input=document.encode("utf-8"),
+            capture_output=True,
+            cwd=str(cwd),
+            timeout=_HELPER_TIMEOUT_SECONDS,
+            env=_go_environment(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AnalyzerUnavailable(
+            AnalyzerFault.HELPER_TIMEOUT,
+            f"the helper took longer than {_HELPER_TIMEOUT_SECONDS}s on the "
+            f"package {request.unit.package_dir!r}. There is no retry and no "
+            "degraded mode: a fallback is how a gate ends up reporting a pass "
+            "it did not earn",
+        ) from exc
+    except OSError as exc:
+        raise AnalyzerUnavailable(
+            AnalyzerFault.HELPER_FAILED,
+            f"the helper binary at {binary} could not be executed: "
+            f"{type(exc).__name__}: {exc}",
+        ) from exc
+
+    if finished.returncode != 0:
+        raise AnalyzerUnavailable(
+            AnalyzerFault.HELPER_FAILED,
+            f"the helper exited {finished.returncode} on the package "
+            f"{request.unit.package_dir!r}: "
+            f"{_diagnostic_text(finished.stderr)}",
+        )
+    try:
+        stdout = finished.stdout.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise AnalyzerUnavailable(
+            AnalyzerFault.HELPER_OUTPUT_INVALID,
+            f"the helper's stdout for the package "
+            f"{request.unit.package_dir!r} is not valid UTF-8: {exc}",
+        ) from exc
+    _RESPONSE_CACHE[memo] = stdout
+    return stdout
+
+
+def _analyzed_units(
+    tree: Path,
+) -> tuple[tuple[GoUnit, tuple[GoSourceFile, ...], GoReachabilityResponse], ...]:
+    """Every unit of ``tree``, run through the helper and decoded.
+
+    The one place :meth:`GoReachabilityAnalyzer.roots` and
+    :meth:`GoReachabilityAnalyzer.graph` share, so the two methods cannot come
+    to disagree about which units exist — which they would have to agree about
+    anyway, since ``discover_seals`` raises when a test root is not declared in
+    the graph.
+
+    Rule 4's other half is checked here and not in the decoder: the response
+    must ECHO the unit that was requested, and this is the only layer holding
+    both.
+    """
+    binary = _go_reachability_binary()
+    root = Path(tree)
+    analyzed = []
+    for unit, files in discover_units(root):
+        request = GoReachabilityRequest(
+            schema=GO_REACHABILITY_SCHEMA, unit=unit, files=files
+        )
+        directory = root / unit.package_dir if unit.package_dir else root
+        response = decode_go_reachability_response(
+            _run_go_reachability_helper(binary, request, directory)
+        )
+        if response.unit != unit:
+            raise _output_invalid(
+                f"the helper answered for {response.unit} and was asked about "
+                f"{unit}; a response for a package nobody asked about would "
+                "attach one package's edges to another package's symbols"
+            )
+        analyzed.append((unit, files, response))
+    return tuple(analyzed)
+
+
+def _import_path_qualifiers(tree: Path, units: Sequence[GoUnit]) -> dict[str, str]:
+    """Each unit's IMPORT PATH mapped to the qualifier its keys are spelled with.
+
+    **The two are not the same string and cannot be.** :func:`go_symbol_key`'s
+    qualifier keeps the tree-relative ``package_dir`` — it is a LABEL that must
+    be unique and legible, never an import path to be resolved — so the
+    acceptance fixture's ``cmd/gates`` is keyed
+    ``…/gates/cmd/gates.VerifyPreservation`` while its import path is ``…/gates``.
+    The helper can only spell a callee in ANOTHER package by that package's
+    import path, which is what the file's import block gives it.
+
+    Without this map every cross-package call inside one tree would be an edge
+    whose callee no symbol declares, and ``CallGraph``'s both-ends rule would
+    drop it — losing a real production edge, which manufactures a BREACH. That
+    is the direction anti-requirement 2 forbids, so the join is made here rather
+    than left to the drop. It binds nothing in the acceptance fixture, whose
+    seven modules are one package each; it binds every repository with an
+    ``internal/``.
+    """
+    root = Path(tree)
+    qualifiers: dict[str, str] = {}
+    for unit in units:
+        directory = root / unit.package_dir if unit.package_dir else root
+        module_dir = _nearest_module_dir(root, directory)
+        if module_dir is None:
+            continue
+        if _is_external_test_package(unit.package_name):
+            # Nothing in any tree can import an external test package, so it
+            # has no import path anyone could name and belongs in no map.
+            continue
+        inside = directory.relative_to(module_dir).as_posix()
+        import_path = unit.module_path
+        if inside not in ("", "."):
+            import_path = f"{unit.module_path}/{inside}"
+        qualifiers[import_path] = _qualifier_of(unit)
+    return qualifiers
+
+
+def _join_callee(
+    callee: str, symbols: Mapping[str, Symbol], qualifiers: Mapping[str, str]
+) -> str:
+    """The callee key as this tree spells it, when the tree spells it at all.
+
+    A callee the helper named by IMPORT PATH — the only way it can name a target
+    in another package — is rewritten to the qualifier that package's own unit
+    keys its symbols with; see :func:`_import_path_qualifiers` for why the two
+    strings differ. Longest prefix wins, so a module and a package inside it
+    cannot both claim one key. Anything that does not resolve is left alone and
+    the both-ends rule drops it, which is the right answer for the standard
+    library.
+    """
+    if callee in symbols:
+        return callee
+    for import_path in sorted(qualifiers, key=len, reverse=True):
+        prefix = f"{import_path}{_KEY_PACKAGE_SEPARATOR}"
+        if callee.startswith(prefix):
+            return f"{qualifiers[import_path]}{_KEY_PACKAGE_SEPARATOR}{callee[len(prefix):]}"
+    return callee
+
+
+def _edge_order(edge: Edge) -> tuple[str, str, str, str]:
+    """A total, content-only order over edges. Sorted at CONSTRUCTION.
+
+    D5 sorts again in ``build_call_graph``, so this cannot move a VERDICT — but
+    :meth:`GoReachabilityAnalyzer.graph` is called directly by seals and by
+    ``roots``' sibling, and two runs over one tree must produce EQUAL graphs.
+    """
+    return (edge.caller.key, edge.callee.key, edge.kind.value, edge.site)
+
+
+def _qualifier_of(unit: GoUnit) -> str:
+    """The qualifier half of a key, taken FROM :func:`go_symbol_key`.
+
+    A key with an empty member is the qualifier plus the separator, so this
+    reads the one spelling rather than respelling it — which is the whole point
+    of that function existing.
+    """
+    key = go_symbol_key(
+        unit.module_path, unit.package_dir, unit.package_name, None, ""
     )
+    return key.rpartition(_KEY_PACKAGE_SEPARATOR)[0]
+
+
+def _is_external_test_package(package_name: str) -> bool:
+    """Go's total discriminator, spelled without a second ``endswith``.
+
+    The module is permitted exactly one ``endswith`` and it is
+    :func:`go_symbol_key`'s, over this same clause; a second call would redden
+    the sweep that pins it, and a slice comparison says the same thing.
+    """
+    suffix = _EXTERNAL_TEST_PACKAGE_SUFFIX
+    return len(package_name) > len(suffix) and package_name[-len(suffix) :] == suffix
 
 
 # --------------------------------------------------------------------------- #
@@ -1301,13 +2086,54 @@ class GoReachabilityAnalyzer:
         rather than left implied: ``UndecidedReason.PARSE_FAILED`` becomes
         unreachable through ``check_tree`` for Go, which would make it "a member
         no dispatch emits" — D5's own stated failure, one level down.
+
+        THE FILE HALF, applied here and nowhere else. The helper emits
+        ``test_function`` on a NAMING claim alone, because it must not open a
+        second notion of "is this one of the tests". This method asks the shared
+        matcher and drops a root whose file disagrees with its kind, in both
+        directions:
+
+          * a ``TEST_FUNCTION`` outside a test file is not an entrypoint at all
+            — ``go test`` runs ``TestX`` only in a ``_test`` file, so a
+            production function that happens to be called ``TestFoo`` starts
+            nothing;
+          * a production kind INSIDE a test file — an ``init`` or a
+            package-level ``var`` in a ``_test`` file — runs in the test binary
+            and not in production, so it is not a production root either.
+
+        Both are also exactly what ``_validate_root`` refuses, so the filter is
+        what keeps a legal Go tree from taking the whole check down.
         """
-        raise NotImplementedError(
-            "GoReachabilityAnalyzer.roots must derive every GO_MAIN, GO_INIT, "
-            "GO_PACKAGE_VAR and TEST_FUNCTION root from the tree, letting "
-            "_validate_root derive root_kind, and must not raise "
-            "SourceUnreadable — see this docstring"
-        )
+        roots: list[Root] = []
+        for _unit, _files, response in _analyzed_units(tree):
+            if response.parse_error is not None:
+                # DISPUTE D4's consequence: a unit that did not parse or did not
+                # type-check contributes no roots and is NOT raised past. The
+                # graph records the file, and step 1b abstains the whole tree
+                # before step 4 can reach a tests-only verdict.
+                continue
+            symbols = {
+                record.key: Symbol(
+                    key=record.key, path=record.path, line=record.line
+                )
+                for record in response.symbols
+            }
+            for wire in response.roots:
+                kind = entrypoint_kind_for_wire(wire.kind)
+                symbol = symbols[wire.symbol]
+                root_kind = _ROOT_KIND_BY_ENTRYPOINT[kind]
+                in_test_file = is_test_path(symbol.path)
+                if (kind is EntrypointKind.TEST_FUNCTION) != in_test_file:
+                    continue
+                roots.append(
+                    Root(
+                        symbol=symbol,
+                        kind=kind,
+                        root_kind=root_kind,
+                        evidence=wire.evidence,
+                    )
+                )
+        return tuple(roots)
 
     def graph(self, tree: Path) -> CallGraph:
         """The whole tree's Go :class:`CallGraph`. STUB.
@@ -1361,11 +2187,81 @@ class GoReachabilityAnalyzer:
         question is the helper, and the first message an operator sees on an
         unconfigured machine should name it.
         """
-        raise NotImplementedError(
-            "GoReachabilityAnalyzer.graph must union every unit's decoded "
-            "response into one CallGraph, record parse errors in "
-            "unreadable_paths rather than raising, and refuse a tree whose Go "
-            "files yielded no symbols at all"
+        analyzed = _analyzed_units(tree)
+        qualifiers = _import_path_qualifiers(tree, [unit for unit, _, _ in analyzed])
+
+        symbols: dict[str, Symbol] = {}
+        declaring_unit: dict[str, GoUnit] = {}
+        unreadable: list[str] = []
+        go_files = 0
+        for unit, files, response in analyzed:
+            go_files += len(files)
+            if response.parse_error is not None:
+                # RECORDED, never raised past. Raising from here lands two
+                # layers on: build_call_graph catches SourceUnreadable and
+                # continues, discarding this row's ENTIRE graph, after which
+                # discover_seals raises because no test root is declared in an
+                # empty symbol map. unreadable_paths is the channel that exists
+                # for this and it is the only one that works.
+                unreadable.append(response.parse_error.path)
+                continue
+            for record in response.symbols:
+                if record.key in symbols:
+                    raise _output_invalid(
+                        f"the key {record.key!r} is declared by two units — "
+                        f"{declaring_unit[record.key]} and {unit}. It should be "
+                        "impossible, so either the sweep sent one package twice "
+                        "or go_symbol_key disagrees with itself, and both are "
+                        "mechanism bugs that would put one symbol in two files "
+                        "at once"
+                    )
+                symbols[record.key] = Symbol(
+                    key=record.key, path=record.path, line=record.line
+                )
+                declaring_unit[record.key] = unit
+
+        edges: list[Edge] = []
+        holes: list[tuple[Symbol, str, str]] = []
+        for _unit, _files, response in analyzed:
+            if response.parse_error is not None:
+                continue
+            for wire in response.edges:
+                caller = symbols.get(wire.caller)
+                callee = symbols.get(_join_callee(wire.callee, symbols, qualifiers))
+                # BOTH ends declared in the tree, which is CallGraph's own rule:
+                # a call into the standard library is dropped, and the callback
+                # PASSED to one survives as the reference edge to the callback.
+                if caller is None or callee is None:
+                    continue
+                edges.append(
+                    Edge(
+                        caller=caller,
+                        callee=callee,
+                        kind=edge_kind_for_wire(wire.kind),
+                        site=wire.site,
+                    )
+                )
+            for wire in response.unresolved:
+                holes.append((symbols[wire.caller], wire.site, wire.detail))
+
+        # THE WHOLE-TREE EMPTINESS GUARD, at the only layer that can tell the
+        # two apart. A unit that declares nothing is an answer; a tree in which
+        # the sweep found Go files, every unit answered, and the union graph
+        # holds zero symbols is the helper having stopped — and an empty graph
+        # makes every subject FROM_NEITHER, so the failure is a flood rather
+        # than a silence.
+        if go_files and not symbols and not unreadable:
+            raise _output_invalid(
+                f"the sweep found {go_files} Go file(s) in {tree} and the union "
+                "graph declares no symbol at all; 'this tree has no edges' and "
+                "'the helper returned nothing' must not be the same answer"
+            )
+
+        return CallGraph(
+            symbols={key: symbols[key] for key in sorted(symbols)},
+            edges=tuple(sorted(edges, key=_edge_order)),
+            unresolved_calls=tuple(sorted(holes, key=lambda hole: (hole[0].key, hole[1], hole[2]))),
+            unreadable_paths=tuple(sorted(dict.fromkeys(unreadable))),
         )
 
     def test_root_predicate(self, symbol: Symbol) -> bool:
