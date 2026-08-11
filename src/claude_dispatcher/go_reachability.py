@@ -628,10 +628,30 @@ class GoReachabilityResponse:
     all four arrays must be PRESENT, possibly empty — ``[]`` is an answer and a
     missing field is not, which is what lets the caller tell "this package
     declares nothing" from "the helper stopped emitting a field".
+
+    ``import_path``
+        **The one field that is not a function of the request.** It is the
+        import path the GO TOOLCHAIN resolves for the unit's own directory —
+        ``go list -e -find -f {{.ImportPath}} .`` — and it replaces the
+        directory arithmetic :func:`_import_path_qualifiers` used to do. See
+        that function for the three shapes the arithmetic got wrong and which
+        of them this closes.
+
+        It is NOT required by this decoder, and the omission is a CHOICE with a
+        named alternative. Rejected: requiring it here, which is where the
+        other required fields are checked. This function is handed one string
+        and has never seen a helper; a document that omits the field is a
+        document a TEST wrote, and refusing it here would make the decoder's
+        contract about who produced the string rather than about what it says.
+        The requirement lives at :func:`_analyzed_units`, which is the only
+        layer that knows the string came from the helper — the same R1
+        discriminator that puts rule 4's echo check and the whole-tree
+        emptiness guard a layer up. Empty means "not stated".
     """
 
     schema: str
     unit: GoUnit
+    import_path: str = ""
     symbols: tuple[GoWireSymbol, ...] = ()
     roots: tuple[GoWireRoot, ...] = ()
     edges: tuple[GoWireEdge, ...] = ()
@@ -981,9 +1001,19 @@ def decode_go_reachability_response(stdout: str) -> GoReachabilityResponse:
             )
         )
 
+    # Typed but not required, and empty means "not stated" — see the field's
+    # note on :class:`GoReachabilityResponse`. A wrongly TYPED field is still a
+    # malformed document, which is rule 8's shape.
+    import_path = document.get("import_path", "")
+    if not isinstance(import_path, str):
+        raise _output_invalid(
+            f"the response 'import_path' is {import_path!r} and not a string"
+        )
+
     return GoReachabilityResponse(
         schema=schema,
         unit=unit,
+        import_path=import_path,
         symbols=tuple(symbols),
         roots=tuple(roots),
         edges=tuple(edges),
@@ -1090,6 +1120,19 @@ _KEY_PACKAGE_SEPARATOR = "."
 #: with a real symbol.
 GO_PACKAGE_VAR_SYMBOL = "<vars>"
 
+#: The SECOND synthetic package-var initialiser: the one whose declarations are
+#: compiled into the TEST binary. One per (package, binary) and not one per
+#: package, because a single symbol standing for both carries a single ``path``
+#: — and ``path`` is what ``seal_verify.is_test_path`` reads to decide whether
+#: the root survives at all, so a per-package symbol made the verdict a function
+#: of which contributing file sorted first. See ``main.go``'s
+#: ``declarePackageVar`` for the two measured trees that flipped.
+#:
+#: It deliberately does not END in :data:`GO_PACKAGE_VAR_SYMBOL`, so that a
+#: reader asking "is this the production initialiser" by suffix is not answered
+#: "yes" for the test one.
+GO_PACKAGE_VAR_TEST_SYMBOL = "<vars:test>"
+
 #: Likewise for the several ``func init()`` one package may legally declare.
 #: The spec permits them explicitly and real code uses them (GOROOT's
 #: ``runtime/proc.go`` and ``cmd/go/main.go`` both do, measured by the sibling
@@ -1136,7 +1179,8 @@ def go_symbol_key(
         <qualifier>.Name          a top-level func
         <qualifier>.(*T).Name     a method, pointer receiver
         <qualifier>.(T).Name      a method, value receiver
-        <qualifier>.<vars>        the package-var initialiser
+        <qualifier>.<vars>        the package-var initialiser, PRODUCTION binary
+        <qualifier>.<vars:test>   the same, for the TEST binary
         <qualifier>.<init:N>      the Nth `func init()`
 
     where ``<qualifier>`` is ``<module_path>/<package_dir>``, plus
@@ -1908,6 +1952,21 @@ def _analyzed_units(
     Rule 4's other half is checked here and not in the decoder: the response
     must ECHO the unit that was requested, and this is the only layer holding
     both.
+
+    **AND SO IS THE ``import_path`` REQUIREMENT (P3, D6 body 2, 2026-08-11).**
+    A graph document must NAME the import path the toolchain resolved for its
+    unit; a document that does not is
+    :attr:`AnalyzerFault.HELPER_OUTPUT_INVALID`. This is the layer that knows
+    the string came from the helper rather than from a seal, which is why the
+    decoder does not check it — the same R1 discriminator that puts rule 4's
+    echo check here. The failure it refuses is not hypothetical: without an
+    import path the unit is absent from :func:`_import_path_qualifiers`' map,
+    every cross-package edge INTO it is dropped by the both-ends rule, and a
+    function production calls reads as uncalled. That is a manufactured BREACH
+    arriving as silence, so it is refused loudly instead.
+
+    A ``parse_error`` document carries no import path and is not asked for one:
+    it declares no symbols, so nothing can be rejoined to it.
     """
     binary = _go_reachability_binary()
     root = Path(tree)
@@ -1926,11 +1985,21 @@ def _analyzed_units(
                 f"{unit}; a response for a package nobody asked about would "
                 "attach one package's edges to another package's symbols"
             )
+        if response.parse_error is None and not response.import_path:
+            raise _output_invalid(
+                f"the helper's graph document for {unit} names no import path. "
+                "The toolchain is the only authority on one, and without it "
+                "every cross-package edge into this package is dropped by the "
+                "both-ends rule — a function production calls would read as "
+                "uncalled, which is a manufactured BREACH arriving as silence"
+            )
         analyzed.append((unit, files, response))
     return tuple(analyzed)
 
 
-def _import_path_qualifiers(tree: Path, units: Sequence[GoUnit]) -> dict[str, str]:
+def _import_path_qualifiers(
+    analyzed: Sequence[tuple[GoUnit, GoReachabilityResponse]],
+) -> dict[str, str]:
     """Each unit's IMPORT PATH mapped to the qualifier its keys are spelled with.
 
     **The two are not the same string and cannot be.** :func:`go_symbol_key`'s
@@ -1949,8 +2018,75 @@ def _import_path_qualifiers(tree: Path, units: Sequence[GoUnit]) -> dict[str, st
     seven modules are one package each; it binds every repository with an
     ``internal/``.
 
+    **P3 (D6 body 2, 2026-08-11) — THE IMPORT PATH NOW COMES FROM THE GO
+    TOOLCHAIN AND NOT FROM DIRECTORY ARITHMETIC, AND THE COLLISION IS LOUD.**
+
+    What this function used to do is written out below and left there, because
+    the shapes it got wrong are the reason the field exists. What it does now is
+    two lines: read ``GoReachabilityResponse.import_path`` — which the helper
+    obtains from ``go list -e -find -f {{.ImportPath}} .`` in the unit's own
+    directory — and refuse a second unit that claims one already claimed.
+
+    **WHAT THE FIELD CLOSED, and each was re-measured under** ``feat/D6-body2``,
+    **2026-08-11, on the tree the P4 built:**
+
+      * **THE VENDOR SHAPE (was item 1), CLOSED.** ``sub/vendor/example.com/lib``
+        under a module at ``sub/``, with ``sub/vendor/modules.txt``: the
+        arithmetic answered ``example.com/app/vendor/example.com/lib`` and the
+        graph held ZERO edges; the toolchain answers ``example.com/lib``, which
+        is what the type-checker resolved, and the edge into ``lib.Do`` lands.
+      * **THE DUPLICATE-IMPORT-PATH COLLISION (was item 3), NOW LOUD.** Two units
+        claiming one import path raise
+        :attr:`AnalyzerFault.HELPER_OUTPUT_INVALID` here, exactly as a duplicate
+        symbol key across units does in :meth:`GoReachabilityAnalyzer.graph` and
+        for the same reason: one label naming two packages is one symbol wearing
+        two declarations, one layer up. **It is NOT closed by construction, and
+        the escalation asked whether it would be — the answer is measured and
+        it is no.** ``go list`` run in ``a/`` and in ``b/``, both declaring
+        ``module example.com/dup``, answers ``example.com/dup`` for both: the
+        toolchain reports what each module calls ITSELF, and two directories may
+        legally call themselves the same thing. The raise is therefore still
+        needed and is still the whole of that repair.
+
+    **WHAT THE FIELD DID NOT CLOSE, AND THIS IS A CORRECTION TO THE ESCALATION
+    RATHER THAN A DEFERRAL. A RENAMING** ``replace`` **(was item 2) IS STILL
+    OPEN, and no per-unit import-path field can close it.** Measured under
+    ``feat/D6-body2``, 2026-08-11, over ``sub/go.mod`` declaring ``module
+    example.com/app`` with ``replace example.com/upstream => ./local`` and
+    ``sub/local/go.mod`` declaring ``module example.com/localfork``:
+
+      * ``go list`` in ``sub/local`` answers ``example.com/localfork``;
+      * the helper for ``sub`` spells the callee ``example.com/upstream.Serve``,
+        because that is the path go/types assigned the package it imported.
+
+    Both are the toolchain's own answers and both are right. **A package reached
+    through a renaming** ``replace`` **HAS TWO import paths — one per module that
+    names it — so "the import path of this directory" is not a function of this
+    directory**, and a field carrying one string per unit cannot hold two. The
+    edge is DROPPED, which is the same direction as before the field and the
+    conservative one; nothing is mis-joined.
+
+    **THE FIX THAT WOULD CLOSE IT, escalated rather than taken, and the reason
+    it was not taken is a seal and not a preference.** The toolchain does answer
+    the question when it is asked from the IMPORTING side: measured under the
+    same revision, ``go list -e -f '{{.ImportPath}} {{.Dir}}' example.com/upstream``
+    run in ``sub/`` answers the pair ``example.com/upstream`` →
+    ``sub/local``. So a second wire field — per unit, each IMPORT's resolved
+    DIRECTORY — would let the join go directory-to-unit and need no import-path
+    arithmetic at all, closing the rename shape exactly. It also answers the
+    duplicate shape EXACTLY rather than refusing it: the same query in
+    ``app/`` resolves ``example.com/dup`` to ``a/``, which is what ``replace``
+    says and what this map cannot read. **That is precisely why it was not
+    taken here.**
+    ``test_two_units_claiming_one_import_path_are_never_silently_joined_to_one``
+    requires that shape to raise or to drop, and a correct answer is neither.
+    Landing both would mean editing a seal, which this body may not do. See the
+    disputes in the commit message.
+
     **P4 RULING (D6 adjudication round 3, 2026-08-11): THE REPAIR IS CORRECT
-    AND IT STAYS HERE. Its limits are below and they are not small.**
+    AND IT STAYS HERE. Its limits are below and they are not small.** The
+    limits are what the field above closes; the ruling on WHERE the repair
+    lives is unchanged.
 
     THE RULING ON CORRECTNESS was taken by building the shapes that break naive
     prefix rewriting and running them, not by reading this function. **Measured
@@ -1983,8 +2119,12 @@ def _import_path_qualifiers(tree: Path, units: Sequence[GoUnit]) -> dict[str, st
         map, and the two edges into ``core.Work`` — one from ``main``, one from
         ``core_test`` — both join.
 
-    **WHAT THIS DOES NOT CLOSE.** Three shapes, measured under the same
-    revision, all ESCALATED TO P3 because each needs production code:
+    **WHAT THIS DID NOT CLOSE**, as the round-3 adjudication left it. Three
+    shapes, measured under the same revision, all ESCALATED TO P3 because each
+    needs production code. **Their state under this revision: (1) CLOSED by the
+    toolchain field, (2) STILL OPEN and now known to be unclosable by any
+    per-unit field, (3) LOUD rather than silent.** They are kept in full
+    because the repair above is measured against them:
 
       1. **A REAL ``go mod vendor`` TREE LOSES THE EDGE.** ``go`` strips
          ``go.mod`` from a vendored module, so ``vendor/example.com/lib`` has
@@ -2020,7 +2160,10 @@ def _import_path_qualifiers(tree: Path, units: Sequence[GoUnit]) -> dict[str, st
          :meth:`GoReachabilityAnalyzer.graph`, and for the same reason — one
          label naming two packages is one symbol wearing two declarations, one
          layer up. ``tests/test_go_reachability.py`` carries the RED row that
-         P3 must turn green.
+         P3 must turn green. **DONE under** ``feat/D6-body2``: the raise is in
+         the body of this function and the row is green. It is a RAISE and not
+         a construction — see the P3 note above for why the toolchain does not
+         tell these two units apart either.
 
     **WHY THE REPAIR STAYS HERE RATHER THAN BECOMING ONE SPELLING.** See
     :meth:`GoReachabilityAnalyzer.graph`'s ruling on the alternative, which was
@@ -2031,21 +2174,38 @@ def _import_path_qualifiers(tree: Path, units: Sequence[GoUnit]) -> dict[str, st
     (1) and (2) wrong in exactly the same way this one does. Only the Go
     toolchain knows a package's import path.
     """
-    root = Path(tree)
     qualifiers: dict[str, str] = {}
-    for unit in units:
-        directory = root / unit.package_dir if unit.package_dir else root
-        module_dir = _nearest_module_dir(root, directory)
-        if module_dir is None:
+    claimed_by: dict[str, GoUnit] = {}
+    for unit, response in analyzed:
+        if response.parse_error is not None:
+            # A unit that did not parse or did not type-check declares no
+            # symbol, so nothing can be rejoined to it and it names no
+            # import path. It is not a claimant and cannot collide.
             continue
         if _is_external_test_package(unit.package_name):
             # Nothing in any tree can import an external test package, so it
-            # has no import path anyone could name and belongs in no map.
+            # has no import path anyone could name and belongs in no map. It
+            # is ALSO why this skip must come before the collision check: the
+            # helper answers with the DIRECTORY's import path, which for
+            # ``package foo_test`` is ``foo``'s — so keeping it would make
+            # every external test package a collision with the package beside
+            # it, and abstain on an idiomatic Go tree.
             continue
-        inside = directory.relative_to(module_dir).as_posix()
-        import_path = unit.module_path
-        if inside not in ("", "."):
-            import_path = f"{unit.module_path}/{inside}"
+        import_path = response.import_path
+        if import_path in claimed_by:
+            raise _output_invalid(
+                f"the import path {import_path!r} is claimed by two units — "
+                f"{claimed_by[import_path]} and {unit}. One label naming two "
+                "packages is one symbol wearing two declarations, one layer "
+                "up: the edge would land on whichever unit the sweep sorted "
+                "last, so the real target would read as uncalled (a false "
+                "BREACH) and the other would read as called (a false "
+                "certification, which hides dark code). There is no honest "
+                "tie-break — `replace` decides which directory an import "
+                "resolves to and nothing here reads `replace` — so this "
+                "abstains rather than guesses"
+            )
+        claimed_by[import_path] = unit
         qualifiers[import_path] = _qualifier_of(unit)
     return qualifiers
 
@@ -2476,8 +2636,25 @@ class GoReachabilityAnalyzer:
         shapes at once, it is production code plus a wire field, and it is not
         a contract sentence.
 
-        **A SECOND CROSS-PACKAGE HOLE IN THE SAME DIRECTION, ESCALATED TO P3
-        and recorded at ``main.go``'s ``classifySelectorCall``:** a method call
+        **P3 (D6 body 2, 2026-08-11) — THE SECOND HOLE IS CLOSED IN THE HELPER
+        AND IT COST ONE SEAL ROW.** ``classifySelectorCall`` now emits the one
+        target go/types resolved whenever the receiver's base type is not an
+        interface, and keeps the fan-out only for genuine interface dispatch.
+        Measured over the tree the escalation names: ``core.(*T).Ptr`` and
+        ``core.(T).Value`` gain their ``method`` edges and the ``interface``
+        edge to the unrelated in-unit ``Decoy.Ptr`` is gone — the false BREACH
+        and the false certification close together. Measured over the
+        acceptance fixture: 738 edges become 694, all 44 removed are
+        ``interface``, none is added, and every removed one is a fan-out from a
+        ``String()`` on a CONCRETE STDLIB receiver. The production closure is
+        104 either way. **THE COST IS A RED ROW AND IT IS A DISPUTE, NOT A
+        REGRESSION:**
+        ``test_a_named_out_of_tree_target_is_not_a_hole_and_a_func_value_call_is``
+        pins the 45th instance of exactly that shape as REQUIRED. See the note
+        at ``main.go``'s ``classifySelectorCall`` and the commit message.
+
+        **THE ESCALATION AS IT STOOD, kept because it is what the repair is
+        measured against:** a method call
         on a receiver whose type is declared in another IN-TREE package emits no
         edge at all, because the helper fans out over ITS OWN unit's methods of
         that name. Measured under this revision: ``core.(*T).Ptr``, called from
@@ -2488,7 +2665,9 @@ class GoReachabilityAnalyzer:
         edge is never emitted.
         """
         analyzed = _analyzed_units(tree)
-        qualifiers = _import_path_qualifiers(tree, [unit for unit, _, _ in analyzed])
+        qualifiers = _import_path_qualifiers(
+            [(unit, response) for unit, _, response in analyzed]
+        )
 
         symbols: dict[str, Symbol] = {}
         declaring_unit: dict[str, GoUnit] = {}

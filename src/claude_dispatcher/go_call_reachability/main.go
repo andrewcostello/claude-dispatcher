@@ -573,12 +573,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"go/ast"
+	"go/build"
 	"go/importer"
 	"go/parser"
 	"go/token"
 	"go/types"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -600,11 +603,43 @@ const SchemaVersion = "claude-dispatcher/go-call-reachability/v1"
 // key is the failure this whole effort is about, so they are constants here
 // rather than format strings assembled at four call sites.
 const (
-	keyPackageSeparator       = "."
-	packageVarSymbol          = "<vars>"
+	keyPackageSeparator = "."
+	packageVarSymbol    = "<vars>"
+	// packageVarTestSymbol is the SECOND synthetic package-var initialiser, and
+	// its existence is the repair of a measured verdict flip. See
+	// declarePackageVar. It is spelled with the same characters no Go
+	// declaration can produce, and it does NOT end in `<vars>`, so a reader
+	// asking "is this the production initialiser" by suffix gets the right
+	// answer.
+	packageVarTestSymbol      = "<vars:test>"
 	initSymbolTemplate        = "<init:%d>"
 	externalTestPackageSuffix = "_test"
+	// testFileSuffix is the toolchain's OWN rule for which binary a file is
+	// compiled into — `go help test`: "files whose names end in _test.go". It
+	// is not a second notion of "is this one of the tests": that question is
+	// seal_verify.is_test_path's and it is asked by the CALLER, over the same
+	// paths, for a different purpose (which ROOTS survive). This one decides
+	// which BINARY a package-level var initialiser runs in, which is a fact
+	// about the Go build and not about this repository's conventions.
+	testFileSuffix = "_test.go"
 )
+
+// The two binaries one Go package compiles into, and the array index each
+// package-var initialiser is filed under. Not a bool: the code below indexes
+// arrays with it, and an index named `true` is how the wrong slot gets read.
+const (
+	binaryProduction = 0
+	binaryTest       = 1
+	binaryCount      = 2
+)
+
+// binaryOf is which binary the declarations in this file are compiled into.
+func binaryOf(path string) int {
+	if strings.HasSuffix(path, testFileSuffix) {
+		return binaryTest
+	}
+	return binaryProduction
+}
 
 // The four wire `kind` strings of the EDGE GRAMMAR, and the four root kinds.
 // Spelled once so a walk cannot grow a fifth by typing one.
@@ -666,6 +701,9 @@ type Request struct {
 //	<module>/<pkgdir-tail>.(*T).Name     a method, pointer receiver
 //	<module>/<pkgdir-tail>.(T).Name      a method, value receiver
 //	<module>/<pkgdir-tail>.<vars>        the synthetic package-var initialiser
+//	                                     of the PRODUCTION binary
+//	<module>/<pkgdir-tail>.<vars:test>   the same, for the test binary — one per
+//	                                     (package, binary), see declarePackageVar
 //
 // The exact spelling is produced by the Python side's go_symbol_key and this
 // program must agree with it byte for byte; it is stated once, there, because
@@ -772,9 +810,44 @@ type ParseError struct {
 // the tag destroys precisely the distinction the paragraph above depends on.
 // The two states become one byte string and "[] is an answer" stops being
 // expressible. The tags stay off; the reading is the repair.
+// P3 (D6 body 2, 2026-08-11) — ImportPath IS THE ONE FIELD THAT IS NOT DERIVED
+// FROM THE REQUEST, AND THAT IS THE WHOLE POINT OF IT.
+//
+// Everything else in this document is a function of the TEXT the caller sent.
+// ImportPath is a function of the DISK, asked of the Go toolchain — `go list -e
+// -find -f {{.ImportPath}} .` in this process's working directory, which the
+// caller has already set to the unit's package directory so that the source
+// importer can resolve imports at all.
+//
+// It exists because the Python side was computing the same string by directory
+// arithmetic — nearest enclosing go.mod, plus the directory below it — and that
+// arithmetic is WRONG on the two commonest shapes after `internal/`. Measured
+// under `feat/D6-body2`, 2026-08-11, go1.24.4:
+//
+//	sub/vendor/example.com/lib  `go mod vendor` STRIPS the vendored module's
+//	                            go.mod, so the arithmetic walks to the
+//	                            ENCLOSING module and computes
+//	                            example.com/app/vendor/example.com/lib. The
+//	                            toolchain answers example.com/lib, which is
+//	                            what the type-checker resolved the import to.
+//
+// It is empty on a parse_error document and non-empty on every graph document;
+// the caller refuses a graph document that does not name it, because a unit
+// whose import path is unknown is a unit no cross-package edge can be rejoined
+// to, and a dropped production edge manufactures a BREACH.
+//
+// WHAT IT DOES NOT CLOSE, and it is measured rather than assumed — see the note
+// on `unitImportPath`: a `replace` that RENAMES. The toolchain's answer for a
+// directory is the answer of the module that OWNS the directory, and a renaming
+// replace means the importing module knows the same package by a different
+// name. "The import path of a directory" is not a function of the directory.
 type Response struct {
-	Schema     string      `json:"schema"`
-	Unit       Unit        `json:"unit"`
+	Schema string `json:"schema"`
+	Unit   Unit   `json:"unit"`
+	// ImportPath is the import path the Go toolchain resolves for this unit's
+	// own directory. Not `,omitempty`: a graph document must NAME it, and an
+	// absent field and an empty one must not be two spellings of one answer.
+	ImportPath string      `json:"import_path"`
 	Symbols    []Symbol    `json:"symbols"`
 	Roots      []Root      `json:"roots"`
 	Edges      []Edge      `json:"edges"`
@@ -883,6 +956,15 @@ func analyze(request Request) (Response, error) {
 		)
 	}
 
+	// Asked AFTER the unit has parsed and type-checked, so a broken unit is
+	// reported as the parse_error it is rather than as a toolchain failure —
+	// and so the exec is not paid for on a unit whose answer is already known.
+	importPath, err := unitImportPath()
+	if err != nil {
+		return Response{}, err
+	}
+	response.ImportPath = importPath
+
 	walk := &walker{
 		unit:      request.Unit,
 		qualifier: qualifierOf(request.Unit),
@@ -904,8 +986,90 @@ func analyze(request Request) (Response, error) {
 		}
 	}
 	walk.declare(parsed, request)
-	walk.walk(parsed)
+	walk.walk(parsed, request)
 	return response, nil
+}
+
+// unitImportPath asks the Go toolchain what this package's import path is.
+//
+// P3 (D6 body 2, 2026-08-11) — THE AUTHORITY ON AN IMPORT PATH IS THE TOOLCHAIN,
+// AND THE ALTERNATIVE WAS NOT AN OPINION, IT WAS A MEASURED DEFECT.
+//
+// The Python side used to derive this string as `<module line of the nearest
+// enclosing go.mod> + <directory below that go.mod>`. Measured under
+// `feat/D6-body` @ f4c7c46 by building the tree and running it: over
+// `sub/vendor/example.com/lib`, where `go mod vendor` has STRIPPED the vendored
+// module's own go.mod, the arithmetic walks up to the enclosing module and
+// answers `example.com/app/vendor/example.com/lib` while the type-checker
+// resolved the import as `example.com/lib` — no prefix matches, the edge is
+// dropped, and `lib.Do`, which production calls, reads UNCALLED. Measured under
+// `feat/D6-body2` on the same tree: `go list -e -find -f {{.ImportPath}} .` in
+// that directory answers `example.com/lib`.
+//
+// WHY `-find`, AND IT IS NOT A MICRO-OPTIMISATION. `-find` tells `go list` to
+// locate the package and NOT resolve its imports. The import graph is already
+// being resolved by go/types a few lines above, and paying for it twice on the
+// gate path is how a per-unit budget becomes a per-tree one. Measured under
+// go1.24.4, 2026-08-11: under 10 ms per unit on every shape in the matrix.
+//
+// WHY `-e`. Without it, a unit whose module graph is incomplete makes `go list`
+// exit non-zero and this program refuse a unit that type-checked. `-e` reports
+// what it found and leaves the refusal to the one condition below.
+//
+// WHAT IT DOES NOT CLOSE, and this is a CORRECTION to the escalation that asked
+// for this field. Measured under `feat/D6-body2`, 2026-08-11, over
+// `sub/go.mod` declaring `module example.com/app` with `replace
+// example.com/upstream => ./local` and `sub/local/go.mod` declaring `module
+// example.com/localfork`: `go list` in `sub/local` answers
+// `example.com/localfork`, while the type-checker — resolving the import block
+// of `sub/main.go` — spells the callee `example.com/upstream.Serve`. Both are
+// correct. A package reached through a renaming `replace` HAS TWO import paths,
+// one per module that names it, so "the import path of this directory" is not a
+// function of this directory and no per-unit field can carry it. See the
+// escalation recorded on `_import_path_qualifiers` in go_reachability.py.
+//
+// A FAILURE HERE IS THIS PROGRAM'S FAILURE, not a fact about the unit, so it
+// returns an error and exits non-zero rather than emitting a document with the
+// field empty. A graph document whose import path is unknown is a unit that
+// nothing can be rejoined to, and a silently dropped cross-package edge is a
+// manufactured BREACH — which is the failure this whole field exists to close.
+func unitImportPath() (string, error) {
+	command := exec.Command(goCommand(), "list", "-e", "-find", "-f", "{{.ImportPath}}", ".")
+	var diagnostics strings.Builder
+	command.Stderr = &diagnostics
+	raw, err := command.Output()
+	if err != nil {
+		return "", fmt.Errorf(
+			"`go list` could not name this package's import path: %v: %s",
+			err, strings.TrimSpace(diagnostics.String()))
+	}
+	answer := strings.TrimSpace(string(raw))
+	// `.` and `command-line-arguments` are what `go list` answers when it did
+	// NOT resolve a package to an import path. Neither is a name anything can
+	// be joined to, and accepting one would put an unjoinable key in the map
+	// that decides whether a cross-package edge survives.
+	if answer == "" || answer == "." || answer == "command-line-arguments" {
+		return "", fmt.Errorf(
+			"`go list` answered %q for this package's import path, which names "+
+				"no package anything can be joined to: %s",
+			answer, strings.TrimSpace(diagnostics.String()))
+	}
+	return answer, nil
+}
+
+// goCommand is go/build's own rule for finding the toolchain, spelled here
+// because go/build does not export it: GOROOT/bin/go when that exists, and
+// otherwise whatever `go` PATH resolves. The source importer a few lines above
+// finds `go` the same way, so a divergence here would mean the two halves of
+// this program asked two different toolchains.
+func goCommand() string {
+	if root := build.Default.GOROOT; root != "" {
+		candidate := filepath.Join(root, "bin", "go")
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return "go"
 }
 
 // errorPath is the file a type error names, or the unit's first file when the
@@ -958,8 +1122,10 @@ type walker struct {
 	// a guess: Go's method-call syntax names the method.
 	methods map[string][]string
 
-	varKey  string
-	varSeen bool
+	// varKey is indexed by binaryProduction / binaryTest: ONE synthetic
+	// initialiser symbol per (package, binary), never one per package. See
+	// declarePackageVar for the measured verdict flip that forces the split.
+	varKey [binaryCount]string
 
 	response *Response
 }
@@ -1065,15 +1231,53 @@ func (w *walker) declareFunc(decl *ast.FuncDecl, path string, initOrdinal *int) 
 }
 
 // declarePackageVar mints the synthetic package-var initialiser symbol, ONCE
-// PER PACKAGE and not once per file.
+// PER (PACKAGE, BINARY) and not once per file, and not once per package.
 //
 // Synthetic rather than omitted, because a root with no symbol has no outgoing
-// edges and would contribute silently nothing. Per PACKAGE because that is
-// go_symbol_key's spelling, and the difference is measurable: spelling it per
-// FILE reported a 106-symbol production closure over the acceptance fixture
-// where the per-package spelling reports 104.
+// edges and would contribute silently nothing. Not per FILE, and the difference
+// is measurable: spelling it per file reported a 106-symbol production closure
+// over the acceptance fixture where a coarser spelling reports 104.
+//
+// P3 (D6 body 2, 2026-08-11) — WHY IT IS NOT PER PACKAGE EITHER, AND THE
+// DEFECT THE SPLIT REPAIRS IS A VERDICT THAT FLIPPED ON A FILENAME.
+//
+// A per-package `<vars>` stands for initialisers that run in TWO different
+// binaries, and it can carry only ONE path — the first contributing file's. The
+// caller reads that path through seal_verify.is_test_path to decide whether the
+// root survives at all. So one alphabetical accident decided both. Measured
+// under `feat/D6-body` @ f4c7c46 over one package holding `var _ = onlyProd()`
+// in one file and `var _ = onlyTest()` in a test file:
+//
+//	main.go + z_test.go   path = main.go, the root is KEPT as PRODUCTION, and
+//	                      its edge to onlyTest certifies a function only a test
+//	                      file initialises — hiding dark code;
+//	a_test.go + b.go      path = a_test.go, the whole root is DROPPED, and
+//	                      onlyProd — genuinely initialised in production —
+//	                      reads FROM_NEITHER, a false BREACH.
+//
+// The same package, the same code, and the verdict flips on the alphabetical
+// position of a test file's name. Measured under `feat/D6-body2` on the same
+// two trees: both answer identically, because each binary's initialiser now has
+// its own symbol taking its path from a file of its OWN kind.
+//
+// WHAT THE SPLIT DOES NOT BUY, and it is not this program's to buy: the
+// `<vars:test>` root is still DROPPED by the caller, because D5 derives
+// RootKind from the entrypoint kind ALONE and `go_package_var` derives
+// PRODUCTION, which its own _validate_root then refuses against a test path.
+// The true answer is a TEST root, and the one table lookup that would say so is
+// escalated to D5's adjudicator. What the split DOES buy is that the drop is
+// now confined to the test binary's initialisers instead of taking the
+// production ones with it, and that no answer here depends on a filename's
+// sort position.
+//
+// The test binary compiles the production files too, so its initialiser set is
+// really a superset of production's. It is NOT spelled that way: the production
+// symbol already carries those edges, and duplicating them under a root the
+// caller drops would buy nothing and cost a second place where one initialiser
+// is two symbols.
 func (w *walker) declarePackageVar(decl *ast.GenDecl, path string) {
-	if w.varSeen {
+	binary := binaryOf(path)
+	if w.varKey[binary] != "" {
 		return
 	}
 	initialised := false
@@ -1086,17 +1290,20 @@ func (w *walker) declarePackageVar(decl *ast.GenDecl, path string) {
 	if !initialised {
 		return
 	}
-	w.varSeen = true
-	w.varKey = w.key("", packageVarSymbol)
+	symbol := packageVarSymbol
+	if binary == binaryTest {
+		symbol = packageVarTestSymbol
+	}
+	w.varKey[binary] = w.key("", symbol)
 	at := w.position(decl.Pos())
 	w.response.Symbols = append(w.response.Symbols, Symbol{
-		Key:  w.varKey,
+		Key:  w.varKey[binary],
 		Path: path,
 		Line: at.Line,
 		Kind: "package_var",
 	})
 	w.response.Roots = append(w.response.Roots, Root{
-		Symbol:   w.varKey,
+		Symbol:   w.varKey[binary],
 		Kind:     rootPackageVar,
 		Evidence: fmt.Sprintf("%s:%d package-level var with an initialiser, package %s", path, at.Line, w.unit.PackageName),
 	})
@@ -1139,8 +1346,14 @@ func isTestName(name string) bool {
 // the seal's own body calls directly, including nested closures and t.Run
 // literals, and a symbol per closure would empty the subject set of every
 // table-driven seal in the target repositories.
-func (w *walker) walk(files []*ast.File) {
-	for _, file := range files {
+func (w *walker) walk(files []*ast.File, request Request) {
+	for index, file := range files {
+		// The OWNER of a package-level var initialiser is the synthetic symbol
+		// of the BINARY its file is compiled into, so an initialiser in a
+		// _test.go file cannot hang its edges off the production root. That is
+		// the whole point of declarePackageVar's split; reading one varKey here
+		// would put the split back.
+		varKey := w.varKey[binaryOf(request.Files[index].Path)]
 		for _, decl := range file.Decls {
 			switch typed := decl.(type) {
 			case *ast.FuncDecl:
@@ -1150,7 +1363,7 @@ func (w *walker) walk(files []*ast.File) {
 				}
 				w.walkOwner(key, typed, typed.Body)
 			case *ast.GenDecl:
-				if typed.Tok != token.VAR || w.varKey == "" {
+				if typed.Tok != token.VAR || varKey == "" {
 					continue
 				}
 				for _, spec := range typed.Specs {
@@ -1163,7 +1376,7 @@ func (w *walker) walk(files []*ast.File) {
 						// rule's obligation 1 can never be discharged here —
 						// which is correct: a package-level var of func type is
 						// exactly the shape that rule declines.
-						w.walkOwner(w.varKey, nil, initialiser)
+						w.walkOwner(varKey, nil, initialiser)
 					}
 				}
 			}
@@ -1236,6 +1449,30 @@ func (w *walker) calleeKey(fn *types.Func) string {
 		return pkgPath + keyPackageSeparator + "(" + receiverSpelling(signature.Recv().Type()) + ")" + keyPackageSeparator + fn.Name()
 	}
 	return pkgPath + keyPackageSeparator + fn.Name()
+}
+
+// isInterfaceReceiver is the DISCRIMINATOR of the method-call rule: is the
+// target of this selection decided by the program, or by the value?
+//
+// The pointer is stripped first because `(*T).M` and `T.M` are one question
+// here — a pointer to a concrete type is a concrete receiver — and the answer is
+// taken from the UNDERLYING type, so a named interface (`type Fetcher
+// interface{…}`) and a literal one give the same answer. A *types.TypeParam
+// answers true: its underlying type is its constraint, the target depends on the
+// instantiation, and a fan-out is the honest over-approximation.
+//
+// A nil type answers true, which is the fan-out branch: it is the branch that
+// cannot manufacture a wrong single target, and this program does not have a
+// third answer to give.
+func isInterfaceReceiver(typ types.Type) bool {
+	if typ == nil {
+		return true
+	}
+	if pointer, ok := typ.Underlying().(*types.Pointer); ok {
+		typ = pointer.Elem()
+	}
+	_, isInterface := typ.Underlying().(*types.Interface)
+	return isInterface
 }
 
 func receiverSpelling(typ types.Type) string {
@@ -1383,13 +1620,57 @@ func (w *walker) classifySelectorCall(sel *ast.SelectorExpr, owner string, decl 
 		// holed. An empty fan-out is an answer too: no in-unit method is named
 		// `Format`, so `now.Format("")` reaches nothing here.
 		//
+		// P3 (D6 body 2, 2026-08-11) — THE DISCRIMINATOR IS THE RECEIVER, AND
+		// IT IS APPLIED HERE. When the receiver's base type is not an
+		// interface, go/types has ALREADY resolved the one target; the fan-out
+		// is then not an over-approximation of an unknown, it is a wrong answer
+		// to a question that was answered. `w.calleeKey(fn)` spells that target
+		// — in-unit keys come out of `keyOf`, out-of-unit ones out of the
+		// object's own package path, exactly as a cross-package FUNC call is
+		// spelled — and the Python side rejoins it the same way.
+		//
+		// The fan-out survives for GENUINE interface dispatch, where
+		// `selection.Obj()` is the interface's method, no implementation is
+		// named, and one edge per in-unit method of that name is the superset
+		// the note below describes. A TYPE PARAMETER counts as interface
+		// dispatch: its underlying type is its constraint, which is an
+		// interface, and the target depends on the instantiation.
+		//
+		// WHAT IT COSTS, measured under `feat/D6-body2`, 2026-08-11, over the
+		// acceptance fixture: the edge set falls from 738 to 694 and NOTHING is
+		// added. All 44 removed edges are `interface`, they come from eight
+		// call sites, and every one of those sites is a `String()` on a
+		// CONCRETE STDLIB receiver — `b.String()` on a strings.Builder at
+		// cmd/gates/preserve.go:509 and three siblings, `t.String()` at
+		// cmd/gates/preserve.go:739 and its sibling, `stderr.String()` in two
+		// seal helpers. The fan-out was claiming that a call to
+		// strings.Builder.String might reach (Fidelity).String, (EditKind).String,
+		// (Divergence).String and eleven more methods of the judged tree. Zero
+		// edges are ADDED, because every one of those sites resolves OUT of the
+		// tree: the fan-out produced 44 false in-tree edges and no true one.
+		// The production closure (104 symbols) and the hole count (3, of which
+		// 2 inside the closure) are unchanged, so no verdict was resting on
+		// them.
+		//
+		// DISPUTE, AND IT IS A CONTRADICTION BETWEEN TWO P4 ARTIFACTS RATHER
+		// THAN A DEFECT IN EITHER. The seal row
+		// `test_a_named_out_of_tree_target_is_not_a_hole_and_a_func_value_call_is`
+		// REQUIRES the edge this rule removes: it builds `now.UTC()` on a
+		// time.Time beside an in-unit `func (Clock) UTC` and asserts one
+		// INTERFACE edge from `stamp` to `Clock.UTC`. That is the 45th instance
+		// of the shape measured above, and the row is RED under this rule. Its
+		// stated purpose — "a named out-of-tree target is not a hole" — still
+		// holds, and its hole-set assertion is still green; what fails is the
+		// witness it chose. The two cannot both be satisfied: a site either
+		// emits the one target go/types resolved, or it emits a method
+		// production cannot reach. NOT resolved here, because resolving it
+		// means editing a seal. See the commit message.
+		//
 		// P4 RULING (D6 adjudication round 3, 2026-08-11) — "SUPERSET OF THE
 		// POSSIBLE IN-TREE TARGETS" IS FALSE ACROSS PACKAGES, AND THE ERROR
 		// RUNS BOTH WAYS AT ONE CALL SITE. `w.methods` holds this unit's
 		// methods only, so a method call on a type declared in ANOTHER IN-TREE
-		// package fans out over the wrong set. ESCALATED TO P3, not repaired
-		// here: the fix is production code and its shape is at the end of this
-		// note.
+		// package fans out over the wrong set.
 		//
 		// Measured under `feat/D6-body` @ `f4c7c46`, 2026-08-11, over a tree
 		// with `example.com/app` at `sub/` and `example.com/app/internal/core`
@@ -1419,6 +1700,10 @@ func (w *walker) classifySelectorCall(sel *ast.SelectorExpr, owner string, decl 
 		// target is a single declaration, and it must be emitted as `edgeMethod`
 		// with `w.calleeKey(fn)` so the Python side can rejoin it exactly as it
 		// rejoins a cross-package func call.
+		if !isInterfaceReceiver(selection.Recv()) {
+			w.edge(owner, w.calleeKey(fn), edgeMethod, w.site(sel.Sel.Pos()))
+			return
+		}
 		for _, key := range w.methods[sel.Sel.Name] {
 			w.edge(owner, key, edgeInterface, w.site(sel.Sel.Pos()))
 		}
