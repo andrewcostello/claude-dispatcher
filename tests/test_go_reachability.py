@@ -84,20 +84,33 @@ DISPUTES — RAISED FOR P4, NOT PAPERED OVER
   re-measure before believing any number here" — is what found it.
 
   **D2. THE STEP-3 ABSTENTION IS NOT A PREDICTION ANY MORE. It is MEASURED, and
-  it holds.** The contract marks it *Predicted (unmeasured)* and calls it "the
-  most likely way this unit fails to earn its keep". **Measured under**
-  ``claude-workflow`` @ ``83b0b97``, 2026-08-11, by running the reference
-  implementation over the vendored tree: the production closure holds **106
-  symbols and 55 unresolved call sites**, so ``check_subject`` never reaches
-  step 4 and **all seven findings come back
-  ``UndecidedReason.DYNAMIC_EDGE`` — abstentions, not BREACHes.** Of the 55, 51
-  are method calls through a receiver a name-level walk cannot type
-  (``time.Time.UTC``, ``regexp.Regexp.FindAllStringSubmatch``,
-  ``exec.Cmd.CombinedOutput``) and 7 are genuine calls through a local func
-  value (``cancel`` from ``context.WithTimeout`` twice in ``cmd/gates``, a
-  ``setMember`` closure five times in ``cmd/iterate``). **Even the most
-  permissive honest reading leaves the closure holed**, so this is not an
-  artifact of one walk's quality.
+  it holds — but P4 CORRECTED THE NUMBER AND THE REASON (D6 adjudication,
+  2026-08-11).** The contract marks it *Predicted (unmeasured)* and calls it
+  "the most likely way this unit fails to earn its keep". The seal author
+  measured **55** unresolved sites over a 106-symbol production closure, ~51 of
+  them method calls through untypeable receivers. **That measured a
+  non-conformant walk, not the tree**: ``main.go``'s EDGE GRAMMAR files a method
+  call on an unresolved receiver as an ``interface`` edge, not a hole, and
+  ``unresolved[]`` means the walk could not NAME the target — never "the target
+  is out of tree". The prose did not close either (51 + 7 > 55).
+
+  **Re-measured under** ``feat/D6-seals`` @ ``5669cb7``, 2026-08-11, by two
+  independent walks written for the adjudication — a name-level walk obeying
+  the grammar, and a full ``go/types`` walk under a hostile environment. They
+  agree: production closure **106 symbols**, and **SEVEN** unresolved sites
+  inside it, **every one a call through a FUNCTION VALUE** — ``cancel``
+  (``context.CancelFunc``) twice in ``cmd/gates`` and a ``setMember`` closure
+  five times in ``cmd/iterate``. Only 2 of the ~50 method-call sites even name a
+  method that exists in this tree.
+
+  So the conclusion stands — step 4 is never reached and **all seven findings
+  come back ``UndecidedReason.DYNAMIC_EDGE``** — and "even the most permissive
+  honest reading leaves the closure holed" is true. The REASON is not the one
+  recorded. **Type information moves 50 sites and moves the verdict on none**,
+  because nothing types the target of a call through a function value: that is
+  dataflow, not typing. See
+  :func:`test_a_named_out_of_tree_target_is_not_a_hole_and_a_func_value_call_is`,
+  the row P4 added because nothing here distinguished the two.
 
   This file does NOT seal "it abstains", which would seal the failure, and does
   not seal "it breaches", which would demand a name-level walk that types
@@ -2061,6 +2074,91 @@ def test_a_call_the_walk_cannot_name_is_a_hole_and_never_a_fifth_edge_kind(tmp_p
     )
 
 
+def test_a_named_out_of_tree_target_is_not_a_hole_and_a_func_value_call_is(tmp_path):
+    """RED at HEAD. **P4 ADDED THIS ROW (D6 adjudication, 2026-08-11).**
+
+    The gap it closes was live and it was not small: at ``5669cb7`` **nothing in
+    this file distinguished "the walk could not NAME the target" from "the
+    target is named and lives outside the tree"**, and a body that filed the
+    second as a hole was green on all 97 rows. Every entry inside the production
+    closure abstains at ``check_subject`` step 3, so that body ships a mechanism
+    which returns :attr:`UndecidedReason.DYNAMIC_EDGE` for every subject of
+    every real Go tree, forever — indistinguishable from a walk that cannot see,
+    and the "unrun check" this repository records as its most expensive failure,
+    reached from the opposite direction to the one the other rows guard.
+
+    It is the mistake that was actually made: the reference walk behind DISPUTE
+    D2 filed ~50 stdlib method calls as holes and reported 55 where there are
+    **seven**.
+
+    **The rule is total, and the totality is why this is not a narrowing.** A
+    call site ``x.M(…)`` that lands on an in-tree method lands on a method NAMED
+    ``M`` — Go's method-call syntax names the method — so one ``interface`` edge
+    per in-tree method named ``M`` is a SUPERSET of the possible in-tree
+    targets. Nothing is filed harmless because it could not be typed; the
+    residue is empty by construction.
+
+    The fixture puts both halves in one tree so neither assertion can be
+    satisfied by a walk that has simply stopped counting: ``stamp`` calls two
+    stdlib methods, one of which (``UTC``) shares its name with an in-tree
+    method and must therefore produce the fan-out edge, and ``spin`` makes the
+    one genuinely unnameable call. **The hole list must be exactly the
+    latter** — a walk that over-counts is red on the equality, and a walk that
+    counts nothing is red on the same equality.
+
+    **Measured under** ``feat/D6-seals`` @ ``5669cb7``, 2026-08-11: red today by
+    ``NotImplementedError``. The property is measured over the acceptance tree
+    by two independent walks — see
+    :func:`test_the_step_three_abstention_is_measured_and_the_implication_is_total`.
+    Three mutations redden it: filing an untypeable receiver as a hole (the
+    equality, and the mistake this row exists for); dropping the ``interface``
+    fan-out to an in-tree method of the same name; and emitting an edge whose
+    callee is out of tree.
+    """
+    tree = _package(tmp_path, {"main.go": (
+        "package main\n\n"
+        'import "time"\n\n'
+        "type Clock struct{}\n\n"
+        "// UTC is an in-tree method sharing a name with time.Time's.\n"
+        "func (c Clock) UTC() string { return \"in-tree\" }\n\n"
+        "func stamp() string {\n"
+        "\tnow := time.Now()\n"
+        "\t_ = now.UTC()\n"
+        "\treturn now.Format(\"\")\n"
+        "}\n\n"
+        "func dark() {}\n\n"
+        "func spin() {\n"
+        "\tfns := []func(){dark}\n"
+        "\tfns[0]()\n"
+        "}\n\n"
+        "func main() {\n\tprintln(stamp())\n\tspin()\n}\n"
+    )})
+    graph = GoReachabilityAnalyzer().graph(tree)
+
+    holes = {(caller.key.rpartition(".")[2], detail) for caller, _, detail in
+             graph.unresolved_calls}
+    assert {caller for caller, _ in holes} == {"spin"}, (
+        "the hole list must be EXACTLY the func-value call: `now.UTC()` and "
+        "`now.Format()` are answered questions whose answer is 'nothing in "
+        "this tree', and filing them as holes abstains on every real Go tree"
+    )
+
+    assert not [e for e in graph.edges if "time." in e.callee.key], (
+        "a stdlib method call has one end outside the tree and yields no edge"
+    )
+    fan = [e for e in graph.edges
+           if e.caller.key.endswith(".stamp") and e.callee.key.endswith(".UTC")]
+    assert fan and fan[0].kind is EdgeKind.INTERFACE, (
+        "`now.UTC()` must still emit one INTERFACE edge per in-tree method of "
+        "that name; that fan-out is WHY the site is not a hole, and a walk "
+        "that drops it has narrowed the abstention instead of answering it"
+    )
+    assert not [e for e in graph.edges if e.callee.key.endswith(".Format")], (
+        "no in-tree method is named Format, so the fan-out is empty — which is "
+        "an answer, not a hole"
+    )
+
+
 def test_an_edge_is_kept_only_when_both_ends_are_declared_in_the_tree(tmp_path):
     """RED at HEAD. A call into the standard library is dropped.
 
@@ -2235,6 +2333,103 @@ def test_an_unparseable_file_never_raises_from_roots_and_lands_in_unreadable_pat
         "unknown size, and PARSE_FAILED is the confession — whole-tree, so it "
         "crosses the module boundary"
     )
+    assert csr.adjudicate(dark[0], None) is Disposition.ABSTAIN
+
+
+def test_a_unit_that_does_not_type_check_is_reported_and_never_silently_partial(
+    tmp_path, monkeypatch
+):
+    """RED at HEAD. **P4 ADDED THIS ROW (D6 adjudication, 2026-08-11).**
+
+    The operator ratified type-checking with ``go/types`` and
+    ``importer.ForCompiler(fset, "source", nil)``. This row pins the sentence
+    that ratification owed, because the failure mode is a fail-open wearing a
+    type-checker's clothes.
+
+    ``types.Config.Error`` swallows errors by design and ``conf.Check`` returns
+    a POPULATED ``Info`` regardless, so a package that does not type-check looks
+    exactly like one that does. **Measured 2026-08-11** on a package containing
+    ``var s string = 42``: one type error raised, and the walk still resolved
+    every one of its five call sites — zero unresolved, a full edge set, nothing
+    in the output telling the two apart. **Measured the same day** on two files
+    guarded by mutually exclusive ``//go:build`` constraints declaring one name:
+    two type errors (``platform redeclared in this block``), and again zero
+    unresolved.
+
+    **A lost EDGE is not a hole**, which is why "trust the holes to show it" is
+    not available: a production closure that silently shrank makes a REACHED
+    subject look unreached, and that is a manufactured ``BREACH`` — the one
+    direction anti-requirement 2 forbids. So a unit that did not type-check is
+    reported the way a unit that did not PARSE is, and the tree abstains.
+
+    The tree is TWO packages for
+    :func:`test_an_unparseable_file_never_raises_from_roots_and_lands_in_unreadable_paths`'s
+    measured reason: with one, there is nothing left to judge and ``findings=()``
+    is "nothing to judge" wearing an abstention's clothes.
+
+    **Measured under** ``feat/D6-seals`` @ ``5669cb7``, 2026-08-11: red today by
+    ``NotImplementedError``. Two mutations redden it: emitting the partial graph
+    for the ill-typed unit (both the ``unreadable_paths`` assertion and the
+    ``PARSE_FAILED`` one), and raising rather than recording, which takes the
+    whole check down instead of abstaining.
+    """
+    tree = tmp_path / "twopkg"
+    for directory, module, files in (
+        ("illtyped", "example.com/illtyped", {"main.go": (
+            "package main\n\n"
+            "func reached() int { return 1 }\n\n"
+            "func broken() int {\n"
+            "\tvar s string = 42\n"
+            "\t_ = s\n"
+            "\treturn reached()\n"
+            "}\n\n"
+            "func main() { println(broken()) }\n"
+        )}),
+        ("live", "example.com/live", {
+            "main.go": (
+                "package main\n\n"
+                "// Dark is dark.\n"
+                "func Dark() int { return 7 }\n\n"
+                "func main() {}\n"
+            ),
+            "main_test.go": (
+                'package main\n\nimport "testing"\n\n'
+                "func TestSeal_Dark(t *testing.T) {\n"
+                "\tif Dark() != 7 {\n\t\tt.Error(\"red\")\n\t}\n}\n"
+            ),
+        }),
+    ):
+        target = tree / directory
+        target.mkdir(parents=True)
+        (target / _LIVE_GO_MOD).write_text(f"module {module}\n\ngo 1.21\n")
+        for name, source in files.items():
+            (target / name).write_text(source)
+
+    row = GoReachabilityAnalyzer()
+    roots = row.roots(tree)   # must not raise
+    graph = row.graph(tree)   # must not raise
+
+    assert graph.unreadable_paths == ("illtyped/main.go",), (
+        "a unit that did not type-check is a unit that was not fully read, and "
+        "it travels the channel an unparsed unit travels; emitting its partial "
+        "graph instead is how a shrunken closure manufactures a BREACH"
+    )
+    assert not [k for k in graph.symbols if k.startswith("example.com/illtyped")], (
+        "the ill-typed unit contributes NO symbols: a document carrying "
+        "parse_error carries no arrays, and half of one is the silent partial"
+    )
+    assert any(key.endswith(".Dark") for key in graph.symbols), (
+        "the unit that DID type-check must still contribute; a total outage is "
+        "a bigger failure than a partial one"
+    )
+    assert any(r.kind is EntrypointKind.TEST_FUNCTION for r in roots)
+
+    _with_go_row(monkeypatch)
+    report = csr.check_tree(tree)
+
+    dark = [f for f in report.findings if f.subject.key.endswith(".Dark")]
+    assert len(dark) == 1, "zero findings would be 'nothing to judge'"
+    assert dark[0].reason is UndecidedReason.PARSE_FAILED
     assert csr.adjudicate(dark[0], None) is Disposition.ABSTAIN
 
 
@@ -2503,17 +2698,41 @@ def test_the_step_three_abstention_is_measured_and_the_implication_is_total(tmp_
     *Predicted (unmeasured)* and calls it "the likeliest way this unit fails to
     earn its keep".
 
-    **Measured under** ``claude-workflow`` @ ``83b0b97``, 2026-08-11, by running
-    the reference implementation over the vendored tree: the production closure
-    holds **106 symbols and 55 unresolved call sites**, so step 4 is never
-    reached and **all seven findings come back
-    :attr:`UndecidedReason.DYNAMIC_EDGE`.** Of the 55, 51 are method calls
-    through a receiver a name-level walk cannot type (``time.Time.UTC``,
-    ``regexp.Regexp.FindAllStringSubmatch``, ``exec.Cmd.CombinedOutput``) and 7
-    are genuine calls through a local func value — ``cancel`` from
-    ``context.WithTimeout`` twice in ``cmd/gates``, a ``setMember`` closure five
-    times in ``cmd/iterate``. **Even the most permissive honest reading leaves
-    the closure holed**, so this is a property of the tree and not of one walk.
+    **P4 AMENDED THIS DOCSTRING (D6 adjudication, 2026-08-11). The row's code is
+    unchanged and correct; its measurement was not.** The seal author's number
+    was 55 unresolved sites in the production closure, of which ~51 were method
+    calls through untypeable receivers. **That was a measurement of a
+    non-conformant walk, not of the tree.** ``main.go``'s EDGE GRAMMAR files a
+    method call on an unresolved receiver as an ``interface`` edge — one per
+    in-tree method of that name — and NOT as a hole; ``unresolved[]`` means the
+    walk could not NAME the target, never "the target is out of tree". The
+    author's own prose did not close either: 51 + 7 > 55.
+
+    **Measured under** ``feat/D6-seals`` @ ``5669cb7``, 2026-08-11, over the
+    vendored tree by TWO independent walks written for this adjudication — a
+    name-level walk obeying the grammar above, and a full ``go/types`` walk
+    using ``importer.ForCompiler(fset, "source", nil)`` under
+    ``env -u HOME -u GOCACHE -u XDG_CACHE_HOME GOPROXY=off
+    GOMODCACHE=/nonexistent GOPATH=/nonexistent``. **They agree exactly:**
+
+      * production closure **106 symbols** — the seal author's number,
+        reproduced independently;
+      * unresolved sites inside it: **SEVEN**, not 55 — ``cancel``
+        (``context.CancelFunc``) twice in ``cmd/gates/main.go``, at ``runOne``
+        and ``runCmd``, and a ``setMember`` closure five times in
+        ``cmd/iterate/preserve.go`` at ``ApplyRoundRecord``;
+      * **every one of the seven is a call through a FUNCTION VALUE.** Not one
+        is a typing failure. Of the ~50 method-call sites the first walk filed
+        as holes, only **2** even name a method that exists in this tree.
+
+    So step 4 is still never reached and **all seven findings still come back
+    :attr:`UndecidedReason.DYNAMIC_EDGE`** — the row's conclusion survives, and
+    "even the most permissive honest reading leaves the closure holed" is TRUE.
+    But the REASON is not the one recorded: it is seven func-value call sites,
+    and **type information moved 50 sites and moved the verdict on none of
+    them**, because no amount of type information names the target of a call
+    through a function value. ``go/types`` gives the value's TYPE, never its
+    identity; that is a dataflow question.
 
     **This row seals the IMPLICATION and is total over the two states**, because
     the alternatives are both wrong: asserting the abstention seals the failure

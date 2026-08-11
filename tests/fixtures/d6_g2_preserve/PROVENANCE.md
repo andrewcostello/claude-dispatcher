@@ -99,10 +99,21 @@ module), 2026-08-11:
 Neither file mentions the subject, and dropping both changes nothing this
 fixture is for. **Measured 2026-08-11** by running the reference implementation
 over the tree with and without them: the seven `VerifyPreservation` findings and
-the production closure's 55 unresolved calls are identical in both runs; what
+the production closure's unresolved calls are identical in both runs; what
 changes is only the noise — 120 seals and 178 findings become 30 and 72. The
 files are recorded here rather than vendored, exactly as `d5_b1_classify` records
 the six files it omits.
+
+**P4 correction (D6 adjudication, 2026-08-11):** an earlier version of this
+paragraph said "the production closure's 55 unresolved calls". The 55 was a
+measurement of a walk that filed stdlib method calls as holes, which
+`main.go`'s EDGE GRAMMAR says they are not. Re-measured by two independent
+walks — name-level and full `go/types` — the production closure holds **106
+symbols and SEVEN unresolved calls**, every one of them a call through a
+function value: `cancel` (`context.CancelFunc`) twice in `cmd/gates/main.go`
+(`runOne`, `runCmd`) and a `setMember` closure five times in
+`cmd/iterate/preserve.go` (`ApplyRoundRecord`). The count is unchanged by
+dropping `main_test.go`, which is what this paragraph claims.
 
 ## Why every other vendored file IS here
 

@@ -74,10 +74,95 @@
 //
 // The caller enforces a wall-clock timeout and reports
 // AnalyzerFault.HELPER_TIMEOUT. This program must therefore never block on
-// anything but its own stdin, must not consult the network, must not read the
-// filesystem, and must not need GOPATH, a module cache or a build of the
-// package it is reading: it parses the request's TEXT, in isolation, with
-// go/parser.
+// anything but its own stdin, and must not consult the network.
+//
+// P4 RULING (D6 adjudication, 2026-08-11) — TYPE RESOLUTION, AND WHAT IT COSTS.
+// An earlier draft of this paragraph also said "must not read the filesystem
+// … it parses the request's TEXT, in isolation, with go/parser". That is
+// STRUCK, because the operator has ratified type-checking with go/types, and
+// go/types cannot be run in that isolation. The rest of the paragraph stands.
+//
+// `analyze` type-checks each unit with go/types and
+// `importer.ForCompiler(fset, "source", nil)`. THE IMPORTER CHOICE IS
+// LOAD-BEARING AND MUST NOT BE "SIMPLIFIED" TO importer.Default().
+// Measured 2026-08-11 under `env -u HOME -u GOCACHE -u XDG_CACHE_HOME
+// GOPROXY=off GOMODCACHE=/nonexistent GOPATH=/nonexistent`:
+//
+//	importer.Default()               FAILS — "GOCACHE is not defined and
+//	                                 neither $XDG_CACHE_HOME nor $HOME are
+//	                                 defined". It needs a writable build cache.
+//	importer.ForCompiler(…,"source") SURVIVES. It reads GOROOT/src instead of
+//	                                 cached export data.
+//
+// The stdlib-only CHOICE is amended in SCOPE and not in rationale: it now
+// means "no third-party MODULES", and go/types is standard library. What the
+// original rationale bought — no network fetch, no writable HOME on the gate
+// path — is preserved and was re-measured above.
+//
+// THREE COSTS, measured rather than predicted, because a ruling that records
+// only the benefit is not a ruling:
+//
+//  1. IT READS THE FILESYSTEM AND IT EXECS THE GO COMMAND. The source importer
+//     resolves imports through `go list`. Measured with GOROOT=/nonexistent:
+//     "could not import strings (go/build: go list strings: fork/exec
+//     /nonexistent/bin/go: no such file or directory)". So a working Go
+//     toolchain and GOROOT/src are analysis-time inputs, not just build-time
+//     ones, and imports resolve relative to the PROCESS WORKING DIRECTORY —
+//     `_run_go_reachability_helper` must therefore run this program with its
+//     cwd inside the unit's module or every cross-module import fails. The
+//     property the struck sentence was protecting — that the analysis cannot
+//     depend on a working tree the branch controls — is genuinely WEAKENED
+//     here, and it is weakened knowingly: GOROOT, cwd and the on-disk module
+//     graph are now verdict inputs. Source still travels as TEXT in the
+//     request and the files named there are still the unit; what is new is
+//     that resolving their IMPORTS touches the disk.
+//  2. A DEPENDENCY MUST HAVE ITS SOURCE ON DISK. Measured: a module requiring
+//     `golang.org/x/text` with no module cache fails with "could not import";
+//     the same dependency reached through a `replace` to a sibling directory
+//     resolves cleanly under the identical hostile environment. So the
+//     constraint is "source on disk", not "a module cache", and it binds
+//     nothing in the acceptance repository today — all seven cmd/ modules
+//     declare no `require` at all, measured 2026-08-11.
+//  3. COST ON THE GATE PATH: 2.7 s for all seven modules of the acceptance
+//     repository, one process per module, hostile environment, measured
+//     2026-08-11 at 83b0b97. That is a PACKAGE-scale price and it is recorded
+//     here the way the TypeScript comparator's 169 ms/file is recorded there.
+//
+// A TYPE ERROR IS NOT SILENCE. This is the second sentence this contract owed.
+// `types.Config.Error` swallows errors by design and `conf.Check` returns a
+// partially populated Info, so a package that does not type-check looks
+// EXACTLY like one that does. Measured 2026-08-11 on a package with
+// `var s string = 42`: 1 type error reported, and the walk still resolved
+// every one of its 5 call sites — UNRESOLVED=0, a full graph, nothing in the
+// output distinguishing it from a clean run. That is a fail-open wearing a
+// type-checker's clothes, and it is the exact defect class this mechanism
+// exists to catch, so:
+//
+//	`analyze` MUST count the type errors it was handed and MUST NOT emit a
+//	graph document when that count is non-zero. A unit that did not
+//	type-check is reported the way a unit that did not PARSE is — through
+//	parse_error, so it reaches the caller as CallGraph.unreadable_paths and
+//	the whole tree abstains with UndecidedReason.PARSE_FAILED.
+//
+// Rejected alternative: emitting the partial graph and trusting that lost
+// edges show up as holes. They do not have to. A lost EDGE is not a hole, and
+// a production closure that silently shrank makes a reached subject look
+// unreached — which is a manufactured BREACH, the one direction
+// anti-requirement 2 forbids. The live instance is build tags: go/parser does
+// not evaluate `//go:build`, so two files guarded by mutually exclusive
+// constraints declaring one name type-check as "X redeclared in this block".
+// Measured 2026-08-11: 2 type errors, and the run still reported
+// UNRESOLVED=0. `git grep -c "go:build"` over cmd/**/*.go matches nothing in
+// the acceptance repository, so this binds nothing there today and is
+// certainly not hypothetical elsewhere.
+//
+// Also measured, and both behave correctly rather than needing a rule:
+// GENERICS type-check clean (a call through a type parameter's func value is
+// a genuine unresolved site and is reported as one; note that a generic
+// instantiation `F[T](x)` puts an *ast.IndexExpr in the Fun slot, so a walk
+// that handles only Ident and SelectorExpr turns EVERY generic call into a
+// false hole), and CGO fails its import (`could not import C`) and degrades to
+// an unresolved call — the abstaining direction.
 //
 // Source travels as TEXT and never as a filename. That is kept from
 // GoHelperRequest unchanged and for its reason: a program that took paths would
@@ -109,6 +194,38 @@
 //	  receiver — one edge per in-tree method M
 //	F, x.M, T.M mentioned as a VALUE, not called  "reference"  YES
 //	f()(x), fns[i](x), c.handler(x), reflection   (no edge)    unresolved[]
+//
+// P4 RULING (D6 adjudication, 2026-08-11) — A NAMED OUT-OF-TREE TARGET IS NOT
+// A HOLE, AND THIS IS THE ROW THE FIRST REFERENCE WALK GOT WRONG.
+// `unresolved[]` means THE WALK COULD NOT NAME THE TARGET. It does not mean
+// "the target is not in this tree". A call whose target IS named and turns out
+// to live outside the tree — `now.UTC()`, `re.FindAllStringSubmatch(…)`,
+// `cmd.CombinedOutput()` — produces NO edge (both ends must be in the tree)
+// and NO hole. It is a fully answered question whose answer is "nothing here".
+//
+// The two must never be conflated, because a hole ABSTAINS: every entry inside
+// the production closure downgrades a would-be verdict to
+// UndecidedReason.DYNAMIC_EDGE. A walk that files answered questions as holes
+// abstains on everything and is indistinguishable from a walk that cannot see.
+//
+// This is not a narrowing of DYNAMIC_EDGE and it is not an assumption of
+// harmlessness. It is total, and the totality is the point: a call site
+// `x.M(…)` that lands on an in-tree method lands on a method NAMED M, because
+// Go's method-call syntax names the method. So emitting one "interface" edge
+// per in-tree method named M is a SUPERSET of the possible in-tree targets,
+// and the residue is empty by construction rather than by assumption. Nothing
+// is ever filed as harmless because it could not be typed.
+//
+// Measured under `feat/D6-seals` @ 5669cb7, 2026-08-11, over the vendored
+// acceptance tree, by two independent walks: a name-level walk obeying the row
+// above and a full go/types walk. The production closure holds 106 symbols;
+// the first reference implementation reported 55 unresolved sites in it, of
+// which ~50 were method calls through receivers it could not type. Under this
+// row that population is not holes at all — only 2 of the 50 even name a
+// method that exists in the tree — and BOTH walks agree the production closure
+// holds exactly SEVEN unresolved sites, the same seven, every one of them a
+// call through a FUNCTION VALUE. Type information moved 50 sites and moved the
+// VERDICT on none of them.
 //
 // A METHOD is DIRECT-strength and is a separate kind anyway, for the reason
 // EdgeKind records: a stdlib-only walk resolves these less often than a
@@ -374,6 +491,33 @@ type ParseError struct {
 // emitting a field". It is also what makes the caller's ignore-unknown-fields
 // rule safe: a field renamed without a schema bump shows up as a missing
 // required array rather than as a silently smaller graph.
+//
+// P4 RULING (D6 adjudication, 2026-08-11) — THE SENTENCE THIS CONTRACT OWED.
+// `null` is ABSENT and `[]` is PRESENT-AND-EMPTY. They are two answers, not
+// two spellings of one, and every decoder MUST read them that way.
+//
+// The two sentences above are compatible under exactly that one reading, and
+// the contract could not previously be satisfied without it. Measured under
+// `feat/D6-seals` @ 5669cb7, 2026-08-11, by marshalling the Response type in
+// this file: with ParseError set and the four slices left nil, Go writes
+//
+//	{"schema":…,"unit":{…},"symbols":null,"roots":null,"edges":null,
+//	 "unresolved":null,"parse_error":{…}}
+//
+// so EVERY parse_error document this program can produce carries the four
+// arrays as `null`. A decoder that read `null` as PRESENT would see
+// "parse_error AND arrays" — the state this contract calls
+// HELPER_OUTPUT_INVALID — and would refuse every parse_error document, which
+// build_call_graph escalates into a whole-check CallSiteReachabilityError:
+// one unparseable file taking the entire check down, which is the outage
+// CallGraph.unreadable_paths exists to prevent.
+//
+// REJECTED, and it is the obvious repair, so the rejection is the ruling:
+// adding `,omitempty` to the four arrays. Measured the same way — under
+// `,omitempty` Go writes `{}` for a nil slice AND `{}` for an empty one, so
+// the tag destroys precisely the distinction the paragraph above depends on.
+// The two states become one byte string and "[] is an answer" stops being
+// expressible. The tags stay off; the reading is the repair.
 type Response struct {
 	Schema     string      `json:"schema"`
 	Unit       Unit        `json:"unit"`
