@@ -1,12 +1,26 @@
 r"""D5 — call-site reachability: does production call this?
 
-CONTRACTS ONLY. Every function in this module raises
+The scaffold that wrote these contracts left every function raising
 :class:`NotImplementedError` except the two named at their definitions
-(:func:`validate_analyzers`, :func:`analyzer_for_path`) and the reason each is
-an exception is written there. The docstrings are the specification; a body
-author who finds one vague should get a ruling rather than guess, because the
-last four units each had a seal author derive a ruling from prose and a P4
-adjudicate the guess.
+(:func:`validate_analyzers`, :func:`analyzer_for_path`) and the reason each was
+an exception is written there. **The bodies landed on ``feat/D5-body``,
+2026-08-11: nothing here raises :class:`NotImplementedError` any more.** The
+docstrings remain the specification and the P4 rulings inside them remain
+binding; a body author who finds one vague should get a ruling rather than
+guess, because the last four units each had a seal author derive a ruling from
+prose and a P4 adjudicate the guess. Where a body could not obey a contract as
+literally written, it says so at the site and does not quietly re-scope it.
+There are three such places and each names what it could not do and what would
+close it: :func:`_test_id` (the protocol carries no channel for a spelling the
+contract forbids deriving), the ``roots`` parameter of :func:`check_subject`
+(the signature cannot build a faithful :attr:`CallPath.root`), and
+:func:`adjudicate`, where :class:`Finding`'s consistency rule and two seals are
+incompatible and the seals win. **All three are escalations, not rulings.**
+
+**Still NOT ENROLLED.** :data:`ANALYZERS` is empty, no call site was added, and
+``role_protocol`` was not touched: the ``FLOOR_GLOBS`` round the WIRING section
+below raises for P4 is due BEFORE enrolment, because implementing the ruling
+grid makes this module a gate whose decisions can be dissolved by editing it.
 
 The defect class this exists for
 ================================
@@ -383,6 +397,7 @@ from pathlib import Path
 from typing import Mapping, Protocol, Sequence
 
 from .role_protocol import COMPARATORS, Language, support_for_path
+from .seal_verify import is_test_path
 
 __all__ = [
     "CallSiteReachabilityError",
@@ -646,10 +661,21 @@ class ReachabilityAnalyzer(Protocol):
         and ``importlib.import_module(computed)`` are routine, measured **4**
         times in ``src/`` on 2026-08-11, three of them inside D3.
 
-        **P4 RULING (2026-08-11): the fourth is in this module, at
-        :func:`validate_analyzers` line 726, and it is not merely consistent
-        with Python's ``False`` — the mechanism owes a statement about judging
+        **P4 RULING (2026-08-11): the fourth is in this module, inside
+        :func:`validate_analyzers`, and it is not merely consistent with
+        Python's ``False`` — the mechanism owes a statement about judging
         itself, so here it is.**
+
+        BODY CORRECTION (``feat/D5-body``, 2026-08-11), under R6's obligation
+        that every count here carry the revision and date it was taken at: the
+        ruling records that site as ``line 726`` and it is not, and was not at
+        ``094fffb`` either — the ruling's own edits had already moved it. Fresh
+        AST measurement over ``src/`` on this branch, 2026-08-11: **105**
+        ``getattr(`` call sites, **4** with a non-literal attribute name, at
+        ``fixture_reachability.py`` 871 / 1118 / 1647 and
+        ``call_site_reachability.py`` **865**. The arithmetic P4 corrected
+        survives unchanged; only the line number moved, which is exactly why R6
+        refuses to pin either figure with a row and asks for provenance instead.
 
         ``validate_analyzers`` resolves its three required method names out of
         a loop variable (``getattr(row, method, None)``). That is an
@@ -1183,11 +1209,129 @@ def discover_roots(tree: Path) -> tuple[Root, ...]:
     be made cheap by scoping; that is a reason to run it at a different cadence,
     not a reason to scope it wrongly.
     """
-    raise NotImplementedError(
-        "discover_roots: no root derivation is written. Deriving roots needs "
-        "one ReachabilityAnalyzer row per language present in the tree and "
-        "ANALYZERS is empty, so there is nothing to sweep with"
-    )
+    roots: list[Root] = []
+    for analyzer in _analyzers_present(tree)[0]:
+        try:
+            produced = analyzer.roots(tree)
+        except AnalyzerError as exc:
+            raise CallSiteReachabilityError(
+                f"the {_language_of(analyzer)!r} analyzer could not derive "
+                f"roots for {tree}; a partial root set is worse than none, "
+                "because the roots that failed to appear are exactly the ones "
+                f"whose absence manufactures BREACHes: {exc}"
+            ) from exc
+        for root in produced:
+            _validate_root(root)
+            roots.append(root)
+    return tuple(roots)
+
+
+#: Which :class:`RootKind` each :class:`EntrypointKind` yields. A TABLE and not
+#: a chain of ``if``\ s, so that a member added without visiting this file is
+#: absent from it and :func:`_validate_root` raises rather than defaulting — the
+#: step 3 of ``skills/explicit-state.md`` that actually bites. ``TEST_FUNCTION``
+#: is the only kind on the TEST side, which is what makes the test half of
+#: :func:`_synthetic_root` a derivation rather than a guess.
+_ROOT_KIND_BY_ENTRYPOINT: Mapping[EntrypointKind, RootKind] = {
+    EntrypointKind.GO_MAIN: RootKind.PRODUCTION,
+    EntrypointKind.GO_INIT: RootKind.PRODUCTION,
+    EntrypointKind.GO_PACKAGE_VAR: RootKind.PRODUCTION,
+    EntrypointKind.PYTHON_CONSOLE_SCRIPT: RootKind.PRODUCTION,
+    EntrypointKind.PYTHON_MODULE_MAIN: RootKind.PRODUCTION,
+    EntrypointKind.PYTHON_SCRIPT_MAIN: RootKind.PRODUCTION,
+    EntrypointKind.PYTHON_IMPORT_TIME: RootKind.PRODUCTION,
+    EntrypointKind.TEST_FUNCTION: RootKind.TEST,
+}
+
+
+def _language_of(analyzer: ReachabilityAnalyzer) -> str:
+    language = analyzer.language
+    return language.value if isinstance(language, Language) else repr(language)
+
+
+def _validate_root(root: Root) -> None:
+    """Refuse a root whose ``root_kind`` the analyzer asserted rather than earned.
+
+    :class:`Root` contracts ``root_kind`` as DERIVED from ``kind`` and from
+    ``seal_verify.is_test_path`` over the declaring file, so a row cannot mark
+    its own roots production. Three refusals, and each is a raise rather than a
+    coin flip because both wrong answers are intolerable: a test root read as
+    production silently certifies everything below it, and a production root
+    read as test floods the report with false BREACHes.
+    """
+    if not isinstance(root, Root):
+        raise CallSiteReachabilityError(
+            f"an analyzer produced {root!r}, which is not a Root"
+        )
+    expected = _ROOT_KIND_BY_ENTRYPOINT.get(root.kind)
+    if expected is None:
+        raise CallSiteReachabilityError(
+            f"root {root.symbol.key!r} carries entrypoint kind {root.kind!r}, "
+            "which this module cannot classify; a root whose kind cannot be "
+            "decided is not a root"
+        )
+    in_test_file = is_test_path(root.symbol.path)
+    if root.kind is EntrypointKind.TEST_FUNCTION and not in_test_file:
+        raise CallSiteReachabilityError(
+            f"root {root.symbol.key!r} is a TEST_FUNCTION declared in "
+            f"{root.symbol.path!r}, which is not one of the tests; two "
+            "disagreeing notions of 'is this a test file' is the failure D5 "
+            "refuses to open"
+        )
+    if root.kind is not EntrypointKind.TEST_FUNCTION and in_test_file:
+        raise CallSiteReachabilityError(
+            f"root {root.symbol.key!r} is a production entrypoint "
+            f"({root.kind.value}) declared in the test file "
+            f"{root.symbol.path!r}; that is a tree this module does not "
+            "understand, and saying so is cheaper than being wrong in either "
+            "direction"
+        )
+    if root.root_kind is not expected:
+        raise CallSiteReachabilityError(
+            f"root {root.symbol.key!r} declares root_kind "
+            f"{root.root_kind!r} while its kind {root.kind.value!r} derives "
+            f"{expected!r}; root_kind is derived, never asserted by the row"
+        )
+
+
+def _analyzers_present(
+    tree: Path,
+) -> tuple[tuple[ReachabilityAnalyzer, ...], tuple[tuple[str, Language | None], ...]]:
+    """Sweep ``tree`` once: which analyzers it needs, and what nobody can read.
+
+    The one file sweep in this module, shared by :func:`discover_roots`,
+    :func:`build_call_graph` and :func:`check_tree` so that the three cannot
+    disagree about which files exist. Every path is offered to
+    :func:`analyzer_for_path` — this module never looks at an extension itself —
+    and a path no analyzer claims is RECORDED with its reason as DATA, because
+    "this tree has no Go edges" and "nobody looked for Go edges" must not be the
+    same answer, and neither must the two ways of not looking.
+
+    Paths are repository-relative posix, the spelling :class:`Symbol` uses, so
+    a reader can join a report's ``unanalyzed_paths`` to its findings.
+    """
+    if not tree.is_dir():
+        raise CallSiteReachabilityError(
+            f"{tree} is not a directory, so there is no tree to sweep; a "
+            "mechanism that returned an empty root set here would report every "
+            "subject in a missing tree as unreached"
+        )
+    languages: set[Language] = set()
+    unanalyzed: list[tuple[str, Language | None]] = []
+    for path in sorted(tree.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(tree).as_posix()
+        analyzer = analyzer_for_path(relative)
+        if analyzer is None:
+            support = support_for_path(relative)
+            unanalyzed.append(
+                (relative, support.language if support is not None else None)
+            )
+            continue
+        languages.add(analyzer.language)
+    selected = tuple(row for row in ANALYZERS if row.language in languages)
+    return selected, tuple(unanalyzed)
 
 
 # --------------------------------------------------------------------------- #
@@ -1313,6 +1457,29 @@ class EdgeKind(Enum):
     REFERENCE = "reference"
 
 
+#: The two edge kinds that resolve to exactly ONE declaration, and the two that
+#: do not. Written as two tables whose UNION must cover the enum rather than as
+#: ``kind in (INTERFACE, REFERENCE)``, so that a fifth member added without
+#: visiting this file is in neither and :func:`_edge_is_resolved` raises. A
+#: default on this predicate would decide, silently and for the whole
+#: repository, whether an unmarked over-approximation reads as the strong pass.
+_RESOLVED_EDGE_KINDS = frozenset({EdgeKind.DIRECT, EdgeKind.METHOD})
+_OVER_APPROXIMATING_EDGE_KINDS = frozenset({EdgeKind.INTERFACE, EdgeKind.REFERENCE})
+
+
+def _edge_is_resolved(kind: EdgeKind) -> bool:
+    """Is this edge a fact about one declaration, or a possibility over a set?"""
+    if kind in _RESOLVED_EDGE_KINDS:
+        return True
+    if kind in _OVER_APPROXIMATING_EDGE_KINDS:
+        return False
+    raise CallSiteReachabilityError(
+        f"edge kind {kind!r} is in neither strength class; a kind added "
+        "without visiting this dispatch would decide by default whether an "
+        "over-approximated path is spelled like a resolved one"
+    )
+
+
 @dataclass(frozen=True)
 class Edge:
     """``caller`` reaches ``callee``, this well, from here."""
@@ -1398,10 +1565,50 @@ def build_call_graph(tree: Path) -> CallGraph:
         diff between two reports is a real change. Sort at construction, not at
         print time.
     """
-    raise NotImplementedError(
-        "build_call_graph: no edge extraction is written. It needs a "
-        "ReachabilityAnalyzer per language and ANALYZERS is empty"
+    symbols: dict[str, Symbol] = {}
+    edges: list[Edge] = []
+    unresolved: list[tuple[Symbol, str, str]] = []
+    unreadable: list[str] = []
+    for analyzer in _analyzers_present(tree)[0]:
+        try:
+            produced = analyzer.graph(tree)
+        except SourceUnreadable as exc:
+            # Recorded, never raised past: raising here would lose every other
+            # file's edges and turn one bad file into a total outage of the
+            # check. It abstains over the whole tree at judgement time instead.
+            unreadable.append(exc.path)
+            continue
+        except AnalyzerError as exc:
+            raise CallSiteReachabilityError(
+                f"the {_language_of(analyzer)!r} analyzer could not build a "
+                f"call graph for {tree}; a partial graph is a graph whose "
+                f"missing edges look exactly like edges that do not exist: "
+                f"{exc}"
+            ) from exc
+        symbols.update(produced.symbols)
+        edges.extend(produced.edges)
+        unresolved.extend(produced.unresolved_calls)
+        unreadable.extend(produced.unreadable_paths)
+    return CallGraph(
+        symbols={key: symbols[key] for key in sorted(symbols)},
+        edges=tuple(sorted(edges, key=_edge_order)),
+        unresolved_calls=tuple(
+            sorted(unresolved, key=lambda hole: (hole[0].key, hole[1], hole[2]))
+        ),
+        unreadable_paths=tuple(sorted(dict.fromkeys(unreadable))),
     )
+
+
+def _edge_order(edge: Edge) -> tuple[str, str, str, str]:
+    """A total, content-only order over edges. Sorted at CONSTRUCTION.
+
+    Determinism is a contract of :func:`build_call_graph` and it is load-bearing
+    twice over: two runs over one tree must produce equal reports so that a diff
+    between them is a real change, and :func:`reachable_from` breaks its
+    equal-length ties on this order, so an unsorted edge list would make the
+    WITNESS PATH nondeterministic even where the verdict was not.
+    """
+    return (edge.caller.key, edge.callee.key, edge.kind.value, edge.site)
 
 
 def reachable_from(
@@ -1468,10 +1675,59 @@ def reachable_from(
     through every merge, and a flag that propagates wrongly in the permissive
     direction is a test root laundering itself into a production answer.
     """
-    raise NotImplementedError(
-        "reachable_from: no traversal is written. It needs a CallGraph and "
-        "build_call_graph raises"
-    )
+    out_edges: dict[str, list[Edge]] = {}
+    for edge in graph.edges:
+        out_edges.setdefault(edge.caller.key, []).append(edge)
+    for chain in out_edges.values():
+        chain.sort(key=_edge_order)
+
+    # Sorted and de-duplicated, which is the "root sorts first by Symbol.key"
+    # half of the tie-break: a level-order sweep that starts its frontier in
+    # this order reaches an equal-length target from the first-sorting root.
+    root_keys = sorted({root.symbol.key for root in roots})
+
+    # Two sweeps, not one scored traversal. The first is over the RESOLVED
+    # subgraph alone, so anything it reaches has a chain with no weak link; the
+    # second is over everything. Preferring the first is R5's correctness rule
+    # — "the chain with the best PathQuality", never the shortest — and it is
+    # why the shorter INTERFACE shortcut must lose to the longer DIRECT chain.
+    resolved = _sweep_chains(out_edges, root_keys, resolved_only=True)
+    everything = _sweep_chains(out_edges, root_keys, resolved_only=False)
+    reach = dict(everything)
+    reach.update(resolved)
+    return reach
+
+
+def _sweep_chains(
+    out_edges: Mapping[str, Sequence[Edge]],
+    root_keys: Sequence[str],
+    *,
+    resolved_only: bool,
+) -> dict[str, tuple[Edge, ...]]:
+    """Level-order reach from ``root_keys``, shortest chain per key.
+
+    **Every root's own key is in the result, mapped to** ``()`` (R5). Three
+    things ride on that and all three are in :func:`reachable_from`'s docstring;
+    the one a body can get silently wrong is the third — a zero-edge chain is
+    :attr:`PathQuality.RESOLVED`, which :func:`_chain_quality` delivers by
+    taking the minimum over no edges to be the strong value.
+    """
+    chains: dict[str, tuple[Edge, ...]] = {key: () for key in root_keys}
+    frontier = list(root_keys)
+    while frontier:
+        following: list[str] = []
+        for key in frontier:
+            chain = chains[key]
+            for edge in out_edges.get(key, ()):
+                if resolved_only and not _edge_is_resolved(edge.kind):
+                    continue
+                target = edge.callee.key
+                if target in chains:
+                    continue
+                chains[target] = chain + (edge,)
+                following.append(target)
+        frontier = following
+    return chains
 
 
 # --------------------------------------------------------------------------- #
@@ -1586,10 +1842,41 @@ def discover_seals(graph: CallGraph, roots: Sequence[Root]) -> tuple[Seal, ...]:
     this effort is about. The cost is limit 8, and the trigger for widening is
     a measured case where a dark function nobody sealed caused an incident.
     """
-    raise NotImplementedError(
-        "discover_seals: no seal derivation is written. It reads the "
-        "TEST_FUNCTION roots that discover_roots produces, and that raises"
-    )
+    seals: list[Seal] = []
+    for root in roots:
+        if root.kind is not EntrypointKind.TEST_FUNCTION:
+            continue
+        if root.symbol.key not in graph.symbols:
+            raise CallSiteReachabilityError(
+                f"test root {root.symbol.key!r} is not declared in the call "
+                "graph, so its body was never read; a seal the graph does not "
+                "declare would silently contribute no subject, which is the "
+                "defect this module exists to refuse"
+            )
+        seals.append(Seal(symbol=root.symbol, test_id=_test_id(root.symbol)))
+    # Root order, not sorted order. The report sorts its FINDINGS
+    # (:func:`check_tree`); sorting here as well would hide a body that only
+    # ever emits in discovery order behind a fixture whose two orders agree.
+    return tuple(seals)
+
+
+def _test_id(symbol: Symbol) -> str:
+    """``cmd/classify.TestSeal_ResolveConfigDual`` — the row a human can run.
+
+    DISPUTE, recorded rather than resolved. :class:`Seal` contracts ``test_id``
+    as "not derived at report time: the spelling differs by language and a
+    report that guessed it would send people to nothing", but
+    :class:`ReachabilityAnalyzer` carries no method by which a row could supply
+    one, so the only layer that could honour that sentence has no channel to.
+    It is derived here — the declaring DIRECTORY, then the symbol's own last
+    segment — which is exactly the Go ``package.TestName`` spelling the seals
+    pin, and which is a defensible pytest node id only by accident. The seam to
+    widen when a Python analyzer lands is a ``test_id`` method on the protocol;
+    this function is then its one caller and disappears.
+    """
+    directory = symbol.path.rpartition("/")[0]
+    name = symbol.key.rpartition(".")[2]
+    return f"{directory}.{name}" if directory else name
 
 
 @dataclass(frozen=True)
@@ -1689,10 +1976,103 @@ def subjects_of_seal(seal: Seal, graph: CallGraph) -> Subject:
         brief names this explicitly and it is the shape of every false green in
         this effort: the checker did not look and the report said fine.
     """
-    raise NotImplementedError(
-        "subjects_of_seal: no subject extraction is written. It reads the "
-        "edges out of a CallGraph and build_call_graph raises"
-    )
+    called: dict[str, Symbol] = {}
+    for edge in graph.edges:
+        # Keyed on the CALLER's key, never on containment. The fixture's decoy
+        # (`…ResolveConfigDualDocComment`) exists to redden a body that reaches
+        # for a substring here.
+        if edge.caller.key == seal.symbol.key:
+            called.setdefault(edge.callee.key, edge.callee)
+    in_production = {
+        key: symbol
+        for key, symbol in called.items()
+        if not is_test_path(symbol.path)
+    }
+    unnameable = [
+        hole for hole in graph.unresolved_calls if hole[0].key == seal.symbol.key
+    ]
+
+    if in_production:
+        subject = Subject(
+            seal=seal,
+            symbols=tuple(in_production[key] for key in sorted(in_production)),
+            gap=None,
+            detail=(
+                f"{seal.test_id} calls "
+                f"{len(in_production)} symbol(s) declared outside the tests"
+            ),
+        )
+    elif unnameable:
+        # UNNAMEABLE outranks the other two even when the seal also calls test
+        # helpers: the target nobody could name may be the very production
+        # symbol the seal exists to cover, and the other two members each say
+        # in as many words that the seal made no claim.
+        subject = Subject(
+            seal=seal,
+            symbols=(),
+            gap=SubjectGap.UNNAMEABLE,
+            detail=(
+                f"{seal.test_id} calls {len(unnameable)} target(s) the "
+                f"analyzer could not name, first at {unnameable[0][1]}"
+            ),
+        )
+    elif called:
+        subject = Subject(
+            seal=seal,
+            symbols=(),
+            gap=SubjectGap.ALL_TARGETS_IN_TESTS,
+            detail=(
+                f"{seal.test_id} calls only symbols declared in test files; it "
+                "exercises helpers, not production"
+            ),
+        )
+    else:
+        subject = Subject(
+            seal=seal,
+            symbols=(),
+            gap=SubjectGap.NO_CALLS,
+            detail=f"{seal.test_id} calls nothing declared in this tree",
+        )
+    # R2, the POSTCONDITION half: this is the one constructor of the record and
+    # it must raise rather than RETURN a contradictory one, because a malformed
+    # record that escapes its constructor is one every later layer re-checks.
+    _validate_subject(subject)
+    return subject
+
+
+def _validate_subject(subject: Subject) -> None:
+    """``gap`` is None exactly when ``symbols`` is non-empty. Both ways.
+
+    Owed at two layers and this is the shared implementation of both (R2):
+    :func:`subjects_of_seal` calls it as a postcondition, :func:`check_tree`
+    calls it as a precondition on every record it consumes. The second is
+    unpinned by any row and is written anyway — the layer that ACTS on a
+    non-judgement is the layer where the non-judgement becomes an answer, and a
+    record arriving from a second constructor is not constructible today only
+    because there is no second constructor today.
+    """
+    if not isinstance(subject, Subject):
+        raise CallSiteReachabilityError(
+            f"{subject!r} is not a Subject and cannot be judged"
+        )
+    if subject.symbols and subject.gap is not None:
+        raise CallSiteReachabilityError(
+            f"subject record for {subject.seal.test_id!r} carries gap "
+            f"{subject.gap!r} alongside "
+            f"{len(subject.symbols)} symbol(s); a record that says two things "
+            "is a non-judgement and a non-judgement must not read as an answer"
+        )
+    if not subject.symbols and subject.gap is None:
+        raise CallSiteReachabilityError(
+            f"subject record for {subject.seal.test_id!r} names no symbol and "
+            "no gap; a record that says nothing is a non-judgement and a "
+            "non-judgement must not read as an answer"
+        )
+    if subject.gap is not None and not isinstance(subject.gap, SubjectGap):
+        raise CallSiteReachabilityError(
+            f"subject record for {subject.seal.test_id!r} carries "
+            f"{subject.gap!r}, which is not a SubjectGap member"
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -1860,6 +2240,25 @@ class PathQuality(Enum):
     NOT_APPLICABLE = "not_applicable"
 
 
+def _chain_quality(chain: Sequence[Edge]) -> PathQuality:
+    """The MINIMUM over a chain's edges. Never the last one, never the majority.
+
+    A chain is only as certain as its weakest link, so one
+    :attr:`EdgeKind.INTERFACE` or :attr:`EdgeKind.REFERENCE` anywhere makes the
+    whole chain :attr:`PathQuality.OVER_APPROXIMATED`.
+
+    **A ZERO-EDGE chain is** :attr:`PathQuality.RESOLVED` (R5), because the
+    minimum over no edges is the strong value — there is no weak link in a chain
+    with no links. Spelling it :attr:`PathQuality.NOT_APPLICABLE` would hand
+    :func:`adjudicate` the pair ``(FROM_PRODUCTION, NOT_APPLICABLE)``, which the
+    grid raises on as a mechanism bug, and would take the check down on every
+    tree whose seal covers an entrypoint.
+    """
+    if all(_edge_is_resolved(edge.kind) for edge in chain):
+        return PathQuality.RESOLVED
+    return PathQuality.OVER_APPROXIMATED
+
+
 @dataclass(frozen=True)
 class CallPath:
     """The evidence behind one :attr:`Reach.FROM_PRODUCTION` answer.
@@ -1921,6 +2320,7 @@ def check_subject(
     production_reach: Mapping[str, tuple[Edge, ...]],
     test_reach: Mapping[str, tuple[Edge, ...]],
     analyzer: ReachabilityAnalyzer,
+    roots: Sequence[Root] = (),
 ) -> Finding:
     """Judge one (seal, subject) pair. The single answer site for one subject.
 
@@ -1958,11 +2358,258 @@ def check_subject(
 
     Any :class:`CallSiteReachabilityError` propagates and is never converted
     into a finding.
+
+    **``roots`` is a body-added, keyword-only, defaulted parameter and it is a
+    recorded DISPUTE, not a widening of the contract.** :class:`CallPath` is
+    contracted to carry the :class:`Root` a chain starts at — "so a reader can
+    ask does that program actually ship" — and the scaffold's signature passes
+    no root records, so a faithful ``CallPath.root`` is not constructible from
+    the arguments it names. :func:`check_tree` supplies the real records and
+    every report this module produces therefore carries true ones. When they are
+    absent (a caller judging one pair in isolation, which is how the seals use
+    this function) the root is SYNTHESISED by :func:`_synthetic_root`, whose
+    ``evidence`` says so in the report rather than quietly claiming a mechanism
+    nobody derived. Two further clauses read ``roots`` when it is supplied:
+
+      * step 2 decides :attr:`UndecidedReason.NO_ENTRYPOINT` from the ROOT SET,
+        which is what R5 requires — "the map corroborates, it is not the
+        authority". With no root records the map is all there is, and R5's
+        inclusion convention is exactly what makes it usable: with roots mapped
+        to ``()``, ``production_reach == {}`` means one thing only.
     """
-    raise NotImplementedError(
-        "check_subject: no judgement is written. It reads two traversals and "
-        "reachable_from raises"
+    if not isinstance(subject, Symbol):
+        raise CallSiteReachabilityError(
+            f"{subject!r} is not a Symbol and cannot be judged"
+        )
+    test_path = _witness(subject, test_reach, RootKind.TEST, roots)
+
+    # 1. A path that was found is FOUND. First, before every abstention, so
+    #    that "we could not see everything" can never suppress a real pass.
+    if subject.key in production_reach:
+        path = _witness(subject, production_reach, RootKind.PRODUCTION, roots)
+        return Finding(
+            seal=seal,
+            subject=subject,
+            reach=Reach.FROM_PRODUCTION,
+            quality=path.quality,
+            path=path,
+            test_path=test_path,
+            reason=None,
+            detail=(
+                f"production reaches {subject.key} from "
+                f"{path.root.symbol.key} over {len(path.edges)} edge(s), "
+                f"quality {path.quality.value}"
+            ),
+        )
+
+    # 1b. An unparsed file is a hole of UNKNOWN SIZE in the edge set, so any
+    #     "no path" computed around it is computed around a hole. Whole-tree,
+    #     per SourceUnreadable's CHOICE, and after step 1 because a found path
+    #     is not un-found by a file nobody could read.
+    if graph.unreadable_paths:
+        return _abstention(
+            seal,
+            subject,
+            test_path,
+            UndecidedReason.PARSE_FAILED,
+            (
+                f"{len(graph.unreadable_paths)} file(s) could not be parsed, "
+                f"first {graph.unreadable_paths[0]}; every no-path answer over "
+                "this tree would be computed around a hole of unknown size"
+            ),
+        )
+
+    # 2. Zero production roots, BEFORE the tests-only check: with no production
+    #    root the tests-only answer is arithmetically guaranteed and would be a
+    #    BREACH against every subject in a library.
+    if _has_no_production_root(roots, production_reach):
+        return _abstention(
+            seal,
+            subject,
+            test_path,
+            UndecidedReason.NO_ENTRYPOINT,
+            (
+                "this tree has no production entrypoint of any EntrypointKind, "
+                "so nothing here is 'everything exported is reachable' and "
+                "nothing here is 'nothing is reachable'"
+            ),
+        )
+
+    # 3. The negative is not conclusive: either the language says so, or the
+    #    production closure itself contains a call nobody could name.
+    if not analyzer.negative_is_conclusive:
+        return _abstention(
+            seal,
+            subject,
+            test_path,
+            UndecidedReason.DYNAMIC_EDGE,
+            (
+                f"the {_language_of(analyzer)} row declares its negative "
+                "inconclusive, so 'no path' would be a fact about the analyzer "
+                "rather than about the language"
+            ),
+        )
+    holes = [
+        hole for hole in graph.unresolved_calls if hole[0].key in production_reach
+    ]
+    if holes:
+        return _abstention(
+            seal,
+            subject,
+            test_path,
+            UndecidedReason.DYNAMIC_EDGE,
+            (
+                f"{len(holes)} call(s) inside the production closure could not "
+                f"be resolved, first at {holes[0][1]} ({holes[0][2]}); one of "
+                "them may be the missing call site"
+            ),
+        )
+
+    # 4. The B1 verdict, reached only once every abstention above is ruled out.
+    if subject.key in test_reach:
+        return Finding(
+            seal=seal,
+            subject=subject,
+            reach=Reach.FROM_TESTS_ONLY,
+            quality=PathQuality.NOT_APPLICABLE,
+            path=None,
+            test_path=test_path,
+            reason=None,
+            detail=(
+                f"{subject.key} is reached from {seal.test_id} and from no "
+                "production root; the seal proves it behaves and nothing "
+                "proves it runs"
+            ),
+        )
+
+    # 5. Impossible for a seal-derived subject, so it is the mechanism's own
+    #    bug and is reported as one rather than converted into a finding.
+    raise CallSiteReachabilityError(
+        f"{subject.key} is reached from no root at all, and {seal.test_id} "
+        "has a direct edge to it by the definition of 'subject'; the traversal "
+        "lost an edge it was handed, and a lost edge folded into the "
+        "tests-only verdict would be an over-call against innocent code"
     )
+
+
+def _abstention(
+    seal: Seal,
+    subject: Symbol,
+    test_path: "CallPath | None",
+    reason: UndecidedReason,
+    detail: str,
+) -> Finding:
+    """One shape for every abstention, so none of them can drift into a pass."""
+    if not isinstance(reason, UndecidedReason):
+        raise CallSiteReachabilityError(
+            f"{reason!r} is not an UndecidedReason; an abstention whose reason "
+            "is prose is one a reworded message can flip"
+        )
+    return Finding(
+        seal=seal,
+        subject=subject,
+        reach=Reach.UNDECIDED,
+        quality=PathQuality.NOT_APPLICABLE,
+        path=None,
+        test_path=test_path,
+        reason=reason,
+        detail=detail,
+    )
+
+
+def _has_no_production_root(
+    roots: Sequence[Root], production_reach: Mapping[str, tuple[Edge, ...]]
+) -> bool:
+    """R5: the ROOT SET is the authority; the reach map only corroborates."""
+    if roots:
+        return not any(root.root_kind is RootKind.PRODUCTION for root in roots)
+    return not production_reach
+
+
+def _witness(
+    subject: Symbol,
+    reach: Mapping[str, tuple[Edge, ...]],
+    root_kind: RootKind,
+    roots: Sequence[Root],
+) -> "CallPath | None":
+    """The chain a human follows, or None when this side reached nothing."""
+    if subject.key not in reach:
+        return None
+    chain = tuple(reach[subject.key])
+    origin = chain[0].caller if chain else subject
+    declared = {
+        (root.symbol.key, root.root_kind): root for root in roots
+    }.get((origin.key, root_kind))
+    root = declared if declared is not None else _synthetic_root(origin, root_kind)
+    return CallPath(root=root, edges=chain, quality=_chain_quality(chain))
+
+
+def _synthetic_root(symbol: Symbol, root_kind: RootKind) -> Root:
+    """A :class:`Root` for a chain whose real record this layer was not handed.
+
+    Only reachable when a caller judges one pair without supplying ``roots``;
+    :func:`check_tree` always supplies them. The ``evidence`` says exactly that,
+    because a root nobody can verify is a root nobody will believe.
+
+    The TEST side is a derivation and not a guess: ``TEST_FUNCTION`` is the only
+    member of :class:`EntrypointKind` on the test side, so there is nothing to
+    choose. **The PRODUCTION side is the dispute** — the production side of
+    :data:`_ROOT_KIND_BY_ENTRYPOINT` holds SEVEN kinds (counted over
+    :class:`EntrypointKind` in this file at ``feat/D5-body``, 2026-08-11) and a
+    chain's first caller does not say which one started it — so the
+    kind is narrowed by the LANGUAGE of the declaring file and the narrowing is
+    written into ``evidence``. A language with no production entrypoint kind
+    (TypeScript, deliberately: "a kind with no analyzer emitting it will never
+    fire and will be read as coverage") RAISES rather than borrows another
+    language's.
+    """
+    if root_kind is RootKind.TEST:
+        return Root(
+            symbol=symbol,
+            kind=EntrypointKind.TEST_FUNCTION,
+            root_kind=RootKind.TEST,
+            evidence=(
+                f"{symbol.path}:{symbol.line} — derived from the witness chain; "
+                "TEST_FUNCTION is the only test entrypoint kind, so no kind was "
+                "chosen"
+            ),
+        )
+    if root_kind is not RootKind.PRODUCTION:
+        raise CallSiteReachabilityError(
+            f"{root_kind!r} is neither production nor test; RootKind has two "
+            "members and no UNKNOWN"
+        )
+    support = support_for_path(symbol.path)
+    language = support.language if support is not None else None
+    kind = _FALLBACK_PRODUCTION_KIND.get(language)
+    if kind is None:
+        raise CallSiteReachabilityError(
+            f"no production EntrypointKind can be named for {symbol.key!r} in "
+            f"{symbol.path!r} (language {language!r}) and no Root record was "
+            "supplied; naming a kind this module cannot derive would put a "
+            "mechanism nobody checked into a report a human is meant to check"
+        )
+    return Root(
+        symbol=symbol,
+        kind=kind,
+        root_kind=RootKind.PRODUCTION,
+        evidence=(
+            f"{symbol.path}:{symbol.line} — derived from the witness chain; no "
+            f"Root record was supplied to check_subject, so the kind is "
+            f"NARROWED to {kind.value} by the file's language and is not a "
+            "sweep result"
+        ),
+    )
+
+
+#: The narrowest production :class:`EntrypointKind` each language has, used only
+#: by :func:`_synthetic_root`. TypeScript is deliberately absent: no member of
+#: the enum names a TypeScript concept, and borrowing another language's kind
+#: would put a mechanism nobody derived into a report.
+_FALLBACK_PRODUCTION_KIND: Mapping[Language, EntrypointKind] = {
+    Language.GO: EntrypointKind.GO_MAIN,
+    Language.PYTHON: EntrypointKind.PYTHON_SCRIPT_MAIN,
+}
 
 
 @dataclass(frozen=True)
@@ -2109,6 +2756,47 @@ class Disposition(Enum):
     ABSTAIN = "abstain"
 
 
+#: **THE ruling grid, as DATA.** Four rows; every pair absent from it raises.
+#: A table and not branching prose, per the P4 ruling on :func:`adjudicate`: a
+#: chain of ``if``\ s grows a default branch, and a default branch on this
+#: dispatch is how the permissive answer gets a new spelling.
+#:
+#: Each value is ``(no declaration, a declaration whose two keys match and whose
+#: wiring says something)``. The two differ in exactly ONE row, which is the
+#: whole power of the annotation: it cannot touch ``ABSTAIN`` (the abstention
+#: count is this mechanism's own coverage figure and buying silence on it would
+#: be buying silence on a measurement nobody took) and it cannot touch
+#: ``REPORT`` (a human cannot declare an over-approximated path into a resolved
+#: one, because the weakness is in the analysis and not in the code).
+#:
+#: The eight pairs that are NOT here are the specification, and each omitted
+#: class is a MECHANISM bug rather than a policy choice: ``FROM_PRODUCTION`` with
+#: ``NOT_APPLICABLE`` is a path found whose quality nobody recorded;
+#: ``FROM_TESTS_ONLY`` or ``UNDECIDED`` with any quality other than
+#: ``NOT_APPLICABLE`` is a quality recorded for a path that does not exist; and
+#: ``FROM_NEITHER`` is omitted rather than mapped so that this layer and
+#: :func:`check_subject` cannot disagree about it — the raise IS that member's
+#: exhaustive treatment.
+_RULINGS: Mapping[tuple[Reach, PathQuality], tuple[Disposition, Disposition]] = {
+    (Reach.FROM_PRODUCTION, PathQuality.RESOLVED): (
+        Disposition.OK,
+        Disposition.OK,
+    ),
+    (Reach.FROM_PRODUCTION, PathQuality.OVER_APPROXIMATED): (
+        Disposition.REPORT,
+        Disposition.REPORT,
+    ),
+    (Reach.FROM_TESTS_ONLY, PathQuality.NOT_APPLICABLE): (
+        Disposition.BREACH,
+        Disposition.ACCEPTED,
+    ),
+    (Reach.UNDECIDED, PathQuality.NOT_APPLICABLE): (
+        Disposition.ABSTAIN,
+        Disposition.ABSTAIN,
+    ),
+}
+
+
 def adjudicate(
     finding: Finding, declaration: StagedDeclaration | None
 ) -> Disposition:
@@ -2183,11 +2871,75 @@ def adjudicate(
     the properties are settled by SEAL, which is the correct division: a body
     that transcribes this table wrongly is caught by the properties, and a body
     that transcribes it differently on purpose is overturning a P4.
+
+    **BODY DISPUTE (``feat/D5-body``, 2026-08-11), and it is escalated rather
+    than resolved here: this function does NOT enforce the ``Finding``
+    consistency rule its own class docstring assigns to it, because the seals
+    forbid it to.** :class:`Finding` says "``reason`` is non-None exactly when
+    ``reach`` is UNDECIDED, and ``path`` is non-None exactly when ``reach`` is
+    FROM_PRODUCTION. Both contradictions are :class:`CallSiteReachabilityError`
+    at :func:`adjudicate`". But
+    ``test_the_three_verdict_classes_land_in_three_buckets`` and
+    ``test_a_declaration_moves_at_most_one_outcome_and_never_an_abstention``
+    both sweep the whole grid with findings built as
+    ``(reach, quality, reason=DYNAMIC_EDGE, path=None)`` and REQUIRE a ruling
+    back for ``(FROM_PRODUCTION, RESOLVED)`` — which carries a reason it may not
+    carry and lacks a path it must have. A body that enforced the rule would
+    raise there, ``rulings[FROM_PRODUCTION]`` would be empty, and both rows
+    would redden. The two cannot both stand, the seals are not a body's to
+    edit, and so the grid is enforced and the consistency rule is not.
+
+    What that costs, stated so it is a decision: a finding carrying two answers
+    is ruled on rather than refused. What it does NOT cost is any answer this
+    module produces — :func:`check_subject` is the only constructor of a
+    :class:`Finding` here and it is total over the five outcomes, each of which
+    sets ``reason`` and ``path`` consistently by construction. The contradiction
+    is therefore unreachable from within the module and only a caller
+    hand-building a :class:`Finding` can reach it, which is exactly what the two
+    rows do. **The question for P4: does the raise move to
+    :func:`check_subject`'s postcondition, or is the sentence in
+    :class:`Finding` struck?** A body may not choose.
     """
-    raise NotImplementedError(
-        "adjudicate: the ruling grid is specified in this docstring and not "
-        "yet written as data; P4 rules on it before a body pins it"
-    )
+    try:
+        cell = _RULINGS.get((finding.reach, finding.quality))
+    except TypeError as exc:  # an unhashable stand-in for a member nobody ruled on
+        raise CallSiteReachabilityError(
+            f"({finding.reach!r}, {finding.quality!r}) cannot even be looked up "
+            f"in the ruling grid: {exc}"
+        ) from exc
+    if cell is None:
+        raise CallSiteReachabilityError(
+            f"the ruling grid does not name ({finding.reach!r}, "
+            f"{finding.quality!r}). Every pair it does not name is a mechanism "
+            "bug — a path found with no quality recorded, a quality recorded "
+            "for a path that does not exist, or a member added without "
+            "visiting this dispatch — and a mechanism bug must not fall "
+            "through to the permissive answer"
+        )
+    undeclared, declared = cell
+    return declared if _declaration_answers(finding, declaration) else undeclared
+
+
+def _declaration_answers(
+    finding: Finding, declaration: StagedDeclaration | None
+) -> bool:
+    """Does this declaration actually answer this finding?
+
+    BOTH keys, exactly — a typo is not an accepted state, and a suffix or a bare
+    name would let one declaration cover a family. Plus R8's ratification
+    condition: **a declaration with no ``wiring`` is not a declaration.** Empty
+    and whitespace-only both count as absent, and such a declaration is ignored
+    for the ruling exactly as a key mismatch is, then reported stale by
+    :func:`check_tree`. It is deliberately NOT a check that the named ticket
+    exists: a verdict behind a network call is a worse gate.
+    """
+    if declaration is None:
+        return False
+    if declaration.test_id != finding.seal.test_id:
+        return False
+    if declaration.subject_key != finding.subject.key:
+        return False
+    return bool(declaration.wiring and declaration.wiring.strip())
 
 
 # --------------------------------------------------------------------------- #
@@ -2326,7 +3078,152 @@ def check_tree(
     NOT acceptable is the third option: returning a report that looks clean. It
     does not; ``seals_examined`` is on the face of it.
     """
-    raise NotImplementedError(
-        "check_tree: no run is written. Every stage it composes raises, "
-        "starting with discover_roots"
+    unanalyzed = _analyzers_present(tree)[1]
+    roots = discover_roots(tree)
+    graph = build_call_graph(tree)
+
+    production_roots = tuple(r for r in roots if r.root_kind is RootKind.PRODUCTION)
+    test_roots = tuple(r for r in roots if r.root_kind is RootKind.TEST)
+    # Twice, never one labelled traversal: a flag that propagates wrongly in the
+    # permissive direction is a test root laundering itself into a production
+    # answer.
+    production_reach = reachable_from(graph, production_roots)
+    test_reach = reachable_from(graph, test_roots)
+
+    seals = discover_seals(graph, roots)
+    gaps: dict[SubjectGap, int] = {gap: 0 for gap in SubjectGap}
+    findings: list[Finding] = []
+    for seal in seals:
+        subject = subjects_of_seal(seal, graph)
+        # R2, the PRECONDITION half. See :func:`_validate_subject`.
+        _validate_subject(subject)
+        if subject.gap is not None:
+            gaps[subject.gap] += 1
+            if subject.gap is SubjectGap.UNNAMEABLE:
+                # R3: exactly ONE finding, an abstention, over a synthetic
+                # subject. A seal the mechanism could not READ is a fact about
+                # the mechanism and belongs where abstentions are counted, not
+                # in a gap tally where it reads as a seal that had nothing to
+                # say.
+                findings.append(_unnameable_finding(seal, graph, subject.detail))
+            elif subject.gap in (SubjectGap.NO_CALLS, SubjectGap.ALL_TARGETS_IN_TESTS):
+                # A seal that made no claim this module can check. Counted, and
+                # no finding follows — the two members say so in as many words.
+                pass
+            else:
+                raise CallSiteReachabilityError(
+                    f"subject gap {subject.gap!r} has no treatment here; a gap "
+                    "that falls through would discharge an unread claim as a "
+                    "bare count"
+                )
+            continue
+        for symbol in subject.symbols:
+            analyzer = analyzer_for_path(symbol.path)
+            if analyzer is None:
+                findings.append(
+                    _abstention(
+                        seal,
+                        symbol,
+                        _witness(symbol, test_reach, RootKind.TEST, roots),
+                        UndecidedReason.UNSUPPORTED_LANGUAGE,
+                        (
+                            f"no analyzer row can read {symbol.path}; this is a "
+                            "permanent fact about the gate, not about the "
+                            "machine it ran on"
+                        ),
+                    )
+                )
+                continue
+            findings.append(
+                check_subject(
+                    seal,
+                    symbol,
+                    graph=graph,
+                    production_reach=production_reach,
+                    test_reach=test_reach,
+                    analyzer=analyzer,
+                    roots=roots,
+                )
+            )
+
+    findings.sort(key=lambda f: (f.seal.test_id, f.subject.key))
+
+    dispositions: dict[Disposition, int] = {d: 0 for d in Disposition}
+    answered: set[int] = set()
+    for finding in findings:
+        matched: StagedDeclaration | None = None
+        for index, declaration in enumerate(declarations):
+            if _declaration_answers(finding, declaration):
+                answered.add(index)
+                if matched is None:
+                    matched = declaration
+        dispositions[adjudicate(finding, matched)] += 1
+
+    return ReachabilityReport(
+        findings=tuple(findings),
+        dispositions=dispositions,
+        roots=roots,
+        seals_examined=len(seals),
+        subject_gaps=gaps,
+        unresolved_call_count=sum(
+            1 for hole in graph.unresolved_calls if hole[0].key in production_reach
+        ),
+        unanalyzed_paths=unanalyzed,
+        stale_declarations=tuple(
+            declaration
+            for index, declaration in enumerate(declarations)
+            if index not in answered
+        ),
     )
+
+
+#: The suffix that spells a synthetic subject, on :class:`Symbol`'s own recorded
+#: convention for synthetic roots: no declaration can produce it, so it cannot
+#: collide with a real symbol.
+_UNNAMEABLE_SUFFIX = "<unnameable>"
+
+
+def _unnameable_finding(seal: Seal, graph: CallGraph, detail: str) -> Finding:
+    """The one abstention an :attr:`SubjectGap.UNNAMEABLE` seal produces (R3).
+
+    The subject is SYNTHETIC — ``<seal key>.<unnameable>`` — rather than the
+    seal's own symbol, which would read as a seal covering itself, and rather
+    than ``None``, because :class:`Finding` has no optional subject and a report
+    must never show a blank where a subject belongs.
+    """
+    sites = sorted(
+        (hole for hole in graph.unresolved_calls if hole[0].key == seal.symbol.key),
+        key=lambda hole: (hole[1], hole[2]),
+    )
+    if not sites:
+        raise CallSiteReachabilityError(
+            f"{seal.test_id} was classified UNNAMEABLE with no unresolved call "
+            "site to point at; the finding would name no place a human can open"
+        )
+    return _abstention(
+        seal,
+        Symbol(
+            key=f"{seal.symbol.key}.{_UNNAMEABLE_SUFFIX}",
+            path=seal.symbol.path,
+            line=_line_of(sites[0][1], seal.symbol.line),
+        ),
+        None,
+        UndecidedReason.SUBJECT_UNIDENTIFIED,
+        detail,
+    )
+
+
+def _line_of(site: str, fallback: int) -> int:
+    """The line out of a ``file:line`` call site, or ``fallback``.
+
+    A best effort over a string an analyzer wrote, and it is deliberately a
+    fallback rather than a raise: the site's SPELLING is not a protocol this
+    module owns, and a mechanism that refused to report an abstention because it
+    could not parse a line number would have converted "I could not read this
+    claim" into "I could not run", which is a different and louder answer.
+    """
+    tail = site.rpartition(":")[2]
+    try:
+        return int(tail)
+    except ValueError:
+        return fallback
