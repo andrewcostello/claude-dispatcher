@@ -3305,8 +3305,35 @@ def encode_go_helper_request(path: str, source: str) -> str:
     )
 
 
-def decode_go_helper_response(stdout: str) -> GoHelperResponse:
-    """Parse the helper's stdout, or raise the named fault.
+def _decode_helper_response(
+    stdout: str,
+    schema: str,
+    response_type: type,
+    symbol_type: type,
+) -> object:
+    """Validate one helper's stdout and build its response. **One implementation.**
+
+    THE SHARED VALIDATOR, extracted by unit D4's P3 body under the ruling at
+    :func:`decode_ts_helper_response` and forced by
+    ``test_one_decoder_serves_both_languages_and_neither_is_a_copy``. Every
+    line below is language-independent; the only Go- or TypeScript-shaped
+    things in it are the four arguments.
+
+    It exists because two decoders would be two implementations of one wire
+    protocol, and the copy that forgets the duplicate-key check clears branches
+    the original refuses — a divergence in the exact place where being wrong
+    fails OPEN.
+
+    The signature is normative and is stated at
+    :func:`decode_ts_helper_response`:
+
+      * ``stdout`` and ``schema`` are the first two POSITIONALS, in that order,
+        so a seal can observe that each wrapper fixes its OWN schema;
+      * ``response_type`` and ``symbol_type`` are constructed by KEYWORD, which
+        is what makes four arguments sufficient — the two dataclass pairs are
+        field-for-field identical in name by contract, not by coincidence;
+      * the return is the caller's ``response_type``, and neither wrapper
+        re-validates or reshapes it.
 
     Raises :class:`ComparatorUnavailable` with
     :attr:`ComparatorFault.HELPER_OUTPUT_INVALID` for every way the document
@@ -3320,9 +3347,8 @@ def decode_go_helper_response(stdout: str) -> GoHelperResponse:
     pass.
 
     Does **not** decide anything about the comparison: a document carrying
-    ``parse_error`` is returned intact, and it is
-    :meth:`GoSignatureFingerprinter.fingerprints` that turns it into
-    :class:`SourceUnparseable`. One place per decision.
+    ``parse_error`` is returned intact, and it is the fingerprinter that turns
+    it into :class:`SourceUnparseable`. One place per decision.
     """
 
     def invalid(reason: str) -> ComparatorUnavailable:
@@ -3347,10 +3373,10 @@ def decode_go_helper_response(stdout: str) -> GoHelperResponse:
             f"stdout is a JSON {type(document).__name__}, not the response object"
         )
 
-    schema = document.get("schema")
-    if schema != GO_HELPER_SCHEMA:
+    declared = document.get("schema")
+    if declared != schema:
         raise invalid(
-            f"the response schema is {schema!r}, not {GO_HELPER_SCHEMA!r}. A "
+            f"the response schema is {declared!r}, not {schema!r}. A "
             "helper from a different version of this protocol is a fault, "
             "never a best-effort read: fingerprints are compared for equality "
             "across two runs and a grammar change would read as a rewrite"
@@ -3378,9 +3404,9 @@ def decode_go_helper_response(stdout: str) -> GoHelperResponse:
         )
 
     if parse_error is not None:
-        return GoHelperResponse(schema=schema, parse_error=parse_error)
+        return response_type(schema=schema, parse_error=parse_error)
 
-    symbols: list[GoHelperSymbol] = []
+    symbols: list[object] = []
     seen: set[str] = set()
     for index, entry in enumerate(raw_symbols or ()):
         if not isinstance(entry, dict):
@@ -3407,13 +3433,29 @@ def decode_go_helper_response(stdout: str) -> GoHelperResponse:
             )
         seen.add(name)
         symbols.append(
-            GoHelperSymbol(
+            symbol_type(
                 symbol=name,
                 fingerprint=str(fingerprint),
                 kind=str(kind),
             )
         )
-    return GoHelperResponse(schema=schema, symbols=tuple(symbols))
+    return response_type(schema=schema, symbols=tuple(symbols))
+
+
+def decode_go_helper_response(stdout: str) -> GoHelperResponse:
+    """Parse the Go helper's stdout, or raise the named fault.
+
+    A thin wrapper that fixes :data:`GO_HELPER_SCHEMA` and the Go dataclass
+    pair; the validation is :func:`_decode_helper_response` and lives in
+    exactly one place. It does not re-validate and it does not reshape — a
+    wrapper that did either would be the second copy of the wire protocol back
+    again, in the place where a divergence fails OPEN.
+    """
+    response = _decode_helper_response(
+        stdout, GO_HELPER_SCHEMA, GoHelperResponse, GoHelperSymbol
+    )
+    assert isinstance(response, GoHelperResponse)  # the type it was handed
+    return response
 
 
 def go_helper_source_dir() -> Path:
@@ -4989,8 +5031,20 @@ def _node_toolchain_environment() -> dict[str, str]:
     scrubbed incorrectly still cannot reach an ancestor ``node_modules``. Two
     independent mechanisms for one property, on purpose: the environment can be
     got wrong by a caller, the absolute path cannot.
+
+    **P3:** the ``NODE_*`` strip is written as *remove every variable whose
+    name starts with* ``NODE_``, not as a list of the dangerous ones, because
+    the contract above rules the enumeration to be the wrong shape — the helper
+    needs none of them, so a future one is closed in advance rather than
+    discovered. ``NPM_CONFIG_*`` goes the same way.
     """
-    raise NotImplementedError("D4 P1 scaffold: contract only")
+    import os
+
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith("NODE_") and not name.startswith("NPM_CONFIG_")
+    }
 
 
 @dataclass(frozen=True)
@@ -5081,8 +5135,19 @@ def encode_ts_helper_request(path: str, source: str) -> str:
     :func:`decode_ts_helper_response` for the ruling and the refactor it names;
     the same applies here, where the duplication is smaller and therefore more
     tempting.
+
+    **P3:** the shared piece here is one ``json.dumps`` call with three
+    keyword arguments, so the extraction the decoder needed would be a wrapper
+    longer than the thing it wraps. What is shared instead is the ARGUMENT —
+    the reasons for ``ensure_ascii`` and for the separators are recorded once,
+    at :func:`encode_go_helper_request`, and are not restated. The schema and
+    the field set are what differ, and they are the whole body.
     """
-    raise NotImplementedError("D4 P1 scaffold: contract only")
+    return json.dumps(
+        {"schema": TS_HELPER_SCHEMA, "path": path, "source": source},
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
 
 
 def decode_ts_helper_response(stdout: str) -> TsHelperResponse:
@@ -5163,8 +5228,19 @@ def decode_ts_helper_response(stdout: str) -> TsHelperResponse:
     third language would make it three copies. That is worth writing down as
     the answer to "was this one row": the *dispatch* was one row, the
     *plumbing* was not.
+
+    **P3, 2026-08-10: the extraction is done and this is the wrapper.** The
+    validation is :func:`_decode_helper_response`, called with the corrected
+    four-argument signature above; there is no second implementation and no
+    copy. :func:`decode_go_helper_response` is now the same shape, which is the
+    half of the ruling that could not have been met by writing only this
+    function.
     """
-    raise NotImplementedError("D4 P1 scaffold: contract only")
+    response = _decode_helper_response(
+        stdout, TS_HELPER_SCHEMA, TsHelperResponse, TsHelperSymbol
+    )
+    assert isinstance(response, TsHelperResponse)  # the type it was handed
+    return response
 
 
 #: The tag vocabulary for one segment of a TypeScript symbol key. A closed set;
@@ -5246,6 +5322,215 @@ def ts_symbol_key(segments: Sequence[tuple[str, str]]) -> str:
         escaped = text.replace("\\", "\\\\").replace("/", "\\/")
         parts.append(f"{tag}:{escaped}")
     return "/".join(parts)
+
+
+#: What this PROCESS probed, keyed by the parser directory the probe loaded.
+#:
+#: Keyed rather than a bare pair because the directory is not a constant: the
+#: digest seals repoint :data:`TS_HELPER_PACKAGE_DIR` at a copy, and a probe
+#: result cached from the shipped directory would then be answering about bytes
+#: nobody loaded. The key makes "this is a different parser" say so.
+#:
+#: Per PROCESS and never on disk, for :data:`_TS_HELPER_PREPARED`'s reason.
+#: This cache carries no verification result — the digest is re-checked by
+#: :func:`_ts_prepared_parser` on every call, ahead of this one — so it cannot
+#: become the stamp file the design refuses.
+_TS_NODE_PREPARED: dict[
+    str, tuple[str, None] | tuple[None, ComparatorUnavailable]
+] = {}
+
+
+def _parse_dotted_version(text: str) -> tuple[int, ...] | None:
+    """``"v20.19.4"`` or ``"5.9.3"`` → ``(20, 19, 4)``, or None if unreadable."""
+    cleaned = text.strip().lstrip("v").split("-")[0].split("+")[0]
+    parts = cleaned.split(".")
+    try:
+        return tuple(int(part) for part in parts if part != "")
+    except ValueError:
+        return None
+
+
+def _probe_node_and_parser(directory: Path) -> str:
+    """Refuse a ``node`` or a vendored parser that cannot do the job.
+
+    Two faults, and the split is the one :data:`TS_NODE_MINIMUM_VERSION`
+    records: ``node`` is a RUNTIME found on PATH and a fact about the machine,
+    so its absence is :attr:`ComparatorFault.TOOLCHAIN_MISSING`; everything
+    else here is :attr:`ComparatorFault.TOOLCHAIN_UNUSABLE`, by
+    :func:`_probe_go_toolchain`'s argument — a toolchain that is present but
+    cannot run would otherwise fail later as a parse error and blame the branch
+    for the age of the install.
+
+    ONE subprocess answers both questions, and it is the helper itself under
+    ``--probe`` rather than ``node --version``. That is deliberate: it also
+    proves that this Node can actually load this 9.1 MB parser, which is the
+    failure a version comparison would sail past.
+
+    The parser version check is belt-and-braces after
+    :func:`_verify_vendored_parser` has matched the bytes exactly, and it is
+    kept because the contract names it and because it costs nothing here — the
+    subprocess is already being run for Node's version.
+    """
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        raise ComparatorUnavailable(
+            ComparatorFault.TOOLCHAIN_MISSING,
+            "`node` is not on PATH. The vendored parser is this build's own "
+            "apparatus and it is present; the RUNTIME that executes it is a "
+            "fact about the machine, which is why this is a toolchain fault "
+            "and not HELPER_MISSING",
+        )
+
+    entry = directory / TS_HELPER_ENTRY_POINT
+    try:
+        probe = subprocess.run(
+            [node, str(entry), "--probe"],
+            capture_output=True,
+            timeout=_HELPER_TIMEOUT_SECONDS,
+            env=_node_toolchain_environment(),
+            cwd=str(directory),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ComparatorUnavailable(
+            ComparatorFault.TOOLCHAIN_UNUSABLE,
+            f"`node {entry} --probe` did not answer within "
+            f"{_HELPER_TIMEOUT_SECONDS}s; a runtime that hangs loading the "
+            "parser cannot be used to clear a branch",
+        ) from exc
+    except OSError as exc:
+        raise ComparatorUnavailable(
+            ComparatorFault.TOOLCHAIN_UNUSABLE,
+            f"`node {entry} --probe` could not be run: "
+            f"{type(exc).__name__}: {exc}",
+        ) from exc
+
+    if probe.returncode != 0:
+        raise ComparatorUnavailable(
+            ComparatorFault.TOOLCHAIN_UNUSABLE,
+            f"`node {entry} --probe` exited {probe.returncode}: "
+            f"{_helper_diagnostic_text(probe.stderr)}",
+        )
+
+    try:
+        reported = json.loads(probe.stdout.decode("utf-8", "replace"))
+    except ValueError as exc:
+        raise ComparatorUnavailable(
+            ComparatorFault.TOOLCHAIN_UNUSABLE,
+            f"the probe answered {probe.stdout!r}, which is not the "
+            "`{node, typescript}` document this helper promises",
+        ) from exc
+    if not isinstance(reported, dict):
+        raise ComparatorUnavailable(
+            ComparatorFault.TOOLCHAIN_UNUSABLE,
+            f"the probe answered a JSON {type(reported).__name__}, not an object",
+        )
+
+    for label, key, minimum in (
+        ("node", "node", TS_NODE_MINIMUM_VERSION),
+        ("the vendored parser", "typescript", TS_PARSER_MINIMUM_VERSION),
+    ):
+        raw = reported.get(key)
+        version = _parse_dotted_version(raw) if isinstance(raw, str) else None
+        if version is None:
+            raise ComparatorUnavailable(
+                ComparatorFault.TOOLCHAIN_UNUSABLE,
+                f"the probe reported {label} as {raw!r}, which is not a "
+                "version this gate can compare against its own minimum",
+            )
+        if version < minimum:
+            wanted = ".".join(str(part) for part in minimum)
+            raise ComparatorUnavailable(
+                ComparatorFault.TOOLCHAIN_UNUSABLE,
+                f"{label} is {raw}, older than the {wanted} this grammar is "
+                "defined against. A parser that predates syntax the target "
+                "repository contains either parse-errors on it — survivable, "
+                "it reads as UNPARSEABLE — or, for a modifier it predates, "
+                "drops it SILENTLY, which is not",
+            )
+    return node
+
+
+def _ts_prepared_node(directory: Path) -> str:
+    """The probed ``node`` for this process and this parser, or its fault.
+
+    Caches both arms in :data:`_TS_NODE_PREPARED`, so a machine with no
+    ``node`` pays one ``which`` rather than one per file and every file in the
+    diff is refused with the same message.
+    """
+    key = str(directory)
+    if key not in _TS_NODE_PREPARED:
+        try:
+            _TS_NODE_PREPARED[key] = (_probe_node_and_parser(directory), None)
+        except ComparatorUnavailable as exc:
+            _TS_NODE_PREPARED[key] = (None, exc)
+
+    node, failure = _TS_NODE_PREPARED[key]
+    if failure is not None:
+        raise failure
+    assert node is not None  # the two arms of the tuple are exclusive
+    return node
+
+
+def _run_ts_helper(node: str, directory: Path, path: str, text: str) -> str:
+    """One request in, the helper's stdout out, or the named fault.
+
+    :func:`_run_go_helper`'s contract, unchanged: exit status and document are
+    separate channels, so a non-zero exit is
+    :attr:`ComparatorFault.HELPER_FAILED` and stdout is **not read at all** — a
+    document from a run that failed is a partial answer, and a partial answer
+    manufactures removed symbols.
+
+    The ``cwd`` is the parser's own directory, per
+    :func:`_node_toolchain_environment`: Node reads ``package.json`` from
+    ancestor directories to decide CommonJS-versus-ESM, and left at the judged
+    checkout the ancestor chain would be the branch's.
+    """
+    import subprocess
+
+    entry = directory / TS_HELPER_ENTRY_POINT
+    request = encode_ts_helper_request(path, text).encode("utf-8")
+    try:
+        finished = subprocess.run(
+            [node, str(entry)],
+            input=request,
+            capture_output=True,
+            timeout=_HELPER_TIMEOUT_SECONDS,
+            env=_node_toolchain_environment(),
+            cwd=str(directory),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ComparatorUnavailable(
+            ComparatorFault.HELPER_TIMEOUT,
+            f"the TypeScript helper took longer than "
+            f"{_HELPER_TIMEOUT_SECONDS}s on {path}. There is no retry and no "
+            "degraded mode: a fallback is how a gate ends up reporting a pass "
+            "it did not earn",
+        ) from exc
+    except OSError as exc:
+        raise ComparatorUnavailable(
+            ComparatorFault.HELPER_FAILED,
+            f"the TypeScript helper at {entry} could not be executed: "
+            f"{type(exc).__name__}: {exc}",
+        ) from exc
+
+    if finished.returncode != 0:
+        raise ComparatorUnavailable(
+            ComparatorFault.HELPER_FAILED,
+            f"the TypeScript helper exited {finished.returncode} on {path}: "
+            f"{_helper_diagnostic_text(finished.stderr)}",
+        )
+
+    try:
+        return finished.stdout.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ComparatorUnavailable(
+            ComparatorFault.HELPER_OUTPUT_INVALID,
+            f"the TypeScript helper's stdout for {path} is not valid UTF-8: "
+            f"{exc}",
+        ) from exc
 
 
 class TypeScriptSignatureFingerprinter:
@@ -5752,12 +6037,18 @@ class TypeScriptSignatureFingerprinter:
         untestable until P3 landed, which is the shape of a check nobody ever
         measures.
         """
-        _ts_prepared_parser()
-        raise NotImplementedError(
-            "D4 P3: the TypeScript comparator body is not written. The trusted "
-            "parser resolved and passed its digest; what is missing is the "
-            f"{TS_HELPER_ENTRY_POINT} run and the decode"
+        directory = _ts_prepared_parser()
+        response = decode_ts_helper_response(
+            _run_ts_helper(_ts_prepared_node(directory), directory, path, text)
         )
+        if response.parse_error is not None:
+            # A fact about the FILE, established by working apparatus — so it
+            # is not a fault, and `compare_signatures` reports it as
+            # UNCHECKED_UNPARSEABLE rather than as a broken machine. Any
+            # diagnostic at all reaches here: see `TsHelperResponse`.
+            raise SourceUnparseable(path, f"typescript: {response.parse_error}")
+        # Declaration order, which the helper guarantees and dicts preserve.
+        return {symbol.symbol: symbol.fingerprint for symbol in response.symbols}
 
 
 @dataclass(frozen=True)
@@ -6228,6 +6519,12 @@ TS_SIGNATURE_EDIT_RULINGS: tuple[TsSignatureEditRuling, ...] = (
 #:      What is still outstanding under this item is ``main.cjs``, which is P3's
 #:      and is a few hundred reviewable lines like the Go helper's; until it
 #:      lands :func:`ts_parser_home` still refuses, with the entry point named.
+#:
+#:      **DONE (P3, 2026-08-10):** ``main.cjs`` has landed. It is the first
+#:      file the subtree glob on :data:`FLOOR_GLOBS` actually covers, it loads
+#:      the parser by the path :func:`ts_parser_home` gives it and never by
+#:      ``require('typescript')``, and its own header records the rendering
+#:      grammar — the one thing about this unit that is stated nowhere else.
 #:      ``pyproject.toml`` ships ``ts_signature_fingerprint/*`` as of the same
 #:      commit, so a wheel built on a machine that ran the fetcher carries the
 #:      parser and one built on a machine that did not is HELPER_MISSING — a
@@ -6253,7 +6550,31 @@ TS_SIGNATURE_EDIT_RULINGS: tuple[TsSignatureEditRuling, ...] = (
 #:      :data:`TS_SIGNATURE_EDIT_RULINGS`, which is the acceptance criterion
 #:      and not a suggestion, and the helper's decoder is the shared extraction
 #:      :func:`decode_ts_helper_response` names rather than a copy of the Go
-#:      one. **NOT DONE.**
+#:      one. **DONE (P3, 2026-08-10):** all twenty rulings are measured green
+#:      against the live comparator, and :func:`_decode_helper_response` is the
+#:      one validator with both public decoders as wrappers — the Go one moved
+#:      too, which is the half of the ruling that could not be met by writing
+#:      only the TypeScript side.
+#:
+#:      Soaked the day it landed, as :data:`GO_SUPPORT`'s row was against
+#:      GOROOT: 39,781 files and 240,643 symbols across the vendored parser
+#:      itself, the primary target's own TypeScript and its ``node_modules``,
+#:      with **zero parse failures, zero symbol keys moved and zero
+#:      fingerprints moved** under a re-run and under a wholesale reformat
+#:      through TypeScript's own printer. Two defects were found by that soak
+#:      and by nothing else: an empty-string member name (legal, and it made
+#:      the helper exit non-zero — the gate faulting on ordinary code), and a
+#:      one-constituent union, which is what the leading-bar spelling parses
+#:      as and which rendered differently from the same type without the bar.
+#:
+#:      Cost, measured rather than assumed, because the Go row's was: **169 ms
+#:      per file on the gate path**, one ``node`` process per revision per file,
+#:      almost all of it loading the 9.1 MB parser. The Go helper answered this
+#:      by caching the BUILD; there is no build here, and the equivalent fix —
+#:      a persistent process — is refused by :class:`TsHelperRequest`'s
+#:      one-file-per-invocation rule, which exists so "which file faulted" is
+#:      answerable. A 200-file TypeScript branch is therefore about 68 seconds
+#:      of gate time, and that is the ruled price rather than an oversight.
 #:   4. Seals exist that pin the comparator as CORRECT, not merely as present.
 #:      The Go row's checklist records that enrolment alone bought nothing:
 #:      dropping parameter names from the Go fingerprint left the suite green
