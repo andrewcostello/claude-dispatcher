@@ -48,6 +48,70 @@ Two contract sites the composition never named — :attr:`UndecidedReason`'s
 them and the placements are CONFIRMED, with the ordering reason written into
 :func:`check_subject` step 1b.
 
+P1 SCAFFOLD (2026-08-11) — THE IMPORT RELATION, SO STEP 3 CAN SCOPE
+====================================================================
+``feat/D5-import-relation``, base ``f4c7c46`` (``feat/D6-body``, the commit that
+landed the Go analyzer's body — so every number below was measured against a
+working analyzer, not predicted). CONTRACT AND STUBS ONLY. :data:`ANALYZERS` is
+still ``()``, ``role_protocol`` is still untouched, ``FLOOR_GLOBS`` is
+unchanged, nothing is wired into :func:`check_subject`, and the suite is
+unmoved: **2413 passed, 0 failed, 13 skipped**, before and after.
+
+The defect: :func:`check_subject` step 3 computes its hole set over the ONE
+whole-tree ``production_reach`` map :func:`check_tree` builds, so the list is
+identical for every (seal, subject) pair and **one hole anywhere abstains every
+finding in the tree**. Measured on the acceptance case at this base: 2 holes in
+``cmd/gates/main.go`` abstain all 7 findings, 4 of which are in ``cmd/iterate``
+and are connected to neither hole by any route.
+
+The operator ruled step 3's hole set is scoped to the SUBJECT; a P4 ruled what
+"scoped" must mean and found it not computable from what :class:`CallGraph`
+carried. What lands here is what it needs, and nothing else:
+
+  * :class:`ImportRelation` / :class:`PackageImports` — the undirected import
+    graph, over package identities spelled as :attr:`Symbol.key` qualifiers.
+    **The shape choice and the rejected per-hole candidate-set shape are argued
+    on :class:`ImportRelation`.**
+  * :class:`ImportsUnavailable` and :data:`IMPORTS_NOT_SUPPLIED` — the absence,
+    as a NAMED STATE with a required reason, never ``None`` and never an empty
+    relation. An empty relation reads as "no imports", which makes every package
+    its own component and silently MAXIMISES the narrowing; the absent relation
+    instead means **no narrowing at all**, i.e. exactly today's sealed
+    behaviour.
+  * :func:`validate_import_relation` — IMPLEMENTED, because "an empty relation
+    is refused" is not a sentence prose can make unmistakable.
+  * :func:`_union_import_evidence` — IMPLEMENTED, because
+    :func:`build_call_graph` is the one production construction site and a field
+    the production path never fills reads as coverage and is not.
+  * :func:`import_components` and :func:`holes_in_scope` — STUBS. The ruled rule
+    and its application, left for a body so that a seal author pins them against
+    the RULING rather than against whatever a scaffold happened to write.
+  * ``ReachabilityAnalyzer.supplies_import_relation`` — CONTRACTED, not present,
+    on ``test_id``'s precedent and for its measured reason.
+
+Measured under ``feat/D5-import-relation``, base ``f4c7c46``, 2026-08-11:
+
+  * the acceptance tree's import graph is **2 packages, 0 in-tree import edges,
+    80 external (stdlib) imports (41 + 39), 0 unplaced — TWO components**;
+  * findings answered, by hole set and scope, driving the real
+    :func:`check_subject`: 2 holes / whole tree **0 of 7**; 2 holes / subject
+    **4 of 7**; 7 holes / subject **0 of 7**; 0 holes **7 of 7**. The P4's 4 is
+    reproduced, and so is its 0-at-seven-holes;
+  * the fail-open is INVISIBLE on this fixture — with 0 in-tree import edges the
+    empty relation and the truth both say 2 components and both answer 4 of 7.
+    It is visible elsewhere in reach: ``evenplay-mono/apps/website-public-api``
+    is 12 packages / 25 edges / **1** true component where an empty relation
+    says 12, and ``apps/platform-domain/core`` is 33 packages / 93 edges /
+    **6** true components where an empty relation says 33. That gap is the
+    entire argument for :class:`ImportsUnavailable` being a type;
+  * ``claude-workflow``'s seven ``cmd/`` modules are one package each with
+    **zero** in-tree imports and no ``internal/``, so the relation binds nothing
+    there — which is also why no seal may be written only against it.
+
+**The relation SUBSUMES D6's ``_import_path_qualifiers``.** See
+:class:`ImportRelation`; that heading is shouted there and it is the one thing
+in this round a body can get wrong twice in ways that cancel.
+
 P4 ROUND 3 (2026-08-11) — THREE RULINGS THE COVERAGE PASS RAISED
 ================================================================
 The seal pass on ``feat/D5-seals2`` closed seven of the eight disclosed gaps
@@ -598,6 +662,14 @@ __all__ = [
     "Symbol",
     "EdgeKind",
     "Edge",
+    "ImportsUnavailable",
+    "PackageImports",
+    "ImportRelation",
+    "ImportEvidence",
+    "IMPORTS_NOT_SUPPLIED",
+    "validate_import_relation",
+    "import_components",
+    "holes_in_scope",
     "CallGraph",
     "build_call_graph",
     "reachable_from",
@@ -941,6 +1013,52 @@ class ReachabilityAnalyzer(Protocol):
         repo into an ABSTAIN by adding one line, with nothing red. A row that
         says ``False`` is a claim a human made; a computed ``False`` is a
         claim a branch can make about its own judge.
+
+    ``supplies_import_relation`` — **CONTRACTED but NOT YET PRESENT (P1
+    scaffold, ``feat/D5-import-relation``, 2026-08-11).**
+        The row's claim that its :meth:`graph` populates
+        :attr:`CallGraph.package_imports` with a real
+        :class:`ImportRelation` rather than an :class:`ImportsUnavailable`.
+        A ``bool``, on ``negative_is_conclusive``'s precedent exactly: a claim a
+        HUMAN made about a language's row, validated for type in
+        :func:`validate_analyzers`, and cross-checked in
+        :func:`build_call_graph` — a row declaring ``True`` whose graph carries
+        the refusal RAISES, and a row declaring ``False`` whose graph carries a
+        relation raises too.
+
+        **Why the belt is worth having when the braces already hold.** The
+        VALUE side is enforced today and enforced hard:
+        :func:`validate_import_relation` refuses an empty relation, and
+        :func:`_union_import_evidence` reads any refusal as a whole-tree
+        refusal, so nothing can narrow on evidence nobody collected. What the
+        value side cannot see is a row that USED to compute imports and quietly
+        stopped: returning :class:`ImportsUnavailable` is legitimate, so the
+        regression is invisible in the data and shows up only as a mechanism
+        that gradually abstains more. The row bool makes that a raise.
+
+        CHOICE (it could have been DERIVED — "this row supplies a relation iff
+        its last graph carried one"): a per-row BOOLEAN. Rejected alternative is
+        free and self-maintaining, and it is out for
+        ``negative_is_conclusive``'s reason verbatim: a derived claim is a claim
+        about the tree the row was last run over, so a row that stopped
+        computing imports would read as a row that never claimed to, and the
+        cross-check would be vacuous by construction.
+
+        **Written here as a contract and NOT as a member, on ``test_id``'s
+        precedent below and for the identical reason — measured, not assumed.**
+        Adding the clause to :func:`validate_analyzers` reddens every row that
+        builds an analyzer double, and there are three such doubles across two
+        seal files on this base (``_Analyzer`` and ``_go``/``_python`` in
+        ``tests/test_call_site_reachability.py``, ``_Unimplemented`` in
+        ``tests/test_go_reachability.py``), plus the live
+        ``GO_REACHABILITY_ANALYZER`` row, which
+        ``validate_analyzers((GO_REACHABILITY_ANALYZER,))`` passes through.
+        Measured under ``feat/D5-import-relation``, base ``f4c7c46``,
+        2026-08-11. Landing it is one round carrying the production edit, the
+        Go row's member and the three doubles TOGETHER — a seal amendment, which
+        a P1 scaffold does not write on a seal author's behalf. Until then the
+        value side stands alone and is sufficient for soundness; what is missing
+        is only the regression alarm.
 
     ``test_id(symbol)`` — **RULED but NOT YET PRESENT (P4 round 2,
     2026-08-11).**
@@ -1818,6 +1936,628 @@ class Edge:
     site: str
 
 
+# --------------------------------------------------------------------------- #
+# Part 3a — the import relation: which packages can name each other?
+#
+# Added by the P1 scaffold on ``feat/D5-import-relation``, 2026-08-11, base
+# ``f4c7c46``. It exists to make ONE sentence computable — step 3 of
+# :func:`check_subject` scoping its hole set to the SUBJECT rather than to the
+# tree. Nothing here is wired into :func:`check_subject` yet; see
+# :func:`holes_in_scope` for the seam and for what a body must land.
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class ImportsUnavailable:
+    """**The named state "this analyzer does not supply the import relation".**
+
+    Requirement 2 of the brief, and the whole reason this is a CLASS and not a
+    ``None`` and not an empty :class:`ImportRelation`:
+
+      an empty relation reads as "no package imports anything", which makes
+      every package its own component, which silently MAXIMISES the narrowing
+      of step 3's hole set. That is fail-open, and it is the one direction this
+      mechanism refuses.
+
+    **Measured under ``feat/D5-import-relation``, base ``f4c7c46``, 2026-08-11,
+    and this is why the refusal has to be a type rather than a convention:**
+
+      * on the acceptance tree the fail-open and the truth are INDISTINGUISHABLE
+        — 2 packages, **0** in-tree import edges, so the true component count
+        and the empty-relation component count are both 2 and both answer 4 of
+        7. A seal written only against this fixture cannot tell an analyzer that
+        computed the relation from one that returned nothing;
+      * on ``evenplay-mono/apps/website-public-api`` (12 Go packages, 25
+        undirected in-tree import edges) the truth is **1** component and the
+        empty relation says **12**. Every hole in that module would be scoped
+        away from every subject outside its own package, on evidence nobody
+        collected;
+      * on ``evenplay-mono/apps/platform-domain/core`` (33 packages, 93 edges)
+        the truth is **6** components — one of 28 and five singletons — and the
+        empty relation says **33**.
+
+    So: an analyzer that cannot answer says so HERE, by name, with a ``reason``
+    it is required to write; and the consequence, contracted at
+    :func:`holes_in_scope`, is **no narrowing at all** — step 3 keeps its
+    whole-tree hole set and behaves exactly as it does today. The absent
+    relation degrades to the CURRENT, SEALED behaviour and never to the
+    maximally-narrowed one.
+
+    ``reason``
+        Required, no default. Why the relation is absent, in a sentence a report
+        can print: "no analyzer ran over this tree", "the Go row does not
+        compute imports yet", "the toolchain could not be reached". Required
+        because the three are different problems with different remediations,
+        and a bare "unavailable" makes them one.
+
+    CHOICE (the design could have spelled the absence as ``None`` on the field,
+    or as an ``ImportCoverage`` enum member beside the relation): a distinct
+    RECORD carrying a required reason. Rejected alternatives and why:
+
+      * ``None`` — it is what an author writes when they have not thought about
+        the field, and it is what a partially-migrated construction site leaves
+        behind. The absence must cost a class name and a sentence, so that a
+        body cannot arrive at it by omission;
+      * a three-state enum ``COMPLETE`` / ``PARTIAL`` / ``UNAVAILABLE`` beside
+        an always-present relation — ``PARTIAL`` is derivable from
+        :attr:`PackageImports.unplaced_imports` being non-empty, so the enum
+        would be a second source of truth for a fact the data already carries,
+        and the two could disagree. Two answers to "was this import placed" is
+        exactly the drift a registry exists to prevent.
+    """
+
+    reason: str
+
+
+@dataclass(frozen=True)
+class PackageImports:
+    """One package: what it declares, and what it can NAME.
+
+    A node of the import graph. The rule this serves (operator ruling relayed
+    by the P4, restated here so a body does not have to go looking) is that a
+    hole stays in scope for subject ``S`` unless this POSITIVE claim can be
+    discharged:
+
+        *this hole cannot be the missing call site, because no execution frame
+        in the hole's package can hold ``S``'s value and no code in the hole's
+        package can name ``S``.*
+
+    A function value crosses a package boundary by exactly three routes — call
+    argument, call return, or a package-level variable both packages can see —
+    and each of the three requires an IMPORT. So the claim holds exactly when
+    the two packages are in different connected components of the tree's
+    **undirected** import graph.
+
+    ``package``
+        This package's identity, spelled as the qualifier half of the
+        :attr:`Symbol.key` its declarations carry — for Go,
+        ``github.com/yourorg/claude-workflow/gates/cmd/gates``. **The identity
+        is the KEY QUALIFIER and never the import path**, and the two are not
+        the same string; see :func:`ImportRelation.package_of` and the note on
+        ``go_reachability._import_path_qualifiers``.
+    ``symbols``
+        Every :attr:`Symbol.key` declared in this package, synthetic root
+        symbols included. This is what makes the relation usable from
+        :func:`check_subject`, which holds keys and not packages: it has
+        ``subject.key`` and ``hole[0].key`` and nothing else, and it must not
+        split a key into a package by string surgery. A Go method key is
+        ``…/classify.(*Config).Match`` — the package qualifier is not
+        "everything before the last dot", and a layer that guessed would place
+        methods in a package called ``…/classify.(*Config)``, which is in no
+        component and would fail closed on every method in the repository.
+        Membership is DATA the analyzer already has (it knows which unit emitted
+        each symbol) and is never re-derived here.
+    ``imports``
+        The identities of the IN-TREE packages this package can name, taken from
+        its import statements. Directed as recorded; :func:`import_components`
+        reads it undirected, because a value flows both ways across one import
+        (an argument goes in, a return value comes out).
+    ``unplaced_imports``
+        **One entry per import this analyzer could neither place onto a package
+        of this tree NOR establish as out-of-tree**, each a detail string a
+        human can act on. NON-EMPTY IS AN EDGE TO EVERY PACKAGE, never an
+        absence — see :func:`import_components`. An import whose target could be
+        anything can be an import of ``S``'s package, so the positive claim
+        above cannot be discharged against any ``S`` at all.
+
+        What a body must do when an import cannot be resolved: **record it here
+        and stop**. Not drop it (that is the absence the rule forbids), not
+        guess a target (a wrong edge is a wrong component in the permissive
+        direction if it is missing and merely conservative if it is spurious —
+        but a guessed edge that is missing is unrecoverable), and not raise (one
+        unplaceable import in one file must not take the whole check down; that
+        is :func:`build_call_graph`'s own recorded-not-raised discipline).
+    ``external_import_count``
+        How many of this package's imports were placed OUT of the tree — the
+        standard library, a module dependency. **The non-vacuity field of this
+        record**, and it earns its place for :attr:`CallGraph.unresolved_calls`'
+        exact reason: a relation reporting zero ``imports`` and zero
+        ``unplaced_imports`` for every package is either a tree of genuinely
+        isolated packages or an analyzer that is not reading import statements,
+        and those two must not be the same value. **Measured on the acceptance
+        tree under ``feat/D5-import-relation``, base ``f4c7c46``, 2026-08-11:
+        41 for ``cmd/gates`` and 39 for ``cmd/iterate``, against 0 in-tree
+        imports and 0 unplaced.** A seal that pins 41/39 falsifies "the analyzer
+        is not counting"; a seal that pins only the two zeros does not.
+
+    CHOICE (``external_import_count`` could have been the import PATHS): a
+    COUNT. Rejected alternative — the paths — because nothing downstream reads
+    them, they are unbounded in a vendored tree, and the count alone falsifies
+    the one claim the field exists to falsify. A body that later needs the paths
+    for a report should widen this field rather than add a second one.
+
+    CHOICE (an out-of-tree import could have been treated as unplaceable, i.e.
+    as an edge to everything): **a placed import to a package outside the tree
+    contributes NO edge.** The dependency is not in the tree, so it declares no
+    :class:`Symbol` here and cannot be ``S``'s package. Rejected alternative —
+    counting every stdlib import as an unknown — because on the acceptance tree
+    that is all 80 imports and the relation would collapse to one component on
+    every tree ever analysed, which is a mechanism that is never consulted. The
+    residual risk is named and is real: a dependency that itself imports THIS
+    tree's module and hands a value back is a route this relation does not
+    model. It is out of reach for a source-only analyzer, it needs a published
+    module and a circular dependency to occur, and the ``REFERENCE`` edge that
+    :class:`CallGraph`'s both-ends CHOICE already keeps is what covers the
+    common shape of it.
+    """
+
+    package: str
+    symbols: frozenset[str]
+    imports: frozenset[str]
+    unplaced_imports: tuple[str, ...]
+    external_import_count: int
+
+
+@dataclass(frozen=True)
+class ImportRelation:
+    """One tree's packages and the imports between them.
+
+    ``packages``
+        Package identity -> :class:`PackageImports`. Every package the analyzers
+        read, and — enforced by :func:`validate_import_relation` — every symbol
+        in the graph belongs to exactly one of them.
+
+    **THE SHAPE CHOICE, which is question 1 of the brief.** The P4 recorded two
+    acceptable shapes and this is the first: an IMPORT/VISIBILITY relation, with
+    the component computation living in D5. **Rejected alternative: a per-hole
+    CANDIDATE-TARGET SET with an explicit unbounded member** — for each entry in
+    :attr:`CallGraph.unresolved_calls`, the set of symbols the missing call
+    could be, or a named ``UNBOUNDED``. Four reasons, in ascending order of how
+    much they should bind the next author:
+
+      1. **It asks the analyzer for a dataflow answer that D6 measured as
+         unavailable.** Every one of the acceptance tree's holes is a call
+         through a FUNCTION VALUE — measured on this base, 2 in the production
+         closure, both ``cancel`` in ``cmd/gates/main.go``, plus 1 outside it —
+         and D6's adjudication measured that ``go/types`` moves the verdict on
+         none of them, because a type is not an identity. A candidate set over
+         those holes is ``UNBOUNDED`` or it is a guess, so the shape would carry
+         an ``UNBOUNDED`` member on every hole this repository actually has and
+         would answer 0 of 7. The import shape answers **4 of 7 on the same
+         tree, measured** (:func:`holes_in_scope`).
+      2. **It puts the RULE in the analyzer instead of in the judge.** The
+         ruled rule — undirected, unresolved-import-counts-as-an-edge — is a
+         ruling about JUDGEMENT, not a fact about a language. Under the
+         candidate-set shape every language row re-derives it, so there would be
+         one chance per row to get the undirected half or the unresolved half
+         wrong, and a row that got either wrong would silently NARROW harder,
+         which is the fail-open direction. Under this shape each row supplies
+         FACTS (its import statements) and D5 applies the rule once, where one
+         seal can pin it.
+      3. **``call_site_reachability.py`` is on ``FLOOR_GLOBS`` and
+         ``go_reachability.py`` is not.** The narrowing decision moves an
+         ABSTAIN to a BREACH and back; it belongs behind the floor. Putting the
+         candidate sets in the analyzer would put the whole of that decision in
+         a module four of the five roles may rewrite while being judged by it.
+         This reason is decisive on its own.
+      4. **The shapes are not equally cheap to be wrong in.** A wrong import
+         edge merges two components and abstains MORE. A wrong candidate set
+         omits the real target and abstains LESS.
+
+    The candidate-set shape has one property this one had to be given
+    deliberately, and the brief is right to flag it: it makes "we cannot bound
+    this hole" a NAMED STATE rather than an absence. That property is imported
+    wholesale rather than lost — twice, at two different granularities:
+    :class:`ImportsUnavailable` names "no relation at all" and
+    :attr:`PackageImports.unplaced_imports` names "this package's reach cannot
+    be bounded". Neither is spellable as an empty container.
+
+    ================================================================
+    THIS RELATION SUBSUMES ``go_reachability._import_path_qualifiers``.
+    DO NOT BUILD A SECOND DERIVATION OF IMPORT PATHS.
+    ================================================================
+    Stated at this volume because two mechanisms deriving import paths
+    differently is how this gets wrong twice, in two directions that cancel in
+    the reports and not in the truth.
+
+    D6's body found and repaired a live defect: a Go symbol's key is qualified
+    ``<module_path>/<tree-relative dir>`` while its real import path is
+    ``<module_path>/<dir relative to the nearest go.mod>``, so a cross-package
+    in-tree call arrives with a callee key matching no symbol and
+    :class:`CallGraph`'s both-ends rule DROPS a real production edge — a false
+    BREACH, the direction anti-requirement 2 forbids. ``_import_path_qualifiers``
+    computes import path -> key qualifier per unit and ``_join_callee`` rewrites
+    the callee through it, longest prefix first.
+
+    That map is exactly this relation's node table. Its VALUES are
+    :attr:`PackageImports.package` — the key qualifier, which is the identity
+    this relation uses — and its KEYS are the strings an import statement is
+    written with, which is precisely what a body must match an import against to
+    place it. **Measured under ``feat/D5-import-relation``, base ``f4c7c46``,
+    2026-08-11**, on the acceptance tree it returns the two pairs
+
+        …/gates   -> …/gates/cmd/gates
+        …/iterate -> …/iterate/cmd/iterate
+
+    and those two values are exactly the two package identities the measured
+    2-component partition is over.
+
+    So the obligation on the body is not "write an import-path derivation", it
+    is **"build the relation FROM the one that exists"** — hoist
+    ``_import_path_qualifiers`` to serve both callers, or call it, but do not
+    re-derive. A body that writes a second one gets the cancellation for free:
+    ``_join_callee`` would join an edge between two packages while this relation
+    reported no import between them, i.e. the call graph would say the packages
+    talk and the import graph would say they cannot, and step 3 would scope away
+    a hole that a kept edge proves is in reach. Nothing would be red. A seal
+    author should pin the two node sets as EQUAL — the values of
+    ``_import_path_qualifiers`` and the keys of :attr:`ImportRelation.packages`
+    — because that single row is what makes the shared derivation checkable
+    rather than merely intended.
+
+    What this relation adds beyond that map, and therefore why it is a
+    superset rather than a duplicate: the qualifier map answers "what is this
+    package called", and the relation additionally carries which in-tree
+    packages each one IMPORTS, which symbols each one declares, which of its
+    imports could not be placed, and how many were placed outside the tree.
+    """
+
+    packages: Mapping[str, PackageImports]
+
+    def package_of(self, key: str) -> str | None:
+        """Which package declares ``key``, or None if this relation cannot say.
+
+        **IMPLEMENTED and not stubbed, on :func:`analyzer_for_path`'s precedent
+        verbatim: it is the single answer site for "which package is this
+        symbol in", and a seal that re-spelled the lookup could drift from the
+        implementation with both of them green.** It is also the one place that
+        could be tempted into string surgery on a :attr:`Symbol.key`, and the
+        way to prove this module never does that is to write the lookup that
+        does not.
+
+        ``None`` is a real answer and a caller must fail CLOSED on it: a key
+        this relation cannot place is a key whose component is unknown, and an
+        unknown component may be the subject's. See :func:`holes_in_scope`.
+
+        Linear in the number of packages, not in the number of symbols, because
+        the membership sets are hashed. A body that finds this hot should build
+        the reverse index INSIDE this record at construction; it must not build
+        one beside it, for the reason the first paragraph gives.
+        """
+        for package in self.packages.values():
+            if key in package.symbols:
+                return package.package
+        return None
+
+
+#: ``ImportRelation`` when an analyzer computed one, ``ImportsUnavailable`` when
+#: none did. **A union and never an Optional**, so that the absence has to be
+#: constructed by name; see :class:`ImportsUnavailable`.
+ImportEvidence = ImportRelation | ImportsUnavailable
+
+
+#: The value :attr:`CallGraph.package_imports` carries when nobody supplied a
+#: relation, and the DEFAULT of that field.
+#:
+#: CHOICE (the field could have been REQUIRED, with no default): defaulted, to
+#: the REFUSAL. This is the one place in this round that has to argue with a
+#: standing D5 ruling, so it argues with it directly rather than around it.
+#: :func:`check_subject`'s ``roots`` parameter had its default STRUCK in P4
+#: round 2, on the sentence "a missing argument is a signature defect; inventing
+#: the value is a verdict defect". That ruling stands and it does not reach
+#: here, because the two defaults point in opposite directions:
+#:
+#:   * the struck default INVENTED EVIDENCE — a synthesised :class:`Root` record
+#:     that bypassed :func:`_validate_root` and could mint a ``GO_MAIN`` root in
+#:     a test file. A caller with no evidence got a judgement built on a fact
+#:     nobody established;
+#:   * this default invents the CONFESSION. A caller with no evidence gets
+#:     "there is no import evidence", which is true, and whose contracted
+#:     consequence is no narrowing — i.e. today's sealed behaviour, unchanged.
+#:
+#: The rejected alternative was measured rather than argued: making the field
+#: required breaks **4** construction sites on this base, of which **2 are in
+#: seal files** (``tests/test_go_reachability.py`` and
+#: ``tests/test_call_site_reachability.py``) — measured under
+#: ``feat/D5-import-relation``, base ``f4c7c46``, 2026-08-11. A P1 scaffold that
+#: edits a sibling unit's seals to keep its own suite green has done the thing
+#: this process exists to stop. The property a required field buys — every
+#: construction site must THINK — is bought instead at the layer that matters,
+#: by the row-level ``supplies_import_relation`` claim contracted on
+#: :class:`ReachabilityAnalyzer` and the cross-check it licenses in
+#: :func:`build_call_graph`.
+IMPORTS_NOT_SUPPLIED = ImportsUnavailable(
+    reason=(
+        "no analyzer supplied an import relation for this tree, so no hole can "
+        "be scoped away from any subject and step 3 keeps its whole-tree hole "
+        "set"
+    )
+)
+
+
+def validate_import_relation(
+    evidence: ImportEvidence, symbols: Mapping[str, Symbol]
+) -> None:
+    """Refuse a relation that would narrow on evidence nobody collected. Pure.
+
+    **IMPLEMENTED and not stubbed.** The exception is :func:`validate_analyzers`'
+    verbatim and it is the sharpest instance of it in this module: requirement 2
+    of this round is that *an analyzer which cannot supply the relation must not
+    silently yield an empty one*, and a seal cannot express "an empty relation
+    is refused" without calling the function that refuses it. Prose cannot be
+    unmistakable; a raise can. Everything else this round adds is a stub.
+
+    Takes ``symbols`` rather than a :class:`CallGraph` because
+    :func:`build_call_graph` calls it BEFORE the graph exists, and because a
+    seal should be able to exhibit a bad relation without building a graph
+    around it.
+
+    :class:`ImportsUnavailable` is always well formed and returns immediately —
+    that is the point of it. Raises :class:`CallSiteReachabilityError` on an
+    :class:`ImportRelation` when:
+
+      * ``packages`` is EMPTY while ``symbols`` is not. **The requirement-2
+        refusal.** An empty relation over a non-empty tree is the fail-open:
+        every package is its own component and every hole is scoped away from
+        every subject outside it. An analyzer with nothing to say must say
+        :class:`ImportsUnavailable`;
+      * a map key and its record's ``package`` field disagree. Two spellings of
+        one identity is one package wearing two names, and the components would
+        depend on which spelling a caller looked up;
+      * a symbol in ``symbols`` is in NO package's membership set. An unplaced
+        symbol has no component, so every question asked about it fails closed —
+        silently, and for a reason no report would show;
+      * a symbol is in TWO packages' membership sets. It would be in two
+        components, and :func:`ImportRelation.package_of` would answer by
+        iteration order;
+      * a package's membership set names a key the graph does not declare. A
+        relation describing symbols the graph has never heard of is a relation
+        built from a different tree;
+      * an entry in ``imports`` names a package this relation does not carry. An
+        edge to a node that does not exist cannot be traversed, and the
+        traversal would either raise deep inside :func:`import_components` or
+        silently drop the edge — and a silently dropped import edge is a
+        wrongly-split component, which narrows harder;
+      * ``external_import_count`` is negative, or is not an ``int``. The
+        non-vacuity field, coerced, is no non-vacuity field at all; this is
+        ``negative_is_conclusive``'s ``bool`` clause applied to the count that
+        tells a reader whether imports were read.
+
+    **It deliberately does NOT raise** when every package reports zero
+    ``imports``, zero ``unplaced_imports`` and zero ``external_import_count``.
+    CHOICE, and the rejected alternative is tempting: refusing an all-zero
+    relation would catch an analyzer that stopped reading import blocks. It is
+    out because a single-file package that imports nothing is legal in Go and
+    common in Python, so the rule would refuse honest trees; the falsification
+    belongs in a SEAL against a tree whose counts are known — 41 and 39 on the
+    acceptance tree, measured under ``feat/D5-import-relation``, base
+    ``f4c7c46``, 2026-08-11 — which is a row that reddens when the reading stops
+    and never fires on an honest empty package.
+    """
+    if isinstance(evidence, ImportsUnavailable):
+        return
+    if not isinstance(evidence, ImportRelation):
+        raise CallSiteReachabilityError(
+            f"{evidence!r} is neither an ImportRelation nor an "
+            "ImportsUnavailable; the absence of an import relation is a state "
+            "with a name and a reason, never a bare value"
+        )
+    if symbols and not evidence.packages:
+        raise CallSiteReachabilityError(
+            f"an import relation with no packages was supplied for a graph "
+            f"declaring {len(symbols)} symbol(s). An empty relation reads as "
+            "'no package imports anything', which makes every package its own "
+            "component and silently maximises the narrowing of step 3's hole "
+            "set — the fail-open this mechanism refuses. An analyzer that "
+            "cannot supply the relation must return ImportsUnavailable with a "
+            "reason, which costs nothing and narrows nothing"
+        )
+    owner: dict[str, str] = {}
+    for identity, package in evidence.packages.items():
+        if package.package != identity:
+            raise CallSiteReachabilityError(
+                f"import relation keys {package.package!r} under {identity!r}; "
+                "one package wearing two identities puts it in two components "
+                "and makes the answer depend on which spelling was looked up"
+            )
+        if not isinstance(package.external_import_count, int) or isinstance(
+            package.external_import_count, bool
+        ):
+            raise CallSiteReachabilityError(
+                f"package {identity!r} declares external_import_count "
+                f"{package.external_import_count!r}, which is not an int; the "
+                "field exists so a reader can tell a tree of isolated packages "
+                "from an analyzer that is not reading import statements, and a "
+                "coerced count tells them neither"
+            )
+        if package.external_import_count < 0:
+            raise CallSiteReachabilityError(
+                f"package {identity!r} declares a negative "
+                f"external_import_count {package.external_import_count}"
+            )
+        for key in package.symbols:
+            if key not in symbols:
+                raise CallSiteReachabilityError(
+                    f"package {identity!r} claims symbol {key!r}, which this "
+                    "graph does not declare; a relation describing symbols the "
+                    "graph has never heard of was built from a different tree"
+                )
+            if key in owner:
+                raise CallSiteReachabilityError(
+                    f"symbol {key!r} is claimed by both {owner[key]!r} and "
+                    f"{identity!r}; it would sit in two components and "
+                    "package_of would answer by iteration order"
+                )
+            owner[key] = identity
+    for identity, package in evidence.packages.items():
+        for imported in package.imports:
+            if imported not in evidence.packages:
+                raise CallSiteReachabilityError(
+                    f"package {identity!r} imports {imported!r}, which this "
+                    "relation does not carry. An edge to a node that does not "
+                    "exist is an edge the traversal must either raise on or "
+                    "drop, and a dropped import edge splits a component that "
+                    "should be joined — which narrows HARDER, on evidence that "
+                    "was collected and then lost"
+                )
+    unplaced = sorted(key for key in symbols if key not in owner)
+    if unplaced:
+        raise CallSiteReachabilityError(
+            f"{len(unplaced)} symbol(s) belong to no package in the import "
+            f"relation, first {unplaced[0]!r}. An unplaced symbol has no "
+            "component, so every question asked about it fails closed — "
+            "correctly, and silently, and for a reason no report would show. "
+            "Membership is data the analyzer already holds: it knows which "
+            "unit emitted each symbol"
+        )
+
+
+def import_components(evidence: ImportEvidence) -> Mapping[str, frozenset[str]]:
+    """Package identity -> every package in its UNDIRECTED import component.
+
+    **STUB.** The ruled rule, and the one computation this round deliberately
+    does not perform: a body writes it and a seal author writes the rows that
+    pin it, because it is the sentence the operator ruled and it must be sealed
+    against the ruling rather than against whatever a scaffold happened to
+    write. What the body owes, exactly:
+
+      * **UNDIRECTED.** ``P`` imports ``Q`` puts ``P`` and ``Q`` in one
+        component, both ways. A value crosses that one import in both
+        directions: ``P`` can pass ``Q``'s function into ``Q``'s call, and
+        ``Q``'s call can return one to ``P``. Reading :attr:`PackageImports.
+        imports` directionally would discharge the positive claim in half the
+        cases where it is false;
+      * **TRANSITIVE.** ``P`` imports ``R``, ``Q`` imports ``R``: ``P`` and
+        ``Q`` are in ONE component. ``R`` can hold ``Q``'s function value and
+        hand it to ``P`` — ``R`` evaluates ``p.Register(q.S)`` — and this is not
+        hypothetical: ``ANALYZERS`` in this very module is that shape, which is
+        the measured refutation of same-module scoping that the P4 recorded and
+        that a body must not re-open;
+      * **AN UNPLACED IMPORT IS AN EDGE TO EVERY PACKAGE.** A package whose
+        :attr:`PackageImports.unplaced_imports` is non-empty could import
+        anything, including the subject's package, so its component is the
+        WHOLE TREE — and because components are an equivalence, one unplaced
+        import anywhere collapses the tree to a single component and step 3
+        reverts to today's whole-tree behaviour. That is severe and it is
+        exactly what "an unresolved import counts as an edge, never as an
+        absence" means. A body that finds this too blunt is asking for a ruling,
+        not for a heuristic;
+      * **RAISES on** :class:`ImportsUnavailable`, rather than returning one
+        component or an empty mapping. A caller that has not handled the
+        refusal must not be able to slide past it into a component computation
+        that answers anyway; :func:`holes_in_scope` branches on the state
+        FIRST and this raise is what forces it to.
+
+    CHOICE (the return could have been ``Mapping[str, str]``, package ->
+    canonical representative, which is what a union-find naturally produces): the
+    full MEMBER SET per package. Rejected alternative is cheaper and is the
+    obvious spelling; it is out because a representative is an arbitrary
+    identity with no meaning, so a seal pinning it pins the traversal's tie-break
+    rather than the partition, and a report printing it names a package the
+    reader did not ask about. The member set answers the question a caller
+    actually has — "is the hole's package in here" — with no second lookup.
+
+    **Predicted (unmeasured) under ``feat/D5-import-relation``, base
+    ``f4c7c46``, 2026-08-11:** on the acceptance tree this returns 2 components,
+    one per package. The COMPONENT COUNT is measured — 2, from the import blocks
+    of both packages, 0 in-tree import edges between them — but this function
+    does not run, so what is predicted is that a body implementing the four
+    rules above reproduces it.
+    """
+    raise NotImplementedError("import_components")
+
+
+def holes_in_scope(
+    subject: Symbol,
+    holes: Sequence[tuple[Symbol, str, str]],
+    evidence: ImportEvidence,
+) -> tuple[tuple[Symbol, str, str], ...]:
+    """The holes that could be the missing call site FOR THIS SUBJECT.
+
+    **STUB, and the seam step 3 of :func:`check_subject` grows.** This is
+    question 4 of the brief — where the filtering happens — and the answer is
+    HERE, in D5, never in an analyzer. Three reasons, the third decisive:
+
+      1. the rule is a ruling about JUDGEMENT and not a fact about a language.
+         An analyzer's job is to report what it read; deciding what a hole
+         licenses is this module's;
+      2. one implementation means one seal. Seven language rows would be seven
+         chances to get the undirected half or the unplaced half wrong, and a
+         row that got either wrong would narrow HARDER on evidence nobody
+         checked;
+      3. ``call_site_reachability.py`` is on ``FLOOR_GLOBS`` and
+         ``go_reachability.py`` is not. This filter moves an ABSTAIN to a BREACH
+         and back. A decision of that weight may not live in a module that four
+         of the five roles can rewrite on the branch it is judging.
+
+    ``holes`` is the list step 3 already computed — entries of
+    :attr:`CallGraph.unresolved_calls` whose caller is in the production closure.
+    **The closure filter stays in :func:`check_subject` and is NOT moved in
+    here.** Two conjuncts, two functions, two seals: the closure conjunct is
+    already pinned by
+    ``test_unresolved_calls_abstain_only_over_the_production_closure`` and a
+    body that folded it in here would make that row pass through this stub's
+    body, where a defect in either conjunct could be blamed on the other.
+
+    What the body owes:
+
+      * :class:`ImportsUnavailable` -> **return ``holes`` UNCHANGED.** No
+        relation, no narrowing, today's behaviour. This branch is the whole of
+        requirement 2 in one line and it must be the FIRST thing the function
+        does, before any component computation, because
+        :func:`import_components` raises on that state;
+      * a ``subject.key`` that :func:`ImportRelation.package_of` cannot place ->
+        return ``holes`` unchanged. Unknown component, fail closed;
+      * a hole whose ``hole[0].key`` cannot be placed -> KEEP that hole. Same
+        reason, per hole rather than per call;
+      * otherwise keep exactly the holes whose caller's package is in the
+        subject's package's component, per :func:`import_components`;
+      * **ORDER PRESERVED.** :func:`check_subject`'s abstention detail names
+        ``holes[0]``, and a filter that reordered would move which site a human
+        is sent to without moving a verdict — the failure this module calls a
+        prose-driven flip, in the one register where nothing would be red.
+
+    **Measured under ``feat/D5-import-relation``, base ``f4c7c46``, 2026-08-11,
+    by driving the real :func:`check_subject` over the acceptance tree with its
+    hole set scoped by hand exactly as this contract specifies — the P4's
+    number REPRODUCED and not trusted:**
+
+        hole set                          scope=tree   scope=subject
+        2 holes (this base, D6's rule 1)     0 of 7        **4 of 7**
+        7 holes (before D6's rule 1)         0 of 7          0 of 7
+        0 holes                              7 of 7          7 of 7
+
+    The four that come back are ``cmd/iterate``'s, and they come back
+    :attr:`Reach.FROM_TESTS_ONLY` / :attr:`Disposition.BREACH` — which is the
+    correct answer, since ``VerifyPreservation`` is dark in ``cmd/iterate`` too.
+    ``cmd/gates``' three still abstain, because both holes are in
+    ``cmd/gates/main.go``. **The 7-hole row is why this contract is worth
+    landing and also why it is not a cure**: five of those seven were in
+    ``cmd/iterate`` itself, so subject scoping alone answered nothing until D6's
+    body resolved them. Scoping and resolution are independent and this round
+    buys neither on its own.
+
+    CHOICE (the signature could have taken ``production_reach`` and done both
+    conjuncts, or taken a :class:`CallGraph` and read the evidence off it):
+    three explicit arguments, evidence passed in. Rejected alternatives: doing
+    both conjuncts is refused above; taking the graph would let this function
+    read ``unresolved_calls`` itself and quietly re-derive the closure filter it
+    was told not to own, and would make a seal build a whole graph to exhibit a
+    two-package question.
+    """
+    raise NotImplementedError("holes_in_scope")
+
+
 @dataclass(frozen=True)
 class CallGraph:
     """One tree's symbols and edges, plus an honest account of what is missing.
@@ -1841,6 +2581,20 @@ class CallGraph:
     ``unreadable_paths``
         Files the analyzer could not parse. Non-empty means the whole tree
         abstains; see :class:`SourceUnreadable`.
+    ``package_imports``
+        The tree's :class:`ImportRelation`, or the named
+        :class:`ImportsUnavailable` when no analyzer supplied one. **The field
+        that makes step 3's hole set scopable to a subject**, added on
+        ``feat/D5-import-relation``, 2026-08-11. It rides on the GRAPH and not
+        on a new parameter of :func:`check_subject`, because
+        :func:`check_subject` already receives the graph and because the
+        relation is a fact about the same tree the edges came from — a second
+        channel carrying facts about one tree is two things to keep in step.
+
+        Defaulted to :data:`IMPORTS_NOT_SUPPLIED`, which is the REFUSAL and not
+        an empty relation; the argument for defaulting it at all, and the
+        measurement behind it, are on that constant. Nothing reads this field
+        yet: :func:`holes_in_scope` is the seam and it is a stub.
 
     CHOICE (the design does not say what "in-repo" means for the edge set):
     **edges are kept only when BOTH ends are declared in the tree.** A call
@@ -1857,6 +2611,7 @@ class CallGraph:
     edges: tuple[Edge, ...]
     unresolved_calls: tuple[tuple[Symbol, str, str], ...]
     unreadable_paths: tuple[str, ...]
+    package_imports: ImportEvidence = IMPORTS_NOT_SUPPLIED
 
 
 def build_call_graph(tree: Path) -> CallGraph:
@@ -1890,11 +2645,16 @@ def build_call_graph(tree: Path) -> CallGraph:
       * **Determinism.** Two runs over the same tree produce equal graphs, so a
         diff between two reports is a real change. Sort at construction, not at
         print time.
+      * **The import relation is UNIONED, and the union is fail-closed.** Added
+        on ``feat/D5-import-relation``, 2026-08-11. See
+        :func:`_union_import_evidence` for the three rules and for why this
+        function implements them rather than stubbing them.
     """
     symbols: dict[str, Symbol] = {}
     edges: list[Edge] = []
     unresolved: list[tuple[Symbol, str, str]] = []
     unreadable: list[str] = []
+    evidence: list[ImportEvidence] = []
     for analyzer in _analyzers_present(tree)[0]:
         try:
             produced = analyzer.graph(tree)
@@ -1903,6 +2663,18 @@ def build_call_graph(tree: Path) -> CallGraph:
             # file's edges and turn one bad file into a total outage of the
             # check. It abstains over the whole tree at judgement time instead.
             unreadable.append(exc.path)
+            # An analyzer that could not read a file may have missed that
+            # file's import block, so it has no relation to contribute and the
+            # union must not read its silence as "this language has no imports".
+            evidence.append(
+                ImportsUnavailable(
+                    reason=(
+                        f"the {_language_of(analyzer)!r} analyzer could not "
+                        f"read {exc.path}, so the imports declared there were "
+                        "never seen"
+                    )
+                )
+            )
             continue
         except AnalyzerError as exc:
             raise CallSiteReachabilityError(
@@ -1915,14 +2687,105 @@ def build_call_graph(tree: Path) -> CallGraph:
         edges.extend(produced.edges)
         unresolved.extend(produced.unresolved_calls)
         unreadable.extend(produced.unreadable_paths)
+        evidence.append(produced.package_imports)
+    ordered = {key: symbols[key] for key in sorted(symbols)}
     return CallGraph(
-        symbols={key: symbols[key] for key in sorted(symbols)},
+        symbols=ordered,
         edges=tuple(sorted(edges, key=_edge_order)),
         unresolved_calls=tuple(
             sorted(unresolved, key=lambda hole: (hole[0].key, hole[1], hole[2]))
         ),
         unreadable_paths=tuple(sorted(dict.fromkeys(unreadable))),
+        package_imports=_union_import_evidence(evidence, ordered),
     )
+
+
+def _union_import_evidence(
+    parts: Sequence[ImportEvidence], symbols: Mapping[str, Symbol]
+) -> ImportEvidence:
+    """Every analyzer's import relation, or the named refusal. Pure.
+
+    **IMPLEMENTED and not stubbed, and it is the third exception this module
+    makes.** :func:`build_call_graph` is the ONE production construction site of
+    a :class:`CallGraph`, so a stub here would either redden every seal that
+    calls it or — worse, if it returned the default — make the whole relation
+    dead on arrival, present in the type and never populated by the only caller
+    that could populate it. A field the production path never fills is a field
+    that reads as coverage and is not. It is also the layer that has to enforce
+    the union's fail-closed rule, which is a decision and not a body.
+
+    Three rules, and each one fails CLOSED:
+
+      1. **No parts at all -> :data:`IMPORTS_NOT_SUPPLIED`.** Today's world:
+         :data:`ANALYZERS` is empty, no analyzer ran, and there is no evidence
+         about anything. Not an empty relation.
+      2. **Any part is :class:`ImportsUnavailable` -> the whole union is
+         :class:`ImportsUnavailable`**, carrying that part's reason. Not a
+         partial relation over the languages that did answer: the packages the
+         silent analyzer did not describe could be adjacent to any of the ones
+         it did, and a relation that omits them would split components that
+         should be joined — which narrows HARDER. One language's silence
+         suspends the narrowing for the whole tree, which is the same shape as
+         :class:`SourceUnreadable`'s whole-tree abstention and is chosen for the
+         same reason.
+      3. **Otherwise merge the package maps**, and a package identity supplied
+         by two analyzers RAISES. Two rows describing one package could disagree
+         about its imports and the components would depend on row order — the
+         defect :func:`validate_analyzers` refuses at the registry level, met
+         again at the value level.
+
+    The merged result is handed to :func:`validate_import_relation` before it is
+    returned, so a body that builds an empty or inconsistent relation is refused
+    at the construction site rather than at the first narrowing.
+
+    **Measured under ``feat/D5-import-relation``, base ``f4c7c46``,
+    2026-08-11**, over the acceptance tree with the live Go row substituted into
+    :data:`ANALYZERS`: :attr:`CallGraph.package_imports` comes back
+    :class:`ImportsUnavailable`, because the Go row's :meth:`graph` does not
+    populate the field yet and its :class:`CallGraph` therefore carries the
+    default. That is the correct answer today and it is the one that changes
+    nothing: with the relation absent, :func:`holes_in_scope` is contracted to
+    return its input unchanged, so step 3 keeps the whole-tree hole set and all
+    7 findings still abstain. With no analyzers at all the field is
+    :data:`IMPORTS_NOT_SUPPLIED` itself. Rules 2 and 3 and each clause of
+    :func:`validate_import_relation` were exercised directly at the same
+    revision; none of them is reachable from a tree today, which is what a seal
+    author needs to know before writing rows against them.
+
+    CHOICE (the union could have kept one relation per LANGUAGE and had
+    :func:`holes_in_scope` pick the subject's): one relation over the whole
+    tree. Rejected alternative is more precise per language and is out because
+    a cross-language question — a Go hole and a Python subject — would then have
+    no relation at all to consult, and "no relation" would have to mean either
+    "different components" (fail-open, and wrong: a Python module and a Go
+    binary in one repo genuinely cannot share a function value, but a mechanism
+    may not assert that from the absence of a table) or "one component"
+    (correct, and reachable more simply by rule 2 above).
+    """
+    if not parts:
+        return IMPORTS_NOT_SUPPLIED
+    for part in parts:
+        if isinstance(part, ImportsUnavailable):
+            return part
+    merged: dict[str, PackageImports] = {}
+    for part in parts:
+        if not isinstance(part, ImportRelation):
+            raise CallSiteReachabilityError(
+                f"{part!r} is neither an ImportRelation nor an "
+                "ImportsUnavailable and cannot be unioned; the absence of an "
+                "import relation is a state with a name and a reason"
+            )
+        for identity, package in part.packages.items():
+            if identity in merged:
+                raise CallSiteReachabilityError(
+                    f"two analyzers both describe package {identity!r}; they "
+                    "could disagree about its imports and the components would "
+                    "then depend on analyzer row order"
+                )
+            merged[identity] = package
+    relation = ImportRelation(packages={key: merged[key] for key in sorted(merged)})
+    validate_import_relation(relation, symbols)
+    return relation
 
 
 def _edge_order(edge: Edge) -> tuple[str, str, str, str]:
@@ -2624,6 +3487,35 @@ class UndecidedReason(Enum):
     OUTSIDE the production closure cannot pull a symbol into it, but an
     unresolved call outside a closure that is itself under-computed can — which
     is why the count is a first-class report field rather than an internal.
+
+    **SECOND CHOICE, ``feat/D5-import-relation``, 2026-08-11 — the closure is
+    the first conjunct and the SUBJECT is the second.** The CHOICE above got the
+    direction right and stopped one narrowing short, and the shortfall is
+    measured on the acceptance tree at this base: the closure conjunct leaves 2
+    holes, both in ``cmd/gates/main.go``, and because ``production_reach`` is
+    ONE whole-tree map the list is identical for every (seal, subject) pair —
+    so those 2 abstain all 7 findings, including ``cmd/iterate``'s 4, which no
+    execution path connects to either hole. **0 of 7 answered.** With the hole
+    set also scoped to the subject: **4 of 7**, measured, both numbers under
+    ``feat/D5-import-relation``, base ``f4c7c46``, 2026-08-11.
+
+    Two readings of "scoped" were considered and REFUSED, and the reasons are
+    recorded so a body does not rediscover them:
+
+      * **same-MODULE scoping is unsound.** ``R`` imports ``P`` and ``Q`` and
+        evaluates ``p.Register(q.S)``; a hole in ``P`` then calls a value
+        declared in ``Q``. :data:`ANALYZERS` in this module is that shape. A Go
+        module bounds NAMING, never value flow;
+      * **CALL-GRAPH components are unsound in the permissive direction.** A
+        package imported for a name only contributes no call edge, so
+        call-graph components under-approximate import components and would
+        scope away a hole that can reach the subject.
+
+    What survives is the undirected IMPORT component, with an unresolved import
+    counting as an edge; see :class:`PackageImports` and
+    :func:`import_components`. Not wired at this commit — the mechanism is
+    :func:`holes_in_scope` and it is a stub — so every count above and every
+    seal on this member is unmoved today.
     """
 
     UNSUPPORTED_LANGUAGE = "unsupported_language"
@@ -2837,6 +3729,67 @@ def check_subject(
          closure holds unresolved calls -> UNDECIDED / DYNAMIC_EDGE.** The
          second half is counted over the production closure only; see the
          CHOICE on :class:`UndecidedReason`.
+
+         **CONTRACT CHANGE, ``feat/D5-import-relation``, 2026-08-11 — SCOPED,
+         NOT YET WIRED.** The operator ruled that step 3's hole set is scoped to
+         the SUBJECT. What that means is
+         :func:`holes_in_scope`; what fills the evidence it reads is
+         :attr:`CallGraph.package_imports`. **Nothing below changes at this
+         commit** — :func:`holes_in_scope` is a stub, this step still computes
+         the whole-tree list, and every seal on step 3 is green and untouched.
+         What a body lands is one line:
+
+             holes = holes_in_scope(subject, holes, graph.package_imports)
+
+         directly after the closure comprehension, and nothing else in this
+         function. Spelled out here because "which sentences change" is a
+         question the seal author asks first:
+
+           * **STANDS — the two disjuncts and their order.** The
+             ``negative_is_conclusive`` half is untouched: it is a fact about a
+             LANGUAGE and no import graph bears on it. The row check still runs
+             FIRST, so a ``False`` row abstains before any scoping question is
+             asked and a repository cannot buy itself a verdict by having tidy
+             imports.
+           * **STANDS — the closure conjunct.** Holes are still counted over
+             the production closure only, and
+             ``test_unresolved_calls_abstain_only_over_the_production_closure``
+             is untouched. Scoping is a SECOND conjunct applied to what that one
+             already returned; it never widens the set.
+           * **STANDS — the placement of step 3 in the composition**, and
+             therefore anti-requirement 2: step 1 still finds paths before any
+             abstention, and this change can only make the mechanism abstain
+             LESS, never make it abstain over a found path.
+           * **STANDS — DYNAMIC_EDGE may only DOWNGRADE.** Narrowing the hole
+             set removes abstentions; it can promote a subject to
+             :attr:`Reach.FROM_TESTS_ONLY` and thence to a BREACH, which is
+             the whole point, and it can never touch
+             :attr:`Reach.FROM_PRODUCTION`.
+           * **CHANGES — "the production closure holds unresolved calls".** It
+             becomes "the production closure holds an unresolved call THAT
+             COULD BE THIS SUBJECT'S MISSING CALL SITE". The old sentence is
+             whole-tree and its cost is measured: on the acceptance tree, 2
+             holes in ``cmd/gates/main.go`` abstain all 7 findings, 4 of which
+             are in ``cmd/iterate`` and cannot be reached from either hole by
+             any route.
+           * **CHANGES — the abstention DETAIL.** It counts the scoped holes,
+             so the number a report shows stops being a whole-tree constant. It
+             must also say WHICH regime produced it: with the relation absent
+             the count is the whole-tree one and a reader must be able to tell
+             that from the string, because "2 holes" under scoping and "2 holes"
+             under no evidence are different facts about the mechanism's
+             confidence. See :class:`ImportsUnavailable`.
+           * **UNCHANGED and worth stating — ``ReachabilityReport.
+             unresolved_call_count``.** It stays the whole-tree,
+             closure-filtered count, because it is a report-level coverage
+             figure about the TREE and not about one subject. A per-subject
+             figure would make the report's own blindness metric a function of
+             which subject a reader happened to look at.
+
+         **Measured under ``feat/D5-import-relation``, base ``f4c7c46``,
+         2026-08-11: 4 of the acceptance tree's 7 findings are answered under
+         this contract, against 0 today.** The full table, the controls, and how
+         the measurement was taken are on :func:`holes_in_scope`.
       4. **``subject.key in test_reach`` -> FROM_TESTS_ONLY.** The B1 verdict,
          reached only when every abstention above has been ruled out.
       5. **Otherwise FROM_NEITHER**, which for a seal-derived subject is
