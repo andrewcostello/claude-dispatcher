@@ -12,23 +12,36 @@ prose and a P4 adjudicate the guess. Where a body could not obey a contract as
 literally written, it says so at the site and does not quietly re-scope it.
 The body raised three such places and **all three are now RULED (P4, round 2,
 2026-08-11)**; each site carries its ruling and none of them was closed by
-weakening the contract that raised it:
+weakening the contract that raised it. **Two of the three are IMPLEMENTED on
+``feat/D5-body2``, 2026-08-11; the third is deliberately not, and says why:**
 
   * :func:`_test_id` — **the PROTOCOL grows the method.** ``test_id`` is a
     per-language spelling by the contract's own words, and a per-language fact
     computed centrally is the second answer site this module refuses
     everywhere else. The derivation stays as a recorded INTERIM only until a
-    row can supply one. See :attr:`Seal.test_id`.
+    row can supply one. See :attr:`Seal.test_id`. **NOT implemented this
+    round, on the P4's own escalation:** requiring ``test_id`` in
+    :func:`validate_analyzers` reddens every row that builds the seal file's
+    analyzer double, and what a Go row's ``test_id`` RETURNS is a claim about
+    Go's spelling that a body may not write on the seal author's behalf. It
+    needs one round carrying the production edit and the double together. The
+    interim and its written expiry are untouched.
   * the ``roots`` parameter of :func:`check_subject` — **the dispute is upheld
-    and the FALLBACK is struck.** The scaffold's signature really was
+    and the FALLBACK is struck. DONE.** The scaffold's signature really was
     defective; the repair is to require the argument, never to invent the value
-    when it is absent. ``roots`` becomes required and :func:`_synthetic_root`
-    goes. See there.
-  * :func:`adjudicate` — **the sentence stands and its ADDRESS changes.** The
-    seals were right; the scaffold filed the raise at a layer that reads
+    when it is absent. ``roots`` is required with no default, the synthesising
+    fallback and its hand-maintained language→entrypoint-kind table are
+    deleted, :func:`_witness` raises on a chain whose origin no supplied
+    :class:`Root` names, and :func:`_has_no_production_root`'s empty-``roots``
+    branch — dead once the default went — is deleted rather than left
+    unreachable. See there.
+  * :func:`adjudicate` — **the sentence stands and its ADDRESS changes. DONE.**
+    The seals were right; the scaffold filed the raise at a layer that reads
     neither field it validates, which is R2's error exactly, so R2's answer
-    applies: constructor postcondition plus acting-layer precondition. See
-    :class:`Finding`.
+    applies: constructor postcondition plus acting-layer precondition.
+    :func:`_validate_finding` is called on every ``return`` in
+    :func:`check_subject` and on every finding :func:`check_tree` acts on. No
+    seal changed and no verdict moved. See :class:`Finding`.
 
 Two contract sites the composition never named — :attr:`UndecidedReason`'s
 ``PARSE_FAILED`` and ``UNSUPPORTED_LANGUAGE`` — are placed where the body put
@@ -141,12 +154,14 @@ only counts, and it is extended because the same obligation caught its own
 author twice in one round.** R6 corrected the ``getattr`` site to ``line 726``;
 that was already wrong at ``094fffb``. The body corrected it to ``865``; that
 was wrong at ``571e036``, the revision the correction names. It is **890** at
-that revision and **961** at this one; both are re-measured by AST below,
-each against the commit it is written at. A line number is a measurement of a
+that revision, **961** at ``37f5665``, and **983** on ``feat/D5-body2``
+(2026-08-11, this commit) because deleting the fallback and adding
+:func:`_validate_finding` moved it again; each is re-measured by AST below,
+against the commit it is written at. A line number is a measurement of a
 file that changes under every edit including the edit that records it, so a
 citation is checked at the revision it is written at or it is not a citation —
-which is why this paragraph carries two numbers and not one, and why neither
-is pinned by a row. Every other citation in this docstring was re-checked
+which is why this paragraph carries three numbers and not one, and why none of
+them is pinned by a row. Every other citation in this docstring was re-checked
 against its artifact this round and one had never been right at all:
 ``resolveConfigPath`` was cited at ``main.go:296``, which is its DOC
 COMMENT — the declaration is 297, as ``PROVENANCE.md`` and the seal file both
@@ -486,10 +501,11 @@ class CallSiteReachabilityError(RuntimeError):
     the ruling grid does not name, a subject that comes back
     :attr:`Reach.FROM_NEITHER` when the seal that named it is itself a test
     root, a malformed :class:`Subject`, a malformed :class:`Finding` (P4 round
-    2; see that class for which layer owes the raise), a witness chain that
-    originates at a key no supplied :class:`Root` names (P4 round 2, replacing
-    the struck :func:`_synthetic_root`), or an :class:`AnalyzerError` that is
-    not :class:`SourceUnreadable`.
+    2; :func:`check_subject` and :func:`check_tree` both raise it, see
+    :func:`_validate_finding`), a witness chain that originates at a key no
+    supplied :class:`Root` names (P4 round 2, replacing the struck
+    synthesising fallback — see :func:`_witness`), or an :class:`AnalyzerError`
+    that is not :class:`SourceUnreadable`.
 
     **P4 RULING (2026-08-11), on R4: "a report assembled over zero roots" is
     struck from that list.** It contradicted the CHOICE on :func:`check_tree`
@@ -722,17 +738,23 @@ class ReachabilityAnalyzer(Protocol):
         ``call_site_reachability.py`` at **890**, not 865. The body wrote 865
         and then went on editing the file above the site.
 
-        **At this commit (``feat/D5-adj2``, 2026-08-11) it is 961**, because
-        writing this paragraph moved it again. Four recordings, three of them
-        wrong the moment they were written: 726, 865, 890, 961. The arithmetic
-        — 105 / 4 / 3 — has now survived three independent AST measurements
-        without moving once.
+        It was **961** at ``37f5665``, because writing that paragraph moved it
+        again. **At this commit (``feat/D5-body2``, 2026-08-11) it is 983**,
+        re-measured by AST over ``src/`` on the tree this commit contains,
+        because deleting the struck fallback and adding
+        :func:`_validate_finding` moved it a fifth time — and the deletion is
+        BELOW this docstring while the module-docstring edit that records it is
+        ABOVE, which is why a citation written from memory of the last round is
+        wrong by construction. Five recordings, three of them wrong the moment
+        they were written: 726, 865, 890, 961, 983. The arithmetic — 105 / 4 /
+        3 — has now survived four independent AST measurements without moving
+        once, this one included.
 
         That contrast is the whole of R6 in one field. The COUNT is a fact about
         the repository and reproduces; the LINE is a fact about a file that
         every edit invalidates, including the edit that records it. A row on the
         count would never have reddened and would have caught nothing; a row on
-        the line would have reddened on all four of these commits and taught
+        the line would have reddened on all five of these commits and taught
         nobody anything. Neither is pinned, and the obligation is provenance
         instead — extended this round to line citations, in the module docstring
         above.
@@ -1301,8 +1323,11 @@ def discover_roots(tree: Path) -> tuple[Root, ...]:
 #: a chain of ``if``\ s, so that a member added without visiting this file is
 #: absent from it and :func:`_validate_root` raises rather than defaulting — the
 #: step 3 of ``skills/explicit-state.md`` that actually bites. ``TEST_FUNCTION``
-#: is the only kind on the TEST side, which is what makes the test half of
-#: :func:`_synthetic_root` a derivation rather than a guess.
+#: is the only kind on the TEST side. That asymmetry used to be offered as the
+#: reason the struck fallback's TEST half was a derivation rather than a guess;
+#: the ruling was that a constrained guess is still not a derivation, so the
+#: table now says only what it is — the derivation of ``root_kind`` from
+#: ``kind``, which is the whole of :func:`_validate_root`'s authority.
 _ROOT_KIND_BY_ENTRYPOINT: Mapping[EntrypointKind, RootKind] = {
     EntrypointKind.GO_MAIN: RootKind.PRODUCTION,
     EntrypointKind.GO_INIT: RootKind.PRODUCTION,
@@ -2468,9 +2493,20 @@ class Finding:
     may not carry two answers, deleted because the layer it was misfiled at
     could not enforce it.
 
-    P3 owes a ``_validate_finding`` on every ``return`` in :func:`check_subject`
-    and on every finding :func:`check_tree` puts in a report. :func:`adjudicate`
-    gains nothing and loses the sentence.
+    **IMPLEMENTED (``feat/D5-body2``, 2026-08-11):** :func:`_validate_finding`
+    runs on every ``return`` in :func:`check_subject` and on every finding
+    :func:`check_tree` acts on. :func:`adjudicate` gained nothing and lost the
+    sentence. No seal was edited and no verdict moved, which is what the ruling
+    predicted: the two grid sweeps hand-build findings whose ``reason`` and
+    ``path`` are arbitrary, and neither of them goes through either layer.
+
+    Each layer is load-bearing without the other, measured rather than argued
+    (``feat/D5-body2``, 2026-08-11). The postcondition is the only guard on a
+    direct :func:`check_subject` call, which is how every D5 seal reaches this
+    module while :data:`ANALYZERS` is empty. The precondition is the only guard
+    on the findings :func:`check_tree` builds itself — the
+    ``UNSUPPORTED_LANGUAGE`` abstention and :func:`_unnameable_finding` — which
+    :func:`check_subject` never sees.
 
     ``test_path`` is the chain from the TEST root, present for every finding
     including the passing ones. It is what makes a BREACH actionable — it says
@@ -2497,7 +2533,7 @@ def check_subject(
     production_reach: Mapping[str, tuple[Edge, ...]],
     test_reach: Mapping[str, tuple[Edge, ...]],
     analyzer: ReachabilityAnalyzer,
-    roots: Sequence[Root] = (),
+    roots: Sequence[Root],
 ) -> Finding:
     """Judge one (seal, subject) pair. The single answer site for one subject.
 
@@ -2563,7 +2599,12 @@ def check_subject(
     verbatim. The five returns are consistent by construction today, which is
     the argument for the check being cheap and not the argument for its absence
     — R2 refused that argument on the identical shape. See :class:`Finding`.
-    Owed by P3; not implemented at this commit.
+    **IMPLEMENTED (``feat/D5-body2``, 2026-08-11):** :func:`_validate_finding`
+    is called on the record every ``return`` below hands back, at the ``return``
+    and not inside :func:`_abstention`. Filing it in the shared abstention
+    constructor would have covered three of the returns more cheaply and would
+    have made the :func:`check_tree` precondition unfalsifiable — the two layers
+    are separable only while each can be shown load-bearing without the other.
 
     There is deliberately NO ``UNSUPPORTED_LANGUAGE`` step here. ``analyzer`` is
     a required, already-resolved parameter, so this layer cannot meet the state;
@@ -2577,8 +2618,12 @@ def check_subject(
     the arguments it names. **The scaffold's signature was wrong and the repair
     is the parameter. It is NOT the default.**
 
-    Ruled: ``roots`` is keyword-only and **REQUIRED — no default** — and
-    :func:`_synthetic_root` is struck. Four reasons, and the last is decisive:
+    Ruled, and **IMPLEMENTED (``feat/D5-body2``, 2026-08-11)**: ``roots`` is
+    keyword-only and **REQUIRED — no default** — and the synthesising fallback
+    (``_synthetic_root``, with its ``_FALLBACK_PRODUCTION_KIND`` table) is
+    deleted. The four reasons are kept in full, because the reasoning is the
+    thing a later reader needs and the deleted code is not there to re-derive
+    it from; and the last is decisive:
 
       1. **A missing argument is a signature defect; inventing the value is a
          verdict defect.** A default of ``()`` converts "this layer was not
@@ -2587,8 +2632,8 @@ def check_subject(
       2. **The invented record bypasses the module's own validator.** Every
          :class:`Root` an analyzer produces goes through :func:`_validate_root`,
          which exists because ``root_kind`` is "derived from ``kind`` and from
-         ``seal_verify.is_test_path``, never asserted". ``_synthetic_root``
-         asserts both and is checked by nothing. It can mint what
+         ``seal_verify.is_test_path``, never asserted". The fallback
+         asserted both and was checked by nothing. It could mint what
          ``_validate_root`` refuses outright: hand it a chain whose first caller
          is declared in a test file and it returns a ``GO_MAIN`` root in a
          ``_test.go``, which is "a tree this module does not understand" — the
@@ -2616,14 +2661,40 @@ def check_subject(
     traversal returned a chain from something it was not given as a root — and
     it gets the treatment every other mechanism bug here gets.
 
-    P3 owes: drop the default, delete :func:`_synthetic_root` and
-    ``_FALLBACK_PRODUCTION_KIND``, and make ``_witness`` raise.
+    Done at this commit: the default is gone, both symbols are deleted, and
+    :func:`_witness` raises. **Requiring the argument is not cosmetic, and it
+    is not made redundant by that raise.** Measured on ``feat/D5-body2``,
+    2026-08-11, by making one call that omits ``roots`` and mutating the module
+    under it — three states, three different answers:
+
+      * as shipped, the call is refused at the SIGNATURE:
+        ``TypeError: check_subject() missing 1 required keyword-only argument:
+        'roots'``. No judgement starts.
+      * restore only the default: the call is ACCEPTED, the judgement starts,
+        and it dies inside :func:`_witness` with a mechanism-bug message about
+        a chain origin. Right refusal, wrong layer, and only because the second
+        edit landed — the signature had already let a caller with no evidence
+        into the function.
+      * restore the default AND the fallback, which is the pre-ruling state:
+        the same call RETURNS ``Finding(reach=UNDECIDED)`` whose
+        ``test_path.root`` is a ``TEST_FUNCTION`` record reading "derived from
+        the witness chain" — a value production never produced, in a report a
+        human is meant to check.
+
+    The D5 seal file is 0 red in all three states, which is the P4's own
+    measurement reproduced: with ``_judge`` passing real records the suite no
+    longer reaches any of this, so no row could have caught the difference and
+    the deletion is not row-pinnable. That is a fact about what a seal can see,
+    not an argument for leaving the fallback in.
 
     One further clause reads ``roots``: step 2 decides
     :attr:`UndecidedReason.NO_ENTRYPOINT` from the ROOT SET, which is what R5
     requires — "the map corroborates, it is not the authority". (The body's
     docstring promised "two further clauses" and listed one; with the fallback
-    struck there is one, and it is this.)
+    struck there is one, and it is this.) With the argument required, that
+    clause reads the root set and nothing else; see
+    :func:`_has_no_production_root` for why its corroborating branch was
+    deleted rather than left standing.
     """
     if not isinstance(subject, Symbol):
         raise CallSiteReachabilityError(
@@ -2635,7 +2706,7 @@ def check_subject(
     #    that "we could not see everything" can never suppress a real pass.
     if subject.key in production_reach:
         path = _witness(subject, production_reach, RootKind.PRODUCTION, roots)
-        return Finding(
+        found = Finding(
             seal=seal,
             subject=subject,
             reach=Reach.FROM_PRODUCTION,
@@ -2649,13 +2720,16 @@ def check_subject(
                 f"quality {path.quality.value}"
             ),
         )
+        # POSTCONDITION, on every return (P4 round 2). See _validate_finding.
+        _validate_finding(found)
+        return found
 
     # 1b. An unparsed file is a hole of UNKNOWN SIZE in the edge set, so any
     #     "no path" computed around it is computed around a hole. Whole-tree,
     #     per SourceUnreadable's CHOICE, and after step 1 because a found path
     #     is not un-found by a file nobody could read.
     if graph.unreadable_paths:
-        return _abstention(
+        parse_failed = _abstention(
             seal,
             subject,
             test_path,
@@ -2666,12 +2740,14 @@ def check_subject(
                 "this tree would be computed around a hole of unknown size"
             ),
         )
+        _validate_finding(parse_failed)
+        return parse_failed
 
     # 2. Zero production roots, BEFORE the tests-only check: with no production
     #    root the tests-only answer is arithmetically guaranteed and would be a
     #    BREACH against every subject in a library.
-    if _has_no_production_root(roots, production_reach):
-        return _abstention(
+    if _has_no_production_root(roots):
+        no_entrypoint = _abstention(
             seal,
             subject,
             test_path,
@@ -2682,11 +2758,13 @@ def check_subject(
                 "nothing here is 'nothing is reachable'"
             ),
         )
+        _validate_finding(no_entrypoint)
+        return no_entrypoint
 
     # 3. The negative is not conclusive: either the language says so, or the
     #    production closure itself contains a call nobody could name.
     if not analyzer.negative_is_conclusive:
-        return _abstention(
+        inconclusive = _abstention(
             seal,
             subject,
             test_path,
@@ -2697,11 +2775,13 @@ def check_subject(
                 "rather than about the language"
             ),
         )
+        _validate_finding(inconclusive)
+        return inconclusive
     holes = [
         hole for hole in graph.unresolved_calls if hole[0].key in production_reach
     ]
     if holes:
-        return _abstention(
+        unresolved = _abstention(
             seal,
             subject,
             test_path,
@@ -2712,10 +2792,12 @@ def check_subject(
                 "them may be the missing call site"
             ),
         )
+        _validate_finding(unresolved)
+        return unresolved
 
     # 4. The B1 verdict, reached only once every abstention above is ruled out.
     if subject.key in test_reach:
-        return Finding(
+        tests_only = Finding(
             seal=seal,
             subject=subject,
             reach=Reach.FROM_TESTS_ONLY,
@@ -2729,6 +2811,8 @@ def check_subject(
                 "proves it runs"
             ),
         )
+        _validate_finding(tests_only)
+        return tests_only
 
     # 5. Impossible for a seal-derived subject, so it is the mechanism's own
     #    bug and is reported as one rather than converted into a finding.
@@ -2738,6 +2822,86 @@ def check_subject(
         "lost an edge it was handed, and a lost edge folded into the "
         "tests-only verdict would be an over-call against innocent code"
     )
+
+
+def _validate_finding(finding: Finding) -> None:
+    """``reason`` is non-None exactly when UNDECIDED; ``path`` exactly when
+    FROM_PRODUCTION. Both ways.
+
+    Owed at two layers and this is the shared implementation of both, mirroring
+    :func:`_validate_subject` exactly (P4 round 2, 2026-08-11):
+    :func:`check_subject` calls it as a postcondition on every ``return``,
+    :func:`check_tree` calls it as a precondition on every finding it acts on.
+    It returns ``None`` rather than the record for the same reason
+    :func:`_validate_subject` does — the mirror is in WHERE it is called, and a
+    validator that handed the record back would read as a constructor.
+
+    Not filed at :func:`adjudicate`, which is a lookup on ``(reach, quality)``
+    and reads neither field named here. That was the scaffold's R2 error on a
+    second record: a validation belongs where the record is BUILT and where it
+    is ACTED ON, not at whichever function it happens to pass through.
+
+    Neither layer can reach a violation from inside this module today, and that
+    is not grounds to skip either — R2 refused that argument on the identical
+    shape, where :func:`subjects_of_seal` is :class:`Subject`'s only
+    constructor and is consistent by construction too. A second constructor, or
+    a caller-supplied record, is not constructible today only because nobody
+    has written one yet.
+
+    **Each layer is load-bearing WITHOUT the other, measured on
+    ``feat/D5-body2``, 2026-08-11, by mutating the module and probing it —
+    two defects, two layers, four runs:**
+
+      * *Defect A*, a two-answer record built by :func:`check_subject` (step
+        4's ``FROM_TESTS_ONLY`` return given a ``DYNAMIC_EDGE`` reason). With
+        the postcondition: a direct :func:`check_subject` call RAISES. With the
+        postcondition alone removed and the precondition left in place: the
+        same call RETURNS ``Finding(reach=FROM_TESTS_ONLY,
+        reason=DYNAMIC_EDGE)``. The precondition never sees it, because while
+        :data:`ANALYZERS` is empty every D5 row reaches this module by calling
+        :func:`check_subject` directly and :func:`check_tree` judges nothing.
+      * *Defect B*, a two-answer record built inside :func:`check_tree` —
+        :func:`_unnameable_finding` rewritten as a second :class:`Finding`
+        constructor emitting ``reach=UNDECIDED`` with ``reason=None``, which is
+        R2's hypothesised second constructor made real. With the precondition:
+        :func:`check_tree` RAISES. With the precondition alone removed and the
+        postcondition left in place: :func:`check_tree` RETURNS a report
+        carrying the two-answer finding, counted as one ABSTAIN. The
+        postcondition never sees it, because :func:`check_subject` never built
+        it.
+
+    So neither layer subsumes the other, and that is why the postcondition sits
+    at :func:`check_subject`'s ``return`` statements rather than inside
+    :func:`_abstention`: filing it in the shared abstention constructor would
+    have caught defect B too, and a second layer that cannot be shown to catch
+    anything alone is a layer nobody can tell is working.
+    """
+    if not isinstance(finding, Finding):
+        raise CallSiteReachabilityError(
+            f"{finding!r} is not a Finding and cannot be reported"
+        )
+    if (finding.reason is not None) != (finding.reach is Reach.UNDECIDED):
+        raise CallSiteReachabilityError(
+            f"finding for {finding.seal.test_id!r} on {finding.subject.key!r} "
+            f"carries reach {finding.reach!r} with reason {finding.reason!r}; "
+            "an UndecidedReason is what an abstention IS, so one anywhere else "
+            "is a finding with two answers and one missing its own"
+        )
+    if (finding.path is not None) != (finding.reach is Reach.FROM_PRODUCTION):
+        raise CallSiteReachabilityError(
+            f"finding for {finding.seal.test_id!r} on {finding.subject.key!r} "
+            f"carries reach {finding.reach!r} with path {finding.path!r}; a "
+            "path is the evidence FROM_PRODUCTION means, so a path without it "
+            "is unfalsifiable green and the verdict without one is a claim "
+            "nobody can check"
+        )
+    if finding.reason is not None and not isinstance(
+        finding.reason, UndecidedReason
+    ):
+        raise CallSiteReachabilityError(
+            f"finding for {finding.seal.test_id!r} carries {finding.reason!r}, "
+            "which is not an UndecidedReason member"
+        )
 
 
 def _abstention(
@@ -2765,13 +2929,45 @@ def _abstention(
     )
 
 
-def _has_no_production_root(
-    roots: Sequence[Root], production_reach: Mapping[str, tuple[Edge, ...]]
-) -> bool:
-    """R5: the ROOT SET is the authority; the reach map only corroborates."""
-    if roots:
-        return not any(root.root_kind is RootKind.PRODUCTION for root in roots)
-    return not production_reach
+def _has_no_production_root(roots: Sequence[Root]) -> bool:
+    """R5: the ROOT SET is the authority, and it is now the only witness asked.
+
+    **The empty-``roots`` branch is DELETED, not left unreachable (P4 round 2
+    flagged it; ``feat/D5-body2``, 2026-08-11).** It read ``return not
+    production_reach`` — the reach map answering when the root set was absent —
+    and the only way the root set could be absent was
+    :func:`check_subject`'s struck ``roots=()`` default. With the argument
+    required, ``()`` no longer means "this layer was not handed the evidence";
+    it means "the sweep ran and found no root", which is a first-class fact
+    about a library tree and is exactly what :attr:`UndecidedReason.NO_ENTRYPOINT`
+    answers. ``not any(...)`` over an empty root set is already ``True``, so the
+    empty case now falls out of the rule instead of being special-cased.
+
+    Deleted rather than kept, because the branch is not merely unreachable —
+    under R5 it is WRONG. An empty root set beside a non-empty
+    ``production_reach`` describes chains starting at roots nobody declared,
+    and the branch read ``False`` from it: "there IS a production root", said
+    by the corroborator over an authority that named none. That is the one
+    thing R5 forbids, and it is the permissive direction.
+
+    Deleted rather than converted into a raise, for two reasons. That state
+    already has an answer site — :func:`_witness` raises the moment it is asked
+    to build a chain whose origin no supplied :class:`Root` names, which is
+    every chain in such a map — and a second layer with its own answer for one
+    condition is what the :attr:`Reach.FROM_NEITHER` treatment refuses. And a
+    raise HERE would be wrong on its own terms: this predicate is also reached
+    with a legitimately empty root set, over a library that has no entrypoint,
+    where the contracted answer is :attr:`UndecidedReason.NO_ENTRYPOINT` and
+    :func:`check_tree`'s own CHOICE says an empty tree reports rather than
+    raises. The module's "an unreachable arm that RAISES is a contract"
+    doctrine applies to arms that raise; this one returned a permissive verdict
+    computed from the corroborator, which is the coincidence the doctrine is
+    contrasted with.
+
+    ``production_reach`` went with it: an argument nothing reads is a second
+    input a later reader would assume is consulted.
+    """
+    return not any(root.root_kind is RootKind.PRODUCTION for root in roots)
 
 
 def _witness(
@@ -2782,12 +2978,15 @@ def _witness(
 ) -> "CallPath | None":
     """The chain a human follows, or None when this side reached nothing.
 
-    **P4 round 2 (2026-08-11):** the ``declared is None`` branch below is the
-    struck fallback's last caller. P3 replaces it with a raise —
-    :class:`CallSiteReachabilityError`, because a chain that originates at a key
-    no supplied :class:`Root` of that :class:`RootKind` names is a traversal
-    reporting a path from something it was never given as a start, and that is a
-    mechanism bug rather than a licence to invent the start.
+    **P4 round 2 (2026-08-11), IMPLEMENTED HERE (``feat/D5-body2``,
+    2026-08-11):** the ``declared is None`` branch was the struck fallback's
+    last caller and it is now a raise. A chain that originates at a key no
+    supplied :class:`Root` of that :class:`RootKind` names is a traversal
+    reporting a path from something it was never given as a start, which is a
+    mechanism bug rather than a licence to invent the start. It is the one
+    answer site for that state: :func:`_has_no_production_root` deliberately
+    does not grow a second one, because two layers with their own answer for
+    one condition is what the :attr:`Reach.FROM_NEITHER` treatment refuses.
     """
     if subject.key not in reach:
         return None
@@ -2796,81 +2995,15 @@ def _witness(
     declared = {
         (root.symbol.key, root.root_kind): root for root in roots
     }.get((origin.key, root_kind))
-    root = declared if declared is not None else _synthetic_root(origin, root_kind)
-    return CallPath(root=root, edges=chain, quality=_chain_quality(chain))
-
-
-def _synthetic_root(symbol: Symbol, root_kind: RootKind) -> Root:
-    """**STRUCK (P4 round 2, 2026-08-11). Dead as of this commit; P3 deletes it.**
-
-    A :class:`Root` for a chain whose real record this layer was not handed —
-    which, ruled, is a record this layer may not build. The full argument is at
-    :func:`check_subject`'s ``roots`` paragraph. In short: the honesty of the
-    ``evidence`` string was never the question. A record that says truthfully
-    "nobody derived me" is still a :class:`Root` in a report, wearing a
-    :class:`EntrypointKind` that names a starting mechanism no sweep found, and
-    it is the only value in this module that production did not produce. The
-    body flagged the production side as the invention and was right; the ruling
-    is that the TEST side goes with it, because "``TEST_FUNCTION`` is the only
-    test kind, so there was nothing to choose" argues that the guess was
-    constrained, not that it was derived — and :attr:`Root.evidence` is
-    contracted as "what was READ", of which nothing was.
-
-    It is left in the tree for exactly one commit so that the seal amendment and
-    the deletion are separately reviewable. ``tests/`` no longer reaches it:
-    the seals' ``_judge`` helper now passes real records, and
-    :func:`check_tree` always did. **Nothing calls this — measured, not
-    asserted: with this function replaced by a raise, the D5 seal file is 13 red
-    at ``571e036`` and 0 red at ``feat/D5-adj2``, 2026-08-11.**
-    """
-    if root_kind is RootKind.TEST:
-        return Root(
-            symbol=symbol,
-            kind=EntrypointKind.TEST_FUNCTION,
-            root_kind=RootKind.TEST,
-            evidence=(
-                f"{symbol.path}:{symbol.line} — derived from the witness chain; "
-                "TEST_FUNCTION is the only test entrypoint kind, so no kind was "
-                "chosen"
-            ),
-        )
-    if root_kind is not RootKind.PRODUCTION:
+    if declared is None:
         raise CallSiteReachabilityError(
-            f"{root_kind!r} is neither production nor test; RootKind has two "
-            "members and no UNKNOWN"
+            f"the {root_kind.value} chain to {subject.key} originates at "
+            f"{origin.key!r}, which no supplied Root of that kind names; the "
+            "traversal reported a path from something it was never given as a "
+            "start, and a start this layer invented would be the only value in "
+            "a report that production did not produce"
         )
-    support = support_for_path(symbol.path)
-    language = support.language if support is not None else None
-    kind = _FALLBACK_PRODUCTION_KIND.get(language)
-    if kind is None:
-        raise CallSiteReachabilityError(
-            f"no production EntrypointKind can be named for {symbol.key!r} in "
-            f"{symbol.path!r} (language {language!r}) and no Root record was "
-            "supplied; naming a kind this module cannot derive would put a "
-            "mechanism nobody checked into a report a human is meant to check"
-        )
-    return Root(
-        symbol=symbol,
-        kind=kind,
-        root_kind=RootKind.PRODUCTION,
-        evidence=(
-            f"{symbol.path}:{symbol.line} — derived from the witness chain; no "
-            f"Root record was supplied to check_subject, so the kind is "
-            f"NARROWED to {kind.value} by the file's language and is not a "
-            "sweep result"
-        ),
-    )
-
-
-#: **STRUCK with :func:`_synthetic_root` (P4 round 2, 2026-08-11); P3 deletes
-#: it.** The narrowest production :class:`EntrypointKind` each language has. It
-#: is a hand-maintained map from a language to an entrypoint kind, which is the
-#: artifact anti-requirement 3 forbids by name, and its only reader is the
-#: struck fallback.
-_FALLBACK_PRODUCTION_KIND: Mapping[Language, EntrypointKind] = {
-    Language.GO: EntrypointKind.GO_MAIN,
-    Language.PYTHON: EntrypointKind.PYTHON_SCRIPT_MAIN,
-}
+    return CallPath(root=declared, edges=chain, quality=_chain_quality(chain))
 
 
 @dataclass(frozen=True)
@@ -3322,7 +3455,12 @@ def check_tree(
         above and the same reason — this is the layer where a non-judgement
         becomes an answer, and it is the layer that hands findings to
         :func:`adjudicate`, which by ruling reads neither field. See
-        :class:`Finding`. Owed by P3; not implemented at this commit.
+        :class:`Finding`. **Implemented (``feat/D5-body2``, 2026-08-11)**, in
+        the disposition loop and BEFORE :func:`adjudicate`, so that the two
+        findings this layer builds itself — the ``UNSUPPORTED_LANGUAGE``
+        abstention below and :func:`_unnameable_finding`, neither of which
+        :func:`check_subject` ever sees — are covered by it and by nothing
+        else.
       * **A subject symbol whose language has no analyzer row is UNDECIDED /
         UNSUPPORTED_LANGUAGE, one finding per SUBJECT** — the site the contract
         named the member for and never placed. **P4 CONFIRMS THE BODY'S
@@ -3427,6 +3565,13 @@ def check_tree(
     dispositions: dict[Disposition, int] = {d: 0 for d in Disposition}
     answered: set[int] = set()
     for finding in findings:
+        # R2's shape on a second record, the PRECONDITION half (P4 round 2).
+        # Every finding in the report passes here, whichever layer built it,
+        # and it runs BEFORE adjudicate because adjudicate is a lookup on
+        # (reach, quality) that reads neither field this checks — so a finding
+        # with two answers would otherwise be counted as whichever one the
+        # dispatch happened to key on. See :func:`_validate_finding`.
+        _validate_finding(finding)
         matched: StagedDeclaration | None = None
         for index, declaration in enumerate(declarations):
             if _declaration_answers(finding, declaration):
