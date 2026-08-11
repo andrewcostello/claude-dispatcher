@@ -255,6 +255,7 @@ from __future__ import annotations
 import ast
 import re
 import shutil
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -270,7 +271,11 @@ from claude_dispatcher.call_site_reachability import (
     Edge,
     EdgeKind,
     EntrypointKind,
+    IMPORTS_NOT_SUPPLIED,
     Finding,
+    ImportRelation,
+    ImportsUnavailable,
+    PackageImports,
     PathQuality,
     Reach,
     ReachabilityReport,
@@ -290,9 +295,12 @@ from claude_dispatcher.call_site_reachability import (
     check_tree,
     discover_roots,
     discover_seals,
+    holes_in_scope,
+    import_components,
     reachable_from,
     subjects_of_seal,
     validate_analyzers,
+    validate_import_relation,
 )
 from claude_dispatcher.role_protocol import COMPARATORS, Language, support_for_path
 
@@ -3401,3 +3409,1293 @@ def test_discover_seals_reports_in_root_order_and_never_sorts():
 
     with pytest.raises(CallSiteReachabilityError):
         discover_seals(_graph(symbols=_ALL_SYMBOLS), roots)
+
+
+# --------------------------------------------------------------------------- #
+# Part 12 — the import relation, and the second defect at the root seam.
+#
+# D5 P2 seals, written on ``feat/D5-relation-seals`` @ ``b2e6fa6`` — the merge
+# of the P1 scaffold ``feat/D5-import-relation`` @ ``76c1918`` into
+# ``feat/D6-adj4`` @ ``c889ac6``. **The merge is CLEAN — the scaffold touched
+# only ``call_site_reachability.py`` and D6's last three rounds touched only
+# ``go_reachability.py``, ``go_call_reachability/main.go``,
+# ``tests/test_go_reachability.py`` and a PROVENANCE file, so the two histories
+# do not overlap in a single file.** Measured with
+# ``PYTHONPATH=src python3 -m pytest -q -o addopts=""``: 2417 passed / 0 failed
+# / 13 skipped at ``c889ac6``, and the same 2417 / 0 / 13 at the merge commit
+# ``b2e6fa6``. ``ANALYZERS`` is ``()`` at both.
+#
+# THE MEASUREMENT THAT DECIDES WHERE THESE ROWS GET THEIR EVIDENCE, and it is
+# the reason not one mechanism row below uses the acceptance tree's shape as
+# its only witness:
+#
+#   The acceptance tree has **0 in-tree import edges** — measured below by
+#   :func:`test_the_acceptance_trees_import_counts_are_the_measured_ones`, which
+#   reads the vendored fixture. On a tree with no edges the FAIL-OPEN and the
+#   TRUTH are the same partition: an empty relation says every package is its
+#   own component, and so does the truth, and both answer 4 of 7. A row proved
+#   only there cannot tell an analyzer that computed the relation from one that
+#   returned nothing, which is vacuity shape "green because the two candidate
+#   answers coincide on this input".
+#
+#   So the mechanism rows are proved on a tree where the two DIFFER, and the
+#   tree is real and is named: ``evenplay-mono/apps/website-public-api`` at
+#   ``51a71736c``, transcribed into :data:`_REACH_EDGES` /
+#   :data:`_REACH_EXTERNAL` below. **Measured by this author 2026-08-11** with
+#   ``go list -e -json ./...`` in that module, unioning ``Imports``,
+#   ``TestImports`` and ``XTestImports`` and keeping the pairs whose target is
+#   in the module:
+#
+#       packages                     12
+#       in-tree undirected edges     24
+#       external (out-of-module)    156
+#       TRUE components               1   (all 12)
+#       EMPTY-relation components    12
+#
+#   **DISPUTE R1 (figures).** :class:`ImportsUnavailable`'s docstring records
+#   this tree as "12 packages, 25 undirected in-tree import edges". Re-measured
+#   here it is **24**, by every counting this author could construct — 24
+#   production-only (``Imports``), 24 including test imports, 24 distinct
+#   undirected pairs. The load-bearing figures, 1 true component against 12
+#   under an empty relation, reproduce EXACTLY. The same docstring's second
+#   tree, ``apps/platform-domain/core``, is recorded as "33 packages, 93 edges,
+#   6 components — one of 28 and five singletons"; re-measured at ``51a71736c``
+#   it is **31 packages, 88 edges, 5 components — one of 27 and four
+#   singletons** (86 edges production-only, same partition). The shape of the
+#   claim survives and the counts do not. No row below rests on either
+#   contested number; the reach fixture is transcribed rather than cited, so a
+#   reader can re-derive every assertion from the data in this file.
+# --------------------------------------------------------------------------- #
+
+
+def _pkg(
+    identity: str,
+    *,
+    symbols: tuple[str, ...] = (),
+    imports: tuple[str, ...] = (),
+    unplaced: tuple[str, ...] = (),
+    external: int = 0,
+) -> PackageImports:
+    """One :class:`PackageImports`, spelled positionally-free.
+
+    Not an implementation of anything under seal: it fills a frozen record.
+    """
+    return PackageImports(
+        package=identity,
+        symbols=frozenset(symbols),
+        imports=frozenset(imports),
+        unplaced_imports=tuple(unplaced),
+        external_import_count=external,
+    )
+
+
+def _relation(*packages: PackageImports) -> ImportRelation:
+    return ImportRelation(packages={p.package: p for p in packages})
+
+
+#: The acceptance tree's two package IDENTITIES — the qualifier half of the
+#: ``Symbol.key`` its declarations carry, which is what the relation is keyed
+#: on. NOT the import paths; see :data:`_ACCEPTANCE_IMPORT_PATHS`.
+_GATES_PKG = "github.com/yourorg/claude-workflow/gates/cmd/gates"
+_ITERATE_PKG = "github.com/yourorg/claude-workflow/iterate/cmd/iterate"
+
+#: The same two packages as an IMPORT STATEMENT spells them. **Disjoint from
+#: the identities above**, which is the whole reason a second derivation of
+#: import paths cancels invisibly rather than colliding loudly.
+_ACCEPTANCE_IMPORT_PATHS = (
+    "github.com/yourorg/claude-workflow/gates",
+    "github.com/yourorg/claude-workflow/iterate",
+)
+
+#: The acceptance tree's measured external import counts, per package. Pinned
+#: against the vendored fixture by
+#: :func:`test_the_acceptance_trees_import_counts_are_the_measured_ones`.
+_ACCEPTANCE_EXTERNAL = {_GATES_PKG: 41, _ITERATE_PKG: 39}
+
+
+def _g(name: str, path: str = "cmd/gates/main.go", line: int = 1) -> Symbol:
+    return Symbol(key=f"{_GATES_PKG}.{name}", path=path, line=line)
+
+
+def _i(name: str, path: str = "cmd/iterate/preserve.go", line: int = 1) -> Symbol:
+    return Symbol(key=f"{_ITERATE_PKG}.{name}", path=path, line=line)
+
+
+#: The acceptance case's two real holes, both ``cancel`` in ``cmd/gates/main.go``
+#: — D6's body resolved the other five. Their CALLER is what scoping reads.
+_GATES_RUN = _g("run", line=90)
+_GATES_SERVE = _g("serve", line=140)
+_HOLE_A = (_GATES_RUN, "cmd/gates/main.go:97", "call through the value `cancel`")
+_HOLE_B = (_GATES_SERVE, "cmd/gates/main.go:151", "call through the value `cancel`")
+
+#: The subject the four answerable findings are about, in the OTHER package.
+_ITERATE_SUBJECT = _i("VerifyPreservation", line=61)
+_ITERATE_HELPER = _i("licenceOf", line=120)
+
+
+def _acceptance_relation(**overrides) -> ImportRelation:
+    """The acceptance tree as the relation records it: two packages, no in-tree
+    import, 41 and 39 placed OUT of the tree, nothing unplaced.
+    """
+    gates = dict(
+        symbols=(_GATES_RUN.key, _GATES_SERVE.key),
+        external=_ACCEPTANCE_EXTERNAL[_GATES_PKG],
+    )
+    iterate = dict(
+        symbols=(_ITERATE_SUBJECT.key, _ITERATE_HELPER.key),
+        external=_ACCEPTANCE_EXTERNAL[_ITERATE_PKG],
+    )
+    gates.update(overrides.pop("gates", {}))
+    iterate.update(overrides.pop("iterate", {}))
+    assert not overrides, overrides
+    return _relation(_pkg(_GATES_PKG, **gates), _pkg(_ITERATE_PKG, **iterate))
+
+
+# --------------------------------------------------------------------------- #
+# The reach fixture. ``evenplay-mono/apps/website-public-api`` @ ``51a71736c``,
+# transcribed from ``go list -e -json ./...`` on 2026-08-11. The module prefix
+# is dropped so the data is readable; nothing below depends on the spelling.
+#
+# It is here because the acceptance tree cannot separate a computed relation
+# from an absent one, and because this tree separates FOUR bodies rather than
+# two — see :func:`test_the_import_graph_is_read_undirected_and_transitively`.
+# --------------------------------------------------------------------------- #
+
+_REACH_MOD = "github.com/EvenPlay/evenplay-mono/apps/website-public-api"
+
+_REACH_EXTERNAL = {
+    "cmd/public-api": 46,
+    "cmd/snapshot-builder": 19,
+    "internal/builder": 10,
+    "internal/domain": 15,
+    "internal/inquiry": 32,
+    "internal/metrics": 15,
+    "internal/seams": 3,
+    "internal/snapshot": 6,
+    "internal/source/postgres": 13,
+    "internal/source/redshift": 20,
+    "internal/store/cache": 12,
+    "internal/store/s3": 21,
+}
+
+#: Directed, as the import statements are written. 24 of them.
+_REACH_EDGES = (
+    ("cmd/public-api", "internal/domain"),
+    ("cmd/public-api", "internal/inquiry"),
+    ("cmd/public-api", "internal/metrics"),
+    ("cmd/public-api", "internal/seams"),
+    ("cmd/public-api", "internal/snapshot"),
+    ("cmd/public-api", "internal/store/cache"),
+    ("cmd/public-api", "internal/store/s3"),
+    ("cmd/snapshot-builder", "internal/builder"),
+    ("cmd/snapshot-builder", "internal/metrics"),
+    ("cmd/snapshot-builder", "internal/source/postgres"),
+    ("cmd/snapshot-builder", "internal/source/redshift"),
+    ("cmd/snapshot-builder", "internal/store/s3"),
+    ("internal/builder", "internal/domain"),
+    ("internal/builder", "internal/seams"),
+    ("internal/builder", "internal/snapshot"),
+    ("internal/inquiry", "internal/seams"),
+    ("internal/metrics", "internal/builder"),
+    ("internal/seams", "internal/snapshot"),
+    ("internal/source/postgres", "internal/builder"),
+    ("internal/source/redshift", "internal/builder"),
+    ("internal/store/cache", "internal/seams"),
+    ("internal/store/cache", "internal/snapshot"),
+    ("internal/store/s3", "internal/seams"),
+    ("internal/store/s3", "internal/snapshot"),
+)
+
+
+def _reach_id(short: str) -> str:
+    return f"{_REACH_MOD}/{short}"
+
+
+def _reach_relation(**overrides) -> ImportRelation:
+    """The 12-package reach tree, keyed on identities, imports as measured."""
+    by_source: dict[str, list[str]] = {short: [] for short in _REACH_EXTERNAL}
+    for source, target in _REACH_EDGES:
+        by_source[source].append(_reach_id(target))
+    return _relation(
+        *(
+            _pkg(
+                _reach_id(short),
+                # One symbol per package, so every node is witnessed and
+                # ``package_of`` can place a hole in any of them.
+                symbols=(f"{_reach_id(short)}.Run",),
+                imports=tuple(by_source[short]),
+                external=_REACH_EXTERNAL[short],
+                **overrides.get(short, {}),
+            )
+            for short in sorted(_REACH_EXTERNAL)
+        )
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Requirement 1 — absence is not narrowing.
+# --------------------------------------------------------------------------- #
+
+
+def test_an_absent_relation_leaves_the_hole_set_exactly_as_it_found_it():
+    """No relation, no narrowing — the CURRENT sealed behaviour, not the
+    maximally-narrowed one.
+
+    Requirement 2 of the scaffold's brief and the one direction this mechanism
+    refuses. The fail-open is not a hypothetical shape: an empty
+    :class:`ImportRelation` reads as "no package imports anything", every
+    package becomes its own component, and every hole is scoped away from every
+    subject outside it. :class:`ImportsUnavailable` exists so that an analyzer
+    with nothing to say lands on TODAY's answer instead.
+
+    Three absences are judged in one call because a body may only handle one of
+    them: the module-level :data:`IMPORTS_NOT_SUPPLIED`, a freshly constructed
+    :class:`ImportsUnavailable` with a different reason, and the one
+    :func:`build_call_graph` mints on a :class:`SourceUnreadable`. Identity is
+    asserted as well as equality — the contract says "return ``holes``
+    UNCHANGED" and a body that rebuilt an equal tuple has still not been caught
+    doing anything wrong, but a body that rebuilt a REORDERED one has, and
+    order is load-bearing (``check_subject``'s abstention detail names
+    ``holes[0]``).
+
+    The control is judged in the same call and it is the whole point: with a
+    real relation in hand and the two packages genuinely disconnected, the same
+    subject and the same holes come back EMPTY. Without it this row is green
+    against a body that returns its input for every evidence value whatsoever —
+    which is a mechanism that never narrows and is never worth landing.
+
+    Production reaches these inputs today and on every tree: :data:`ANALYZERS`
+    is ``()`` so :func:`_union_import_evidence` returns
+    :data:`IMPORTS_NOT_SUPPLIED` for every graph the module can build, and the
+    Go row's :meth:`graph` carries the field's default, so ``ImportsUnavailable``
+    is the ONLY value ``CallGraph.package_imports`` takes at this revision.
+
+    RED at HEAD: :func:`holes_in_scope` raises ``NotImplementedError``.
+
+    **Measured under**, each applied to a throwaway reference implementation in
+    a clone and each run over the whole suite:
+
+      * returning ``()`` on the absence — the fail-open spelled directly.
+        Reddens this row and
+        ``test_narrowing_only_ever_removes_holes_and_can_never_un_find_a_path``,
+        and nothing else;
+      * returning ``holes`` for EVERY evidence value — the control half reddens,
+        together with ``…_in_both_directions`` and ``…_never_by_string_surgery``;
+      * returning ``tuple(sorted(holes, key=lambda h: h[0].key, reverse=True))``
+        on the absence — the order half reddens, same two rows as the first.
+    """
+    holes = (_HOLE_A, _HOLE_B)
+    absences = (
+        IMPORTS_NOT_SUPPLIED,
+        ImportsUnavailable(reason="the Go row does not compute imports yet"),
+        ImportsUnavailable(
+            reason="the 'go' analyzer could not read cmd/gates/main.go, so the "
+            "imports declared there were never seen"
+        ),
+    )
+    for absent in absences:
+        kept = holes_in_scope(_ITERATE_SUBJECT, holes, absent)
+        assert kept == holes, (
+            f"{absent!r} narrowed the hole set. An analyzer that could not "
+            "answer must degrade to today's whole-tree behaviour, never to the "
+            "maximally-narrowed one"
+        )
+        assert [h[0].key for h in kept] == [h[0].key for h in holes], (
+            "the absence branch reordered the holes; check_subject's abstention "
+            "detail names holes[0], so a reorder moves which site a human is "
+            "sent to with no verdict moving and nothing red"
+        )
+
+    assert holes_in_scope(_ITERATE_SUBJECT, holes, _acceptance_relation()) == (), (
+        "the control failed: with a real relation and the two packages in "
+        "different components, both cmd/gates holes are still in scope for a "
+        "cmd/iterate subject — so the rows above are green against a body that "
+        "never narrows at all"
+    )
+
+
+def test_an_empty_relation_over_a_non_empty_graph_is_refused():
+    """The fail-open spelled as data, refused at the type.
+
+    An :class:`ImportRelation` with no packages over a graph that declares
+    symbols is the maximal narrowing wearing the costume of a computed answer.
+    It is refused, and the refusal is what makes :class:`ImportsUnavailable`
+    the only way to say "I could not compute this" — an absence that costs a
+    class name and a required reason cannot be arrived at by omission.
+
+    Three controls, all judged in the same call, because the refusal must be
+    about the EMPTINESS and not about the shape:
+
+      * the same emptiness over an EMPTY symbol map is accepted — an empty tree
+        genuinely has no packages, and a rule that refused it would refuse a
+        legal input;
+      * :data:`IMPORTS_NOT_SUPPLIED` over the same non-empty symbols is
+        accepted — the named absence is always well formed, which is the point
+        of it;
+      * a well-formed two-package relation over the same symbols is accepted.
+
+    GREEN at HEAD, mutation-verified: :func:`validate_import_relation` is one of
+    the three things the scaffold implemented on purpose, on the stated ground
+    that "a seal cannot express 'an empty relation is refused' without calling
+    the function that refuses it".
+
+    Production reaches this input at :func:`_union_import_evidence`, which hands
+    every merged relation to this validator before returning it — so an analyzer
+    that answered with an empty relation is refused at the construction site
+    rather than at the first narrowing.
+
+    **Measured under: deleting BOTH refusals** — the ``if symbols and not
+    evidence.packages`` clause AND the trailing unplaced-symbol clause. Reddens
+    this row and no other in the suite. Relaxing the first to ``if not
+    evidence.packages`` reddens the empty-tree control, and this row alone.
+
+    **DISPUTE R3, and it is why the mutation above names two clauses rather than
+    one. The requirement-2 refusal is OVER-DETERMINED, and its dedicated clause
+    is not individually load-bearing.** Measured on ``feat/D5-relation-seals`` @
+    ``b2e6fa6``: with ``if symbols and not evidence.packages`` replaced by ``if
+    False``, an empty relation over a one-symbol graph is STILL refused — by
+    ``unplaced = sorted(key for key in symbols if key not in owner)``, which
+    fires on exactly the same inputs, because an empty ``packages`` places no
+    symbol. That mutation reddens NO row in the suite. Deleting the
+    unplaced-symbol clause alone reddens no row either. Neither clause is
+    redundant in general — the second catches partial relations the first cannot
+    see — but for THIS requirement they are co-extensive, and the whole value of
+    the dedicated clause is its MESSAGE: a body debugging "1 symbol(s) belong to
+    no package" is being told about a symbol when the fact is that an analyzer
+    returned nothing. Recorded rather than repaired; collapsing them is a
+    scaffold decision, not a seal author's.
+    """
+    symbols = {
+        s.key: s
+        for s in (_GATES_RUN, _GATES_SERVE, _ITERATE_SUBJECT, _ITERATE_HELPER)
+    }
+    empty = ImportRelation(packages={})
+
+    with pytest.raises(CallSiteReachabilityError):
+        validate_import_relation(empty, symbols)
+
+    assert validate_import_relation(empty, {}) is None, (
+        "the control failed: an empty relation over an empty tree was refused, "
+        "so the refusal above is about the shape and not about the fail-open"
+    )
+    assert validate_import_relation(IMPORTS_NOT_SUPPLIED, symbols) is None, (
+        "the control failed: the NAMED absence was refused, which would leave "
+        "an analyzer with nothing to say no legal way to say it"
+    )
+    assert validate_import_relation(_acceptance_relation(), symbols) is None, (
+        "the control failed: a well-formed two-package relation was refused"
+    )
+
+
+def test_import_components_raises_on_the_absence_rather_than_answering_anyway():
+    """A caller that has not handled the refusal may not slide past it.
+
+    The scaffold contracts this raise and gives the reason: the branch order in
+    :func:`holes_in_scope` — absence FIRST, components second — is only
+    enforceable if the component computation refuses to answer for a state that
+    carries no components. The two plausible wrong answers are both silent: an
+    empty mapping makes every lookup a ``KeyError`` three frames down, and a
+    single all-packages component makes the absence read as "everything is
+    connected", which is the RIGHT verdict reached by the WRONG route and would
+    make a body that dropped the ``holes_in_scope`` absence branch entirely
+    still pass every verdict row in this file.
+
+    The control is judged in the same call: a real relation returns a mapping
+    rather than raising, so the raise above is about the state and not about the
+    function being unimplemented.
+
+    Production reaches this input the moment a body writes the ``holes_in_scope``
+    branch in the wrong order, which is the only thing this row is for.
+
+    RED at HEAD: the stub raises ``NotImplementedError``, which is not
+    :class:`CallSiteReachabilityError`, so ``pytest.raises`` does not catch it.
+    **Measured under**: returning ``{}`` for :class:`ImportsUnavailable`;
+    returning ``{"<all>": frozenset()}``. Each reddens this row and no other in
+    the suite.
+    """
+    with pytest.raises(CallSiteReachabilityError):
+        import_components(IMPORTS_NOT_SUPPLIED)
+    with pytest.raises(CallSiteReachabilityError):
+        import_components(ImportsUnavailable(reason="no analyzer ran"))
+
+    components = import_components(_acceptance_relation())
+    assert isinstance(components, Mapping), (
+        "the control failed: a real relation did not yield a mapping, so the "
+        "raises above are about the function and not about the state"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Requirement 2 — an unplaced import is an edge to every package.
+# --------------------------------------------------------------------------- #
+
+
+def test_an_unplaced_import_is_an_edge_to_every_package():
+    """One import nobody could place collapses the tree to one component.
+
+    The ruled rule, in the half that is easiest to soften into a heuristic: *an
+    unresolved import counts as an EDGE, never as an ABSENCE*. A package whose
+    reach cannot be bounded could import anything, including the subject's
+    package, so the positive claim — "no code in the hole's package can name
+    ``S``" — cannot be discharged against ANY ``S``. Because components are an
+    equivalence, one such package anywhere collapses the whole tree and step 3
+    reverts to today's behaviour.
+
+    Proved on the reach tree and not on the acceptance tree, and the choice is
+    load-bearing: the acceptance tree has 0 in-tree import edges, so its true
+    partition and its empty-relation partition are the SAME 12-of-12 shape —
+    there, "unplaced collapses the tree" and "unplaced is dropped" differ by the
+    whole answer, but so does every other pair of bodies, and the row would not
+    say which rule produced it. Here the surgery is a single package: the tree
+    is one component either way, so the row is made to speak by DISCONNECTING
+    one package first (``internal/audit``, imported by nobody and importing
+    nothing) and then giving it — and only it — an unplaced import.
+
+    Three bodies separated, in one call:
+
+      * **DROP the unplaced import** (the absence reading, and the fail-open):
+        ``internal/audit`` stays a singleton;
+      * **RAISE on it**: the row errors out;
+      * **GUESS a target**: any single guessed edge leaves at least one of the
+        twelve outside ``internal/audit``'s component, since a guess names one
+        package and the rule names all of them.
+
+    The control is judged in the same call: the identical relation with
+    ``unplaced_imports=()`` keeps ``internal/audit`` alone, so the collapse is
+    attributable to the unplaced import and to nothing else about the fixture.
+
+    Production reaches this input on the first Go tree with a ``replace``
+    directive: ``_import_path_qualifiers``' own docstring records a renaming
+    ``replace`` as OPEN and unclosable by any per-unit import-path field, and an
+    import the analyzer can neither place in the tree nor establish as
+    out-of-tree is exactly this state.
+
+    RED at HEAD: :func:`import_components` raises ``NotImplementedError``.
+    **Measured under**: dropping ``unplaced_imports`` from the traversal —
+    reddens this row and ``…_a_placed_out_of_tree_import_contributes_no_edge``,
+    and nothing else; returning direct neighbours only — reddens this row and
+    ``…_undirected_and_transitively``; reading ``external_import_count`` as
+    unplaceable — reddens this row and five others, because that body collapses
+    every fixture in this part.
+    """
+    audit = _reach_id("internal/audit")
+    detached = _relation(
+        *_reach_relation().packages.values(),
+        _pkg(audit, symbols=(f"{audit}.Run",), external=4),
+    )
+    nodes = frozenset(detached.packages)
+    assert len(nodes) == 13
+
+    clean = import_components(detached)
+    assert clean[audit] == frozenset({audit}), (
+        "the control failed: a package importing nothing and imported by "
+        "nobody is not a singleton component, so the collapse below is not "
+        "attributable to the unplaced import"
+    )
+    assert clean[_reach_id("cmd/public-api")] == nodes - {audit}, (
+        "the control failed: the other twelve are not one component, so this "
+        "fixture cannot show a collapse"
+    )
+
+    with_unplaced = _relation(
+        *_reach_relation().packages.values(),
+        _pkg(
+            audit,
+            symbols=(f"{audit}.Run",),
+            external=4,
+            unplaced=("replace example.com/upstream => ./local: no unit claims it",),
+        ),
+    )
+    collapsed = import_components(with_unplaced)
+    for identity in sorted(nodes):
+        assert collapsed[identity] == nodes, (
+            f"{identity!r} is not in the whole-tree component. One unplaced "
+            "import anywhere makes every package's component the whole tree — "
+            "an import whose target could be anything can be an import of the "
+            f"subject's package. Got {sorted(collapsed[identity])}"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Requirement 3 — a placed out-of-tree import contributes no edge, and the
+# count is the non-vacuity field.
+# --------------------------------------------------------------------------- #
+
+
+def test_a_placed_out_of_tree_import_contributes_no_edge():
+    """80 stdlib imports do not make two packages one component.
+
+    The scaffold's CHOICE, and the rejected alternative is the one a cautious
+    body writes: treating every import the analyzer did not place IN the tree as
+    unplaceable. On the acceptance tree that is all 80 imports, the relation
+    collapses to one component on every tree ever analysed, and the mechanism is
+    never consulted. A dependency outside the tree declares no :class:`Symbol`
+    here and therefore cannot be the subject's package.
+
+    The row is the pair, judged in one call, and the pair is what makes it say
+    something: the acceptance relation carries 41 and 39 PLACED-EXTERNAL imports
+    and 0 unplaced, and must yield TWO components; the same two packages with a
+    single unplaced import — one import, against eighty placed ones — must yield
+    ONE. A body that conflated "outside the tree" with "could not be placed"
+    passes neither half.
+
+    The counts are not decoration and they are not a literal this file invented:
+    :func:`test_the_acceptance_trees_import_counts_are_the_measured_ones` reads
+    them off the vendored fixture. They are the non-vacuity field — a relation
+    reporting zero imports, zero unplaced and zero external for every package is
+    either a tree of genuinely isolated packages or an analyzer that stopped
+    reading import blocks, and the third assertion here is what stops those two
+    reading the same: the all-zero relation gives the SAME partition as the
+    41/39 one, so the partition alone can never distinguish them and the COUNT
+    is the only thing that can.
+
+    Production reaches this input on the acceptance tree itself, which is the
+    tree D6's analyzer runs over.
+
+    RED at HEAD: :func:`import_components` raises ``NotImplementedError``.
+    **Measured under**: treating ``external_import_count > 0`` as unplaceable —
+    the two-component half reddens; ignoring ``unplaced_imports`` — the
+    one-component half reddens, together with
+    ``…_an_unplaced_import_is_an_edge_to_every_package`` and nothing else.
+    """
+    two = import_components(_acceptance_relation())
+    assert two[_GATES_PKG] == frozenset({_GATES_PKG}), (
+        f"{_GATES_PKG}'s component is {sorted(two[_GATES_PKG])}; 41 imports "
+        "placed OUTSIDE the tree are not edges inside it"
+    )
+    assert two[_ITERATE_PKG] == frozenset({_ITERATE_PKG})
+
+    one = import_components(
+        _acceptance_relation(gates={"unplaced": ("a vendored path no unit claims",)})
+    )
+    assert one[_GATES_PKG] == frozenset({_GATES_PKG, _ITERATE_PKG}), (
+        "one UNPLACED import did not collapse the tree while eighty PLACED "
+        "external ones left it split — the two must not be the same value"
+    )
+
+    zeros = import_components(
+        _acceptance_relation(gates={"external": 0}, iterate={"external": 0})
+    )
+    assert zeros == two, (
+        "the partition moved when the external counts went to zero, which "
+        "means the count is being read as structure. It is not structure: it "
+        "is the field that tells a reader whether the analyzer read the import "
+        "blocks at all, and a relation of all zeros must be distinguishable "
+        "from one that counted BY THE COUNT and never by the partition"
+    )
+
+
+def test_the_acceptance_trees_import_counts_are_the_measured_ones():
+    """41, 39, 80, and zero in-tree — read off the vendored fixture.
+
+    This row pins the INPUT, not the mechanism, exactly as
+    :func:`test_the_canonical_fixture_is_the_measured_artifact` does for
+    ``cmd/classify``. It exists for two reasons and both are about the rows
+    above rather than about this one:
+
+      1. :data:`_ACCEPTANCE_EXTERNAL` is the number a body must hit, and a
+         hand-written number nobody checks is fiction. The scaffold cites 41 and
+         39 in three docstrings; if the fixture ever changes, this row is what
+         goes red instead of those three going quietly wrong;
+      2. **it is the measurement that disqualifies the acceptance tree as
+         non-vacuity evidence for every other row in this part.** ZERO in-tree
+         imports is what makes the fail-open and the truth agree there, so the
+         reach fixture had to be brought in. That claim is asserted here rather
+         than asserted in prose.
+
+    The sweep is deliberately crude and is not a parser of anything the module
+    under seal parses: it counts the lines of a Go ``import ( … )`` block and
+    the single-line ``import "x"`` form, over every ``.go`` file of each
+    package, test files included — which is the set an analyzer reading import
+    blocks would read.
+
+    GREEN at HEAD, mutation-verified: it reads vendored text.
+
+    **Measured under**: deleting one import line from the first ``import (…)``
+    block of ``tests/fixtures/d6_g2_preserve/cmd/gates/main.go``. Reddens this
+    row and no other row in THIS file; it also reddens three rows in
+    ``tests/test_go_reachability.py`` that read the same fixture
+    (``…_seven_seal_subject_pairs_over_two_keys``,
+    ``…_step_three_abstention_is_measured…``,
+    ``…_subject_reader_cannot_be_import_based_over_this_fixture``), which is the
+    correct blast radius for a fixture edit and is recorded so a body does not
+    mistake it for collateral from a code change.
+    """
+    fixture = _TESTS_DIR / "fixtures" / "d6_g2_preserve"
+    block = re.compile(r"^import\s*\(([^)]*)\)", re.M | re.S)
+    single = re.compile(r'^import\s+(?:\w+\s+)?"[^"]+"\s*$', re.M)
+
+    counted = {}
+    for short, identity in (("cmd/gates", _GATES_PKG), ("cmd/iterate", _ITERATE_PKG)):
+        total = 0
+        in_tree = 0
+        for go_file in sorted((fixture / short).glob("*.go")):
+            text = go_file.read_text(encoding="utf-8")
+            lines = []
+            for match in block.finditer(text):
+                lines += [
+                    line.strip()
+                    for line in match.group(1).splitlines()
+                    if line.strip() and not line.strip().startswith("//")
+                ]
+            lines += [m.group(0).partition("import")[2].strip() for m in single.finditer(text)]
+            total += len(lines)
+            in_tree += sum(1 for line in lines if "yourorg/claude-workflow" in line)
+        counted[identity] = total
+        assert in_tree == 0, (
+            f"{short} now has {in_tree} in-tree import(s). The rows in this "
+            "part rest on the acceptance tree having NONE — that is what makes "
+            "its true partition and its empty-relation partition the same "
+            "answer, and therefore what makes it unusable as non-vacuity "
+            "evidence. If this changed, the reach fixture's justification "
+            "changed with it"
+        )
+
+    assert counted == _ACCEPTANCE_EXTERNAL, (
+        f"the fixture's import blocks now count {counted}, not "
+        f"{_ACCEPTANCE_EXTERNAL}; the numbers three scaffold docstrings cite "
+        "and the numbers the tree carries have drifted apart"
+    )
+    assert sum(counted.values()) == 80
+
+
+# --------------------------------------------------------------------------- #
+# Requirement 4 — the graph is undirected, and it is transitive.
+# --------------------------------------------------------------------------- #
+
+
+def test_the_import_graph_is_read_undirected_and_transitively():
+    """``A imports B`` joins them BOTH ways, and joins reach through a third.
+
+    A function value crosses one import in both directions — ``A`` passes
+    ``B``'s function into ``B``'s call, and ``B``'s call returns one to ``A`` —
+    so reading :attr:`PackageImports.imports` directionally would discharge the
+    positive claim in half the cases where it is false, which is the fail-open
+    direction. Transitivity has the same standing: ``P`` imports ``R``, ``Q``
+    imports ``R``, and ``R`` can evaluate ``p.Register(q.S)``.
+
+    **This is the row the acceptance tree cannot carry**, and the reach fixture
+    is here for it. On a tree with zero in-tree edges every reading — undirected,
+    directed, transitive, direct-only, and the empty relation — gives the same
+    12-singleton partition. On this tree, measured at ``51a71736c``, the four
+    separate cleanly, and the row asserts each separation rather than asserting
+    the answer once:
+
+      * **the truth** — one component of 12;
+      * **an EMPTY relation** — 12 components. Asserted here as the FAIL-OPEN
+        CONTROL, in this same call, because it is the body this whole class
+        exists to refuse and on the acceptance tree it is invisible;
+      * **DIRECTED** — ``internal/snapshot`` imports nothing, so a directed
+        reading gives it a component of ONE while five packages import it;
+      * **DIRECT-ONLY (no transitivity)** — ``cmd/public-api`` imports seven of
+        the eleven others and imports ``internal/builder`` through none of them,
+        so a direct-only reading gives it a component of 8, not 12.
+
+    Production reaches this input on any repository with an ``internal/``
+    tree, which is every module in ``evenplay-mono`` and is the shape
+    ``_import_path_qualifiers``' docstring says "binds every repository with an
+    ``internal/``".
+
+    RED at HEAD: :func:`import_components` raises ``NotImplementedError``.
+    **Measured under**: following ``imports`` in the declared direction only —
+    reddens this row, ``…_an_unplaced_import_is_an_edge_to_every_package`` and
+    ``…_in_both_directions``; returning each package's direct neighbours plus
+    itself — reddens this row and the unplaced row; ignoring ``imports``
+    altogether — the fail-open control reddens, same three rows as the first.
+    """
+    relation = _reach_relation()
+    nodes = frozenset(relation.packages)
+    assert len(nodes) == 12
+    assert sum(len(p.imports) for p in relation.packages.values()) == 24
+
+    components = import_components(relation)
+    assert set(components) == nodes
+    for identity in sorted(nodes):
+        assert components[identity] == nodes, (
+            f"{identity!r} is not in the one component this tree has. Measured "
+            "at evenplay-mono 51a71736c: 12 packages, 24 undirected in-tree "
+            f"import edges, ONE component. Got {len(components[identity])} "
+            "member(s)"
+        )
+
+    # The three wrong readings, each named by the member that exposes it.
+    snapshot = _reach_id("internal/snapshot")
+    assert relation.packages[snapshot].imports == frozenset(), (
+        "the fixture changed: internal/snapshot importing something makes the "
+        "directed reading indistinguishable from the undirected one here"
+    )
+    assert len(relation.packages[_reach_id("cmd/public-api")].imports) == 7, (
+        "the fixture changed: cmd/public-api's direct neighbourhood is no "
+        "longer a proper subset of the tree, so the direct-only reading is no "
+        "longer separated"
+    )
+
+    # The fail-open control, judged here: the SAME node set with every import
+    # removed is twelve components, and on this tree that is a different answer.
+    hollow = _relation(
+        *(
+            _pkg(p.package, symbols=tuple(p.symbols), external=p.external_import_count)
+            for p in relation.packages.values()
+        )
+    )
+    hollow_components = import_components(hollow)
+    assert {frozenset(v) for v in hollow_components.values()} == {
+        frozenset({n}) for n in nodes
+    }, (
+        "the control failed: a relation with no imports at all did NOT give "
+        "twelve singleton components, so the twelve-into-one result above is "
+        "not attributable to the imports being read"
+    )
+
+
+def test_an_import_puts_a_hole_in_scope_in_both_directions():
+    """The undirected rule, at the seam that spends it.
+
+    :func:`import_components` is where the rule is computed and
+    :func:`holes_in_scope` is where it is spent, and the two are separately
+    wrongable: a body can compute an undirected partition and then look the
+    subject up in the HOLE's component rather than asking whether the two agree.
+    The row is the mirror pair — hole in the importer with the subject in the
+    imported, and hole in the imported with the subject in the importer — and a
+    body that got the direction wrong passes exactly one half.
+
+    The third package is the control, judged in the same call: ``cmd/iterate``
+    imports nothing and nothing imports it, so its hole is scoped AWAY for a
+    ``cmd/gates`` subject. Without that assertion the row is green against
+    ``return holes``.
+
+    Production reaches this input on the acceptance case as soon as one of the
+    two modules imports the other, and on any ``internal/`` tree today.
+
+    RED at HEAD: :func:`holes_in_scope` raises ``NotImplementedError``.
+    **Measured under**: keeping a hole only when the HOLE's package imports the
+    subject's — reddens this row and no other in the suite; reading the graph in
+    the declared direction only — reddens this row and two others; returning
+    ``holes`` unchanged — the control reddens.
+    """
+    third = "github.com/yourorg/claude-workflow/repro/cmd/repro"
+    third_caller = Symbol(key=f"{third}.run", path="cmd/repro/main.go", line=12)
+    third_hole = (third_caller, "cmd/repro/main.go:20", "call through a value")
+
+    # gates imports iterate. Nothing imports repro and repro imports nothing.
+    relation = _relation(
+        _pkg(
+            _GATES_PKG,
+            symbols=(_GATES_RUN.key, _GATES_SERVE.key),
+            imports=(_ITERATE_PKG,),
+            external=41,
+        ),
+        _pkg(
+            _ITERATE_PKG,
+            symbols=(_ITERATE_SUBJECT.key, _ITERATE_HELPER.key),
+            external=39,
+        ),
+        _pkg(third, symbols=(third_caller.key,), external=2),
+    )
+
+    holes = (_HOLE_A, third_hole)
+
+    # Direction 1: the hole is in the IMPORTER, the subject in the IMPORTED.
+    assert holes_in_scope(_ITERATE_SUBJECT, holes, relation) == (_HOLE_A,), (
+        "a hole in cmd/gates was scoped away from a cmd/iterate subject while "
+        "cmd/gates imports cmd/iterate. gates can name iterate's function and "
+        "pass it to a value it then calls"
+    )
+
+    # Direction 2: the hole is in the IMPORTED, the subject in the IMPORTER.
+    iterate_caller = _i("licenceOf", line=120)
+    iterate_hole = (iterate_caller, "cmd/iterate/preserve.go:133", "call through a value")
+    mirrored = (iterate_hole, third_hole)
+    assert holes_in_scope(_GATES_RUN, mirrored, relation) == (iterate_hole,), (
+        "a hole in cmd/iterate was scoped away from a cmd/gates subject. The "
+        "graph is UNDIRECTED for this purpose: gates' call into iterate can "
+        "RETURN a gates function, so an iterate frame can hold it"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Requirement 5 — narrowing may only reduce abstention.
+# --------------------------------------------------------------------------- #
+
+
+def test_narrowing_only_ever_removes_holes_and_can_never_un_find_a_path():
+    """Anti-requirement 2 in the register this change opens.
+
+    Scoping is allowed to move a subject from :attr:`Reach.UNDECIDED` to
+    :attr:`Reach.FROM_TESTS_ONLY` and thence to a BREACH — that is the whole
+    point of it. What it may never do is make the mechanism assert MORE than it
+    could before, and there are exactly two routes to that and both are sealed
+    here:
+
+      * **the output is a SUBSEQUENCE of the input**, over every evidence shape
+        this module can produce. Step 3 abstains iff the hole set is non-empty,
+        so a subsequence can only make the mechanism abstain LESS often; a body
+        that ADDED a hole, or duplicated one, or reordered them, has made the
+        abstention set a function of something other than the input;
+      * **and the two fail-closed clauses**, which are what stop the narrowing
+        being computed around a gap: a subject :meth:`ImportRelation.package_of`
+        cannot place keeps ALL holes, and an individual hole it cannot place is
+        KEPT. An unplaceable key has an unknown component, and an unknown
+        component may be the subject's.
+
+    Five evidence shapes are swept in one call, including the two that a naive
+    body handles by accident and the one that a naive body gets exactly
+    backwards (the all-singleton relation, where the correct answer is the
+    empty tuple and the fail-open answer is also the empty tuple — which is why
+    the subsequence property, and not the ANSWER, is what this row asserts).
+
+    The control is judged in the same call and it is the un-find half: a
+    subject that is already in ``production_reach`` reads
+    :attr:`Reach.FROM_PRODUCTION` while the graph carries a relation that
+    scopes every hole away and while the production closure is FULL of holes.
+    That is step 1 running before step 3, which the contract says STANDS, and
+    it is the row a body must not redden when it lands the one-line wiring.
+
+    Production reaches the unplaceable-key inputs on any tree the analyzer
+    partly described: :func:`validate_import_relation` refuses a relation that
+    leaves a graph symbol unplaced, but :func:`holes_in_scope` is handed the
+    evidence directly and is contracted to fail closed on its own.
+
+    RED at HEAD: :func:`holes_in_scope` raises ``NotImplementedError``.
+    **Measured under**, each reddening this row and — for the first three — no
+    other row in the suite: reordering the kept holes; dropping a hole whose
+    package cannot be placed; scoping to ``()`` when the SUBJECT cannot be
+    placed. The fourth is the un-find control: wiring ``holes_in_scope`` into
+    ``check_subject`` AHEAD of step 1 reddens this row and two rows in
+    ``tests/test_go_reachability.py`` that judge the acceptance tree — which is
+    the point, since that wiring moves verdicts on a real tree.
+    """
+    stranger = Symbol(
+        key="example.com/nobody/pkg.helper", path="pkg/helper.go", line=3
+    )
+    stranger_hole = (stranger, "pkg/helper.go:9", "call through a value")
+    holes = (_HOLE_A, stranger_hole, _HOLE_B)
+
+    shapes = (
+        IMPORTS_NOT_SUPPLIED,
+        ImportsUnavailable(reason="the Go row does not compute imports yet"),
+        _acceptance_relation(),
+        _acceptance_relation(gates={"imports": (_ITERATE_PKG,)}),
+        _acceptance_relation(gates={"unplaced": ("a path no unit claims",)}),
+    )
+    for evidence in shapes:
+        kept = holes_in_scope(_ITERATE_SUBJECT, holes, evidence)
+        assert list(kept) == [h for h in holes if h in set(kept)], (
+            f"{evidence!r} produced {[h[1] for h in kept]}, which is not a "
+            "SUBSEQUENCE of the input. check_subject's abstention detail names "
+            "holes[0]; a filter that reorders moves which site a human is sent "
+            "to with no verdict moving and nothing red"
+        )
+        assert len(kept) == len(set(kept)) <= len(holes)
+        assert stranger_hole in kept, (
+            f"{evidence!r} scoped away a hole whose package the relation "
+            "cannot place. An unplaceable key has an unknown component and an "
+            "unknown component may be the subject's — this clause is the "
+            "difference between narrowing and guessing"
+        )
+
+    unplaceable_subject = holes_in_scope(stranger, holes, _acceptance_relation())
+    assert unplaceable_subject == holes, (
+        "a subject the relation cannot place did not keep the whole hole set. "
+        "Unknown component, fail closed — the same rule as the per-hole one, "
+        "applied per call"
+    )
+
+    # The un-find control. A saturated hole set, a relation that puts the
+    # subject alone, and a subject that step 1 already found.
+    saturated = _graph(
+        unresolved=(
+            (_FIND_CONFIG, "cmd/classify/main.go:450", "call through a value"),
+        )
+    )
+    found = _judge(_LOAD_CONFIG, graph=saturated)
+    assert found.reach is Reach.FROM_PRODUCTION, (
+        "the control failed: a subject already in production_reach did not read "
+        "FROM_PRODUCTION with the production closure full of holes. Step 1 runs "
+        "before step 3, and the scoping change may not move that — failing to "
+        "look may only make an answer LESS conclusive"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Requirement 6 — package identity agrees with the key's qualifier.
+# --------------------------------------------------------------------------- #
+
+
+def test_the_components_are_keyed_on_the_identities_package_of_answers():
+    """One node table, or the divergence cancels and nothing is red.
+
+    D6's P4 measured that a Go symbol's KEY QUALIFIER and its IMPORT PATH are
+    different strings whenever the module root is not the tree root — the
+    acceptance tree's ``cmd/gates`` is keyed ``…/gates/cmd/gates`` and imported
+    as ``…/gates`` — and warned that any import relation must be keyed on an
+    identity that agrees with the qualifier. :data:`_ACCEPTANCE_IMPORT_PATHS`
+    and :data:`_GATES_PKG` are asserted DISJOINT below, which is the fact that
+    makes a second derivation cancel invisibly rather than collide loudly.
+
+    What a body can get wrong here is not the arithmetic, it is the KEY SPACE:
+    :meth:`ImportRelation.package_of` answers identities, so a component
+    mapping keyed on anything else — import paths, a union-find representative,
+    a normalised spelling — makes ``components[package_of(k)]`` either a
+    ``KeyError`` or a silent miss, and a silent miss on the subject's package is
+    the fail-open. So the row pins the two key spaces as ONE, both ways:
+
+      * every key of the mapping is a node of the relation, and every node is a
+        key — no phantom nodes, no dropped ones;
+      * every MEMBER of every component is a node too;
+      * and the round trip closes: for every symbol the relation places,
+        ``package_of(key)`` is a key of the mapping.
+
+    The all-unplaced relation is swept in the same call as the ordinary one,
+    because the whole-tree collapse is exactly where a body is tempted to
+    return a single synthetic component under a made-up name.
+
+    Production reaches this input the moment an analyzer supplies a relation,
+    which is what ``ImportRelation``'s docstring means by "**THIS RELATION
+    SUBSUMES ``go_reachability._import_path_qualifiers``. DO NOT BUILD A SECOND
+    DERIVATION OF IMPORT PATHS.**"
+
+    RED at HEAD: :func:`import_components` raises ``NotImplementedError``.
+    **Measured under**: keying the mapping on the union-find representative —
+    the spelling the scaffold's own rejected alternative names, and the one a
+    body reaches for by accident. It reddens this row and four others in this
+    part, because a representative-keyed mapping misses on every package that is
+    not its own representative.
+
+    **DISPUTE R2, and it is the limit of this row.** The scaffold asks a seal
+    author to "pin the two node sets as EQUAL — the values of
+    ``_import_path_qualifiers`` and the keys of ``ImportRelation.packages``".
+    That row cannot be written at this revision and cannot be turned green by
+    the body these seals are for: no analyzer populates
+    ``CallGraph.package_imports``, so the live comparison has no left-hand side,
+    and a row asserting one would be red the day it was written and red the day
+    the D5 body landed — vacuity shape "pins a transient unimplementedness",
+    which this unit has already been burned by once. The narrower property that
+    IS D5's and IS reachable is the one above. The full cross-derivation
+    equality is owed by whichever round makes the Go row supply a relation, and
+    it is recorded here so it is not lost.
+    """
+    for identity in _ACCEPTANCE_IMPORT_PATHS:
+        assert identity not in (_GATES_PKG, _ITERATE_PKG), (
+            "an import path and a key qualifier came out equal; the whole "
+            "hazard this row guards is that they are DIFFERENT strings for one "
+            "package, so a second derivation produces a node set that overlaps "
+            "the first nowhere and every component silently splits"
+        )
+
+    for relation in (
+        _acceptance_relation(),
+        _reach_relation(),
+        _acceptance_relation(gates={"unplaced": ("a path no unit claims",)}),
+    ):
+        nodes = frozenset(relation.packages)
+        components = import_components(relation)
+        assert frozenset(components) == nodes, (
+            f"the component mapping is keyed on {sorted(set(components) - nodes)} "
+            f"and is missing {sorted(nodes - set(components))}. holes_in_scope "
+            "looks a package up by what package_of returned, so a mapping in "
+            "any other key space misses silently on the subject's own package"
+        )
+        for identity, members in components.items():
+            assert members <= nodes, (
+                f"{identity!r}'s component names {sorted(members - nodes)}, "
+                "which the relation does not carry"
+            )
+            assert identity in members, (
+                f"{identity!r} is not in its own component; the relation is an "
+                "equivalence and a package can always name itself"
+            )
+        for package in relation.packages.values():
+            for key in sorted(package.symbols):
+                assert relation.package_of(key) in components, (
+                    f"package_of({key!r}) answered "
+                    f"{relation.package_of(key)!r}, which is not a key of the "
+                    "component mapping — the two derivations have diverged and "
+                    "the lookup fails closed on every symbol in that package"
+                )
+
+
+def test_a_method_key_is_placed_through_package_of_and_never_by_string_surgery():
+    """``…/classify.(*Config).Match`` is in ``…/classify``, and no split says so.
+
+    The scaffold names this hazard on :attr:`PackageImports.symbols` and it is
+    the concrete shape of the identity-agreement requirement at the spending
+    seam: a Go method key is ``…/classify.(*Config).Match``, the qualifier is
+    NOT "everything before the last dot", and a layer that guessed would place
+    the method in a package called ``…/classify.(*Config)`` — a package in no
+    component, on which every question fails closed, for every method in the
+    repository.
+
+    The row is built so that the two bodies give OPPOSITE answers rather than
+    the same one twice, which is what makes it non-vacuous: the method's package
+    and the subject's package are in DIFFERENT components, so the correct answer
+    is to scope the hole AWAY, while a surgical body invents an unplaceable
+    package, hits the fail-closed clause, and KEEPS it. A row built the other
+    way round — same component — would be green under both.
+
+    The control is judged in the same call: a second method hole, in the
+    SUBJECT's own package and spelled with the same two dots, is kept. Without
+    it the row is green against ``return ()``.
+
+    Production reaches this input on every Go tree with a method: D6's
+    ``go_symbol_key`` spells receivers this way and the acceptance tree's own
+    ``preserve.go`` declares methods.
+
+    RED at HEAD: :func:`holes_in_scope` raises ``NotImplementedError``.
+    **Measured under**: deriving the hole's package as
+    ``key.rpartition(".")[0]`` and falling closed when that names no package —
+    reddens this row and NO other in the suite, which is the point: the surgery
+    is invisible everywhere except on a method key. Returning ``holes``
+    unchanged reddens the first half; the control is what covers ``return ()``.
+    """
+    gates_method = Symbol(
+        key=f"{_GATES_PKG}.(*Runner).dispatch",
+        path="cmd/gates/main.go",
+        line=210,
+    )
+    iterate_method = Symbol(
+        key=f"{_ITERATE_PKG}.(*Licence).allows",
+        path="cmd/iterate/preserve.go",
+        line=88,
+    )
+    gates_hole = (gates_method, "cmd/gates/main.go:217", "call through a value")
+    iterate_hole = (iterate_method, "cmd/iterate/preserve.go:95", "call through a value")
+
+    relation = _acceptance_relation(
+        gates={"symbols": (_GATES_RUN.key, _GATES_SERVE.key, gates_method.key)},
+        iterate={
+            "symbols": (
+                _ITERATE_SUBJECT.key,
+                _ITERATE_HELPER.key,
+                iterate_method.key,
+            )
+        },
+    )
+    assert relation.package_of(gates_method.key) == _GATES_PKG, (
+        "the control failed: package_of could not place a method key, so the "
+        "assertions below would be about the fixture and not about the caller"
+    )
+
+    kept = holes_in_scope(_ITERATE_SUBJECT, (gates_hole, iterate_hole), relation)
+    assert kept == (iterate_hole,), (
+        "a method-keyed hole was placed by string surgery. `…(*Runner).dispatch` "
+        "is declared in cmd/gates, which the relation carries and which is in a "
+        "DIFFERENT component from the cmd/iterate subject, so the hole is out "
+        "of scope; a body splitting the key on a dot invents the package "
+        f"'{_GATES_PKG}.(*Runner)', finds it in no component, and fails closed "
+        f"— keeping it. Got {[h[0].key for h in kept]}"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# The second, separate defect: ``root_kind`` derives from ``kind`` AND from the
+# declaring file, which is what ``_validate_root``'s own docstring already says.
+# --------------------------------------------------------------------------- #
+
+
+def test_root_kind_derives_from_the_kind_and_the_declaring_file_together(
+    tmp_path, monkeypatch
+):
+    """A ``go_package_var`` in a ``_test.go`` is not "no root". It is a TEST root.
+
+    :func:`_validate_root`'s docstring contracts ``root_kind`` as "DERIVED from
+    ``kind`` AND from ``seal_verify.is_test_path`` over the declaring file". The
+    code derives it from ``kind`` alone — ``_ROOT_KIND_BY_ENTRYPOINT.get(
+    root.kind)`` — and then REFUSES any production kind found in a test file.
+    The two agree only if a production kind in a test file is impossible, and it
+    is idiomatic Go.
+
+    **The consequence is measured and it was escalated to this layer twice by
+    D6, in ``GoReachabilityAnalyzer.roots``' own docstring**, under
+    ``feat/D6-body`` @ ``f4c7c46`` and again under ``feat/D6-adj4`` @
+    ``c889ac6``:
+
+      * ``func init()`` in ``z_test.go`` calling ``registered()`` — the root is
+        dropped and ``registered`` reads FROM_NEITHER where the truth is
+        FROM_TEST;
+      * D6's ``<vars:test>`` symbol — the per-(package, binary) split P3 landed
+        to stop a verdict flipping on a filename's sort order — is a
+        ``go_package_var`` declared in a ``_test.go``, so it is exactly this
+        case and contributes NO root in either fixture tree. The split raised
+        the price of this defect rather than changing it.
+
+    **FROM_NEITHER is not merely imprecise: it RAISES for a seal-derived
+    subject** (:func:`test_from_neither_raises_for_a_seal_derived_subject`), so
+    the under-approximation converts into an exception rather than into a
+    quieter answer.
+
+    D6's row cannot fix it and correctly did not try: routing ``<vars:test>``
+    past its filter while this module derives PRODUCTION from ``go_package_var``
+    alone trips ``_validate_root`` and turns a quiet under-approximation into a
+    raise on a legal tree. The fix is one table lookup and it is D5's.
+
+    Swept over every production :class:`EntrypointKind`, both root_kind
+    spellings per member, because a body that special-cases ``GO_PACKAGE_VAR``
+    has fixed the instance and not the derivation — ``GO_INIT`` in a ``_test.go``
+    is the same tree and ``PYTHON_IMPORT_TIME`` in ``tests/conftest.py`` is the
+    Python one.
+
+    Two controls judged in the same call: the same kinds in a PRODUCTION file
+    still derive PRODUCTION (the fix must not flip the default), and each kind's
+    test-file root asserting PRODUCTION is still REFUSED (the fix must not
+    become "accept whatever the row says").
+
+    Production reaches this input on the first Go tree with a package-level
+    ``var`` or an ``init`` in a test file, which D6 measured as idiomatic and
+    built two fixtures around.
+
+    RED at HEAD: ``discover_roots`` raises
+    :class:`CallSiteReachabilityError` — "is a production entrypoint
+    (go_package_var) declared in the test file …" — on the first assertion.
+    **Measured under**: the current HEAD — this row is red, on
+    ``_validate_root``'s "is a production entrypoint (go_main) declared in the
+    test file" refusal; reverting the file half so ``expected`` comes from
+    ``_ROOT_KIND_BY_ENTRYPOINT[kind]`` alone — reddens this row and
+    ``test_a_root_that_disagrees_with_its_own_file_or_names_no_kind_is_refused``;
+    accepting the row's asserted ``root_kind`` whenever the file is a test file
+    — reddens this row, that same sibling, and
+    ``test_root_kind_is_derived_from_the_kind_and_never_asserted_by_the_row[test_function]``;
+    making :func:`_validate_root` a no-op — reddens this row and nine others.
+
+    **DISPUTE R4 (prose that must move with the code).** :class:`Root`'s own
+    ``root_kind`` docstring says "a production kind found in a test file is a
+    :class:`CallSiteReachabilityError` rather than a coin flip" — the behaviour
+    this row refutes — while :func:`_validate_root`'s docstring already
+    contracts the derivation this row seals. The two have disagreed since the
+    module was written, and the CODE implements the first. A body landing the
+    fix must strike the :class:`Root` sentence; a body that edits only the
+    derivation leaves the module carrying a contract it violates.
+
+    **DISPUTE R5 (what the fix does NOT cost, measured).** The
+    production-kind-in-a-test-file REFUSAL must go — a ``go_package_var`` in a
+    ``_test.go`` becomes a root rather than a raise — and removing it was
+    measured NOT to cost the sibling row: its "func main inside
+    contract_seal_test.go" case still raises under the fix, because that row
+    asserts PRODUCTION while the file now derives TEST. The refusal survives,
+    for a different and better reason.
+    """
+    production_kinds = tuple(
+        kind
+        for kind in EntrypointKind
+        if kind is not EntrypointKind.TEST_FUNCTION
+    )
+    assert len(production_kinds) == 7, (
+        "EntrypointKind grew or shrank; this sweep is over every kind the "
+        "table calls PRODUCTION and a member added without visiting it would "
+        "go unswept"
+    )
+
+    tree = _tree(tmp_path)
+    for kind in production_kinds:
+        symbol = _sym(f"initOf_{kind.value}", "contract_seal_test.go", 11)
+        honest = Root(
+            symbol=symbol,
+            kind=kind,
+            root_kind=RootKind.TEST,
+            evidence=f"cmd/classify/contract_seal_test.go:11 {kind.value}",
+        )
+        monkeypatch.setattr(csr, "ANALYZERS", (_go(roots=(honest,)),))
+        assert discover_roots(tree) == (honest,), (
+            f"a {kind.value} declared in contract_seal_test.go was not accepted "
+            "as a TEST root. It is not 'no root': it runs, in the test binary, "
+            "and everything it reaches is genuinely reached under test. "
+            "root_kind is derived from the kind AND from is_test_path, which "
+            "is what _validate_root's own docstring already says"
+        )
+
+        lying = Root(
+            symbol=symbol,
+            kind=kind,
+            root_kind=RootKind.PRODUCTION,
+            evidence="asserted by the row",
+        )
+        monkeypatch.setattr(csr, "ANALYZERS", (_go(roots=(lying,)),))
+        with pytest.raises(CallSiteReachabilityError):
+            discover_roots(tree)
+
+        in_production = _sym(f"prodOf_{kind.value}", "main.go", 11)
+        unchanged = Root(
+            symbol=in_production,
+            kind=kind,
+            root_kind=RootKind.PRODUCTION,
+            evidence=f"cmd/classify/main.go:11 {kind.value}",
+        )
+        monkeypatch.setattr(csr, "ANALYZERS", (_go(roots=(unchanged,)),))
+        assert discover_roots(tree) == (unchanged,), (
+            f"the control failed: a {kind.value} in a PRODUCTION file stopped "
+            "deriving PRODUCTION, so the fix flipped the default rather than "
+            "adding the file to the derivation"
+        )
+
+
+def test_a_test_function_outside_the_tests_is_refused_in_both_spellings(
+    tmp_path, monkeypatch
+):
+    """The MIRROR direction stays a refusal, and the drop above it stays a drop.
+
+    D6's P4 ruled the two directions for DIFFERENT reasons and only one of them
+    is a defect. This row is the half that is CORRECT AND PERMANENT, sealed
+    explicitly so that a body repairing the other half cannot repair it by
+    deleting both clauses — which is the cheapest way to make the sibling row
+    green and is measurably wrong.
+
+    A ``func TestFoo`` in ``main.go`` starts nothing: ``go test`` runs ``TestX``
+    only out of a ``_test`` file, so the conjunction
+    :func:`go_test_root_predicate` contracts is false and there is no root. D6
+    measured the consequence under ``feat/D6-body`` @ ``f4c7c46`` — ``func
+    TestFoo`` in ``main.go`` calling ``reachedOnlyFromTestFoo``, the root
+    dropped, the callee reading FROM_NEITHER — and ruled that TRUE, because
+    nothing else calls it. Losing this refusal would make a production symbol
+    named ``TestFoo`` a TEST root, and everything below it would read
+    FROM_TESTS_ONLY: a BREACH manufactured out of a naming convention.
+
+    BOTH root_kind spellings are refused, and the second is the one the naive
+    fix opens. A body that rewrites the derivation as "TEST when
+    ``is_test_path``, else the table" and DELETES the ``TEST_FUNCTION``-outside-
+    the-tests clause accepts ``TEST_FUNCTION`` in ``main.go`` with
+    ``root_kind=TEST``, because the table already derives TEST for that kind and
+    the row's assertion agrees with it. Nothing would be red without this half.
+
+    The control is judged in the same call: the well-formed pair still returns
+    both roots, so the refusals are about the file/kind disagreement and not
+    about the validator having been made to refuse everything.
+
+    GREEN at HEAD, mutation-verified. The ``root_kind=TEST`` spelling is also
+    covered by
+    :func:`test_a_root_that_disagrees_with_its_own_file_or_names_no_kind_is_refused`;
+    the ``root_kind=PRODUCTION`` spelling is covered nowhere, and the sweep in
+    :func:`test_root_kind_is_derived_from_the_kind_and_never_asserted_by_the_row`
+    does not reach it because that sweep puts every ``TEST_FUNCTION`` in a test
+    file by construction.
+
+    Production reaches this input on any Go tree with a helper named
+    ``TestHelper`` in a production file, and on any Python module with a
+    module-level ``test_`` function.
+
+    **Measured under**: deleting the ``TEST_FUNCTION and not in_test_file``
+    clause from :func:`_validate_root`, on top of the file-half fix — reddens
+    this row and
+    ``test_a_root_that_disagrees_with_its_own_file_or_names_no_kind_is_refused``,
+    and nothing else in the suite. Making :func:`_validate_root` a no-op reddens
+    this row and nine others. **The measurement is the reason this row exists:**
+    with the file half added, the sibling's fourth refusal and this row are the
+    only two things between a body and a production ``TestHelper`` becoming a
+    TEST root, and the sibling covers only the ``root_kind=TEST`` spelling.
+    """
+    tree = _tree(tmp_path)
+    for asserted in (RootKind.TEST, RootKind.PRODUCTION):
+        misplaced = Root(
+            symbol=_MAIN,
+            kind=EntrypointKind.TEST_FUNCTION,
+            root_kind=asserted,
+            evidence=f"a TEST_FUNCTION inside main.go, root_kind={asserted.value}",
+        )
+        monkeypatch.setattr(csr, "ANALYZERS", (_go(roots=(misplaced,)),))
+        with pytest.raises(CallSiteReachabilityError):
+            discover_roots(tree)
+
+    monkeypatch.setattr(csr, "ANALYZERS", (_go(),))
+    assert set(discover_roots(tree)) == {_GO_MAIN_ROOT, _TEST_ROOT}, (
+        "the control failed: the well-formed pair was refused too, so the "
+        "refusals above are not about the file disagreeing with the kind"
+    )
