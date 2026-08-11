@@ -534,7 +534,22 @@ def _judge(
     graph: CallGraph | None = None,
     production_reach=None,
     test_reach=None,
+    roots: tuple[Root, ...] = (_GO_MAIN_ROOT, _TEST_ROOT),
 ) -> Finding:
+    """One pair judged, against the SAME two root records the reach maps use.
+
+    AMENDED by P4 round 2 (2026-08-11), under the ruling that struck
+    ``_synthetic_root``. This helper used to omit ``roots`` and take
+    :func:`check_subject`'s default, which made the module SYNTHESISE the
+    :class:`Root` on every ``CallPath`` these rows produce — so
+    ``dark.test_path.root`` below was an assertion about a record the module
+    invented for this helper's benefit, and the production side of that
+    synthesis had no caller outside this file. Passing the records the reach
+    maps were written from is not a widening: ``_production_reach`` originates
+    every chain at ``_MAIN`` and ``_test_reach`` at ``_SEAL_FN``, which are
+    exactly ``_GO_MAIN_ROOT.symbol`` and ``_TEST_ROOT.symbol``, so every row
+    below now checks a real record and none of their verdicts move.
+    """
     return check_subject(
         _SEAL,
         subject,
@@ -542,6 +557,7 @@ def _judge(
         production_reach=_production_reach() if production_reach is None else production_reach,
         test_reach=_test_reach() if test_reach is None else test_reach,
         analyzer=analyzer if analyzer is not None else _go(),
+        roots=roots,
     )
 
 
