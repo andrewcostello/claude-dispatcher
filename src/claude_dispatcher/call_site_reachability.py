@@ -238,6 +238,67 @@ re-derive it, and the trigger for revisiting is named there.
 below raises for P4 is due BEFORE enrolment, because implementing the ruling
 grid makes this module a gate whose decisions can be dissolved by editing it.
 
+P3 BODY (2026-08-11) — THE RELATION IS COMPUTED, AND ``root_kind`` READS THE FILE
+=================================================================================
+``feat/D5-relation-body``, base ``3eedd07`` (``feat/D5-relation-seals``). Three
+things land and the two bullets above that call them STUBS are now history
+rather than description:
+
+  * :func:`import_components` — IMPLEMENTED. Undirected, transitive, and an
+    unplaced import is an edge to every package. One new CHOICE, recorded there
+    as **DISPUTE B1**: an ``imports`` entry naming a package the relation does
+    not carry is treated as unplaced — an edge to everything — rather than
+    raised on or dropped. :func:`validate_import_relation` still refuses that
+    shape loudly and still runs first; this is the fail-closed floor under it.
+  * :func:`holes_in_scope` — IMPLEMENTED and WIRED, one line in step 3 of
+    :func:`check_subject` plus the regime marker on that step's detail string.
+    The subject conjunct only; the closure conjunct stays in
+    :func:`check_subject`, so its seal keeps pinning it independently.
+  * :func:`_validate_root` — REPAIRED. ``root_kind`` now derives from ``kind``
+    AND from ``seal_verify.is_test_path`` over the declaring file, which is
+    what its own docstring has contracted since the module was written. The
+    production-kind-in-a-test-file REFUSAL is struck, and the contradicting
+    sentence in :class:`Root`'s ``root_kind`` paragraph is struck with it — a
+    body that edited only the derivation would have left this module carrying a
+    contract it violates. The MIRROR — a ``TEST_FUNCTION`` outside the tests —
+    is not symmetric and remains a refusal.
+
+**Measured under ``feat/D5-relation-body``, base ``3eedd07``, 2026-08-11**,
+``PYTHONPATH=src python3 -m pytest -q -o addopts=""``:
+
+  * before: **10 failed, 2420 passed, 13 skipped**, every failure in
+    ``tests/test_call_site_reachability.py``;
+  * after: **0 failed, 2430 passed, 13 skipped**;
+  * on the reach fixture ``evenplay-mono/apps/website-public-api`` @
+    ``51a71736c`` — 12 packages, 24 directed in-tree edges — this body returns
+    **ONE component of 12**. The three wrong readings return 12 (empty
+    relation), 12-with-``internal/snapshot``-a-singleton (directed), and
+    8-of-12 for ``cmd/public-api`` (direct-only). It is the truth;
+  * the acceptance tree still answers **4 of 7** with the hole set scoped and
+    **0 of 7** with the relation absent — and absent is what every tree carries
+    at this revision. Neither regime produced a ``FROM_PRODUCTION`` or an
+    ``OK``: the narrowing reduces abstention and does not manufacture verdicts;
+  * **23 mutations, each applied alone to the shipped body and run over the
+    WHOLE suite in a ``cp -a`` clone.** Every row this body closes has at least
+    one mutation that reddens it and a recorded blast radius. Three blast radii
+    diverge from what the seals record, all reported on the functions
+    concerned, and all in the direction of MORE coverage than predicted: the
+    absence branch (2 predicted, **4** measured — the difference is the wiring
+    line), the representative-keyed mapping (5 predicted, **4** measured), and
+    ``_validate_root`` as a no-op (10 predicted, **11** measured). Two changes
+    are measured as pinned by NO row and are landed on the contract's authority
+    with that fact recorded: **DISPUTE B1** and **DISPUTE B2**.
+
+**NOTHING WAS ENROLLED.** :data:`ANALYZERS` is still ``()``, ``role_protocol``
+was not touched, ``FLOOR_GLOBS`` is unchanged, and no analyzer row was added.
+The wiring line is inert on every tree this module can build today, because
+:func:`_union_import_evidence` returns :data:`IMPORTS_NOT_SUPPLIED` with no row
+to ask. **DISPUTE R1 of the seal pass stands unresolved and is not this body's
+to close:** :class:`ImportsUnavailable`'s docstring says the reach tree is 25
+edges and ``platform-domain/core`` is 33 packages / 93 edges / 6 components;
+the seal author re-measured 24, and 31 / 88 / 5. The load-bearing figures — 1
+true component against 12 — reproduce under this body exactly.
+
 The defect class this exists for
 ================================
 The first feature unit built end to end under the scaffold-first protocol
@@ -1583,12 +1644,31 @@ class Root:
         PRODUCTION or TEST. **Derived from ``kind`` and from
         ``seal_verify.is_test_path`` over the declaring file, never asserted by
         the analyzer independently**, so a row cannot mark its own roots
-        production. ``TEST_FUNCTION`` is the only kind that yields TEST, and a
-        production kind found in a test file is a
-        :class:`CallSiteReachabilityError` rather than a coin flip — a
-        ``func main()`` inside ``_test.go`` is a tree this module does not
-        understand, and saying so is cheaper than being wrong in either
-        direction.
+        production. The declaring file is the SENIOR half: a kind the table
+        calls production, declared in a test file, is a **TEST root**. A ``func
+        init()`` in a ``z_test.go`` runs — in the test binary — and everything
+        it reaches is genuinely reached under test. See :func:`_validate_root`
+        for the derivation and for what refusals remain.
+
+        **STRUCK on ``feat/D5-relation-body``, 2026-08-11, base ``3eedd07``,
+        and recorded rather than silently deleted, because the code implemented
+        it for as long as it stood:** this paragraph used to end "a production
+        kind found in a test file is a :class:`CallSiteReachabilityError`
+        rather than a coin flip — a ``func main()`` inside ``_test.go`` is a
+        tree this module does not understand, and saying so is cheaper than
+        being wrong in either direction." It contradicted
+        :func:`_validate_root`'s own docstring, which has contracted the
+        two-half derivation from the start, and it was measurably wrong rather
+        than merely cautious: it dropped D6's ``<vars:test>`` root and every
+        ``init`` in a ``_test.go``, and a dropped root under-approximates into
+        :attr:`Reach.FROM_NEITHER`, which RAISES for a seal-derived subject.
+        The reading it protected against — a ``GO_MAIN`` inside
+        ``contract_seal_test.go`` silently certifying the whole test closure as
+        FROM_PRODUCTION — is still refused, and by the derivation itself: such
+        a root derives TEST, so a row asserting PRODUCTION for it disagrees
+        with the derivation and is refused. The mirror, a ``TEST_FUNCTION``
+        outside the tests, remains a refusal for a reason that is not
+        symmetric; :func:`_validate_root` gives it.
     ``evidence``
         What was read to derive this root, in a form a human can check by hand:
         ``"pyproject.toml [project.scripts] dispatcher"``,
@@ -1675,7 +1755,18 @@ def discover_roots(tree: Path) -> tuple[Root, ...]:
 #: reason the struck fallback's TEST half was a derivation rather than a guess;
 #: the ruling was that a constrained guess is still not a derivation, so the
 #: table now says only what it is — the derivation of ``root_kind`` from
-#: ``kind``, which is the whole of :func:`_validate_root`'s authority.
+#: ``kind``.
+#:
+#: **It is HALF of :func:`_validate_root`'s authority and not the whole of it**
+#: (amended on ``feat/D5-relation-body``, 2026-08-11, base ``3eedd07``, where
+#: the sentence used to read "which is the whole of ``_validate_root``'s
+#: authority"). The other half is ``seal_verify.is_test_path`` over the
+#: declaring file, and it is SENIOR to this table: a kind named PRODUCTION
+#: here, declared in a test file, derives TEST. This table is what that
+#: derivation falls back to for a production file, and it is still the thing a
+#: ninth member added without visiting this file falls off — the raise above it
+#: is unchanged.
+
 _ROOT_KIND_BY_ENTRYPOINT: Mapping[EntrypointKind, RootKind] = {
     EntrypointKind.GO_MAIN: RootKind.PRODUCTION,
     EntrypointKind.GO_INIT: RootKind.PRODUCTION,
@@ -1702,13 +1793,71 @@ def _validate_root(root: Root) -> None:
     coin flip because both wrong answers are intolerable: a test root read as
     production silently certifies everything below it, and a production root
     read as test floods the report with false BREACHes.
+
+    **THE DERIVATION WAS REPAIRED ON ``feat/D5-relation-body``, 2026-08-11,
+    base ``3eedd07``, and the prose moved with it.** Until this commit the code
+    derived ``expected`` from ``_ROOT_KIND_BY_ENTRYPOINT.get(root.kind)``
+    ALONE — the ``kind`` half only — and then REFUSED any production kind found
+    in a test file. This function's own first paragraph has contracted both
+    halves since the module was written, and :class:`Root`'s ``root_kind``
+    paragraph contracted the refusal; the two have disagreed from the start and
+    the code implemented the second. It now implements the first, and the
+    :class:`Root` sentence has been struck rather than left standing.
+
+    What changed, exactly: ``expected`` is ``TEST`` when the declaring file is
+    a test file and the table's answer otherwise, and the
+    production-kind-in-a-test-file refusal is GONE. A ``func init()`` in a
+    ``z_test.go``, and D6's ``<vars:test>`` ``GO_PACKAGE_VAR`` symbol, are
+    roots — TEST roots. They RUN, in the test binary, and everything they reach
+    is genuinely reached under test. Dropping them made their callees read
+    :attr:`Reach.FROM_NEITHER` where the truth is FROM_TEST, and FROM_NEITHER
+    RAISES for a seal-derived subject, so the under-approximation converted
+    into an exception rather than into a quieter answer. D6 escalated it to
+    this layer twice, in ``GoReachabilityAnalyzer.roots``' own docstring, and
+    correctly did not try to fix it there.
+
+    **The mirror direction is NOT symmetric and stays a refusal**: a
+    ``TEST_FUNCTION`` declared OUTSIDE the tests starts nothing, because ``go
+    test`` runs ``TestX`` only out of a ``_test`` file, and accepting it would
+    make a production helper named ``TestHelper`` a TEST root and everything
+    below it a BREACH manufactured out of a naming convention. The clause above
+    is what holds that, and a body repairing the file half by deleting BOTH
+    clauses has opened exactly that hole.
+
+    **Measured under ``feat/D5-relation-body``, 2026-08-11, base ``3eedd07``,
+    each mutation applied alone to the shipped body and run over the WHOLE
+    suite in a clone** (the seven ``FLOOR_GLOBS`` rows cannot run there and are
+    excluded; that is expected, not collateral):
+
+      * ``expected = by_kind`` — the pre-fix derivation, ``kind`` alone —
+        reddens ``test_root_kind_derives_from_the_kind_and_the_declaring_file_together``
+        and ``test_a_root_that_disagrees_with_its_own_file_or_names_no_kind_is_refused``,
+        and nothing else;
+      * ``expected = root.root_kind if in_test_file else by_kind`` — "accept
+        whatever the row says in a test file" — reddens those two AND
+        ``test_root_kind_is_derived_from_the_kind_and_never_asserted_by_the_row[test_function]``;
+      * deleting the ``TEST_FUNCTION``-outside-the-tests clause reddens
+        ``test_a_test_function_outside_the_tests_is_refused_in_both_spellings``
+        and the ``…_disagrees_with_its_own_file…`` sibling, and nothing else —
+        which is the measurement that says the mirror clause is load-bearing
+        and may not be deleted to make the file half easier;
+      * making this function a no-op reddens **11** rows. The seal author
+        predicted "this row and nine others", i.e. 10; recorded as a
+        divergence, in the direction of more coverage rather than less.
+
+    **The sibling row survives the struck refusal, and for a BETTER reason** —
+    checked directly rather than inferred from the suite being green: its "``func
+    main`` inside ``contract_seal_test.go``" case, ``root_kind=PRODUCTION``,
+    now raises "``…derives RootKind.TEST``" because the FILE derives TEST and
+    the row asserted PRODUCTION. The same root spelled ``root_kind=TEST`` is
+    accepted, which is the whole of the repair.
     """
     if not isinstance(root, Root):
         raise CallSiteReachabilityError(
             f"an analyzer produced {root!r}, which is not a Root"
         )
-    expected = _ROOT_KIND_BY_ENTRYPOINT.get(root.kind)
-    if expected is None:
+    by_kind = _ROOT_KIND_BY_ENTRYPOINT.get(root.kind)
+    if by_kind is None:
         raise CallSiteReachabilityError(
             f"root {root.symbol.key!r} carries entrypoint kind {root.kind!r}, "
             "which this module cannot classify; a root whose kind cannot be "
@@ -1722,19 +1871,21 @@ def _validate_root(root: Root) -> None:
             "disagreeing notions of 'is this a test file' is the failure D5 "
             "refuses to open"
         )
-    if root.kind is not EntrypointKind.TEST_FUNCTION and in_test_file:
-        raise CallSiteReachabilityError(
-            f"root {root.symbol.key!r} is a production entrypoint "
-            f"({root.kind.value}) declared in the test file "
-            f"{root.symbol.path!r}; that is a tree this module does not "
-            "understand, and saying so is cheaper than being wrong in either "
-            "direction"
-        )
+    # BOTH halves of the derivation, per this function's own first paragraph.
+    # A production kind declared in a test file is a TEST root, not a refusal:
+    # `func init()` in a `_test.go`, and D6's `<vars:test>` GO_PACKAGE_VAR
+    # symbol, RUN — in the test binary — and everything they reach is genuinely
+    # reached under test. The file cannot make a TEST_FUNCTION production: the
+    # clause above already refused that spelling, and the table derives TEST
+    # for it anyway, so the two halves agree wherever both have an opinion.
+    expected = RootKind.TEST if in_test_file else by_kind
     if root.root_kind is not expected:
         raise CallSiteReachabilityError(
             f"root {root.symbol.key!r} declares root_kind "
-            f"{root.root_kind!r} while its kind {root.kind.value!r} derives "
-            f"{expected!r}; root_kind is derived, never asserted by the row"
+            f"{root.root_kind!r} while its kind {root.kind.value!r} declared "
+            f"in {root.symbol.path!r} (is_test_path: {in_test_file}) derives "
+            f"{expected!r}; root_kind is derived from the kind AND from the "
+            "declaring file, never asserted by the row"
         )
 
 
@@ -2425,11 +2576,9 @@ def validate_import_relation(
 def import_components(evidence: ImportEvidence) -> Mapping[str, frozenset[str]]:
     """Package identity -> every package in its UNDIRECTED import component.
 
-    **STUB.** The ruled rule, and the one computation this round deliberately
-    does not perform: a body writes it and a seal author writes the rows that
-    pin it, because it is the sentence the operator ruled and it must be sealed
-    against the ruling rather than against whatever a scaffold happened to
-    write. What the body owes, exactly:
+    **IMPLEMENTED on ``feat/D5-relation-body``, 2026-08-11, base ``3eedd07``.**
+    The ruled rule, computed once, here, where one seal can pin it. What the
+    body owed, and what it landed:
 
       * **UNDIRECTED.** ``P`` imports ``Q`` puts ``P`` and ``Q`` in one
         component, both ways. A value crosses that one import in both
@@ -2467,14 +2616,100 @@ def import_components(evidence: ImportEvidence) -> Mapping[str, frozenset[str]]:
     reader did not ask about. The member set answers the question a caller
     actually has — "is the hole's package in here" — with no second lookup.
 
-    **Predicted (unmeasured) under ``feat/D5-import-relation``, base
-    ``f4c7c46``, 2026-08-11:** on the acceptance tree this returns 2 components,
-    one per package. The COMPONENT COUNT is measured — 2, from the import blocks
-    of both packages, 0 in-tree import edges between them — but this function
-    does not run, so what is predicted is that a body implementing the four
-    rules above reproduces it.
+    CHOICE, and it is the ONE policy question the contract left open (the body
+    of ``feat/D5-relation-body``, recorded as **DISPUTE B1**): what to do with
+    an entry in ``imports`` naming a package the relation does not carry.
+    :func:`validate_import_relation` REFUSES that shape, and it runs on every
+    relation :func:`_union_import_evidence` returns, so this branch is
+    unreachable from production — but this function is public and a seal or a
+    later caller can hand it an unvalidated relation. Its own docstring names
+    the two bad options, "either raise deep inside :func:`import_components` or
+    silently drop the edge", and this body takes NEITHER: a dangling target is
+    treated exactly as an :attr:`PackageImports.unplaced_imports` entry — an
+    import that could not be placed onto a package of this tree — and therefore
+    as an EDGE TO EVERY PACKAGE. Three reasons: it applies the ruled rule
+    instead of inventing a fourth policy for the same fact; it can only
+    COLLAPSE and never SPLIT, so it cannot narrow on evidence that was
+    collected and then lost; and it cannot turn a data drift into an outage in
+    a module that is a gate. Defence in depth, not a substitute: the loud
+    refusal is still :func:`validate_import_relation`'s and still fires first.
+
+    **Measured under ``feat/D5-relation-body``, 2026-08-11, base ``3eedd07``:**
+    on the acceptance tree this returns 2 components, one per package — the
+    scaffold's prediction reproduced by running it. On the reach fixture
+    ``evenplay-mono/apps/website-public-api`` @ ``51a71736c`` (12 packages, 24
+    directed in-tree edges) it returns ONE component of 12, against 12
+    singletons for the same node set with the imports removed. Run against all
+    four candidate readings the seals separate, on that fixture: **this is the
+    TRUTH** — the empty relation gives 12 singletons, a directed reading gives
+    ``internal/snapshot`` a member set of 1 though five packages import it, and
+    a direct-only reading gives ``cmd/public-api`` 8 of 12. This body matches
+    the truth and none of the other three.
+
+    **DISPUTE B1 is measured as UNPINNED and is recorded rather than defended
+    by a row**: replacing the collapse with a raise reddens NOTHING in the
+    whole suite (2026-08-11, clone, whole suite). The choice above rests on the
+    contract's reasoning and not on a seal, and a seal author who disagrees
+    with it can overturn it at no cost to any existing row.
     """
-    raise NotImplementedError("import_components")
+    if isinstance(evidence, ImportsUnavailable):
+        raise CallSiteReachabilityError(
+            f"import_components was asked for the components of "
+            f"{evidence!r}; an absent relation has no components, and "
+            "answering anyway — with an empty mapping, or with one "
+            "all-packages component — would let a caller that never handled "
+            "the absence slide into a narrowing computed over evidence "
+            "nobody collected. Branch on the state first; see holes_in_scope"
+        )
+    if not isinstance(evidence, ImportRelation):
+        raise CallSiteReachabilityError(
+            f"{evidence!r} is neither an ImportRelation nor an "
+            "ImportsUnavailable, so it has no components"
+        )
+
+    nodes = frozenset(evidence.packages)
+    whole_tree = {identity: nodes for identity in nodes}
+
+    # An unplaced import is an edge to EVERY package: a package whose reach
+    # cannot be bounded could import anything, including the subject's, so the
+    # positive claim cannot be discharged against any subject at all. Because
+    # components are an equivalence, one such package anywhere collapses the
+    # tree — which is severe, and is exactly what the ruling says.
+    for package in evidence.packages.values():
+        if package.unplaced_imports:
+            return whole_tree
+
+    parent: dict[str, str] = {identity: identity for identity in nodes}
+
+    def _find(node: str) -> str:
+        root = node
+        while parent[root] != root:
+            root = parent[root]
+        while parent[node] != root:
+            parent[node], node = root, parent[node]
+        return root
+
+    for identity, package in evidence.packages.items():
+        for imported in package.imports:
+            if imported not in parent:
+                # DISPUTE B1 above: an edge to a node this relation does not
+                # carry is an import that could not be placed on this tree.
+                return whole_tree
+            # UNDIRECTED: `P imports Q` joins them both ways, because a value
+            # crosses that one import in both directions — P can pass Q's
+            # function into Q's call, and Q's call can return one to P.
+            # TRANSITIVE falls out of the union: P and Q both importing R are
+            # one component, and R can evaluate `p.Register(q.S)`.
+            left, right = _find(identity), _find(imported)
+            if left != right:
+                parent[left] = right
+
+    members: dict[str, set[str]] = {}
+    for identity in nodes:
+        members.setdefault(_find(identity), set()).add(identity)
+    return {
+        identity: frozenset(members[_find(identity)]) for identity in nodes
+    }
 
 
 def holes_in_scope(
@@ -2484,8 +2719,9 @@ def holes_in_scope(
 ) -> tuple[tuple[Symbol, str, str], ...]:
     """The holes that could be the missing call site FOR THIS SUBJECT.
 
-    **STUB, and the seam step 3 of :func:`check_subject` grows.** This is
-    question 4 of the brief — where the filtering happens — and the answer is
+    **IMPLEMENTED AND WIRED on ``feat/D5-relation-body``, 2026-08-11, base
+    ``3eedd07``**, as the one line step 3 of :func:`check_subject` grows. This
+    is question 4 of the brief — where the filtering happens — and the answer is
     HERE, in D5, never in an analyzer. Three reasons, the third decisive:
 
       1. the rule is a ruling about JUDGEMENT and not a fact about a language.
@@ -2554,8 +2790,80 @@ def holes_in_scope(
     read ``unresolved_calls`` itself and quietly re-derive the closure filter it
     was told not to own, and would make a seal build a whole graph to exhibit a
     two-package question.
+
+    **THE SEAM THAT CANCELS INVISIBLY, and how this body avoids it.** Package
+    identity is whatever :meth:`ImportRelation.package_of` ANSWERS, and this
+    function derives it nowhere else. There is no ``rpartition('.')`` here and
+    there must never be one: a Go method key is
+    ``…/cmd/gates.(*Runner).dispatch``, a body splitting on the last dot
+    invents the package ``…/cmd/gates.(*Runner)``, finds it in no component,
+    fails closed, and KEEPS a hole the truth scopes away. **Measured under
+    ``feat/D5-relation-body``, 2026-08-11, base ``3eedd07``:** that mutation
+    reddens
+    ``test_a_method_key_is_placed_through_package_of_and_never_by_string_surgery``
+    and NO other row in the suite.
+
+    **The narrowing can only ever REMOVE holes, by construction and not by
+    luck**: the output is built by appending a subset of ``holes`` in input
+    order, so it is a subsequence of the input; step 3 abstains iff the hole set
+    is non-empty; therefore this can only make the mechanism abstain LESS often
+    and can never manufacture a BREACH out of a hole it invented. Step 1 still
+    runs first and a found path is still found.
+
+    **Measured under ``feat/D5-relation-body``, 2026-08-11, base ``3eedd07``,
+    by driving the real :func:`check_subject` over the acceptance tree with a
+    hand-built relation for its two packages — the P4's number and the seal
+    author's REPRODUCED and not trusted:**
+
+        hole set                          scope=tree   scope=subject
+        2 holes (this base, D6's rule 1)     0 of 7        **4 of 7**
+
+    The four that come back are ``cmd/iterate``'s, :attr:`Reach.FROM_TESTS_ONLY`
+    / :attr:`Disposition.BREACH`. ``cmd/gates``' three still abstain, because
+    both holes are in ``cmd/gates/main.go``. **With the relation absent — which
+    is every tree at this revision, since :data:`ANALYZERS` is ``()`` — the
+    answer is 0 of 7, unchanged, because the first branch returns the input.**
+    Neither regime produced a single :attr:`Reach.FROM_PRODUCTION` or a single
+    :attr:`Disposition.OK`, asserted in the harness rather than eyeballed.
+
+    **THE ABSENCE BRANCH IS WORTH MORE THAN THE SEAL RECORDS, and the
+    difference is the wiring line.** ``test_an_absent_relation_leaves_the_hole_
+    set_exactly_as_it_found_it`` records that returning ``()`` on the absence
+    "reddens this row and ``…_narrowing_only_ever_removes_holes…``, and nothing
+    else" — measured by the seal author against a throwaway reference
+    implementation in a clone, which had no call site. **Re-measured against
+    the SHIPPED body, whole suite, 2026-08-11: that mutation reddens FOUR
+    rows** — those two, plus
+    ``test_unresolved_calls_abstain_only_over_the_production_closure`` here and
+    ``test_the_step_three_abstention_is_measured_and_the_implication_is_total``
+    in ``tests/test_go_reachability.py``. Once step 3 actually calls this
+    function, two rows that judge REAL TREES become guards on the absence
+    branch. The seal author's figure was right for the artifact it was measured
+    on; it is not the figure for the wired module.
     """
-    raise NotImplementedError("holes_in_scope")
+    if isinstance(evidence, ImportsUnavailable):
+        # Requirement 2, and it is FIRST because import_components raises on
+        # this state. No relation, no narrowing: the absence degrades to the
+        # CURRENT sealed behaviour and never to the maximally-narrowed one.
+        return tuple(holes)
+
+    components = import_components(evidence)
+
+    home = evidence.package_of(subject.key)
+    if home is None or home not in components:
+        # Unknown component, and an unknown component may be any hole's. Fail
+        # closed over the whole call.
+        return tuple(holes)
+    reachable = components[home]
+
+    kept: list[tuple[Symbol, str, str]] = []
+    for hole in holes:
+        package = evidence.package_of(hole[0].key)
+        # Same rule per hole: a key the relation cannot place has an unknown
+        # component, and an unknown component may be the subject's.
+        if package is None or package not in components or package in reachable:
+            kept.append(hole)
+    return tuple(kept)
 
 
 @dataclass(frozen=True)
@@ -3730,20 +4038,23 @@ def check_subject(
          second half is counted over the production closure only; see the
          CHOICE on :class:`UndecidedReason`.
 
-         **CONTRACT CHANGE, ``feat/D5-import-relation``, 2026-08-11 — SCOPED,
-         NOT YET WIRED.** The operator ruled that step 3's hole set is scoped to
-         the SUBJECT. What that means is
-         :func:`holes_in_scope`; what fills the evidence it reads is
-         :attr:`CallGraph.package_imports`. **Nothing below changes at this
-         commit** — :func:`holes_in_scope` is a stub, this step still computes
-         the whole-tree list, and every seal on step 3 is green and untouched.
-         What a body lands is one line:
+         **CONTRACT CHANGE, ``feat/D5-import-relation``, 2026-08-11 — SCOPED.
+         WIRED on ``feat/D5-relation-body``, base ``3eedd07``.** The operator
+         ruled that step 3's hole set is scoped to the SUBJECT. What that means
+         is :func:`holes_in_scope`; what fills the evidence it reads is
+         :attr:`CallGraph.package_imports`. The line that landed is
 
              holes = holes_in_scope(subject, holes, graph.package_imports)
 
-         directly after the closure comprehension, and nothing else in this
-         function. Spelled out here because "which sentences change" is a
-         question the seal author asks first:
+         directly after the closure comprehension, plus the regime marker on
+         the detail below, and nothing else in this function. **No verdict on
+         any tree moves at this revision**: :data:`ANALYZERS` is ``()``, so
+         :func:`_union_import_evidence` returns :data:`IMPORTS_NOT_SUPPLIED`
+         for every graph this module can build, and the first branch of
+         :func:`holes_in_scope` returns its input unchanged. Measured on
+         ``feat/D5-relation-body``, 2026-08-11: 0 rows in the suite move on the
+         wiring line alone. Spelled out here because "which sentences change"
+         is a question the seal author asks first:
 
            * **STANDS — the two disjuncts and their order.** The
              ``negative_is_conclusive`` half is untouched: it is a fact about a
@@ -3772,13 +4083,18 @@ def check_subject(
              holes in ``cmd/gates/main.go`` abstain all 7 findings, 4 of which
              are in ``cmd/iterate`` and cannot be reached from either hole by
              any route.
-           * **CHANGES — the abstention DETAIL.** It counts the scoped holes,
-             so the number a report shows stops being a whole-tree constant. It
-             must also say WHICH regime produced it: with the relation absent
-             the count is the whole-tree one and a reader must be able to tell
-             that from the string, because "2 holes" under scoping and "2 holes"
-             under no evidence are different facts about the mechanism's
-             confidence. See :class:`ImportsUnavailable`.
+           * **CHANGED — the abstention DETAIL.** It counts the scoped holes,
+             so the number a report shows stops being a whole-tree constant,
+             and it now names WHICH regime produced it: with the relation
+             absent the string says so, and says the reason the absence
+             carried, because "2 holes" under scoping and "2 holes" under no
+             evidence are different facts about the mechanism's confidence. See
+             :class:`ImportsUnavailable`. **No row in the suite reads this
+             string**, measured on ``feat/D5-relation-body``, 2026-08-11, by
+             garbling it in a clone and running the whole suite: 0 red. So the
+             regime marker is landed on the contract's authority and not on a
+             seal's; a seal author who wants it pinned should pin it. Recorded
+             as **DISPUTE B2**.
            * **UNCHANGED and worth stating — ``ReachabilityReport.
              unresolved_call_count``.** It stays the whole-tree,
              closure-filtered count, because it is a report-level coverage
@@ -3997,7 +4313,27 @@ def check_subject(
     holes = [
         hole for hole in graph.unresolved_calls if hole[0].key in production_reach
     ]
+    # The SECOND conjunct, landed on feat/D5-relation-body: of the holes inside
+    # the production closure, the ones that could be THIS subject's missing
+    # call site. Never widens the set the comprehension above returned. With
+    # the relation absent — which is every tree at this revision, since
+    # ANALYZERS is () — this returns its input and step 3 is unchanged.
+    holes = list(holes_in_scope(subject, holes, graph.package_imports))
     if holes:
+        # The count must say WHICH REGIME produced it. "2 holes" under scoping
+        # and "2 holes" with no relation are different facts about the
+        # mechanism's confidence, and a reader has no other way to tell them
+        # apart. See ImportsUnavailable.
+        if isinstance(graph.package_imports, ImportsUnavailable):
+            regime = (
+                "the hole set is the WHOLE TREE's — no import relation was "
+                f"supplied ({graph.package_imports.reason}), so it was not "
+                "scoped to this subject"
+            )
+        else:
+            regime = (
+                "the hole set is SCOPED to this subject's import component"
+            )
         unresolved = _abstention(
             seal,
             subject,
@@ -4006,7 +4342,7 @@ def check_subject(
             (
                 f"{len(holes)} call(s) inside the production closure could not "
                 f"be resolved, first at {holes[0][1]} ({holes[0][2]}); one of "
-                "them may be the missing call site"
+                f"them may be the missing call site. {regime}"
             ),
         )
         _validate_finding(unresolved)
