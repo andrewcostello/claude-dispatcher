@@ -227,6 +227,27 @@ it is not):
     Those rows were strengthened (a second seal whose discovery order and
     sorted order disagree; a decoy the containment reader must not pull in)
     rather than the mutations weakened.
+
+    **P4 ROUND 3 (2026-08-11) — "every one of them" IS FALSE, and it is struck.
+    Measured, not argued.** Swallowing the :class:`AnalyzerError` in
+    :func:`discover_roots` — a mutation named verbatim by
+    :func:`test_discover_roots_refuses_a_tree_it_cannot_sweep`'s clause — was
+    injected into ``feat/D5-seals2`` @ ``4e66a01`` in a clone with the ``.git``
+    FILE removed and ``__pycache__`` cleared. It reddens the six
+    parametrisations of
+    :func:`test_discover_roots_raises_on_a_fault_without_help_from_the_graph_builder`
+    and **nothing else in this file** — not the row whose clause names it,
+    which never hands :func:`discover_roots` a raising analyzer and therefore
+    could not have detected that mutation under the reference implementation
+    either. So the sentence was wrong when it was written, not merely stale.
+
+    The second half of the claim expired independently: the reference
+    implementation those forty mutations ran against **was thrown away**, and
+    the body that shipped on ``feat/D5-body2`` is not it. Counted at
+    ``4e66a01``: **43** rows carry a ``Reddens under`` clause, **12** of them
+    (all in PART 11) record a measurement against the shipped body, and **31**
+    record one only against the discarded reference. See the P4 round-3 ruling
+    on the clause convention in ``call_site_reachability.py``.
 """
 
 from __future__ import annotations
@@ -2306,8 +2327,21 @@ def test_discover_roots_refuses_a_tree_it_cannot_sweep(tmp_path):
     A partial root set is worse than none: the roots that failed to appear are
     exactly the ones whose absence manufactures BREACHes.
 
-    RED at HEAD. Reddens under a body on: returning ``()`` for a missing tree;
-    swallowing an :class:`AnalyzerError`.
+    RED at HEAD. Predicted (unmeasured) under: returning ``()`` for a missing
+    tree.
+
+    **P4 ROUND 3 (2026-08-11): the second half of this clause is STRUCK, and it
+    is the reason the convention itself was ruled on.** It used to read ";
+    swallowing an :class:`AnalyzerError`", and gap 4 of the eight sat behind
+    that sentence for a whole round, reading as coverage. This row supplies no
+    analyzer and never reaches the ``except`` branch, so it cannot detect that
+    mutation under ANY body — including the reference implementation the
+    seal-file header measured against. Measured at ``4e66a01``: the swallow
+    reddens only
+    :func:`test_discover_roots_raises_on_a_fault_without_help_from_the_graph_builder`,
+    where the coverage actually lives and where it is measured against the
+    shipped body. Nothing about this row's own assertion moves; only the claim
+    made on its behalf does.
     """
     with pytest.raises(CallSiteReachabilityError):
         discover_roots(tmp_path / "does-not-exist")
@@ -2407,20 +2441,46 @@ def test_symbol_equality_and_hashing_are_over_the_key_alone():
 #     fixture. The rule is stated, is public, and gives its own reason, so the
 #     row is written at the public function. Closed, at that boundary and only
 #     there.
-#   * **Gap 6 (unsorted subject symbols) — the assessment is RIGHT, and richer
-#     fixtures do NOT close it.** Measured: a seal with two production subjects
-#     whose call order is the reverse of their key order still yields SORTED
-#     symbols through ``check_tree``, because ``build_call_graph`` sorts its
-#     edges by ``(caller.key, callee.key, …)`` at construction and per caller
-#     that already orders the callees. So the ``sorted()`` inside
-#     ``subjects_of_seal`` is a no-op on every graph the module's one production
-#     path can produce, and a row would have to hand it a graph that violates
-#     ``build_call_graph``'s own determinism contract. Left OPEN deliberately —
-#     no sentence anywhere contracts ``Subject.symbols`` as ordered, and a row
-#     that is red only on an input production cannot construct is the mirror of
-#     "green on an unproducible input", which is the first vacuity shape this
-#     codebase measured. The observable consequence is the findings order, and
-#     :func:`test_check_tree_judges_every_subject_of_every_seal` already pins it.
+#   * **Gap 6 (unsorted subject symbols) — LEFT OPEN, and P4 round 3 RATIFIES
+#     the outcome while OVERTURNING the reason. Both premises were measured and
+#     both are wrong.**
+#
+#     What was written here: that the ``sorted()`` inside ``subjects_of_seal``
+#     is a no-op on every graph the one production path can produce, because
+#     ``build_call_graph`` sorts edges by ``(caller.key, callee.key, …)`` at
+#     construction; and that a row would therefore "have to hand it a graph that
+#     violates ``build_call_graph``'s own determinism contract", which would be
+#     the mirror of "green on an unproducible input".
+#
+#     The first premise is true and irrelevant, and the second is false.
+#     ``subjects_of_seal`` is PUBLIC, in ``__all__``, and takes the graph as an
+#     ARGUMENT; the determinism contract belongs to ``build_call_graph``, and
+#     ``CallGraph.edges`` is contracted in as many words as "Every edge, in no
+#     guaranteed order". So a graph whose edges descend by callee key is a
+#     LEGAL ``CallGraph`` that a row constructs with the ``_graph`` helper this
+#     file already uses, needing no substitution and violating nothing.
+#     Measured at ``4e66a01``: handed such a graph directly,
+#     ``subjects_of_seal`` returns ``(Alpha, Zulu)`` for edges supplied
+#     ``(Zulu, Alpha)`` — the ``sorted()`` is doing real work, not idling.
+#
+#     That correction matters beyond this gap. "A row red only on an input
+#     production cannot construct" is the argument that would also strike the
+#     three substitution rows P4 round 3 RATIFIES below, and here it was aimed
+#     at an input that is neither unconstructible nor illegal.
+#
+#     The outcome stands on the OTHER reason, which is sufficient on its own:
+#     **no sentence contracts ``Subject.symbols`` as ordered, and the order is
+#     load-bearing for nothing** — ``check_tree`` re-sorts findings by
+#     ``(test_id, subject key)``, a key that is total over them, and
+#     :func:`test_check_tree_judges_every_subject_of_every_seal` pins that. A
+#     row here would not guard a contract; it would legislate one into
+#     existence for the row's own benefit, which is not a P2's standing and is
+#     the shape R8 already refused. Measured at ``4e66a01``: deleting the
+#     ``sorted()`` reddens nothing in this file, and under this ruling that is
+#     the correct reading rather than a hole — the call is an uncontracted
+#     determinism convenience for callers other than ``check_tree``, and
+#     ``Subject.symbols`` now records that absence rather than leaving a reader
+#     to re-derive it.
 # --------------------------------------------------------------------------- #
 
 
@@ -2457,8 +2517,22 @@ def test_reachable_from_includes_its_own_roots_mapped_to_the_empty_chain():
     :func:`test_a_subject_that_is_itself_a_production_root_is_a_resolved_pass`,
     and no other row in the file. The coupling is reported rather than designed
     away: excluding the roots removes the very map entry whose zero-edge chain
-    the other row judges, so the two rows cannot be made independent of it
-    without one of them stopping being about R5.
+    the other row judges.
+
+    **P4 ROUND 3 (2026-08-11): CONFIRMED as honest reporting, and the row is
+    NOT split — but the sentence that used to end this paragraph ("the two rows
+    cannot be made independent of it without one of them stopping being about
+    R5") overstated it and is struck.** Re-measured at ``4e66a01``: the
+    exclusion reddens exactly those two rows and no others, and the other row
+    decomposes. Its **contract half is already independent** — half 1 judges
+    ``_chain_quality`` against ``_production_reach()``, which this file writes
+    out by hand precisely so that no row is fed the output of a function it is
+    also sealing. Only its **end-to-end half** co-reddens, because that half
+    runs :func:`check_tree` and therefore the real traversal. An end-to-end
+    half that did not depend on the mechanism's own traversal would not be
+    end-to-end, so splitting would delete integration evidence to buy an
+    independence the contract half already has. Each row also still has a
+    mutation that reddens it alone.
     """
     graph = _graph()
 
@@ -3181,6 +3255,19 @@ def test_an_edge_kind_in_neither_strength_class_is_a_refusal_not_a_default():
     :func:`test_adjudicate_raises_on_a_member_the_grid_has_never_seen`, which is
     the device this file already uses and which P4 ratified there. The gap needed
     a row, not a richer fixture.
+
+    **P4 ROUND 3 (2026-08-11): CONFIRMED, and the duck-type surface is recorded
+    in full, because half of it was written down and half was not.** A stand-in
+    for :attr:`Edge.kind` must be ``(hashable, .value)`` — BOTH, and for two
+    different reasons at two different layers. ``_edge_order`` reads
+    ``edge.kind.value`` while sorting, so a stand-in without one dies in the
+    sort before reaching the dispatch (recorded below already); and
+    ``_edge_is_resolved`` tests ``kind in _RESOLVED_EDGE_KINDS``, a set
+    membership, so an unhashable stand-in raises ``TypeError`` rather than the
+    mechanism's own error and the row would pass for the wrong reason.
+    ``_FifthKind`` below satisfies both — a plain class, hashable by identity,
+    carrying a ``str`` ``value``. An incomplete record of a duck-type surface is
+    how the next stand-in breaks.
 
     What a default would decide, silently and for the whole repository: whether
     an unmarked over-approximation reads as the strong pass. ``_RESOLVED_EDGE_KINDS``

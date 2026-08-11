@@ -48,6 +48,127 @@ Two contract sites the composition never named — :attr:`UndecidedReason`'s
 them and the placements are CONFIRMED, with the ordering reason written into
 :func:`check_subject` step 1b.
 
+P4 ROUND 3 (2026-08-11) — THREE RULINGS THE COVERAGE PASS RAISED
+================================================================
+The seal pass on ``feat/D5-seals2`` closed seven of the eight disclosed gaps
+and asked three questions. All three are answered; each amendment they force is
+named in the commit message. Nothing was enrolled: :data:`ANALYZERS` is still
+``()`` and ``role_protocol`` is still untouched.
+
+**S1. SUBSTITUTION IS RATIFIED as the sealing device for a contracted layer no
+constructible input can reach — with one condition, which all three rows
+already meet.** Three rows substitute a module name to exhibit a state:
+:func:`subjects_of_seal` (a name in :data:`__all__`), :func:`_unnameable_finding`
+and :func:`_validate_finding` (private, and each now says so at its own
+definition). Each is stated in its own docstring rather than dressed as a
+fixture.
+
+The argument that decides it is not a preference between two workable designs;
+it is a comparison of FAILURE MODES, and this module exists for one of them.
+
+  * Substitution's failure mode is a RENAME, and a rename here is a loud red
+    that names its own cause. Measured at ``4e66a01`` in a clone with the
+    ``.git`` FILE removed: renaming both private names reddens exactly the two
+    rows that substitute them, each with an ``AttributeError`` naming the
+    attribute that went missing. Two rows, two named attributes, a one-line fix
+    each, and the rename becomes a two-file edit.
+  * Leaving the layers unpinned has the OTHER failure mode: a layer that is
+    contracted, implemented, mutation-verified by a body, and guarded by
+    nothing fails SILENTLY and GREEN. This codebase has already measured what
+    that costs — "a layer nobody can demonstrate is working is a layer nobody
+    can tell has stopped working" — and the whole of this module is one
+    instance of it.
+
+A mechanism whose first anti-requirement is that failing to look may never
+manufacture a pass does not get to prefer a silent green to a loud red because
+the loud red is inconvenient. **The condition**, so the device cannot decay into
+the thing it replaces: a substitution row must (a) substitute a name that
+EXISTS — never ``monkeypatch.setattr(..., raising=False)``, which would go
+silently inert on a rename and leave the row passing vacuously — and (b) judge,
+in the same call, a control on the UNSUBSTITUTED path, so the row cannot pass by
+the substitution merely existing. Verified at ``4e66a01``: ``raising=False``
+appears nowhere in the seal file, and each of the three rows carries such a
+control.
+
+The rejected alternative, spelled out because it was the live one: ruling the
+three layers UNSEALABLE and saying so in this contract. That trades a coupling
+whose failure is loud for a recorded absence whose failure is silent, and it
+would have written the module's own defect class into the module's own
+contract.
+
+**S2. THE ``Reddens under`` CONVENTION — the defect is UPHELD, the proposed
+mechanical row is REJECTED, and a spelling split is adopted instead.**
+
+The defect is real and worse than "unverified". Measured at ``4e66a01``: 43
+rows carry such a clause; 12 record a measurement against the shipped body (all
+in the seal file's PART 11) and 31 record one only against a reference
+implementation that was thrown away. And at least one clause was never true:
+:func:`test_discover_roots_refuses_a_tree_it_cannot_sweep` named "swallowing an
+:class:`AnalyzerError`" while supplying no analyzer at all, so it could not
+detect that mutation under any body — and gap 4 of the eight sat behind that
+sentence for a round, reading as coverage. The seal file's header claim that
+every injected mutation "reddened the rows that name it" is falsified by it and
+is struck there.
+
+**The proposed mechanical row is refused on this module's own first
+anti-requirement.** A row over docstrings can check only that a clause is
+ACCOMPANIED by a word like "Measured"; it cannot check that anything was
+measured. That row is satisfied by typing, and *a mechanism that can be defeated
+by a comment is not a mechanism*. Building it would be a claim that reads as
+verification and is not — the defect being ruled on, at a third level, shipped
+by the ruling against it.
+
+What is adopted instead costs no mechanism and is honest about being a naming
+rule rather than a check: **the two kinds of clause get two spellings.** A
+clause measured against the body that shipped is spelled ``Measured under:``
+and names the run; a clause that is a prediction is spelled ``Predicted
+(unmeasured) under:``. One name for two different things is invariant 5's shape,
+which this module refuses by name three times, and the whole value of the split
+is that a reader can see at a glance which clauses are evidence. **A prediction
+is still worth writing** — it tells the next author where to aim a mutation —
+but it may not wear a measurement's clothes.
+
+SCOPE, ruled explicitly rather than by silence. Relabelling all 43 clauses to
+the two spellings is D5-LOCAL and is an obligation on the SEAL AUTHOR, not on
+this round — an adjudicator rewriting 43 docstrings in the file it is ruling on
+is the "gate whose decisions can be dissolved by editing it" hazard in
+miniature. The 12 in PART 11 are already substantively compliant, since each
+names the run it was measured by; the 31 are the real work, and each needs
+either a re-measurement against the shipped body or the prediction spelling.
+Only the one demonstrably FALSE clause is amended here, and the header sentence
+it falsifies. **The MECHANISM question is OUT OF D5's SCOPE** and belongs to task
+#27 as a unit of its own: the convention has spread to the G1 and G2 seal files,
+a convention living in three files cannot be repaired in one of them, and the
+only non-vacuous form of it — a mutation harness with a durable ledger outside
+the docstrings — is a unit of work rather than a row.
+
+**S3. GAP 6 (unsorted subject symbols) — the OUTCOME is RATIFIED and the REASON
+is OVERTURNED.** Leaving it open is right. The reason given for it was wrong on
+both premises, and one of them was dangerous.
+
+The claim was that a row would "have to hand it a graph that violates
+:func:`build_call_graph`'s own determinism contract", making it "red only on an
+input production cannot construct". :func:`subjects_of_seal` is public and takes
+the graph as an ARGUMENT; the determinism contract belongs to
+:func:`build_call_graph`, and :class:`CallGraph` contracts its edges as "in no
+guaranteed order". A descending-key graph is therefore a LEGAL ``CallGraph`` a
+row builds with the helper the seal file already uses — no substitution, no
+violation. Measured at ``4e66a01``: handed such a graph,
+:func:`subjects_of_seal` returns ``(Alpha, Zulu)`` for edges supplied
+``(Zulu, Alpha)``.
+
+That correction is load-bearing beyond this gap: *"a row red only on an input
+production cannot construct"* is the argument that would also strike the three
+rows S1 ratifies, and here it was aimed at an input that is neither
+unconstructible nor illegal. It must not be left standing as precedent.
+
+The outcome survives on the other reason, which is sufficient alone: **nothing
+contracts the order and nothing reads it.** A row would legislate a contract
+into existence for the row's own benefit rather than guard one that exists,
+which is not a P2's standing — R8 refused the same shape. The absence is now
+recorded at :attr:`Subject.symbols` instead, so the next reader does not
+re-derive it, and the trigger for revisiting is named there.
+
 **Still NOT ENROLLED.** :data:`ANALYZERS` is empty, no call site was added, and
 ``role_protocol`` was not touched: the ``FLOOR_GLOBS`` round the WIRING section
 below raises for P4 is due BEFORE enrolment, because implementing the ruling
@@ -2043,6 +2164,25 @@ class Subject:
     seal: Seal
     #: The symbols the seal calls that are declared in NON-test files. May be
     #: empty, in which case ``gap`` says why.
+    #:
+    #: **ORDER IS NOT CONTRACTED (P4 ROUND 3, 2026-08-11), and the absence is
+    #: written down rather than left to be re-derived.** The body sorts by key,
+    #: and that ``sorted()`` is an uncontracted determinism convenience, not a
+    #: promise: :func:`build_call_graph` already sorts its edges by
+    #: ``(caller.key, callee.key, …)``, so per caller the callees arrive
+    #: ordered and the call idles on every graph the one production path
+    #: produces. It does real work for OTHER callers — this function is public
+    #: and takes the graph as an argument, and :class:`CallGraph` contracts its
+    #: edges as being "in no guaranteed order" — measured at ``4e66a01``:
+    #: edges handed in as ``(Zulu, Alpha)`` come back ``(Alpha, Zulu)``.
+    #:
+    #: No row pins it, deliberately (Part 11's gap 6). Nothing reads the order:
+    #: :func:`check_tree` re-sorts findings on ``(test_id, subject key)``,
+    #: which is total over them. A row here would legislate a contract into
+    #: existence for the row's own benefit rather than guard one that exists.
+    #: What would change that: the first consumer whose answer depends on this
+    #: order — at which point the contract is written FIRST and the row
+    #: follows it, in that order.
     symbols: tuple[Symbol, ...]
     #: ``None`` exactly when ``symbols`` is non-empty; a :class:`SubjectGap`
     #: member exactly when it is empty. Both contradictions — a gap alongside
@@ -2068,8 +2208,16 @@ class Subject:
     #:
     #: :func:`check_subject` owes nothing here; the original sentence naming it
     #: is struck. ``test_a_subject_record_never_says_two_things_or_nothing``
-    #: pins the constructor half. The :func:`check_tree` half is unpinned by
-    #: any row and is recorded as such.
+    #: pins the constructor half.
+    #:
+    #: **P4 ROUND 3 (2026-08-11): "the :func:`check_tree` half is unpinned by
+    #: any row" was true when it was written and is now FALSE, so it is
+    #: struck.** ``test_check_tree_refuses_a_subject_record_a_second_constructor_built``
+    #: pins it, by SUBSTITUTING :func:`subjects_of_seal` to be the second
+    #: constructor R2 hypothesises — the device P4 round 3 ratifies. Left
+    #: standing, the sentence would be a coverage claim contradicted by the
+    #: file it describes, which is the defect the same round ruled on one level
+    #: up.
     gap: SubjectGap | None
     #: The same reason IN PROSE, FOR A HUMAN, and for nothing else. **No
     #: decision anywhere in this module reads it**, so improving a message can
@@ -2202,11 +2350,18 @@ def _validate_subject(subject: Subject) -> None:
 
     Owed at two layers and this is the shared implementation of both (R2):
     :func:`subjects_of_seal` calls it as a postcondition, :func:`check_tree`
-    calls it as a precondition on every record it consumes. The second is
-    unpinned by any row and is written anyway — the layer that ACTS on a
-    non-judgement is the layer where the non-judgement becomes an answer, and a
-    record arriving from a second constructor is not constructible today only
-    because there is no second constructor today.
+    calls it as a precondition on every record it consumes. The second was
+    written while unpinned by any row — the layer that ACTS on a non-judgement
+    is the layer where the non-judgement becomes an answer, and a record
+    arriving from a second constructor is not constructible today only because
+    there is no second constructor today.
+
+    **P4 ROUND 3 (2026-08-11): it is pinned now, so "unpinned" is struck.**
+    ``test_check_tree_refuses_a_subject_record_a_second_constructor_built``
+    substitutes :func:`subjects_of_seal` — a name in :data:`__all__` — with a
+    constructor that returns each contradiction in turn, and requires
+    :func:`check_tree` to raise on both. Deleting the ``_validate_subject``
+    call in :func:`check_tree` reddens that row and no other.
     """
     if not isinstance(subject, Subject):
         raise CallSiteReachabilityError(
@@ -2875,6 +3030,17 @@ def _validate_finding(finding: Finding) -> None:
     :func:`_abstention`: filing it in the shared abstention constructor would
     have caught defect B too, and a second layer that cannot be shown to catch
     anything alone is a layer nobody can tell is working.
+
+    **THIS PRIVATE NAME IS PART OF THE SEAL SURFACE (P4 round 3, 2026-08-11).**
+    ``test_check_subject_validates_every_finding_it_returns`` substitutes it by
+    name, WRAPPING rather than replacing it so the module's own refusals still
+    fire, and asserts on object identity that every ``return`` passed through
+    it. Renaming it is therefore a TWO-FILE edit. The price is measured, not
+    estimated: at ``4e66a01``, renaming this name and
+    :func:`_unnameable_finding` reddens exactly those two rows, each with an
+    ``AttributeError`` naming the attribute that went missing — a loud,
+    correctly-attributed red with a one-line fix, which is why the coupling was
+    ratified rather than the layer left unsealed.
     """
     if not isinstance(finding, Finding):
         raise CallSiteReachabilityError(
@@ -3611,6 +3777,16 @@ def _unnameable_finding(seal: Seal, graph: CallGraph, detail: str) -> Finding:
     seal's own symbol, which would read as a seal covering itself, and rather
     than ``None``, because :class:`Finding` has no optional subject and a report
     must never show a blank where a subject belongs.
+
+    **THIS PRIVATE NAME IS PART OF THE SEAL SURFACE (P4 round 3, 2026-08-11).**
+    ``test_check_tree_validates_a_finding_check_subject_never_built``
+    substitutes it with a second :class:`Finding` constructor emitting
+    ``reach=UNDECIDED`` with ``reason=None`` — R2's hypothesised second
+    constructor made real — because this is the only seam in :func:`check_tree`
+    that can produce a two-answer record from outside: its other self-built
+    finding goes through :func:`_abstention`, which fixes ``reach`` and guards
+    ``reason``. Renaming this is a TWO-FILE edit; see :func:`_validate_finding`
+    for the measured price.
     """
     sites = sorted(
         (hole for hole in graph.unresolved_calls if hole[0].key == seal.symbol.key),
