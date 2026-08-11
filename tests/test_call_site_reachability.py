@@ -188,6 +188,22 @@ against them:
     run over the LIVE ``src/`` tree and each carries a positive control proving
     the sweep can still find what it is looking for.
 
+Two more shapes have since been measured on this codebase and PART 11 is
+written against all seven: *a test reading through the same struct shape that
+caused the loss*, and *a seal asserting truthiness of a value now known to be
+wrong*. Part 11's rows read through no shared helper the module under seal also
+reads — the reach maps, root records and graphs they hand in are written out in
+this file — and none of them asserts that a value is merely truthy.
+
+PART 11 — THE SECOND PASS
+=========================
+Everything above was written before a body existed. Part 11 was written after
+one did, against the eight mutations ``feat/D5-body2`` ran that reddened NOTHING
+and disclosed against its own interest, plus the properties the round-2 rulings
+made pinnable for the first time. Its rows are GREEN at HEAD — the body is
+implemented — so each of them is verified by the mutation it names rather than
+by an unimplemented stub, and each names that mutation and what it measured.
+
 JOINT SATISFIABILITY, AND THE EVIDENCE THAT EACH ROW IS RED FOR ITS OWN REASON
 ==============================================================================
 At HEAD every row that touches a contract is red with
@@ -2353,3 +2369,948 @@ def test_symbol_equality_and_hashing_are_over_the_key_alone():
     renamed = Symbol(key=f"{_MOD}.ResolveConfig", path=_SUBJECT.path, line=_SUBJECT.line)
     assert renamed != _SUBJECT
     assert len({renamed, _SUBJECT}) == 2
+
+
+# --------------------------------------------------------------------------- #
+# Part 11 — the coverage gaps the P1 body disclosed against its own interest.
+#
+# ``feat/D5-body2`` ran 33 mutations against this file. Twenty-five reddened the
+# rows naming them and no others; EIGHT reddened nothing, and the body reported
+# all eight. Every row below closes one of those eight, or pins a property the
+# round-2 rulings made pinnable for the first time. Each carries the mutation
+# that proves it red, measured in a clone of this worktree with the ``.git``
+# FILE removed and ``__pycache__`` cleared between runs — CPython keys bytecode
+# on ``(mtime_seconds, size)``, so a same-size mutation restored within a second
+# reports as covered when it is not.
+#
+# Symbols are cited rather than line numbers. A recorded line in this effort has
+# been wrong three times out of five and one recording MOVED the line it
+# recorded, because the paragraph that records it sits above the site.
+#
+# THE BODY'S OWN ASSESSMENT OF GAPS 6, 7 AND 8, TESTED RATHER THAN ACCEPTED
+# ------------------------------------------------------------------------
+# The body judged all three unreachable from the current fixtures and therefore
+# in need of richer fixtures rather than more assertions. Measured on
+# ``feat/D5-body2`` + this file, one mutation each:
+#
+#   * **Gap 7 (a default on ``_edge_is_resolved``) — the assessment is WRONG.**
+#     "No fifth :class:`EdgeKind` is constructible" is false: ``Edge`` is a
+#     frozen dataclass with no runtime type enforcement, and a stand-in member
+#     goes into ``kind`` exactly as ``_Unnamed`` goes into ``Finding.reach`` in
+#     :func:`test_adjudicate_raises_on_a_member_the_grid_has_never_seen`. It
+#     needed a row, and it has one. What it did need from a fixture was the
+#     ``.value`` attribute — ``_edge_order`` reads it while sorting, so a bare
+#     string stand-in dies in the sort before it reaches the dispatch.
+#   * **Gap 8 (sorting inside ``discover_seals``) — the assessment is RIGHT
+#     about ``check_tree`` and does not settle the contract.** ``check_tree``
+#     does re-sort its findings, so the mutation is invisible there on any
+#     fixture. The rule is stated, is public, and gives its own reason, so the
+#     row is written at the public function. Closed, at that boundary and only
+#     there.
+#   * **Gap 6 (unsorted subject symbols) — the assessment is RIGHT, and richer
+#     fixtures do NOT close it.** Measured: a seal with two production subjects
+#     whose call order is the reverse of their key order still yields SORTED
+#     symbols through ``check_tree``, because ``build_call_graph`` sorts its
+#     edges by ``(caller.key, callee.key, …)`` at construction and per caller
+#     that already orders the callees. So the ``sorted()`` inside
+#     ``subjects_of_seal`` is a no-op on every graph the module's one production
+#     path can produce, and a row would have to hand it a graph that violates
+#     ``build_call_graph``'s own determinism contract. Left OPEN deliberately —
+#     no sentence anywhere contracts ``Subject.symbols`` as ordered, and a row
+#     that is red only on an input production cannot construct is the mirror of
+#     "green on an unproducible input", which is the first vacuity shape this
+#     codebase measured. The observable consequence is the findings order, and
+#     :func:`test_check_tree_judges_every_subject_of_every_seal` already pins it.
+# --------------------------------------------------------------------------- #
+
+
+def test_reachable_from_includes_its_own_roots_mapped_to_the_empty_chain():
+    """R5's convention, and the two states it exists to keep apart.
+
+    **Gap 1 of the eight.** P4 predicted this one unpinned and it was: excluding
+    the roots from the map reddened nothing in this file. Three consequences ride
+    on the convention and the row pins all three in one call:
+
+      1. **A root is reachable from itself.** ``func main`` excluded from its own
+         reach map comes back :attr:`Reach.FROM_TESTS_ONLY` or
+         :attr:`Reach.FROM_NEITHER` — a false BREACH against the one symbol whose
+         liveness is not in question.
+      2. **"No production root" and "the production roots call nothing" are
+         different values.** With roots included, a tree whose lonely ``main``
+         calls nothing yields ``{main: ()}``, which is not empty; with them
+         excluded it yields ``{}``, the same value as a tree with no roots at
+         all, and :func:`check_subject` step 2 turns the second into an
+         abstention over EVERY subject in the tree. The row asserts the two maps
+         differ, which is the property, rather than either one's contents.
+      3. A zero-edge chain is :attr:`PathQuality.RESOLVED`, which is gap 2 and
+         has its own row below.
+
+    The control is judged in the same call: a symbol the root really reaches
+    carries a NON-empty chain, so a body that returns ``{key: () for every
+    symbol}`` does not pass; and the canonical subject is still absent from the
+    production map, so the defect the fixture exists for is still the defect.
+
+    GREEN at HEAD, and mutation-verified rather than trusted. Reddens under a
+    body on: ``_sweep_chains`` returning ``{k: v for k, v in chains.items() if k
+    not in set(root_keys)}`` — the exact exclusion P4 predicted. Measured: that
+    mutation reddens this row and
+    :func:`test_a_subject_that_is_itself_a_production_root_is_a_resolved_pass`,
+    and no other row in the file. The coupling is reported rather than designed
+    away: excluding the roots removes the very map entry whose zero-edge chain
+    the other row judges, so the two rows cannot be made independent of it
+    without one of them stopping being about R5.
+    """
+    graph = _graph()
+
+    production = reachable_from(graph, (_GO_MAIN_ROOT,))
+    assert _MAIN.key in production, (
+        "the production root is missing from its own reach map; a subject that "
+        "IS an entrypoint would come back unreached, which is the loudest "
+        "possible way to be wrong"
+    )
+    assert production[_MAIN.key] == (), (
+        f"a root maps to {production[_MAIN.key]!r} rather than the empty chain"
+    )
+    assert production[_FIND_CONFIG.key], (
+        "the control failed: a symbol two edges from the root carries no chain, "
+        "so the empty chain above says nothing about roots"
+    )
+    assert _SUBJECT.key not in production, (
+        "the control failed: production reaches the canonical defect, so this "
+        "fixture is no longer the fixture"
+    )
+
+    tests = reachable_from(graph, (_TEST_ROOT,))
+    assert tests.get(_SEAL_FN.key) == (), "the test root is missing from its own map"
+
+    # 2. The two states that must not collapse, compared in this call.
+    lonely_root = reachable_from(_graph(edges=_SEAL_EDGES), (_GO_MAIN_ROOT,))
+    no_root = reachable_from(graph, ())
+    assert no_root == {}, f"a traversal from no root produced {no_root!r}"
+    assert lonely_root != no_root, (
+        "'this tree has a main that calls nothing' and 'this tree has no "
+        "production root' are the same map, so NO_ENTRYPOINT cannot be told "
+        "from an entrypoint with no callees"
+    )
+
+
+def test_a_subject_that_is_itself_a_production_root_is_a_resolved_pass(
+    tmp_path, monkeypatch
+):
+    """A zero-edge chain is RESOLVED, and NOT_APPLICABLE takes the check down.
+
+    **Gap 2 of the eight, and the one that matters most.** P4 predicted it
+    unpinned and it was: no fixture in this file had a subject that is itself a
+    production root, so spelling the zero-edge chain
+    :attr:`PathQuality.NOT_APPLICABLE` reddened nothing. It is not a cosmetic
+    difference — it hands :func:`adjudicate` the pair ``(FROM_PRODUCTION,
+    NOT_APPLICABLE)``, which the grid RAISES on as a mechanism bug, so the whole
+    check dies on **every** tree whose seal covers an entrypoint.
+
+    That state is ordinary rather than exotic, which is how this row knows
+    production can reach the input. :func:`reachable_from` maps every production
+    root's own key to ``()`` (R5), and R5 names four kinds of subject that are
+    themselves roots: a ``GO_INIT``, a ``GO_PACKAGE_VAR``, a
+    ``PYTHON_IMPORT_TIME`` module body and a console-script ``main``. The last
+    is the common one — ``pyproject``'s ``[project.scripts]`` entry is a
+    ``PRODUCTION`` root and a pytest row calling it is unremarkable — and a Go
+    test calling ``main()`` from inside ``package main`` is legal and does
+    happen. The end-to-end half below is that case, in Go, over the vendored
+    tree.
+
+    Two halves, and the second is the one that would have caught the outage:
+
+      * one pair judged directly, where the quality must be RESOLVED and must
+        rule the same way a multi-edge resolved pass rules;
+      * a whole :func:`check_tree` run over a tree whose seal covers ``main``,
+        which must RETURN a report rather than raise out of the grid.
+
+    Controls judged in the same call: the multi-edge resolved pass, so a body
+    that answers RESOLVED for everything is caught by
+    :func:`test_an_over_approximated_path_is_never_spelled_resolved`; and the
+    canonical subject, which must still be the B1 verdict in the same report, so
+    an unconditionally-passing run does not satisfy this row.
+
+    GREEN at HEAD, mutation-verified. Reddens under a body on: ``_chain_quality``
+    answering ``NOT_APPLICABLE`` for the empty chain. Measured: that mutation
+    reddens this row and no other in the file. It also reddens under gap 1's
+    root-exclusion mutation, which is reported at
+    :func:`test_reachable_from_includes_its_own_roots_mapped_to_the_empty_chain`
+    and is a property of R5 rather than a weakness in either row.
+    """
+    # Half 1 — one pair, judged directly. ``_production_reach`` maps _MAIN to
+    # the empty chain because _MAIN is where it starts.
+    entrypoint = _judge(_MAIN)
+    assert entrypoint.reach is Reach.FROM_PRODUCTION
+    assert entrypoint.path is not None and entrypoint.path.edges == ()
+    assert entrypoint.path.root is _GO_MAIN_ROOT, (
+        "the zero-edge chain named a root the caller never supplied"
+    )
+    assert entrypoint.quality is PathQuality.RESOLVED, (
+        f"a chain with no links was spelled {entrypoint.quality.value}; the "
+        "minimum over no edges is the strong value, and the weak spelling hands "
+        "adjudicate a pair the grid raises on"
+    )
+
+    multi_edge = _judge(_FIND_CONFIG)
+    assert multi_edge.quality is PathQuality.RESOLVED and multi_edge.path.edges, (
+        "the control failed: the multi-edge resolved pass is not resolved"
+    )
+    assert adjudicate(entrypoint, None) is adjudicate(multi_edge, None), (
+        "a subject that is its own entrypoint rules differently from a subject "
+        "two edges away, though both are resolved production paths"
+    )
+
+    # Half 2 — the whole run, over a tree whose seal covers the entrypoint.
+    tree = _tree(tmp_path)
+    covers_main = _sym("TestSeal_Main", "contract_seal_test.go", 120)
+    main_seal_root = Root(
+        symbol=covers_main,
+        kind=EntrypointKind.TEST_FUNCTION,
+        root_kind=RootKind.TEST,
+        evidence="cmd/classify/contract_seal_test.go:120 func TestSeal_Main",
+    )
+    graph = _graph(
+        symbols=_ALL_SYMBOLS + (covers_main,),
+        edges=_PRODUCTION_EDGES + _SEAL_EDGES + (_edge(covers_main, _MAIN),),
+    )
+    monkeypatch.setattr(
+        csr,
+        "ANALYZERS",
+        (_go(roots=(_GO_MAIN_ROOT, _TEST_ROOT, main_seal_root), graph=graph),),
+    )
+
+    report = check_tree(tree)
+    on_main = [f for f in report.findings if f.subject.key == _MAIN.key]
+    assert len(on_main) == 1, (
+        f"the seal covering the entrypoint produced {len(on_main)} findings"
+    )
+    assert on_main[0].reach is Reach.FROM_PRODUCTION
+    assert on_main[0].quality is PathQuality.RESOLVED
+    assert sum(report.dispositions.values()) == len(report.findings), (
+        "a finding reached the report without being ruled on, which is what "
+        "the grid raising on (FROM_PRODUCTION, NOT_APPLICABLE) prevents"
+    )
+
+    canonical = [f for f in report.findings if f.subject.key == _SUBJECT.key]
+    assert canonical and canonical[0].reach is Reach.FROM_TESTS_ONLY, (
+        "the control failed: the canonical defect is not the B1 verdict in this "
+        "report, so the pass above is not evidence of anything"
+    )
+
+
+def test_check_tree_refuses_a_subject_record_a_second_constructor_built(
+    tmp_path, monkeypatch
+):
+    """R2's second layer, which no row reached.
+
+    **Gap 3 of the eight.** P4 predicted it and it was: deleting
+    ``_validate_subject``'s call inside :func:`check_tree` reddened nothing,
+    because :func:`subjects_of_seal` is the record's only constructor today and
+    it validates its own output. R2 ruled the precondition in ANYWAY — "a second
+    constructor or a caller-supplied record would otherwise reach the judgement
+    loop unchecked, and the layer that ACTS on a non-judgement is the layer
+    where the non-judgement becomes an answer" — so the layer is contracted and
+    was pinned by nothing.
+
+    The only way a row can exhibit the state is to BE the second constructor R2
+    hypothesises, which is what the substitution below is. It is not a fixture
+    that production produces and this row does not claim otherwise: the input is
+    reachable exactly when someone writes the second constructor, which is the
+    event the precondition exists for, and a layer whose only justification is a
+    future caller cannot be sealed by any input that exists before that caller
+    does. The alternative is not sealing it.
+
+    Both contradictions are swept, because they fail differently and the second
+    is the silent one: a gap ALONGSIDE symbols makes :func:`check_tree` count a
+    gap and ``continue``, dropping every symbol the record also named — a silent
+    pass over real subjects; an empty record with no gap produces no finding and
+    no count at all.
+
+    The control is judged in the same call: the real constructor's records run
+    through the same tree and produce a report with findings, so a body that
+    raises on every subject does not pass.
+
+    GREEN at HEAD, mutation-verified. Reddens under a body on: deleting the
+    ``_validate_subject(subject)`` call in :func:`check_tree`. Measured: that
+    mutation reddens this row and no other in the file.
+    """
+    tree = _tree(tmp_path)
+    monkeypatch.setattr(csr, "ANALYZERS", (_go(),))
+
+    baseline = check_tree(tree)
+    assert baseline.findings, (
+        "the control failed: the unsubstituted run produced no findings, so a "
+        "refusal below would say nothing"
+    )
+
+    two_answers = Subject(
+        seal=_SEAL,
+        symbols=(_SUBJECT,),
+        gap=SubjectGap.NO_CALLS,
+        detail="a record that says two things",
+    )
+    says_nothing = Subject(
+        seal=_SEAL, symbols=(), gap=None, detail="a record that says nothing"
+    )
+
+    for malformed in (two_answers, says_nothing):
+        monkeypatch.setattr(
+            csr, "subjects_of_seal", lambda seal, graph, _r=malformed: _r
+        )
+        with pytest.raises(CallSiteReachabilityError):
+            check_tree(tree)
+
+
+@pytest.mark.parametrize("fault", list(AnalyzerFault), ids=lambda f: f.value)
+def test_discover_roots_raises_on_a_fault_without_help_from_the_graph_builder(
+    tmp_path, monkeypatch, fault
+):
+    """The root sweep's own refusal, measured where nothing can mask it.
+
+    **Gap 4 of the eight, and NOT predicted.** Deleting
+    :func:`discover_roots`' ``raise`` and swallowing the
+    :class:`AnalyzerError` instead reddened nothing — including
+    :func:`test_an_analyzer_fault_never_reads_as_a_clean_tree`, whose
+    ``Reddens under a body on:`` clause names exactly that mutation. The reason
+    is structural rather than an oversight: that row goes through
+    :func:`check_tree`, which calls :func:`build_call_graph` immediately after
+    :func:`discover_roots`, and ``build_call_graph``'s own raise fires on the
+    same faulting analyzer. So the whole-tree row cannot tell which of the two
+    refused, and a body that swallowed the fault HERE and returned a partial
+    root set would have shipped green.
+
+    That is the failure R1's ruling exists to prevent. R1 STRUCK
+    :attr:`UndecidedReason.ANALYZER_FAULT` precisely so that a fault RAISES
+    rather than abstains — "a fault leaves no roots, therefore no seals,
+    therefore no subjects to abstain over, and an abstention you cannot
+    enumerate is silence with a label". A swallowed fault does something worse
+    than abstain: it returns a root set missing exactly the roots whose absence
+    manufactures BREACHes, and the report carries no mark of it at all.
+
+    :class:`SourceUnreadable` is swept alongside :class:`AnalyzerUnavailable`
+    because the asymmetry with :func:`build_call_graph` is the contract:
+    ``build_call_graph`` RECORDS an unreadable file and abstains at judgement
+    time; ``discover_roots`` raises on "any analyzer raises
+    :class:`AnalyzerError`", of which :class:`SourceUnreadable` is one. A body
+    that copies the graph builder's handling into the root sweep loses every
+    other analyzer's roots to a silent ``continue``.
+
+    The control is judged in the same call: the same analyzer, not faulting,
+    returns a non-empty root set — so a body that raises unconditionally does
+    not pass.
+
+    GREEN at HEAD, mutation-verified. Reddens under a body on: replacing
+    :func:`discover_roots`' ``except AnalyzerError`` raise with ``continue``.
+    Measured: that mutation reddens this row and no other in the file.
+    """
+    tree = _tree(tmp_path)
+
+    for broken in (
+        AnalyzerUnavailable(fault, "measured by a seal"),
+        SourceUnreadable("cmd/classify/main.go", "measured by a seal"),
+    ):
+        monkeypatch.setattr(csr, "ANALYZERS", (_go(raises=broken),))
+        with pytest.raises(CallSiteReachabilityError):
+            discover_roots(tree)
+
+    monkeypatch.setattr(csr, "ANALYZERS", (_go(),))
+    assert discover_roots(tree), (
+        "the control failed: the healthy analyzer derived no roots at all, so "
+        "the refusals above are not about the fault"
+    )
+
+
+@pytest.mark.parametrize("kind", list(EntrypointKind), ids=lambda k: k.value)
+def test_root_kind_is_derived_from_the_kind_and_never_asserted_by_the_row(
+    tmp_path, monkeypatch, kind
+):
+    """The invariant ``_synthetic_root`` was struck for bypassing, sealed at last.
+
+    **Gap 5 of the eight, NOT predicted, and the most surprising of them:
+    deleting :func:`_validate_root` entirely reddened nothing.** The contract
+    "``root_kind`` is DERIVED from ``kind`` and from ``seal_verify.is_test_path``
+    over the declaring file, never asserted by the analyzer independently, so a
+    row cannot mark its own roots production" had **no row at all** — while the
+    P4 that struck ``_synthetic_root`` gave as its second reason that the
+    fallback "bypasses the module's own validator" and "could mint what
+    ``_validate_root`` refuses outright". An invariant load-bearing enough to
+    delete production code over, and nothing measured it.
+
+    Swept over the whole of :class:`EntrypointKind`, both directions per member,
+    which is strictly stronger than a few hand-picked rows and is what pins the
+    derivation TABLE rather than a body's ``if``: for each member, the root
+    whose ``root_kind`` the table derives is ACCEPTED and the root asserting the
+    other one is REFUSED. A member added without visiting
+    ``_ROOT_KIND_BY_ENTRYPOINT`` is absent from it, and the refusal above the
+    table is what this sweep sees.
+
+    Both wrong answers are intolerable and the sweep covers both: a TEST root
+    read as production silently certifies everything below it, and a production
+    root read as test floods the report with false BREACHes.
+
+    Production reaches this input on the first analyzer written: every
+    :class:`Root` an analyzer produces goes through this validator, and the
+    values come from a Go helper's JSON, not from a Python literal.
+
+    GREEN at HEAD, mutation-verified. Reddens under a body on: making
+    :func:`_validate_root` a no-op. Measured: that mutation reddens this row
+    and its sibling
+    :func:`test_a_root_that_disagrees_with_its_own_file_or_names_no_kind_is_refused`,
+    and no other row in the file. A DEFAULT on ``_ROOT_KIND_BY_ENTRYPOINT``
+    does NOT redden this row and is measured as reddening the sibling only —
+    recorded here rather than claimed, because the table still names all eight
+    members and this sweep cannot see past them. That is the sibling's job.
+    """
+    in_tests = kind is EntrypointKind.TEST_FUNCTION
+    path = "contract_seal_test.go" if in_tests else "main.go"
+    symbol = _sym(f"rootOf_{kind.value}", path, 7)
+    derived = RootKind.TEST if in_tests else RootKind.PRODUCTION
+    asserted = RootKind.PRODUCTION if in_tests else RootKind.TEST
+
+    tree = _tree(tmp_path)
+
+    honest = Root(
+        symbol=symbol,
+        kind=kind,
+        root_kind=derived,
+        evidence=f"cmd/classify/{path}:7, derived for {kind.value}",
+    )
+    monkeypatch.setattr(csr, "ANALYZERS", (_go(roots=(honest,)),))
+    assert discover_roots(tree) == (honest,), (
+        f"the control failed: a well-formed {kind.value} root was refused, so "
+        "the refusal below is not about the asserted root_kind"
+    )
+
+    lying = Root(
+        symbol=symbol,
+        kind=kind,
+        root_kind=asserted,
+        evidence=f"cmd/classify/{path}:7, asserted by the row",
+    )
+    monkeypatch.setattr(csr, "ANALYZERS", (_go(roots=(lying,)),))
+    with pytest.raises(CallSiteReachabilityError):
+        discover_roots(tree)
+
+
+def test_a_root_that_disagrees_with_its_own_file_or_names_no_kind_is_refused(
+    tmp_path, monkeypatch
+):
+    """The other three refusals ``_validate_root`` owes, none of them pinned.
+
+    **Gap 5 of the eight, continued.** The sweep above pins the derivation
+    table; these are the three refusals that do not fall out of it, and the
+    third is the one the struck fallback could actually mint.
+
+      * **Not a :class:`Root` at all.** An analyzer returning dicts, or
+        ``None``s, or the tuples an earlier protocol used. Refused by name
+        rather than by ``AttributeError`` three layers down.
+      * **A kind this module cannot classify.** The stand-in below is the ninth
+        :class:`EntrypointKind` somebody adds without visiting
+        ``_ROOT_KIND_BY_ENTRYPOINT`` — the same device
+        :func:`test_adjudicate_raises_on_a_member_the_grid_has_never_seen` uses
+        for :class:`Reach`, and for the same reason: naming the states does not
+        give exhaustiveness for free.
+      * **A production entrypoint declared in a test file.** This is the case
+        the P4 named when it struck ``_synthetic_root``: "hand it a chain whose
+        first caller is declared in a test file and it returns a ``GO_MAIN``
+        root in a ``_test.go``, which is a tree this module does not
+        understand". It is also the permissive direction — a ``GO_MAIN`` root
+        inside ``contract_seal_test.go`` makes the entire test closure read
+        FROM_PRODUCTION, which certifies every B1 defect in the package.
+      * **A ``TEST_FUNCTION`` declared outside the tests**, the mirror, which
+        would make production symbols read as test-only and flood the report.
+
+    The control is the sweep above, and one is judged here too: the same
+    analyzer with the well-formed pair returns both roots.
+
+    GREEN at HEAD, mutation-verified, three mutations. Reddens under a body on:
+    making :func:`_validate_root` a no-op; giving ``_ROOT_KIND_BY_ENTRYPOINT``
+    a default (``.get(root.kind, root.root_kind)``, the shape that lets a row
+    assert its own answer for a kind nobody classified); dropping the
+    ``is_test_path`` cross-check and trusting ``kind`` alone. Measured: the
+    second and third redden this row and no other in the file; the first
+    reddens this row and the sweep above.
+    """
+    tree = _tree(tmp_path)
+
+    class _NinthKind:
+        value = "a kind nobody has classified"
+
+    refusals = (
+        {"symbol": _MAIN.key, "kind": "not a Root at all"},
+        Root(
+            symbol=_MAIN,
+            kind=_NinthKind(),
+            root_kind=RootKind.PRODUCTION,
+            evidence="a member added without visiting the table",
+        ),
+        Root(
+            symbol=_SEAL_FN,
+            kind=EntrypointKind.GO_MAIN,
+            root_kind=RootKind.PRODUCTION,
+            evidence="func main inside contract_seal_test.go",
+        ),
+        Root(
+            symbol=_MAIN,
+            kind=EntrypointKind.TEST_FUNCTION,
+            root_kind=RootKind.TEST,
+            evidence="a TEST_FUNCTION inside main.go",
+        ),
+    )
+    for refused in refusals:
+        monkeypatch.setattr(csr, "ANALYZERS", (_go(roots=(refused,)),))
+        with pytest.raises(CallSiteReachabilityError):
+            discover_roots(tree)
+
+    monkeypatch.setattr(csr, "ANALYZERS", (_go(),))
+    assert set(discover_roots(tree)) == {_GO_MAIN_ROOT, _TEST_ROOT}, (
+        "the control failed: the well-formed pair was refused too"
+    )
+
+
+def test_check_subject_is_handed_its_roots_and_never_invents_one():
+    """The struck fallback's two replacements, neither of which a row measured.
+
+    **Newly pinnable, flagged by P4 for this pass.** The body measured that this
+    seal file is **0 red in all three states** — as shipped, with the ``roots``
+    default restored, and with the default AND ``_synthetic_root`` restored —
+    so nothing distinguished a signature that refuses the call from one that
+    accepts it and invents the evidence. Both halves are sealed here, and they
+    are separate defects with separate mutations:
+
+      * **The signature.** ``roots`` is keyword-only and REQUIRED. A default of
+        ``()`` converts "this layer was not handed the evidence" into "this
+        layer made some up", at runtime, where no reader is looking. The
+        refusal must happen before any judgement starts, which is what the
+        :class:`TypeError` half asserts — it is the interpreter refusing, and
+        that is the point: no other layer has to be right for it to hold.
+      * **The raise.** :func:`_witness` refuses a chain that originates at a key
+        no supplied :class:`Root` of that :class:`RootKind` names. The traversal
+        reported a path from something it was never given as a start; that is a
+        mechanism bug, not a licence to invent the start.
+
+    Both directions of the second half are swept, because the fallback was
+    wrong in both: a TEST chain whose origin the caller did not declare, and a
+    PRODUCTION chain likewise. The ``RootKind`` is part of the lookup, so
+    supplying the right symbol under the wrong kind must not satisfy it either
+    — that is how a test root laundered itself into a production answer.
+
+    Production reaches the input the moment ``check_tree`` is not the only
+    caller, and the P4 measured that the suite ITSELF was the whole of the
+    fallback's liveness: 13 rows reached it before the seal amendment and 0
+    after. A branch of production code only tests execute is
+    :attr:`Reach.FROM_TESTS_ONLY` spelled in Python, inside D5.
+
+    The control is judged in the same call: with both records supplied, the same
+    arguments return the B1 verdict.
+
+    GREEN at HEAD, mutation-verified. Reddens under a body on: restoring
+    ``roots: Sequence[Root] = ()`` (the TypeError half); restoring
+    :func:`_witness`'s ``declared is None`` fallback to a synthesised
+    :class:`Root` (the raise half). Measured: each mutation reddens this row and
+    no other in the file.
+    """
+    with pytest.raises(TypeError):
+        check_subject(
+            _SEAL,
+            _SUBJECT,
+            graph=_graph(),
+            production_reach=_production_reach(),
+            test_reach=_test_reach(),
+            analyzer=_go(),
+        )
+
+    # The TEST chain to the canonical subject originates at the seal, which this
+    # root set does not name.
+    with pytest.raises(CallSiteReachabilityError):
+        _judge(_SUBJECT, roots=(_GO_MAIN_ROOT,))
+
+    # The PRODUCTION chain to findConfig originates at main, likewise.
+    with pytest.raises(CallSiteReachabilityError):
+        _judge(_FIND_CONFIG, roots=(_TEST_ROOT,))
+
+    # The right symbol under the wrong RootKind is not the same record.
+    mislabelled = Root(
+        symbol=_SEAL_FN,
+        kind=EntrypointKind.GO_MAIN,
+        root_kind=RootKind.PRODUCTION,
+        evidence="the seal, asserted as a production entrypoint",
+    )
+    with pytest.raises(CallSiteReachabilityError):
+        _judge(_SUBJECT, roots=(_GO_MAIN_ROOT, mislabelled))
+
+    dark = _judge(_SUBJECT)
+    assert dark.reach is Reach.FROM_TESTS_ONLY, (
+        "the control failed: with both records supplied the canonical subject "
+        "is not the B1 verdict, so the refusals above are not about the roots"
+    )
+    assert dark.test_path is not None and dark.test_path.root is _TEST_ROOT
+
+
+def test_parse_failed_outranks_no_entrypoint_when_both_hold(tmp_path, monkeypatch):
+    """The order of the two abstentions, which no fixture made both hold at once.
+
+    **Newly pinnable, flagged by P4 for this pass.** D4 confirmed the body's
+    placement of ``PARSE_FAILED`` and ruled that the position relative to step 2
+    is the SUBSTANTIVE half, and it was pinned by nothing: the existing rows
+    exercise each abstention alone
+    (:func:`test_a_source_unreadable_abstains_over_the_whole_tree`,
+    :func:`test_no_entrypoint_over_a_library_tree_abstains`) and no tree made
+    both hold, so swapping the two steps reddened nothing.
+
+    The two abstentions are not equals. ``NO_ENTRYPOINT`` is a positive claim
+    ABOUT THE TREE — "this tree has no production entrypoint of any
+    :class:`EntrypointKind`" — and an unparsed file is exactly where an
+    undiscovered ``func main`` would be, so under a parse hole that claim is
+    computed AROUND the hole and the mechanism cannot support it.
+    ``PARSE_FAILED`` is the confession that the tree was not fully read. When
+    both hold the caller must see the confession, not the claim: the other
+    reading has the mechanism asserting a fact it derived around a gap, which is
+    anti-requirement 2 in the abstention register — failing to look may only
+    make an answer LESS conclusive.
+
+    Both controls are judged in the same call, and the first is the one that
+    stops a body answering ``PARSE_FAILED`` unconditionally: the same library
+    tree with nothing unreadable still answers ``NO_ENTRYPOINT``.
+
+    GREEN at HEAD, mutation-verified. Reddens under a body on: moving
+    :func:`check_subject`'s ``unreadable_paths`` check after the zero-production-
+    roots check. Measured: that mutation reddens this row and no other in the
+    file.
+    """
+    tree = _tree(tmp_path)
+
+    def _reasons(analyzer):
+        monkeypatch.setattr(csr, "ANALYZERS", (analyzer,))
+        report = check_tree(tree)
+        assert report.findings, "a run produced no finding to read a reason off"
+        return {f.reason for f in report.findings}
+
+    both_hold = _reasons(
+        _go(roots=(_TEST_ROOT,), graph=_graph(unreadable=("cmd/classify/main.go",)))
+    )
+    assert both_hold == {UndecidedReason.PARSE_FAILED}, (
+        f"a tree with no production root AND an unparsed file answered "
+        f"{sorted(r.value for r in both_hold)}; NO_ENTRYPOINT is a positive "
+        "claim about a tree that was not fully read, and the unparsed file is "
+        "exactly where the missing entrypoint would be"
+    )
+
+    only_no_entrypoint = _reasons(_go(roots=(_TEST_ROOT,)))
+    assert only_no_entrypoint == {UndecidedReason.NO_ENTRYPOINT}, (
+        "the control failed: a fully-read library tree no longer answers "
+        "NO_ENTRYPOINT, so the answer above is not an ordering"
+    )
+
+    only_parse_failed = _reasons(_go(graph=_graph(unreadable=("cmd/classify/main.go",))))
+    assert only_parse_failed == {UndecidedReason.PARSE_FAILED}, (
+        "the control failed: a rooted tree with an unparsed file no longer "
+        "answers PARSE_FAILED"
+    )
+
+
+def test_check_subject_validates_every_finding_it_returns(monkeypatch):
+    """The postcondition layer, shown load-bearing on its own.
+
+    **Also worth a row, and this file agrees it is sealable.** The body proved
+    by mutation that the two :func:`_validate_finding` layers are separable —
+    postcondition alone removed, a direct :func:`check_subject` call returns a
+    two-answer :class:`Finding`; precondition alone removed,
+    :func:`check_tree` returns a report silently counting it as one ABSTAIN —
+    and that separability is a DESIGN PROPERTY, ratified over a wider guard
+    inside ``_abstention`` that would have covered more for less code, **because
+    the wider guard would have made the second layer unfalsifiable**. A property
+    defended that explicitly and pinned by nothing is worth a row.
+
+    A seal cannot mutate the module, so it cannot make :func:`check_subject`
+    BUILD a two-answer record — the five returns are consistent by construction
+    and every field is computed. What it can do is observe that the validator
+    runs on the record actually handed back, at every return, which is the
+    obligation. The substitution below wraps the real validator rather than
+    replacing it, so the module's own refusals still fire.
+
+    Three of the five returns are swept, chosen to be three different reaches so
+    that no single ``if`` covers them, and the assertion is on OBJECT IDENTITY:
+    a body that validates some other record, or a copy, does not pass.
+
+    The last assertion is the non-vacuity control and it is the one that makes
+    the rest mean anything: a call that raises before constructing anything
+    records NOTHING. So the recorder measures calls rather than being satisfied
+    by the substitution existing.
+
+    GREEN at HEAD, mutation-verified. Reddens under a body on: dropping any
+    ``_validate_finding`` call from :func:`check_subject`; moving the
+    postcondition into :func:`_abstention`, which reaches three of the five
+    returns and none of the two that are not abstentions. Measured: both
+    mutations redden this row and no other in the file.
+    """
+    seen: list[Finding] = []
+    real = csr._validate_finding
+
+    def _recording(finding):
+        seen.append(finding)
+        return real(finding)
+
+    monkeypatch.setattr(csr, "_validate_finding", _recording)
+
+    returned = [
+        _judge(_SUBJECT, analyzer=_go()),          # FROM_TESTS_ONLY
+        _judge(_SUBJECT, analyzer=_python()),      # UNDECIDED / DYNAMIC_EDGE
+        _judge(_FIND_CONFIG, analyzer=_go()),      # FROM_PRODUCTION
+    ]
+    assert {f.reach for f in returned} == {
+        Reach.FROM_TESTS_ONLY,
+        Reach.UNDECIDED,
+        Reach.FROM_PRODUCTION,
+    }, "the three returns swept here no longer cover three different reaches"
+
+    for finding in returned:
+        assert any(finding is candidate for candidate in seen), (
+            f"check_subject returned a {finding.reach.value} finding it never "
+            "validated; the postcondition is the only guard on a direct call, "
+            "which is how every D5 row reaches this module while ANALYZERS is "
+            "empty"
+        )
+
+    seen.clear()
+    with pytest.raises(CallSiteReachabilityError):
+        _judge("not a Symbol at all")
+    assert seen == [], (
+        "the control failed: the recorder logged a validation for a call that "
+        "never built a finding, so it is not measuring calls"
+    )
+
+
+def test_check_tree_validates_a_finding_check_subject_never_built(
+    tmp_path, monkeypatch
+):
+    """The precondition layer, shown load-bearing on its own.
+
+    **Also worth a row, second half.** :func:`check_tree` builds two findings
+    itself — the ``UNSUPPORTED_LANGUAGE`` abstention and
+    :func:`_unnameable_finding` — and :func:`check_subject` never sees either,
+    so the precondition is the ONLY guard on them. The body measured this by
+    rewriting ``_unnameable_finding`` as a second :class:`Finding` constructor
+    emitting ``reach=UNDECIDED`` with ``reason=None``, "which is R2's
+    hypothesised second constructor made real", and found that with the
+    precondition removed :func:`check_tree` returns a report carrying the
+    two-answer finding, counted as one ABSTAIN.
+
+    This row is that measurement, done the way a seal is allowed to do it: the
+    second constructor is substituted rather than written into the module. The
+    substituted name is private, and that is a deliberate choice with an
+    alternative that is worse. ``check_tree``'s other self-built finding goes
+    through ``_abstention``, which fixes ``reach`` and guards ``reason``, so it
+    cannot be made two-answered from outside; the seam R2 names is the one
+    substituted here, and the alternative is not sealing the layer at all.
+
+    The control is judged in the same call, and it is the strong one: the SAME
+    tree with the real constructor returns a report that counts exactly one
+    ABSTAIN for the unnameable seal. So the refusal below is about the record's
+    shape and not about the tree, the seal, or the substitution.
+
+    GREEN at HEAD, mutation-verified. Reddens under a body on: deleting the
+    ``_validate_finding(finding)`` call in :func:`check_tree`'s disposition
+    loop. Measured: that mutation reddens this row and no other in the file.
+    """
+    tree = _tree(tmp_path)
+    mystery = Seal(
+        symbol=_sym("TestSeal_ViaValue", "contract_seal_test.go", 300),
+        test_id="cmd/classify.TestSeal_ViaValue",
+    )
+    mystery_root = Root(
+        symbol=mystery.symbol,
+        kind=EntrypointKind.TEST_FUNCTION,
+        root_kind=RootKind.TEST,
+        evidence="cmd/classify/contract_seal_test.go:300 func TestSeal_ViaValue",
+    )
+    graph = _graph(
+        symbols=(_MAIN, _DECOY, mystery.symbol),
+        edges=(_edge(_MAIN, _DECOY),),
+        unresolved=(
+            (
+                mystery.symbol,
+                "cmd/classify/contract_seal_test.go:310",
+                "call through a func value",
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        csr,
+        "ANALYZERS",
+        (_go(roots=(_GO_MAIN_ROOT, mystery_root), graph=graph),),
+    )
+
+    real = check_tree(tree)
+    assert real.dispositions[Disposition.ABSTAIN] == 1, (
+        "the control failed: the unnameable seal did not produce exactly one "
+        "abstention, so the refusal below is not about the record"
+    )
+    assert all(f.reach is Reach.UNDECIDED for f in real.findings)
+    assert not any(
+        f.seal.test_id == _SEAL.test_id for f in real.findings
+    ), "this tree deliberately holds one seal, and it is the unnameable one"
+
+    def _second_constructor(seal, graph, detail):
+        return Finding(
+            seal=seal,
+            subject=Symbol(key=f"{seal.symbol.key}.<unnameable>", path=seal.symbol.path, line=1),
+            reach=Reach.UNDECIDED,
+            quality=PathQuality.NOT_APPLICABLE,
+            path=None,
+            test_path=None,
+            reason=None,
+            detail=detail,
+        )
+
+    monkeypatch.setattr(csr, "_unnameable_finding", _second_constructor)
+    with pytest.raises(CallSiteReachabilityError):
+        check_tree(tree)
+
+
+def test_an_edge_kind_in_neither_strength_class_is_a_refusal_not_a_default():
+    """The fifth ``EdgeKind``, which the body reported unconstructible.
+
+    **Gap 7 of the eight, NOT predicted, and the body's own assessment of it is
+    WRONG — measured, not argued.** The body judged that giving
+    ``_edge_is_resolved`` a default is unreachable from the fixtures because "no
+    fifth :class:`EdgeKind` is constructible". :class:`Edge` is a plain frozen
+    dataclass with no runtime type enforcement, so a stand-in member goes into
+    ``kind`` exactly as ``_Unnamed`` goes into ``Finding.reach`` in
+    :func:`test_adjudicate_raises_on_a_member_the_grid_has_never_seen`, which is
+    the device this file already uses and which P4 ratified there. The gap needed
+    a row, not a richer fixture.
+
+    What a default would decide, silently and for the whole repository: whether
+    an unmarked over-approximation reads as the strong pass. ``_RESOLVED_EDGE_KINDS``
+    and ``_OVER_APPROXIMATING_EDGE_KINDS`` are written as two tables whose union
+    must cover the enum for exactly this reason, and a member added without
+    visiting that dispatch is in neither.
+
+    Both public paths that classify an edge are swept, because they fail at
+    different layers and a body could default one without the other:
+    :func:`reachable_from`'s resolved-only sweep, and the chain quality
+    :func:`check_subject` puts on a :class:`CallPath`.
+
+    The control is judged in the same call and it is over the WHOLE enum: each
+    of the four real members classifies without raising, and the two classes
+    produce two different qualities — so a body that raises on everything, or
+    one that answers RESOLVED for everything, does not pass.
+
+    GREEN at HEAD, mutation-verified. Reddens under a body on: ``return False``
+    or ``return True`` in place of ``_edge_is_resolved``'s raise. Measured: both
+    mutations redden this row and no other in the file.
+    """
+
+    class _FifthKind:
+        value = "a strength nobody has classified"
+
+    unknown = Edge(
+        caller=_MAIN,
+        callee=_FIND_CONFIG,
+        kind=_FifthKind(),
+        site="cmd/classify/main.go:180",
+    )
+
+    with pytest.raises(CallSiteReachabilityError):
+        reachable_from(_graph(edges=(unknown,)), (_GO_MAIN_ROOT,))
+
+    with pytest.raises(CallSiteReachabilityError):
+        _judge(
+            _FIND_CONFIG,
+            graph=_graph(edges=(unknown,) + _SEAL_EDGES),
+            production_reach={_MAIN.key: (), _FIND_CONFIG.key: (unknown,)},
+        )
+
+    qualities = set()
+    for kind in EdgeKind:
+        known = Edge(
+            caller=_MAIN,
+            callee=_FIND_CONFIG,
+            kind=kind,
+            site="cmd/classify/main.go:180",
+        )
+        reach = reachable_from(_graph(edges=(known,)), (_GO_MAIN_ROOT,))
+        assert reach.get(_FIND_CONFIG.key) == (known,), (
+            f"the control failed: a {kind.value} edge was not traversed at all"
+        )
+        found = _judge(
+            _FIND_CONFIG,
+            graph=_graph(edges=(known,) + _SEAL_EDGES),
+            production_reach={_MAIN.key: (), _FIND_CONFIG.key: (known,)},
+        )
+        qualities.add(found.quality)
+    assert qualities == {PathQuality.RESOLVED, PathQuality.OVER_APPROXIMATED}, (
+        "the control failed: the four real members no longer produce two "
+        f"different qualities, they produce {sorted(q.value for q in qualities)}"
+    )
+
+
+def test_discover_seals_reports_in_root_order_and_never_sorts():
+    """Discovery order, so a body that only ever emits in it cannot hide.
+
+    **Gap 8 of the eight, NOT predicted.** Sorting inside :func:`discover_seals`
+    reddened nothing, and the body's reading of why — "``check_tree`` sorts
+    findings anyway" — is **correct about the report and beside the point about
+    the contract**, which this row measures rather than accepts. The contract is
+    explicit and gives its own reason: "Root order, not sorted order. The report
+    sorts its FINDINGS; sorting here as well would hide a body that only ever
+    emits in discovery order behind a fixture whose two orders agree."
+
+    So the row is written where the property is observable, which is the public
+    function, and the fixture is the one the old fixtures could not be: two test
+    roots whose DISCOVERY order and SORTED order disagree. A body that sorts
+    returns them the other way round.
+
+    Measured, and reported as a limit rather than hidden: this property is NOT
+    observable through :func:`check_tree` on any fixture, because
+    :func:`check_tree` re-sorts its findings by ``(test_id, subject key)`` and
+    the gap counts are order-free. The mutation is caught here and nowhere else,
+    which is why the row is at this boundary.
+
+    Two controls are judged in the same call: the production root is not a seal
+    (so a body that returns every root passes nothing), and a test root the
+    graph does not declare is a refusal rather than a silent omission — a seal
+    the graph never read would contribute no subject, which is the defect this
+    module exists to refuse.
+
+    GREEN at HEAD, mutation-verified. Reddens under a body on: ``return
+    tuple(sorted(seals, key=...))`` in :func:`discover_seals`. Measured: that
+    mutation reddens this row and no other in the file.
+    """
+    first_found = _sym("TestSeal_Zulu", "contract_seal_test.go", 700)
+    second_found = _sym("TestSeal_Alpha", "contract_seal_test.go", 900)
+    assert second_found.key < first_found.key, (
+        "the fixture no longer distinguishes discovery order from sorted order"
+    )
+
+    roots = (
+        Root(
+            symbol=first_found,
+            kind=EntrypointKind.TEST_FUNCTION,
+            root_kind=RootKind.TEST,
+            evidence="cmd/classify/contract_seal_test.go:700 func TestSeal_Zulu",
+        ),
+        _GO_MAIN_ROOT,
+        Root(
+            symbol=second_found,
+            kind=EntrypointKind.TEST_FUNCTION,
+            root_kind=RootKind.TEST,
+            evidence="cmd/classify/contract_seal_test.go:900 func TestSeal_Alpha",
+        ),
+    )
+    graph = _graph(symbols=_ALL_SYMBOLS + (first_found, second_found))
+
+    seals = discover_seals(graph, roots)
+    assert [s.symbol.key for s in seals] == [first_found.key, second_found.key], (
+        "discover_seals re-ordered its roots; the report sorts its findings, and "
+        "sorting here as well hides a body that only ever emits in discovery "
+        "order behind a fixture whose two orders agree"
+    )
+    assert _MAIN.key not in {s.symbol.key for s in seals}, (
+        "the control failed: a production root became a seal"
+    )
+
+    with pytest.raises(CallSiteReachabilityError):
+        discover_seals(_graph(symbols=_ALL_SYMBOLS), roots)
