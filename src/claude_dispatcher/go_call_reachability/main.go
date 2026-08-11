@@ -50,11 +50,43 @@
 //
 // One package rather than one module, because the package is the exact scope in
 // which Go's unqualified-identifier resolution is decidable from text alone. A
-// call to `pkg.F` in another package is emitted anyway: the import block of the
-// calling file names the import path, so the callee's KEY is derivable without
-// the callee's source. The Python side then drops any edge whose callee is not
-// declared anywhere in the tree, which is CallGraph's own recorded rule
-// ("edges are kept only when BOTH ends are declared in the tree").
+// call to `pkg.F` in another package is emitted anyway, spelled with the
+// callee's IMPORT PATH, which is what go/types gives this program and the only
+// name it has for a package it did not parse. The Python side then drops any
+// edge whose callee is not declared anywhere in the tree, which is CallGraph's
+// own recorded rule ("edges are kept only when BOTH ends are declared in the
+// tree").
+//
+// P4 RULING (D6 adjudication round 3, 2026-08-11) — THE SENTENCE THAT STOOD
+// HERE WAS FALSE AND IS STRUCK. It read: "the import block of the calling file
+// names the import path, so the callee's KEY is derivable without the callee's
+// source." The import path is derivable. The KEY is not, and the difference
+// manufactures a BREACH.
+//
+// `go_symbol_key`'s qualifier is `<module_path>/<TREE-relative package_dir>`.
+// The acceptance fixture's `cmd/gates` is therefore keyed
+// `…/claude-workflow/gates/cmd/gates.F` while its IMPORT PATH — the only
+// spelling this program can produce for it from another package — is
+// `…/claude-workflow/gates.F`. The two strings differ whenever the module root
+// is not the tree root, which is the acceptance fixture's own shape and every
+// monorepo's. A helper-emitted cross-package callee key then matches nothing
+// the callee's own unit declared, CallGraph's both-ends rule drops a REAL
+// production edge, and a function production calls reads as uncalled.
+//
+// That is a false accusation of dark code in the mechanism whose whole purpose
+// is accusing code of being dark, so it is the worst failure this unit has.
+// The reconciliation lives on the Python side, in
+// `go_reachability._import_path_qualifiers` and `_join_callee`; read those two
+// before changing anything about how this program spells a callee, and read
+// their WHAT THIS DOES NOT CLOSE list before assuming they close it.
+//
+// TWO SPELLINGS RECONCILED BY A REPAIR IS WEAKER THAN ONE SPELLING, and the
+// ruling records why one spelling was NOT adopted: making the qualifier the
+// import path requires computing the import path, and `<module path> +
+// <in-module directory>` is not it for a vendored package or for a `replace`
+// that renames. The only authority on a package's import path is the Go
+// toolchain, which this program already execs. See the escalation recorded on
+// `_import_path_qualifiers`.
 //
 // # PROTOCOL
 //
@@ -1293,8 +1325,15 @@ func (w *walker) classifyIdentCall(ident *ast.Ident, owner string, decl *ast.Fun
 func (w *walker) classifySelectorCall(sel *ast.SelectorExpr, owner string, decl *ast.FuncDecl, consumed map[*ast.Ident]bool) {
 	consumed[sel.Sel] = true
 	// `pkg.F(x)`, a qualified identifier: the import block of this file names
-	// the import path, so the callee's key is derivable without the callee's
-	// source. That is DIRECT-strength — one declaration, named.
+	// the import path, so the callee is nameable without the callee's source.
+	// That is DIRECT-strength — one declaration, named.
+	//
+	// NAMEABLE, not KEYED. The name this emits is the callee's IMPORT PATH and
+	// the callee's own unit keys it by its TREE-relative directory; the two
+	// differ whenever the module root is not the tree root. The Python side
+	// rejoins them. See the P4 ruling in the package comment — the sentence
+	// that used to claim derivability here was false, and its consequence was a
+	// dropped production edge, which is a manufactured BREACH.
 	if base, ok := sel.X.(*ast.Ident); ok {
 		if _, isPackage := w.info.Uses[base].(*types.PkgName); isPackage {
 			consumed[base] = true
@@ -1337,12 +1376,49 @@ func (w *walker) classifySelectorCall(sel *ast.SelectorExpr, owner string, decl 
 			return
 		}
 		// Either interface dispatch, or a method on a type declared outside
-		// this unit. Both take the same honest answer: ONE edge per in-unit
-		// method of that name. Go's method-call syntax NAMES the method, so
-		// that fan-out is a SUPERSET of the possible in-tree targets and the
-		// residue is empty by construction — which is why the site is answered
-		// rather than holed. An empty fan-out is an answer too: no in-unit
-		// method is named `Format`, so `now.Format("")` reaches nothing here.
+		// this unit. Both take the same answer: ONE edge per in-unit method of
+		// that name. Go's method-call syntax NAMES the method, so within THIS
+		// UNIT the fan-out is a superset of the possible targets and the
+		// residue is empty — which is why the site is answered rather than
+		// holed. An empty fan-out is an answer too: no in-unit method is named
+		// `Format`, so `now.Format("")` reaches nothing here.
+		//
+		// P4 RULING (D6 adjudication round 3, 2026-08-11) — "SUPERSET OF THE
+		// POSSIBLE IN-TREE TARGETS" IS FALSE ACROSS PACKAGES, AND THE ERROR
+		// RUNS BOTH WAYS AT ONE CALL SITE. `w.methods` holds this unit's
+		// methods only, so a method call on a type declared in ANOTHER IN-TREE
+		// package fans out over the wrong set. ESCALATED TO P3, not repaired
+		// here: the fix is production code and its shape is at the end of this
+		// note.
+		//
+		// Measured under `feat/D6-body` @ `f4c7c46`, 2026-08-11, over a tree
+		// with `example.com/app` at `sub/` and `example.com/app/internal/core`
+		// declaring `func (t *T) Ptr()`, `func (t T) Value()` and `func New()
+		// *T`, called from `sub/main.go` as `v := core.New(); v.Ptr();
+		// (*v).Value()`:
+		//
+		//	no in-unit method named Ptr    `v.Ptr()` emits NOTHING. The graph
+		//	                               holds core.(*T).Ptr and core.(T).Value
+		//	                               with no incoming edge, so two methods
+		//	                               production calls read as UNCALLED —
+		//	                               a manufactured BREACH.
+		//	an in-unit `func (Decoy) Ptr`  the SAME site emits an `interface`
+		//	                               edge to `…/sub.(Decoy).Ptr`, a method
+		//	                               production never calls — and
+		//	                               core.(*T).Ptr STILL reads as
+		//	                               uncalled. One call site, one false
+		//	                               BREACH and one false certification.
+		//
+		// The fan-out is right for genuine INTERFACE dispatch, where
+		// `selection.Obj()` is the interface's method and no implementation is
+		// named. It is wrong for a CONCRETE receiver whose type is declared
+		// elsewhere, where go/types has already resolved the one target and
+		// `w.calleeKey(fn)` can spell it. THE DISCRIMINATOR IS THE RECEIVER,
+		// not the unit: `selection.Kind() == types.MethodVal` and the receiver
+		// base type's underlying type is not an `*types.Interface` means the
+		// target is a single declaration, and it must be emitted as `edgeMethod`
+		// with `w.calleeKey(fn)` so the Python side can rejoin it exactly as it
+		// rejoins a cross-package func call.
 		for _, key := range w.methods[sel.Sel.Name] {
 			w.edge(owner, key, edgeInterface, w.site(sel.Sel.Pos()))
 		}

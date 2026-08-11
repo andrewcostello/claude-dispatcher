@@ -1769,13 +1769,44 @@ def _go_reachability_binary() -> Path:
     return binary
 
 
-#: One encoded request and one working directory answer to exactly one stdout,
-#: because the helper is a pure function of them. Cached per PROCESS so that
-#: ``roots`` and ``graph`` over one tree — which D5 calls separately, from
-#: ``discover_roots`` and ``build_call_graph`` — pay for the walk once. It is a
-#: memo and never a fallback: a miss runs the helper, and a fault is not cached
-#: here at all.
-_RESPONSE_CACHE: dict[tuple[str, str], str] = {}
+#: **P4 RULING (D6 adjudication round 3, 2026-08-11): THE PER-PROCESS RESPONSE
+#: MEMO DOES NOT STAND, AND IT IS REMOVED HERE RATHER THAN AMENDED.**
+#:
+#: It was keyed on ``(encoded request, working directory)`` on the stated ground
+#: that "the helper is a pure function of those two". **That ground is false,
+#: and the ruling that forced the ``cwd`` parameter below is exactly what makes
+#: it false**: the helper resolves imports through ``go list``, which reads
+#: ``go.mod``, ``go.sum``, ``GOROOT/src`` and the SOURCE OF EVERY IMPORTED
+#: PACKAGE — none of which is in the request, because the request carries one
+#: unit's files and nothing else.
+#:
+#: **Measured under** ``feat/D6-body`` @ ``f4c7c46``, 2026-08-11, one process,
+#: one tree, ``example.com/app`` at ``sub/`` with ``sub/main.go`` calling
+#: ``core.Work()`` in ``sub/internal/core``:
+#:
+#:   1. ``graph`` — one edge, ``unreadable_paths == ()``;
+#:   2. ``core.go`` rewritten to delete ``Work``. ``sub/main.go`` is unchanged
+#:      byte for byte and its working directory is unchanged, so the memo hits;
+#:   3. ``graph`` again — zero edges, ``unreadable_paths == ()``.
+#:
+#: A COLD process over the identical tree state answers ``unreadable_paths ==
+#: ('sub/main.go',)``, because ``sub/main.go`` does not type-check. So the memo
+#: turned a ``PARSE_FAILED`` abstention into a confident graph in which
+#: ``core.Other`` has no incoming edge — it reported dark code out of a tree
+#: that does not compile. **That is a memo behaving as a fallback in the precise
+#: sense the obligation forbids**, and it fails in the manufacturing direction.
+#:
+#: The two obligations it DID meet are recorded so the next author does not
+#: re-derive them: a miss ran the helper, and no fault was ever cached — every
+#: raise preceded the store. The defect is the KEY, not the discipline.
+#:
+#: THE PRICE OF REMOVAL, measured rather than assumed: ``roots`` and ``graph``
+#: each run the helper once per unit instead of sharing one run, and the whole
+#: suite goes from 74.1 s to 76.4 s — **2.3 seconds**, against a mechanism whose
+#: output blocks a branch. A memo may return only if its key covers everything
+#: the answer depends on; keying on every unit's encoded document for the whole
+#: tree would close the case measured above and is P3's to weigh, not something
+#: to reintroduce on the old key.
 
 
 def _run_go_reachability_helper(
@@ -1799,14 +1830,28 @@ def _run_go_reachability_helper(
     the helper must run inside the unit's module or every cross-module import
     fails. It is the exposure that ruling quantifies rather than a convenience,
     and it is named here so a reader meets it at the site that opens it.
+
+    **P4 (D6 adjudication round 3, 2026-08-11): THE PARAMETER STANDS, and it is
+    load-bearing rather than tidy. Measured under** ``feat/D6-body`` @
+    ``f4c7c46``: one unit, ``example.com/app`` at ``sub/``, importing
+    ``example.com/app/internal/core``, run twice through this function with
+    nothing changed but ``cwd`` —
+
+        cwd = the package directory   1 symbol, 1 edge
+        cwd = the tree root           TYPE ERROR, "could not import
+                                      example.com/app/internal/core (no
+                                      required module provides package …)"
+
+    A type error is a ``parse_error`` document, which becomes
+    ``CallGraph.unreadable_paths``, which abstains the WHOLE tree at
+    ``check_subject`` step 1b. So without this parameter every repository whose
+    modules are not at the tree root — the acceptance fixture included —
+    answers PARSE_FAILED and this row decides nothing at all. The exposure the
+    type-resolution ruling quantified is the price of the row existing.
     """
     import subprocess
 
     document = encode_go_reachability_request(request.unit, request.files)
-    memo = (document, str(cwd))
-    cached = _RESPONSE_CACHE.get(memo)
-    if cached is not None:
-        return cached
     try:
         finished = subprocess.run(
             [str(binary)],
@@ -1846,7 +1891,6 @@ def _run_go_reachability_helper(
             f"the helper's stdout for the package "
             f"{request.unit.package_dir!r} is not valid UTF-8: {exc}",
         ) from exc
-    _RESPONSE_CACHE[memo] = stdout
     return stdout
 
 
@@ -1904,6 +1948,88 @@ def _import_path_qualifiers(tree: Path, units: Sequence[GoUnit]) -> dict[str, st
     than left to the drop. It binds nothing in the acceptance fixture, whose
     seven modules are one package each; it binds every repository with an
     ``internal/``.
+
+    **P4 RULING (D6 adjudication round 3, 2026-08-11): THE REPAIR IS CORRECT
+    AND IT STAYS HERE. Its limits are below and they are not small.**
+
+    THE RULING ON CORRECTNESS was taken by building the shapes that break naive
+    prefix rewriting and running them, not by reading this function. **Measured
+    under** ``feat/D6-body`` @ ``f4c7c46``, 2026-08-11, each shape a whole tree
+    with the module BELOW the tree root — which is the only arrangement in which
+    this map is anything but the identity, and it is the acceptance fixture's
+    own arrangement:
+
+      * ``internal/`` under a module at ``sub/``: the edge survives WITH the
+        map and is DROPPED without it;
+      * two package directories where one import path is a strict textual
+        prefix of the other's KEY (``example.com/app/b`` and
+        ``example.com/app/b.v2``, so ``example.com/app/b.`` genuinely prefixes
+        ``example.com/app/b.v2.FromBV2``): both edges land in their own
+        package. **This is the one shape in which longest-match is
+        load-bearing**; shortest-match rewrites ``b.v2`` into
+        ``<qualifier of b>.v2`` and invents a symbol;
+      * a nested module (``example.com/inner`` inside ``example.com/outer``'s
+        tree, reached by ``replace``): joined correctly;
+      * a module path that is a strict prefix of another's
+        (``example.com/x`` / ``example.com/xy``): joined correctly, and the
+        separator alone is what keeps them apart;
+      * a package whose DIRECTORY name differs from its package clause
+        (``internal/go-utils`` declaring ``package utils``): joined correctly,
+        and it is a non-issue by construction — this map is keyed on the
+        directory, which is what an import path names, and never on the clause;
+      * pointer and value receiver methods across packages: the prefix rewrite
+        moves ``…(*T).Ptr`` and ``…(T).Value`` intact;
+      * an external test package beside its package: correctly absent from the
+        map, and the two edges into ``core.Work`` — one from ``main``, one from
+        ``core_test`` — both join.
+
+    **WHAT THIS DOES NOT CLOSE.** Three shapes, measured under the same
+    revision, all ESCALATED TO P3 because each needs production code:
+
+      1. **A REAL ``go mod vendor`` TREE LOSES THE EDGE.** ``go`` strips
+         ``go.mod`` from a vendored module, so ``vendor/example.com/lib`` has
+         no manifest of its own and :func:`_nearest_module_dir` walks up to the
+         ENCLOSING module. This map then computes its import path as
+         ``example.com/app/vendor/example.com/lib`` while the type-checker
+         resolves the import as ``example.com/lib``. No prefix matches, the
+         edge is dropped, and ``lib.Do`` — which production calls — reads as
+         UNCALLED. Measured: a tree with ``sub/vendor/modules.txt`` and
+         ``sub/vendor/example.com/lib/lib.go`` produces ZERO edges.
+         :func:`discover_units`' CHOICE deliberately does not skip ``vendor/``,
+         so this is reachable by this module's own doctrine, and it is the
+         second most common shape in Go after ``internal/``.
+      2. **A ``replace`` THAT RENAMES LOSES THE EDGE.** ``replace
+         example.com/upstream => ./local`` where ``local/go.mod`` declares
+         ``module example.com/localfork``: the import block names
+         ``example.com/upstream``, this map keys ``example.com/localfork``, and
+         the edge into ``Serve`` is dropped. Measured, same direction, rarer.
+      3. **TWO UNITS CLAIMING ONE IMPORT PATH ARE SILENTLY MIS-JOINED, AND
+         THIS IS THE ONE PLACE THE REPAIR IS WORSE THAN THE DROP IT
+         REPLACED.** ``qualifiers`` is a plain ``dict`` with no collision
+         check, so the LAST unit written wins and the winner is decided by
+         :func:`discover_units`' sort order, which is a fact about directory
+         names. Measured over a tree holding ``a/go.mod`` and ``b/go.mod`` both
+         declaring ``module example.com/dup``, with ``app`` reaching the first
+         through ``replace … => ../a``: the edge lands on ``b/d.go``. The real
+         target reads as uncalled (a false BREACH) **and** the decoy reads as
+         called (a false certification, which hides dark code). The same
+         happens for a vendored copy that does carry a ``go.mod``.
+         **The fix is a raise:** a second unit claiming an import path already
+         in this map is :attr:`AnalyzerFault.HELPER_OUTPUT_INVALID`, exactly as
+         a duplicate symbol key across units is in
+         :meth:`GoReachabilityAnalyzer.graph`, and for the same reason — one
+         label naming two packages is one symbol wearing two declarations, one
+         layer up. ``tests/test_go_reachability.py`` carries the RED row that
+         P3 must turn green.
+
+    **WHY THE REPAIR STAYS HERE RATHER THAN BECOMING ONE SPELLING.** See
+    :meth:`GoReachabilityAnalyzer.graph`'s ruling on the alternative, which was
+    measured rather than argued: making the qualifier the import path costs five
+    seal rows and closes only the first four shapes above, because
+    ``<module path> + <in-module directory>`` is not a package's import path
+    either — it is a second recomputation of the same unknowable, and it gets
+    (1) and (2) wrong in exactly the same way this one does. Only the Go
+    toolchain knows a package's import path.
     """
     root = Path(tree)
     qualifiers: dict[str, str] = {}
@@ -1936,6 +2062,31 @@ def _join_callee(
     cannot both claim one key. Anything that does not resolve is left alone and
     the both-ends rule drops it, which is the right answer for the standard
     library.
+
+    **P4 (D6 adjudication round 3, 2026-08-11).** Longest-match is not
+    decoration and the shape that needs it was BUILT rather than imagined.
+    ``_KEY_PACKAGE_SEPARATOR`` is ``"."`` and an import path may legally contain
+    one, so ``example.com/app/b.`` is a genuine textual prefix of
+    ``example.com/app/b.v2.FromBV2``. **Measured under** ``feat/D6-body`` @
+    ``f4c7c46``: with longest-match both callees land in their own package;
+    shortest-match rewrites the second to ``<qualifier of b>.v2.FromBV2``,
+    which no unit declares — so the failure mode of getting this backwards is
+    a DROPPED production edge, not a visible error.
+
+    THE ``callee in symbols`` SHORT-CIRCUIT IS NOT AN OPTIMISATION and must not
+    be removed as one: a key the tree already declares is already this tree's
+    spelling, and rewriting it would move a correct key onto a longer prefix.
+
+    RESIDUE, named because leaving it implied is how it becomes a surprise: a
+    callee in a package OUTSIDE the tree whose import path is prefixed by an
+    in-tree one — ``example.com/x.y.F`` where ``example.com/x`` is in the tree
+    and ``example.com/x.y`` is not — is rewritten to ``<qualifier of x>.y.F``.
+    That string cannot collide with a real member, because a member is a bare
+    name or a ``(recv).name`` form and neither can contain a bare ``.``
+    segment, so the rewrite lands on nothing and the both-ends rule drops the
+    edge — which is what would have happened anyway. It is recorded rather than
+    fixed because the fix would need to know which import paths exist outside
+    the tree, and nothing here does.
     """
     if callee in symbols:
         return callee
@@ -2103,6 +2254,97 @@ class GoReachabilityAnalyzer:
 
         Both are also exactly what ``_validate_root`` refuses, so the filter is
         what keeps a legal Go tree from taking the whole check down.
+
+        **P4 RULING (D6 adjudication round 3, 2026-08-11) — DROP, IN BOTH
+        DIRECTIONS, AND NOT RAISE. The two halves are ruled for DIFFERENT
+        reasons and only one of them is semantics.** The rule was not in the
+        scaffold and the body was right to flag it rather than let it pass as
+        obvious.
+
+        **RAISE IS WRONG HERE, and the module's own doctrine is what says so.**
+        "An unreachable arm which raises is the difference between a contract
+        and a coincidence" governs arms that are IMPOSSIBLE. Neither of these
+        is: ``func init()`` in a ``_test.go`` is idiomatic Go, and a func named
+        ``TestFoo`` in ``main.go`` is legal. A raise here leaves as
+        :class:`AnalyzerError`, ``discover_roots`` wraps it, and the whole check
+        dies on a legal tree — the exact failure this method's CHOICE above was
+        written to avoid. There is no unreachable arm to harden: RULE 10 in the
+        decoder already refuses a root naming an undeclared symbol, so
+        ``symbols[wire.symbol]`` cannot miss, and
+        ``_ROOT_KIND_BY_ENTRYPOINT`` is total over :class:`EntrypointKind`
+        because ``entrypoint_kind_for_wire`` raises before this line on
+        anything else.
+
+        **DIRECTION 1 — a ``TEST_FUNCTION`` in a production file. The drop is
+        CORRECT and permanent.** It is not a new rule at all: it is the
+        conjunction :func:`go_test_root_predicate` already contracts, whose
+        naming half the helper applies and whose FILE half is
+        ``seal_verify.is_test_path``. The conjunction is false, so there is no
+        root, and no root is lost — the symbol stays in the graph and any real
+        edge into it still counts. **Measured under** ``feat/D6-body`` @
+        ``f4c7c46``: ``func TestFoo`` in ``main.go`` calling
+        ``reachedOnlyFromTestFoo``; the root is dropped and the callee reads
+        FROM_NEITHER, which is the TRUE answer, because ``go test`` does not
+        run ``TestFoo`` out of ``main.go`` and nothing else calls it.
+
+        **DIRECTION 2 — a production kind in a test file. The drop is FORCED,
+        it is an UNDER-APPROXIMATION IN THE MANUFACTURING DIRECTION, and it is
+        a LIMIT rather than semantics. The sentence above claiming it "is not a
+        production root either" is true and INCOMPLETE, and the completion is
+        the point:** it is not "no root", it is a TEST root. ``func init()`` in
+        a ``_test.go`` genuinely runs, in the test binary, and everything it
+        reaches is genuinely reached under test.
+
+        The row cannot say so. D5 derives ``root_kind`` from ``kind`` ALONE
+        (``_ROOT_KIND_BY_ENTRYPOINT``) and ``_validate_root`` then REFUSES the
+        disagreement with the file, and that refusal is sealed —
+        ``test_root_kind_is_derived_from_the_kind_and_never_asserted_by_the_row``
+        pins "``func main`` inside ``contract_seal_test.go``" as a refusal. So
+        a Go row's only two moves are drop and die, and dropping is the one
+        that leaves the check running.
+
+        **WHAT IT COSTS, measured under** ``feat/D6-body`` @ ``f4c7c46``:
+
+          * ``func init()`` in ``z_test.go`` calling ``registered()`` — the
+            root is dropped and ``registered`` reads FROM_NEITHER where the
+            true answer is FROM_TEST. FROM_NEITHER is this mechanism's loudest
+            state, so an under-approximation here does not merely lose
+            information, it accuses;
+          * a package whose only initialised package-level ``var`` lives in a
+            test file — same, through the synthetic ``<vars>`` symbol.
+
+        **ESCALATED TO THE D5 ADJUDICATOR, and it is D5's contract that is
+        already on this side of the argument:** ``_validate_root``'s own
+        docstring says ``root_kind`` is "DERIVED from ``kind`` and from
+        ``seal_verify.is_test_path`` over the declaring file", while
+        ``_ROOT_KIND_BY_ENTRYPOINT`` derives it from ``kind`` alone. The two
+        agree only if a production kind in a test file is impossible, and it is
+        idiomatic. The fix is one table lookup — ``RootKind.TEST`` whenever
+        ``is_test_path`` is true, whatever the ``kind`` — and it belongs to D5,
+        not here. Nothing in this module is edited for it.
+
+        **A SEPARATE AND WORSE DEFECT AT THE SAME SEAM, ESCALATED TO P3.** The
+        synthetic ``<vars>`` symbol is per PACKAGE and takes its path from the
+        first contributing file, so ONE symbol stands for initialisers that run
+        in two different binaries. Measured under the same revision, over one
+        package holding ``var _ = onlyProd()`` and ``var _ = onlyTest()``:
+
+            main.go + z_test.go   <vars> path is main.go, the root is KEPT as
+                                  PRODUCTION, and its edge to `onlyTest` makes
+                                  a function only a test file initialises read
+                                  as REACHED FROM PRODUCTION — a false
+                                  certification, which hides dark code;
+            a_test.go + b.go      <vars> path is a_test.go, the whole root is
+                                  DROPPED, and `onlyProd` — genuinely
+                                  initialised in production — reads
+                                  FROM_NEITHER, a false BREACH.
+
+        **The same package, the same code, and the verdict flips on the
+        alphabetical position of a test file's name.** Neither answer is
+        reachable through the filter in this method, because the filter reads
+        one path and the symbol conflates two. The fix is in the helper: emit
+        ``<vars>`` once per (package, binary) rather than once per package, each
+        taking its path from a file of its own kind.
         """
         roots: list[Root] = []
         for _unit, _files, response in _analyzed_units(tree):
@@ -2186,6 +2428,64 @@ class GoReachabilityAnalyzer:
         fingerprinter, because here as there the thing whose provenance is in
         question is the helper, and the first message an operator sees on an
         unconfigured machine should name it.
+
+        **P4 RULING (D6 adjudication round 3, 2026-08-11) — THE CROSS-PACKAGE
+        KEY REPAIR BELONGS HERE, FOR NOW, AND THE COST OF MOVING IT WAS
+        MEASURED BEFORE THE RULING RATHER THAN ESTIMATED AFTER.**
+
+        A repair that reconciles two spellings is weaker than one spelling, so
+        the alternative was built and run rather than reasoned about: make
+        ``GoUnit.package_dir`` MODULE-relative instead of tree-relative, so that
+        ``qualifierOf(unit)`` in ``main.go`` equals the package's import path
+        and the helper's cross-package callee key equals the callee unit's own
+        key by construction, with no map and no rewrite.
+
+        **THE COST, measured under** ``feat/D6-body`` @ ``f4c7c46``, 2026-08-11,
+        by applying that change to a copy of this tree and running the whole
+        suite: **five red rows** —
+        ``test_a_directory_holding_two_packages_is_two_units``,
+        ``test_the_module_path_is_the_nearest_enclosing_go_mod``,
+        ``test_the_sweep_is_deterministic_and_writes_nothing``,
+        ``test_interface_satisfaction_produces_no_edge_and_a_call_through_one_produces_many``
+        and
+        ``test_the_acceptance_case_is_seven_seal_subject_pairs_over_two_keys``.
+        The acceptance row's SUBSTANCE survives the move — the two
+        ``VerifyPreservation`` keys stay distinct, as
+        ``…/gates.VerifyPreservation`` and ``…/iterate.VerifyPreservation`` —
+        so the fixture's whole reason for existing is not what the move costs.
+        Five rows is a price this effort would pay.
+
+        **THE RULING IS AGAINST THE MOVE ANYWAY, because it does not buy one
+        spelling — it buys a cheaper second guess at the same unknowable.**
+        Measured under the same change: a real ``go mod vendor`` tree still
+        loses its edge, and a renaming ``replace`` still loses its edge, for the
+        identical reason both fail today — ``<module path> + <in-module
+        directory>`` is not a package's import path in either shape. What the
+        move DOES buy is that the duplicate-import-path collision stops being
+        silent: the two units merge and go/types answers "Do redeclared in this
+        block", which reaches the caller as ``unreadable_paths`` and abstains
+        the tree. Loud and conservative, against today's silent mis-join.
+
+        **So the ruling is: keep the repair in this method, make the collision
+        loud where it is (see :func:`_import_path_qualifiers`), and ESCALATE THE
+        ONE FIX THAT IS ACTUALLY ONE SPELLING to P3 — the import path must come
+        from the Go toolchain, which the helper already execs, and not from
+        arithmetic on directory names.** Concretely: the helper reports, per
+        unit, the import path ``go/build`` resolves for its own directory, and
+        the Python side keys symbols by that. That closes all three residual
+        shapes at once, it is production code plus a wire field, and it is not
+        a contract sentence.
+
+        **A SECOND CROSS-PACKAGE HOLE IN THE SAME DIRECTION, ESCALATED TO P3
+        and recorded at ``main.go``'s ``classifySelectorCall``:** a method call
+        on a receiver whose type is declared in another IN-TREE package emits no
+        edge at all, because the helper fans out over ITS OWN unit's methods of
+        that name. Measured under this revision: ``core.(*T).Ptr``, called from
+        ``main``, reads as UNCALLED; and if the calling unit happens to declare
+        an unrelated method of the same name, the SAME call site also
+        manufactures an ``interface`` edge to it. One false BREACH and one false
+        certification, at one site. No amount of key rejoining reaches it — the
+        edge is never emitted.
         """
         analyzed = _analyzed_units(tree)
         qualifiers = _import_path_qualifiers(tree, [unit for unit, _, _ in analyzed])

@@ -132,8 +132,47 @@ GOMODCACHE=/nonexistent GOPATH=/nonexistent`:
                                                                 production
                                                                 closure)
 
-Two type errors: **zero**. Reference edges: 41 in tree, and the closure and the
-hole count are identical with and without them.
+Two type errors: **zero**.
+
+**P4 round 3 (D6 adjudication, 2026-08-11) — the reference-edge count is
+CORRECTED from 41 to ZERO.** An earlier version of this line read *"Reference
+edges: 41 in tree, and the closure and the hole count are identical with and
+without them."* The 41 does not reproduce, and 41 is the value of the `method`
+cell in the resolution column immediately above: the number was transcribed
+across, not measured. The rest of that sentence is vacuously true — a count that
+is zero cannot change anything by being included.
+
+**Measured under** `feat/D6-body` @ `f4c7c46`, 2026-08-11, by two walks that
+share no code:
+
+  * the row's own `GoReachabilityAnalyzer.graph` over this fixture — 218
+    symbols, 738 edges, of which **direct 655, interface 44, method 39,
+    reference 0**; and the helper's RAW per-unit output before the both-ends
+    rule drops anything — 1,313 edges, of which **reference 0**. So the zero is
+    not the both-ends rule hiding them;
+  * a probe written from scratch against `go/types`, which marks the
+    identifiers a call expression consumes and then counts every remaining
+    identifier resolving to a `*types.Func` — that is what "reference edge"
+    means. It answers **0 for `cmd/gates` and 0 for `cmd/iterate`**, over the
+    production and test files alike.
+
+**The probe's POSITIVE CONTROL, without which the zero would be a blind
+instrument:** the same probe over a four-line package holding `f := Named` and
+`apply(Named)` answers **2**, at the two identifiers, naming the package. The
+zero is a fact about this fixture and not about the walk.
+
+**Why it is zero.** Every func value in this tree is a literal. Go's
+`func(...) {...}` in an argument slot is an `*ast.FuncLit` and not an
+identifier, so it names no declaration to reference; the census above records
+exactly one `*ast.FuncLit` in the whole fixture.
+
+`method 41` and the edge census are **not** comparable and must not be
+reconciled: the census column counts CALL SITES by how they resolved, and one
+method call site that reaches an interface emits one edge per in-unit method of
+that name. Comparing them is what produced the 41 in the first place.
+
+The closure size (**104**) and the hole counts (**7** without the sole-binding
+rule, **2** with it) reproduce exactly under `feat/D6-body` @ `f4c7c46`.
 
 **The closure size reads 104 here and 106 above, and they are the same
 measurement.** The round-2 walk spells the synthetic package-var initialiser

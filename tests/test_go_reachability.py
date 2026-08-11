@@ -3105,3 +3105,360 @@ def test_the_subject_reader_cannot_be_import_based_over_this_fixture(tmp_path, m
             )
             named += 1
     assert named == 7
+
+
+# =========================================================================== #
+# Part 12 — the cross-package key repair, and the one shape where it is worse
+#           than the drop it replaced
+#
+# P4 (D6 adjudication round 3, 2026-08-11). `main.go`'s contract used to say a
+# cross-package callee's KEY is derivable from the import block. It is not:
+# `go_symbol_key`'s qualifier is `<module_path>/<TREE-relative package_dir>`
+# and a package's import path is `<module_path>/<MODULE-relative directory>`.
+# The two differ whenever the module root is not the tree root, which is the
+# acceptance fixture's own shape, and the difference costs a real production
+# edge — a false accusation of dark code in the mechanism whose whole purpose
+# is accusing code of being dark.
+#
+# The body closed it inside `graph()` with `_import_path_qualifiers` and
+# `_join_callee` and flagged it as uncovered. These are the rows.
+#
+# EVERY TREE HERE PUTS THE MODULE BELOW THE TREE ROOT, and that is not
+# decoration: with a module at the tree root the map is the identity, the
+# rewrite is a no-op, and a row built that way would pass with the repair
+# deleted. The `_MODULE_BELOW_ROOT` control asserts exactly that.
+# =========================================================================== #
+
+
+#: The subdirectory every tree in this part puts its module in. Named once,
+#: because a row that spelled it twice could drift into the tree-root shape
+#: where these rows measure nothing.
+_MODULE_BELOW_ROOT = "sub"
+
+
+def _below_root_tree(tmp_path: Path, files: dict[str, str], *, name: str) -> Path:
+    """A tree whose module lives at ``sub/``, one file per entry.
+
+    Keys are paths relative to ``sub/``. The ``go.mod`` is the caller's, because
+    two of these rows turn on what it says.
+    """
+    tree = tmp_path / name
+    for relative, source in files.items():
+        path = tree / _MODULE_BELOW_ROOT / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source)
+    return tree
+
+
+def test_a_cross_package_edge_survives_only_because_the_callee_key_is_rejoined(
+    tmp_path,
+):
+    """The repair, and the control that proves the row can fail.
+
+    ``sub/main.go`` calls ``core.Work`` in ``sub/internal/core``. The helper can
+    only name that callee by its IMPORT PATH — ``example.com/app/internal/core``
+    — while the callee's own unit keys it ``example.com/app/sub/internal/core``,
+    because ``go_symbol_key``'s qualifier keeps the TREE-relative directory. If
+    the two are not rejoined, ``CallGraph``'s both-ends rule drops a real
+    production edge and ``Work`` reads as uncalled.
+
+    **THE POSITIVE CONTROL IS THE SECOND ASSERTION**, and it is what makes this
+    row more than a restatement of the body: it re-derives the pre-repair
+    answer by joining against an EMPTY qualifier map — which is the code as it
+    stood before ``_import_path_qualifiers`` existed — and asserts that key
+    names nothing in the tree. So the row measures the repair rather than the
+    call.
+
+    **Measured under** ``feat/D6-adj3``, 2026-08-11: GREEN, mutation-verified,
+    two mutations, and each reddens this row plus the two below it and nothing
+    else in the file — replacing ``graph``'s ``qualifiers`` with ``{}`` (which
+    is the code exactly as it stood before the repair), and computing
+    ``_import_path_qualifiers``' ``inside`` from the TREE root instead of the
+    module directory (which is the same defect written a second way).
+    """
+    tree = _below_root_tree(
+        tmp_path,
+        {
+            "go.mod": "module example.com/app\n\ngo 1.21\n",
+            "main.go": (
+                "package main\n\n"
+                'import "example.com/app/internal/core"\n\n'
+                "func main() { core.Work() }\n"
+            ),
+            "internal/core/core.go": "package core\n\nfunc Work() {}\n",
+        },
+        name="rejoined",
+    )
+    graph = GoReachabilityAnalyzer().graph(tree)
+
+    callee = go_symbol_key(
+        "example.com/app", f"{_MODULE_BELOW_ROOT}/internal/core", "core", None, "Work"
+    )
+    assert callee in graph.symbols, (
+        "the control failed: the callee's own unit did not declare the key "
+        "go_symbol_key spells, so the row below is measuring nothing"
+    )
+    assert [e for e in graph.edges if e.callee.key == callee], (
+        "the cross-package call is a real production edge; dropping it makes "
+        "core.Work read as uncalled, which is a manufactured BREACH in the "
+        "mechanism whose whole purpose is accusing code of being dark"
+    )
+
+    # THE POSITIVE CONTROL. The key the helper emitted, joined the way the code
+    # joined it before the repair: it names nothing here.
+    as_the_helper_spelled_it = "example.com/app/internal/core.Work"
+    assert as_the_helper_spelled_it not in graph.symbols, (
+        "the row is vacuous if the helper's spelling already matches: then the "
+        "module sits at the tree root, the qualifier map is the identity, and "
+        "this file would pass with the repair deleted"
+    )
+
+
+def test_the_longest_import_path_wins_when_one_prefixes_another(tmp_path):
+    """The one shape in which longest-match is load-bearing, built rather than imagined.
+
+    ``_KEY_PACKAGE_SEPARATOR`` is ``"."`` and an import path may legally contain
+    one — ``gopkg.in/yaml.v2`` is the everyday example — so ``example.com/x.``
+    is a genuine textual prefix of the KEY ``example.com/x.y.FromY``. Two
+    candidates match and the rule must pick the longer.
+
+    **THE TWO MODULES ARE THE POINT AND THIS ROW COST ONE REWRITE TO GET
+    RIGHT.** Inside ONE module the two rules are indistinguishable: every
+    package of a module gets the SAME prefix inserted, so shortest-match's
+    answer for ``…/app/b.v2.FromBV2`` is the correct key by coincidence and a
+    row built that way passes under either rule. The candidates must belong to
+    units whose qualifiers transform differently, which means two modules in
+    two directories. **The first draft of this row was built inside one module
+    and was vacuous; it is recorded because a control that cannot fail is the
+    defect this file exists to find.**
+
+    Here ``example.com/x`` lives at ``mx/`` and ``example.com/x.y`` at ``my/``,
+    so longest-match answers ``example.com/x.y/my.FromY`` and shortest-match
+    answers ``example.com/x/mx.y.FromY`` — different strings, and only one of
+    them names anything. Getting this backwards costs a DROPPED production edge
+    and prints no error at all.
+
+    **Measured under** ``feat/D6-adj3``, 2026-08-11: GREEN, mutation-verified,
+    three mutations — dropping ``reverse=True`` from ``_join_callee``'s
+    ``sorted(..., key=len)``, which reddens this row and no other; and the two
+    the row above lists, which redden this one too.
+    """
+    tree = tmp_path / "prefix"
+    for relative, source in {
+        "mx/go.mod": "module example.com/x\n\ngo 1.21\n",
+        "mx/x.go": "package x\n\nfunc FromX() {}\n",
+        "my/go.mod": "module example.com/x.y\n\ngo 1.21\n",
+        "my/y.go": "package y\n\nfunc FromY() {}\n",
+        "app/go.mod": (
+            "module example.com/app\n\n"
+            "go 1.21\n\n"
+            "require (\n"
+            "\texample.com/x v0.0.0\n"
+            "\texample.com/x.y v0.0.0\n"
+            ")\n\n"
+            "replace example.com/x => ../mx\n\n"
+            "replace example.com/x.y => ../my\n"
+        ),
+        "app/main.go": (
+            "package main\n\n"
+            "import (\n"
+            '\t"example.com/x"\n'
+            '\t"example.com/x.y"\n'
+            ")\n\n"
+            "func main() {\n"
+            "\tx.FromX()\n"
+            "\ty.FromY()\n"
+            "}\n"
+        ),
+    }.items():
+        path = tree / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source)
+
+    graph = GoReachabilityAnalyzer().graph(tree)
+
+    for module, directory, package, name in (
+        ("example.com/x", "mx", "x", "FromX"),
+        ("example.com/x.y", "my", "y", "FromY"),
+    ):
+        key = go_symbol_key(module, directory, package, None, name)
+        assert key in graph.symbols, (
+            f"the control failed: {directory} declared no {name} to reach"
+        )
+        assert [e for e in graph.edges if e.callee.key == key], (
+            f"{name} is called from app/main.go and its edge was lost; under "
+            "shortest-match the example.com/x.y callee is rewritten onto "
+            "example.com/x's qualifier and lands on nothing"
+        )
+
+    # THE POSITIVE CONTROL: the key shortest-match would have produced. It must
+    # name nothing, or the row cannot tell the two rules apart.
+    x_qualifier = go_symbol_key("example.com/x", "mx", "x", None, "").rpartition(".")[0]
+    shortest_match = f"{x_qualifier}.y.FromY"
+    correct = go_symbol_key("example.com/x.y", "my", "y", None, "FromY")
+    assert shortest_match != correct, (
+        "the control failed: the two rules produced the same string, which is "
+        "what happens when both candidates live in ONE module. This row is "
+        "then vacuous under either rule"
+    )
+    assert shortest_match not in graph.symbols, (
+        "shortest-match's answer must name nothing in the tree"
+    )
+
+
+def test_a_method_key_crosses_a_package_boundary_with_its_receiver_intact(tmp_path):
+    """The rewrite moves ``(*T).M`` and ``(T).M`` without touching the member.
+
+    ``go_symbol_key`` gives pointer and value receivers DIFFERENT keys on
+    purpose, so a prefix rewrite that reached into the member — or that split on
+    the wrong ``.`` — would silently merge two bodies into one symbol, which is
+    the collision the qualifier exists to prevent, one level in.
+
+    This row asserts the SPELLING survives the join, over a package-level
+    function that returns the receiver type. It deliberately does not assert an
+    edge into either method: **a method call on a receiver declared in another
+    in-tree package emits no edge at all today** — see the P4 escalation on
+    ``classifySelectorCall`` in ``main.go`` — and a row that asserted one here
+    would be red for a defect that is P3's, not this repair's.
+
+    **Measured under** ``feat/D6-adj3``, 2026-08-11: GREEN, mutation-verified
+    by the two mutations the first row of this Part lists, both of which redden
+    it; a join that rewrote past the qualifier's separator would mangle the
+    member and redden the ``{pointer, value}`` assertion.
+    """
+    tree = _below_root_tree(
+        tmp_path,
+        {
+            "go.mod": "module example.com/app\n\ngo 1.21\n",
+            "internal/core/core.go": (
+                "package core\n\n"
+                "type T struct{}\n\n"
+                "func (t *T) Ptr()  {}\n"
+                "func (t T) Value() {}\n\n"
+                "func New() *T { return &T{} }\n"
+            ),
+            "main.go": (
+                "package main\n\n"
+                'import "example.com/app/internal/core"\n\n'
+                "func main() {\n"
+                "\tv := core.New()\n"
+                "\tv.Ptr()\n"
+                "\t(*v).Value()\n"
+                "}\n"
+            ),
+        },
+        name="methods",
+    )
+    graph = GoReachabilityAnalyzer().graph(tree)
+
+    directory = f"{_MODULE_BELOW_ROOT}/internal/core"
+    pointer = go_symbol_key("example.com/app", directory, "core", "*T", "Ptr")
+    value = go_symbol_key("example.com/app", directory, "core", "T", "Value")
+    assert pointer != value, (
+        "the control failed: the two receivers collapsed to one key, and this "
+        "row cannot tell a preserved member from a mangled one"
+    )
+    assert {pointer, value} <= set(graph.symbols), (
+        "both methods are declared in the tree and both must be symbols; a "
+        "symbol absent from the map cannot be a subject"
+    )
+    joined = [e for e in graph.edges if e.callee.key.endswith(".New")]
+    assert joined and joined[0].callee.key.startswith(f"example.com/app/{directory}"), (
+        "the cross-package func edge must land on the callee unit's own "
+        "qualifier, which is what makes the method keys above reachable at all"
+    )
+
+
+def test_two_units_claiming_one_import_path_are_never_silently_joined_to_one(
+    tmp_path,
+):
+    """RED at HEAD, and the redness is the finding.
+
+    **P4 (D6 adjudication round 3, 2026-08-11): this is the one measured shape
+    in which the repair is WORSE than the drop it replaced, and it ships red so
+    that P3 has a row to fix against rather than a paragraph to remember.**
+
+    ``_import_path_qualifiers`` returns a plain ``dict`` keyed on import path
+    with no collision check, so when two units in one tree claim one import path
+    — two checkouts of a module, or a vendored copy that kept its ``go.mod`` —
+    the LAST one written wins, and the winner is decided by ``discover_units``'
+    sort order, which is a fact about directory names and nothing else.
+
+    Here ``a/`` and ``b/`` both declare ``module example.com/dup`` and ``app``
+    reaches the FIRST through ``replace example.com/dup => ../a``. Measured
+    under ``feat/D6-body`` @ ``f4c7c46``: the edge lands on ``b/d.go``. Two
+    harms at one site — the real target reads as uncalled, which is a false
+    BREACH, and the decoy reads as called, which is a false certification and
+    hides dark code. Before the repair the edge was merely dropped, so the
+    repair introduced the second harm.
+
+    THE RULING is that a second unit claiming an import path already in the map
+    is :attr:`AnalyzerFault.HELPER_OUTPUT_INVALID`, exactly as a duplicate
+    symbol key across units already is in ``graph`` and for the same reason: one
+    label naming two packages is one symbol wearing two declarations, one layer
+    up. Abstaining is the answer a mechanism that cannot tell two packages apart
+    is entitled to give; guessing is not.
+
+    The alternative ruling — silently preferring one — was rejected because
+    there is no honest tie-break: ``replace`` decides which directory the import
+    resolves to and nothing in this map reads ``replace``.
+
+    THE CONTROL is the first assertion: both ``Do``s must be declared, so a
+    green from an empty graph is impossible.
+
+    **AND THE SHARPEST MEASUREMENT IN THIS PART: THIS ROW IS GREEN WITH THE
+    REPAIR REMOVED.** Measured under ``feat/D6-adj3``, 2026-08-11, replacing
+    ``graph``'s ``qualifiers`` with ``{}``: the three rows above redden and this
+    one goes green, because with no map the edge is merely dropped and nothing
+    is certified. That is "the repair introduced the second harm" as an
+    executable fact rather than a claim, and it is why the collision must be
+    made loud rather than the repair reverted — reverting would take the three
+    rows above with it.
+    """
+    tree = tmp_path / "collision"
+    for relative, source in {
+        "a/go.mod": "module example.com/dup\n\ngo 1.21\n",
+        "a/d.go": "package dup\n\nfunc Do() {}\n",
+        "b/go.mod": "module example.com/dup\n\ngo 1.21\n",
+        "b/d.go": "package dup\n\nfunc Do() {}\n",
+        "app/go.mod": (
+            "module example.com/app\n\n"
+            "go 1.21\n\n"
+            "require example.com/dup v0.0.0\n\n"
+            "replace example.com/dup => ../a\n"
+        ),
+        "app/main.go": (
+            "package main\n\n"
+            'import "example.com/dup"\n\n'
+            "func main() { dup.Do() }\n"
+        ),
+    }.items():
+        path = tree / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source)
+
+    row = GoReachabilityAnalyzer()
+    try:
+        graph = row.graph(tree)
+    except AnalyzerUnavailable as exc:
+        assert exc.fault is AnalyzerFault.HELPER_OUTPUT_INVALID, (
+            "two units claiming one import path is the mechanism failing to "
+            f"tell two packages apart, not {exc.fault!r}"
+        )
+        return
+
+    declared = {key for key in graph.symbols if key.endswith(".Do")}
+    assert len(declared) == 2, (
+        "the control failed: the tree must declare both Do's, or a green here "
+        f"means nothing. Declared: {sorted(declared)}"
+    )
+    landed = [e.callee.key for e in graph.edges if e.callee.key.endswith(".Do")]
+    assert not landed, (
+        "the map guessed. `replace ... => ../a` resolves the import to a/d.go "
+        f"and the edge landed on {landed}; the map cannot read `replace`, so "
+        "it has no honest tie-break and must raise HELPER_OUTPUT_INVALID "
+        "rather than pick. Picking makes the real target read as uncalled AND "
+        "certifies the decoy — a false BREACH and a false certification at one "
+        "site. P4 ruled: make the collision loud. See "
+        "_import_path_qualifiers' WHAT THIS DOES NOT CLOSE, item 3"
+    )
