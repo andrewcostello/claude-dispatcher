@@ -16,3 +16,22 @@ dist/
 docs/runs/
 worktrees-smoke/
 worktrees-dogfood/
+
+# The vendored TypeScript parser (unit D4). A SEPARATELY-VERSIONED ARTIFACT and
+# not a blob in this history: operator ruling 2026-08-10. `typescript.js` is
+# 9.1 MB of third-party code whose only practical review is a digest, so the
+# digest is what this repository carries — `TS_VENDORED_PARSER_SHA256` in
+# `role_protocol.py`, which is on FLOOR_GLOBS — and the bytes are fetched at
+# install time by `python3 -m claude_dispatcher.ts_parser_vendor` and re-hashed
+# on every process that renders a TypeScript signature.
+#
+# NAMED INDIVIDUALLY, not as `ts_signature_fingerprint/`. The helper `main.cjs`
+# lives in the same directory, it IS reviewable source, and it MUST stay
+# tracked: it is a parser input, it is on FLOOR_GLOBS, and the whole subtree
+# glob exists to protect it. A directory-wide ignore here would quietly untrack
+# the one file in there the floor can actually see.
+/src/claude_dispatcher/ts_signature_fingerprint/typescript.js
+/src/claude_dispatcher/ts_signature_fingerprint/LICENSE.typescript.txt
+# Interrupted `os.replace` staging from the fetcher, which cleans up after
+# itself; ignored so a crashed run cannot leave a file that reads as source.
+/src/claude_dispatcher/ts_signature_fingerprint/.*.incoming-*

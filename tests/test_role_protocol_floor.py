@@ -401,6 +401,39 @@ def _spec(role: Role, *disputed: str) -> TaskRoleSpec:
 #:      1663 passed, 13 skipped, and the single remaining failure is the seal
 #:      below, which is exactly the coordination P3 may not perform.
 #:
+#: **THE GATE'S FOURTH ARTIFACT — the TypeScript parser subtree (P4 ruling,
+#: 2026-08-10, unit D4). P3: use this string, or escalate — do not edit this
+#: table.**
+#:
+#:     **/src/claude_dispatcher/ts_signature_fingerprint/**
+#:
+#: Four rows, on the Go subtree's pattern and for its reasons, plus one this
+#: entry has that the Go entry does not:
+#:
+#:   9. PATH-QUALIFIED and a SUBTREE, decided exactly as points 4 and 5 decide
+#:      it. Measured 2026-08-10 under the module's own glob lens: the
+#:      path-qualified spelling matches
+#:      `src/claude_dispatcher/ts_signature_fingerprint/typescript.js`, its
+#:      `main.cjs`, its `LICENSE.typescript.txt` and the vendored
+#:      `sub/project/...` layout, and does NOT match
+#:      `tools/ts_signature_fingerprint/typescript.js`.
+#:   10. THE ROW THAT IS NOT THE GO ENTRY'S. What lands under this glob is a
+#:      **9.1 MB third-party blob** whose only practical review is a digest,
+#:      and the digest — `TS_VENDORED_PARSER_SHA256` — lives in
+#:      `role_protocol.py`, already floored. The two together are the ruling:
+#:      defeating the parser check needs a floor violation on the BYTES and a
+#:      second one on the EXPECTATION, in two different files. A floor that
+#:      covered only the digest would leave the bytes writable; one that
+#:      covered only the bytes would let a branch move the expectation to meet
+#:      them. Neither half is sufficient and that is why the fourth artifact is
+#:      a floor entry rather than a code change.
+#:   11. IT LANDS BEFORE ANYTHING IS VENDORED, which is the Go entry's rule
+#:      restated and the reason this is its own commit: "a floor that arrives
+#:      with enrolment is a floor that was absent for every commit that built
+#:      the thing it protects." The subtree does not exist on disk today. The
+#:      rows below are therefore probes of the GLOB and not of the filesystem,
+#:      which is what every row in this table already is.
+#:
 #: Point 6's arithmetic is stated for the closure ruling's own half and is
 #: still right under the union, for a reason worth writing down: the union puts
 #: NINE globs on the floor, and eight of them — every one but the Go subtree —
@@ -416,6 +449,18 @@ def _spec(role: Role, *disputed: str) -> TaskRoleSpec:
 #: without either being wrong, and a textual merge would have left the closure
 #: ruling's "plan time strictly stricter than diff time" reading as if it held
 #: across a floor it does not describe.
+#:
+#: TEN globs as of unit D4 (2026-08-10), and that paragraph now reads "the TWO
+#: floor globs that are diff-time only": the TS subtree's last segment is `**`
+#: as well. Measured 2026-08-10 against the merged tuple —
+#: `ts_signature_fingerprint`, `typescript.js`, `main.cjs` and the full
+#: `src/claude_dispatcher/ts_signature_fingerprint/typescript.js` all return
+#: None. Eight of ten refused at plan time, ten of ten at diff time. The
+#: generalisation the second instance licenses, written down so a third does
+#: not have to rediscover it: a SUBTREE glob is always plan-time invisible
+#: under `_floor_glob_named_by`, because a pure-wildcard tail is exactly what
+#: that function refuses. Any future artifact protected as a tree buys
+#: diff-time enforcement only, by construction and not by oversight.
 _FLOOR_ROWS: tuple[tuple[str, str], ...] = (
     ("**/.dispatcher.yaml", ".dispatcher.yaml"),
     ("**/.dispatcher.yaml", "sub/project/.dispatcher.yaml"),
@@ -454,6 +499,28 @@ _FLOOR_ROWS: tuple[tuple[str, str], ...] = (
     (
         "**/src/claude_dispatcher/go_signature_fingerprint/**",
         "src/claude_dispatcher/go_signature_fingerprint/internal/parse/decl.go",
+    ),
+    # The gate's fourth artifact (D4 P4 ruling, 2026-08-10). Four rows on the
+    # Go subtree's pattern: two that pin the path qualification (real layout
+    # and vendored layout) and two that pin the SUBTREE half — a spelling that
+    # named `typescript.js` alone would leave the helper that loads it, and the
+    # license that is the cheapest evidence of what was vendored, writable by
+    # the branch being judged.
+    (
+        "**/src/claude_dispatcher/ts_signature_fingerprint/**",
+        "src/claude_dispatcher/ts_signature_fingerprint/typescript.js",
+    ),
+    (
+        "**/src/claude_dispatcher/ts_signature_fingerprint/**",
+        "sub/project/src/claude_dispatcher/ts_signature_fingerprint/typescript.js",
+    ),
+    (
+        "**/src/claude_dispatcher/ts_signature_fingerprint/**",
+        "src/claude_dispatcher/ts_signature_fingerprint/main.cjs",
+    ),
+    (
+        "**/src/claude_dispatcher/ts_signature_fingerprint/**",
+        "src/claude_dispatcher/ts_signature_fingerprint/LICENSE.typescript.txt",
     ),
     # The delegation closure (D1 P4 ruling). Five globs, two probes each — the
     # real path and the nested `sub/project/...` layout — same as every glob
@@ -560,6 +627,18 @@ def test_the_floor_is_exactly_the_written_out_set_of_globs() -> None:
     something even when the matching constant entry is deleted with it — the
     18-of-28 failure mode — and a bound looser than the table does not do that
     job for the rows between the two numbers.
+
+    **P4, 2026-08-10 (unit D4): the bound moves 20 -> 24** for the TypeScript
+    parser subtree's four rows, and it moves for the reason the bound exists
+    rather than as bookkeeping. Those rows are the only thing standing between
+    a 9.1 MB third-party blob and a branch that can write it. The set
+    difference above is satisfied by narrowing the constant and this table
+    together, so the bound and the per-row match assertion are all that is
+    left. Measured both ways, as unit D2 measured its own: narrow only
+    `FLOOR_GLOBS` to `.../ts_signature_fingerprint/typescript.js` and the set
+    difference fires naming the unsealed glob; narrow the constant and this
+    table together and the bound fires. A bound left at 20 would have let all
+    four rows go with everything still green.
     """
     written = {glob for glob, _probe in _FLOOR_ROWS}
     unsealed = sorted(set(FLOOR_GLOBS) - written)
@@ -575,7 +654,7 @@ def test_the_floor_is_exactly_the_written_out_set_of_globs() -> None:
             f"{probe!r} does not match floor glob {glob!r} — the probe, not "
             "the floor, is wrong"
         )
-    assert len(_FLOOR_ROWS) >= 20, _FLOOR_ROWS
+    assert len(_FLOOR_ROWS) >= 24, _FLOOR_ROWS
 
 
 def test_every_floor_glob_the_ruling_wrote_out_is_in_the_constant() -> None:
@@ -631,8 +710,14 @@ def test_every_floor_glob_the_ruling_wrote_out_is_in_the_constant() -> None:
     # moved: this ruling counted its own eight and unit D2's Go subtree glob
     # makes nine. A distinct-glob bound left at 8 would let the whole Go entry —
     # constant, rows and all — be deleted with this seal still green.
-    assert len(written) >= 9, (
-        f"_FLOOR_ROWS no longer writes out nine distinct floor globs, so this "
+    #
+    # 9 -> 10 (D4 P4, 2026-08-10): the TypeScript parser subtree. Same
+    # argument, and it is the one that made the bound matter for Go: left at 9,
+    # the entire TS entry — glob, four rows and all — could be deleted here
+    # with this seal green, and the 9.1 MB blob it protects becomes writable by
+    # the branch it is meant to be judging.
+    assert len(written) >= 10, (
+        f"_FLOOR_ROWS no longer writes out ten distinct floor globs, so this "
         f"seal is measuring a shrunken table rather than the floor: {written}"
     )
     missing = sorted(written - set(FLOOR_GLOBS))
