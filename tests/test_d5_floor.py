@@ -95,8 +95,86 @@ OWES that machinery, and a second copy of the machinery could answer it
 differently from the first — which is the drift every registry in this codebase
 exists to prevent. `test_capstone.py` establishes the cross-file import pattern.
 
-Disputes, for P4
-----------------
+RULINGS (P4, 2026-08-11, on `feat/D5-floor-adj`)
+------------------------------------------------
+All four disputes below are ruled. Each ruling is recorded where it BINDS —
+next to the row or the table it changes — and summarised here. Everything cited
+was re-measured against `feat/D5-floor-seals` @ 59a648d rather than carried over
+from the seal author's record; every recorded measurement reproduced.
+
+  1. **SPELLING: `**/src/claude_dispatcher/call_site_reachability.py`.** One
+     path-qualified FILE glob. Ruled and reasoned in full on `_FLOOR_ROWS` in
+     `tests/test_role_protocol_floor.py` (points 12-15), which is where P3
+     reads it and where "one notion of one fact" puts it. Measured here:
+     basename-only also swallows `vendor/thirdparty/...`; the package subtree
+     also swallows `plan.py` and `blast_radius.py` and buys no plan-time reach;
+     the brace-compressed spelling matches nothing at all and leaves all
+     seventeen rows red.
+
+     **COORDINATION: SPLIT, and the split is forced rather than chosen.** P4
+     landed the two `_FLOOR_ROWS` rows and both bounds (`>= 24 -> >= 26`,
+     `>= 10 -> >= 11`) — seal amendments, which only P4 may make. P4 did NOT
+     land the `FLOOR_GLOBS` constant: `role_protocol.py` is itself on the floor,
+     and `check_branch` refuses that path to ADJUDICATE with `FLOOR_RATIONALE`
+     even when it is declared in `disputed_paths:` (measured 2026-08-11). The
+     gate under adjudication forbids the adjudicator from writing it. It is a
+     reviewed edit on the protected base, and it is P3's.
+
+     Consequence, stated because it moves the round's red count: this file is
+     unchanged at 17 red, and
+     `test_role_protocol_floor.py::test_every_floor_glob_the_ruling_wrote_out_
+     is_in_the_constant` is red for the interval — 18 across the two files. That
+     is the price that row's own docstring names and accepts. Measured joint
+     satisfiability, `.git`-less clone, `__pycache__` cleared: constant + rows +
+     bounds moves the suite from 17 failed / 2296 passed to 1 failed / 2312
+     passed, and the one survivor is ruling 2's row.
+
+  2. **THE IMPORT-TIME ORDERING GUARD: DEFERRED. The row stays red and gains a
+     fifth control.** Not because the property is wrong but because the fix this
+     round would have shipped is: the recommended derivation bricks the
+     installed wheel, and the row could not see it. Ruled in full on
+     `test_enrolment_is_impossible_while_the_floor_row_is_red`, which now
+     carries control (e) and the measurement. What stops the ordering being
+     forgotten is that this round DISCHARGES it — the floor lands first, and the
+     only way back is deleting the glob, which reddens nineteen rows including
+     the sibling seal that re-arms on exactly that edit. Measured.
+
+  3. **THE PLAN-TIME BASENAME ASYMMETRY, 8 -> 9: CONFIRMED, not revisited.**
+     Measured in the clone with the glob landed: `call_site_reachability.py`,
+     the full path, AND `vendor/thirdparty/call_site_reachability.py` all return
+     the new glob from `_floor_glob_named_by`, while `src/claude_dispatcher/**`
+     returns None. Nine of eleven globs are plan-time reachable and two subtree
+     globs are not. The 2026-08-09 reasoning holds unchanged and for its own
+     reason rather than by precedent: the asymmetry can only false-refuse, never
+     false-clear, and the false refusal has a spelling that works. The seal
+     author's judgement that this is the least collision-prone of the nine
+     stands — the eight incumbents include `risk.py`, `repo_config.py` and
+     `yaml_io.py`, and no plausible unrelated file is named
+     `call_site_reachability.py`.
+
+  4. **THE CROSS-FILE IMPORTS: ACCEPTED AS WRITTEN. Do not fork the analyzer or
+     the CI-checkout fixture.** The reasoning is right and this round is
+     evidence for it: Part 2's finding is "nothing further is owed", and that
+     finding is only worth anything because it was computed by the SAME analyzer
+     D1's own closure is computed by. A second copy could answer D5's question
+     differently from the way D1's answers its own, and the two would drift
+     silently, in the one direction nobody looks. The recorded remedy is also
+     right: if it bites, move the helpers to a shared module, do not copy them.
+
+     **One thing the dispute understates, and it is the part with teeth.** The
+     cost is not "an ERROR instead of a FAIL" — it is that a collection error is
+     not a FAILED line, and THIS ROUND'S CONTRACT IS A RED COUNT. If D1's seal
+     files are renamed, this file does not report 17 red; it reports none, and a
+     gate reading FAILED lines sees the number improve. So the count is ruled
+     insufficient on its own: any gate or hand-off that states this file's red
+     count MUST state its collected count beside it. This file collects 34 items
+     (17 red, 17 green); P4's amendment adds a control inside an existing row
+     and collects 34 still. A 34 that becomes a 0 is the rename, and it is the
+     only reading under which that is visible.
+
+Disputes as the seal author raised them, kept verbatim below so the rulings can
+be read against what was actually asked.
+
   1. **The spelling, and the coordination that comes with it.** Nothing here
      names a glob string, but the ruling is not free: `_FLOOR_ROWS` in
      `test_role_protocol_floor.py` is a set difference against `FLOOR_GLOBS` in
@@ -1256,6 +1334,18 @@ def test_the_module_is_not_enrolled_while_it_is_off_the_floor() -> None:
     seal, and it only fires when the suite runs. The row after it is the
     mechanical one, and it needs a production change.
 
+    **P4, 2026-08-11: "stops constraining anything" is true only while the floor
+    is there, which is exactly when there is nothing to constrain. The row
+    RE-ARMS on deletion, and that was measured rather than reasoned.** In a
+    clone carrying the landed glob, deleting it from `FLOOR_GLOBS` and enrolling
+    `ANALYZERS` in the same edit — the only route back into the world the
+    ordering forbids — turns this row RED again, naming the analyzer row and the
+    floor it is missing from, alongside 18 others. So this row is not a fuse
+    that burns out at the first floor; it is armed whenever the antecedent is
+    true, which is the whole of the property. That measurement is why the
+    mechanical guard below is DEFERRED and not abandoned: it would move the
+    failure from the suite to the first import, not add a case the suite misses.
+
     The in-call control is the predicate itself, exercised on both a satisfying
     and a violating pair, so the row cannot pass because
     `_enrolment_is_ordered` is a tautology — the "pass condition satisfiable by
@@ -1284,14 +1374,30 @@ def test_the_module_is_not_enrolled_while_it_is_off_the_floor() -> None:
     )
 
 
-def _package_copy(tmp_path, *, enrolled: bool, floored: bool | None):
-    """An importable copy of `claude_dispatcher`, doctored along two axes.
+def _package_copy(tmp_path, *, enrolled: bool, floored: bool | None, layout: str = "src"):
+    """An importable copy of `claude_dispatcher`, doctored along three axes.
 
     Only the package's top-level `.py` files are copied — enough to import
     `call_site_reachability` and everything it reaches, and it leaves the 8.8 MB
-    vendored TypeScript parser where it is. The copy keeps the `src/` prefix,
-    because a fix that derives its own repo-relative path from `__file__` (see
-    the row's docstring for why it must) needs those three components.
+    vendored TypeScript parser where it is.
+
+    `layout` NAMES THE DIRECTORY THE PACKAGE SITS IN, and it is an axis rather
+    than a constant because of what P4 measured on 2026-08-11:
+
+        "src"            a source checkout — the shape every other row in this
+                         file judges, and the shape a fix that derives its own
+                         repo-relative path from `__file__` needs, since
+                         `Path(__file__).resolve().parts[-3:]` is
+                         `src/claude_dispatcher/<module>.py` only here;
+        "site-packages"  an INSTALLED dispatcher. `pyproject.toml` builds a
+                         setuptools wheel with `where = ["src"]`, so the shipped
+                         package does NOT live under `src/` and that derivation
+                         returns `site-packages/claude_dispatcher/<module>.py`,
+                         which no path-qualified floor glob matches.
+
+    The second value is not hypothetical tidiness. It was the axis this fixture
+    did not have, and the row below could not see the defect without it — see
+    that row's docstring for the measurement.
 
     `enrolled` REPLACES the `ANALYZERS = ()` line with a one-row tuple, so that
     every line after it in the module — `validate_analyzers(ANALYZERS)` and
@@ -1318,7 +1424,7 @@ def _package_copy(tmp_path, *, enrolled: bool, floored: bool | None):
     Nothing is monkeypatched and no mechanism is named: this constructs a world
     and then imports it.
     """
-    root = tmp_path / f"pkg-e{int(enrolled)}-f{floored}" / "src"
+    root = tmp_path / f"pkg-e{int(enrolled)}-f{floored}-{layout}" / layout
     package = root / "claude_dispatcher"
     package.mkdir(parents=True)
     copied = 0
@@ -1423,6 +1529,59 @@ def test_enrolment_is_impossible_while_the_floor_row_is_red(tmp_path) -> None:
     The import-time property has no such collision: `validate_analyzers`'s
     contract is unchanged and that row stays green.
 
+    **P4 RULING, 2026-08-11: DEFERRED out of this round, and this row stays
+    RED as the standing requirement. Two reasons, one procedural and one
+    measured.**
+
+    Procedural: the guard is production code in
+    `call_site_reachability.py`, and an adjudication rules, it does not
+    implement. That alone would only be a handoff.
+
+    Measured, and the reason this is a deferral rather than a handoff: **the
+    reference implementation recorded below bricks the shipped wheel, and this
+    row as written could not see it.** `pyproject.toml` builds a setuptools
+    wheel with `where = ["src"]`, so an installed dispatcher lives at
+    `.../site-packages/claude_dispatcher/call_site_reachability.py` and
+    `"/".join(Path(__file__).resolve().parts[-3:])` returns
+    `site-packages/claude_dispatcher/call_site_reachability.py`, which no
+    path-qualified floor glob matches — measured 2026-08-11 against
+    `**/src/claude_dispatcher/call_site_reachability.py`, which returns None for
+    it and the glob for the checkout spelling. So a guard reading "derive my
+    path, refuse if it is not on the floor" refuses every INSTALLED copy the
+    moment the module is enrolled, including copies whose repository floors it
+    correctly. Control (c) could not catch that, because `_package_copy` hard
+    coded the `src/` prefix: the fixture stated only the world the fix wanted.
+
+    Control (e) is P4's amendment and closes it. Measured 2026-08-11 in a
+    throwaway clone, against a reference implementation of the guard **that was
+    then discarded** — recorded that way on purpose, because 31 of this unit's
+    43 earlier clauses cited a reference implementation that no longer existed
+    and one was never true:
+
+      * the guard with the derivation conditioned on the copy actually being a
+        `src/` checkout — all 34 rows in this file green together, so (a)-(e)
+        are jointly satisfiable and this row is not asking for the impossible;
+      * the same guard WITHOUT that condition — the derivation exactly as
+        recorded below — control (e) FAILS with the `ImportError` and every
+        other row stays green. So control (e) is the only thing in this file
+        that catches the brick, and without it the brick ships green.
+
+    **What stops the ordering being forgotten while this is deferred.** Not
+    goodwill, and not this row. The floor lands FIRST in this round, which is
+    the round's whole thesis, and that DISCHARGES the ordering rather than
+    postponing it: there is no interval in which the module is enrolled and
+    unfloored, because enrolment has not happened and the floor is landing now.
+    The only route back into the forbidden world is DELETING the floor glob, and
+    the sibling row above re-arms the instant that happens — measured
+    2026-08-11 in a clone carrying the landed glob: delete it from `FLOOR_GLOBS`
+    and enrol `ANALYZERS` in the same edit, and NINETEEN rows go red, including
+    `test_the_module_is_not_enrolled_while_it_is_off_the_floor` (which the
+    docstring above calls discharged — it is discharged only while the floor is
+    there, which is precisely when there is nothing to constrain) and
+    `test_role_protocol_floor.py::test_every_floor_glob_the_ruling_wrote_out_
+    is_in_the_constant`. A mechanical guard would move that failure from the
+    suite to the first import. It would not add a case the suite misses.
+
     **ONE CONSTRAINT ON THE FIX, and it was MEASURED rather than anticipated:
     the check may not name this module's own path as a string literal.**
     `test_the_module_declares_no_file_extension_and_calls_no_endswith` sweeps
@@ -1431,10 +1590,14 @@ def test_enrolment_is_impossible_while_the_floor_row_is_red(tmp_path) -> None:
     `"src/claude_dispatcher/call_site_reachability.py"` matches it. The
     reference implementation that proved joint satisfiability derives the path
     instead — `"/".join(Path(__file__).resolve().parts[-3:])` — which costs
-    nothing, satisfies that seal, and cannot drift if the file is renamed. The
-    copies below keep the `src/` prefix so that derivation works.
+    nothing, satisfies that seal, and cannot drift if the file is renamed.
+    Measured 2026-08-11 and left standing: the string-literal form is reported
+    by `_extension_literals`, the derived form is reported by neither that sweep
+    nor `_endswith_sites`. **That derivation is necessary and NOT sufficient —
+    see the P4 ruling above for what it does to an installed copy, and control
+    (e) for the row that now says so.**
 
-    Four copies, judged in this one call, and the three controls come first:
+    FIVE copies, judged in this one call, and the four controls come first:
 
       a. UNDOCTORED — imports, reports an empty registry and this tree's own
          answer to "is the module floored". The copy machinery works and
@@ -1450,19 +1613,41 @@ def test_enrolment_is_impossible_while_the_floor_row_is_red(tmp_path) -> None:
          deletes. It also proves the probe row is well formed, since it survives
          `validate_analyzers` on the way through;
       d. ENROLLED AND NOT FLOORED — must NOT import. This is the row.
+      e. ENROLLED AND FLOORED, in an INSTALLED layout — imports. P4's
+         amendment, 2026-08-11. It is control (c) asked in the deployment shape
+         `pip install` produces, and it is the one that stops a fix from
+         reading "I cannot find myself on the floor" as "I am not on the
+         floor". A permanent refusal is not a control; a permanent refusal that
+         only fires off the developer's machine is worse, because the suite is
+         green when it ships.
 
     Controls (b) and (c) between them pin the refusal to the CONJUNCTION.
-    Neither axis alone may cause it.
+    Neither axis alone may cause it. Control (e) pins the third axis nobody had
+    asked about: the refusal must be a fact about the FLOOR, not about where the
+    package happens to be sitting.
 
-    RED TODAY. Measured against 8f44d1c: copy (d) imports cleanly and prints
-    `IMPORTED 1 False`. Nothing refuses it, at import or anywhere else.
-    Green when: (d) fails to import while (a), (b) and (c) still do.
+    RED TODAY, and re-measured 2026-08-11 against `feat/D5-floor-seals` @
+    59a648d: copy (d) imports cleanly and prints `IMPORTED 1 False`. Nothing
+    refuses it, at import or anywhere else. Still red after the floor lands —
+    measured in the clone that carries the glob, where it is the ONLY remaining
+    failure in the whole suite (1 failed, 2312 passed), which is what makes it
+    the round's standing requirement rather than one red among seventeen.
+    Green when: (d) fails to import while (a), (b), (c) and (e) still do.
 
     Measured under: building copy (d) by "leave the floor alone" instead of by
     removing every covering glob — in the joint-satisfiability clone, where the
     floor already carries the entry, `floored=False` silently means
     `floored=True` and the row passes for exactly the wrong reason. That is why
-    `_package_copy` states both worlds as edits.
+    `_package_copy` states both worlds as edits. Confirmed 2026-08-11: with the
+    glob landed in the clone, control (b) still reports `IMPORTED 0 False`, so
+    the un-flooring surgery does the work the omission used to be credited with.
+    Measured under: the derived-path guard WITHOUT a check that the copy is a
+    `src/` checkout — control (e) fails with the guard's own `ImportError` and
+    all 33 other rows stay green. This is the mutation control (e) exists for
+    and it is the reference implementation this row previously recommended.
+    Measured under: the same guard WITH that check — all 34 rows green, so the
+    five controls are jointly satisfiable. Both against a reference
+    implementation that was DISCARDED; no clause here describes shipped code.
     Predicted (unmeasured) under: a fix that raises for every non-empty registry
     regardless of the floor — control (c) fails.
     """
@@ -1514,4 +1699,24 @@ def test_enrolment_is_impossible_while_the_floor_row_is_red(tmp_path) -> None:
         "the module refused to import, but not for a reason anyone reading the "
         "traceback could act on: it must say that this module is not on the "
         f"floor.\nstderr={unfloored.stderr}"
+    )
+
+    # (e) ENROLLED AND FLOORED, but INSTALLED rather than checked out. Added by
+    # P4 on 2026-08-11 against a measured brick; see the docstring. This copy
+    # carries an analyzer row, its repository floors the module, and it lives
+    # where `pip install` puts it — so there is no `src/` component and no
+    # repo-relative path to match a floor glob against. It must still import.
+    installed = _import_the_copy(
+        _package_copy(tmp_path, enrolled=True, floored=True, layout="site-packages")
+    )
+    assert installed.returncode == 0, (
+        "an ENROLLED and FLOORED copy of the package failed to import because "
+        "it was installed rather than checked out. The ordering guard refused "
+        "the shipped wheel: `pyproject.toml` builds with `where = [\"src\"]`, so "
+        "an installed dispatcher has no `src/` component and a floor glob "
+        "cannot match a path derived from its `__file__`. A guard that treats "
+        "'I cannot find myself on the floor' as 'I am not on the floor' bricks "
+        "every install of a repository that floors this module correctly — "
+        "which is the opposite of the property this row is asking for.\n"
+        f"stderr={installed.stderr}"
     )
