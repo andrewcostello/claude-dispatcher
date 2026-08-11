@@ -1652,19 +1652,44 @@ func (w *walker) classifySelectorCall(sel *ast.SelectorExpr, owner string, decl 
 		// 2 inside the closure) are unchanged, so no verdict was resting on
 		// them.
 		//
-		// DISPUTE, AND IT IS A CONTRADICTION BETWEEN TWO P4 ARTIFACTS RATHER
-		// THAN A DEFECT IN EITHER. The seal row
+		// THE DISPUTE THIS RAISED IS RULED, AND THE RULING WENT THIS RULE'S WAY
+		// (P4, D6 adjudication round 4, 2026-08-11). The contradiction was
+		// between two P4 artifacts rather than a defect in either: the seal row
 		// `test_a_named_out_of_tree_target_is_not_a_hole_and_a_func_value_call_is`
-		// REQUIRES the edge this rule removes: it builds `now.UTC()` on a
-		// time.Time beside an in-unit `func (Clock) UTC` and asserts one
-		// INTERFACE edge from `stamp` to `Clock.UTC`. That is the 45th instance
-		// of the shape measured above, and the row is RED under this rule. Its
-		// stated purpose — "a named out-of-tree target is not a hole" — still
-		// holds, and its hole-set assertion is still green; what fails is the
-		// witness it chose. The two cannot both be satisfied: a site either
-		// emits the one target go/types resolved, or it emits a method
-		// production cannot reach. NOT resolved here, because resolving it
-		// means editing a seal. See the commit message.
+		// REQUIRED the edge this rule removes, building `now.UTC()` on a
+		// time.Time beside an in-unit `func (Clock) UTC` and asserting one
+		// INTERFACE edge from `stamp` to `Clock.UTC` — the 45th instance of the
+		// shape measured above. Its stated purpose ("a named out-of-tree target
+		// is not a hole") and its hole-set assertion were green; only its
+		// WITNESS failed, and the witness was a CONCRETE receiver, which is the
+		// wrong witness for a property about UNRESOLVED targets. Priced by the
+		// measurement above at 44 false edges and 0 true ones, THE WITNESS
+		// MOVED and this rule stands.
+		//
+		// P4 RE-MEASURED THAT PRICE RATHER THAN INHERITING IT. Under
+		// `feat/D6-adj4`, 2026-08-11, over the acceptance fixture, with this
+		// branch forced never-taken (which is exactly round 2's rule) against
+		// the shipped rule: 738 edges {655 direct, 39 method, 44 interface}
+		// become 694 {655 direct, 39 method, 0 interface}, holes 3 either way.
+		// All 44 are named `String`, they come from 8 sites, and every one is a
+		// concrete receiver — `b.String()` at cmd/gates/preserve.go:509 and
+		// cmd/iterate/preserve.go:458, `t.String()` at cmd/gates/preserve.go:739
+		// and cmd/iterate/preserve.go:697, `stderr.String()` in four seal
+		// helpers. Removed 44, added 0.
+		//
+		// Both ways of forcing the old witness green were rejected, and they are
+		// named here so no later round re-proposes them. Emitting the resolved
+		// edge AND the fan-out leaves the false certification that is half the
+		// harm above. Suppressing the fan-out only where the resolved target
+		// lands in-tree keeps a provably-false edge in exactly the case where it
+		// is provably false.
+		//
+		// The amended row now carries BOTH receivers, because neither half
+		// catches both errors: measured under `feat/D6-adj4`, forcing this
+		// branch always-taken leaves `stamp` green and reddens the interface
+		// half, and forcing it never-taken leaves `describe` green and reddens
+		// the concrete half. A future round that deletes either receiver from
+		// that fixture has removed the guard on one of these two directions.
 		//
 		// P4 RULING (D6 adjudication round 3, 2026-08-11) — "SUPERSET OF THE
 		// POSSIBLE IN-TREE TARGETS" IS FALSE ACROSS PACKAGES, AND THE ERROR

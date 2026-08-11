@@ -2092,70 +2092,163 @@ def test_a_named_out_of_tree_target_is_not_a_hole_and_a_func_value_call_is(tmp_p
     **seven**.
 
     **The rule is total, and the totality is why this is not a narrowing.** A
-    call site ``x.M(…)`` that lands on an in-tree method lands on a method NAMED
-    ``M`` — Go's method-call syntax names the method — so one ``interface`` edge
-    per in-tree method named ``M`` is a SUPERSET of the possible in-tree
-    targets. Nothing is filed harmless because it could not be typed; the
+    call site ``x.M(…)`` that lands on a target this walk cannot name lands on
+    an in-tree method NAMED ``M`` or on nothing at all — Go's method-call
+    syntax names the method — so one ``interface`` edge per in-unit method
+    named ``M`` is a SUPERSET of the possible targets THE WALK HAS NOT ALREADY
+    RESOLVED. Nothing is filed harmless because it could not be typed; the
     residue is empty by construction.
 
-    The fixture puts both halves in one tree so neither assertion can be
-    satisfied by a walk that has simply stopped counting: ``stamp`` calls two
-    stdlib methods, one of which (``UTC``) shares its name with an in-tree
-    method and must therefore produce the fan-out edge, and ``spin`` makes the
-    one genuinely unnameable call. **The hole list must be exactly the
-    latter** — a walk that over-counts is red on the equality, and a walk that
-    counts nothing is red on the same equality.
+    **P4 AMENDED THIS ROW'S WITNESS (D6 adjudication round 4, 2026-08-11), AND
+    THE SENTENCE ABOVE IS THE AMENDED FORM OF ONE ROUND 3 STRUCK.** The
+    original read "a SUPERSET of the possible in-tree targets" with no
+    qualifier, and applied the fan-out to EVERY selection whose target is not
+    in this unit. Round 3 measured that false and ruled that a selection on a
+    receiver whose base type is not an interface is a question go/types has
+    ALREADY answered, so the walk must emit ``calleeKey(fn)`` as ``method`` and
+    keep the fan-out for genuine interface dispatch only.
 
-    **Measured under** ``feat/D6-seals`` @ ``5669cb7``, 2026-08-11: red today by
+    **The two rulings collide on exactly one thing: this row's chosen
+    witness.** The original fixture built ``now.UTC()`` on a ``time.Time``
+    beside an in-unit ``func (Clock) UTC`` and required an ``interface`` edge
+    ``stamp → Clock.UTC``. That is a CONCRETE receiver, so round 3 removes the
+    edge and the assertion went red.
+
+    **THE PRICE OF THE STRUCK SENTENCE DECIDED THIS RULING, AND P4 RE-MEASURED
+    IT RATHER THAN INHERITING THE NUMBER. Measured under** ``feat/D6-adj4``,
+    **2026-08-11**, over the acceptance fixture, running round 2's rule (the
+    receiver discriminator forced never-taken) against the shipped one:
+
+        round 2   738 edges — 655 ``direct``, 39 ``method``, 44 ``interface``
+        round 3   694 edges — 655 ``direct``, 39 ``method``,  0 ``interface``
+
+    Holes are 3 under both. **All 44 removed are** ``interface``, **none is
+    added**, every one is named ``String``, and the 8 sites they come from all
+    have a CONCRETE receiver — ``b.String()`` at ``cmd/gates/preserve.go:509``
+    and ``cmd/iterate/preserve.go:458``, ``t.String()`` at ``:739`` and
+    ``:697``, ``stderr.String()`` in four seal helpers. The fan-out was claiming
+    that a call to ``strings.Builder.String`` might reach every unrelated
+    in-tree ``String`` method.
+
+    So the struck sentence bought **44 false edges and 0 true ones**, and the
+    concrete receiver is the wrong witness for a property about UNRESOLVED
+    targets. **The escalation stands; the witness moves.**
+
+    Both ways of forcing the original witness green were weighed and both
+    rejected, and this row records the rejection so no later round re-proposes
+    them: emitting the resolved edge AND the fan-out leaves the false
+    certification (a method production never calls, reading as called) that is
+    half the measured harm; suppressing the fan-out only where the resolved
+    target happens to land in-tree keeps a provably-false edge in exactly the
+    case where it is provably false.
+
+    The fixture puts every half in one tree so no assertion can be satisfied by
+    a walk that has simply stopped counting:
+
+      * ``stamp`` calls two methods on a CONCRETE stdlib receiver. ``UTC``
+        shares its name with an in-tree method and ``Format`` does not; **both
+        must yield no edge and neither may be a hole**, because go/types
+        resolved both out of the tree. This is the half that reddens if round
+        2's fan-out is restored.
+      * ``describe`` calls ``s.String()`` on an ``fmt.Stringer`` — GENUINE
+        interface dispatch, where the target is decided by the dynamic value
+        and the walk has resolved nothing. **The fan-out onto the in-tree
+        ``Clock.String`` is the answer**, and this is the half that reddens if
+        the fan-out is dropped. It is also the half that carries the row's
+        title: ``fmt.Stringer.String`` is a NAMED OUT-OF-TREE target, it is not
+        a hole, and it is not a hole because the fan-out answered it.
+      * ``spin`` makes the one genuinely unnameable call. **The hole list must
+        be exactly this** — a walk that over-counts is red on the equality, and
+        a walk that counts nothing is red on the same equality.
+
+    **Measured under** ``feat/D6-seals`` @ ``5669cb7``, 2026-08-11: red by
     ``NotImplementedError``. The property is measured over the acceptance tree
     by two independent walks — see
     :func:`test_the_step_three_abstention_is_measured_and_the_implication_is_total`.
-    Three mutations redden it: filing an untypeable receiver as a hole (the
-    equality, and the mistake this row exists for); dropping the ``interface``
-    fan-out to an in-tree method of the same name; and emitting an edge whose
-    callee is out of tree.
+
+    **PROOF THAT THE AMENDED ROW CAN STILL FAIL, measured under**
+    ``feat/D6-adj4``, **2026-08-11 — four mutations of the shipped mechanism,
+    each applied alone, each run against this row:**
+
+      1. filing an out-of-unit method receiver as a hole (the mistake this row
+         exists for) — **red on the hole equality**;
+      2. dropping the ``interface`` fan-out, so genuine interface dispatch
+         emits only the interface's own method — **red on ``describe →
+         Clock.String``**;
+      3. **restoring round 2's fan-out on concrete receivers** — **red on
+         ``stamp``, which acquires the very ``interface`` edge to ``Clock.UTC``
+         this row used to demand**;
+      4. defeating the both-ends rule so an out-of-tree callee survives — **red
+         on the ``time.``/``fmt.`` assertion**.
+
+    Mutations 2 and 3 are opposite errors and **neither half catches both**:
+    ``describe`` is green under 3 and ``stamp`` is green under 2. That is why
+    the fixture carries a concrete receiver AND an interface one, and it is the
+    guard against this row being re-amended into whichever shape the next body
+    happens to implement.
     """
     tree = _package(tmp_path, {"main.go": (
         "package main\n\n"
-        'import "time"\n\n'
+        "import (\n\t\"fmt\"\n\t\"time\"\n)\n\n"
         "type Clock struct{}\n\n"
         "// UTC is an in-tree method sharing a name with time.Time's.\n"
         "func (c Clock) UTC() string { return \"in-tree\" }\n\n"
+        "// String is an in-tree method sharing a name with fmt.Stringer's.\n"
+        "func (c Clock) String() string { return \"clock\" }\n\n"
         "func stamp() string {\n"
         "\tnow := time.Now()\n"
         "\t_ = now.UTC()\n"
         "\treturn now.Format(\"\")\n"
         "}\n\n"
+        "func describe(s fmt.Stringer) string { return s.String() }\n\n"
         "func dark() {}\n\n"
         "func spin() {\n"
         "\tfns := []func(){dark}\n"
         "\tfns[0]()\n"
         "}\n\n"
-        "func main() {\n\tprintln(stamp())\n\tspin()\n}\n"
+        "func main() {\n"
+        "\tprintln(stamp())\n"
+        "\tprintln(describe(Clock{}))\n"
+        "\tspin()\n"
+        "}\n"
     )})
     graph = GoReachabilityAnalyzer().graph(tree)
 
     holes = {(caller.key.rpartition(".")[2], detail) for caller, _, detail in
              graph.unresolved_calls}
     assert {caller for caller, _ in holes} == {"spin"}, (
-        "the hole list must be EXACTLY the func-value call: `now.UTC()` and "
-        "`now.Format()` are answered questions whose answer is 'nothing in "
-        "this tree', and filing them as holes abstains on every real Go tree"
+        "the hole list must be EXACTLY the func-value call: `now.UTC()`, "
+        "`now.Format()` and `s.String()` are answered questions — two whose "
+        "answer is 'nothing in this tree' and one answered by the fan-out — "
+        "and filing them as holes abstains on every real Go tree"
     )
 
-    assert not [e for e in graph.edges if "time." in e.callee.key], (
-        "a stdlib method call has one end outside the tree and yields no edge"
+    assert not [e for e in graph.edges
+                if "time." in e.callee.key or "fmt." in e.callee.key], (
+        "a call whose target is outside the tree has one end outside the tree "
+        "and yields no edge, whichever branch resolved it"
+    )
+    assert not [e for e in graph.edges if e.caller.key.endswith(".stamp")], (
+        "`now.UTC()` and `now.Format(\"\")` are calls on a CONCRETE receiver "
+        "whose type is declared outside this tree, so go/types has already "
+        "named the one target and it is out of tree. `stamp` must therefore "
+        "have NO outgoing edge at all. An `interface` edge to `Clock.UTC` "
+        "here is round 2's struck fan-out: a method production cannot reach, "
+        "certified as called. Measured price of that rule over the acceptance "
+        "fixture: 44 false edges, 0 true ones"
     )
     fan = [e for e in graph.edges
-           if e.caller.key.endswith(".stamp") and e.callee.key.endswith(".UTC")]
-    assert fan and fan[0].kind is EdgeKind.INTERFACE, (
-        "`now.UTC()` must still emit one INTERFACE edge per in-tree method of "
-        "that name; that fan-out is WHY the site is not a hole, and a walk "
+           if e.caller.key.endswith(".describe") and e.callee.key.endswith(".String")]
+    assert len(fan) == 1 and fan[0].kind is EdgeKind.INTERFACE, (
+        "`s.String()` on an `fmt.Stringer` is GENUINE interface dispatch: the "
+        "target is decided by the dynamic value, the walk has resolved "
+        "nothing, and one INTERFACE edge per in-tree method of that name is "
+        "the superset that makes the site ANSWERED rather than holed. A walk "
         "that drops it has narrowed the abstention instead of answering it"
     )
     assert not [e for e in graph.edges if e.callee.key.endswith(".Format")], (
-        "no in-tree method is named Format, so the fan-out is empty — which is "
-        "an answer, not a hole"
+        "no in-tree method is named Format, so nothing lands — which is an "
+        "answer, not a hole"
     )
 
 

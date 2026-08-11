@@ -2080,8 +2080,50 @@ def _import_path_qualifiers(
     taken here.**
     ``test_two_units_claiming_one_import_path_are_never_silently_joined_to_one``
     requires that shape to raise or to drop, and a correct answer is neither.
-    Landing both would mean editing a seal, which this body may not do. See the
-    disputes in the commit message.
+    Landing both would mean editing a seal, which this body may not do.
+
+    **P4 RULING (D6 adjudication round 4, 2026-08-11) — THE DUPLICATE CASE DOES
+    WANT A CORRECT JOIN, THE REFUSAL STANDS UNTIL A MECHANISM EXISTS THAT CAN BE
+    CORRECT, AND THE SEAL IS NOT AMENDED.**
+
+    Both toolchain claims above were RE-MEASURED by P4 under ``feat/D6-adj4``
+    rather than taken from the escalation, on trees P4 built:
+    ``go list -e -f '{{.ImportPath}} {{.Dir}}' example.com/upstream`` in
+    ``sub/`` answers ``example.com/upstream → …/local`` while ``local/`` calls
+    itself ``example.com/renamed``; and the same query for ``example.com/dup``
+    in ``app/`` answers ``a/`` while ``a/`` and ``b/`` both call themselves
+    ``example.com/dup``. **So the seal's stated rationale — "there is no honest
+    tie-break, ``replace`` decides and nothing here reads ``replace``" — is
+    CONDITIONAL on the wire, not a law.** A toolchain answer is not a guess, and
+    a directory-to-unit join would be right where this one abstains.
+
+    **The seal is nonetheless left byte-identical, and the reason is a
+    measurement, not deference.** The obvious amendment is to widen its
+    admissible answers from {raise, drop} to {raise, drop, land on the directory
+    ``replace`` names} — forbidding only the DECOY. P4 measured what that admits:
+    with the raise removed, so the map is pure last-writer-wins over
+    :func:`discover_units`' ``(package_dir, package_name)`` order, the edge lands
+    on ``b/`` when the real target is ``a/`` — **and on ``z/``, correctly, when
+    the only change is renaming ``a/`` to ``z/``.** A pure guess is green under
+    the widened row for one directory naming and red for another, so the
+    widening would make the row green for the very thing it exists to forbid,
+    and the row cannot tell a correct landing from a lucky one. **For any map
+    keyed on import path, EVERY landing is a guess, and raise-or-drop is the
+    correct and complete statement of that.**
+
+    **THE DIRECTORY FIELD IS A BODY TASK WITH ITS OWN SEALS, NOT A SEAL
+    AMENDMENT.** It changes the join's KEY — directory, unique by construction —
+    so the collision this function raises on stops existing rather than being
+    tolerated, and every shape in the matrix above must be re-measured against
+    the new key, not just the two it closes. Its costs are named so the next
+    round prices them: one ``go list`` per unit over the IMPORT SET resolves the
+    import graph, which is the work ``-find`` exists to avoid, and this row's own
+    escalation-2 note is that paying twice on the gate path turns a per-unit
+    budget into a per-tree one. The row that guards it is a NEW one asserting the
+    edge lands on ``a/`` and reddening on ``b/``; this row's fixture holds no
+    collision at all once the key is the directory. **Until then the rename shape
+    stays DROPPED and the duplicate shape stays RAISED — both conservative, both
+    measured, neither a guess.**
 
     **P4 RULING (D6 adjudication round 3, 2026-08-11): THE REPAIR IS CORRECT
     AND IT STAYS HERE. Its limits are below and they are not small.** The
@@ -2483,11 +2525,12 @@ class GoReachabilityAnalyzer:
         ``is_test_path`` is true, whatever the ``kind`` — and it belongs to D5,
         not here. Nothing in this module is edited for it.
 
-        **A SEPARATE AND WORSE DEFECT AT THE SAME SEAM, ESCALATED TO P3.** The
-        synthetic ``<vars>`` symbol is per PACKAGE and takes its path from the
-        first contributing file, so ONE symbol stands for initialisers that run
-        in two different binaries. Measured under the same revision, over one
-        package holding ``var _ = onlyProd()`` and ``var _ = onlyTest()``:
+        **A SEPARATE AND WORSE DEFECT AT THE SAME SEAM, ESCALATED TO P3 — NOW
+        CLOSED.** The synthetic ``<vars>`` symbol WAS per PACKAGE and took its
+        path from the first contributing file, so ONE symbol stood for
+        initialisers that run in two different binaries. Measured under
+        ``feat/D6-body`` @ ``f4c7c46``, over one package holding
+        ``var _ = onlyProd()`` and ``var _ = onlyTest()``:
 
             main.go + z_test.go   <vars> path is main.go, the root is KEPT as
                                   PRODUCTION, and its edge to `onlyTest` makes
@@ -2499,12 +2542,35 @@ class GoReachabilityAnalyzer:
                                   initialised in production — reads
                                   FROM_NEITHER, a false BREACH.
 
-        **The same package, the same code, and the verdict flips on the
-        alphabetical position of a test file's name.** Neither answer is
-        reachable through the filter in this method, because the filter reads
-        one path and the symbol conflates two. The fix is in the helper: emit
-        ``<vars>`` once per (package, binary) rather than once per package, each
-        taking its path from a file of its own kind.
+        **The same package, the same code, and the verdict flipped on the
+        alphabetical position of a test file's name.** P3 took the named fix:
+        the helper emits ``<vars>`` once per (package, binary), each taking its
+        path from a file of its own kind. **Re-measured by P4 under**
+        ``feat/D6-adj4``, **2026-08-11, over both trees above:** each declares
+        ``<vars>`` and ``<vars:test>``, the edges are ``<vars> → onlyProd`` and
+        ``<vars:test> → onlyTest`` in BOTH, and the sole root is ``<vars>`` at
+        ``main.go`` / ``b.go`` respectively. The two trees now give one answer
+        and no verdict depends on a filename's sort order.
+
+        **WHAT THE SPLIT DID NOT CLOSE, AND IT MAKES DIRECTION 2 LOAD-BEARING A
+        SECOND TIME. P4 RULED IT D5'S AND DELIBERATELY DID NOT IMPLEMENT IT
+        HERE (D6 adjudication round 4, 2026-08-11).** ``<vars:test>`` is a
+        ``go_package_var`` root declared in a ``_test.go`` file, so it is
+        exactly direction 2 and the filter above drops it. **Measured under the
+        same revision, in the run above: ``<vars:test>`` contributes NO root in
+        either tree.** A package-level ``var`` that genuinely initialises in the
+        test binary therefore reaches nothing, and what only it reaches reads
+        FROM_NEITHER — this mechanism's loudest state — where the true answer is
+        FROM_TEST.
+
+        This is the SAME one-table-lookup fix escalated above, and the split has
+        raised its price rather than changed it: ``root_kind`` must derive from
+        ``kind`` AND ``is_test_path``, which is what ``_validate_root``'s own
+        docstring already claims. Nothing in this module is edited for it, and
+        this method's filter is deliberately left alone — routing
+        ``<vars:test>`` past it while D5 still derives PRODUCTION from
+        ``go_package_var`` alone would trip ``_validate_root`` and turn a quiet
+        under-approximation into a raise.
         """
         roots: list[Root] = []
         for _unit, _files, response in _analyzed_units(tree):
@@ -2647,11 +2713,19 @@ class GoReachabilityAnalyzer:
         acceptance fixture: 738 edges become 694, all 44 removed are
         ``interface``, none is added, and every removed one is a fan-out from a
         ``String()`` on a CONCRETE STDLIB receiver. The production closure is
-        104 either way. **THE COST IS A RED ROW AND IT IS A DISPUTE, NOT A
-        REGRESSION:**
+        104 either way.
+
+        **THE COST WAS A RED ROW AND P4 RULED IT (D6 adjudication round 4,
+        2026-08-11): THE REPAIR STANDS AND THE ROW'S WITNESS MOVED.**
         ``test_a_named_out_of_tree_target_is_not_a_hole_and_a_func_value_call_is``
-        pins the 45th instance of exactly that shape as REQUIRED. See the note
-        at ``main.go``'s ``classifySelectorCall`` and the commit message.
+        pinned the 45th instance of exactly this shape as REQUIRED, on a
+        CONCRETE receiver — which is the wrong witness for a property about
+        UNRESOLVED targets, and the fixture priced it at 44 false edges and 0
+        true ones. The row now witnesses the property through GENUINE interface
+        dispatch (``s.String()`` on an ``fmt.Stringer``) and additionally
+        forbids the concrete-receiver fan-out, so it reddens under BOTH
+        directions of this rule being got wrong. See the note at ``main.go``'s
+        ``classifySelectorCall``.
 
         **THE ESCALATION AS IT STOOD, kept because it is what the repair is
         measured against:** a method call
