@@ -570,7 +570,13 @@ from enum import Enum
 from pathlib import Path
 from typing import Mapping, Protocol, Sequence
 
-from .role_protocol import COMPARATORS, Language, support_for_path
+from .role_protocol import (
+    COMPARATORS,
+    FLOOR_GLOBS,
+    Language,
+    first_matching_glob,
+    support_for_path,
+)
 from .seal_verify import is_test_path
 
 __all__ = [
@@ -1109,6 +1115,109 @@ def validate_analyzers(analyzers: Sequence[ReachabilityAnalyzer]) -> None:
 
 
 validate_analyzers(ANALYZERS)
+
+
+#: The directory a source checkout puts this package in, and the ONE fact that
+#: separates a checkout from an install. ``pyproject.toml`` builds a setuptools
+#: wheel with ``where = ["src"]``, so the shipped package sits at
+#: ``.../site-packages/claude_dispatcher/`` and its parent is NOT this name.
+#:
+#: It is spelled as a directory name and never as a path, because the AST sweep
+#: in ``test_the_module_declares_no_file_extension_and_calls_no_endswith``
+#: reads every non-prose string constant in this module and refuses anything
+#: extension-shaped: this module's own repo-relative path would match it. The
+#: path is derived from ``__file__`` instead, which also cannot drift on a
+#: rename.
+_CHECKOUT_PACKAGE_ROOT = "src"
+
+
+def _floor_relative_path() -> str | None:
+    """This module's path as the floor spells paths, or None if it cannot be.
+
+    ``FLOOR_GLOBS`` is written in repo-relative, git-emitted form, and every
+    entry naming a file in this package is path-qualified — the leading ``**/``
+    matches zero or more leading segments, so the last three components of this
+    file's resolved location are exactly what a floor glob can be matched
+    against, in a nested checkout as well as at a repository root.
+
+    None is returned when this module is NOT sitting in a source checkout, and
+    that return is the whole point of this function rather than defensive
+    padding. An installed dispatcher derives
+    ``site-packages/claude_dispatcher/<this module>``, which NO path-qualified
+    floor glob matches and which no repository could make match. Reading that
+    "I cannot find myself on the floor" as "I am not on the floor" would refuse
+    every installed copy the moment the module is enrolled, including copies
+    whose repository floors it correctly.
+
+    Measured 2026-08-11 under ``risk._glob_to_regex`` via
+    :func:`role_protocol.first_matching_glob`, against the eleven-entry
+    ``FLOOR_GLOBS`` this round lands: the checkout spelling returns
+    ``**/src/claude_dispatcher/call_site_reachability.py`` and the
+    ``site-packages`` spelling returns None.
+    """
+    parts = Path(__file__).resolve().parts[-3:]
+    if len(parts) < 3 or parts[0] != _CHECKOUT_PACKAGE_ROOT:
+        return None
+    return "/".join(parts)
+
+
+def _refuse_enrolment_before_flooring() -> None:
+    """Fail the IMPORT when this module carries an analyzer row off the floor.
+
+    The ordering D5's first P4 escalated, as a property of the ARTIFACT rather
+    than of a test run: this module decides, per seal, whether a subject is
+    reachable from a production root, and turns that into a ``Disposition`` a
+    branch is judged by. A branch that could rewrite it while it is being asked
+    the question is the delegation-closure defect, so :data:`ANALYZERS` may not
+    acquire a row before ``FLOOR_GLOBS`` acquires this module. Enforced here so
+    the failure arrives at the first import instead of at the end of a build
+    cycle.
+
+    THE REFUSAL IS A CONJUNCTION and each conjunct is load-bearing:
+
+      * an EMPTY registry never refuses — that is today's world, and a rule
+        that refused it would make the package unimportable as it ships;
+      * a FLOORED module never refuses — enrolment after flooring is the whole
+        point of the ordering, and a rule that refused it too would not be a
+        guard but a permanent refusal that the next author deletes;
+      * a module that cannot be spelled the way the floor spells paths never
+        refuses — see :func:`_floor_relative_path`. This is a fact about the
+        FLOOR, not about where the package happens to be sitting.
+
+    Deliberately NOT written as ``validate_analyzers`` refusing a well-formed
+    row: measured 2026-08-11, that reddens a live sibling seal, since
+    ``test_validate_analyzers_refuses_a_row_no_path_can_reach`` ends by
+    asserting that a Go row IS accepted once its language is enrolled. The
+    import-time form leaves that contract untouched.
+
+    Measured 2026-08-11 against this revision, four package copies imported in
+    fresh interpreters plus one installed-layout copy: unenrolled-and-unfloored
+    imports, enrolled-and-floored imports, enrolled-and-floored under a
+    ``site-packages`` parent imports, and enrolled-and-unfloored raises from
+    here. Removing the :func:`_floor_relative_path` layout condition turns the
+    installed-layout copy into an import failure and nothing else moves.
+    """
+    if not ANALYZERS:
+        return
+    path = _floor_relative_path()
+    if path is None:
+        return
+    if first_matching_glob(path, FLOOR_GLOBS) is not None:
+        return
+    raise ImportError(
+        "this module carries an analyzer row while its own path is off the "
+        "non-overridable floor. It decides, per seal, whether a subject is "
+        "reachable from a production root, and a branch it is judging may "
+        "still rewrite it: four of the five roles get a clean verdict for "
+        "editing an unfloored gate. Land the floor glob covering "
+        f"{path} in role_protocol.FLOOR_GLOBS on the protected base — a "
+        "reviewed edit, never a line in the branch being judged — and enrol "
+        "after that, not before. The floor as imported here is "
+        f"{list(FLOOR_GLOBS)}"
+    )
+
+
+_refuse_enrolment_before_flooring()
 
 
 def analyzer_for_path(path: str) -> ReachabilityAnalyzer | None:

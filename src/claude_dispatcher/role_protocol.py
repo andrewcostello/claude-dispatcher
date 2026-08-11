@@ -791,6 +791,42 @@ FLOOR_GLOBS: tuple[str, ...] = (
     "**/src/claude_dispatcher/repo_config.py",
     "**/src/claude_dispatcher/yaml_io.py",
     "**/src/claude_dispatcher/mechanical_verify.py",
+    # The gate's FIFTH artifact (D5 P4 ruling, 2026-08-11). A FILE glob, and
+    # PATH-QUALIFIED, for the reason points 1-3 give and re-measured under this
+    # module's own lens on 2026-08-11 rather than inherited:
+    #   * the basename-only spelling `**/call_site_reachability.py` also
+    #     matches `vendor/thirdparty/call_site_reachability.py`, and a floor
+    #     has no override to buy that back;
+    #   * the package subtree `**/src/claude_dispatcher/**` also matches
+    #     `plan.py` and `blast_radius.py` — five still-writable controls — and
+    #     buys NO plan-time reach, because a `**` tail is exactly what
+    #     `_floor_glob_named_by` refuses. This entry is the ninth BASENAME, not
+    #     the third subtree;
+    #   * the brace-compressed spelling
+    #     `**/src/claude_dispatcher/{call_site_reachability,blast_radius}.py`
+    #     matches none of the five probes — this engine has no brace expansion
+    #     (point 7 above, restated because it was re-measured here) — so it
+    #     is a silent no-op that reads as protection.
+    # The module decides, per seal, whether a subject is reachable from a
+    # production root and turns that into a `Disposition` a branch is judged
+    # by; measured 2026-08-11 at 59a648d, four of the five roles could rewrite
+    # it. It lands BEFORE enrolment (`ANALYZERS` is still `()`), which is the
+    # Go entry's rule unchanged: a floor that arrives with enrolment is a floor
+    # that was absent for every commit that built the thing it protects.
+    #
+    # LOAD-BEARING, measured on this revision in a `.git`-less clone re-inited
+    # as its own repository with `__pycache__` cleared. Deleting this one
+    # string and changing nothing else: 17 failed / 2296 passed, whole suite.
+    # The "19" the D5 P4 ruling records is a DIFFERENT mutation counted over a
+    # NARROWER scope — delete the glob AND enrol `ANALYZERS` in the same edit,
+    # counted over `test_d5_floor.py` + `test_role_protocol_floor.py` only;
+    # the same mutation over the whole suite is 21, the two extra rows being
+    # the D5 unit seals on `ANALYZERS == ()`. Both re-measured 2026-08-11, and
+    # both against a tree with the import guard REMOVED: with the guard in
+    # `call_site_reachability` present, that mutation no longer produces FAILED
+    # lines at all — the module refuses to import and the run ends in a
+    # collection error, which is the guard doing exactly what it is for.
+    "**/src/claude_dispatcher/call_site_reachability.py",
 )
 
 #: What a floor violation prints, and deliberately NOT the violated role's own
