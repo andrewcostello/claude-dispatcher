@@ -108,12 +108,41 @@ the six files it omits.
 paragraph said "the production closure's 55 unresolved calls". The 55 was a
 measurement of a walk that filed stdlib method calls as holes, which
 `main.go`'s EDGE GRAMMAR says they are not. Re-measured by two independent
-walks — name-level and full `go/types` — the production closure holds **106
-symbols and SEVEN unresolved calls**, every one of them a call through a
-function value: `cancel` (`context.CancelFunc`) twice in `cmd/gates/main.go`
-(`runOne`, `runCmd`) and a `setMember` closure five times in
-`cmd/iterate/preserve.go` (`ApplyRoundRecord`). The count is unchanged by
-dropping `main_test.go`, which is what this paragraph claims.
+walks — name-level and full `go/types` — the production closure holds **SEVEN
+unresolved calls**, every one of them a call through a function value: `cancel`
+(`context.CancelFunc`) twice in `cmd/gates/main.go` (`runOne`, `runCmd`) and a
+`setMember` closure five times in `cmd/iterate/preserve.go`
+(`ApplyRoundRecord`). The count is unchanged by dropping `main_test.go`, which
+is what this paragraph claims.
+
+**P4 round 2 (D6 adjudication, 2026-08-11) — reproduced, and one number
+corrected.** A third walk, written from scratch and classifying **every**
+`*ast.CallExpr` by the form in its `Fun` slot rather than inspecting one form,
+agrees on the seven exactly — same sites, same lines. Its census of the whole
+fixture, measured under `env -u HOME -u GOCACHE -u XDG_CACHE_HOME GOPROXY=off
+GOMODCACHE=/nonexistent GOPATH=/nonexistent`:
+
+    *ast.SelectorExpr   1114        resolution         count
+    *ast.Ident          1000          named, out of tree  1054
+    *ast.ArrayType        17          direct               668
+    *ast.FuncLit           1          builtin              267
+    (no other form)                   conversion            70
+                                      method                41
+                                      hole                  19  (7 in the
+                                                                production
+                                                                closure)
+
+Two type errors: **zero**. Reference edges: 41 in tree, and the closure and the
+hole count are identical with and without them.
+
+**The closure size reads 104 here and 106 above, and they are the same
+measurement.** The round-2 walk spells the synthetic package-var initialiser
+once per PACKAGE; the round-1 walks spelled it once per FILE. Four files carry a
+package-level `var` with an initialiser — `cmd/gates/main.go`,
+`cmd/gates/preserve.go`, `cmd/iterate/main.go`, `cmd/iterate/preserve.go` — over
+two packages, so the difference is exactly those two synthetic symbols and no
+real declaration is on either side of it. **104** is the number that matches
+`go_symbol_key`'s per-package synthetic spelling and is the one recorded.
 
 ## Why every other vendored file IS here
 

@@ -116,6 +116,55 @@
 //     graph are now verdict inputs. Source still travels as TEXT in the
 //     request and the files named there are still the unit; what is new is
 //     that resolving their IMPORTS touches the disk.
+//
+//     P4 QUANTIFIES THE EXPOSURE (D6 adjudication round 2, 2026-08-11),
+//     because "knowingly weakened" is not a shape an operator can decide
+//     against. THE QUESTION IS: what can a branch under judgement change,
+//     other than the source it is being judged on, that moves a verdict? The
+//     answer is NOT "nothing". It is a `go.mod` edit, a `replace` directive, a
+//     `go.work` file, or a vendored source tree — all four measured, at
+//     `feat/D6-adj2`, 2026-08-11, under the hostile environment above:
+//
+//     DELETING ONE LINE — a `replace` — with the Go source BYTE-IDENTICAL
+//     takes the unit from 0 type errors and a clean graph to "could not
+//     import example.com/dep". Under the type-error ruling below that unit
+//     must travel the parse_error channel, so it reaches the caller as
+//     CallGraph.unreadable_paths and `check_subject` step 1b abstains THE
+//     WHOLE TREE with PARSE_FAILED. A one-line `go.mod` edit therefore
+//     converts every finding in the repository into an abstention, and an
+//     abstention is not a BREACH. That is the exposure at its sharpest: a
+//     route from BREACH to silence, costing one line.
+//
+//     ADDING a `go.work` naming the sibling restores resolution with no
+//     `replace` at all — 0 type errors again — so a file the branch CREATES
+//     is a verdict input on its own.
+//
+//     EDITING the `module` line renames EVERY Symbol key in that module
+//     (measured: `example.com/app/..light` becomes
+//     `example.com/RENAMED/..light`). Pointing two modules at ONE module path
+//     is the collision `PackageDir` exists to prevent, and that one is caught
+//     rather than silent: it lands as a duplicate key across two units, which
+//     the caller already refuses.
+//
+//     A VENDORED SOURCE TREE is the same lever as `replace`. Cost 2 below
+//     establishes that a dependency needs its SOURCE on disk, and the branch
+//     controls the disk.
+//
+//     NOTHING CLOSES THIS TODAY, and the near-miss is worth naming so nobody
+//     mistakes it for a fix: `scripts/check_body_branch.sh` reads THIS HELPER
+//     out of the base revision when its own `src/` lies inside the checkout
+//     under judgement. That protects the ANALYZER. The `go.mod` being read
+//     here belongs to the JUDGED repository, which is the branch, and no rule
+//     reaches it.
+//
+//     WHAT IT DOES NOT BUY THE BRANCH: none of the four is a route to a false
+//     `OK`. `Disposition.ABSTAIN` is "never suppressible, never declarable,
+//     and always counted separately from OK", the unresolved-call count is a
+//     first-class report field, and `unreadable_paths` names the file. The
+//     branch can make the mechanism go quiet; it cannot make it agree. That is
+//     the decision in front of the operator, with the shape stated rather than
+//     footnoted.
+//
 //  2. A DEPENDENCY MUST HAVE ITS SOURCE ON DISK. Measured: a module requiring
 //     `golang.org/x/text` with no module cache fails with "could not import";
 //     the same dependency reached through a `replace` to a sibling directory
@@ -123,6 +172,7 @@
 //     constraint is "source on disk", not "a module cache", and it binds
 //     nothing in the acceptance repository today — all seven cmd/ modules
 //     declare no `require` at all, measured 2026-08-11.
+//
 //  3. COST ON THE GATE PATH: 2.7 s for all seven modules of the acceptance
 //     repository, one process per module, hostile environment, measured
 //     2026-08-11 at 83b0b97. That is a PACKAGE-scale price and it is recorded
@@ -193,6 +243,8 @@
 //	x.M(x), x an interface-typed or unresolved    "interface"  YES
 //	  receiver — one edge per in-tree method M
 //	F, x.M, T.M mentioned as a VALUE, not called  "reference"  YES
+//	v(x), v a SOLE-BINDING FUNC LITERAL — the     (no edge)    no
+//	  four obligations below                                   and NO hole
 //	f()(x), fns[i](x), c.handler(x), reflection   (no edge)    unresolved[]
 //
 // P4 RULING (D6 adjudication, 2026-08-11) — A NAMED OUT-OF-TREE TARGET IS NOT
@@ -218,7 +270,7 @@
 //
 // Measured under `feat/D6-seals` @ 5669cb7, 2026-08-11, over the vendored
 // acceptance tree, by two independent walks: a name-level walk obeying the row
-// above and a full go/types walk. The production closure holds 106 symbols;
+// above and a full go/types walk. The production closure holds 104 symbols;
 // the first reference implementation reported 55 unresolved sites in it, of
 // which ~50 were method calls through receivers it could not type. Under this
 // row that population is not holes at all — only 2 of the 50 even name a
@@ -226,6 +278,148 @@
 // holds exactly SEVEN unresolved sites, the same seven, every one of them a
 // call through a FUNCTION VALUE. Type information moved 50 sites and moved the
 // VERDICT on none of them.
+//
+// (Round 2 re-measured this with a third walk that classifies every
+// *ast.CallExpr form rather than one — 1,114 SelectorExpr, 1,000 Ident, 17
+// ArrayType conversions, 1 immediately-invoked FuncLit, nothing else — and
+// agrees on the seven exactly. It corrected 106 to 104: round 1 spelled the
+// synthetic package-var initialiser once per FILE and go_symbol_key spells it
+// once per PACKAGE, and four such files sit in two packages. The 1,054 sites
+// naming an out-of-tree target are the population this row is about. Five of
+// the seven holes are cleared by the SOLE-BINDING FUNC LITERAL rule ruled
+// below; the two `cancel` sites are not, and the argument for clearing them is
+// refused below too.)
+//
+// P4 RULING (D6 adjudication round 2, 2026-08-11) — THE SOLE-BINDING FUNC
+// LITERAL RULE IS ADOPTED. A call `v(…)` through a func-typed variable is NOT a
+// hole, and produces no edge, when all four obligations below are DISCHARGED.
+// It is a positive claim about what `v` holds, never "we could not find another
+// assignment, so assume there is none" — an absence-based rule is the fail-open
+// this codebase refuses, and the distinction is the whole of this ruling.
+//
+// THE POSITIVE CLAIM THIS RULE RESTS ON is a theorem about Go and not an
+// observation about a tree: THE IDENTIFIERS THAT CAN NAME A FUNCTION-LOCAL
+// VARIABLE ARE EXACTLY THE IDENTIFIERS INSIDE THAT FUNCTION'S OWN DECLARATION.
+// Go gives no other way to reach a local — no package-scope name for it, no
+// reflection route to a stack slot — except through its ADDRESS, which is
+// obligation 3b. So the region that must be searched is one AST subtree, finite
+// and wholly present in this unit, and the search over it is EXHAUSTIVE rather
+// than best-effort. That is what makes the conclusion a claim rather than a
+// failure to find a counterexample.
+//
+//	OBLIGATION 1 — LOCALITY. The binding occurrence of `v` is inside the
+//	  BODY of the enclosing named declaration D. Established by finding it,
+//	  not by failing to find one elsewhere. A package-level `var` of func
+//	  type FAILS here (its binding is not in any D), and so does a
+//	  PARAMETER of func type (bound by D's signature, so its value is the
+//	  caller's and not visible here).
+//	OBLIGATION 2 — SOLE BINDING IS A LITERAL. That one binding is a `:=` or
+//	  a `var` spec whose initialiser, positionally matched to this name, is
+//	  a single *ast.FuncLit. A TUPLE binding fails: the value then comes
+//	  from one multi-valued expression and no literal is named. So does a
+//	  named func on the right (`f := target`) — sound to add, and NOT
+//	  claimed here — a range clause, and a declaration with no initialiser.
+//	OBLIGATION 3 — EVERY OCCURRENCE IS A READ. Enumerate every identifier
+//	  in D that denotes `v` and show each one is a READ, by an exhaustive
+//	  switch on its PARENT node that DECLINES on any node type it does not
+//	  classify.
+//	OBLIGATION 3b — NO `&v`. Taking the address is the one route by which
+//	  `v`'s value can change with no syntax naming `v` (`p := &v; *p = g`),
+//	  and it is the clause that makes obligation 3 a claim about the VALUE
+//	  rather than about the syntax.
+//
+// OBLIGATION 3 IS STATED FAIL-CLOSED, AND THE REASON IS A MEASURED DEFECT IN
+// THIS ADJUDICATION'S OWN FIRST DRAFT. That draft enumerated the ASSIGNING
+// constructs — *ast.AssignStmt — and cleared anything it did not recognise.
+// Measured 2026-08-11: `for _, f = range fns` is an *ast.RangeStmt and not an
+// *ast.AssignStmt, so it walked straight through and the rule CLEARED a call
+// whose target is rebound once per iteration. An enumeration of the forms that
+// WRITE is an open list that grows with the language and defaults to CLEAR; the
+// inverted form — every occurrence must be shown to be a read — is closed under
+// language growth, because a new writing construct still has to name `v` and
+// its parent lands in the switch's decline branch. This is the repository's
+// "be exhaustive, raise on unknown" rule applied to a soundness argument.
+//
+// WHY A CLEARED CALL PRODUCES NO EDGE RATHER THAN A "direct" ONE. The
+// ATTRIBUTION rule below gives a closure no symbol of its own: the literal's
+// calls are already attributed to D, and the call site is inside D too, so
+// caller and callee are the same symbol. A cleared site is a fully answered
+// question whose answer is "this reaches code already attributed here" — the
+// same shape as a named out-of-tree target, and for the same reason it is not a
+// hole. Nothing is lost from the graph and nothing is invented in it.
+//
+// MEASURED under `feat/D6-adj2`, 2026-08-11, by an implementation of the four
+// obligations run over a 32-site package written to attack them. Every shape
+// lands where soundness requires: reassignment later in the same scope, in an
+// `if` branch, inside a nested literal, on another goroutine, behind a `goto`,
+// in a `select` comm clause and through `for _, f = range` all DECLINE;
+// `&v` taken locally and `&v` passed to a mutator both DECLINE; a package-level
+// `var` of func type, a parameter, a range variable, a struct FIELD of func
+// type, a tuple binding and a named-func initialiser all DECLINE. Escape BY
+// VALUE — returned, stored in a struct, passed as an argument, captured
+// read-only by another closure — CLEARS, because a copy of a func value cannot
+// change the variable it was copied from. SHADOWING clears both calls and binds
+// each to ITS OWN literal, measured: the rule keys on the *types.Var object and
+// an inner `:=` is a different object. `go f()` and `defer f()` take the same
+// ruling as the plain call form.
+//
+// P4 RULING (D6 adjudication round 2, 2026-08-11) — THE OUT-OF-TREE PROVENANCE
+// CLAIM IS REFUSED, AND THE REFUSAL IS THE RULING. The candidate was: `cancel`
+// is the second result of `context.WithCancel`/`WithTimeout`, whose body is out
+// of tree, so the value returned is an out-of-tree function and calling it
+// cannot reach an in-tree symbol. It is not the withdrawn "we could not type
+// the receiver, so assume harmless"; it is a positive provenance claim, and it
+// is FALSE.
+//
+// MEASURED 2026-08-11 by RUNNING a package built to test it, not by argument.
+// Three standard-library shapes, all Go 1.24, in which out-of-tree code holds
+// and invokes in-tree code:
+//
+//	sync.OnceFunc(inTreeA)   returns a func value whose body CALLS the
+//	                         in-tree function it was handed.
+//	iter.Pull(seq)           returns `next`, which CALLS the caller-supplied
+//	                         in-tree `seq`.
+//	httptest.NewServer(h{})  calls an in-tree method the tree NEVER NAMES.
+//
+// The program prints `REACHED: [inTreeA seq handler.ServeHTTP inTreeB]`. So an
+// out-of-tree function value reaches in-tree code, and "the callee is
+// out-of-tree" says nothing whatever about what its result executes.
+//
+// AND THE REFERENCE EDGE DOES NOT CLOSE IT — it closes two of the three and
+// RELOCATES nothing on the third, which is the measurement that decides this.
+// `sort.Slice(xs, less)` is the shape that works: `less` is MENTIONED, so a
+// `reference` edge puts it in the closure, and the same holds for `inTreeA` and
+// `seq` above. The third has no mention to hang an edge on. Measured over that
+// package by the same walk: the production closure is {main, inTreeA, seq} and
+// `(handler).ServeHTTP` and `inTreeB` are OUTSIDE it — while `go run` proves
+// both execute. Interface satisfaction is not an edge (see the paragraph below,
+// which is why), so nothing names the method and nothing can.
+//
+// That is what makes adopting the rule a fail-open rather than a narrowing.
+// The three holes at those call sites are the ONLY record that the tree was not
+// fully read. Erase them and the document claims a fully-resolved production
+// closure while in-tree code that provably runs sits outside it — a "no path"
+// answer computed around a gap the rule had just deleted, which turns a
+// reached symbol into an unreached one and manufactures a BREACH.
+// Anti-requirement 2 forbids exactly that direction.
+//
+// The keying requirement does not rescue it either, and this is worth saying
+// because the requirement was the right one to impose. Keying on "the callee is
+// established out-of-tree BY TYPE-CHECKING" rather than on a name list of
+// stdlib functions removes the anti-requirement 3 objection — a hand list is
+// what the deleted `_FALLBACK_PRODUCTION_KIND` table was — but it does not make
+// the claim true, because type-checking establishes the callee's PACKAGE and
+// the result's TYPE, and the claim is about the result's BODY. No narrowing
+// survives either: "no func-typed or interface-typed argument at this call
+// site" still loses to a handoff made at a DIFFERENT site (`sql.Register` then
+// `sql.Open`), and repairing that is a whole-tree escape analysis, which is a
+// different mechanism from the one proposed.
+//
+// So `cancel` stays a hole. Note that it does not even reach the provenance
+// question: measured, both sites fail OBLIGATION 2 of the rule above, because
+// `ctx, cancel := context.WithTimeout(…)` is a TUPLE binding. (Recorded in
+// passing: both sites are `context.WithTimeout`, not `context.WithCancel`; the
+// type is `context.CancelFunc` either way and the ruling is unchanged.)
 //
 // A METHOD is DIRECT-strength and is a separate kind anyway, for the reason
 // EdgeKind records: a stdlib-only walk resolves these less often than a

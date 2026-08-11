@@ -2159,6 +2159,130 @@ def test_a_named_out_of_tree_target_is_not_a_hole_and_a_func_value_call_is(tmp_p
     )
 
 
+def test_the_sole_binding_func_literal_rule_clears_one_shape_and_no_other(tmp_path):
+    """RED at HEAD. **P4 ADDED THIS ROW (D6 adjudication round 2, 2026-08-11).**
+
+    It is added because a ruling in that round ADOPTED a NARROWING of the hole
+    set — ``main.go``'s SOLE-BINDING FUNC LITERAL rule — and a narrowing of an
+    abstention is the one direction this repository will not accept unsealed. A
+    hole ABSTAINS; deleting holes makes the mechanism louder and more confident,
+    and a body that implements the rule too generously ships a walk that reports
+    a fully-resolved production closure over a tree it did not resolve. That
+    turns a reached symbol into an unreached one, which is a manufactured
+    BREACH, which is the direction anti-requirement 2 forbids.
+
+    **The failure mode is not hypothetical: it was MADE, in the adjudication
+    that ruled the rule.** That round's first implementation discharged the
+    no-reassignment obligation by enumerating the ASSIGNING constructs and
+    clearing anything it did not recognise. ``for _, f = range fns`` is an
+    ``*ast.RangeStmt`` and not an ``*ast.AssignStmt``, so it walked straight
+    through and the rule CLEARED a call whose target is rebound once per
+    iteration. Nothing in this file would have caught it. ``ranged`` below is
+    that exact shape and it is why the fixture has five functions and not two.
+
+    **The rule is a POSITIVE claim, and each half of this row pins one side of
+    it.** The claim is that the identifiers which can name a function-local
+    variable are exactly the identifiers inside that function's own
+    declaration — a theorem about Go, not an observation about a tree — so the
+    region to search is one finite AST subtree and the search over it is
+    exhaustive. ``cleared`` is the one shape that discharges all four
+    obligations. The other four each break exactly one of them, and each must
+    stay a hole:
+
+      * ``reassigned`` — a second assignment, in a branch (obligation 3);
+      * ``ranged`` — reassigned by a range clause that is not an assignment
+        statement (obligation 3, and the measured defect above);
+      * ``addressed`` — ``p := &f; *p = …``, the one route by which the value
+        changes with no syntax naming it (obligation 3b);
+      * ``viaPackageVar`` — a package-level ``var`` of func type, whose value
+        any file in the package may replace (obligation 1).
+
+    The hole list must be **exactly** the four, so a walk that over-clears and a
+    walk that clears nothing are both red on one equality — the shape
+    :func:`test_a_named_out_of_tree_target_is_not_a_hole_and_a_func_value_call_is`
+    uses, for its reason.
+
+    The edge half is the other way a body could get this wrong. A cleared call
+    yields **no edge**, because the ATTRIBUTION rule gives a closure no symbol
+    of its own: the literal's calls are already attributed to the enclosing
+    named declaration and the call site is inside it, so caller and callee are
+    the same symbol. ``cleared`` must therefore have exactly ONE outgoing edge,
+    the ``direct`` one to ``target`` that the literal's own body produces. A
+    body that invented a synthetic symbol per literal, or emitted a self-edge,
+    is red here — and the first of those is the mutation that would empty the
+    subject set of every table-driven seal in the target repositories.
+
+    **Measured under** ``feat/D6-adj2``, 2026-08-11: red today by
+    ``NotImplementedError``. The fixture compiles, vets clean and type-checks
+    with zero errors — which it must, or the type-error ruling would route the
+    whole unit through ``parse_error`` and this row would pass by abstaining.
+    An implementation of the four obligations run over it clears ``cleared``
+    and declines the other four, each naming the obligation it failed; run over
+    the acceptance fixture the same implementation clears exactly the five
+    ``setMember`` sites and declines both ``cancel`` sites.
+    """
+    tree = _package(tmp_path, {"main.go": (
+        "package main\n\n"
+        "func target() {}\n\n"
+        "func cleared() {\n"
+        "\tf := func() { target() }\n"
+        "\tf()\n"
+        "}\n\n"
+        "func reassigned(b bool) {\n"
+        "\tf := func() { target() }\n"
+        "\tif b {\n"
+        "\t\tf = func() {}\n"
+        "\t}\n"
+        "\tf()\n"
+        "}\n\n"
+        "func ranged(fns []func()) {\n"
+        "\tf := func() { target() }\n"
+        "\tfor _, f = range fns {\n"
+        "\t}\n"
+        "\tf()\n"
+        "}\n\n"
+        "func addressed() {\n"
+        "\tf := func() { target() }\n"
+        "\tp := &f\n"
+        "\t*p = func() {}\n"
+        "\tf()\n"
+        "}\n\n"
+        "var pkgLevel = func() { target() }\n\n"
+        "func viaPackageVar() { pkgLevel() }\n\n"
+        "func main() {\n"
+        "\tcleared()\n"
+        "\treassigned(true)\n"
+        "\tranged(nil)\n"
+        "\taddressed()\n"
+        "\tviaPackageVar()\n"
+        "}\n"
+    )})
+    graph = GoReachabilityAnalyzer().graph(tree)
+
+    holed = {caller.key.rpartition(".")[2] for caller, _, _ in graph.unresolved_calls}
+    assert holed == {"reassigned", "ranged", "addressed", "viaPackageVar"}, (
+        "the hole list must be EXACTLY these four. `cleared` in it means the "
+        "rule was not implemented and the mechanism still abstains on the "
+        "shape the ruling adopted it for; any of the other four MISSING from "
+        "it means the rule over-cleared, which deletes the only record that "
+        "the tree was not fully read"
+    )
+
+    from_cleared = [e for e in graph.edges if e.caller.key.endswith(".cleared")]
+    assert [e.callee.key.rpartition(".")[2] for e in from_cleared] == ["target"], (
+        "a cleared call produces NO edge: the literal has no symbol of its own "
+        "under the ATTRIBUTION rule, so its body's call to `target` is already "
+        "attributed to `cleared` and caller and callee would be one symbol. A "
+        "synthetic symbol per literal is the mutation that empties the subject "
+        "set of every table-driven seal"
+    )
+    assert from_cleared[0].kind is EdgeKind.DIRECT
+    assert not [e for e in graph.edges if e.caller.key == e.callee.key], (
+        "and never a self-edge, which is the other way to spell the same wrong "
+        "answer"
+    )
+
+
 def test_an_edge_is_kept_only_when_both_ends_are_declared_in_the_tree(tmp_path):
     """RED at HEAD. A call into the standard library is dropped.
 
@@ -2713,17 +2837,35 @@ def test_the_step_three_abstention_is_measured_and_the_implication_is_total(tmp_
     name-level walk obeying the grammar above, and a full ``go/types`` walk
     using ``importer.ForCompiler(fset, "source", nil)`` under
     ``env -u HOME -u GOCACHE -u XDG_CACHE_HOME GOPROXY=off
-    GOMODCACHE=/nonexistent GOPATH=/nonexistent``. **They agree exactly:**
+    GOMODCACHE=/nonexistent GOPATH=/nonexistent``. **Re-measured under**
+    ``feat/D6-adj2``, 2026-08-11, by a THIRD walk written from scratch for the
+    round-2 adjudication, which classifies every ``*ast.CallExpr`` by the form
+    in its ``Fun`` slot rather than looking at one form: 1,114
+    ``SelectorExpr``, 1,000 ``Ident``, 17 ``ArrayType`` (conversions), 1
+    ``FuncLit`` (immediately invoked), nothing else. **All three agree on the
+    thing this row turns on:**
 
-      * production closure **106 symbols** — the seal author's number,
-        reproduced independently;
-      * unresolved sites inside it: **SEVEN**, not 55 — ``cancel``
-        (``context.CancelFunc``) twice in ``cmd/gates/main.go``, at ``runOne``
-        and ``runCmd``, and a ``setMember`` closure five times in
-        ``cmd/iterate/preserve.go`` at ``ApplyRoundRecord``;
+      * unresolved sites in the production closure: **SEVEN**, not 55 —
+        ``cancel`` (``context.CancelFunc``, from ``context.WithTimeout``) twice
+        in ``cmd/gates/main.go``, at ``runOne`` and ``runCmd``, and a
+        ``setMember`` closure five times in ``cmd/iterate/preserve.go`` at
+        ``ApplyRoundRecord``. Same seven sites, same lines;
       * **every one of the seven is a call through a FUNCTION VALUE.** Not one
         is a typing failure. Of the ~50 method-call sites the first walk filed
-        as holes, only **2** even name a method that exists in this tree.
+        as holes, only **2** even name a method that exists in this tree;
+        1,054 sites name a target that lives outside the tree, and those are
+        answered questions rather than holes;
+      * ``reference`` edges move neither number — 41 in-tree references, and
+        the closure and the hole count are identical with and without them.
+
+    **The closure size is 104, not 106, and the two are the same measurement.**
+    The round-2 walk spells the synthetic package-var initialiser once per
+    PACKAGE and the round-1 walks spelled it once per FILE; four files in this
+    fixture carry a package-level ``var`` with an initialiser and two packages
+    hold them, so the difference is exactly those two synthetic symbols. No
+    real declaration and no hole is on either side of it. The number is
+    recorded as 104 because ``go_symbol_key``'s synthetic spelling is
+    per-package.
 
     So step 4 is still never reached and **all seven findings still come back
     :attr:`UndecidedReason.DYNAMIC_EDGE`** — the row's conclusion survives, and
@@ -2734,10 +2876,31 @@ def test_the_step_three_abstention_is_measured_and_the_implication_is_total(tmp_
     through a function value. ``go/types`` gives the value's TYPE, never its
     identity; that is a dataflow question.
 
+    **P4 ROUND 2 (D6 adjudication, 2026-08-11) — THE ARITHMETIC, AND WHY IT IS
+    SEVEN OR NONE.** The round-1 ruling recorded that a sound single-assignment
+    rule "would clear all four of ``cmd/iterate``'s findings". The rule is now
+    ruled and adopted — ``main.go``'s SOLE-BINDING FUNC LITERAL rule, which
+    clears exactly the five ``setMember`` sites and declines both ``cancel``
+    sites, measured. **The "four" is REFUTED by measurement.**
+    :func:`check_subject` computes its hole list as
+    ``[h for h in graph.unresolved_calls if h[0].key in production_reach]``,
+    over the ONE whole-tree ``production_reach`` :func:`check_tree` builds, so
+    the list is identical for every (seal, subject) pair and a hole in
+    ``cmd/gates`` abstains ``cmd/iterate``'s findings too. **Measured under**
+    ``feat/D6-adj2``, 2026-08-11, by driving :func:`check_subject` directly over
+    two modules at four hole-sets: 7 holes → 0 of 7 answered; 2 holes (rule 1
+    alone) → **0 of 7**; 5 holes → 0 of 7; 0 holes → 7 of 7. There is no
+    partial answer available on this repository. Scoping step 3's hole set to
+    the SUBJECT rather than to the tree would make it four, and that is
+    ``call_site_reachability.py``, which is on ``FLOOR_GLOBS`` — D5's file and
+    D5's ruling. **ESCALATED, not taken here.**
+
     **This row seals the IMPLICATION and is total over the two states**, because
     the alternatives are both wrong: asserting the abstention seals the failure
     and would go red the day a body improved, and asserting the BREACH demands a
-    name-level walk that types ``time.Time``. Which branch runs today is
+    name-level walk that types ``time.Time``. It survives round 2 untouched in
+    code for the same reason it survived round 1, and that is the point of
+    having written it that way. Which branch runs today is
     recorded, not required — and the branch that does NOT run today is kept from
     being a dead letter by
     :func:`test_a_fully_resolved_production_closure_reaches_the_tests_only_verdict`,
@@ -2761,7 +2924,8 @@ def test_the_step_three_abstention_is_measured_and_the_implication_is_total(tmp_
         assert all(f.reason is UndecidedReason.DYNAMIC_EDGE for f in findings), (
             "with the production closure holed, one of those calls may be the "
             "missing call site; the abstention is correct and is the measured "
-            "state of this tree — 55 holes over a 106-symbol closure"
+            "state of this tree — SEVEN holes over a 104-symbol closure, every "
+            "one a call through a function value"
         )
         assert all(csr.adjudicate(f, None) is Disposition.ABSTAIN for f in findings)
     else:

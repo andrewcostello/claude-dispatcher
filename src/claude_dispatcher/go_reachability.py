@@ -128,28 +128,83 @@ So the expected report, per module:
     ``Reach.FROM_TESTS_ONLY`` / ``PathQuality.NOT_APPLICABLE`` →
     ``Disposition.BREACH``. Not one finding: ``check_tree`` judges every
     (seal, subject) pair, and a subject with no finding is a silent pass.
-  * **``cmd/iterate.VerifyPreservation``: five findings**, same verdict.
-  * **Eight BREACHes from these two symbols alone**, plus whatever the rest of
+  * **``cmd/iterate.VerifyPreservation``: FOUR findings**, same verdict.
+    **P4 CORRECTED THIS NUMBER (D6 adjudication, 2026-08-11 — DISPUTE D1
+    UPHELD).** It read *five*, and five is unmeasured: the scaffold's own list
+    names four distinct seal functions and then adds "and the licence row",
+    which is the first of the four. Measured twice, independently — a scan
+    attributing each ``VerifyPreservation(`` to its enclosing ``func``, and the
+    reference call-graph walk — see the fixture's ``PROVENANCE.md``.
+  * **SEVEN BREACHes from these two symbols alone**, plus whatever the rest of
     the repository contributes. Whoever enrols owes that number MEASURED, by
     running this module on the enrolling commit — the crude scan over
     ``cmd/classify`` suggests at least six more and a grep is what this
     mechanism refuses to be.
-  * The two must be **eight distinct findings and not four**, because the two
-    subjects are two symbols. That is only true if the key is qualified by the
-    module path: see :func:`go_symbol_key`, where the collision is measured.
+  * The seven must land over **TWO distinct subject keys and not one**, because
+    the two declarations are two symbols. That is only true if the key is
+    qualified by the module path — both modules declare ``package main`` and
+    both declare ``func VerifyPreservation`` — and under D5's key-only
+    ``Symbol`` identity a collision is not a near-miss but one symbol wearing
+    two declarations. See :func:`go_symbol_key`, where it is measured. *(P4
+    corrected this bullet with the one above: it read "eight distinct findings
+    and not four", whose second number followed from nothing.)*
 
-**The honest complication, and it is a real one.** ``check_subject`` reaches
-step 4 (the ``FROM_TESTS_ONLY`` verdict) only after step 3 has been ruled out,
-and step 3 abstains when the production closure contains **any** entry in
-``CallGraph.unresolved_calls``. Over a real repository with seven Go modules,
-the production closure will contain unresolved call sites unless the walk
-resolves every one of them. **Predicted (unmeasured) under** ``feat/G2-adj`` @
-``83b0b97``: if it does not, all eight findings come back
-``UndecidedReason.DYNAMIC_EDGE`` — abstentions, not BREACHes — and the
-mechanism reports nothing about the defect it was built for. That is the
-correct behaviour under D5's contract and it is also the most likely way this
-unit fails to earn its keep. It is the first thing P3 should measure and the
-first thing an enrolment count will expose.
+**The honest complication, and it is a real one — no longer a prediction.**
+``check_subject`` reaches step 4 (the ``FROM_TESTS_ONLY`` verdict) only after
+step 3 has been ruled out, and step 3 abstains when the production closure
+contains **any** entry in ``CallGraph.unresolved_calls``.
+
+**Measured under** ``feat/D6-adj2``, 2026-08-11, over the vendored acceptance
+tree by a ``go/types`` walk written independently for that adjudication and run
+under ``env -u HOME -u GOCACHE -u XDG_CACHE_HOME GOPROXY=off
+GOMODCACHE=/nonexistent GOPATH=/nonexistent``. The walk classifies EVERY
+``*ast.CallExpr`` by the syntactic form in its ``Fun`` slot — 1,114
+``SelectorExpr``, 1,000 ``Ident``, 17 ``ArrayType`` (all conversions), 1
+``FuncLit`` (an immediately-invoked literal), and nothing else — because the
+two probes that preceded it each reported a rate over a population that
+excluded the calls that mattered:
+
+  * the production closure holds **104 symbols** and **SEVEN** unresolved sites
+    inside it, every one a call through a FUNCTION VALUE: ``cancel``
+    (``context.CancelFunc``, from ``context.WithTimeout``) twice in
+    ``cmd/gates/main.go`` at ``runOne`` and ``runCmd``, and a ``setMember``
+    closure five times in ``cmd/iterate/preserve.go`` at ``ApplyRoundRecord``;
+  * 1,054 call sites name a target that lives OUTSIDE the tree. Those are
+    answered questions, not holes — see ``main.go``'s EDGE GRAMMAR — and a walk
+    that files them as holes abstains on every real Go tree forever;
+  * ``reference`` edges move neither number: 41 in-tree references, closure
+    still 104, holes still 7.
+
+**So D6 answers 0 of its 7 findings, and it is not 4.** The scaffold's earlier
+adjudication reasoned that a sound single-assignment rule would clear
+``cmd/iterate``'s five holes and with them that module's four findings. The
+first half is right and is now ruled (see ``main.go``'s SOLE-BINDING FUNC
+LITERAL rule). **The second half is refuted by measurement**, and the reason is
+a granularity nobody had looked at: ``check_subject`` computes its hole list as
+``[h for h in graph.unresolved_calls if h[0].key in production_reach]``, over
+the WHOLE-TREE ``production_reach`` that :func:`check_tree` builds once — so
+the list is IDENTICAL for every (seal, subject) pair, and a hole in
+``cmd/gates`` abstains ``cmd/iterate``'s findings too. Measured by driving
+``check_subject`` directly over both modules at four hole-sets:
+
+  ===================  ==========================  ========
+  rules applied        holes in production closure  answered
+  ===================  ==========================  ========
+  neither              7                           0 of 7
+  rule 1 only          2 (both ``cancel``)         0 of 7
+  rule 2 only          5 (all ``setMember``)       0 of 7
+  rules 1 and 2        0                           7 of 7
+  ===================  ==========================  ========
+
+The mechanism has no partial answer available on this repository: it is seven
+or none. **ESCALATED, not decided here** — making it four would mean scoping
+step 3's hole set to the subject rather than to the tree, and
+``call_site_reachability.py`` is on ``FLOOR_GLOBS``. It is D5's file and D5's
+ruling, and a D6 adjudication may not take it.
+
+The remaining two are ``cancel``, and they are named rather than hand-waved:
+the out-of-tree provenance argument for clearing them is REFUSED, with the
+counterexample measured, in ``main.go``.
 
 **And a limit the fixture makes concrete.** If ``cmd/iterate`` is analyzed at
 ``1fe753b`` instead, where no seal names ``VerifyPreservation``, the correct
