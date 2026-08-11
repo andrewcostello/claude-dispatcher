@@ -5253,7 +5253,29 @@ def decode_ts_helper_response(stdout: str) -> TsHelperResponse:
 #:        ``default`` (an anonymous default export), ``global`` (``declare
 #:        global``), ``call`` / ``new`` / ``index`` (call, construct and index
 #:        signatures), ``ctor`` (a class constructor), ``export`` (the module's
-#:        export-surface subtree), ``star`` (``export * from``).
+#:        export-surface subtree, and — alone, as a whole key — ``export = X``;
+#:        see :class:`TypeScriptSignatureFingerprinter`), ``star``
+#:        (``export * from``), ``empty`` (a name that is the EMPTY STRING).
+#:
+#: **``empty`` — P4 ruling, 2026-08-10, and the tag set is untouched by it.**
+#: ``interface I { "": number }``, ``declare module "" {}`` and
+#: ``export * from ""`` are all legal, all compile, and were all found in the
+#: soak corpus rather than by reading. Each produces an empty segment text,
+#: which :func:`ts_symbol_key` refuses — correctly, since a key built from a
+#: helper bug matches nothing across revisions — so before the guard the helper
+#: exited non-zero and the gate reported HELPER_FAILED on ordinary compiling
+#: code. That is the worse of the two ways to be wrong: a fault is not a
+#: lenient answer, it is NO answer, over the whole file.
+#:
+#: It belongs on ``k`` because it satisfies that tag's own definition exactly —
+#: a position the language has and no identifier names — and because it cannot
+#: be forged: a member named ``empty`` keys ``i:empty``, a string-literal member
+#: ``"empty"`` normalises to ``i:empty`` too, and a string-literal member
+#: spelled ``k:empty`` keys ``s:k:empty``, since the LEADING tag is what is
+#: read. What this ruling adds is a WORD to the list above. **The TAG SET
+#: remains closed at ``{i, s, c, k}``** and adding to it would be a different
+#: ruling with a different argument; the word list has always been open, which
+#: is what a keyword slot is for.
 TS_KEY_TAGS: frozenset[str] = frozenset({"i", "s", "c", "k"})
 
 
@@ -5370,6 +5392,38 @@ def _probe_node_and_parser(directory: Path) -> str:
     :func:`_verify_vendored_parser` has matched the bytes exactly, and it is
     kept because the contract names it and because it costs nothing here — the
     subprocess is already being run for Node's version.
+
+    **AND THE THIRD CHECK IS THE ONE THAT MATTERS: THE LOADED PARSER IS
+    IDENTIFIED, NOT ASSUMED.** P4 ruling, 2026-08-10, task #15. Everything
+    above verifies BYTES ON DISK and a VERSION; neither says which file the
+    helper process actually loaded. ``main.cjs`` loads the parser by absolute
+    path and never as ``require('typescript')``, and that is the central
+    security property of this unit — but it was, until this ruling, sealed by
+    nothing. A mutation to ``require('typescript')`` reddens only where no
+    ambient TypeScript resolves; on a laptop with a global install, a CI image
+    with hoisted ``node_modules``, or the primary target checkout — which
+    vendors TypeScript — the mutant resolves, runs, and answers. **And it
+    answers with the same version string**, because the ambient copy is
+    routinely the same release: measured on a manufactured hostile machine,
+    both report ``5.9.3``. A version is equally true of the untrusted copy, so
+    a version check cannot separate them and never could.
+
+    ``--probe`` therefore also reports ``parser``: the filename Node resolved
+    for the module object the helper is holding, read out of the loader's own
+    ``module.children`` rather than recomputed from the specifier. This
+    function compares it against the vendored file by IDENTITY — resolved
+    paths, so a symlinked checkout compares equal — and refuses anything else.
+    A helper that cannot say, or does not say, is refused too: a missing
+    ``parser`` key is the check being deleted from the helper side, and the
+    default for "which parser ran is unknown" is a fault, not a pass.
+
+    The fault is TOOLCHAIN_UNUSABLE and not a seventh one. The trusted parser
+    is present and its digest matched — that is what
+    :func:`_ts_prepared_parser` already established — so this is not
+    HELPER_MISSING; what has gone wrong is that the runtime loaded something
+    else, which is a toolchain that is present and cannot be used to clear a
+    branch. No new fault is added, by :class:`TypeScriptSignatureFingerprinter`'s
+    rule that this design adds none.
     """
     import shutil
     import subprocess
@@ -5420,7 +5474,7 @@ def _probe_node_and_parser(directory: Path) -> str:
         raise ComparatorUnavailable(
             ComparatorFault.TOOLCHAIN_UNUSABLE,
             f"the probe answered {probe.stdout!r}, which is not the "
-            "`{node, typescript}` document this helper promises",
+            "`{node, typescript, parser}` document this helper promises",
         ) from exc
     if not isinstance(reported, dict):
         raise ComparatorUnavailable(
@@ -5450,6 +5504,42 @@ def _probe_node_and_parser(directory: Path) -> str:
                 "it reads as UNPARSEABLE — or, for a modifier it predates, "
                 "drops it SILENTLY, which is not",
             )
+
+    # THE IDENTITY CHECK. See the docstring: this is the only one of the three
+    # that answers "which parser RAN", and it is the only one a machine with an
+    # ambient TypeScript cannot defeat.
+    expected = (directory / TS_VENDORED_PARSER).resolve()
+    raw_parser = reported.get("parser")
+    if not isinstance(raw_parser, str) or not raw_parser:
+        raise ComparatorUnavailable(
+            ComparatorFault.TOOLCHAIN_UNUSABLE,
+            f"the probe reported the loaded parser as {raw_parser!r}. A helper "
+            "that does not say which parser it loaded cannot be trusted to have "
+            "loaded the vendored one, and 'unknown' is a fault here rather than "
+            "a pass: `require('typescript')` resolves on any machine with a "
+            "global install or a hoisted node_modules — including the target "
+            "checkout, which vendors TypeScript — and reports the same version",
+        )
+    try:
+        loaded = Path(raw_parser).resolve()
+    except OSError as exc:
+        raise ComparatorUnavailable(
+            ComparatorFault.TOOLCHAIN_UNUSABLE,
+            f"the probe reported the loaded parser as {raw_parser!r}, which "
+            f"could not be resolved to a path: {type(exc).__name__}: {exc}",
+        ) from exc
+    if loaded != expected:
+        raise ComparatorUnavailable(
+            ComparatorFault.TOOLCHAIN_UNUSABLE,
+            f"the helper loaded {str(loaded)!r}, not the vendored parser at "
+            f"{str(expected)!r}. That is the untrusted-parser failure this unit "
+            "exists to prevent: a branch that edits its own "
+            "`node_modules/typescript/lib/typescript.js` to drop a modifier "
+            "would be choosing the program that decides what its signatures "
+            "are. The digest above vouched for bytes NOBODY LOADED, and the "
+            "version matched because an ambient copy is routinely the same "
+            "release",
+        )
     return node
 
 
@@ -5569,7 +5659,14 @@ class TypeScriptSignatureFingerprinter:
         ``i:I/k:new``, ``i:I/k:index``; a class constructor → ``i:C/k:ctor``;
       * ``declare module "foo"`` → ``s:foo``; ``declare global`` → ``k:global``;
       * an anonymous ``export default …`` → ``k:default``;
-      * the module's export surface → ``k:export/…`` (below).
+      * ``export = X`` → ``k:export``, the bare keyword slot with nothing under
+        it (below, and it is a P4 ruling of 2026-08-10 rather than an omission);
+      * the module's export surface → ``k:export/…`` (below);
+      * **a name that is the EMPTY STRING → ``k:empty`` in the segment that name
+        occupies.** ``interface I { "": number }``, ``declare module "" {}`` and
+        ``export * from ""`` are legal and were all found in the soak corpus, so
+        this is a position the grammar must have; :data:`TS_KEY_TAGS` carries the
+        ruling and the argument for why the slot is ``k`` and cannot be forged.
 
     **ONE KEY PER NAME, and every declaration of that name folds into it.**
     This is the ruling that makes the scheme total, and it answers three
@@ -5659,6 +5756,24 @@ class TypeScriptSignatureFingerprinter:
         export, ``k:export/k:star/s:.\\/m`` for a star re-export of ``./m``;
         the fingerprint carries the local name, the source specifier and the
         type-only flag.
+
+        **``export = X`` is the BARE ``k:export`` key — P4 ruling, 2026-08-10,
+        and the position list above now names it.** The seal author found the
+        behaviour shipped and unruled: it is distinct from ``k:default`` and
+        from ``k:export/i:<name>`` by construction, but no contract sentence
+        required it, so the row pinned an accident. It is ruled IN, because it
+        is the only key that is true of it. ``export = X`` does not export a
+        NAME out of the module's surface, it replaces the surface — the module
+        *is* ``X`` — so the symbol is the export-surface subtree root itself,
+        with nothing under it. That is also why it may not share ``k:default``:
+        ``export = X`` is the CommonJS-shaped export consumed by
+        ``import X = require('m')`` and ``import * as X``, ``export default X``
+        is the ES one, and swapping them breaks every importer — at build time
+        for some and at run time for the rest, depending on
+        ``esModuleInterop``. Sharing a key would report that swap as one symbol
+        whose fingerprint moved, rather than as one promise withdrawn and a
+        different one made. An ambient module NAMED ``"export"`` keys
+        ``s:export`` and cannot reach the slot, by the tag rule.
 
         **P4 correction, 2026-08-10.** This example was written
         ``k:export/k:star/s:./m``, which is not the key :func:`ts_symbol_key`
@@ -5930,6 +6045,17 @@ class TypeScriptSignatureFingerprinter:
         old is the direct analogue of :func:`_probe_go_toolchain`'s
         language-version refusal: it would fail as a parse error and blame the
         branch for the age of the install;
+      * **the probe does not report the loaded parser, or reports one that is
+        not the vendored file** → :attr:`ComparatorFault.TOOLCHAIN_UNUSABLE`.
+        P4 ruling, 2026-08-10, task #15. The digest verifies BYTES ON DISK and
+        the version verifies a STRING; neither says which file the helper
+        process loaded, and a version is equally true of an ambient copy — the
+        target checkout vendors TypeScript 5.9.3, the same release this build
+        pins. ``--probe`` therefore reports ``parser``, the filename Node
+        resolved for the module the helper is holding, and
+        :func:`_probe_node_and_parser` compares it against the vendored file by
+        identity. Without it, "the parser is loaded by absolute path" was a
+        property no seal on any machine could falsify;
       * the helper directory, entry point, vendored parser or license is
         missing, or escapes the package by symlink →
         :attr:`ComparatorFault.HELPER_MISSING` (:func:`ts_parser_home`);
@@ -6575,6 +6701,14 @@ TS_SIGNATURE_EDIT_RULINGS: tuple[TsSignatureEditRuling, ...] = (
 #:      one-file-per-invocation rule, which exists so "which file faulted" is
 #:      answerable. A 200-file TypeScript branch is therefore about 68 seconds
 #:      of gate time, and that is the ruled price rather than an oversight.
+#:
+#:      **TASK #14, and P4 RECORDED IT RATHER THAN FIXING IT (2026-08-10).** It
+#:      is not an enrolment blocker: 68 seconds is a cost, and every other item
+#:      on this list is a correctness question. It is written down as an open
+#:      task so that the day somebody proposes the persistent process, the
+#:      argument against it is already here to be argued WITH rather than
+#:      rediscovered — and so that a future measurement can be compared against
+#:      a number that was actually taken.
 #:   4. Seals exist that pin the comparator as CORRECT, not merely as present.
 #:      The Go row's checklist records that enrolment alone bought nothing:
 #:      dropping parameter names from the Go fingerprint left the suite green
@@ -6583,6 +6717,22 @@ TS_SIGNATURE_EDIT_RULINGS: tuple[TsSignatureEditRuling, ...] = (
 #:      (:func:`ts_symbol_key`), the parse-diagnostic strictness
 #:      (:class:`TsHelperResponse`) and the resolution rule
 #:      (:func:`ts_parser_home`).
+#:
+#:      **DONE (P2 in two passes, then P4, 2026-08-10), and the last piece was
+#:      TASK #15 because it was the only one that could not be sealed at all.**
+#:      `tests/test_ts_comparator.py` carries all four, plus a section on the
+#:      RENDERING grammar's forgeability that the body author disclosed against
+#:      its own interest. The piece that was missing until P4: **which parser
+#:      actually ran.** Everything above verified the parser's LOCATION, its
+#:      BYTES and its VERSION, and none of those says which file the helper
+#:      process loaded — a mutation to ``require('typescript')`` reddened only
+#:      on a machine with nothing ambient installed, and would have gone green
+#:      with the defect present on the target checkout, which vendors
+#:      TypeScript at the same release. ``--probe`` now reports the loaded
+#:      parser's resolved path and :func:`_probe_node_and_parser` checks it by
+#:      identity; the seal manufactures the hostile machine rather than waiting
+#:      for one. Without that, the central security property of this unit would
+#:      have been enrolled unsealed.
 #:   5. The count of seals that redden on enrolment is taken **that day, by
 #:      enrolling in a clone**. The Go row's count was wrong four times —
 #:      seven, then eight, then nine — and the recorded lesson is that the only

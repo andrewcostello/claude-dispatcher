@@ -2216,14 +2216,29 @@ def test_one_decoder_serves_both_languages_and_neither_is_a_copy() -> None:
 
     Green when: both decoders call the one shared function.
 
-    Falsify, MEASURED against the reference implementation: replacing
-    `decode_ts_helper_response`'s delegation with a hand-written second
-    implementation — a faithful one, differing only in that it forgets the
-    duplicate-key check, which is the divergence the scaffold predicts a copy
-    will produce — reddens EIGHT seals in this file: this one, and seven rows
-    of the shared malformed table including `ts-a DUPLICATE symbol key`. A
-    copy-paste body cannot satisfy this section, which is what it was asked
-    for.
+    Falsify, MEASURED: replacing `decode_ts_helper_response`'s delegation with a
+    hand-written second implementation — a faithful one, differing only in that
+    it forgets the duplicate-key check, which is the divergence the scaffold
+    predicts a copy will produce — reddens **TWO** rows: this one, and
+    `test_both_decoders_refuse_the_same_malformed_document_with_the_same_fault
+    [ts-a DUPLICATE symbol key]`.
+
+    **P4, 2026-08-10 — this docstring said EIGHT and the reproducible number is
+    TWO.** The correction matters more than the arithmetic. Eight was measured
+    against the reference implementation's particular copy, and the other six
+    rows were properties of THAT copy — a hand transcription that also diverged
+    in ways nobody was claiming a copy would necessarily diverge in — rather
+    than of the table. Re-measured here against a copy that is faithful except
+    for the one predicted divergence, only two rows bite. Both directions this
+    seal cares about are among them, so the seal works exactly as designed: the
+    extraction row catches "there are two implementations" and the duplicate-key
+    row catches "and they have already diverged". A number nobody can reproduce
+    is worse than a smaller one, because the next author to re-measure concludes
+    the seals have rotted rather than that the count was never the claim.
+
+    A copy-paste body cannot satisfy this section, which is what it was asked
+    for, and TWO rows is enough for that: one of them is unsatisfiable by any
+    second implementation at all.
 
     Note the shape that does NOT falsify it, also measured: routing through a
     private helper that itself calls `_decode_helper_response` stays green, and
@@ -2943,6 +2958,34 @@ def test_every_optional_marker_lives_in_an_always_present_bracket_slot(
     strings, the renderer must emit them, and a device deleted for being
     unreachable is a device that is not there the day rule 1 is weakened. M1 and
     M2 together are the Go defect restored in full.
+
+    **P4, 2026-08-10 — UPHELD, and the limit above is upgraded from an absence of
+    evidence to a reason.** The disputed question was whether defence in depth
+    sealed as exact bytes overstates what the row proves. It does not, and the
+    two halves of that answer are worth separating.
+
+    First, the negative result is not "we looked and did not find one". It is
+    structural, and it can be stated: under M1 the modifier column is followed
+    either by a tag-prefixed atom or by a keyword from a closed literal set
+    (`fn`, `class`, `new`, `function`, `interface`, `type`, `enum`, `namespace`,
+    `export`), and the column's own contents come from `MODIFIER_WORDS`, a table
+    keyed by `ts.SyntaxKind`. So there is **no author-controlled text in that
+    column at all**, and a name cannot reach it whatever it is spelled. M1 alone
+    is therefore not merely un-forged on this machine, it is unforgeable — and it
+    becomes forgeable the moment rule 1's tag prefix is what weakens, which is
+    the precise contingency the row is held against. That is a stronger claim
+    than the seal author felt entitled to make and it is the same conclusion.
+
+    Second, EXACT BYTES is the right instrument here rather than an over-pin,
+    because these bytes are not an implementation detail this row discovered:
+    `main.cjs` rule 2 PRINTS `[prop][]i:static:number` and
+    `[prop][static]i:x:number` in its header, and the header is the only record
+    of the rendering grammar anywhere. A row that asserted only the shape would
+    let the contract and the renderer drift apart while staying green. And the
+    brittleness objection cuts the other way: the grammar IS the wire format, so
+    a change to these bytes is a change that must bump `SCHEMA` — `main.cjs` says
+    so at the constant — and eight loud red rows are the correct way to make that
+    conversation happen rather than a cost to be engineered away.
     """
     import re
 
@@ -3168,18 +3211,21 @@ def test_the_empty_name_is_representable_rather_than_a_helper_bug(
     which is to say the guard that stops the gate faulting on legal code had no
     seal at all.
 
-    RULING REQUEST FOR P4, recorded here because a seal is the wrong instrument
-    for it and this author may not edit `role_protocol.py`. `k:empty` extends the
-    `k` word list the contract documents at `TS_KEY_TAGS`. The TAG SET itself is
-    closed at `{i,s,c,k}` and sealed shut by
-    `test_a_key_built_from_a_helper_bug_is_refused_rather_than_returned`, and
-    that is untouched. The WORD list is not sealed and not closed, and `empty` is
-    not on it. It fits the tag's stated definition — "a position the language has
-    but no identifier names" — and it cannot be forged: a member named `empty`
-    keys `i:empty`, a string-literal `"empty"` normalises to `i:empty` too, and a
-    string-literal member spelled `k:empty` keys `s:k:empty`, because the LEADING
-    tag is what is read. All three are asserted below. What is missing is a WORD
-    saying so in the contract, and only P4 can write it.
+    RULING REQUEST — **GRANTED, P4, 2026-08-10.** The word is written. The seal
+    author's argument is the ruling's argument and is not restated here: it is at
+    `TS_KEY_TAGS`, which now lists `empty` among the keyword slots and carries
+    the reason the slot is `k` and the reason it cannot be forged, and at
+    `TypeScriptSignatureFingerprinter`'s key-position list, which now names the
+    position. **The TAG SET is untouched and stays closed at `{i,s,c,k}`** —
+    sealed shut by
+    `test_a_key_built_from_a_helper_bug_is_refused_rather_than_returned` — and
+    that is the whole distinction the ruling turns on: the word list has always
+    been open, because an open word list is what a keyword slot IS, while an open
+    tag set would put a forgeable prefix at offset 0 of a segment.
+
+    Nothing in this row changed. It pinned the right behaviour before the ruling
+    and pins it after; what changed is that it now pins behaviour the contract
+    requires instead of behaviour the contract was silent about.
     """
     fingerprints = _fingerprints(_TS, source)
     assert key in fingerprints, (
@@ -3225,13 +3271,24 @@ def test_export_equals_keeps_its_own_slot_and_never_the_default_one() -> None:
     the first assertion reddens, and M5 reddens ZERO of the 151 rows that predate
     this section.
 
-    RULING REQUEST FOR P4, the same shape as the `k:empty` one above. The bare
-    `k:export` key that `export = X` produces is a key shape the contract's
-    documented position list does not name — the list names `k:export/i:<name>`
-    for a named export and `k:default` for the anonymous default slot, and stops.
-    `k:export` alone is distinct from both by construction, and is asserted so
-    here, but it is UNRULED: the seal below pins behaviour that no contract
-    sentence currently requires. Only P4 can add the sentence.
+    RULING REQUEST — **GRANTED, P4, 2026-08-10: the contract gains the sentence
+    rather than this row losing itself.** The seal author was right that the row
+    pinned an unruled accident, and right to say so instead of leaving it to be
+    discovered; the question P4 had to answer is whether the accident was the
+    RIGHT answer, because a row pinning correct-but-unruled behaviour and a row
+    pinning a bug look identical from here.
+
+    It is the right answer, and the reason is that `export = X` does not export a
+    NAME out of the module's surface — it REPLACES the surface, the module *is*
+    `X` — so the symbol it should own is the export-surface subtree root itself,
+    with nothing under it, which is exactly the bare `k:export`. No other key is
+    true of it: `k:export/i:X` would claim a named export that does not exist,
+    and `k:default` is the other export form and the one thing it must never be
+    confused with. `TypeScriptSignatureFingerprinter`'s key-position list and its
+    export-surface bullet now both name it, with the importer-breakage argument
+    this docstring makes.
+
+    Nothing in this row changed.
     """
     equals = _fingerprints(_TS, "declare const X: number;\nexport = X;\n")
     default = _fingerprints(_TS, "const X: number = 1;\nexport default X;\n")
@@ -3456,10 +3513,10 @@ def test_the_forgery_tables_are_intact_and_every_row_is_a_real_probe() -> None:
     )
 
 
-def test_the_absolute_path_rule_cannot_be_sealed_on_this_machine() -> None:
-    """The one hole this pass leaves open, recorded rather than papered over.
+def test_the_absolute_path_rule_is_still_explained_where_a_reader_meets_it() -> None:
+    """The header paragraph that says WHY the parser is addressed absolutely.
 
-    GREEN TODAY, and it is a seal on a LIMIT rather than on the property.
+    GREEN TODAY, and it is a seal on the RECORD rather than on the property.
 
     `main.cjs` requires the parser as `path.join(__dirname, 'typescript.js')` and
     never as `require('typescript')`, and that is the central security property
@@ -3468,27 +3525,29 @@ def test_the_absolute_path_rule_cannot_be_sealed_on_this_machine() -> None:
     `node_modules/typescript/lib/typescript.js` to drop a modifier would be
     choosing the program that decides what its signatures are.
 
-    THAT PROPERTY IS NOT SEALED AND CANNOT BE SEALED HERE. The body measured 53
-    rows reddening when the require is mutated to `require('typescript')` — but
-    that redness is an ARTIFACT of this machine having no ambient `typescript` on
-    the resolution path, so the mutant simply fails to load. On a machine that
-    HAS one — a laptop with a global install, a CI image with a hoisted
-    `node_modules`, or the primary target checkout itself, which vendors
-    TypeScript — the mutant would resolve, run, and go GREEN, and the seals would
-    certify the defect. A falsification that depends on the alternative parser
-    being absent is not a falsification of the parser being untrusted.
+    THIS ROW USED TO SAY THAT PROPERTY COULD NOT BE SEALED, AND IT WAS RIGHT
+    UNTIL THE P4 ADJUDICATION OF 2026-08-10. The seal author recorded the hole
+    rather than papering over it: the body's measurement of 53 rows reddening
+    under `require('typescript')` was an ARTIFACT of this machine having no
+    ambient `typescript` on the resolution path, so the mutant simply failed to
+    load. On a machine that HAS one the mutant would resolve, run, and go green
+    with the defect present. A falsification that depends on the alternative
+    parser being absent is not a falsification of the parser being untrusted.
 
-    Closing it needs a production change, so it is a dispute for P4 rather than
-    something this file can fix. The shape it would need: the helper reporting
-    the RESOLVED path of the module it actually loaded — in the `--probe`
-    document, where the caller already reads the `node` and `typescript` versions
-    — so that `role_protocol` can assert the loaded parser is the vendored one by
-    IDENTITY rather than by hoping the alternative is missing. Today `--probe`
-    carries versions only, and a version string is equally true of the untrusted
-    copy.
+    **The hole is closed and the seal is section 14.** P4 ruled for the change
+    the seal author proposed: `--probe` now reports `parser`, the filename Node
+    resolved for the module the helper is actually holding, and
+    `_probe_node_and_parser` compares it against the vendored file by IDENTITY.
+    Section 14 manufactures the hostile machine — an ambient `node_modules/
+    typescript` reporting the same version — and measures the refusal, so the
+    property is falsifiable HERE and on every machine.
 
-    Green when: the limit is still written down where a reader of the seals will
-    meet it. It asserts nothing about the comparator, on purpose.
+    What survives in this row is the documentation half, and it is worth keeping
+    on its own merits: the header is where a reader learns why the rule exists,
+    and section 14 seals the mechanism without teaching anybody the reason.
+
+    Green when: the header still names the rule and both halves of it.
+    Falsify: delete the paragraph. (Deleting the RULE is section 14's job.)
     """
     helper = _prose(
         Path(role_protocol.__file__)
@@ -3498,12 +3557,340 @@ def test_the_absolute_path_rule_cannot_be_sealed_on_this_machine() -> None:
     )
     assert _prose("WHY THE PARSER IS REQUIRED BY ABSOLUTE PATH") in helper, (
         "the helper stopped explaining why it addresses its parser absolutely. "
-        "That paragraph is the only record of the property, because no seal on "
-        "this machine can test it: a mutation to `require('typescript')` fails "
-        "to resolve here and reddens for the wrong reason, and on a machine with "
-        "an ambient TypeScript it would go green with the defect present"
+        "Section 14 seals that the rule HOLDS; this paragraph is the only place "
+        "that says why it exists, and a mechanism whose reason is unwritten is "
+        "the mechanism the next refactor removes for being unexplained"
     )
     assert _prose("typescript.js") in helper and _prose("require('typescript')") in helper, (
         "the header no longer names both halves of the rule — the absolute path "
         "it uses, and the resolution it refuses"
     )
+
+
+# --------------------------------------------------------------------------- #
+# 14 — WHICH PARSER ACTUALLY RAN, ANSWERED BY IDENTITY
+#
+# GREEN TODAY. Added by the P4 adjudication, 2026-08-10, together with the
+# production change it rules for (task #15).
+#
+# WHY THIS SECTION EXISTS
+# -----------------------
+# Everything unit D4 does to keep the branch from choosing its own parser was,
+# until this section, unfalsifiable:
+#
+#   * `ts_parser_home` proves a file EXISTS at a computed path (section 1);
+#   * `TS_VENDORED_PARSER_SHA256` proves BYTES ON DISK at that path (section 2);
+#   * `--probe` proved a VERSION STRING.
+#
+# None of those says which file the helper process loaded. The seal author
+# found this and stated it precisely: mutating `main.cjs` to
+# `require('typescript')` reddens 53 rows on THIS machine only, because nothing
+# ambient resolves here, and on a laptop with a global install, a CI image with
+# hoisted `node_modules`, or the primary target checkout — which vendors
+# TypeScript — the mutant resolves, runs, and goes green with the defect
+# present. The digest would still pass: it would be vouching for bytes nobody
+# loaded. The version would still pass too, and that is the part that kills any
+# cheaper fix — measured below, the ambient copy reports the SAME `5.9.3`.
+#
+# THE RULING, AND WHAT IT COST
+# ----------------------------
+# P4 ruled for the change the seal author proposed. `--probe` now reports
+# `parser`: the filename NODE resolved for the module object the helper holds,
+# read out of the loader's own `module.children` rather than recomputed from
+# the specifier — recomputing would seal nothing, since a mutant that changed
+# the specifier and left the computation alone would report a path it did not
+# load. `_probe_node_and_parser` compares it against the vendored file by
+# identity and refuses anything else, as TOOLCHAIN_UNUSABLE and not a seventh
+# fault: the trusted parser is present and its digest matched, so this is a
+# runtime that loaded the wrong thing, not a missing helper.
+#
+# HOW THESE ROWS AVOID THE TRAP THAT MADE THE OLD ONES UNFALSIFIABLE
+# -------------------------------------------------------------------
+# By MANUFACTURING the machine instead of hoping for it. Each row builds a
+# checkout that has an ambient `node_modules/typescript` on the resolution
+# path — the exact machine the hole describes — and every row carries its
+# control on the same manufactured machine, so a refusal cannot be bought by
+# the temporary directory being odd. The stub reports `5.9.3` deliberately:
+# a row that let the ambient copy report a different version would be sealing
+# the version check that already existed.
+# --------------------------------------------------------------------------- #
+
+
+#: The shipped parser directory. Read through `role_protocol` rather than
+#: hard-coded, so a rename of `TS_HELPER_PACKAGE_DIR` moves this with it.
+def _vendored_dir() -> Path:
+    return Path(role_protocol.__file__).with_name(role_protocol.TS_HELPER_PACKAGE_DIR)
+
+
+#: The one line in `main.cjs` this section mutates. Asserted present rather
+#: than assumed: a rewritten helper must redden this section loudly rather than
+#: have its mutation silently not apply, which is how a falsifier stops
+#: falsifying.
+_THE_ABSOLUTE_REQUIRE = "const ts = require(path.join(__dirname, 'typescript.js'));"
+
+#: An ambient TypeScript that is NOT the vendored one and says it is 5.9.3 —
+#: the same release this build pins. That equality is the point of the stub:
+#: it is what makes the pre-existing version check provably unable to separate
+#: the two copies. `--probe` reads `ts.version` and, at module load, a handful
+#: of `ts.SyntaxKind` members, so the proxy answers everything else with 0.
+_AMBIENT_PARSER_STUB = """'use strict';
+module.exports = new Proxy({ version: '5.9.3' }, {
+  get(target, key) {
+    if (key in target) return target[key];
+    return new Proxy({}, { get: () => 0 });
+  },
+});
+"""
+
+
+def _a_machine_with_an_ambient_typescript(
+    root: Path, *, require_line: str | None = None, probe_line: str | None = None
+) -> Path:
+    """A parser directory with a hostile `node_modules/typescript` beside it.
+
+    The vendored parser is PRESENT (symlinked, so its resolved path is the real
+    one) and correct — that is what makes the negative rows say something: the
+    trusted parser is there and passes every existing check, and the helper
+    loaded somebody else's anyway.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    source = (_vendored_dir() / role_protocol.TS_HELPER_ENTRY_POINT).read_text(
+        encoding="utf-8"
+    )
+    assert source.count(_THE_ABSOLUTE_REQUIRE) == 1, (
+        "`main.cjs` no longer contains the line this section mutates "
+        f"({_THE_ABSOLUTE_REQUIRE!r}). A falsifier that does not apply is not a "
+        "falsifier, and every negative row below would pass by doing nothing"
+    )
+    if require_line is not None:
+        source = source.replace(_THE_ABSOLUTE_REQUIRE, require_line)
+    if probe_line is not None:
+        old = "        parser: loadedParserPath(),\n"
+        assert source.count(old) == 1, (
+            "the probe no longer reports `parser` at all; the identity check "
+            "this section seals has been removed from the helper side"
+        )
+        source = source.replace(old, probe_line)
+    (root / role_protocol.TS_HELPER_ENTRY_POINT).write_text(source, encoding="utf-8")
+
+    link = root / role_protocol.TS_VENDORED_PARSER
+    if not link.exists():
+        link.symlink_to(_vendored_dir() / role_protocol.TS_VENDORED_PARSER)
+
+    ambient = root / "node_modules" / "typescript"
+    ambient.mkdir(parents=True, exist_ok=True)
+    (ambient / "package.json").write_text(
+        '{"name":"typescript","version":"5.9.3","main":"index.js"}\n', encoding="utf-8"
+    )
+    (ambient / "index.js").write_text(_AMBIENT_PARSER_STUB, encoding="utf-8")
+    return root
+
+
+def test_the_probe_says_which_parser_node_actually_loaded(tmp_path: Path) -> None:
+    """`--probe` reports the loaded parser, and it is the vendored file.
+
+    GREEN TODAY. Red under M8a.
+
+    The positive direction, measured against the SHIPPED directory rather than
+    a manufactured one, because the thing being asserted is that the real gate
+    path loads the real parser. The two pre-existing fields are asserted in the
+    same call: this ruling ADDS a field and may not quietly remove the version
+    checks that were already there.
+
+    Green when: `--probe` exits 0, its document carries `node`, `typescript` and
+    `parser`, `parser` resolves to the vendored `typescript.js`, and
+    `_probe_node_and_parser` accepts the shipped directory.
+
+    Falsify: **M8a** — drop `parser` from the probe document. Measured: **88
+    rows red**, which is every execution seal in this file plus all three of
+    section 14, because `_probe_node_and_parser` then refuses every TypeScript
+    file on the machine. That is the correct blocking answer to "which parser
+    ran is unknown" and it is worth naming as the shape it is: a helper that
+    stops answering this question takes the whole comparator down rather than
+    quietly clearing branches.
+    """
+    import subprocess
+
+    try:
+        directory = role_protocol.ts_parser_home()
+    except ComparatorUnavailable as exc:
+        pytest.fail(f"{_NO_PARSER}: {exc.fault.value}: {exc.message}")
+
+    entry = directory / role_protocol.TS_HELPER_ENTRY_POINT
+    probe = subprocess.run(
+        [shutil.which("node") or "node", str(entry), "--probe"],
+        capture_output=True,
+        cwd=str(directory),
+        env=role_protocol._node_toolchain_environment(),
+    )
+    assert probe.returncode == 0, (
+        f"`node main.cjs --probe` exited {probe.returncode}: {probe.stderr!r}"
+    )
+    reported = json.loads(probe.stdout.decode("utf-8"))
+
+    assert set(reported) >= {"node", "typescript", "parser"}, (
+        f"the probe document is {reported!r}. `parser` is what makes the "
+        "untrusted-parser property checkable at all, and `node` and "
+        "`typescript` are the version checks that existed before it — this "
+        "ruling adds a field and removes nothing"
+    )
+    assert reported["typescript"] == role_protocol.TS_VENDORED_PARSER_VERSION, (
+        f"the loaded parser reports {reported['typescript']!r}, not the pinned "
+        f"{role_protocol.TS_VENDORED_PARSER_VERSION!r}"
+    )
+    assert (
+        Path(reported["parser"]).resolve()
+        == (directory / role_protocol.TS_VENDORED_PARSER).resolve()
+    ), (
+        f"the helper loaded {reported['parser']!r}, not the vendored parser at "
+        f"{str(directory / role_protocol.TS_VENDORED_PARSER)!r}"
+    )
+
+    # And the caller accepts it — the property is only real where it is checked.
+    assert role_protocol._probe_node_and_parser(directory), (
+        "`_probe_node_and_parser` did not return the `node` it probed"
+    )
+
+
+def test_a_helper_that_loaded_an_ambient_parser_is_refused_by_identity(
+    tmp_path: Path,
+) -> None:
+    """**THE ROW THAT CLOSES THE HOLE.** Both halves, on one hostile machine.
+
+    GREEN TODAY. Red under M8b.
+
+    This is the machine the seal author could not reach and therefore could not
+    seal against: a checkout with an ambient `node_modules/typescript` on the
+    resolution path. It is manufactured here rather than waited for, so the
+    property is falsifiable on every machine and not only on one that happens
+    to have a global TypeScript installed.
+
+    THE CONTROL IS ON THE SAME MACHINE AND WITHOUT IT THIS ROW IS VACUOUS. An
+    unmutated `main.cjs`, in the same directory, with the same hostile
+    `node_modules` one level down, must be ACCEPTED. Otherwise a refusal bought
+    by the temporary directory being unusual for any reason at all would read as
+    the security property holding.
+
+    AND THE VERSIONS ARE COMPARED, which is the row's second job: the ambient
+    stub reports `5.9.3`, the same release this build pins, and both probes
+    report it. That is the measurement that says the pre-existing version check
+    could never have caught this — a version string is equally true of the
+    untrusted copy — so the identity check is doing work no cheaper check does.
+
+    Green when: the mutant is refused with TOOLCHAIN_UNUSABLE naming the file it
+    loaded, the honest twin on the same machine is accepted, and the two report
+    the same `typescript` version.
+
+    Falsify: **M8b** — neuter the identity comparison in
+    `_probe_node_and_parser` (`if False and loaded != expected:`). Measured:
+    **exactly one row red, this one** — the mutant is accepted and the other 189
+    rows in this file stay green. That count is the finding, not a footnote: it
+    says nothing else in this suite can see an untrusted parser being loaded,
+    which is precisely the state the seal author reported and this row ends.
+    """
+    import subprocess
+
+    node = shutil.which("node")
+    assert node, "`node` is not on PATH; this row cannot measure what it claims"
+
+    honest = _a_machine_with_an_ambient_typescript(tmp_path / "honest")
+    mutant = _a_machine_with_an_ambient_typescript(
+        tmp_path / "mutant", require_line="const ts = require('typescript');"
+    )
+
+    def _probe_document(directory: Path) -> dict:
+        probe = subprocess.run(
+            [node, str(directory / role_protocol.TS_HELPER_ENTRY_POINT), "--probe"],
+            capture_output=True,
+            cwd=str(directory),
+            env=role_protocol._node_toolchain_environment(),
+        )
+        assert probe.returncode == 0, (
+            f"the probe in {directory} exited {probe.returncode}: {probe.stderr!r}. "
+            "The mutant must RESOLVE AND RUN here — a mutant that fails to load "
+            "is the artifact this whole section exists to stop relying on"
+        )
+        return json.loads(probe.stdout.decode("utf-8"))
+
+    honest_doc = _probe_document(honest)
+    mutant_doc = _probe_document(mutant)
+
+    assert honest_doc["typescript"] == mutant_doc["typescript"], (
+        f"the honest helper reported TypeScript {honest_doc['typescript']!r} and "
+        f"the mutant reported {mutant_doc['typescript']!r}. The stub is meant to "
+        "claim the SAME version as the vendored parser, because that is what "
+        "proves a version check cannot separate the two copies. With different "
+        "versions this row would be re-sealing the check that already existed"
+    )
+    loaded_by_mutant = Path(mutant_doc["parser"]).resolve()
+    assert loaded_by_mutant != Path(honest_doc["parser"]).resolve(), (
+        f"both helpers reported loading {mutant_doc['parser']!r}, so the mutation "
+        "did not take effect and the refusal below would prove nothing"
+    )
+
+    # The control: same machine, same ambient node_modules, honest require.
+    assert role_protocol._probe_node_and_parser(honest), (
+        "the UNMUTATED helper was refused on this machine. Then the refusal "
+        "below is not the identity check working, it is the manufactured "
+        "directory being rejected for some unrelated reason, and this row would "
+        "be certifying nothing"
+    )
+
+    with pytest.raises(ComparatorUnavailable) as caught:
+        role_protocol._probe_node_and_parser(mutant)
+
+    assert caught.value.fault is ComparatorFault.TOOLCHAIN_UNUSABLE, (
+        f"a helper that loaded an untrusted parser was refused as "
+        f"{caught.value.fault.value}. The vendored parser is present and its "
+        "digest matches — the failure is a runtime that loaded something else, "
+        "which is a toolchain present and unusable, and this design adds no "
+        "seventh fault"
+    )
+    assert mutant_doc["parser"] in caught.value.message, (
+        f"the refusal does not name the file that was actually loaded; it said "
+        f"{caught.value.message!r}. An operator reading this must be able to see "
+        "WHICH parser ran, because that is the whole finding"
+    )
+
+
+def test_a_probe_that_will_not_say_which_parser_it_loaded_is_refused(
+    tmp_path: Path,
+) -> None:
+    """A helper that stops answering the question is refused, not trusted.
+
+    GREEN TODAY. Red under M8c.
+
+    The identity check has two sides and the seal above only exercises one. If
+    the helper simply stops reporting `parser` — the natural shape of somebody
+    removing the check from the side that is not `role_protocol` — then a caller
+    that treated a missing field as "nothing to compare" would be back to the
+    state this ruling closed, with a `--probe` document that looks fine.
+
+    So the default for "which parser ran is unknown" is a FAULT. Both spellings
+    of unknown are ruled: the key absent, and the key present as `null` — which
+    is what `main.cjs` itself emits if it cannot find the loaded module in the
+    loader's records, deliberately, rather than guessing the path it meant to
+    load.
+
+    Green when: both spellings raise TOOLCHAIN_UNUSABLE.
+
+    Falsify: **M8c** — let a missing `parser` default to the path that was
+    expected: `reported.get("parser") or str(expected)`. That is the realistic
+    shape of the fail-open, because it is what a reader tidying an "unnecessary"
+    branch would write. Measured: **exactly one row red, this one.**
+    """
+    for label, probe_line in (
+        ("the key absent", ""),
+        ("the key null", "        parser: null,\n"),
+    ):
+        directory = _a_machine_with_an_ambient_typescript(
+            tmp_path / label.replace(" ", "-"), probe_line=probe_line
+        )
+        with pytest.raises(ComparatorUnavailable) as caught:
+            role_protocol._probe_node_and_parser(directory)
+        assert caught.value.fault is ComparatorFault.TOOLCHAIN_UNUSABLE, (
+            f"{label}: a probe that does not say which parser it loaded was "
+            f"accepted as {caught.value.fault.value}. 'Unknown' may not be a "
+            "pass: `require('typescript')` resolves on any machine with a "
+            "hoisted node_modules, including the target checkout"
+        )

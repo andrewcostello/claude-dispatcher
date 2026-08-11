@@ -24,6 +24,25 @@
 // for one property, because an environment can be got wrong by a caller and an
 // absolute path cannot.
 //
+// AND THE CALLER IS TOLD WHICH PARSER WAS LOADED, which is the third mechanism
+// and the only one that is checkable from outside this file. P4 ruling,
+// 2026-08-10, task #15. The two above are unfalsifiable in a seal: mutating
+// this line to `require('typescript')` reddens only on a machine where no
+// ambient TypeScript resolves, and on a laptop with a global install, a CI
+// image with hoisted `node_modules`, or the primary target checkout — which
+// vendors TypeScript — the mutant resolves, runs, and goes GREEN with the
+// defect present. A version string does not separate the two copies either:
+// the ambient one is very often the same 5.9.3.
+//
+// So `--probe` reports `parser`: the filename NODE resolved for the module
+// object this file is actually holding, read back out of the loader's own
+// record of what it loaded (`module.children`) rather than recomputed from the
+// specifier. Recomputing would seal nothing — a mutant that changed the
+// specifier and left the computation alone would report the path it did not
+// load. The caller compares it against the vendored file by IDENTITY and
+// refuses anything else, so the untrusted-parser property is now falsifiable
+// on every machine and not only on one with nothing installed.
+//
 // # PROTOCOL
 //
 // One request object on stdin, one response object on stdout, diagnostics on
@@ -33,10 +52,11 @@
 // HELPER_FAILED without reading stdout at all.
 //
 // `node main.cjs --probe` is the second mode: it writes
-// `{"node":…,"typescript":…}` and exits 0. The caller uses it once per process
-// to refuse a Node or a parser too old for this grammar. It is deliberately
-// NOT part of the fingerprint schema — it answers a question about the
-// machine, not about a file.
+// `{"node":…,"typescript":…,"parser":…}` and exits 0. The caller uses it once
+// per process to refuse a Node or a parser too old for this grammar, and to
+// refuse a parser that is not the vendored one. It is deliberately NOT part of
+// the fingerprint schema — it answers a question about the machine, not about
+// a file.
 //
 // # DETERMINISM IS PART OF THE CONTRACT
 //
@@ -95,6 +115,24 @@ const path = require('path');
 
 // Absolute, and derived from this file's own location. See the header.
 const ts = require(path.join(__dirname, 'typescript.js'));
+
+// The filename NODE resolved for the module object above — asked of the
+// loader, not recomputed from the specifier. `module.children` is the loader's
+// own list of what this module caused to be loaded, so a mutation to the
+// `require` above changes this answer too, which is the whole point: a probe
+// that recomputed `path.join(__dirname, 'typescript.js')` would keep reporting
+// the vendored path while holding somebody else's parser. Built-ins do not
+// appear in `module.children`, so `path` is not a candidate; the match is by
+// exports identity rather than by position all the same.
+function loadedParserPath() {
+  for (const child of module.children) {
+    if (child.exports === ts) return child.filename;
+  }
+  // Unreachable in a fresh process, and NOT papered over with a guess: a null
+  // here makes the caller refuse, which is the correct answer to "this program
+  // cannot tell you which parser it loaded".
+  return null;
+}
 
 // Echoed on every response and checked by the caller against TS_HELPER_SCHEMA.
 // Bump it whenever the GRAMMAR above changes, not only when a field moves.
@@ -1082,7 +1120,11 @@ function respond(raw) {
 function main(argv) {
   if (argv.includes('--probe')) {
     process.stdout.write(
-      `${JSON.stringify({ node: process.versions.node, typescript: ts.version })}\n`,
+      `${JSON.stringify({
+        node: process.versions.node,
+        typescript: ts.version,
+        parser: loadedParserPath(),
+      })}\n`,
     );
     return 0;
   }
