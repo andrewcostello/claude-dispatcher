@@ -4598,6 +4598,134 @@ TS_VENDORED_PARSER = "typescript.js"
 #: cheapest available evidence that what was vendored is what it claims to be.
 TS_VENDORED_PARSER_LICENSE = "LICENSE.typescript.txt"
 
+# --------------------------------------------------------------------------- #
+# THE PARSER IS A SEPARATELY-VERSIONED ARTIFACT, AND THE DIGEST IS THE ONLY
+# THING THAT MAKES THAT SURVIVABLE. Operator ruling, 2026-08-10; landed by the
+# D4 vendoring commit.
+#
+# THE RULING. The 9.1 MB parser is **not a blob in this repository's history**.
+# It is a pinned artifact fetched at INSTALL time into the dispatcher-owned
+# path :func:`ts_parser_home` names, and the pin is verified **at USE**, not
+# merely at fetch. `src/claude_dispatcher/ts_parser_vendor.py` is the fetcher;
+# `.gitignore` names the two fetched files so they cannot be committed by
+# accident, and names them individually so that ``main.cjs`` — the reviewable
+# helper — is still tracked.
+#
+# WHY "AT USE" IS THE WHOLE OF IT, and not a belt-and-braces extra. The
+# section header above rejected ``npx`` partly because it caches into
+# ``~/.npm/_npx``, "a mutable path outside :data:`FLOOR_GLOBS` whose bytes
+# decide a verdict". An install-time fetch lands bytes in exactly that kind of
+# path: outside the repository on a wheel install, gitignored inside it on an
+# editable one, and unreadable by ``scripts/check_body_branch.sh`` either way.
+# So a fetch-time-only check — a boolean recorded after downloading, or a stamp
+# file written beside the artifact — leaves a window in which anyone who can
+# write the installed path defeats the entire scheme, and leaves no diff.
+# Recomputing the digest from the bytes the process is about to load closes it:
+# the mutable path's bytes stop deciding the verdict the moment they stop
+# matching the immutable, floored constant. :func:`_ts_prepared_parser` is
+# where that happens and it is on the path that produces every TS verdict.
+#
+# WHY THE EXPECTATION LIVES HERE. A digest read from a manifest beside the
+# artifact is not a check, it is a formality: whoever wrote the parser wrote
+# the manifest. The expectation has to sit in a file the branch cannot edit
+# without a floor violation, and this module is the third entry on
+# :data:`FLOOR_GLOBS`. **There is deliberately no SHA256SUMS, no stamp file and
+# no lockfile beside the artifact**, and adding one would not be an
+# improvement — it would be a second authority, and the weaker of the two would
+# be the one an attacker chooses.
+#
+# WHAT CHANGED FROM THE P4 FLOOR RULING, recorded rather than left to be
+# discovered. That ruling described the protection as "a floor violation on the
+# BYTES and a second one on the EXPECTATION, in two different files". Under the
+# operator's separately-versioned ruling the bytes are never committed, so a
+# branch has **no reviewable path to them at all** — it can only tamper the
+# on-disk copy, which the floor cannot see and which this digest catches. The
+# subtree glob is not thereby vacuous: ``main.cjs`` is a parser input, it IS
+# committed, and it is what the glob protects today.
+#
+# THE FETCH IS NOT PART OF THE TRUST BOUNDARY, which is the pleasant corollary.
+# `ts_parser_vendor.py` is NOT on :data:`FLOOR_GLOBS` and does not need to be:
+# a branch that rewrote it to fetch a poisoned parser, or to skip its own
+# checks entirely, would produce bytes that fail the check below and a gate
+# that faults. The fetcher can only decide whether the gate RUNS, never what it
+# answers.
+#
+# THE RESIDUAL WINDOW, recorded and deliberately not closed: the preparation is
+# cached once per PROCESS (:data:`_TS_HELPER_PREPARED`), so a tamper landing
+# after a given process has prepared its parser is not caught by that process.
+# The gate runs a fresh process per judgement, so per-process is per-verdict.
+# --------------------------------------------------------------------------- #
+
+#: The exact TypeScript release this build vouches for. Bumping it is bumping
+#: :data:`TS_HELPER_SCHEMA` too — see that constant: the fingerprint grammar is
+#: derived from the parser's AST, so a parser change is a grammar change and a
+#: grammar change reads as every symbol having been rewritten.
+TS_VENDORED_PARSER_VERSION = "5.9.3"
+
+#: **The floored expectation. This constant is the authority over the bytes on
+#: disk, and nothing else is.** sha256 of ``package/lib/typescript.js`` from the
+#: npm tarball below, measured 2026-08-10 and independently confirmed three
+#: times: against the tarball this repository fetches, against the extracted
+#: artifact, and against the primary target's own
+#: ``node_modules/typescript/lib/typescript.js`` (which is where the measurement
+#: started and is the one copy nothing here may ever RESOLVE to).
+TS_VENDORED_PARSER_SHA256 = (
+    "3ae902c92cc44dace175c0e69e13a4b0899f6983c6121d76b9ab8dd5795e7675"
+)
+
+#: The parser's size, pinned beside the hash because it is the cheap half: a
+#: truncated, swapped or ballooned file is refused by a ``stat`` that reads no
+#: content. It is not a substitute for the hash and it is checked FIRST only to
+#: bound the work — :func:`_ts_prepared_parser` hashes whenever the size agrees,
+#: which is the case a size check cannot decide.
+TS_VENDORED_PARSER_BYTES = 9_112_572
+
+#: Where the artifact comes from, pinned to one immutable URL rather than to a
+#: package name. ``npm view typescript@5.9.3 dist.tarball``, 2026-08-10. A
+#: registry name resolved through npm's config would be a location a
+#: project-local ``.npmrc`` can move, which is the argument that rejected
+#: ``npm root -g`` two hundred lines above; the fetcher therefore speaks HTTPS
+#: to this URL directly and never invokes ``npm`` or ``npx`` at all.
+TS_VENDORED_PARSER_TARBALL_URL = (
+    "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz"
+)
+
+#: npm's own integrity string for that tarball, in npm's ``sha512-<base64>``
+#: spelling so it can be compared against a lockfile by eye. Verified before the
+#: archive is opened, which is what makes a hostile or corrupted download a
+#: refusal rather than a ``tarfile`` parse of attacker-chosen bytes.
+#:
+#: It does NOT replace :data:`TS_VENDORED_PARSER_SHA256`: this one is checked
+#: once, at fetch, on a machine that had network; that one is checked on every
+#: process that renders a TypeScript signature. Two different questions.
+TS_VENDORED_PARSER_TARBALL_INTEGRITY = (
+    "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4"
+    "bXlb1RHhLpp8wtm6M5TgSw=="
+)
+
+#: The two members lifted out of the tarball, and the flat names they land under
+#: (:data:`TS_HELPER_PACKAGE_DIR` is FLAT by contract, so the paths are
+#: rewritten rather than preserved). Nothing else is extracted: the tarball
+#: holds a full npm package including ``tsc``, ``tsserver`` and a ``bin/``, none
+#: of which this gate runs, and an archive member this build does not need is an
+#: archive member this build should not write.
+TS_VENDORED_PARSER_TARBALL_MEMBERS: tuple[tuple[str, str], ...] = (
+    ("package/LICENSE.txt", TS_VENDORED_PARSER_LICENSE),
+    ("package/lib/typescript.js", TS_VENDORED_PARSER),
+)
+
+#: sha256 of the license text, checked at FETCH and deliberately NOT at use.
+#:
+#: The split is the point. The at-use check covers exactly the bytes that decide
+#: a verdict, and the license decides nothing — verifying it on the verdict path
+#: would turn a benign edit to a text file into a gate outage, which is how a
+#: check acquires the reputation that gets it disabled. At fetch it is worth
+#: having: it is the cheapest evidence that what was extracted is the package it
+#: claims to be, which is the role :data:`TS_VENDORED_PARSER_LICENSE` was given.
+TS_VENDORED_PARSER_LICENSE_SHA256 = (
+    "a7d00bfd54525bc694b6e32f64c7ebcf5e6b7ae3657be5cc12767bce74654a47"
+)
+
 #: The lowest ``ts.version`` this grammar is defined against. A parser older
 #: than this does not know syntax the target repo contains (``satisfies``,
 #: ``const`` type parameters, ``in``/``out`` variance) and would either
@@ -4704,6 +4832,123 @@ def ts_parser_home() -> Path:
                 "a parser this gate cannot vouch for, and the destination is "
                 "very likely the judged repository's own node_modules",
             )
+    return directory
+
+
+#: What this PROCESS prepared: ``(directory, None)`` or ``(None, fault)``,
+#: whichever the first call produced, and ``None`` before there has been one.
+#:
+#: **The name is CONTRACT** (P4 adjudication, 2026-08-10) — see
+#: :meth:`TypeScriptSignatureFingerprinter.fingerprints`. It is the exact
+#: analogue of :data:`_GO_HELPER_PREPARED`, it starts as ``None``, and rebinding
+#: it to ``None`` makes the next call re-resolve, re-probe and **re-verify** the
+#: digest from scratch. That last word is why a seal reaches for this name: "the
+#: digest is verified at USE" has no falsifiable form without a way to say *this
+#: is a new use*, and inside one process the only way to say it is to clear this.
+#:
+#: Per PROCESS and never on disk between runs, for :data:`_GO_HELPER_PREPARED`'s
+#: reason with one turn of the screw added: a cached *verification result* on
+#: disk would be a stamp file, and a stamp file is the fetch-time check this
+#: unit's whole design refuses.
+#:
+#: The FAULT is cached too, so a machine with no vendored parser pays one
+#: ``stat`` rather than one per file, and every file in the diff is refused with
+#: the same message.
+_TS_HELPER_PREPARED: (
+    tuple[Path, None] | tuple[None, ComparatorUnavailable] | None
+) = None
+
+
+def _verify_vendored_parser(directory: Path) -> None:
+    """Recompute the parser's digest from disk and compare it to the floor.
+
+    **The at-use half of the operator's ruling**, and the only place the
+    comparison happens. Called from :func:`_ts_prepared_parser` on the path that
+    produces every TypeScript verdict, never from the fetcher's success path.
+
+    Two comparisons, in this order:
+
+      * size against :data:`TS_VENDORED_PARSER_BYTES`, from ``stat``, so a
+        truncated or ballooned file is refused without reading it. It is a bound
+        on work, not a check that stands alone;
+      * sha256 of the whole file against :data:`TS_VENDORED_PARSER_SHA256`.
+        Reached whenever the size agrees, which is exactly the case the size
+        check cannot decide — a same-length substitution is the interesting
+        tamper and it is the one the hash exists for.
+
+    The license is NOT hashed here; see
+    :data:`TS_VENDORED_PARSER_LICENSE_SHA256` for that split and its argument.
+
+    The fault is :attr:`ComparatorFault.HELPER_MISSING` and not a seventh
+    member. A parser whose bytes are not the floored ones is *the trusted parser
+    this build claims to ship is not there* — the same fact
+    :func:`ts_parser_home`'s three refusals name, arrived at by measurement
+    instead of by ``is_file()``. It is emphatically not TOOLCHAIN_UNUSABLE,
+    which blames the machine for something this build got wrong, and it is not
+    ``PARSER_UNTRUSTED``, which the scaffold refused as a member for a state
+    that the resolution rule makes unreachable.
+    """
+    import hashlib
+
+    parser = directory / TS_VENDORED_PARSER
+    try:
+        size = parser.stat().st_size
+    except OSError as exc:  # pragma: no cover - ts_parser_home checked is_file
+        raise ComparatorUnavailable(
+            ComparatorFault.HELPER_MISSING,
+            f"the vendored parser at {parser} could not be read: {exc}",
+        ) from exc
+
+    if size != TS_VENDORED_PARSER_BYTES:
+        raise ComparatorUnavailable(
+            ComparatorFault.HELPER_MISSING,
+            f"the vendored parser at {parser} is {size} bytes; this build "
+            f"vouches for TypeScript {TS_VENDORED_PARSER_VERSION} at "
+            f"{TS_VENDORED_PARSER_BYTES} bytes. Re-fetch it with `python3 -m "
+            "claude_dispatcher.ts_parser_vendor`; do NOT edit the expectation "
+            "to match the file, which is a floor violation and a seal",
+        )
+
+    digest = hashlib.sha256(parser.read_bytes()).hexdigest()
+    if digest != TS_VENDORED_PARSER_SHA256:
+        raise ComparatorUnavailable(
+            ComparatorFault.HELPER_MISSING,
+            f"the vendored parser at {parser} hashes to {digest}, not the "
+            f"floored {TS_VENDORED_PARSER_SHA256}. These bytes live in a "
+            "mutable path that `scripts/check_body_branch.sh` cannot read, so "
+            "this comparison is the only thing standing between them and every "
+            "TypeScript verdict this gate issues. TypeScript is UNCHECKED and "
+            "BLOCKING until the artifact matches the floored digest",
+        )
+
+
+def _ts_prepared_parser() -> Path:
+    """The verified parser directory for this process, or re-raise its fault.
+
+    Resolution (:func:`ts_parser_home`) and verification
+    (:func:`_verify_vendored_parser`) together, cached in
+    :data:`_TS_HELPER_PREPARED` — see that constant for why the cache is
+    per-process, in memory, and never a file.
+
+    Both halves are inside the cached region on purpose. Caching the resolution
+    but re-verifying, or the reverse, would be a preparation that is half fresh
+    and half stale, and "which half decided this verdict" is a question nobody
+    should have to ask of a gate.
+    """
+    global _TS_HELPER_PREPARED
+
+    if _TS_HELPER_PREPARED is None:
+        try:
+            directory = ts_parser_home()
+            _verify_vendored_parser(directory)
+            _TS_HELPER_PREPARED = (directory, None)
+        except ComparatorUnavailable as exc:
+            _TS_HELPER_PREPARED = (None, exc)
+
+    directory, failure = _TS_HELPER_PREPARED
+    if failure is not None:
+        raise failure
+    assert directory is not None  # the two arms of the tuple are exclusive
     return directory
 
 
@@ -5481,8 +5726,38 @@ class TypeScriptSignatureFingerprinter:
         nothing. Never to signal a failure: an empty mapping is a CHECKED
         comparison with no changes, which is a pass bought by having read
         nothing.
+
+        **THE DIGEST STEP, added by the D4 vendoring commit (operator ruling,
+        2026-08-10), and it is IMPLEMENTED rather than contracted.** The
+        resolution step above is now :func:`_ts_prepared_parser`, which resolves
+        AND recomputes the parser's sha256 against
+        :data:`TS_VENDORED_PARSER_SHA256` before returning a directory. It is
+        the first statement of this method and it runs before every other step,
+        which is what "verified at use" means operationally: no path through
+        this method reaches ``node`` with bytes that were not hashed by the
+        process that is about to load them.
+
+        It is written here, and not left with the rest of the body, because the
+        parser is a separately-versioned artifact fetched into a mutable path
+        (see the ruling recorded at :data:`TS_VENDORED_PARSER_SHA256`). A fetch
+        whose product is only checked at fetch time is the design the scaffold
+        rejected ``npx`` for. So the check lands with the fetch mechanism, in
+        the same commit, and the body that follows inherits a parser it can
+        trust rather than a promise that one will be checked later.
+
+        Until that body exists this method raises ``NotImplementedError`` — but
+        it raises it AFTER the preparation, so on a machine whose parser has
+        been tampered with the answer is already the fault rather than "not
+        implemented". Ordering it the other way would have left the digest
+        untestable until P3 landed, which is the shape of a check nobody ever
+        measures.
         """
-        raise NotImplementedError("D4 P1 scaffold: contract only")
+        _ts_prepared_parser()
+        raise NotImplementedError(
+            "D4 P3: the TypeScript comparator body is not written. The trusted "
+            "parser resolved and passed its digest; what is missing is the "
+            f"{TS_HELPER_ENTRY_POINT} run and the decode"
+        )
 
 
 @dataclass(frozen=True)
@@ -5938,6 +6213,25 @@ TS_SIGNATURE_EDIT_RULINGS: tuple[TsSignatureEditRuling, ...] = (
 #:      outcome is that this row stays pending forever and TypeScript stays
 #:      UNCHECKED — which is the state this scaffold ships and is why the
 #:      refusal is designed to be survivable rather than to be a stopgap.
+#:
+#:      **PARTLY DONE, and the blob review the scaffold feared was REFUSED —
+#:      operator ruling, 2026-08-10.** The parser does not enter this
+#:      repository's history at all. It is a separately-versioned artifact:
+#:      pinned by :data:`TS_VENDORED_PARSER_SHA256` and
+#:      :data:`TS_VENDORED_PARSER_TARBALL_INTEGRITY`, fetched at install time by
+#:      ``python3 -m claude_dispatcher.ts_parser_vendor`` into the path
+#:      :func:`ts_parser_home` names, gitignored so it cannot be committed by
+#:      accident, and — the part that makes it survivable — **verified at USE**
+#:      by :func:`_ts_prepared_parser` rather than at fetch. So the largest file
+#:      this repository tracks is unchanged, and the parser's review is a
+#:      64-character constant on the floor instead of 9.1 MB nobody reads.
+#:      What is still outstanding under this item is ``main.cjs``, which is P3's
+#:      and is a few hundred reviewable lines like the Go helper's; until it
+#:      lands :func:`ts_parser_home` still refuses, with the entry point named.
+#:      ``pyproject.toml`` ships ``ts_signature_fingerprint/*`` as of the same
+#:      commit, so a wheel built on a machine that ran the fetcher carries the
+#:      parser and one built on a machine that did not is HELPER_MISSING — a
+#:      named, blocking state, which is the correct answer for a broken install.
 #:   2. :data:`FLOOR_GLOBS` covers
 #:      ``**/src/claude_dispatcher/ts_signature_fingerprint/**`` **before**
 #:      anything is vendored into it, and ``scripts/check_body_branch.sh`` reads

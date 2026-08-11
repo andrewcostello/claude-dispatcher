@@ -97,6 +97,31 @@ dispatcher doctor --check
 
 If `pipx install` fails with "externally-managed-environment", install pipx itself via `brew install pipx` rather than `pip install pipx`.
 
+### 2a. Fetch the pinned TypeScript parser
+
+The signature gate reads TypeScript with a parser it owns, resolved out of the dispatcher's own package directory and never out of the repository being judged. That parser is a **separately-versioned artifact**: 9.1 MB of third-party code that is pinned by digest rather than committed, so it is fetched once, here, after the install.
+
+```bash
+# Needs network once. Idempotent — a re-run with the parser already in place
+# is a no-op and touches no network.
+python3 -m claude_dispatcher.ts_parser_vendor
+
+# Expect: ts-parser-vendor OK typescript 5.9.3 -> .../ts_signature_fingerprint
+```
+
+Run it against the **installed** dispatcher (`pipx runpip claude-dispatcher ...`-style environments included) — the artifact lands beside `role_protocol.py`, wherever that happens to be. With `pipx install --editable` that is your clone.
+
+If the machine has no network, fetch the tarball elsewhere and install it offline. It is checked against the same pinned digests, so this relaxes how the bytes travelled and not which bytes are acceptable:
+
+```bash
+curl -LO https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz
+python3 -m claude_dispatcher.ts_parser_vendor --from-tarball ./typescript-5.9.3.tgz
+```
+
+**Skipping this step is safe but not free.** Without the parser the gate reports TypeScript as `HELPER_MISSING`, which is *blocking*, never "this build has no TypeScript support" — so `.ts` and `.tsx` branches come back UNCHECKED rather than clean. The failure mode is loud in the direction that blocks.
+
+You do not need to re-run it when you pull. You do need to re-run it when the pinned parser version changes, which is a change to `TS_VENDORED_PARSER_SHA256` in `role_protocol.py`; until you do, the digest is re-checked on every gate run and reports the mismatch by name.
+
 ---
 
 ## 3. Per-project setup
@@ -275,6 +300,10 @@ No reinstall step needed because of the `--editable` install. To force-rebuild i
 
 ```bash
 pipx reinstall claude-dispatcher
+
+# A non-editable reinstall replaces the package directory, which takes the
+# vendored TypeScript parser with it. Re-run step 2a afterwards.
+python3 -m claude_dispatcher.ts_parser_vendor
 ```
 
 ---
@@ -290,6 +319,9 @@ pipx reinstall claude-dispatcher
 | `git worktree add` fails with "fatal: invalid reference: epic/..." | The base branch doesn't exist locally. Run `git fetch origin epic/your-branch:epic/your-branch` first, or set `base_branch: main` in the YAML if you don't need an epic branch |
 | `forecast jira create` returns "unsupported protocol scheme" | `.forecast/config.yaml` not reachable from the cwd you invoked from. Recent dispatcher (`b242780+`) passes `--config` explicitly to avoid this. If you see it, `git -C ~/Project/claude-dispatcher pull` then retry. |
 | `gh pr create` fails with "unauthorized" | `gh auth login` again; SSH key may not be authorized for this org |
+| Gate reports `helper_missing` on a `.ts`/`.tsx` branch | Step 2a was never run, or a non-editable reinstall wiped the package dir. `python3 -m claude_dispatcher.ts_parser_vendor` |
+| `ts-parser-vendor FAILED [network-unreachable]` | Fetch `typescript-5.9.3.tgz` on a machine that has network and install it with `--from-tarball`; the pinned digests are checked either way |
+| The vendored parser hashes to something other than the floored digest | Something rewrote it on disk. Re-fetch with `--force`. Do **not** edit `TS_VENDORED_PARSER_SHA256` to match — that constant is on `FLOOR_GLOBS` and a seal writes the measured value out a second time |
 | Apple Silicon — `go build` fails for forecast | Use Go 1.21+ from brew (universal binary), or build with `GOARCH=arm64 go build` |
 
 ---

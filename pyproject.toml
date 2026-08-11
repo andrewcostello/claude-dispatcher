@@ -37,7 +37,21 @@ where = ["src"]
 # helper must travel with the dispatcher rather than be read out of the tree
 # under judgement. An install that drops it is
 # ComparatorFault.HELPER_MISSING — a named, blocking state, never "no Go here".
-claude_dispatcher = ["*_prompts/*.md", "go_signature_fingerprint/*"]
+#
+# The TypeScript helper (unit D4) is the same argument again, with one wrinkle:
+# `typescript.js` is fetched at install time rather than tracked in git (it is
+# 9.1 MB of third-party code; see .gitignore and TS_VENDORED_PARSER_SHA256), so
+# this glob ships it only when the wheel is BUILT on a machine that already ran
+# `python3 -m claude_dispatcher.ts_parser_vendor`. A wheel built without it
+# installs a dispatcher whose TypeScript comparator is HELPER_MISSING — named
+# and blocking, never "no TypeScript here" — and the fix is to run the fetcher
+# on the installed copy. The glob is FLAT and does not recurse, which is why
+# TS_HELPER_PACKAGE_DIR is a flat trio rather than a `node_modules` layout.
+claude_dispatcher = [
+    "*_prompts/*.md",
+    "go_signature_fingerprint/*",
+    "ts_signature_fingerprint/*",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
