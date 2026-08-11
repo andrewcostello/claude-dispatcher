@@ -35,3 +35,19 @@ worktrees-dogfood/
 # Interrupted `os.replace` staging from the fetcher, which cleans up after
 # itself; ignored so a crashed run cannot leave a file that reads as source.
 /src/claude_dispatcher/ts_signature_fingerprint/.*.incoming-*
+
+# The Go call-reachability helper's default `go build` output (unit D6). NOT a
+# tracked artifact: it is built once per gate process into a temporary
+# workspace, because bytes outside FLOOR_GLOBS that decide what a Go call graph
+# is are bytes that decide a Disposition.BREACH. This line is not a gate, it is
+# the absence of a trap — nine ELF binaries are tracked under cmd/ with no
+# ignore rule between them and a stray `go build`, and task #25 records two
+# authors destroying one by accident. go_signature_fingerprint/ has no such
+# line and should get one in the same P4 round as its floor entry.
+#
+# The name is the MODULE PATH's last element and NOT the directory's, and it is
+# measured rather than assumed: `go build .` in that directory writes
+# `go-call-reachability`, with hyphens. A line naming the directory was written
+# first and ignored nothing, which `git check-ignore -v` reported in one
+# command. Measured 2026-08-11 under go1.24.4.
+/src/claude_dispatcher/go_call_reachability/go-call-reachability

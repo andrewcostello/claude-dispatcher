@@ -1,0 +1,1451 @@
+r"""D6 — the Go reachability analyzer: the first concrete row for D5.
+
+**P1 SCAFFOLD. Contracts and stubs.** Every function below raises
+:class:`NotImplementedError` except the seven named at their definitions, and
+the reason each is an exception is written there. P2 seals, P3 fills in.
+
+D5 (``call_site_reachability``) is complete as a MECHANISM and is on the floor.
+What it does not have is a row: :data:`~claude_dispatcher.call_site_reachability.ANALYZERS`
+is ``()``, so every path in every tree comes back
+:attr:`UndecidedReason.UNSUPPORTED_LANGUAGE` and no run of ``check_tree`` can
+report a verdict. This module is the sibling of ``go_signature_fingerprint``,
+which was the same commit one unit earlier: a registry with no rows, and then
+one.
+
+**IT IS NOT ENROLLED BY THIS COMMIT.** ``ANALYZERS`` is untouched and still
+``()``; ``role_protocol`` is untouched; ``FLOOR_GLOBS`` is untouched; no call
+site is added. See WHAT IS OWED BEFORE ENROLMENT. D5's import-time guard
+(``_refuse_enrolment_before_flooring``) already refuses a row while the module
+is off the floor, so enrolment cannot happen by accident — that is not a reason
+to do it deliberately.
+
+Provenance discipline
+=====================
+Every count and every citation below carries the revision and the date it was
+taken at, per D5's R6 extension, and citations prefer SYMBOLS to coordinates
+because a recorded line here has been wrong three times out of five and one
+recording moved the line it recorded. Prose distinguishes ``Measured under:``
+from ``Predicted (unmeasured) under:``, per D5's S2, and a prediction is
+written where it tells the next author where to aim a mutation — but it never
+wears a measurement's clothes.
+
+Baseline for this unit: ``feat/D6-go-analyzer``, branched from
+``feat/D5-floor-body`` at ``0238aa2``. Suite measured 2026-08-11 on that base,
+after ``python3 -m claude_dispatcher.ts_parser_vendor``: **2313 passed, 0
+failed, 13 skipped.**
+
+THE ACCEPTANCE FIXTURE, AND THE PREMISE THAT DID NOT SURVIVE MEASUREMENT
+========================================================================
+This unit was handed an acceptance case: ``VerifyPreservation`` in ``cmd/gates``
+and in ``cmd/iterate`` — "both contracted, implemented, mutation-verified by
+their bodies, covered by green seals, and called from production in neither".
+Measured before it was believed, and it is half right in a way that changes
+what a correct analyzer must report.
+
+**Measured under:** ``git grep`` / ``git show`` against the bare objects,
+2026-08-11.
+
+  * **Neither function is in this worktree at all.** ``feat/D6-go-analyzer``
+    tracks no ``cmd/`` directory; the only ``go.mod`` under it is
+    ``go_signature_fingerprint``'s. The symbols live on other branches.
+  * On ``feat/G2-iterate-preserve`` (``1fe753b``) — the branch whose name
+    matches the case — ``cmd/iterate``'s ``VerifyPreservation`` is an
+    **unimplemented stub** returning ``errNotImplemented``, and ``cmd/iterate``
+    tracks **no ``preserve_seal_test.go`` at all**. Zero seals name it.
+  * On ``feat/G2-adj`` (``83b0b97``) both bodies have landed and both are
+    sealed. That is the revision this contract is written against, and the one
+    a body author should re-measure before believing any number here.
+
+At ``83b0b97``, then, and this is the whole of it:
+
+  * ``cmd/gates/preserve.go`` declares ``func VerifyPreservation(original,
+    produced []byte, edits []Edit, level Fidelity) (violations []Divergence,
+    err error)``, a package-level func in ``package main``. Nine occurrences of
+    the identifier in non-test files: **one is the declaration and eight are
+    comments.** Zero call expressions. ``cmd/gates/main.go`` mentions it zero
+    times.
+  * ``cmd/iterate/preserve.go`` declares the identical signature, also
+    package-level, also ``package main``. Nine non-test occurrences: **one
+    declaration, eight comments.** Zero call expressions. One of those comments
+    reads, in the source, "VerifyPreservation has no non-test caller in this
+    package — grep it."
+  * Three seals in ``cmd/gates/preserve_seal_test.go``
+    (``TestSeal_G1_VerifyPreservation_ReportsEditsOutsideTheLicensedPaths``,
+    ``…_TreatsADeletionUnderGatesAsAViolation``, ``…_RefusesWhatItCannotCheck``)
+    call it, **eight times, every one lexically inside the test function's own
+    body** — some inside plain ``for`` loops, none behind a helper. The three
+    occurrences in ``preserve_seal_helpers_test.go`` are all comments, so no
+    call is routed through a helper.
+  * Five seals in ``cmd/iterate/preserve_seal_test.go``
+    (``TestSeal_G2_Licence_GatesIsLicensedForGatesAndForbiddenForIterate``,
+    ``TestSeal_G2_VerifyPreservation_CatchesEveryArrayMalformationFromTheLicenceAlone``,
+    ``…_DerivesTheLicenceFromTheEditListNotTheOutput``,
+    ``…_RefusesWhatItCannotCheckOnItsOwnTerms``, and the licence row) call it,
+    **nine times, all in their own bodies.**
+  * Neither package has a ``func init()`` or a package-level ``var`` that
+    references it.
+
+**It is the B1 shape exactly, twice, and it is a better fixture than B1 in one
+respect:** ``ResolveConfigDual``'s doc comment opens with its own name, which is
+what defeated the first crude scan anyone wrote. Both ``VerifyPreservation``
+doc comments do the same — ``// VerifyPreservation checks a produced document
+against the original at the …`` — so **the naive "exported func with no
+non-test mention" scan certifies both of them CLEAN**, and the refined
+"non-comment, non-declaration production line" scan finds them only because
+someone wrote the refinement. This mechanism must not be satisfiable by either.
+
+WHAT A CORRECT ANALYZER MUST REPORT FOR THE TWO CASES
+=====================================================
+Stated as an obligation on P3 and as a target for P2, at ``83b0b97``, over
+``check_tree`` run on a tree containing the whole repository.
+
+**Do the seals qualify under** :func:`~claude_dispatcher.call_site_reachability.discover_seals`\ **? YES, and the
+chain is checkable link by link.** ``discover_seals`` takes the roots
+``discover_roots`` already derived and keeps those of kind ``TEST_FUNCTION``.
+A ``TEST_FUNCTION`` root requires two independent yeses:
+
+  1. ``seal_verify.is_test_path`` over the declaring file. **Measured under:**
+     ``_TEST_PATH``'s first alternative is the literal ``_test.``, so
+     ``cmd/gates/preserve_seal_test.go`` and
+     ``cmd/iterate/preserve_seal_test.go`` both match. This is the shared
+     matcher and D5 refuses to open a second one.
+  2. the row's ``test_root_predicate`` over the symbol name.
+     :func:`go_test_root_predicate` accepts ``TestSeal_G1_…`` and
+     ``TestSeal_G2_…`` under Go's own rule.
+
+Then ``discover_seals`` requires the seal's key to be in ``graph.symbols``,
+which it is because this row emits a symbol for every declaration including
+those in test files. Then ``subjects_of_seal`` takes the NON-TEST symbols the
+seal's own body calls DIRECTLY: ``VerifyPreservation`` is declared in
+``preserve.go``, which ``is_test_path`` rejects, so it is a subject. **An
+import-based subject reader returns zero here** — seal and subject are both
+``package main`` in one directory and there is no import between them, which is
+the same measurement that killed the import reading for B1.
+
+So the expected report, per module:
+
+  * **``cmd/gates.VerifyPreservation``: three findings, one per seal**, each
+    ``Reach.FROM_TESTS_ONLY`` / ``PathQuality.NOT_APPLICABLE`` →
+    ``Disposition.BREACH``. Not one finding: ``check_tree`` judges every
+    (seal, subject) pair, and a subject with no finding is a silent pass.
+  * **``cmd/iterate.VerifyPreservation``: five findings**, same verdict.
+  * **Eight BREACHes from these two symbols alone**, plus whatever the rest of
+    the repository contributes. Whoever enrols owes that number MEASURED, by
+    running this module on the enrolling commit — the crude scan over
+    ``cmd/classify`` suggests at least six more and a grep is what this
+    mechanism refuses to be.
+  * The two must be **eight distinct findings and not four**, because the two
+    subjects are two symbols. That is only true if the key is qualified by the
+    module path: see :func:`go_symbol_key`, where the collision is measured.
+
+**The honest complication, and it is a real one.** ``check_subject`` reaches
+step 4 (the ``FROM_TESTS_ONLY`` verdict) only after step 3 has been ruled out,
+and step 3 abstains when the production closure contains **any** entry in
+``CallGraph.unresolved_calls``. Over a real repository with seven Go modules,
+the production closure will contain unresolved call sites unless the walk
+resolves every one of them. **Predicted (unmeasured) under** ``feat/G2-adj`` @
+``83b0b97``: if it does not, all eight findings come back
+``UndecidedReason.DYNAMIC_EDGE`` — abstentions, not BREACHes — and the
+mechanism reports nothing about the defect it was built for. That is the
+correct behaviour under D5's contract and it is also the most likely way this
+unit fails to earn its keep. It is the first thing P3 should measure and the
+first thing an enrolment count will expose.
+
+**And a limit the fixture makes concrete.** If ``cmd/iterate`` is analyzed at
+``1fe753b`` instead, where no seal names ``VerifyPreservation``, the correct
+report is **no finding at all** — not a BREACH, not an abstention. D5 judges
+the subjects OF SEALS; a dark function nobody sealed is invisible here (limit
+8), and that is dead-code detection rather than this mechanism. A body author
+who "fixes" that has widened the subject population without a ruling.
+
+WHAT THIS ROW CLAIMS, AND THE ONE CLAIM THAT MATTERS MOST
+==========================================================
+``negative_is_conclusive`` is ``True`` for Go, and that single boolean is the
+ruling that made D5 language-parametric rather than Python-with-a-Go-case. Go
+has no runtime lookup of a package-level function by name — there is no
+``reflect`` route to a package's declarations — so a symbol referenced nowhere
+in the production closure is called nowhere, and "no path" is a fact about the
+LANGUAGE. Python's row is ``False`` for the opposite reason, measured four
+times over ``src/``.
+
+It is a per-row boolean and not a computed property, per D5's CHOICE: a
+computed ``False`` is a claim a branch can make about its own judge by adding
+one line, with nothing red.
+
+WHAT IS OWED BEFORE ENROLMENT — NONE OF IT IS P1'S TO DO
+=========================================================
+Recorded here rather than performed, following D2's and D4's precedent exactly.
+
+  1. **``FLOOR_GLOBS`` must grow**
+     ``**/src/claude_dispatcher/go_call_reachability/**``, a SUBTREE and not a
+     file, for the reason the Go fingerprinter's entry records: ``go.mod``
+     fixes the language version the parse runs under and pins the module to
+     stdlib-only, so it is a parser input as much as ``main.go`` is. That entry
+     reddens ``test_the_floor_is_exactly_the_written_out_set_of_globs``, whose
+     ``_FLOOR_ROWS`` table P4 has already ruled P3 may not edit — so the glob
+     and its literal row are one P4 commit, as the Go and TypeScript subtrees
+     each were.
+  2. **This module itself must be floored** if it is ever imported by a floored
+     module. It is not today: nothing imports it, so it is not in the
+     delegation closure, and adding it to ``ANALYZERS`` is what would put it
+     there.
+  3. **``scripts/check_body_branch.sh``** must read this helper out of the base
+     revision's object store in the self-judging case, by the rule it already
+     applies to ``role_protocol`` and that ``go_helper_source_dir`` flags for
+     the fingerprinter: "when its own ``src/`` lies inside the checkout under
+     judgement, the branch supplied the library". A branch could otherwise
+     rewrite this helper to emit an empty edge set and walk through a gate it
+     had just neutered — which, because an empty graph makes every subject
+     ``FROM_NEITHER``, would not even be quiet: it would take the check down
+     loudly. Both directions are refused; see :meth:`GoReachabilityAnalyzer.graph`.
+  4. **The ``test_id`` protocol edit** (D5's ``_test_id`` schedule, ESCALATED
+     there). This row already carries :meth:`GoReachabilityAnalyzer.test_id`
+     ahead of the protocol, deliberately — see that method — so the day the four
+     coupled edits land, the Go row is not the thing blocking them.
+  5. **A measured enrolment count**, taken that day, by enrolling in a clone.
+     The Go comparator's count was wrong four times, and the recorded lesson is
+     that the only trustworthy count is a measured one.
+
+CHOICE (where this row lives): a module of its own, ``go_reachability.py``, and
+not a class inside ``call_site_reachability``. Three reasons. ``role_protocol``
+carries ``GoSignatureFingerprinter`` inline and that is the shape a reader would
+expect — but ``call_site_reachability`` is on ``FLOOR_GLOBS`` and every edit to
+it is a floor edit needing a P4 round, which would couple this unit's schedule
+to the gate's; the D5 module is 3,935 lines before a row is added; and a row
+that imports the mechanism is the direction the dependency should run, so that
+the mechanism cannot come to depend on the row. Rejected alternative: writing it
+into ``role_protocol`` beside the fingerprinter, which puts a call-graph
+analyzer inside the module whose central registry is about SIGNATURES — the
+exact conflation D5's ``ANALYZERS`` CHOICE refuses one level up.
+
+CHOICE (the module's NAME): ``go_reachability.py``, deliberately NOT
+``go_call_reachability.py``, which would be the obvious spelling and would sit
+beside the helper package directory ``go_call_reachability/``. **Measured
+2026-08-11** on CPython 3.11 in a scratch tree: a directory holding an
+``__init__.py`` SHADOWS the same-named module and wins the import; a directory
+holding no ``__init__.py`` — which is what a directory of ``.go`` files is —
+loses, and the module wins. So the collision resolves correctly today and flips
+the day anybody drops an ``__init__.py`` into the helper directory. A name whose
+correctness depends on the continued absence of a file nobody guards is a name
+waiting to be wrong; the two are spelled differently instead.
+
+CHOICE (this module holds no file-extension literal and matches no PATH against
+a suffix): adopted voluntarily, since D5's AST sweep
+(``test_the_module_declares_no_file_extension_and_calls_no_endswith``) is scoped
+to ``call_site_reachability.py`` and does not reach here — **measured
+2026-08-11**, the sweep reads exactly that one file. The rule is kept anyway
+because the reason for it is not about which file the sweep reads: exactly one
+place in this codebase decides what language a file is, and it is
+``role_protocol.support_for_path``. This module asks.
+
+**The claim is stated precisely because the loose version of it became false
+while this file was being written, and correcting the prose rather than the
+code is the honest repair.** An earlier draft of this paragraph said "calls no
+``endswith``" flatly. There is exactly ONE ``endswith`` in this module and it is
+in :func:`go_symbol_key`, over a Go PACKAGE CLAUSE — ``package_name.endswith("_test")``
+— which is not a path, not an extension, and not a language decision about a
+judged tree; it is the language's own total discriminator between the two
+packages that may share a directory. Naming the site here means a reader who
+greps for the word finds the sentence that explains it rather than a
+contradiction. The two entry-point filenames in
+:data:`GO_REACHABILITY_HELPER_ENTRY_POINTS` are the other apparent exception and
+are not one either: they name files inside THIS package, and
+``go_helper_source_dir`` names the same two for the same reason.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Mapping, Sequence
+
+from .call_site_reachability import (
+    GO_REACHABILITY_PACKAGE_DIR,
+    GO_REACHABILITY_SCHEMA,
+    AnalyzerFault,
+    AnalyzerUnavailable,
+    CallGraph,
+    EdgeKind,
+    EntrypointKind,
+    Root,
+    Symbol,
+)
+from .role_protocol import Language
+
+__all__ = [
+    "GO_REACHABILITY_HELPER_ENTRY_POINTS",
+    "go_reachability_helper_dir",
+    "GoUnit",
+    "GoSourceFile",
+    "GoReachabilityRequest",
+    "GoWireSymbol",
+    "GoWireRoot",
+    "GoWireEdge",
+    "GoWireHole",
+    "GoWireParseError",
+    "GoReachabilityResponse",
+    "GO_PACKAGE_VAR_SYMBOL",
+    "GO_INIT_SYMBOL_TEMPLATE",
+    "encode_go_reachability_request",
+    "decode_go_reachability_response",
+    "go_symbol_key",
+    "go_test_root_predicate",
+    "edge_kind_for_wire",
+    "entrypoint_kind_for_wire",
+    "discover_units",
+    "GoReachabilityAnalyzer",
+    "GO_REACHABILITY_ANALYZER",
+]
+
+
+# --------------------------------------------------------------------------- #
+# Part 1 — where the helper is, and how its path is derived
+# --------------------------------------------------------------------------- #
+
+#: The two files that make the helper a program that can be built. Both are
+#: checked, on ``go_helper_source_dir``'s ruling for the sibling: ``go.mod``
+#: fixes the language version the parse runs under and pins the module to
+#: stdlib-only, so an install that dropped it would reach ``go build`` and fail
+#: there as HELPER_FAILED with a module error, which names the wrong party.
+GO_REACHABILITY_HELPER_ENTRY_POINTS = ("main.go", "go.mod")
+
+
+def go_reachability_helper_dir() -> Path:
+    """Where this build's Go reachability helper source is, or the named fault.
+
+    **The first of the seven functions this scaffold implements rather than
+    stubs, and the reason is D4's for** ``ts_parser_home`` **verbatim: this
+    function IS this unit's answer to "which program judges the branch", and an
+    answer expressed only in prose is a note.**
+
+    THE RULE, and the whole of it: :data:`GO_REACHABILITY_PACKAGE_DIR` resolved
+    against ``Path(__file__).parent``. Never against ``repo_root``, never
+    against the CWD, never against an environment variable, and never by asking
+    anything in the judged tree. D4's ruling stands as the precedent — *the
+    parser's location is a pure function of the dispatcher's own installed
+    location, and of nothing else* — and it binds here with more force than it
+    did there, because this helper computes a CALL GRAPH: a helper read out of
+    the judged repository would be a call-graph analyzer supplied by the branch
+    whose call graph it is computing.
+
+    Three refusals, all :attr:`AnalyzerFault.HELPER_MISSING`, because all three
+    are the same fact — *the helper this build claims to ship is not there*:
+
+      * the directory is absent (an install that dropped a non-``.py`` asset;
+        ``tests/test_packaging.py`` exists for exactly this and it has happened
+        live twice, 2026-07-13);
+      * either entry point in
+        :data:`GO_REACHABILITY_HELPER_ENTRY_POINTS` is missing from it;
+      * the directory or either entry point resolves, after following symlinks,
+        to a path OUTSIDE this package directory. That is D4's containment
+        check and it is deliberate belt-and-braces: under the resolution rule
+        the escape should be impossible, and a symlink from ``main.go`` into the
+        judged tree would satisfy every existence check while restoring the
+        exact defect this unit exists to prevent, with a one-byte artifact.
+
+    Absence is a FAULT and never "this build has no Go analysis". The second
+    reading is the broken-wheel fail-open :class:`AnalyzerFault` exists to name:
+    it would hand every Go branch a clean bill of health for as long as the
+    install stayed broken. Note that under D5's R1 ruling the fault does not
+    become an abstention — :func:`discover_roots` and :func:`build_call_graph`
+    both RAISE on an :class:`AnalyzerError`, and it reaches the caller as a
+    :class:`CallSiteReachabilityError` that a caller may not catch and continue.
+
+    CHOICE (D4 checks a digest at use and this function does not, so the
+    silence is marked): **there is no digest here, and the omission is the
+    ruling rather than an oversight.** Rejected alternative: a
+    ``GO_REACHABILITY_SOURCE_SHA256`` constant recomputed before every build,
+    copying D4's shape. It is out because the expectation would have to live in
+    this module, which is not floored, and a digest a branch can edit alongside
+    the bytes is what ``TS_VENDORED_PARSER_SHA256``'s own docstring calls no
+    review at all. The full argument: D4 checks
+    :data:`~claude_dispatcher.role_protocol.TS_VENDORED_PARSER_SHA256` at USE
+    — "a digest computed from the file it pins, pins nothing" — because that
+    parser is a separately-versioned artifact FETCHED at install time into a
+    mutable path that no floor entry can cover. This helper is the opposite
+    artifact: it is tracked in git, it is reviewable source, and the mechanism
+    that vouches for it is the ``FLOOR_GLOBS`` subtree entry item 1 of WHAT IS
+    OWED names. Adding a digest would mean writing the expectation somewhere,
+    and the only place it could live without being editable alongside the bytes
+    is a floored module — which is a floor edit this unit may not make. A
+    digest constant sitting in THIS module, which is not floored, would be
+    exactly "a digest that a branch could edit alongside the bytes", which
+    ``TS_VENDORED_PARSER_SHA256``'s own docstring names as no review at all.
+    The trigger for revisiting: the first time any part of this helper is
+    fetched rather than tracked.
+    """
+    package = Path(__file__).parent.resolve()
+    directory = package / GO_REACHABILITY_PACKAGE_DIR
+    if not directory.is_dir():
+        raise AnalyzerUnavailable(
+            AnalyzerFault.HELPER_MISSING,
+            f"the Go reachability helper's source directory is not at "
+            f"{directory}. An install that dropped the asset is a broken "
+            "install, never 'this build has no Go analysis': the second "
+            "reading hands every Go branch a clean bill of health",
+        )
+    missing = [
+        name
+        for name in GO_REACHABILITY_HELPER_ENTRY_POINTS
+        if not (directory / name).is_file()
+    ]
+    if missing:
+        raise AnalyzerUnavailable(
+            AnalyzerFault.HELPER_MISSING,
+            f"the Go reachability helper at {directory} is missing "
+            f"{', '.join(missing)}; it is a program that cannot be built, "
+            "which is a broken install and not a language nobody can read",
+        )
+    escaped = [
+        name
+        for name in GO_REACHABILITY_HELPER_ENTRY_POINTS
+        if package not in (directory / name).resolve().parents
+    ]
+    if directory.resolve() != package / GO_REACHABILITY_PACKAGE_DIR or escaped:
+        raise AnalyzerUnavailable(
+            AnalyzerFault.HELPER_MISSING,
+            f"the Go reachability helper at {directory} resolves outside "
+            f"{package} ({', '.join(escaped) or 'the directory itself'}). A "
+            "symlink into the judged tree satisfies every existence check "
+            "while making the branch supply the program that computes its own "
+            "call graph",
+        )
+    return directory
+
+
+# --------------------------------------------------------------------------- #
+# Part 2 — the wire protocol
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class GoUnit:
+    """The package one helper invocation covers. See ``main.go``'s ``Unit``.
+
+    ``module_path``
+        The ``module`` line of the ``go.mod`` that governs the directory. Read
+        by the PYTHON side out of the tree and passed in, because the helper
+        does not touch the filesystem — so the analysis cannot depend on a
+        working tree the branch controls.
+    ``package_dir``
+        Tree-relative posix directory. Part of the key, not decoration; see
+        :func:`go_symbol_key`.
+    ``package_name``
+        The ``package`` clause. Distinguishes ``foo`` from ``foo_test`` in one
+        directory, which are two packages by the language's own rules and must
+        be two invocations.
+    """
+
+    module_path: str
+    package_dir: str
+    package_name: str
+
+
+@dataclass(frozen=True)
+class GoSourceFile:
+    """One file of the unit: tree-relative posix path, and text.
+
+    Source travels as TEXT, kept unchanged from ``GoHelperRequest``'s rule and
+    for its reason: a helper that took paths would make the answer depend on
+    the working tree.
+    """
+
+    path: str
+    source: str
+
+
+@dataclass(frozen=True)
+class GoReachabilityRequest:
+    """What the Python side sends: ONE package's whole file set.
+
+    CHOICE (the design does not say what one invocation covers, and the sibling
+    protocol says the opposite): **one PACKAGE per invocation.** This is the
+    deliberate divergence from ``GoHelperRequest``, whose
+    contract is "one revision of one file, not a batch". That rule is right for
+    signatures and fatal here: a call graph is not a per-file property, and a
+    per-file protocol would make every cross-file call inside one package an
+    unresolved edge — an abstention on almost everything.
+
+    The cost the divergence avoids is measured. The TypeScript comparator kept
+    the one-process-per-file rule and pays **169 ms per file on the gate path**
+    (``role_protocol``, ``TYPESCRIPT_SUPPORT`` enrolment checklist item 3,
+    measured 2026-08-10), about **68 seconds for a 200-file branch**, recorded
+    there as a ruled price with no caching route — because the natural fix, a
+    persistent process, is refused by the one-file-per-invocation rule itself.
+    This protocol costs one process per PACKAGE instead.
+
+    What is LOST with the per-file rule, and must be replaced rather than
+    mourned: the per-file timeout that made "which file" answerable. The
+    replacement is the unit — a timeout here names a PACKAGE, and the response
+    names the first file that would not parse, so "which file" survives for the
+    failure that actually needs it.
+
+    Rejected alternative: keep per-file requests and stitch the graph on the
+    Python side. That moves Go's name-resolution rules into Python — a second
+    implementation of Go scoping, in the wrong language, maintained by nobody.
+    """
+
+    schema: str
+    unit: GoUnit
+    files: tuple[GoSourceFile, ...]
+
+
+@dataclass(frozen=True)
+class GoWireSymbol:
+    """One declared callable as the helper reports it. ``main.go``'s ``Symbol``.
+
+    ``kind`` is reportage only — ``"func"``, ``"method"``, ``"package_var"`` —
+    and is never part of any comparison. A second comparison surface is a
+    second thing to keep in agreement.
+    """
+
+    key: str
+    path: str
+    line: int
+    kind: str
+
+
+@dataclass(frozen=True)
+class GoWireRoot:
+    """One entrypoint as the helper reports it. ``main.go``'s ``Root``.
+
+    ``kind`` is a wire string, mapped by :func:`entrypoint_kind_for_wire`. The
+    helper does NOT report a :class:`RootKind`: that is derived by D5 from the
+    entrypoint kind and from ``seal_verify.is_test_path``, and
+    ``_validate_root`` refuses any row that asserts it instead.
+    """
+
+    symbol: str
+    kind: str
+    evidence: str
+
+
+@dataclass(frozen=True)
+class GoWireEdge:
+    """One call or reference. ``main.go``'s ``Edge`` and its EDGE GRAMMAR."""
+
+    caller: str
+    callee: str
+    kind: str
+    site: str
+
+
+@dataclass(frozen=True)
+class GoWireHole:
+    """One call site the helper could not name. ``main.go``'s ``Hole``.
+
+    THE non-vacuity record of a response. It is the exact quantity that decides
+    whether a "no path" answer is conclusive (``UndecidedReason.DYNAMIC_EDGE``),
+    so a helper that reports zero of them over a real package is either
+    extraordinarily good or not counting, and a decoder must not let those be
+    the same value. ``detail`` is prose and no decision reads it.
+    """
+
+    caller: str
+    site: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class GoWireParseError:
+    """The FIRST file of the unit that go/parser refused, and its message.
+
+    Exit 0: an unparseable file is a successful run of the helper and a fact
+    about the file. ``go_signature_fingerprint``'s rule, unchanged.
+    """
+
+    path: str
+    message: str
+
+
+@dataclass(frozen=True)
+class GoReachabilityResponse:
+    """What the helper writes to stdout: exactly one JSON object, always.
+
+    ``parse_error`` and the four arrays are mutually exclusive: a document
+    carrying both, or neither, is
+    :attr:`AnalyzerFault.HELPER_OUTPUT_INVALID`. When ``parse_error`` is absent
+    all four arrays must be PRESENT, possibly empty — ``[]`` is an answer and a
+    missing field is not, which is what lets the caller tell "this package
+    declares nothing" from "the helper stopped emitting a field".
+    """
+
+    schema: str
+    unit: GoUnit
+    symbols: tuple[GoWireSymbol, ...] = ()
+    roots: tuple[GoWireRoot, ...] = ()
+    edges: tuple[GoWireEdge, ...] = ()
+    unresolved: tuple[GoWireHole, ...] = ()
+    parse_error: GoWireParseError | None = None
+
+
+def encode_go_reachability_request(
+    unit: GoUnit, files: Sequence[GoSourceFile]
+) -> str:
+    """The JSON document for one package, ready for the helper's stdin.
+
+    Contract, and it is ``encode_go_helper_request``'s with the shape changed
+    and none of the reasoning: a single JSON object with exactly the fields of
+    :class:`GoReachabilityRequest`, ``schema`` set to
+    :data:`GO_REACHABILITY_SCHEMA`, UTF-8.
+
+    Two properties a body must not lose, both inherited and both measured
+    consequences of real failures:
+
+      * ``ensure_ascii=True``, and it is not a style choice. ``source`` is
+        whatever the read accepted, which can include lone surrogates from a
+        blob that is not valid UTF-8; ``ensure_ascii=False`` raises on encoding
+        those and turns a bad FILE into an environment fault.
+      * deterministic separators, so two runs over one package produce one
+        request byte for byte.
+
+    ``source`` is passed through verbatim — BOM, CRLF, invalid UTF-8 included —
+    because normalising here would make the Python and Go sides disagree about
+    what the file says.
+
+    Files are sent in the order the caller supplies them, and the caller sorts
+    by path, because ``main.go`` contracts edge order as request order and a
+    nondeterministic request makes the witness path a human is asked to check
+    nondeterministic too.
+
+    STUB. Nothing here is untestable without a body: a seal can assert the
+    document's shape against this contract the moment P3 writes it.
+    """
+    raise NotImplementedError(
+        "encode_go_reachability_request must emit one JSON object with the "
+        "fields of GoReachabilityRequest, schema set to "
+        f"{GO_REACHABILITY_SCHEMA!r}, ensure_ascii=True and deterministic "
+        "separators"
+    )
+
+
+def decode_go_reachability_response(stdout: str) -> GoReachabilityResponse:
+    """Parse the helper's stdout, or raise the named fault. STUB.
+
+    **A THIRD DECODER, and the duplication is ruled rather than drifted into.**
+    ``role_protocol._decode_helper_response`` is THE shared validator for the
+    two signature helpers, extracted under a P4 ruling and forced by
+    ``test_one_decoder_serves_both_languages_and_neither_is_a_copy``, because
+    "the copy that forgets the duplicate-key check clears branches the original
+    refuses — a divergence in the exact place where being wrong fails OPEN".
+    That validator is shaped for a ``(symbol, fingerprint, kind)`` triple and a
+    single ``symbols`` array; this document has four arrays, a nested unit and a
+    structured parse error, so it cannot be served by four arguments. **The
+    argument against a copy does not apply, because this is not a copy — no
+    line of it is transferable. What DOES transfer is the obligation the
+    extraction was protecting**, and it is written out below so it cannot be
+    lost the way the extraction ruling says it would be.
+
+    **THE DUPLICATE-KEY GUARD, and a correction to the brief this unit was
+    given.** That brief records the sibling's duplicate-key guard as having been
+    found UNCOVERED — "removing it left the suite green". **Measured under**
+    ``feat/D6-go-analyzer`` @ ``0238aa2``, 2026-08-11, by replacing the
+    ``if name in seen`` raise in ``role_protocol._decode_helper_response`` with a
+    dead branch and running the whole suite: **2 failed, 2311 passed, 13
+    skipped** — both failures are
+    ``test_both_decoders_refuse_the_same_malformed_document_with_the_same_fault``
+    at its ``a DUPLICATE symbol key`` parameter, once for ``go`` and once for
+    ``ts``. The gap was real and D4's shared row closed it. It is written down
+    here because the interesting fact is not that it is covered now: it is that
+    a guard on this exact question went uncovered once already, in the module
+    this one is modelled on.
+
+    Raises :class:`AnalyzerUnavailable` with
+    :attr:`AnalyzerFault.HELPER_OUTPUT_INVALID` for every way the document can
+    be wrong. The list is EXHAUSTIVE and a seal should be total over it:
+
+      1. stdout is empty or whitespace. "No symbols" and "no output" are not
+         the same answer: the first describes one package and the second would
+         describe every branch.
+      2. stdout is not JSON, or is a JSON value that is not an object.
+      3. ``schema`` is absent or is not :data:`GO_REACHABILITY_SCHEMA`.
+         Checked before anything else is read.
+      4. ``unit`` is absent, is not an object, or does not echo the unit that
+         was requested. A response for a package nobody asked about would
+         attach one package's edges to another package's symbols.
+      5. ``parse_error`` and the arrays are both present, or both absent.
+      6. ``parse_error`` is present but is not an object with a non-empty
+         ``path`` and ``message``.
+      7. any of ``symbols``, ``roots``, ``edges``, ``unresolved`` is absent or
+         is not a list, when ``parse_error`` is absent. An empty LIST is the
+         answer for a package that declares nothing; a missing one is not an
+         answer at all — and requiring all four is what makes rule 12's
+         ignore-unknown-fields ruling safe.
+      8. any record is not an object, or carries a field of the wrong type, or
+         a ``key`` / ``symbol`` / ``caller`` / ``callee`` / ``site`` that is not
+         a non-empty string, or a ``line`` that is not a positive integer.
+      9. **``symbols`` repeats a ``key``.** Sharper here than in the sibling:
+         D5's :class:`Symbol` declares ``path`` and ``line`` as
+         ``field(compare=False)``, so identity is over ``key`` alone and two
+         records with one key are ONE symbol whose ``path`` is decided by dict
+         insertion order — and ``path`` is what ``seal_verify.is_test_path``
+         reads to decide whether a symbol is excluded from a subject set and
+         whether a root is TEST or PRODUCTION. A duplicate key can turn a
+         BREACH into an exclusion.
+     10. ``roots`` repeats a ``symbol``, or names a symbol ``symbols`` does not
+         declare. A root the graph does not declare has no outgoing edges and
+         would contribute silently nothing.
+     11. any ``kind`` string is not a member of the wire vocabularies; see
+         :func:`edge_kind_for_wire` and :func:`entrypoint_kind_for_wire`, which
+         raise rather than defaulting.
+     12. an ``edges`` or ``unresolved`` record naming a ``caller`` that
+         ``symbols`` does not declare. An edge from nowhere is not an edge.
+
+    **Not on the list. Each omission is a CHOICE and each names what it
+    rejected:**
+
+      * CHOICE — **Unknown FIELDS are ignored, at every level.** ``schema`` is checked
+        for equality first, so an unknown field can only arrive from a document
+        that has already lied about its version, and a second refusal for a
+        state the first check owns is a second answer site. Rejected
+        alternative: refusing unknown fields, which reads as strictness and
+        buys only one thing the version check does not — catching a field
+        RENAMED without a schema bump — and rule 7 already catches that as a
+        missing required array. Ignoring is also the sibling decoder's live
+        behaviour, so the two protocols do not disagree about a document
+        neither should ever see.
+      * CHOICE — **Duplicate EDGES are DEDUPLICATED, not refused.** Rejected
+        alternative: refusing them as rule 9 refuses a duplicate key, which is
+        the consistent-looking answer. ``f(f(x))`` is
+        ordinary Go and emits two identical ``(caller, callee, kind, site)``
+        tuples; refusing them would blame the machine for a legal program,
+        which is the lesson ``go_signature_fingerprint``'s ``isBlank`` records
+        after ``stringer`` output produced duplicate keys across GOROOT. A
+        duplicate edge is the same answer twice, not two answers, and
+        reachability is a set property, so the dedup cannot move a verdict.
+      * CHOICE — **An EMPTY graph for one unit is an answer, not a fault.**
+        Rejected alternative: faulting here on any empty response, which is what
+        D5's ``HELPER_OUTPUT_INVALID`` wording reads like in isolation and which
+        would fault on a file holding only a package clause and imports. A file
+        declaring only a package clause and imports declares nothing. The
+        whole-tree guard D5's :attr:`AnalyzerFault.HELPER_OUTPUT_INVALID`
+        demands — "including an EMPTY graph where a graph was expected" —
+        belongs at :meth:`GoReachabilityAnalyzer.graph`, which is the layer
+        that knows how many Go files the sweep found; see there. Placing it
+        here would be a claim about a population this function cannot see,
+        which is R1's discriminator exactly.
+
+    Does NOT decide anything about the analysis: a document carrying
+    ``parse_error`` is returned intact, and it is the analyzer that turns it
+    into an entry in :attr:`CallGraph.unreadable_paths`. One place per decision.
+    """
+    raise NotImplementedError(
+        "decode_go_reachability_response must refuse all twelve malformed "
+        "classes in its docstring as AnalyzerFault.HELPER_OUTPUT_INVALID, "
+        "ignore unknown fields, deduplicate identical edges, and return a "
+        "parse_error document intact"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Part 3 — the spellings: keys, kinds and test names
+# --------------------------------------------------------------------------- #
+
+
+#: Spelled as a package-qualifier separator and as a receiver bracket pair,
+#: never assembled inline, so that the ONE definition of a key lives in
+#: :func:`go_symbol_key` and a body cannot grow a second one three lines away.
+_KEY_PACKAGE_SEPARATOR = "."
+
+#: The suffix that spells the synthetic symbol a ``GO_PACKAGE_VAR`` root enters
+#: at, on :class:`Symbol`'s own recorded convention for synthetic roots: it is
+#: spelled with characters no Go declaration can produce, so it cannot collide
+#: with a real symbol.
+GO_PACKAGE_VAR_SYMBOL = "<vars>"
+
+#: Likewise for the several ``func init()`` one package may legally declare.
+#: The spec permits them explicitly and real code uses them (GOROOT's
+#: ``runtime/proc.go`` and ``cmd/go/main.go`` both do, measured by the sibling
+#: on GOROOT/src 2026-08-09: 11 files of 4,505), so ``init`` alone is not a
+#: key — it is a duplicate key waiting to happen, which is rule 9's fault. The
+#: ordinal is the file's index in the request, then the declaration's index in
+#: the file, which is deterministic because the request order is.
+GO_INIT_SYMBOL_TEMPLATE = "<init:{ordinal}>"
+
+
+#: The suffix Go's spec fixes for the one package that may share a directory
+#: with another. It is the ONLY way two packages can occupy one directory, which
+#: is what makes :func:`go_symbol_key`'s disambiguation total rather than a
+#: heuristic.
+_EXTERNAL_TEST_PACKAGE_SUFFIX = "_test"
+
+
+def go_symbol_key(
+    module_path: str,
+    package_dir: str,
+    package_name: str,
+    receiver: str | None,
+    name: str,
+) -> str:
+    """The one spelling of a Go symbol key. Both sides must agree byte for byte.
+
+    **The second function this scaffold implements rather than stubs, and the
+    reason is D4's for** ``ts_symbol_key``: *a seal cannot express the
+    key-collision property without calling it.* Here the collision is not
+    hypothetical and it is not in a fixture.
+
+    **Measured under** ``feat/G2-adj`` @ ``83b0b97``, 2026-08-11: seven modules
+    in the acceptance repository declare ``package main``, and ``cmd/gates`` and
+    ``cmd/iterate`` each declare a top-level ``func VerifyPreservation`` with
+    an identical signature. A key spelled ``main.VerifyPreservation`` collides
+    across them — and under D5's :class:`Symbol`, whose ``path`` and ``line``
+    are ``field(compare=False)``, a collision is not a near-miss: it is one
+    symbol wearing two declarations, in a mechanism that decides "is this
+    reached" by set membership on the key. The eight findings the two subjects
+    owe would become four, over a symbol that is in two files at once.
+
+    THE SPELLING::
+
+        <qualifier>.Name          a top-level func
+        <qualifier>.(*T).Name     a method, pointer receiver
+        <qualifier>.(T).Name      a method, value receiver
+        <qualifier>.<vars>        the package-var initialiser
+        <qualifier>.<init:N>      the Nth `func init()`
+
+    where ``<qualifier>`` is ``<module_path>/<package_dir>``, plus
+    ``[<package_name>]`` when ``package_name`` ends in ``_test``.
+
+    ``package_dir`` keeps any leading directories the module path already
+    accounts for — they are NOT stripped. The qualifier is a LABEL that must be
+    unique and legible, never an import path to be resolved; stripping would
+    require knowing where the module root sits relative to the tree, which is a
+    second fact to keep in agreement with the first. It is verbose
+    (``github.com/yourorg/claude-workflow/gates/cmd/gates.VerifyPreservation``)
+    and verbose is the cheap failure here.
+
+    **``package_name`` is a parameter because a directory can hold TWO
+    packages, and without it this function had a collision of its own.** Go's
+    spec permits exactly one such pair — ``foo`` and its external test package
+    ``foo_test`` — so an ``_test`` suffix on the package clause is a total
+    discriminator rather than a heuristic, and it is applied to the QUALIFIER
+    rather than to the member so that the two packages' symbol sets can never
+    interleave. This scaffold's first draft omitted the parameter; it is
+    recorded rather than quietly fixed, because it is the same defect the
+    function exists to prevent, one level in: a key that is unique over the
+    inputs somebody happened to think of.
+
+    CHOICE (the sibling makes the opposite call and the divergence must not
+    read as an accident): **pointer and value receivers get DIFFERENT keys.**
+    Rejected alternative: stripping ``*`` as ``receiverBaseName`` does, which
+    would keep the two units' keys interchangeable and is wrong here for the
+    reason below. It is the opposite of
+    ``go_signature_fingerprint``'s ``receiverBaseName``, whose whole job is to
+    strip ``*`` so that changing a receiver's pointer-ness reads as one symbol
+    changing rather than two swapping. The two units want opposite things and
+    the divergence is deliberate: a signature comparison asks "did this contract
+    change", for which one key is right; a call graph asks "does execution
+    arrive here", for which ``func (T) M`` and ``func (*T) M`` are two bodies —
+    and Go forbids declaring both, so the keys cannot collide by accident.
+
+    Pure, total, and it never looks at the filesystem. ``receiver`` is the
+    receiver type EXACTLY as written after any parentheses are dropped
+    (``*Config``, ``Config``, ``*Set[T]``), and ``None`` for a non-method.
+    """
+    qualifier = f"{module_path}/{package_dir}" if package_dir else module_path
+    if package_name.endswith(_EXTERNAL_TEST_PACKAGE_SUFFIX):
+        qualifier = f"{qualifier}[{package_name}]"
+    if receiver is None:
+        member = name
+    else:
+        member = f"({receiver}).{name}"
+    return f"{qualifier}{_KEY_PACKAGE_SEPARATOR}{member}"
+
+
+#: The prefixes ``go test`` recognises, exactly. Not a guess: ``testing``'s own
+#: documented set, and the ordering is irrelevant because a name has at most one
+#: of them.
+_GO_TEST_PREFIXES = ("Test", "Benchmark", "Fuzz", "Example")
+
+
+def go_test_root_predicate(name: str) -> bool:
+    """Is this symbol name a Go test entrypoint? Go's own rule, not a guess.
+
+    **The third function this scaffold implements rather than stubs.** It is the
+    per-language half of the one question D5 refuses to answer twice — the FILE
+    half is ``seal_verify.is_test_path`` and this module does not re-ask it —
+    and it decides whether a root is TEST or PRODUCTION. Both wrong answers are
+    intolerable in the way D5's :class:`RootKind` describes: a test root read as
+    production silently certifies everything below it, and a production root
+    read as test floods the report with false BREACHes. A seal author handed a
+    stub here would be sealing their own guess at Go's rule.
+
+    THE RULE, which is ``cmd/go``'s ``isTest``: the name begins with one of
+    ``Test``, ``Benchmark``, ``Fuzz`` or ``Example``, and the rune immediately
+    after the prefix is **not a lower-case letter**. So ``TestFoo`` and a bare
+    ``Test`` are test entrypoints and ``Testify`` is not — which is the whole
+    reason the rule is a rune check and not ``startswith``.
+
+    ``TestMain`` satisfies it and that is correct rather than a corner: it IS an
+    entrypoint, it is the one ``go test`` calls first, and everything it reaches
+    is genuinely reached under test.
+
+    ``name`` is the symbol's own last segment, never the key — a key carries a
+    module path, and a module whose name began with ``Test`` would otherwise
+    make every symbol in it a test root.
+
+    Predicted (unmeasured) under ``feat/G2-adj`` @ ``83b0b97``: this accepts all
+    twelve ``TestSeal_G1_…`` names in ``cmd/gates/preserve_seal_test.go`` and
+    all of the ``TestSeal_G2_…`` names in ``cmd/iterate``'s, which is what makes
+    the acceptance fixture's seals seals. The FILE half is measured above; this
+    half is a rule, and a seal can pin it against both.
+    """
+    for prefix in _GO_TEST_PREFIXES:
+        if not name.startswith(prefix):
+            continue
+        rest = name[len(prefix) :]
+        if not rest:
+            return True
+        return not rest[0].islower()
+    return False
+
+
+#: The wire ``kind`` vocabulary for edges, as a TABLE and not a chain of
+#: ``if``\ s, so that a string added to ``main.go``'s grammar without visiting
+#: this file is absent from it and :func:`edge_kind_for_wire` raises rather than
+#: defaulting. A default on this dispatch decides, silently and for the whole
+#: repository, whether an unmarked over-approximation reads as the strong pass —
+#: which is D5's own argument for ``_RESOLVED_EDGE_KINDS`` being two tables.
+_EDGE_KIND_BY_WIRE: Mapping[str, EdgeKind] = {
+    "direct": EdgeKind.DIRECT,
+    "method": EdgeKind.METHOD,
+    "interface": EdgeKind.INTERFACE,
+    "reference": EdgeKind.REFERENCE,
+}
+
+
+def edge_kind_for_wire(value: str) -> EdgeKind:
+    """One wire string to one :class:`EdgeKind`, raising on anything else.
+
+    **The fourth function this scaffold implements rather than stubs**, with
+    :func:`entrypoint_kind_for_wire`, and for one reason: these two tables ARE
+    the Go-side answer to "how does a Go shape map onto D5's vocabulary", which
+    is the second question this unit was asked. A mapping left as prose is a
+    mapping two authors will spell differently, and a body written against the
+    wrong one is wrong everywhere at once.
+
+    THE MAPPING, and which cases force
+    :attr:`PathQuality.OVER_APPROXIMATED` — the grammar is stated once, in
+    ``main.go``, and this is its Python face:
+
+      ``direct``
+        a call by name to exactly one declaration: ``f(x)`` where ``f`` is
+        declared in the package, or ``pkg.F(x)`` where ``pkg`` is an import
+        alias. Resolved. Does NOT force over-approximation.
+      ``method``
+        a call on a receiver whose declared type is readable from the text —
+        a parameter ``x T``, a ``var x T``, a ``x := T{…}`` — resolved to
+        exactly one declaration. Resolved. Does NOT force over-approximation. It
+        is a separate kind from ``direct`` anyway, on :class:`EdgeKind`'s own
+        reasoning: a stdlib-only walk resolves these less often than a
+        type-checked one would, and a report must be able to say which
+        resolution it was leaning on.
+      ``interface``
+        a call through an interface-typed value, or through any receiver the
+        name-level walk could not resolve, emitted as ONE EDGE PER in-tree
+        method of that name. **FORCES** :attr:`PathQuality.OVER_APPROXIMATED`.
+      ``reference``
+        the symbol mentioned as a VALUE and not called — assigned, passed
+        (``sort.Slice(xs, less)``), stored in a table, a method value ``x.M``,
+        a method expression ``T.M``. **FORCES**
+        :attr:`PathQuality.OVER_APPROXIMATED`.
+
+    **Interface SATISFACTION is not on this table, and its absence is the
+    answer rather than an omission.** Go's satisfaction is implicit and
+    structural; a type declaring an interface's methods produces no edge, and
+    ``var _ I = (*T)(nil)`` produces none either because it names no method.
+    What produces edges is a CALL through an interface-typed value, and the only
+    honest name-level resolution of it is the over-approximating one above.
+    Method promotion through an embedded field lands in the same place, for the
+    same reason: whether an embed promotes is what decides which interfaces a
+    type satisfies — the fact ``go_signature_fingerprint``'s v2 grammar moved
+    its ``embedded:`` marker to protect — and it is not decidable at name level.
+
+    A call the walk cannot name at all is NOT on this table and must never be
+    added to it. It is not an edge; it is a hole, it travels as a
+    :class:`GoWireHole`, and its consequence is
+    :attr:`UndecidedReason.DYNAMIC_EDGE`. Naming it a fifth kind invites a body
+    to treat the absence of a target as a target.
+    """
+    kind = _EDGE_KIND_BY_WIRE.get(value)
+    if kind is None:
+        raise AnalyzerUnavailable(
+            AnalyzerFault.HELPER_OUTPUT_INVALID,
+            f"edge kind {value!r} is not in the wire vocabulary "
+            f"{sorted(_EDGE_KIND_BY_WIRE)}; a kind this table does not name "
+            "would decide by default whether an over-approximated path is "
+            "spelled like a resolved one",
+        )
+    return kind
+
+
+#: The wire ``kind`` vocabulary for roots. Four members and no more: the three
+#: Go production kinds :class:`EntrypointKind` names, plus the shared
+#: ``TEST_FUNCTION``. Every other member of that enum is Python's and a Go row
+#: that emitted one would be claiming a start it cannot derive.
+_ENTRYPOINT_KIND_BY_WIRE: Mapping[str, EntrypointKind] = {
+    "go_main": EntrypointKind.GO_MAIN,
+    "go_init": EntrypointKind.GO_INIT,
+    "go_package_var": EntrypointKind.GO_PACKAGE_VAR,
+    "test_function": EntrypointKind.TEST_FUNCTION,
+}
+
+
+def entrypoint_kind_for_wire(value: str) -> EntrypointKind:
+    """One wire string to one :class:`EntrypointKind`, raising on anything else.
+
+    **The fifth function this scaffold implements rather than stubs**; see
+    :func:`edge_kind_for_wire` for the shared reason.
+
+    The four, exhaustively, and each names what it is DERIVED from — a kind
+    whose derivation cannot be written is a kind that does not go in the enum:
+
+      ``go_main``
+        ``func main()`` in a file declaring ``package main``. **Measured
+        under** ``feat/G2-adj`` @ ``83b0b97``: seven of them, one per ``cmd/``
+        module.
+      ``go_init``
+        ``func init()`` in any package. Go runs every one before ``main``.
+        D5's contract records "zero instances in ``cmd/classify`` today,
+        measured 2026-08-10", and says the member is written on the LANGUAGE's
+        semantics rather than on an instance. **That is no longer the state of
+        the tree: measured under** ``feat/G2-adj`` @ ``83b0b97``,
+        ``cmd/classify/capability.go`` declares one. The member now has a live
+        example and the reasoning that admitted it without one is unaffected.
+      ``go_package_var``
+        a package-level ``var x = <expression>``, which runs before ``init``.
+        The symbol is synthetic (:data:`GO_PACKAGE_VAR_SYMBOL`).
+      ``test_function``
+        a func in a file ``seal_verify.is_test_path`` calls a test, whose name
+        :func:`go_test_root_predicate` accepts. **The row supplies the naming
+        half only**; the file half is the shared matcher and D5 does not open a
+        second one.
+
+    There is no ``PUBLIC_API`` member and there must not be one. D5's CHOICE is
+    decisive and it is measured against this unit's own fixture: a rule that
+    made an exported symbol a root would make ``VerifyPreservation`` — exported,
+    in both modules — a root, so the mechanism built to catch this defect would
+    certify it as REACHED on its first run.
+    """
+    kind = _ENTRYPOINT_KIND_BY_WIRE.get(value)
+    if kind is None:
+        raise AnalyzerUnavailable(
+            AnalyzerFault.HELPER_OUTPUT_INVALID,
+            f"entrypoint kind {value!r} is not in the wire vocabulary "
+            f"{sorted(_ENTRYPOINT_KIND_BY_WIRE)}; a root whose kind this "
+            "module cannot classify is not a root, and skipping it would make "
+            "everything below it a false BREACH",
+        )
+    return kind
+
+
+# --------------------------------------------------------------------------- #
+# Part 4 — sweeping the tree into units
+# --------------------------------------------------------------------------- #
+
+
+def discover_units(tree: Path) -> tuple[tuple[GoUnit, tuple[GoSourceFile, ...]], ...]:
+    """Every Go package in ``tree``, with its files. STUB.
+
+    The sweep this row owns, and the one place it decides what to send the
+    helper. Obligations, each of which a seal can pin:
+
+      * **A file is Go because** ``role_protocol.support_for_path`` **says so**,
+        and by no other test. This module holds no file-extension literal and
+        matches no path against a suffix; there is exactly one place in this
+        codebase that decides what language a file is, and a second extension
+        table would drift silently, on files neither gate had been pointed at
+        yet. (The module's one ``endswith`` is over a package clause, not a
+        path; see the CHOICE in the module docstring.)
+      * **One unit per (directory, package clause) pair**, not per directory:
+        ``package foo_test`` beside ``package foo`` is two packages by the
+        language's rules and merging them would put two unqualified-identifier
+        scopes in one resolution pass.
+      * **A package's ``_test.go`` files are IN its unit.** The seals whose
+        subjects this mechanism judges live there, and a seal the graph does not
+        declare makes :func:`discover_seals` raise.
+      * **``module_path`` is read from the nearest enclosing ``go.mod``.** Seven
+        of them in the acceptance repository, none at the root, so "the nearest
+        enclosing" is the rule and "the repository's" is not. A directory with
+        no enclosing ``go.mod`` is not a unit and is recorded, never guessed at:
+        a synthesised module path is a key nobody can join to anything.
+      * **Deterministic order**, files sorted by path within a unit and units
+        sorted by ``(package_dir, package_name)``, because ``main.go``
+        contracts edge order as request order.
+      * **Never write into ``tree``.** The analyzer reads.
+
+    CHOICE (whether the sweep skips vendored or generated trees): **it does
+    not.** Rejected alternative: skipping ``vendor/``, ``testdata/`` and
+    generated files, which is what every other Go tool does and which is
+    tempting because their edges are noise. It is out because a skip is a hole
+    of the shape this mechanism exists to refuse — an edge that exists and was
+    not looked for is indistinguishable from an edge that does not exist — and
+    because the direction of the error is the permissive one: a production call
+    site living in a generated file would read as absent, which manufactures a
+    BREACH. D5's limit 7 already records generated call sites as counting, and
+    this keeps the two consistent. What would change it: a measured case where
+    a vendored tree's edges made a real BREACH invisible.
+    """
+    raise NotImplementedError(
+        "discover_units must group tree's Go files into one unit per "
+        "(directory, package clause), asking support_for_path which files are "
+        "Go, reading module_path from the nearest enclosing go.mod, and "
+        "emitting a deterministic order"
+    )
+
+
+def _build_go_reachability_helper() -> Path:
+    """Resolve, probe and compile the helper once. Returns the binary. STUB.
+
+    Total: every failure leaves here as an :class:`AnalyzerUnavailable` carrying
+    the named fault, in the order :meth:`GoReachabilityAnalyzer.graph`
+    documents — HELPER_MISSING (:func:`go_reachability_helper_dir`), then
+    TOOLCHAIN_MISSING (no ``go`` on PATH), then TOOLCHAIN_UNUSABLE (on PATH and
+    not answering: a failing version probe, a version older than the module's
+    language version, a ``GOCACHE``/``HOME`` the process cannot write), then
+    HELPER_TIMEOUT or HELPER_FAILED from the build itself.
+
+    **THE BINARY IS NOT TRACKED IN GIT, AND THIS FUNCTION IS THE
+    RECOMMENDATION.** It is built into a fresh ``mkdtemp`` workspace, once per
+    PROCESS, cached in memory as ``(binary, None)`` or ``(None, fault)``, and
+    never on disk between runs. That is ``_build_go_helper``'s design verbatim,
+    and the full argument is in WHAT THE TRACKED-BINARY QUESTION ACTUALLY IS,
+    below :data:`GO_REACHABILITY_ANALYZER`.
+    """
+    raise NotImplementedError(
+        "_build_go_reachability_helper must resolve the source, probe the "
+        "toolchain, build once per process into a mkdtemp workspace, and "
+        "return the binary — caching the fault as well as the success"
+    )
+
+
+def _run_go_reachability_helper(
+    binary: Path, request: GoReachabilityRequest
+) -> str:
+    """One request in, the helper's stdout out, or the named fault. STUB.
+
+    Exit status and document are separate channels: a non-zero exit is
+    HELPER_FAILED and stdout is **not read at all**, because a document from a
+    run that failed is a partial answer, and a partial graph's missing edges
+    look exactly like edges that do not exist.
+
+    The timeout budget is per UNIT rather than per file — the divergence
+    :class:`GoReachabilityRequest` rules on — and there is no retry and no
+    degraded mode: a fallback is how a gate ends up reporting a pass it did not
+    earn.
+    """
+    raise NotImplementedError(
+        "_run_go_reachability_helper must write one encoded request to a fresh "
+        "process's stdin under a per-unit timeout and return its stdout, "
+        "reading nothing on a non-zero exit"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Part 5 — the row
+# --------------------------------------------------------------------------- #
+
+
+class GoReachabilityAnalyzer:
+    """Go's answer to the three questions D5's mechanism asks.
+
+    Satisfies ``call_site_reachability.ReachabilityAnalyzer`` structurally; the
+    Protocol is deliberately not ``@runtime_checkable`` and the shape check that
+    matters is ``validate_analyzers``, which a seal can read.
+
+    **NOT ENROLLED.** :data:`GO_REACHABILITY_ANALYZER` below is an instance and
+    nothing else; ``ANALYZERS`` is still ``()``.
+    """
+
+    @property
+    def language(self) -> Language:
+        """``Language.GO``, the key both registries share.
+
+        Implemented, with ``negative_is_conclusive``, because they are fields
+        rather than work: a row whose two declarative members raise cannot be
+        handed to ``validate_analyzers`` at all, and validating the row's SHAPE
+        while its methods are unimplemented is the exact property D5 contracts
+        (``a row is validated for SHAPE at import and never for
+        implementedness``).
+        """
+        return Language.GO
+
+    @property
+    def negative_is_conclusive(self) -> bool:
+        """``True``, and this is the most important claim the row makes.
+
+        Go has no runtime lookup of a package-level function by name: there is
+        no ``reflect`` route to a package's declarations, so a symbol whose name
+        is referenced nowhere in the production closure is called nowhere and
+        "no path" is a FACT about the language rather than a fact about this
+        analyzer's quality. That asymmetry — against Python's ``False``, which
+        is measured four times over ``src/`` — is the ruling that made D5
+        language-parametric on day one rather than Python-with-a-Go-case, and
+        it is the reason this row can produce a BREACH at all.
+
+        A real ``bool`` and not a truthy value, which ``validate_analyzers``
+        refuses by name: a truthy non-bool is the coercion defect from
+        ``skills/explicit-state.md`` applied to the one field that decides
+        whether this mechanism may emit a BREACH.
+
+        **What it does NOT buy, because the two guards are independent.** A
+        ``True`` row still abstains whenever the production closure contains an
+        unresolved call (``check_subject`` step 3), and over a real Go tree it
+        will contain some — every ``fns[i](x)``, every call through a struct
+        field. The row's boolean and the per-closure count are belt and braces
+        by design: a branch cannot turn abstentions into BREACHes by editing the
+        row, and cannot turn BREACHes into abstentions by adding one dynamic
+        call to a path production already runs.
+        """
+        return True
+
+    def roots(self, tree: Path) -> tuple[Root, ...]:
+        """Every Go :class:`Root` in ``tree``, DERIVED. Never read from a list.
+
+        STUB. The composition: :func:`discover_units`, then one helper
+        invocation per unit, then :func:`entrypoint_kind_for_wire` per reported
+        root, then a :class:`Root` whose ``root_kind`` is left to
+        ``_validate_root`` to derive — a row that asserted its own
+        ``root_kind`` is refused outright, and correctly.
+
+        There is no ``ENTRYPOINTS`` constant here and there must never be one.
+        The precedent D5 records is concrete: an earlier hand-list in this repo
+        omitted ``recheck_min_severity``, the safety floor.
+
+        CHOICE (D5's :func:`discover_roots` says any :class:`AnalyzerError`
+        from here raises, and step 1b's ruling says an unparsed tree must reach
+        the judgement; the two cannot both be read literally, so the silence is
+        marked): **this method must not raise** :class:`SourceUnreadable`.
+        Rejected alternative: raising it, which is the literal reading of
+        ``discover_roots`` and which makes
+        :attr:`UndecidedReason.PARSE_FAILED` unreachable through
+        ``check_tree`` for Go — a member no dispatch emits, which is D5's own
+        stated failure. **The reason is a composition trace rather than a
+        preference.** D5's
+        :func:`discover_roots` wraps ANY :class:`AnalyzerError` from here into a
+        :class:`CallSiteReachabilityError` and the whole check dies. But P4
+        ruled, at ``check_subject`` step 1b, that ``PARSE_FAILED`` outranks
+        ``NO_ENTRYPOINT`` precisely because "an unparsed file is exactly where
+        an undiscovered ``func main`` would be" — a ruling that can only ever
+        take effect if a tree containing an unparsed file REACHES step 1b. So
+        the ruling implies this method returns the roots of every unit that
+        parsed, and reports the unparsed file through the graph instead.
+
+        The stated harm of a partial root set — "the roots that failed to appear
+        are exactly the ones whose absence manufactures BREACHes" — is exactly
+        what step 1b neutralises: with ``unreadable_paths`` non-empty, every
+        subject abstains at 1b, before step 4 can reach the tests-only verdict.
+        A missing root can therefore only cost a ``FROM_PRODUCTION`` at step 1,
+        which downgrades to an abstention. Failing to look made the answer less
+        conclusive and manufactured nothing, which is anti-requirement 2 satisfied.
+
+        **RAISED FOR P4, not papered over:** ``discover_roots``'s sentence
+        ("raises ... if any analyzer raises AnalyzerError") and step 1b's ruling
+        cannot both be read literally. This row adopts the reading that makes
+        the later ruling non-vacuous, states it here, and edits nothing in D5.
+        If P4 prefers the other reading, the consequence must be written down
+        rather than left implied: ``UndecidedReason.PARSE_FAILED`` becomes
+        unreachable through ``check_tree`` for Go, which would make it "a member
+        no dispatch emits" — D5's own stated failure, one level down.
+        """
+        raise NotImplementedError(
+            "GoReachabilityAnalyzer.roots must derive every GO_MAIN, GO_INIT, "
+            "GO_PACKAGE_VAR and TEST_FUNCTION root from the tree, letting "
+            "_validate_root derive root_kind, and must not raise "
+            "SourceUnreadable — see this docstring"
+        )
+
+    def graph(self, tree: Path) -> CallGraph:
+        """The whole tree's Go :class:`CallGraph`. STUB.
+
+        The composition: :func:`discover_units`, one invocation per unit,
+        :func:`decode_go_reachability_response` per response, then the union —
+        symbols keyed by :func:`go_symbol_key`, edges through
+        :func:`edge_kind_for_wire`, holes into ``unresolved_calls``, and a
+        ``parse_error`` document into ``unreadable_paths``.
+
+        Obligations a body must meet:
+
+          * **Every declaration becomes a symbol**, including the ones nothing
+            references. A symbol absent from the map cannot be a subject, and a
+            subject that cannot be found is an abstention, not a pass.
+          * **An edge is kept only when BOTH ends are declared in the tree**,
+            which is :class:`CallGraph`'s own rule. A call into the standard
+            library is dropped; a callback PASSED to it is kept as a
+            ``reference`` edge to the callback.
+          * **A ``parse_error`` unit is RECORDED, never raised past.** See
+            :meth:`roots`: raising from either method takes down the check that
+            the ``PARSE_FAILED`` ruling exists to keep running, and the raise
+            would land two layers further on — ``build_call_graph`` catches
+            :class:`SourceUnreadable` and ``continue``\\ s, discarding this
+            row's entire graph, after which ``discover_seals`` raises because
+            no test root is declared in an empty symbol map. Measured by
+            reading the composition, ``feat/D5-floor-body`` @ ``0238aa2``,
+            2026-08-11. ``unreadable_paths`` is the channel that exists for
+            this and it is the only one that works.
+          * **A duplicate key ACROSS units is HELPER_OUTPUT_INVALID here**, the
+            way a duplicate within one unit is at the decoder. It should be
+            impossible — the qualifier makes keys unique per package — so if it
+            happens the sweep sent one package twice or ``go_symbol_key``
+            disagrees with itself, and both are mechanism bugs.
+          * **THE WHOLE-TREE EMPTINESS GUARD LIVES HERE.** A unit that declares
+            nothing is an answer; a tree in which :func:`discover_units` found
+            Go files and the union graph has zero symbols is
+            :attr:`AnalyzerFault.HELPER_OUTPUT_INVALID`. D5 demands this
+            explicitly — "including an EMPTY graph where a graph was expected"
+            — and names the failure direction: an empty graph makes every
+            subject ``FROM_NEITHER``, which is the loudest state the mechanism
+            has, so the failure is a flood rather than a silence. This is the
+            layer that knows how many Go files the sweep found, so it is the
+            only layer that can tell the two apart.
+          * **Determinism.** Two runs over one tree produce equal graphs.
+
+        The fault ORDER on the first invocation is HELPER_MISSING,
+        TOOLCHAIN_MISSING, TOOLCHAIN_UNUSABLE, then the build's own — helper
+        first, following the TypeScript comparator rather than the Go
+        fingerprinter, because here as there the thing whose provenance is in
+        question is the helper, and the first message an operator sees on an
+        unconfigured machine should name it.
+        """
+        raise NotImplementedError(
+            "GoReachabilityAnalyzer.graph must union every unit's decoded "
+            "response into one CallGraph, record parse errors in "
+            "unreadable_paths rather than raising, and refuse a tree whose Go "
+            "files yielded no symbols at all"
+        )
+
+    def test_root_predicate(self, symbol: Symbol) -> bool:
+        """Is this symbol a Go test ENTRYPOINT? The naming half only.
+
+        **The sixth function this scaffold implements rather than stubs**, by
+        delegation: the rule is :func:`go_test_root_predicate` and this method
+        is the protocol's face on it. The file half of the question is NOT asked
+        here — it is ``seal_verify.is_test_path``, this repo's one matcher for
+        "is this one of the tests", and two disagreeing notions of that is
+        invariant 5's failure mode, which was live in this repo once already.
+
+        The name is taken as the key's last segment after the receiver form is
+        stripped, never the whole key: a key carries a module path, and a module
+        whose name began with ``Test`` would otherwise make every symbol in it a
+        test root.
+        """
+        member = symbol.key.rpartition(_KEY_PACKAGE_SEPARATOR)[2]
+        return go_test_root_predicate(member)
+
+    def test_id(self, symbol: Symbol) -> str:
+        """``cmd/gates.TestSeal_G1_…`` — the row a human can run.
+
+        CHOICE (the protocol does not carry this method yet, so writing it is a
+        silence either way): **the row supplies it now.** Rejected alternative:
+        omitting it until the protocol grows the member, which is the literal
+        reading of "do not implement" and which leaves the escalated landing
+        blocked on the one edit only a Go row can make. **The seventh function
+        this scaffold implements rather than stubs, and it is ahead of the
+        protocol on purpose.** D5 ruled (round 2,
+        2026-08-11) that :class:`ReachabilityAnalyzer` GROWS this method,
+        because :attr:`Seal.test_id` contracts the spelling as per-language and
+        not-derived while no row had a channel to supply one — and then
+        ESCALATED the landing, because requiring it in ``validate_analyzers``
+        reddens every seal-file row that builds an analyzer double, and "what a
+        Go row's ``test_id`` RETURNS is a claim about Go's spelling that a body
+        may not write on the seal author's behalf".
+
+        This is that claim, written by the row that owns it, where it can be
+        argued with. It is Go's ``package.TestName`` — the spelling
+        ``go test -run`` takes and the one the existing seals pin — derived from
+        the symbol's declaring DIRECTORY rather than from its module path,
+        because a human runs ``go test ./cmd/gates -run TestSeal_G1_…`` from a
+        directory and not from an import path.
+
+        It changes no verdict: ``test_id`` is a label on a finding and no
+        dispatch reads it. Adding it here costs nothing today (the protocol does
+        not require it, so nothing calls it) and means that when P3 lands D5's
+        four coupled edits, the Go row is not what is blocking them.
+
+        D5's interim ``_test_id`` yields the same string for a Go symbol and a
+        useless one for a Python symbol; that is the defect the ruling names,
+        and it is not this row's to fix.
+        """
+        directory = symbol.path.rpartition("/")[0]
+        member = symbol.key.rpartition(_KEY_PACKAGE_SEPARATOR)[2]
+        return f"{directory}{_KEY_PACKAGE_SEPARATOR}{member}" if directory else member
+
+
+#: The row, instantiated and **NOT ENROLLED**. It exists so that a seal can hand
+#: it to ``validate_analyzers`` and observe that a scaffolded row passes the
+#: SHAPE check while its methods raise — which is the property D5 contracts and
+#: which cannot be observed against a class nobody instantiated.
+#:
+#: Adding it to ``ANALYZERS`` is a separate decision with separate evidence, and
+#: D5's import-time guard refuses it while this module's own path is off
+#: ``FLOOR_GLOBS``. See WHAT IS OWED BEFORE ENROLMENT.
+#:
+#: WHAT THE TRACKED-BINARY QUESTION ACTUALLY IS
+#: --------------------------------------------
+#: CHOICE (three binaries in the acceptance repository are tracked at their
+#: module's default output path and nothing warns about it, so a scaffold that
+#: said nothing would be choosing by silence):
+#: **RECOMMENDATION: the helper binary is NOT tracked. It is built once per
+#: process into a temporary workspace and never written into the tree.**
+#: Rejected alternative: tracking it beside ``main.go`` as ``cmd/*`` do, which
+#: removes ``go`` from the gate's dependency list entirely — a real benefit,
+#: since ``TOOLCHAIN_MISSING`` is otherwise reachable on any CI image without a
+#: Go toolchain — and which is refused on points 1 and 2 below.
+#:
+#: The question is live because three binaries in the acceptance repository ARE
+#: tracked, sitting at their module's default ``go build`` output path, warned
+#: about nowhere. **Measured under** ``docs/explicit-state``, 2026-08-11, by
+#: ``git ls-files`` plus a MIME probe: **nine** tracked ELF files under
+#: ``cmd/``, totalling **44,054,262 bytes** —
+#: ``classify/classify`` (3,916,741), ``deepseek/deepseek`` (8,962,883),
+#: ``gates/gates`` (4,032,253), ``iterate/iterate`` (3,401,547),
+#: ``recheck/recheck`` (3,465,388), ``repro/repro`` (3,863,975),
+#: ``reviewer/deepseek`` (8,962,883), ``reviewer/main`` (4,073,497),
+#: ``reviewer/reviewer`` (4,375,597). The repository ``.gitignore`` on that
+#: branch is three lines and covers **none** of them.
+#:
+#: Three things follow, and only the first two are arguments against tracking:
+#:
+#:   1. **A tracked binary goes stale against its source, and this repository
+#:      has paid for it.** Commit ``14560c5`` is titled "fix(reviewer): refresh
+#:      stale cmd/reviewer/deepseek binary (had no -temperature flag)". And
+#:      ``cmd/gates`` carries a whole seal about it —
+#:      ``TestSeal_G1_TrackedBinary_IsRebuiltFromTheFixedSource`` — which execs
+#:      ``./gates`` and fails when the committed artifact does not match the
+#:      fixed source. A tracked artifact needs a seal to tell you it is current;
+#:      a built one is current by construction.
+#:   2. **The sibling already ruled it, on this gate path, for a reason that
+#:      binds harder here.** ``_GO_HELPER_PREPARED`` records that the Go
+#:      signature helper is built once per process into ``mkdtemp`` and cached
+#:      in memory, "per PROCESS and never on disk between runs", because "a
+#:      binary cached under ``/tmp`` across runs would be a file outside
+#:      ``FLOOR_GLOBS`` whose bytes decide what a Go signature is". Bytes
+#:      outside the floor that decide what a Go CALL GRAPH is are worse: this
+#:      module's output is a ``Disposition.BREACH`` that blocks a branch.
+#:      ``go_signature_fingerprint/`` accordingly tracks exactly two files,
+#:      ``main.go`` and ``go.mod``, and no binary — **measured 2026-08-11.**
+#:   3. **The nine tracked binaries are not a precedent for this one, because
+#:      they are tracked for a reason this helper does not have.** Production
+#:      EXECS them by path: ``roles/tasker.md``, ``README.md`` and
+#:      ``skills/critical-review-dispatch.md`` all invoke
+#:      ``cmd/reviewer/main`` directly, and ``cmd/gates``'s own seals name
+#:      ``./gates`` as "the COMMITTED artifact ... it — not the source tree —
+#:      is what production runs". Nothing execs this helper except the
+#:      dispatcher, which can build it. Conflating the two populations is how
+#:      the second one grows.
+#:
+#: The cost of the recommendation, so it is a decision: one ``go build`` per
+#: gate process. The sibling measured it on the reference machine, 2026-08-09 —
+#: **1.9 s with an empty ``GOCACHE``, 0.04 s warm** — against a build timeout
+#: deliberately generous at 120 s, because what that bounds is a HUNG toolchain
+#: and not a slow one.
+#:
+#: What is added instead of tracking, and it is one line: the module's default
+#: ``go build`` output path is named in ``.gitignore`` — ``go-call-reachability``,
+#: the MODULE PATH's last element and not the directory's, measured 2026-08-11
+#: under go1.24.4 after a first line naming the directory ignored nothing — so
+#: that the accident task #25
+#: records — two authors destroying a tracked binary — cannot happen to this
+#: directory by a stray ``go build`` in it. That is not machinery and it is not
+#: a gate; it is the absence of a trap. ``go_signature_fingerprint/`` has no
+#: such line and should get one in the same P4 round as its floor entry.
+GO_REACHABILITY_ANALYZER = GoReachabilityAnalyzer()
