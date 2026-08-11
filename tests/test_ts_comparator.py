@@ -494,11 +494,15 @@ def test_the_helper_subtree_is_on_the_floor_before_anything_is_vendored_into_it(
 ):
     """`FLOOR_GLOBS` must cover the TS helper subtree, and must cover it FIRST.
 
-    RED TODAY, and the red is the point. This is the precondition the scaffold
-    states at `ts_parser_home` and repeats at `TYPESCRIPT_SUPPORT`: the glob
-    lands **before** anything is vendored, "for the reason the Go entry records
-    — a floor that arrives with enrolment is a floor that was absent for every
-    commit that built the thing it protects."
+    **GREEN as of the D4 P4 adjudication, 2026-08-10, and it was RED when
+    written.** This is the precondition the scaffold states at `ts_parser_home`
+    and repeats at `TYPESCRIPT_SUPPORT`: the glob lands **before** anything is
+    vendored, "for the reason the Go entry records — a floor that arrives with
+    enrolment is a floor that was absent for every commit that built the thing
+    it protects." It went green on exactly that commit and nothing else: the
+    glob, its four rows in `_FLOOR_ROWS`, and the two bounds those rows move.
+    The subtree still does not exist on disk, which is the state this row was
+    written to demand and not a reason to soften it.
 
     It matters more here than it did for Go. When this repository judges
     ITSELF, `Path(__file__).parent` IS inside the tree under judgement, so
@@ -507,14 +511,29 @@ def test_the_helper_subtree_is_on_the_floor_before_anything_is_vendored_into_it(
     the distinction, and a 9.1 MB third-party blob is exactly the artifact
     nobody re-reads in a diff.
 
-    This seal is P4's to satisfy, not P3's: `_FLOOR_ROWS` in
+    This seal was P4's to satisfy, not P3's: `_FLOOR_ROWS` in
     `tests/test_role_protocol_floor.py` is a written-out table P3 may not edit,
-    so the glob and its row are one P4 commit — as the Go subtree's were. It is
-    red until then and it should be, because red here says "do not vendor yet".
+    so the glob and its rows are one P4 commit — as the Go subtree's were.
+
+    What this row does NOT cover, stated so its green is not read as more than
+    it is. The floor makes editing the vendored bytes a VIOLATION when a
+    trusted run reads the diff; it does not make the gate EXECUTE the base's
+    copy. For the Go helper those are two separate facts with two separate
+    seals, the second being
+    `test_the_go_helper_is_read_from_the_base_not_from_the_branch`. Measured
+    2026-08-10 rather than inherited: the TS subtree travels from `<base>` by
+    the same whole-subtree `ls-tree -r` of the `src/` prefix, with no change to
+    `scripts/check_body_branch.sh`. It gets no seal of its own because, unlike
+    the Go helper, it cannot be moved out from under that prefix — `main.cjs`
+    and `typescript.js` are resolved against `Path(__file__).parent` and
+    `test_the_vendored_layout_is_the_flat_named_trio` pins the directory name
+    flat, so the placement the Go seal exists to catch is unreachable here.
 
     Green when: the subtree glob is on the floor.
-    Falsify: it is falsified by its own subject — remove the glob after adding
-    it and this reddens; that is the whole job.
+    Falsify: it is falsified by its own subject — remove the glob and this
+    reddens. Measured 2026-08-10 in a clone: removing it reddens this row and
+    `test_every_floor_glob_the_ruling_wrote_out_is_in_the_constant`, and
+    nothing else.
     """
     expected = f"**/src/claude_dispatcher/{role_protocol.TS_HELPER_PACKAGE_DIR}/**"
     assert expected in role_protocol.FLOOR_GLOBS, (
@@ -590,6 +609,26 @@ def _fresh_gate_process(monkeypatch: pytest.MonkeyPatch):
     `_GO_HELPER_PREPARED`. It is a small constraint on the implementation and
     it is stated openly rather than smuggled — without it, "verified at use"
     has no falsifiable form at all.
+
+    **P4 ADJUDICATION, 2026-08-10: the coupling is ALLOWED, and the contract
+    now names the same global.** The seal author was right to flag it and right
+    to keep it: a seal that reaches for a private name is depending on a
+    contract, and the fix is to write the contract down, not to delete the
+    dependency. `TypeScriptSignatureFingerprinter.fingerprints` now specifies
+    `_TS_HELPER_PREPARED` by name, that it starts `None`, and that rebinding it
+    to `None` must force a re-resolve, re-probe and re-verify. So this fixture
+    no longer asserts a name of its own invention against an implementation
+    that was never told about it — P3 reads the requirement where P3 reads
+    everything else.
+
+    What was REFUSED, because it is the reform this dispute invites: a public
+    reset entry point. The cache is per-process by contract and a gate runs a
+    fresh process per verdict, so no production caller has a reason to reset
+    it; a public reset would be new machinery on the verdict path whose only
+    user is a test, and the argument for adding it would be exactly the
+    argument that `npx` and an env-var override were rejected on. A private
+    name that a seal reaches into is honest about being a test seam. A public
+    one would not be.
     """
     if not hasattr(role_protocol, "_TS_HELPER_PREPARED"):
         pytest.fail(
@@ -945,11 +984,25 @@ def test_the_documented_key_positions_are_all_representable_and_all_distinct() -
     signature, an index signature — and the obvious keys for them (`default`,
     `index`, `call`) are ordinary spellable identifiers.
 
-    Green when: all documented positions build, and the set is as large as the
-    list.
+    **P4, 2026-08-10 — the contract's own worked example is now checked against
+    the function.** The scaffold cited the star re-export's key as
+    `k:export/k:star/s:./m`, unescaped. That is not a key `ts_symbol_key` can
+    produce: the `/` inside a module specifier is escaped exactly as the `/`
+    inside a member name is, and unescaped it spells the segment separator, so
+    `./m` would key as two segments. A reader checking the example against the
+    function would have concluded the function was wrong. Corrected in the
+    docstring under this repository's standing ruling against a citation that
+    sends a reader to something they cannot reproduce — and pinned HERE, so the
+    ruling has an enforcement rather than a note: the example the contract
+    prints must be the string the function returns.
+
+    Green when: all documented positions build, the set is as large as the
+    list, and the contract's printed example is the built key.
     Falsify: drop `k` from `TS_KEY_TAGS` — every keyword-slot row raises and
     this reddens. Render a `k` segment as its bare text — `k:default` and a
-    top-level declaration named `default` collide.
+    top-level declaration named `default` collide. Rewrite the docstring
+    example back to its unescaped spelling — the citation assertion reddens
+    (measured).
     """
     positions = {
         "top-level declaration": [("i", "f")],
@@ -978,6 +1031,19 @@ def test_the_documented_key_positions_are_all_representable_and_all_distinct() -
     assert built["string-literal member"] == "i:I/s:a\\/b", (
         "a `/` inside a member name must be escaped; unescaped it spells the "
         "segment separator, which is trap 1"
+    )
+
+    # The contract PRINTS one of these keys as a worked example. It must be the
+    # one the function builds, or the example teaches the wrong grammar to
+    # everybody who reads the contract instead of the code — which is
+    # everybody, because the contract is where the grammar is stated.
+    cited = role_protocol.TypeScriptSignatureFingerprinter.__doc__ or ""
+    assert built["star re-export"] in cited, (
+        f"the contract does not print {built['star re-export']!r} as the key "
+        "of `export * from './m'`. Whatever it prints instead is a key no "
+        "input produces, and the `/` escaping is the whole of trap 1 in the "
+        "one position — a module specifier — where every real value contains "
+        "a separator"
     )
 
 
@@ -1032,7 +1098,20 @@ def test_the_table_rules_both_ways_and_still_has_its_controls() -> None:
     `ts.createPrinter` passes. Without the un-annotated row, a comparator that
     guessed at inference passes.
 
-    Green when: both answers are present and all four controls rule silent.
+    **P4 ADJUDICATION, 2026-08-10 — `a class method added` LEFT this list.**
+    It was a control here and it is now ruled a change, because the scaffold
+    contradicted itself: the same contract said a method's rendering is inside
+    the class fingerprint AND that adding one is not a change. The ruling is at
+    `TypeScriptSignatureFingerprinter` and the row is at
+    `TS_SIGNATURE_EDIT_RULINGS`; this seal follows it rather than the other way
+    round, which is the rule this file states everywhere else ("reopen it
+    there, not here"). Six controls remain and each still forbids a distinct
+    cheap comparator, so nothing this list was doing is lost — the row was the
+    seventh, not the load-bearing one. What IS lost is the Python parity
+    measurement that row carried, and it is replaced rather than dropped: see
+    `test_the_class_method_parity_break_is_measured_and_not_a_drift`.
+
+    Green when: both answers are present and all six controls rule silent.
     Falsify: flip `is_a_change` on the body-rewrite row — a gate nobody can
     pass, and this reddens. Delete the requoting row — the third assertion
     reddens and section 6's whole argument loses its anchor in the table.
@@ -1046,7 +1125,6 @@ def test_the_table_rules_both_ways_and_still_has_its_controls() -> None:
         "an un-annotated const's initialiser changed",
         "interface members reordered",
         "destructured parameter's bindings reordered",
-        "a class method added",
     )
     for name in controls:
         assert name in rulings, (
@@ -1070,6 +1148,11 @@ def test_the_table_rules_both_ways_and_still_has_its_controls() -> None:
         "a decorator's argument changed",
         "enum members reordered",
         "a class property added",
+        # P4, 2026-08-10. Moved here from `controls` by the class-method
+        # ruling. It sits beside `a class property added` on purpose: the two
+        # rows are now one rule with one reason, where before they were two
+        # answers the contract could not both justify.
+        "a class method added",
         "an arrow const's declared signature changed",
         "a component's props type gains a required member",
         "a required property made optional",
@@ -1141,15 +1224,24 @@ def test_the_ruled_answer_is_what_the_live_python_comparator_already_gives(
     This is the strongest assertion available while the TypeScript comparator
     is a contract. It cannot check TypeScript, but it can prove the ruling is
     not inventing a standard TypeScript alone would be held to: the rename IS a
-    change in Python, the same-type reorder IS, a body rewrite is NOT, adding a
-    private method is NOT, and adding an annotated class attribute IS — all
-    five measured rather than asserted.
+    change in Python, the same-type reorder IS, a body rewrite is NOT, and
+    adding an annotated class attribute IS — all four measured rather than
+    asserted.
 
     The rows with `python_analogue=None` are the recorded claim that the
     languages differ there or that Python has no such shape, and their absence
     from this parametrisation is deliberate. Top-level `const` is the loudest
     of them: it is a deliberate parity BREAK, so asserting parity for it would
     assert the opposite of the ruling.
+
+    **P4, 2026-08-10: `a class method added` left this parametrisation**, from
+    four measured claims to three plus one measured BREAK. It was ruled a
+    change for TypeScript, Python still answers NOT a change, and a row whose
+    analogue disagrees with it reddens here by design — which is this seal
+    working, not this seal being in the way. The honest move is the one the
+    `const` rows already model: `python_analogue=None` records that the
+    languages differ. What that spelling cannot do is prove they still differ,
+    so the break is measured in its own seal below rather than left as prose.
 
     Green when: every analogue agrees with the row's ruled answer.
     Falsify: rule "a class property added" NOT a change while Python still
@@ -1169,6 +1261,105 @@ def test_the_ruled_answer_is_what_the_live_python_comparator_already_gives(
         "TypeScript, and its own Python analogue disagrees. Either the "
         "analogue is not the same edit, or the parity claim is wrong; both are "
         "questions for TS_SIGNATURE_EDIT_RULINGS, not for this file"
+    )
+
+
+#: The class-method edit, transliterated to Python. Written out HERE rather
+#: than carried on the ruling row, because the row's `python_analogue` field
+#: means "the languages agree" and they do not: the whole point of this seal is
+#: the disagreement. Same two revisions the ruling row uses, one language over.
+_CLASS_METHOD_IN_PYTHON = (
+    "class Svc:\n    def do(self, a):\n        pass\n",
+    "class Svc:\n    def do(self, a):\n        pass\n"
+    "    def _helper(self, b):\n        pass\n",
+)
+
+
+def test_the_class_method_parity_break_is_measured_and_not_a_drift() -> None:
+    """Adding a class method: a change in TypeScript, NOT one in Python.
+
+    GREEN TODAY — it asks the live Python comparator and a dataclass, and
+    neither needs a TypeScript parser.
+
+    P4, 2026-08-10, and it exists because a ruling took something away. `a
+    class method added` used to carry a `python_analogue`, so the claim "this
+    row agrees with Python" was MEASURED. The class-method adjudication makes
+    the row a change while Python still answers not-a-change, so the analogue
+    had to go — and with it, silently, the measurement. `python_analogue=None`
+    is the right value (it is what the top-level `const` rows use for their own
+    deliberate break) and it is a claim nothing checks: a field that is absent
+    proves nothing about the language it stopped comparing against.
+
+    So the break is measured as a BREAK. That is a strictly stronger seal than
+    the parity row it replaces, because it fails in two directions where the
+    old row failed in one:
+
+      * the TypeScript ruling drifting back to silent — assertion 1;
+      * the row quietly re-acquiring an analogue, which would put it back in a
+        parametrisation that would then redden for the right reason in the
+        wrong file — assertion 2;
+      * Python's own comparator changing under it, so that the two languages
+        stop differing and the "deliberate break" becomes a stale story —
+        assertion 3.
+
+    The class PROPERTY row is asserted alongside, and that pairing is the
+    point rather than thoroughness: property and method are ONE rule in
+    TypeScript now, and they are TWO rules in Python. A seal that measured only
+    the method half would go green on a Python comparator that had stopped
+    reading class fields at all, which is the direction that clears branches.
+
+    Green when: TypeScript rules it a change, the row carries no analogue,
+    Python rules the same edit silent, and Python still rules the property edit
+    a change.
+    Falsify: set `is_a_change=False` on the row (assertion 1); restore its
+    `python_analogue` (assertion 2); make `_class_fingerprint` render methods
+    (assertion 3, and Python would then agree with TypeScript rather than
+    differ from it).
+    """
+    rulings = {r.name: r for r in role_protocol.TS_SIGNATURE_EDIT_RULINGS}
+    method_row = rulings["a class method added"]
+
+    assert method_row.is_a_change is True, (
+        "adding a class method is ruled a CHANGE for TypeScript (P4, "
+        "2026-08-10): the class fingerprint renders its members in full, "
+        "because no rendering position in this grammar is name-only and "
+        "sub-symbols are never the sole storage of a signature. Reopen it at "
+        "TS_SIGNATURE_EDIT_RULINGS, not here"
+    )
+    assert method_row.python_analogue is None, (
+        "this row is a deliberate parity BREAK, so it may not carry a "
+        "`python_analogue` — that field is the claim that the languages agree, "
+        "and asserting it here would assert the opposite of the ruling"
+    )
+
+    before, after = _CLASS_METHOD_IN_PYTHON
+    python = compare_signatures("pkg/m.py", before, after)
+    assert python.status is SignatureCheckStatus.CHECKED, (
+        f"the Python transliteration did not parse: {python.detail}"
+    )
+    assert not python.changes, (
+        "Python no longer rules 'a body may add private helpers' silent, so "
+        "the TypeScript ruling is no longer a parity BREAK — it is now "
+        "agreement, and the reasoning recorded at "
+        "TypeScriptSignatureFingerprinter and on the ruling row is stale"
+    )
+
+    property_row = rulings["a class property added"]
+    assert property_row.is_a_change is True
+    assert property_row.python_analogue is not None, (
+        "the class PROPERTY row's parity claim is what bounds this break: "
+        "without it, a Python comparator that had stopped reading class "
+        "bodies entirely would satisfy the assertion above"
+    )
+    property_before, property_after = property_row.python_analogue
+    python_property = compare_signatures(
+        "pkg/m.py", property_before, property_after
+    )
+    assert python_property.status is SignatureCheckStatus.CHECKED
+    assert python_property.changes, (
+        "Python stopped reporting an added annotated class field as a change, "
+        "so the silence measured above is a comparator that reads no class "
+        "members rather than a rule about methods"
     )
 
 
@@ -1204,6 +1395,20 @@ def test_every_ruled_edit_gets_its_ruled_answer_from_the_live_comparator(
     skipped. So these rows are red for absence and not because they are
     mutually unsatisfiable.
 
+    **P4, 2026-08-10 — that satisfiability claim NO LONGER COVERS ONE ROW, and
+    saying so is the point of writing measurements down.** The reference
+    implementation stored class methods as sub-symbols ONLY. It had to: `a
+    class method added` was ruled silent, and the scaffold's other sentences
+    said the opposite, so an implementer could satisfy one or the other and not
+    both. The adjudication rules the class fingerprint carries its members in
+    full, so that reference implementation now DISAGREES with this row and
+    would be red here. Nineteen rows are measured-satisfiable and one is
+    ruled-and-not-yet-measured. It is not re-measured in this commit because
+    doing so means building a comparator, which is P3's. What the ruling does
+    guarantee is that the row is no longer mutually unsatisfiable with the
+    contract, which is what it WAS: an implementation cannot both render a
+    class's members and not render them, and before the ruling it was asked to.
+
     Falsify — every one MEASURED against that reference implementation, with
     the number of seals in this file that each mutation reddens:
 
@@ -1218,6 +1423,12 @@ def test_every_ruled_edit_gets_its_ruled_answer_from_the_live_comparator(
       * hard-code `ScriptKind.TS`, ignoring `.tsx`         -> 4
       * report `parse_error` only when nothing recovered   -> 5
       * render an interface's name but not its members     -> 5
+      * render a CLASS's name but not its members          -> not measured,
+        and named rather than left out: it is the shape the reference
+        implementation had, and after the 2026-08-10 ruling it is a mutation
+        rather than the design. It must redden at least `a class method added`
+        and `a class property added`; the count is P3's to take on the day
+        there is something to count.
       * fingerprint a binding's INITIALISER                -> 3
       * stop reading the export surface                    -> 1
       * stop reading top-level `const`/`let`/`var`         -> 1
@@ -1847,9 +2058,23 @@ def test_any_parse_diagnostic_is_unparseable_and_never_a_partial_answer(
 # `decode_go_helper_response` is ~110 lines of language-independent validation
 # whose only Go-shaped element is a schema string. `decode_ts_helper_response`'s
 # docstring rules that P3 may neither copy it nor reimplement it, names the
-# required P4 extraction — `_decode_helper_response(stdout, schema)` with both
-# public decoders as thin, schema-fixing wrappers — and says the seal author
-# should write the seal that FORCES it. This is that seal.
+# required P4 extraction, and says the seal author should write the seal that
+# FORCES it. This is that seal.
+#
+# THE SIGNATURE, corrected by P4 on 2026-08-10 and now normative in the scaffold:
+#
+#     _decode_helper_response(stdout, schema, response_type, symbol_type)
+#
+# The scaffold wrote it with two arguments. The seal author reported that two
+# cannot be met — the shared function BUILDS the result, and there are two
+# response/symbol dataclass pairs, so a two-argument version needs a second
+# construction step per language, which is the second implementation this
+# section exists to forbid arriving one level down. The seals below were
+# written to accommodate the extras and needed no edit for the correction: what
+# they observe is that `stdout` and `schema` are the first two POSITIONALS and
+# that each wrapper passes its OWN schema — which is precisely what the
+# corrected signature fixes, and why the scaffold now pins the parameter order
+# rather than leaving it to the implementer.
 #
 # The malformed-document table is verified against the GO decoder TODAY, which
 # is what stops this section being red on both arms and therefore unfalsifiable:
@@ -1977,6 +2202,17 @@ def test_one_decoder_serves_both_languages_and_neither_is_a_copy() -> None:
     Note what is NOT asserted: the wrappers may do whatever they like with the
     result — build their own dataclasses, rename fields — because the response
     types genuinely differ. What may not differ is the VALIDATION.
+
+    P4, 2026-08-10: that sentence is what the arity dispute turned on, and the
+    scaffold now answers it the other way round. The response types differ, so
+    the SHARED function is handed them (`response_type`, `symbol_type`) rather
+    than each wrapper building its own — because "each wrapper builds its own"
+    is where a divergence would live once the validation stopped diverging.
+    The spy below already accepted the extra positionals, so this seal reads
+    the same against the corrected signature as against the scaffold's, which
+    is why the correction cost no seal edit; it is recorded rather than left,
+    because a seal that would have passed either way should say which one it
+    is now asserting.
 
     Green when: both decoders call the one shared function.
 

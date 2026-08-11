@@ -714,6 +714,54 @@ _GLOB_METACHARACTERS = "*?[]"
 #:     floor is not weaker for it — :func:`_floor_violations` is the
 #:     enforcement point and it reads the whole tuple — but a subtree glob buys
 #:     no early refusal, and a later ruling adding one should expect that.
+#:
+#: **The gate's FOURTH artifact, 2026-08-10 (D4 P4): the TypeScript parser
+#: subtree.** ``src/claude_dispatcher/ts_signature_fingerprint/`` is the Go
+#: entry's argument in a language where it is strictly worse, and the floor
+#: lands BEFORE anything is vendored into it — which is the whole reason this is
+#: a P4 commit and not part of the vendoring one. Three differences from the Go
+#: subtree, each of which raises the stake rather than lowering it:
+#:
+#:   * The subtree will hold a **9.1 MB third-party blob** (``typescript.js``,
+#:     5.9.3). Nobody re-reads that in a diff. The Go helper is a few hundred
+#:     reviewable lines; this one is an artifact whose only practical review is
+#:     a digest, and a digest that a branch could edit alongside the bytes is no
+#:     review at all. :data:`TS_VENDORED_PARSER_SHA256` therefore lives in THIS
+#:     module — already the third entry below — and the parser bytes live under
+#:     this glob, so defeating the check needs two floor violations rather than
+#:     one consistent edit.
+#:   * Unlike ``go``, which is a system binary outside every repository, the
+#:     only TypeScript parser on a typical machine is inside the tree under
+#:     judgement. The resolution rule (:func:`ts_parser_home`) keeps the gate
+#:     out of it; this glob is what keeps the branch out of the gate's own copy
+#:     when the repository judges ITSELF, which is the case where
+#:     "dispatcher-owned" and "branch-writable" stop being opposites.
+#:   * The subtree is FLAT by contract (:data:`TS_HELPER_PACKAGE_DIR`), so the
+#:     trailing ``/**`` protects three named files today. It is still a subtree
+#:     glob and not three file globs, for the Go entry's reason: a later file
+#:     beside them — a second parser, a config, a second helper entry point —
+#:     is a parser input the day it lands, and a floor that had to be extended
+#:     for it is a floor that was absent for the commit that added it.
+#:
+#: TEN globs now. The arithmetic above is unchanged where it counts: the new
+#: entry is the SECOND that contributes no basename, because its last segment is
+#: also ``**``, so eight of ten are refused at plan time and two are diff-time
+#: only. Measured 2026-08-10 against this tuple, and it is the same measurement
+#: the Go entry recorded: ``ts_signature_fingerprint``, ``typescript.js``,
+#: ``main.cjs`` and the full
+#: ``src/claude_dispatcher/ts_signature_fingerprint/typescript.js`` all return
+#: None from :func:`_floor_glob_named_by`.
+#:
+#: ``scripts/check_body_branch.sh`` needs no change, and that was MEASURED
+#: rather than inherited from the Go entry (2026-08-10, in a clone: a
+#: self-judging checkout whose branch replaced a file under the TS subtree was
+#: run with a ``$PYTHON`` that dumps what it was handed, and it was handed the
+#: BASE's bytes). The property is TRUE BY LOCATION — the base-pinned block
+#: reads a whole-subtree ``ls-tree -r`` of the ``src/`` prefix, not a list of
+#: named files — and it is stronger here than for Go: the Go helper's directory
+#: could be moved out from under ``src/``, while this one cannot, because
+#: :func:`ts_parser_home` resolves it against ``Path(__file__).parent`` and
+#: :data:`TS_HELPER_PACKAGE_DIR` is sealed FLAT.
 FLOOR_GLOBS: tuple[str, ...] = (
     "**/.dispatcher.yaml",
     "**/scripts/check_body_branch.sh",
@@ -722,6 +770,13 @@ FLOOR_GLOBS: tuple[str, ...] = (
     # file: `go.mod` fixes the language version the parse runs under and is a
     # parser input as much as `main.go`.
     "**/src/claude_dispatcher/go_signature_fingerprint/**",
+    # The gate's fourth artifact (D4 P4 ruling, 2026-08-10). A SUBTREE, and it
+    # lands BEFORE anything is vendored into it: a floor that arrives with the
+    # 9.1 MB parser is a floor that was absent for the commit that added it.
+    # The digest that vouches for those bytes is `TS_VENDORED_PARSER_SHA256`,
+    # in this module, which is on the floor three entries up — so a branch
+    # cannot make tampered bytes match by editing the expectation.
+    "**/src/claude_dispatcher/ts_signature_fingerprint/**",
     # The delegation closure (D1 P4 ruling, 2026-08-09). FIVE SEPARATE STRINGS
     # — do NOT compress them into `**/src/claude_dispatcher/{risk,seal_verify,
     # repo_config,yaml_io,mechanical_verify}.py`. Measured under this module's
@@ -4484,9 +4539,13 @@ GO_SUPPORT = LanguageSupport(
 #   * **FALSE POSITIVES, accepted deliberately**: a renamed import alias moves
 #     every annotation that mentions it; a reordered union or intersection
 #     moves the type that contains it; a renamed parameter or type parameter is
-#     a change even when no caller breaks; and an edit to a class method is
-#     reported twice, once as the member and once through the class. Each is
-#     argued where it is ruled.
+#     a change even when no caller breaks; an edit to a class method is
+#     reported twice, once as the member and once through the class; and
+#     ADDING a class method — including a `private` or `#` one that breaks no
+#     external caller — is a change, because the class fingerprint carries its
+#     members in full (P4 adjudication 2026-08-10, at
+#     :class:`TypeScriptSignatureFingerprinter`). Each is argued where it is
+#     ruled.
 #
 # WHERE THIS DESIGN IS SILENT, named so nobody reads silence as a ruling:
 # ``as const`` assertions outside a top-level binding; ``abstract`` constructor
@@ -4802,14 +4861,57 @@ def decode_ts_helper_response(stdout: str) -> TsHelperResponse:
     duplicate-key check clears branches the original refuses.
 
     P3 **may not copy it and may not implement it independently.** The required
-    shape is a P4-authored extraction: one ``_decode_helper_response(stdout,
-    schema)`` taking the expected schema as an argument, with
-    :func:`decode_go_helper_response` and this function as thin, schema-fixing
-    wrappers. That is a change to shipped Go code and to seals that name it, so
-    it is neither P1's nor P3's; it is named here so the seal author can write
-    the seal that FORCES it — assert that both decoders reject the same
-    malformed documents with the same fault, over one shared table of bad
+    shape is a P4-authored extraction: one shared validator with
+    :func:`decode_go_helper_response` and this function as thin wrappers that
+    fix its arguments. That is a change to shipped Go code and to seals that
+    name it, so it is neither P1's nor P3's; it is named here so the seal author
+    can write the seal that FORCES it — assert that both decoders reject the
+    same malformed documents with the same fault, over one shared table of bad
     inputs, so a divergent second copy reddens.
+
+    **P4 ADJUDICATION, 2026-08-10 — the named signature was wrong and is
+    corrected here.** The scaffold wrote ``_decode_helper_response(stdout,
+    schema)``. Two arguments cannot be met: the validator does not merely
+    VALIDATE, it BUILDS the result, and there are two response/symbol dataclass
+    pairs — :class:`GoHelperResponse`/:class:`GoHelperSymbol` and
+    :class:`TsHelperResponse`/:class:`TsHelperSymbol` — which are distinct
+    types by deliberate design (each carries its own schema and its own
+    docstring's rules). A two-argument validator would have to pick one pair,
+    and the language whose pair it did not pick would need its own construction
+    step — which is the second implementation this ruling exists to forbid,
+    reintroduced one level down. The seal author reported the arity mismatch
+    rather than writing a seal against a signature that cannot be met, and
+    wrote the spy to accept extras. The signature P3 implements is::
+
+        _decode_helper_response(
+            stdout: str,
+            schema: str,
+            response_type: type,
+            symbol_type: type,
+        )
+
+    Normative, and each clause is load-bearing:
+
+      * ``stdout`` and ``schema`` are the first two POSITIONAL parameters, in
+        that order. The seal observes the schema each wrapper passes, which is
+        how "each decoder fixes its OWN schema" is checkable at all; a
+        keyword-only or reordered spelling makes it unobservable.
+      * ``response_type`` and ``symbol_type`` are the constructors, passed in.
+        Four arguments is the smallest number that lets ONE body of validation
+        serve two type pairs, and the two type arguments are what stops the
+        extraction degenerating into a shared parser plus two private builders.
+      * Both are constructed by KEYWORD — ``symbol_type(symbol=…,
+        fingerprint=…, kind=…)`` and ``response_type(schema=…, symbols=…)`` or
+        ``response_type(schema=…, parse_error=…)``. This is what makes four
+        arguments sufficient rather than five: the two pairs are already
+        field-for-field identical in name and order, and that identity is a
+        contract of :class:`TsHelperRequest`/:class:`TsHelperResponse` ("field
+        for field :class:`GoHelperRequest`"), not a coincidence to be
+        rediscovered. A future language that needs a different field set needs
+        a ruling, not a fifth argument.
+      * The return is the caller's ``response_type``. Neither wrapper
+        re-validates and neither wrapper reshapes; a wrapper that did would be
+        the divergence back again.
 
     The duplication is real and it is not an artifact of the wire format being
     poorly chosen. Both helpers are subprocesses that speak one JSON object; a
@@ -5024,8 +5126,20 @@ class TypeScriptSignatureFingerprinter:
         ``verbatimModuleSyntax``; ``export * from './m'`` republishes another
         module's surface. All three are contract changes that a
         declaration-only reader cannot see. Keys: ``k:export/i:b`` for a named
-        export, ``k:export/k:star/s:./m`` for a star re-export; the fingerprint
-        carries the local name, the source specifier and the type-only flag.
+        export, ``k:export/k:star/s:.\\/m`` for a star re-export of ``./m``;
+        the fingerprint carries the local name, the source specifier and the
+        type-only flag.
+
+        **P4 correction, 2026-08-10.** This example was written
+        ``k:export/k:star/s:./m``, which is not the key :func:`ts_symbol_key`
+        builds — the ``/`` inside a module specifier is escaped, exactly as the
+        ``/`` inside a member name is, and for the same reason: unescaped it
+        spells the segment separator and ``./m`` would key as two segments.
+        Corrected rather than left, under this repository's standing ruling
+        against a citation that sends a reader to something they cannot
+        reproduce: the earlier spelling is unreachable from any input, so
+        anyone checking it against the function would have concluded the
+        function was wrong.
       * **Ambient declarations.** ``declare module "foo"``, ``declare global``,
         and everything in a ``.d.ts``. A ``.d.ts`` file is nothing but
         signature; it is read through the ``.ts`` row (``.d.ts`` cannot be its
@@ -5130,24 +5244,72 @@ class TypeScriptSignatureFingerprinter:
     is paid in exactly one place and it is small: a member of an interface is
     stored in the interface's own fingerprint, which is why interface members
     are NOT emitted as separate symbols here. A class's methods ARE separate
-    symbols, and there the price is real — an edit to ``C.m`` changes both
-    ``i:C/i:m`` and, through the class rendering, ``i:C`` — so a report may
-    carry two rows for one edit. That redundancy is accepted deliberately: the
-    Go unit took the other trade and it cost six lost positions, and this
-    project's stated stance is that a visible duplicate row is cheaper than a
-    silent pass.
+    symbols **as well**, and there the price is real — an edit to ``C.m``
+    changes both ``i:C/i:m`` and, through the class rendering, ``i:C`` — so a
+    report may carry two rows for one edit. That redundancy is accepted
+    deliberately: the Go unit took the other trade and it cost six lost
+    positions, and this project's stated stance is that a visible duplicate row
+    is cheaper than a silent pass.
 
-    That choice also settles what "adding a member" means, and the two answers
-    differ for a stated reason rather than by accident:
+    **P4 ADJUDICATION, 2026-08-10 — the class-method contradiction, ruled.**
+    Two sentences of this contract could not both hold. One said a method's
+    rendering is inside the class fingerprint (the paragraph above, and the
+    header's accepted false positive "an edit to a class method is reported
+    twice"); the other said adding a method to a class is NOT a change, which is
+    true only if the class fingerprint does not carry the method. The seal
+    author's reference implementation had to choose, chose sub-symbols-only to
+    satisfy the ruled row, and flagged it rather than choosing quietly. The
+    ruling goes the other way, and the reason is the invariant immediately
+    above rather than a preference between two costs:
+
+      *sub-symbols are ADDITIONAL reporting, never the sole storage of a
+      signature.* Rendering a class's members by name in ``i:C`` and storing
+      the signature only under ``i:C/i:m`` is a name-only rendering position,
+      which this grammar does not have. It is also, precisely, the Go split:
+      Go's interface elements were name-only, the signature lived in the
+      sub-symbol, and that arrangement lost signatures in **six** positions. It
+      lost them where no sub-symbol existed; the answer here is not "a class
+      method always has a sub-symbol, so this instance is safe" but that a
+      contract with one name-only position has to be checked position by
+      position, which is the enumeration this section retired.
+
+    The transfer from Python that the old ruling rested on was invalid, and
+    that is worth naming rather than overruling silently. Python's "a body may
+    add private helpers" is a CONSEQUENCE of Python's mechanism —
+    :func:`_class_fingerprint` carries bases, decorators and annotated fields
+    and does not carry methods — not a principle standing above it. This
+    grammar adopted a different mechanism on purpose. Transferring Python's
+    conclusion while rejecting Python's mechanism is how two sentences came to
+    contradict each other.
+
+    So, exhaustively, for every containing declaration this grammar has:
 
       * **adding a member to an interface, type literal or enum IS a change** —
         it is inside the containing type's fingerprint. This is correct on its
         own merits: an added required member breaks every implementor.
-      * **adding a method to a class is NOT a change** — it is a new
-        sub-symbol, and Python's "a body may add private helpers" applies.
-        **Adding a class PROPERTY is a change**, because properties are
-        rendered inside the class fingerprint, which is Python's rule for
-        annotated class-level assignments transferred intact.
+      * **adding a member to a class IS a change**, method and property alike,
+        because both are rendered inside the class fingerprint. The property
+        half is Python's rule for annotated class-level assignments transferred
+        intact; the method half is this ruling.
+      * the same edit also adds the sub-symbol ``i:C/i:m``, and an ADDED symbol
+        is not a change — so the verdict comes from the class fingerprint
+        moving, and the new sub-symbol is the report row that says which member
+        did it.
+
+    THE COST, stated rather than discovered. A body agent may no longer add a
+    private helper METHOD to an existing class without the gate reporting a
+    signature change; it must put the helper in a new type, at module level, or
+    get a ruling. That is a false positive by the criterion this contract uses
+    everywhere else — ``private`` and ``#`` members break no external caller —
+    and it is accepted for the reason the decorator and struct-tag rows are
+    accepted: this project's stance is that a visible false positive is cheaper
+    than a silent pass, and the alternative here is not a smaller false
+    positive but a name-only position in a grammar that has ruled it has none.
+    Narrowing it later — excluding ``private``/``#`` members from the class
+    rendering — is a coherent future ruling and is deliberately NOT taken now,
+    because ``private`` is erased at compile time, still occupies a name a
+    subclass must not collide with, and would reintroduce exactly one
+    position that has to be argued on its own.
 
     JSX — 475 of the 996 target files, and the ruling is that it is out
     ------------------------------------------------------------------
@@ -5287,6 +5449,33 @@ class TypeScriptSignatureFingerprinter:
         cache under ``/tmp`` would be a file outside :data:`FLOOR_GLOBS` whose
         bytes decide what a signature is. Unlike Go there is no compile step,
         so the cached object is the resolved directory and the probe result.
+
+        **The cache is a module global named ``_TS_HELPER_PREPARED``, and the
+        name is CONTRACT (P4 adjudication, 2026-08-10).** It is the exact
+        analogue of :data:`_GO_HELPER_PREPARED`, it starts as ``None``, and
+        rebinding it to ``None`` must make the next call re-resolve, re-probe
+        and re-verify from scratch — a fresh gate process, simulated.
+
+        This is written into the contract because a seal already requires it.
+        The digest is verified AT USE rather than at fetch, and "at use" has no
+        falsifiable form without a way for a seal to say *this is a new use*;
+        inside one pytest process the only way to say it is to clear the cache.
+        The coupling was reported by the seal author as a private name a seal
+        reaches for, and it is RULED ACCEPTABLE — but a private name a seal
+        depends on is a contract whether or not anyone writes it down, and an
+        unwritten contract is the thing this unit exists to refuse. So it is
+        written down here, where P3 reads it, rather than left in a fixture.
+
+        What is NOT added, and the refusal is the substance of the ruling: no
+        public reset entry point, and no supported way to make a running
+        process re-prepare. The cache is per-process BY CONTRACT and a gate
+        runs a fresh process per verdict, so there is no production caller with
+        a reason to reset it; a public reset would be machinery whose only user
+        is a test, and machinery on the verdict path that exists for a test is
+        exactly how a fail-open arrives. The corollary is recorded rather than
+        sealed, as the seal author had it: a tamper landing AFTER a process has
+        prepared its parser is not caught by that process. Sealing against that
+        would be sealing against this paragraph.
 
         May return an empty mapping ONLY for a file that genuinely declares
         nothing. Never to signal a failure: an empty mapping is a CHECKED
@@ -5613,18 +5802,29 @@ TS_SIGNATURE_EDIT_RULINGS: tuple[TsSignatureEditRuling, ...] = (
             "export class Svc {\n  do(a: string): void {}\n"
             "  private helper(b: number): void {}\n}\n"
         ),
-        is_a_change=False,
+        is_a_change=True,
         rationale=(
-            "Python's 'a body may add private helpers', transferred. A class "
-            "method is its own sub-symbol and an added symbol is not a change. "
-            "Contrast the class PROPERTY row below and the interface member "
-            "row above — the three together are what the trap-2 rule buys"
+            "P4 ADJUDICATION 2026-08-10, and this row was RULED THE OTHER WAY "
+            "in the P1 scaffold. It read 'Python's a body may add private "
+            "helpers, transferred', which contradicted the same contract's "
+            "statement that a method's rendering is inside the class "
+            "fingerprint; both could not hold and the seal author's reference "
+            "implementation had to pick one to satisfy this row. The class "
+            "fingerprint carries its members in full, because the trap-2 "
+            "invariant is that no rendering position in this grammar is "
+            "name-only and sub-symbols are never the sole storage of a "
+            "signature — the split that lost the Go unit six positions. So "
+            "adding a member to a class moves `i:C`, method and property "
+            "alike, and the added `i:C/i:m` sub-symbol is the report row that "
+            "says which member did it. The cost is a real false positive on a "
+            "private helper and it is accepted, for the reason the decorator "
+            "row is accepted. The Python parity claim is DROPPED rather than "
+            "quietly kept: Python answers NOT a change here, which makes this "
+            "a deliberate parity BREAK like top-level `const`, and it is "
+            "measured as a break by "
+            "`test_the_class_method_parity_break_is_measured_and_not_a_drift`"
         ),
-        python_analogue=(
-            "class Svc:\n    def do(self, a):\n        pass\n",
-            "class Svc:\n    def do(self, a):\n        pass\n"
-            "    def _helper(self, b):\n        pass\n",
-        ),
+        python_analogue=None,
     ),
     TsSignatureEditRuling(
         name="a class property added",
@@ -5742,10 +5942,19 @@ TS_SIGNATURE_EDIT_RULINGS: tuple[TsSignatureEditRuling, ...] = (
 #:      ``**/src/claude_dispatcher/ts_signature_fingerprint/**`` **before**
 #:      anything is vendored into it, and ``scripts/check_body_branch.sh`` reads
 #:      it from the protected base. P4's commit, because the floor's
-#:      ``_FLOOR_ROWS`` table is a seal P3 may not edit. The script is expected
-#:      to need no change — the Go helper needed none because it sits under the
-#:      ``src/`` prefix the base-pinned block copies wholesale — but that was
-#:      MEASURED for Go and must be measured again, not inherited.
+#:      ``_FLOOR_ROWS`` table is a seal P3 may not edit. **DONE (P4,
+#:      2026-08-10):** the glob is on the floor above with four rows in
+#:      ``_FLOOR_ROWS``, and the script needed no change — MEASURED rather than
+#:      inherited from the Go entry, in a clone with a real repo: a self-judging
+#:      checkout whose base carried
+#:      ``src/claude_dispatcher/ts_signature_fingerprint/main.cjs`` and whose
+#:      branch replaced it was run with a ``$PYTHON`` that dumps the file it was
+#:      handed, and it was handed the BASE's line while the working tree still
+#:      held the branch's. The negative was measured too: narrowing the
+#:      base-pinned ``ls-tree`` to the one named library file makes the subtree
+#:      stop travelling, so the probe measures the property rather than reading
+#:      an untampered tree. Nothing is vendored yet and that is still the
+#:      point — the floor is in place for the commit that does it.
 #:   3. :class:`TypeScriptSignatureFingerprinter` is implemented (P3) to
 #:      :data:`TS_SIGNATURE_EDIT_RULINGS`, which is the acceptance criterion
 #:      and not a suggestion, and the helper's decoder is the shared extraction
