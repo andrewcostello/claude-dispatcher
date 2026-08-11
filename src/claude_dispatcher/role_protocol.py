@@ -6594,12 +6594,25 @@ TS_SIGNATURE_EDIT_RULINGS: tuple[TsSignatureEditRuling, ...] = (
 )
 
 
-#: TypeScript's row: **written, complete as a contract, and deliberately not
-#: enrolled.** It is in :data:`PENDING_COMPARATORS`, so :func:`support_for_path`
-#: never returns it and a ``.ts`` or ``.tsx`` path is answered exactly as it was
+#: TypeScript's row: **ENROLLED, 2026-08-10, and this is what changed.** It is
+#: in :data:`COMPARATORS`, so :func:`support_for_path` returns it and a ``.ts``
+#: or ``.tsx`` path is READ. Until that commit it was in
+#: :data:`PENDING_COMPARATORS` and such a path was answered exactly as it was
 #: before this unit — UNCHECKED_UNSUPPORTED_LANGUAGE, promoted to
 #: UNCHECKED_NO_SUPPORTED_FILE on a diff with nothing else in it, CLEAN on
-#: BODIES.
+#: BODIES. **That abstention is now a positive claim**, and the sign change was
+#: measured in both directions through :func:`check_branch` on a real repository
+#: rather than inferred from a green suite; the enrolment commit carries the
+#: numbers.
+#:
+#: **AND IT NEWLY BLOCKS ONE CLASS OF BRANCH**, recorded here because the Go
+#: enrolment found :func:`check_branch`'s "can never newly block" claim false
+#: and this row is the second witness: a ``.ts`` file that does not parse is
+#: UNCHECKED_UNPARSEABLE, which refuses a BODIES branch, and the identical
+#: branch was CLEAN before enrolment (measured: UNDETERMINED /
+#: UNCHECKED_UNPARSEABLE). The class is empty on the primary target today — the
+#: soak below read 39,781 files with zero parse failures — so nothing regresses
+#: now, but it is a real change in what this gate refuses and not a no-op.
 #:
 #: ``.d.ts`` is NOT a separate entry and cannot be one:
 #: :func:`validate_registry` refuses an extension that is a suffix of another,
@@ -6612,10 +6625,12 @@ TS_SIGNATURE_EDIT_RULINGS: tuple[TsSignatureEditRuling, ...] = (
 #: **and removing it from** :data:`PENDING_COMPARATORS`. Doing only the first
 #: leaves the row in both tuples, :func:`validate_registry` raises at import and
 #: the whole suite fails collection. That correction cost the Go row a P4
-#: amendment on 2026-08-10; it is written here so this row does not repeat it.
+#: amendment on 2026-08-10; it is written here so this row does not repeat it,
+#: and it did not.
 #:
-#: It may not happen until all of these hold. Three of them are somebody else's
-#: commit, and the first is the one that may yet sink the approach:
+#: It could not happen until all of these held. Three of them were somebody
+#: else's commit, and the first was the one that might have sunk the approach.
+#: **All five are now met** and each carries the evidence that met it:
 #:
 #:   1. **A pinned TypeScript parser is vendored** into
 #:      ``src/claude_dispatcher/ts_signature_fingerprint/`` as a flat trio —
@@ -6744,6 +6759,16 @@ TS_SIGNATURE_EDIT_RULINGS: tuple[TsSignatureEditRuling, ...] = (
 #:      :data:`PENDING_COMPARATORS`'s contents. That is a reason to expect a
 #:      small number, not a reason to skip the count.
 #:
+#:      **DONE, and the count is ZERO** — taken on the enrolment day, on this
+#:      tree, by running the suite with the move applied: 2,197 collected, 0
+#:      failed, 13 skipped (the pre-existing EPA-* rows), byte-identical to the
+#:      unenrolled run. The prediction held. **Zero is not evidence that the
+#:      comparator is right**, and that is the Go row's own lesson stated
+#:      against this row: dropping parameter names from the Go fingerprint left
+#:      the suite green before AND after enrolment. The evidence that this
+#:      comparator READS is the two-direction :func:`check_branch` measurement,
+#:      not the count.
+#:
 #: The row exists now, unenrolled, rather than being written by P3, for the
 #: reason :data:`GO_SUPPORT` gives: the extensions belong in the table that owns
 #: extensions, and a reader can check what this build covers by reading one
@@ -6759,7 +6784,7 @@ TYPESCRIPT_SUPPORT = LanguageSupport(
 #: **THE registry.** The one table that says what this gate can read, and the
 #: only input to :func:`support_for_path`. Adding a language is adding a row;
 #: no dispatch site changes, because there is no dispatch site.
-COMPARATORS: tuple[LanguageSupport, ...] = (PYTHON_SUPPORT,)
+COMPARATORS: tuple[LanguageSupport, ...] = (PYTHON_SUPPORT, TYPESCRIPT_SUPPORT)
 
 #: Rows that are written but not live. Nothing dispatches on this tuple — it
 #: exists so that "scaffolded but not enrolled" is a NAMED state with a
@@ -6775,7 +6800,6 @@ COMPARATORS: tuple[LanguageSupport, ...] = (PYTHON_SUPPORT,)
 #: either is enrolled.
 PENDING_COMPARATORS: tuple[LanguageSupport, ...] = (
     GO_SUPPORT,
-    TYPESCRIPT_SUPPORT,
 )
 
 

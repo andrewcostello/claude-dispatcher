@@ -82,11 +82,14 @@ THE VACUITY TRAPS, AND WHAT IS DONE ABOUT EACH
 
 WHAT THIS FILE DOES NOT DO
 ---------------------------
-It does not enrol. `TYPESCRIPT_SUPPORT` stays in `PENDING_COMPARATORS`;
-enrolment is a two-line move in a separate reviewable commit after a P4
-re-language pass, and section 0 pins the registry's internal consistency rather
-than one transient state of it, exactly as the Go file's section 0 was amended
-to do.
+It does not enrol, and it did not: enrolment was the two-line move in the
+separate reviewable commit that follows the P4 adjudication, and NOT ONE ROW OF
+THIS FILE CHANGED FOR IT. That is by construction — section 0 pins the
+registry's internal consistency rather than one transient state of it, exactly
+as the Go file's section 0 was amended to do, and `compare_ts` PREPENDS the row
+rather than replacing the tuple, so it supplied the row before enrolment and
+shadows it with the same object after. This paragraph is the only line in the
+file that had to be re-languaged.
 
 It does not depend on the target repository's copy of TypeScript. The only
 parser this file will ever accept is the one `ts_parser_home()` resolves out of
