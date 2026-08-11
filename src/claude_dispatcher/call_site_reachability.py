@@ -24,9 +24,13 @@ Measured on ``wt-b1-baseline``, 2026-08-10, in ``cmd/classify`` (Go):
   * Six seals in ``contract_seal_test.go`` (``TestSeal_ResolveConfigDual``,
     line 852) and eight more in ``repair_seal_test.go`` certify it. Every one
     passes. The function does exactly what its doc comment says.
-  * **Every call to it is from a ``_test.go`` file.** Counted: 27 mentions in
-    ``*_test.go``, 0 in non-test source outside its own doc comment and its own
-    ``func`` line.
+  * **Every call to it is from a ``_test.go`` file.** Counted at ``929d362``,
+    re-measured by P4 2026-08-11: **31** occurrences of the identifier across
+    ``*_test.go`` (11 in ``contract_seal_test.go``, 20 in
+    ``repair_seal_test.go``), of which **12** are call expressions; **0** in
+    non-test source outside its own doc comment and its own ``func`` line.
+    The scaffold first recorded ``27``, which is neither figure; see the P4
+    RULING on measurements below.
   * Production resolves the config through ``resolveConfigPath``
     (``main.go:296``) → ``findConfig`` → ``configCandidates``
     (``main.go:401``), which takes the FIRST candidate that exists. So two
@@ -54,12 +58,20 @@ non-test mention" — reported ``ResolveConfigDual`` as CLEAN, because
 A mechanism that can be defeated by a comment is not a mechanism.
 
 The refined crude scan (mentions in non-comment, non-declaration production
-lines, within ``cmd/classify`` only) does find it, alongside six others::
+lines, within ``cmd/classify`` only) does find it, alongside six others.
+Re-measured by P4 at ``929d362``, 2026-08-11 — the ``test=`` column of the
+scaffold's first draft was understated in **every one of the seven rows** and
+is corrected here::
 
-    DesugarConfigScaffold  prod=0 test=5     ProjectPanelToV1   prod=0 test=8
-    EmitterCovers          prod=0 test=9     ResolveConfigDual  prod=0 test=27
-    GenerateReadSet        prod=0 test=22    SemanticEquivalentV1 prod=0 test=19
-                                             SidecarSurvives    prod=0 test=13
+    DesugarConfigScaffold  prod=0 test=7     ProjectPanelToV1   prod=0 test=9
+    EmitterCovers          prod=0 test=10    ResolveConfigDual  prod=0 test=31
+    GenerateReadSet        prod=0 test=28    SemanticEquivalentV1 prod=0 test=22
+                                             SidecarSurvives    prod=0 test=15
+
+``test=`` counts occurrences of the identifier in every ``*_test.go`` under
+``cmd/classify``; ``prod=`` is the refined scan above. Both are reproducible
+from the recorded revision, which is the property the first draft's numbers
+lacked and the reason a P4 rather than a body corrected them.
 
 That scan is recorded here as an ORDER OF MAGNITUDE and explicitly not as a
 finding, for a reason that is this module's whole subject: it counts MENTIONS,
@@ -67,6 +79,30 @@ so it cannot tell a mention inside live code from a mention inside a function
 that is itself dead. ``V2SidecarPath`` scores ``prod=3`` and a grep cannot say
 whether any of those three lines runs. Transitive reachability from an
 entrypoint is the question, and a grep is a one-hop approximation of it.
+
+P4 RULING on the two measurements in this module (2026-08-11), because the
+question "should a row pin this?" was raised and the answer is not the same for
+both. **Neither is pinned by a row, and the reasons differ.**
+
+  * The ``cmd/classify`` figures above are over a VENDORED, FROZEN artifact
+    (``tests/fixtures/d5_b1_classify/``). A row asserting a count over frozen
+    text can never redden, which is "a recording that measures a frozen
+    artifact" — one of the five non-vacuity hazards the seal file enumerates
+    against itself. What a row must pin about that fixture is what makes it the
+    right FIXTURE (the doc-comment shortcut, the absent import, the two
+    production occurrences), and
+    ``test_the_canonical_fixture_is_the_measured_artifact`` already does.
+  * The ``getattr`` figure below is over the LIVE ``src/`` tree, where an exact
+    count reddens on every unrelated commit that adds a ``getattr``. That is a
+    row that cries wolf and is deleted, taking the real claim with it. What a
+    row must pin there is the PREMISE of the Python language row — that this
+    repository really does resolve names dynamically — and
+    ``test_the_python_row_is_false_because_this_repo_resolves_names_dynamically``
+    already does, as an invariant with the counts recorded beside it.
+
+The obligation the ruling puts on a body instead: every count in this docstring
+carries the revision and the date it was taken at, so that a number without a
+provenance is visibly a number nobody can check.
 
 **2. It must not report reachable because it failed to look.** Every false
 green in this effort has that shape. A parse failure, a missing entrypoint, an
@@ -170,11 +206,16 @@ The evidence, in the order it should be weighed:
      if a symbol's name is referenced nowhere in the production closure, no
      dynamic edge can reach it either, and "no path" is a fact. Python is the
      opposite; ``getattr(module, name)`` with a computed ``name`` is routine.
-     Measured in ``src/`` on this worktree, 2026-08-10: 100 ``getattr(`` call
-     sites, six of them with a non-literal attribute name, three of those six
+     Measured by AST over ``src/`` on this worktree, re-measured by P4
+     2026-08-11: **105** ``getattr(`` call sites, **four** of them with a
+     non-literal attribute name, **three** of those four
      inside ``fixture_reachability`` itself — which resolves ARBITRARY
      fully-qualified names out of a table (``_resolve_dotted``, line 847) and
-     is D5's own sibling. A Python-first mechanism would therefore have baked
+     is D5's own sibling. The scaffold first recorded 100 / six / three; the
+     claim's shape survived and its arithmetic did not. **The fourth
+     non-literal site is inside THIS module**, and it carries a ruling of its
+     own — see :attr:`ReachabilityAnalyzer.negative_is_conclusive`.
+     A Python-first mechanism would therefore have baked
      in Python's rule, abstained on the Go case it was built for, and been
      switched off; a Go-first mechanism generalised later would have baked in
      Go's rule and reported a confident "no path" for Python code reached by
@@ -336,7 +377,7 @@ Two coordinations this scaffold may NOT perform, raised for P4:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Mapping, Protocol, Sequence
@@ -391,7 +432,30 @@ class CallSiteReachabilityError(RuntimeError):
     this module cannot classify, a :class:`Reach` /:class:`PathQuality` pair
     the ruling grid does not name, a subject that comes back
     :attr:`Reach.FROM_NEITHER` when the seal that named it is itself a test
-    root, or a report assembled over zero roots.
+    root, a malformed :class:`Subject`, or an :class:`AnalyzerError` that is
+    not :class:`SourceUnreadable`.
+
+    **P4 RULING (2026-08-11), on R4: "a report assembled over zero roots" is
+    struck from that list.** It contradicted the CHOICE on :func:`check_tree`
+    ("an empty tree returns a report with ``seals_examined=0``, and does NOT
+    raise"), and an empty tree has zero roots, so the two could not both stand.
+    The CHOICE wins, for two reasons that are the module's own:
+
+      * **Zero roots already has a first-class answer.** Zero PRODUCTION roots
+        is :attr:`UndecidedReason.NO_ENTRYPOINT`, a named abstention over the
+        whole tree. A raise for the same condition would be a second layer with
+        its own answer for one state, which is precisely what the
+        :attr:`Reach.FROM_NEITHER` treatment refuses ("omitted here rather than
+        mapped ... so that the two layers cannot disagree about it").
+      * **The raise would make the non-vacuity field unreachable.**
+        :attr:`ReachabilityReport.roots` is contracted as THE field a reader
+        looks at first, existing so that an empty root set is VISIBLE. A
+        mechanism that raises rather than shipping an empty root list can never
+        show one, and the field's stated purpose is dead.
+
+    A report over zero roots is therefore returned, and it is legible as
+    vacuous on its face: ``roots=()``, ``seals_examined=0``, ``findings=()``,
+    every :class:`Disposition` present as a key and summing to zero.
 
     Never used to report a defect in the code under check, and a caller must
     not catch it and continue. An error here means the mechanism has no
@@ -418,10 +482,40 @@ class AnalyzerFault(Enum):
     fail-open — a Go tree analyzed in a CI image with no toolchain would report
     "nothing to analyze here" for as long as the image stayed broken.
 
-    Every member maps to :attr:`UndecidedReason.ANALYZER_FAULT`, i.e. to an
-    ABSTENTION, and none of them maps to a verdict. That is the difference from
-    ``ComparatorFault``, which maps to statuses of several kinds: D5 has
-    exactly one honest thing to say when its analyzer did not run.
+    **P4 RULING (2026-08-11), on the contradiction the seal author raised as
+    R1.** The scaffold said every member here maps to an
+    ``UndecidedReason.ANALYZER_FAULT`` abstention, while the only two functions
+    that run an analyzer — :func:`discover_roots` and :func:`build_call_graph`
+    — both RAISE on :class:`AnalyzerError`. Both could not be true.
+
+    **The raises are right and the abstention is UNBUILDABLE, so
+    ``UndecidedReason.ANALYZER_FAULT`` is struck.** A fault is carried on the
+    raised :class:`AnalyzerUnavailable` and reaches the caller as a
+    :class:`CallSiteReachabilityError`; no member here maps to a finding.
+
+    The reason is not a preference between two workable designs. An abstention
+    is a statement ABOUT A SUBJECT, and both faulting sites are upstream of the
+    subject population: a fault in :func:`discover_roots` leaves no roots,
+    therefore no seals, therefore no subjects to abstain over, and a report
+    that abstains over zero subjects is a report of zero findings — which is
+    the exact artifact this module exists to stop anyone shipping. **An
+    abstention you cannot enumerate is not an abstention; it is silence with a
+    label on it.** The raise is the honest form of the same refusal: it is not
+    a pass, it is not a silent skip, and :class:`CallSiteReachabilityError`
+    already contracts that a caller may not catch it and continue.
+
+    What the ruling costs, stated so it is a decision: in a tree with two
+    analyzer rows, one faulting toolchain takes down the judgement of the
+    healthy language too. That binds nothing today (:data:`ANALYZERS` is empty,
+    and the first row will be Go alone) and it is recorded rather than
+    engineered around. The trigger for revisiting: the first tree with two
+    analyzer rows in which one language's toolchain is routinely absent — at
+    which point the member comes back, but it comes back attached to a layer
+    that KNOWS the subject population, which neither of these two is.
+
+    That is also the difference from ``ComparatorFault``, which maps to
+    statuses of several kinds: D5 has exactly one honest thing to say when its
+    analyzer did not run, and it says it by refusing to answer.
 
     TOOLCHAIN_MISSING
         The external program the analyzer needs (``go``) is not on PATH.
@@ -549,8 +643,52 @@ class ReachabilityAnalyzer(Protocol):
         a fact about the analyzer. Go: ``True`` — a package-level function
         cannot be obtained by name at runtime, so a symbol referenced nowhere
         is called nowhere. Python: ``False`` — ``getattr(module, computed)``
-        and ``importlib.import_module(computed)`` are routine, measured 6 times
-        in ``src/`` on 2026-08-10, three of them inside D3.
+        and ``importlib.import_module(computed)`` are routine, measured **4**
+        times in ``src/`` on 2026-08-11, three of them inside D3.
+
+        **P4 RULING (2026-08-11): the fourth is in this module, at
+        :func:`validate_analyzers` line 726, and it is not merely consistent
+        with Python's ``False`` — the mechanism owes a statement about judging
+        itself, so here it is.**
+
+        ``validate_analyzers`` resolves its three required method names out of
+        a loop variable (``getattr(row, method, None)``). That is an
+        unresolvable call, it is in this package, and this package's production
+        closure contains it: ``role_protocol.py`` calls ``validate_registry``
+        at module level and this module calls ``validate_analyzers(ANALYZERS)``
+        at module level, both of which are
+        :attr:`EntrypointKind.PYTHON_IMPORT_TIME` roots. So if a Python
+        analyzer row is ever written and D5 is run over ``claude-workflow``,
+        its own ``getattr`` lands in :attr:`CallGraph.unresolved_calls` INSIDE
+        the production closure, and step 3 of :func:`check_subject` downgrades
+        every Python subject in the repository to
+        :attr:`UndecidedReason.DYNAMIC_EDGE` — by the closure rule, quite
+        independently of what this row's boolean says.
+
+        Three consequences a body must not lose:
+
+          1. **D5 cannot emit a BREACH against Python code in THIS repository,
+             and flipping this row to ``True`` would not buy one.** The belt
+             (the per-language row) and the braces (the per-closure unresolved
+             count) are independent, which is exactly the property the CHOICE
+             below was reaching for when it refused a computed row: a branch
+             cannot turn abstentions into BREACHes by editing the row alone,
+             any more than it can turn BREACHes into abstentions by adding one
+             ``getattr``.
+          2. **D5 run over itself must ABSTAIN over its own Python subjects,
+             and that is the correct answer, not a defect to be engineered
+             around.** A mechanism whose thesis is that failing to look is not
+             a pass does not get to make an exception for its own reflection.
+             A body that special-cases this module's own ``getattr`` to buy
+             itself a verdict has written the fail-open this module exists to
+             refuse, one level up.
+          3. **The measurement is load-bearing and is sealed as an invariant**,
+             not as a count: the row
+             ``test_the_python_row_is_false_because_this_repo_resolves_names_dynamically``
+             asserts that ``call_site_reachability.py`` is still among the
+             dynamic resolvers. If that stops being true the premise above has
+             moved and both this paragraph and Python's ``False`` need
+             re-arguing — which is the point of pinning it.
 
         A ``False`` row cannot produce :attr:`Reach.FROM_TESTS_ONLY` and
         therefore cannot produce a BREACH by itself; it produces
@@ -1084,14 +1222,26 @@ class Symbol:
 
     ``path`` and ``line`` are deliberately NOT part of the identity: a symbol
     that moved file is the same symbol, and a graph keyed on location would
-    report every refactor as a mass unreachability event. Equality and hashing
-    are over ``key`` alone — which a body must implement explicitly, since a
-    frozen dataclass hashes all three fields by default. A seal should pin it.
+    report every refactor as a mass unreachability event.
+
+    **P4 FIX (2026-08-11), and it is a production change made rather than
+    handed on.** The scaffold declared this identity in prose and then left a
+    plain ``@dataclass(frozen=True)``, whose generated ``__eq__`` and
+    ``__hash__`` compare all three fields — so a symbol that moved file WAS a
+    different symbol, and the class contradicted its own docstring. That is a
+    defect in the scaffold, not a task for a body: the contract was already
+    written, the fix is declarative, and this class is used as a dict key and a
+    set member by the seals themselves and by every traversal below, so a body
+    written against the wrong semantics would be wrong everywhere at once.
+    ``field(compare=False)`` excludes both fields from ``__eq__`` and from the
+    generated ``__hash__``, so identity is over ``key`` alone.
+    ``test_symbol_equality_and_hashing_are_over_the_key_alone`` was red for this
+    defect and is green because the defect is gone — not because the row moved.
     """
 
     key: str
-    path: str
-    line: int
+    path: str = field(compare=False)
+    line: int = field(compare=False)
 
 
 class EdgeKind(Enum):
@@ -1264,6 +1414,43 @@ def reachable_from(
     a mechanism that reports "reachable" with no path is one nobody can check,
     and unverifiable green is the thing this whole effort is about.
 
+    **P4 RULING (2026-08-11), on R5 — and the scaffold was silent on it, which
+    it could not afford to be.** *Every root's own key is IN the map, mapped to
+    the empty chain* ``()``. Three consequences, all forced:
+
+      1. **A root is reachable from itself.** Excluding roots would make
+         ``func main`` unreachable, and a subject that IS a root — a
+         ``GO_INIT``, a ``GO_PACKAGE_VAR``, a ``PYTHON_IMPORT_TIME`` module
+         body, a console-script ``main`` — would come back
+         :attr:`Reach.FROM_TESTS_ONLY` or :attr:`Reach.FROM_NEITHER`. That is a
+         false BREACH against the entrypoint itself, which is the loudest
+         possible way to be wrong about the one symbol whose liveness is not in
+         question.
+      2. **It is what makes "no entrypoint" distinguishable from "the
+         entrypoint calls nothing", and that distinction is not a detail** —
+         it decides whether an empty production reach map is an abstention over
+         EVERY subject in the tree. With roots included, a tree whose lonely
+         ``main`` calls nothing yields ``{main: ()}``, which is not empty, so
+         ``production_reach == {}`` means exactly one thing: **there are no
+         production roots.** With roots excluded the two states are the same
+         value and a body would have to guess.
+      3. **A zero-edge chain is** :attr:`PathQuality.RESOLVED`, **never**
+         :attr:`PathQuality.NOT_APPLICABLE`. The quality of a chain is the
+         minimum over its edges and the minimum over no edges is the strong
+         value — there is no weak link in a chain with no links. A body that
+         spelled it ``NOT_APPLICABLE`` would hand :func:`adjudicate` the pair
+         ``(FROM_PRODUCTION, NOT_APPLICABLE)``, which the grid RAISES on as a
+         mechanism bug, and would take down the check on every tree whose seal
+         covers an entrypoint.
+
+    **The inclusion does not move where NO_ENTRYPOINT is decided.** It is still
+    derived from the ROOT SET — "zero production roots of any
+    :class:`EntrypointKind`" — and never from the shape of this map, so there
+    stays one answer site. The map corroborates that answer; it is not the
+    authority for it. ``test_no_entrypoint_is_a_fact_about_the_root_set`` pins
+    that half and this ruling supplies the convention that lets a body satisfy
+    it without inspecting the roots twice.
+
     Which chain, when several exist — and this is not a tie-break, it is a
     correctness rule: **the chain with the best :class:`PathQuality`.** A
     subject reached both through a resolved chain and through an interface
@@ -1324,6 +1511,36 @@ class SubjectGap(Enum):
 
     Every dispatch over this enum must be exhaustive and RAISE on an unknown
     member.
+
+    **P4 RULING (2026-08-11), on R3.** ``UNNAMEABLE`` was contracted twice and
+    incompatibly: :func:`subjects_of_seal` said it yields a finding
+    (:attr:`Reach.UNDECIDED` / :attr:`UndecidedReason.SUBJECT_UNIDENTIFIED`),
+    :func:`check_tree` said a gap-bearing seal produces none.
+    **:func:`subjects_of_seal` was the intent and it stands; the
+    :func:`check_tree` sentence was over-general and is amended there.**
+
+    The enum itself settles it, and it always did. ``NO_CALLS`` and
+    ``ALL_TARGETS_IN_TESTS`` each say in as many words that they are legitimate
+    and that no finding follows; ``UNNAMEABLE`` says the opposite in as many
+    words. :func:`check_tree` wrote one rule over three members that do not
+    share one. **Two of the three gaps are facts about a seal that made no
+    claim. The third is a fact about a claim this mechanism could not read**,
+    and a mechanism whose thesis is that failing to look is never a pass may
+    not discharge the one gap that means "I failed to look" as a bare count.
+
+    ``UndecidedReason.SUBJECT_UNIDENTIFIED`` is therefore NOT dead — it is the
+    reason on that finding, and it is the only member of that enum reachable
+    without a graph.
+
+    **The finding needs a subject and there is none, so it gets a synthetic
+    one**, on :class:`Symbol`'s own recorded convention for synthetic roots: a
+    key spelled with a suffix no declaration can produce,
+    ``<the seal's key>.<unnameable>``, carrying the seal's ``path`` and the
+    line of the unresolved call site. Synthetic rather than reusing the seal's
+    own symbol, because a finding whose subject IS its seal reads as a seal
+    covering itself; synthetic rather than ``None``, because
+    :class:`Finding` has no optional subject and a report must never show a
+    finding with a blank where a subject belongs.
     """
 
     NO_CALLS = "no_calls"
@@ -1386,10 +1603,29 @@ class Subject:
     #: ``None`` exactly when ``symbols`` is non-empty; a :class:`SubjectGap`
     #: member exactly when it is empty. Both contradictions — a gap alongside
     #: symbols, an empty set with no gap — are
-    #: :class:`CallSiteReachabilityError` at :func:`check_subject`, because a
-    #: subject record that says two things or says nothing is a non-judgement
-    #: and a non-judgement must not read as an answer. D3's :class:`Witness`
-    #: contract, unchanged.
+    #: :class:`CallSiteReachabilityError`, because a subject record that says
+    #: two things or says nothing is a non-judgement and a non-judgement must
+    #: not read as an answer. D3's :class:`Witness` contract, unchanged.
+    #:
+    #: **P4 RULING (2026-08-11), on R2.** The scaffold located that raise "at
+    #: :func:`check_subject`", which takes a :class:`Symbol` and has no
+    #: :class:`Subject` parameter, so as written it was owed by a layer that
+    #: cannot see one. It is owed by TWO layers and they owe different things:
+    #:
+    #:   * :func:`subjects_of_seal` owes it as a POSTCONDITION. It is the one
+    #:     constructor of this record and it must raise rather than RETURN a
+    #:     contradictory one — a malformed record that escapes its constructor
+    #:     is a malformed record every later layer has to re-check.
+    #:   * :func:`check_tree` owes it as a PRECONDITION on every
+    #:     :class:`Subject` it consumes, because a second constructor or a
+    #:     caller-supplied record would otherwise reach the judgement loop
+    #:     unchecked, and the layer that ACTS on a non-judgement is the layer
+    #:     where the non-judgement becomes an answer.
+    #:
+    #: :func:`check_subject` owes nothing here; the original sentence naming it
+    #: is struck. ``test_a_subject_record_never_says_two_things_or_nothing``
+    #: pins the constructor half. The :func:`check_tree` half is unpinned by
+    #: any row and is recorded as such.
     gap: SubjectGap | None
     #: The same reason IN PROSE, FOR A HUMAN, and for nothing else. **No
     #: decision anywhere in this module reads it**, so improving a message can
@@ -1519,7 +1755,7 @@ class Reach(Enum):
 
 
 class UndecidedReason(Enum):
-    """Why :attr:`Reach.UNDECIDED`, as DATA. Six states, exhaustively.
+    """Why :attr:`Reach.UNDECIDED`, as DATA. Five states, exhaustively.
 
     D3's :class:`WitnessGap`, widened. Data and not prose for D3's stated
     reason, which is worth repeating because it is the reason this enum is not
@@ -1532,12 +1768,16 @@ class UndecidedReason(Enum):
     UNSUPPORTED_LANGUAGE
         :func:`analyzer_for_path` returned None for a file that matters. A
         permanent fact about the gate, not about the machine.
-    ANALYZER_FAULT
-        An :class:`AnalyzerFault`. A fact about the machine, not about the
-        gate. The two are separate members for ``ComparatorFault``'s own
-        recorded reason: conflating them is a live fail-open, because a broken
-        CI image would otherwise read as "no Go here" for as long as it stayed
-        broken.
+    **There is deliberately no ``ANALYZER_FAULT`` member**, and its absence is
+    a P4 ruling rather than an oversight; see :class:`AnalyzerFault`. A fault is
+    a fact about the MACHINE and it arrives at the caller as a raised
+    :class:`CallSiteReachabilityError`, because both sites that can meet one are
+    upstream of the subject population and an abstention over no subjects is
+    silence with a label. Every member below is a fact about a SUBJECT that the
+    mechanism did enumerate and then declined to judge. A body author who wants
+    to fold a fault into this enum is re-opening a decided question and needs a
+    new P4 round, not a new member.
+
     PARSE_FAILED
         A :class:`SourceUnreadable`. The gate opened the file and the file is
         bad. Abstains over the whole tree; see that class.
@@ -1579,7 +1819,6 @@ class UndecidedReason(Enum):
     """
 
     UNSUPPORTED_LANGUAGE = "unsupported_language"
-    ANALYZER_FAULT = "analyzer_fault"
     PARSE_FAILED = "parse_failed"
     NO_ENTRYPOINT = "no_entrypoint"
     SUBJECT_UNIDENTIFIED = "subject_unidentified"
@@ -1779,6 +2018,49 @@ class StagedDeclaration:
     ``ACCEPTED`` is counted separately from ``OK`` in every report, and a
     declaration whose keys match nothing is reported. A growing ``ACCEPTED``
     count is a debt figure and must be legible as one.
+
+    **P4 RULING (2026-08-11), on R8: RATIFIED, with one condition that is new.**
+
+    The seal author recorded the appealability without ratifying it and was
+    right not to: an appealable BREACH is one someone can talk their way out
+    of, and a policy claim is not a seal author's to settle. Ratified, on the
+    scaffold's argument, which survives scrutiny: the scaffold-first protocol
+    MANUFACTURES this state by construction — a P1 scaffold is a set of symbols
+    with seals and no call sites — so an unappealable BREACH makes the
+    protocol's own intermediate state a blocking failure, and the recorded
+    consequence of a check that over-calls is that it gets switched off. A
+    check nobody runs is this repository's most expensive measured failure. D3
+    could make its finding unappealable because nothing in the protocol
+    manufactures D3's state; something in the protocol manufactures this one.
+
+    **What stops ``wiring`` becoming a rubber stamp, and the honest answer is
+    that the scaffold's argument does NOT, on its own.** "A B1 author writing
+    that sentence would have discovered the bug in the act of writing it" is
+    true and is unenforceable: nothing reads the sentence, so nothing stops it
+    being ``"TODO"``. What actually holds the line is that the appeal is
+    EXPENSIVE and VISIBLE, and four of those five properties were already
+    sealed by P2 — both keys exact, staleness reported, ``ACCEPTED`` counted
+    apart from ``OK``, abstentions and path qualities untouchable, exactly one
+    cell moved. Ratification adds the fifth, because four were not enough:
+
+      * **A declaration whose ``wiring`` is empty or whitespace is NOT a
+        declaration.** :func:`adjudicate` ignores it exactly as it ignores a
+        key mismatch — the finding rules as though no declaration were passed —
+        and :func:`check_tree` reports it in ``stale_declarations``. This is
+        the minimum mechanical check that a sentence was written at all, it is
+        the only part of "name a future in which this stops being true" a
+        machine can verify, and it converts the scaffold's argument from an
+        appeal to good faith into a precondition. It is deliberately NOT a
+        check that the ticket exists or is open: this module has no issue
+        tracker and inventing a dependency on one would put the gate's verdict
+        behind a network call.
+
+    What is NOT ruled, and is left for the first body that has evidence: an
+    EXPIRY on a declaration. It is the obvious next tooth and it needs a clock
+    and a policy, neither of which this module has. The named trigger for
+    adding one: the first ``ACCEPTED`` count that survives two releases
+    unchanged — at which point the debt figure has demonstrated that visibility
+    alone does not retire it.
     """
 
     test_id: str
@@ -1869,10 +2151,38 @@ def adjudicate(
     AND reported as stale by :func:`check_tree`. Silently ignoring it would let
     a typo look like an accepted state.
 
-    The grid itself is deliberately NOT written out as a module-level table in
-    this scaffold. D3's P1 left its ruling in the docstring and P3 wrote the
-    table; the same split applies here, so that P4 rules on the grid as prose
-    before any body pins it as data.
+    A declaration is honoured only when it carries a non-empty ``wiring``; an
+    empty or whitespace one is ignored for the ruling exactly as a key mismatch
+    is, and is reported stale. See the P4 ruling on :class:`StagedDeclaration`.
+
+    **P4 RULING (2026-08-11): THE GRID ABOVE IS RULED, AS WRITTEN.** The
+    scaffold left it as prose following D3's P1 precisely so that a P4 would
+    rule before a body pinned it as data. It is ruled: the four rows stand
+    unchanged, every other pair raises, and **a body must now implement it as a
+    module-level table** rather than treating it as a proposal.
+
+    The four cells were re-derived against this round's other rulings and none
+    of them adds a cell:
+
+      * A subject that is itself a production root has a zero-edge chain, whose
+        quality is :attr:`PathQuality.RESOLVED` (R5) — cell 1, not a new one.
+      * An :attr:`SubjectGap.UNNAMEABLE` seal's finding is
+        ``(UNDECIDED, NOT_APPLICABLE)`` (R3) — cell 4, not a new one.
+      * An analyzer fault produces no finding at all (R1), so it needs no cell;
+        that is what striking :attr:`UndecidedReason.ANALYZER_FAULT` bought.
+
+    **No row is added pinning a cell, and that is also the ruling.** P2 sealed
+    the PROPERTIES instead — totality, the raise on an unknown member, the
+    raise on ``FROM_NEITHER`` at both layers, three-bucket separation, and the
+    exactly-one-cell bound on a declaration — and those are strictly stronger
+    than four cell assertions against the failures that actually happen here: a
+    default branch, a collapsed vocabulary, a declaration that reaches further
+    than it should. Four cell rows would be four rows a body satisfies by
+    transcribing the table and nothing else, and they would say nothing about
+    the eight pairs that must refuse. The cells are now settled by RULING and
+    the properties are settled by SEAL, which is the correct division: a body
+    that transcribes this table wrongly is caught by the properties, and a body
+    that transcribes it differently on purpose is overturning a P4.
     """
     raise NotImplementedError(
         "adjudicate: the ruling grid is specified in this docstring and not "
@@ -1974,9 +2284,28 @@ def check_tree(
 
       * **Judge every subject of every seal.** A subject with no finding is a
         silent pass, which is the defect one level up.
-      * **A seal that yields no subject is COUNTED, in ``subject_gaps``, and
-        produces no finding.** Not an error and not a pass: the seal made no
-        claim this module can check.
+      * **A seal that yields no subject is COUNTED, in ``subject_gaps``.**
+        Whether it also produces a finding depends on WHICH gap, and the P4
+        ruling on :class:`SubjectGap` (R3) makes that split normative:
+
+          - :attr:`SubjectGap.NO_CALLS` and
+            :attr:`SubjectGap.ALL_TARGETS_IN_TESTS` produce NO finding. Not an
+            error and not a pass: the seal made no claim this module can check.
+          - :attr:`SubjectGap.UNNAMEABLE` produces exactly ONE finding, an
+            abstention — :attr:`Reach.UNDECIDED`,
+            :attr:`UndecidedReason.SUBJECT_UNIDENTIFIED`,
+            :attr:`PathQuality.NOT_APPLICABLE`, over the synthetic subject
+            symbol :class:`SubjectGap` specifies. The seal made a claim and the
+            mechanism could not read it, which is a fact about the MECHANISM
+            and belongs in the findings where an abstention is counted, not in
+            a gap tally where it reads as a seal that had nothing to say.
+
+        This is the sentence the scaffold wrote over all three members at once;
+        it is amended rather than deleted because two thirds of it were right.
+      * **Validate every :class:`Subject` before acting on it** (R2): a record
+        carrying a gap alongside symbols, or an empty symbol set with no gap,
+        is a :class:`CallSiteReachabilityError` here as well as at its
+        constructor. See :class:`Subject`.
       * **Populate every count, zeros included**, for both mappings.
       * **Let :class:`CallSiteReachabilityError` propagate.** A partial report
         is not a report; a caller that receives one cannot tell a clean run

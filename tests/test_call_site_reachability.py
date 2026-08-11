@@ -55,9 +55,33 @@ precedent. That is a real ruling with a real cost and it is raised for P4 in
 on both keys, staleness reported, abstentions untouchable, the accepted count
 carried separately — and not the policy.
 
-RULING REQUESTS FOR P4
-=======================
-Eight, each raised at the row that met it.
+RULING REQUESTS FOR P4 — ALL EIGHT RULED, 2026-08-11
+=====================================================
+Each was raised at the row that met it and each is now answered. The requests
+are kept verbatim below because a ruling is only readable against the question
+it answered; the answer is appended to each. The rulings themselves live in
+``call_site_reachability.py``, where a body author will meet them.
+
+  R1  **STRUCK.** ``UndecidedReason.ANALYZER_FAULT`` is gone; the raises stand.
+  R2  **BOTH LAYERS.** ``subjects_of_seal`` as a postcondition, ``check_tree``
+      as a precondition; ``check_subject`` owes nothing and its mention struck.
+  R3  **``subjects_of_seal`` WAS THE INTENT.** ``UNNAMEABLE`` yields a finding;
+      ``SUBJECT_UNIDENTIFIED`` is live; ``check_tree``'s sentence was
+      over-general and now splits by member.
+  R4  **THE EMPTY TREE RETURNS.** The zero-roots raise is struck.
+  R5  **ROOTS ARE INCLUDED**, mapped to ``()``, and a zero-edge chain is
+      ``RESOLVED``. ``NO_ENTRYPOINT`` is still decided from the root set.
+  R6  **BOTH FIGURES CORRECTED, NEITHER PINNED BY A ROW**, for different
+      reasons — one is over frozen text, the other over the live tree.
+  R7  **THE MECHANISM OWES A STATEMENT AND NOW MAKES ONE**: D5 must abstain
+      over its own Python subjects, and the row's boolean and the closure rule
+      are independent in both directions.
+  R8  **RATIFIED WITH A CONDITION**: a declaration with no ``wiring`` is not a
+      declaration.
+
+THE ORIGINAL EIGHT
+------------------
+Each raised at the row that met it.
 
   R1. **``UndecidedReason.ANALYZER_FAULT`` has no production site.**
       :class:`AnalyzerFault` says "every member maps to
@@ -490,12 +514,15 @@ def _finding(
 
 
 def _declaration(
-    *, test_id: str = _SEAL.test_id, subject_key: str = _SUBJECT.key
+    *,
+    test_id: str = _SEAL.test_id,
+    subject_key: str = _SUBJECT.key,
+    wiring: str = "SMG-0000 will call it from resolveConfigPath",
 ) -> StagedDeclaration:
     return StagedDeclaration(
         test_id=test_id,
         subject_key=subject_key,
-        wiring="SMG-0000 will call it from resolveConfigPath",
+        wiring=wiring,
         reason="staged behind the config-path repair",
     )
 
@@ -1294,17 +1321,21 @@ def test_a_subject_record_never_says_two_things_or_nothing():
 def test_no_undecided_reason_is_actionable_as_a_pass(reason):
     """Every abstention lands apart from every pass, and none is declarable.
 
-    Six members, each judged in the same call as the two things it must not be
-    confused with: a resolved production pass and an over-approximated one. And
-    a matching declaration must not move it — the abstention count is this
-    mechanism's own coverage figure and a declaration that could silence one
-    would be buying silence on a measurement nobody took.
+    **Five** members, each judged in the same call as the two things it must
+    not be confused with: a resolved production pass and an over-approximated
+    one. And a matching declaration must not move it — the abstention count is
+    this mechanism's own coverage figure and a declaration that could silence
+    one would be buying silence on a measurement nobody took.
 
-    R1 and R3 are visible here: ``ANALYZER_FAULT`` and ``SUBJECT_UNIDENTIFIED``
-    have no production site under the contracts as written. This row is over
-    the ENUM, so it holds whichever way P4 rules; the rows that would exercise
-    their production sites are :func:`test_an_analyzer_fault_never_reads_as_a_clean_tree`
-    and :func:`test_an_unnameable_target_is_counted_and_never_passes`.
+    R1 and R3 were the two dead-member questions and P4 ruled them opposite
+    ways, which is why this row's parameter count moved from six to five with
+    no assertion changed: ``ANALYZER_FAULT`` was STRUCK (a fault raises; both
+    faulting sites are upstream of the subject population) and
+    ``SUBJECT_UNIDENTIFIED`` was CONFIRMED LIVE (an ``UNNAMEABLE`` seal does
+    produce an abstention finding). This row is over the ENUM and needed no
+    amendment for either; the rows that exercise the two production sites are
+    :func:`test_an_analyzer_fault_never_reads_as_a_clean_tree` and
+    :func:`test_an_unnameable_target_is_counted_and_never_passes`.
 
     RED at HEAD. Reddens under a body on: mapping any abstention onto a pass
     bucket; letting a declaration touch an abstention.
@@ -1424,23 +1455,27 @@ def test_no_entrypoint_is_a_fact_about_the_root_set(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("fault", list(AnalyzerFault), ids=lambda f: f.value)
 def test_an_analyzer_fault_never_reads_as_a_clean_tree(tmp_path, monkeypatch, fault):
-    """A broken toolchain is not "no Go here". Either answer, never silence.
+    """A broken toolchain is not "no Go here". It is a refusal to answer.
 
-    R1: :class:`AnalyzerFault` says every member maps to an ABSTENTION, and the
-    two functions that run an analyzer both say they RAISE. This row seals only
-    what both readings agree on, because the disagreement is P4's: a faulting
-    analyzer must produce either a :class:`CallSiteReachabilityError` or a
-    report that abstains — and never a report a caller can read as clean. A Go
-    tree analyzed in a CI image with no toolchain reporting "nothing to analyze
-    here" is a live fail-open for as long as the image stays broken.
+    R1, RULED by P4 2026-08-11: the raises in :func:`discover_roots` and
+    :func:`build_call_graph` stand and ``UndecidedReason.ANALYZER_FAULT`` is
+    STRUCK, because both faulting sites are upstream of the subject population
+    — a fault leaves no roots, therefore no seals, therefore no subjects to
+    abstain over, and an abstention you cannot enumerate is silence with a
+    label. So this row no longer accepts either answer: every
+    :class:`AnalyzerFault` must reach the caller as a
+    :class:`CallSiteReachabilityError`, which is not a pass and not a silent
+    skip. A Go tree analyzed in a CI image with no toolchain reporting
+    "nothing to analyze here" is a live fail-open for as long as the image
+    stays broken, and so is one reporting nothing at all without raising.
 
     The control is judged in the same call: the same analyzer, not faulting,
     returns a report with real findings — so a body that raises on everything
     does not pass.
 
     RED at HEAD. Reddens under a body on: catching
-    :class:`AnalyzerUnavailable` and returning a partial report; mapping a
-    fault onto ``dispositions[OK]``.
+    :class:`AnalyzerUnavailable` and returning a report of any kind; raising
+    any type other than the mechanism's own.
     """
     tree = _tree(tmp_path)
     monkeypatch.setattr(
@@ -1449,17 +1484,8 @@ def test_an_analyzer_fault_never_reads_as_a_clean_tree(tmp_path, monkeypatch, fa
         (_go(raises=AnalyzerUnavailable(fault, "measured by a seal")),),
     )
 
-    try:
-        report = check_tree(tree)
-    except CallSiteReachabilityError:
-        pass
-    else:
-        assert report.dispositions[Disposition.OK] == 0
-        assert report.findings, "a faulting analyzer produced an empty report"
-        assert all(f.reach is Reach.UNDECIDED for f in report.findings)
-        assert all(
-            f.reason is UndecidedReason.ANALYZER_FAULT for f in report.findings
-        )
+    with pytest.raises(CallSiteReachabilityError):
+        check_tree(tree)
 
     monkeypatch.setattr(csr, "ANALYZERS", (_go(),))
     healthy = check_tree(tree)
@@ -1509,19 +1535,26 @@ def test_a_source_unreadable_abstains_over_the_whole_tree(tmp_path, monkeypatch)
 def test_an_unnameable_target_is_counted_and_never_passes(tmp_path, monkeypatch):
     """A seal whose target could not be named is visible, and is not a pass.
 
-    R3: :func:`subjects_of_seal` contracts this as an abstention with a
-    finding; :func:`check_tree` contracts a gap-bearing seal as producing no
-    finding. The two cannot both hold. This row seals their intersection —
-    the seal is counted in ``subject_gaps[UNNAMEABLE]``, the count is on the
-    face of the report, and nothing about it lands in a passing bucket — and
-    leaves the finding question to P4.
+    R3, RULED by P4 2026-08-11 in favour of :func:`subjects_of_seal`:
+    ``UNNAMEABLE`` DOES produce a finding, an abstention carrying
+    ``SUBJECT_UNIDENTIFIED`` over a synthetic subject symbol, and
+    :func:`check_tree`'s "produces no finding" was over-general — it holds for
+    ``NO_CALLS`` and ``ALL_TARGETS_IN_TESTS``, which are seals that made no
+    claim, and not for the one gap that means the mechanism could not READ a
+    claim. ``SUBJECT_UNIDENTIFIED`` is therefore not a dead member.
+
+    The row is amended accordingly, and the amendment is a strengthening: as
+    written the per-finding loop below was VACUOUSLY satisfied by a report with
+    no finding for the mystery seal at all, which is precisely the reading the
+    ruling rejects. A finding must now exist.
 
     An unresolved call from the seal is how the state arises: the seal calls
     something through a value, and the unnameable target may be the very
     production symbol the seal exists to cover.
 
     RED at HEAD. Reddens under a body on: dropping the gap counts; folding
-    UNNAMEABLE into NO_CALLS; reporting the seal as OK.
+    UNNAMEABLE into NO_CALLS; reporting the seal as OK; discharging the
+    unnameable seal as a count with no finding.
     """
     tree = _tree(tmp_path)
     mystery = Seal(
@@ -1554,10 +1587,23 @@ def test_an_unnameable_target_is_counted_and_never_passes(tmp_path, monkeypatch)
     assert report.subject_gaps[SubjectGap.UNNAMEABLE] >= 1, (
         "a seal whose call target could not be named vanished from the report"
     )
-    for finding in report.findings:
-        if finding.seal.test_id == mystery.test_id:
-            assert finding.reach is Reach.UNDECIDED
-            assert finding.reason is UndecidedReason.SUBJECT_UNIDENTIFIED
+    mystery_findings = [
+        f for f in report.findings if f.seal.test_id == mystery.test_id
+    ]
+    assert len(mystery_findings) == 1, (
+        "an UNNAMEABLE seal produces exactly one finding, an abstention; a "
+        "count with no finding discharges 'the mechanism could not read this "
+        "claim' as though the seal had made none"
+    )
+    for finding in mystery_findings:
+        assert finding.reach is Reach.UNDECIDED
+        assert finding.reason is UndecidedReason.SUBJECT_UNIDENTIFIED
+        assert finding.quality is PathQuality.NOT_APPLICABLE
+        assert finding.path is None
+        assert finding.subject.key not in graph.symbols, (
+            "the synthetic subject must carry a key no declaration can "
+            "produce, or it collides with a real symbol"
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -2012,13 +2058,37 @@ def test_a_declaration_moves_at_most_one_outcome_and_never_an_abstention():
         pytest.param(
             _declaration(test_id="TestSeal_ResolveConfigDual"), id="unqualified-test-id"
         ),
+        pytest.param(_declaration(wiring=""), id="empty-wiring"),
+        pytest.param(_declaration(wiring="   \t\n"), id="whitespace-wiring"),
     ],
 )
-def test_a_declaration_that_misses_either_key_buys_nothing(declaration):
-    """BOTH keys must match exactly. A typo is not an accepted state.
+def test_a_declaration_that_misses_a_key_or_names_no_wiring_buys_nothing(declaration):
+    """BOTH keys must match exactly, and ``wiring`` must say something.
+
+    A typo is not an accepted state, and neither is an empty promise.
+
+    R8, RATIFIED by P4 2026-08-11 WITH A CONDITION, which is what the last two
+    parameters pin. The appeal was ratified on the scaffold's argument — the
+    scaffold-first protocol manufactures this state by construction, so an
+    unappealable BREACH makes P1's own intermediate state a blocking failure
+    and the check gets switched off. But the scaffold's guarantee against a
+    rubber stamp ("a B1 author writing the ``wiring`` sentence would have
+    discovered the bug in the act of writing it") is unenforceable on its own:
+    nothing reads the sentence, so nothing stops it being ``""``. The
+    ratification therefore adds the one part a machine can check — **a
+    declaration with no ``wiring`` is not a declaration**, is ignored for the
+    ruling exactly as a key mismatch is, and is reported stale. It is
+    deliberately not a check that the named ticket exists: this module has no
+    issue tracker and a verdict behind a network call is a worse gate.
+
+    The two key-mismatch parameters and the two wiring parameters are the same
+    assertion because they are the same rule: a declaration that fails any
+    precondition buys exactly nothing, and buying nothing must be
+    indistinguishable from not declaring.
 
     RED at HEAD. Reddens under a body on: matching on one key; matching on a
-    suffix or a bare name.
+    suffix or a bare name; honouring a declaration whose ``wiring`` is empty or
+    whitespace.
     """
     finding = _finding(Reach.FROM_TESTS_ONLY, PathQuality.NOT_APPLICABLE)
     assert adjudicate(finding, declaration) is adjudicate(finding, None)
@@ -2033,31 +2103,35 @@ def test_an_empty_run_is_distinguishable_from_a_clean_one(tmp_path, monkeypatch)
     """Zero breaches over zero seals must not read as a clean tree.
 
     What this module exists to stop other people shipping, turned on itself.
-    R4: :class:`CallSiteReachabilityError` says a report over zero roots
-    raises, and the CHOICE on :func:`check_tree` says an empty tree returns
-    ``seals_examined=0`` and does not. Either is accepted here; what is not
-    accepted is the third option, a report that looks clean.
+
+    R4, RULED by P4 2026-08-11 in favour of the CHOICE on :func:`check_tree`:
+    an empty tree RETURNS a report and does not raise, and
+    ":class:`CallSiteReachabilityError` ... over zero roots" is struck. Zero
+    production roots already has a first-class answer (``NO_ENTRYPOINT``), so a
+    raise would be a second layer answering one state — the thing the
+    ``FROM_NEITHER`` treatment refuses — and a mechanism that raises rather
+    than shipping an empty root list can never SHOW one, which kills the stated
+    purpose of ``roots`` as the non-vacuity field. The row is amended
+    accordingly and the amendment is a strengthening: it no longer accepts
+    either answer.
 
     The control is judged in the same call: the populated tree reports a
     non-zero ``seals_examined``, so a body that reports zero always does not
     pass.
 
-    RED at HEAD. Reddens under a body on: returning a report with no root list;
-    reporting ``seals_examined`` as anything but the count of test functions.
+    RED at HEAD. Reddens under a body on: raising on an empty tree; returning a
+    report with no root list; reporting ``seals_examined`` as anything but the
+    count of test functions.
     """
     empty = tmp_path / "empty"
     empty.mkdir()
     monkeypatch.setattr(csr, "ANALYZERS", (_go(roots=(), graph=_graph(symbols=(), edges=())),))
-    try:
-        report = check_tree(empty)
-    except CallSiteReachabilityError:
-        pass
-    else:
-        assert report.seals_examined == 0
-        assert report.roots == ()
-        assert report.findings == ()
-        assert set(report.dispositions) == set(Disposition)
-        assert sum(report.dispositions.values()) == 0
+    report = check_tree(empty)
+    assert report.seals_examined == 0
+    assert report.roots == ()
+    assert report.findings == ()
+    assert set(report.dispositions) == set(Disposition)
+    assert sum(report.dispositions.values()) == 0
 
     populated = _tree(tmp_path)
     monkeypatch.setattr(csr, "ANALYZERS", (_go(),))
