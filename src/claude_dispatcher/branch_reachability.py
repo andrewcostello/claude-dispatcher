@@ -255,13 +255,21 @@ Every figure above is stamped. Nothing here is inherited.
 
 from __future__ import annotations
 
+import collections.abc
+import os
+import shutil
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
+from . import role_protocol as role_protocol_mod
+from . import yaml_io
 from .call_site_contract import RootKind
 from .call_site_reachability import (
+    CallSiteReachabilityError,
     Disposition,
     ReachabilityReport,
     StagedDeclaration,
@@ -269,6 +277,7 @@ from .call_site_reachability import (
     _declaration_answers,
     adjudicate,
     analyzer_for_path,
+    check_tree,
 )
 
 # CHOICE (rejected: re-spell the declaration match here, both keys, rather than
@@ -476,6 +485,27 @@ _BLOCKING_SWEEP_STATUSES: frozenset[ReachabilitySweepStatus] = frozenset(
     }
 )
 
+#: DISPUTE D4's ruling in one name, so that the three sites that use it cannot
+#: drift and so that the P4 who adds the tenth member has one line to change.
+#: See :func:`check_branch_reachability`'s D4 section for why this member and
+#: not one of the other three that refuse. It is asserted below to be one of
+#: them, because a D4 ruling that resolved to a CLEARING status would be the
+#: permissive answer with a third spelling.
+_APPEAL_UNREADABLE_STATUS: ReachabilitySweepStatus = (
+    ReachabilitySweepStatus.UNCHECKED_SWEEP_VACUOUS
+)
+
+if _APPEAL_UNREADABLE_STATUS not in _BLOCKING_SWEEP_STATUSES:  # pragma: no cover
+    # An `if`/`raise` and NOT an `assert`, deliberately: `python -O` strips
+    # asserts, and a guard that vanishes under a flag is "a guard that reads as
+    # protection" — the failure `FLOOR_GLOBS` records for the brace-compressed
+    # glob and the one this module spends a docstring refusing.
+    raise BranchReachabilityError(
+        "the status DISPUTE D4 is ruled onto must REFUSE on the role whose "
+        "gate this is; an appeal file nobody could read is something an author "
+        "can fix and re-running clears, and none of the nine may read as a pass"
+    )
+
 
 # --------------------------------------------------------------------------- #
 # The verdict mapping. Five dispositions, three verdicts, exhaustive
@@ -624,7 +654,10 @@ def verdict_for_abstention(reason: UndecidedReason | None) -> DiffVerdict:
             "so this record was not validated and the gate will not pick a "
             "side of the blocking set for it"
         )
-    if reason not in UndecidedReason:
+    # DEFECT D5, FIXED (P3 body). Was ``if reason not in UndecidedReason``.
+    # See the note on :func:`verdict_for_status` for the measurement and for
+    # why this spelling and not the other.
+    if not isinstance(reason, UndecidedReason):
         raise BranchReachabilityError(
             f"{reason!r} is not an UndecidedReason; every dispatch over that "
             "enum must be exhaustive and RAISE on an unknown member, which is "
@@ -644,8 +677,43 @@ def verdict_for_status(status: ReachabilitySweepStatus) -> DiffVerdict:
     the distinction the status name on the verdict line carries.
 
     **IMPLEMENTED**, same reason as the two above.
+
+    DEFECT D5, FIXED (P3 body, ``feat/D7-body``). The shipped guard was ``if
+    status not in ReachabilitySweepStatus``, and ``x in SomeEnum`` is a **value**
+    lookup on Python 3.12+. *Measured under* ``8948a6e`` on python 3.13.7,
+    before the fix::
+
+        "checked" in ReachabilitySweepStatus            -> True
+        verdict_for_status("unchecked_analyzer_fault")  -> DiffVerdict.CLEAN
+        verdict_for_abstention("parse_failed")          -> DiffVerdict.CLEAN
+
+    The guard admitted the bare string, the string then failed a membership
+    test against a frozenset of MEMBERS, and both functions returned the
+    CLEARING branch — for exactly the two inputs their own docstrings say must
+    refuse. ``isinstance`` is the fix in both.
+
+    **The defect was inside the thing built to prevent the defect.** These three
+    tables were implemented at P1 rather than stubbed *precisely* so that a seal
+    author would not be sealing a vacuous stub of "an unmapped member raises" —
+    and the permissive answer walked in through the one spelling of that raise
+    nobody re-derived. A guard is only worth what its author measured, not what
+    its docstring claims; this one claimed to forbid "a new spelling of the
+    permissive answer" while being one.
+
+    *Measured under* ``8948a6e``, the three dispatches D5 says are unaffected,
+    re-derived rather than assumed: ``verdict_for_disposition("breach")``,
+    ``obligation_for_role("bodies")`` and ``worst_verdict(["clean"])`` each
+    raise :class:`BranchReachabilityError` already — the first two dispatch
+    through a ``dict`` lookup (a string is not a member and is not a key) and
+    the third tests membership against ``_VERDICT_PRECEDENCE``, a **tuple** of
+    members, where ``in`` is ordinary equality and not the enum protocol. All
+    three value spellings *are* accepted by ``in <Enum>``
+    (``"breach" in Disposition``, ``"bodies" in Role``, ``"clean" in
+    DiffVerdict`` are each True), so the three are safe by their dispatch shape
+    and not by their inputs — which is why they are worth re-measuring rather
+    than reasoning about.
     """
-    if status not in ReachabilitySweepStatus:
+    if not isinstance(status, ReachabilitySweepStatus):
         raise BranchReachabilityError(
             f"{status!r} is not a ReachabilitySweepStatus; a new member must "
             "be ruled into or out of _BLOCKING_SWEEP_STATUSES explicitly, "
@@ -987,12 +1055,32 @@ def analyzable_paths(changed_paths: Sequence[str]) -> tuple[str, ...]:
 DECLARATION_PATH = ".dispatcher.staged.yaml"
 
 
+#: The four fields a declaration row must carry, and the ONLY four. Checked
+#: both ways — a row missing one is a :class:`BranchReachabilityError` by the
+#: contract below, and a row carrying a FIFTH is one too, because the fifth is
+#: almost always a misspelling of one of these four and a misspelled
+#: ``subject_key`` silently answers nothing while looking like an appeal. The
+#: cost of the strictness is that a future field is a two-line edit here; the
+#: cost of the alternative is an appeal that reads as written and adjudicates
+#: as absent, which is the vacuous shape this module exists to refuse.
+_DECLARATION_FIELDS: tuple[str, ...] = ("test_id", "subject_key", "wiring", "reason")
+
+
 def declarations_at(
     repo_root: str | Path, ref: str, *, run: Callable[..., object] | None = None
 ) -> tuple[StagedDeclaration, ...]:
     """Every :class:`StagedDeclaration` at :data:`DECLARATION_PATH` in ``ref``.
 
-    **STUB.** A body implements it.
+    **IMPLEMENTED (P3 body, ``feat/D7-body``).**
+
+    Delegates the git read to ``role_protocol.file_text_at``, looked up as an
+    attribute on the module and never from-imported, so this module grows no
+    second git seam: that function already answers symlink, submodule,
+    non-UTF-8 and unresolvable-ref for both gates at once (it delegates in turn
+    to ``repo_config.blob_text_at``, invariant 5's one reader of a path out of
+    a ref's object store). ``None`` from it means "this ref's tree does not
+    contain the file" and nothing else — the distinction the whole third bullet
+    below rests on.
 
     Contract:
 
@@ -1020,14 +1108,169 @@ def declarations_at(
     is a cache that goes stale across a branch that moved mid-check — the
     window ``check_branch`` step 5b already exists to close.
     """
-    raise NotImplementedError(
-        "D7 P1 scaffold: declarations_at is a stub; see its contract"
-    )
+    try:
+        text = role_protocol_mod.file_text_at(
+            repo_root, ref, DECLARATION_PATH, run=run
+        )
+    except Exception as exc:  # RoleDiffError, and anything the seam raises
+        raise BranchReachabilityError(
+            f"cannot read {DECLARATION_PATH} at {ref}: {exc}; 'I could not "
+            "read the appeals' is never answered with 'there were no "
+            "appeals', which would turn every declared finding back into a "
+            "silent BREACH"
+        ) from exc
+
+    if text is None:
+        return ()
+
+    try:
+        rows = yaml_io.loads(text)
+    except Exception as exc:
+        raise BranchReachabilityError(
+            f"{DECLARATION_PATH} at {ref} is not readable YAML: {exc}; a file "
+            "that is PRESENT and unparseable is a refusal, never zero "
+            "declarations"
+        ) from exc
+
+    if rows is None:  # an empty document, which is a file with no rows in it
+        return ()
+    if not isinstance(rows, list):
+        raise BranchReachabilityError(
+            f"{DECLARATION_PATH} at {ref} parses to {type(rows).__name__}, not "
+            "a list of mappings; the shape load_role_policy_from_base refuses "
+            "for the policy, refused here for the appeal"
+        )
+
+    declarations: list[StagedDeclaration] = []
+    for index, row in enumerate(rows):
+        where = f"{DECLARATION_PATH} at {ref}, row {index}"
+        if not isinstance(row, collections.abc.Mapping):
+            raise BranchReachabilityError(
+                f"{where} is {type(row).__name__}, not a mapping; a list of "
+                "something else is not a list of declarations"
+            )
+        missing = [field for field in _DECLARATION_FIELDS if field not in row]
+        if missing:
+            raise BranchReachabilityError(
+                f"{where} is missing {missing!r}; every row must carry all "
+                "four fields, and a row with no `wiring` KEY cannot even be "
+                "the empty-wiring case adjudicate already rules on"
+            )
+        unknown = [key for key in row if key not in _DECLARATION_FIELDS]
+        if unknown:
+            raise BranchReachabilityError(
+                f"{where} carries {unknown!r}, which is not one of "
+                f"{list(_DECLARATION_FIELDS)}; an unrecognised key is a "
+                "misspelling far more often than it is an extension, and a "
+                "misspelled subject_key is an appeal that answers nothing "
+                "while reading as one"
+            )
+        values = {}
+        for field in _DECLARATION_FIELDS:
+            value = row[field]
+            if not isinstance(value, str):
+                raise BranchReachabilityError(
+                    f"{where} has {field}={value!r}, which is "
+                    f"{type(value).__name__} and not a string; both keys are "
+                    "matched by exact string equality and a non-string "
+                    "matches nothing"
+                )
+            values[field] = value
+        # `wiring` that is empty or whitespace is deliberately NOT rejected
+        # here — it is passed through, because `adjudicate` already ignores it
+        # exactly as it ignores a key mismatch and `check_tree` already reports
+        # it in `stale_declarations`. Two places ruling on one behaviour is two
+        # places to drift.
+        declarations.append(StagedDeclaration(**values))
+    return tuple(declarations)
 
 
 # --------------------------------------------------------------------------- #
 # Materialising the two trees
 # --------------------------------------------------------------------------- #
+
+#: How long any one subprocess this module starts may take. The same shape
+#: ``repo_config`` uses, and here for the same reason: a gate that can hang is
+#: a gate CI kills without a verdict, which is the one outcome worse than a
+#: named refusal.
+_SUBPROCESS_TIMEOUT_SECONDS = 300
+
+
+def _run_capture(
+    command: Sequence[str], run: Callable[..., object] | None
+) -> tuple[int, str]:
+    """``(returncode, stderr)`` for one command, through the injectable seam.
+
+    ``run``'s convention is ``repo_config._run_git``'s, which is
+    ``push_verify``'s: a ``CompletedProcess`` or a ``(rc, out, err)`` triple
+    are both accepted, because the seam's shape is the caller's choice.
+
+    Only ``stderr`` is returned because neither of this module's two commands
+    has a stdout a caller reads — ``git archive`` writes its bytes to
+    ``--output`` and ``tar`` writes files. A helper that returned stdout would
+    be a helper that invited someone to hold 270 MB in a string.
+    """
+    if run is None:
+        proc = subprocess.run(
+            list(command),
+            capture_output=True,
+            text=True,
+            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        return proc.returncode, proc.stderr or ""
+    result = run(
+        list(command),
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+    )
+    if hasattr(result, "returncode"):
+        code = int(getattr(result, "returncode"))
+        return code, str(getattr(result, "stderr", "") or "")
+    if isinstance(result, tuple) and len(result) >= 2:
+        return int(result[0]), str(result[2]) if len(result) > 2 and result[2] else ""
+    raise BranchReachabilityError(
+        f"the injected run seam answered {result!r}, which is neither a "
+        "CompletedProcess nor a (rc, out, err) triple; a gate cannot read a "
+        "verdict out of a shape it does not recognise"
+    )
+
+
+def _resolved_sha(
+    repo_root: Path, ref: str, run: Callable[..., object] | None
+) -> str | None:
+    """``ref``'s commit sha in ``repo_root``, or ``None`` when it does not resolve.
+
+    ``git rev-parse --verify <ref>^{commit}`` — ``^{commit}`` so that a tag and
+    the commit it points at compare equal, and ``--verify`` so that an
+    unresolvable ref is a non-zero exit rather than the string ``<ref>`` echoed
+    back, which is ``rev-parse``'s default and would compare unequal to
+    everything and read as "not checked out" for a reason that is not that.
+    """
+    if run is None:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--verify", f"{ref}^{{commit}}"],
+            capture_output=True,
+            text=True,
+            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        return proc.stdout.strip() if proc.returncode == 0 else None
+    result = run(
+        ["git", "-C", str(repo_root), "rev-parse", "--verify", f"{ref}^{{commit}}"],
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+    )
+    if hasattr(result, "returncode"):
+        if int(getattr(result, "returncode")) != 0:
+            return None
+        return str(getattr(result, "stdout", "") or "").strip()
+    if isinstance(result, tuple) and len(result) >= 2:
+        return str(result[1] or "").strip() if int(result[0]) == 0 else None
+    raise BranchReachabilityError(
+        f"the injected run seam answered {result!r} for rev-parse; see "
+        "_run_capture"
+    )
 
 
 def materialise_base_tree(
@@ -1040,7 +1283,9 @@ def materialise_base_tree(
 ) -> Path:
     """Extract ``subtree`` at ``base_ref`` into ``destination``; return the tree root.
 
-    **STUB.** A body implements it.
+    **IMPLEMENTED (P3 body, ``feat/D7-body``).** ``subtree`` is a git pathspec;
+    ``""`` and ``"."`` mean **the whole repository**, which under the D2 ruling
+    below is what the only caller passes.
 
     This function is the delta ruling's whole extra cost and the reason it is
     affordable. *Measured under* ``2e0dc89`` on ``evenplay-mono`` @
@@ -1052,6 +1297,43 @@ def materialise_base_tree(
     and a ``check_tree`` sweep over the archived result costs the same as one
     over the tree in place (7.83 s then 7.69 s, against 7.84 / 7.69 / 7.61 s
     in place), so the extraction adds its 0.01 s and nothing else.
+
+    **THE D2 PRICE, MEASURED. The whole tree, not a subtree.** DISPUTE D2 ruled
+    that both halves of the delta must be swept at the REPOSITORY ROOT, because
+    a subject key, a subject path and a seal ``test_id`` are all relative to the
+    swept root — so a subtree base matches nothing a whole-tree head produced,
+    and a *symmetric* subtree reading makes a ``.dispatcher.staged.yaml``
+    written from one branch's report stop matching on the next branch, whose
+    different changed-file set derives a different scope. An appeal whose
+    validity depends on which files the branch happened to edit is not an
+    appeal. The scaffold's 472 KB figure is therefore not the figure this gate
+    pays, and it is re-measured here rather than inherited.
+
+    *Measured under* ``8948a6e`` on ``evenplay-mono`` @ ``51a71736c``, this
+    host, three repetitions, ``git archive --format=tar`` piped through
+    ``tar -x``, wall clock covering archive **and** extraction::
+
+        git archive <ref> apps/website-public-api | tar -x
+            0.017 / 0.029 / 0.031 s      472 KB extracted (420 KB tar)   58 files
+        git archive <ref> | tar -x        (the whole tree, D2's ruling)
+            0.856 / 0.845 / 0.859 s   279 824 KB extracted (270 MB tar)  6 285 files
+
+    **So D2 costs 0.85 s and 273 MB where the scaffold budgeted 0.01 s and
+    472 KB — 28x the time and 592x the bytes.** Two things about that number
+    before anyone argues from it:
+
+      * against the delta's own measured 15.4 s of sweeping on this same
+        target, 0.84 s of extra extraction is **+5.5% wall clock**. The
+        extraction was never the cost; the second sweep is;
+      * it is the same order as ``git worktree add --detach`` (0.74–0.76 s,
+        275 MB), which the contract rejected *on cost*. At whole-tree scale
+        that argument is gone — the two routes cost the same. What survives,
+        and is now the ONLY reason to prefer ``git archive``, is that it
+        touches no worktree registry: a removed directory leaves a REGISTERED
+        worktree and the next ``add`` fails until ``git worktree prune``, and a
+        gate that can wedge a repository it was only supposed to read is not a
+        gate anyone leaves on. That reason is sufficient on its own and it is
+        the one to keep quoting.
 
     Contract:
 
@@ -1078,11 +1360,72 @@ def materialise_base_tree(
     ``subtree`` is the analyzable scope, not the repository: on a monorepo the
     branch's Go work is one app and extracting the other 274 MB buys nothing.
     Deriving it is the caller's job — see
-    :func:`check_branch_reachability`.
+    :func:`check_branch_reachability`. **That sentence is the contract's, and
+    D2 overruled it**: the only caller passes ``""``, and the 274 MB is bought
+    not for the analysis but for the stability of the keys the appeal file is
+    written in. The parameter is kept because the containment and cleanup
+    obligations are the function's regardless of scope, and because the seal
+    exercises it with a real subtree.
+
+    IMPLEMENTATION NOTE — ``--output`` and then ``tar -xf``, not a pipe. Two
+    ordinary ``run`` calls through the injectable seam instead of a
+    ``Popen``-to-``Popen`` pipe, and neither ever holds the archive in memory:
+    at whole-tree scale on the primary target that would be a 270 MB
+    ``bytes``. The tarball is created by ``tempfile.mkstemp`` — outside
+    ``repo_root`` by the same obligation ``destination`` is — and unlinked in a
+    ``finally``.
     """
-    raise NotImplementedError(
-        "D7 P1 scaffold: materialise_base_tree is a stub; see its contract"
-    )
+    repo = Path(repo_root).resolve()
+    dest = Path(destination).resolve()
+
+    if dest == repo or repo in dest.parents:
+        raise BranchReachabilityError(
+            f"refusing to materialise the base tree at {dest}, which is inside "
+            f"{repo}: check_tree's own obligation is never to write into the "
+            "tree it reads, and a base extracted under repo_root would "
+            "additionally appear in the HEAD sweep as new packages — a gate "
+            "manufacturing its own findings"
+        )
+
+    dest.mkdir(parents=True, exist_ok=True)
+    pathspec = [] if subtree in ("", ".") else [subtree]
+
+    handle, tarball_name = tempfile.mkstemp(prefix="d7-base-", suffix=".tar")
+    os.close(handle)
+    tarball = Path(tarball_name)
+    try:
+        code, stderr = _run_capture(
+            [
+                "git",
+                "-C",
+                str(repo),
+                "archive",
+                "--format=tar",
+                f"--output={tarball}",
+                base_ref,
+                *pathspec,
+            ],
+            run,
+        )
+        if code != 0:
+            raise BranchReachabilityError(
+                f"git archive {base_ref} {' '.join(pathspec)} in {repo} exited "
+                f"{code}: {stderr.strip()}; a base that cannot be materialised "
+                "is UNCHECKED_BASE_UNAVAILABLE at the caller and never an "
+                "empty tree, which would make every head finding look "
+                "introduced"
+            )
+        code, stderr = _run_capture(["tar", "-xf", str(tarball), "-C", str(dest)], run)
+        if code != 0:
+            raise BranchReachabilityError(
+                f"tar -xf into {dest} exited {code}: {stderr.strip()}; a "
+                "partially extracted base tree is the same falsehood as an "
+                "empty one"
+            )
+    finally:
+        tarball.unlink(missing_ok=True)
+
+    return dest
 
 
 # --------------------------------------------------------------------------- #
@@ -1216,6 +1559,25 @@ def check_branch_reachability(
          the exit most branches take and it is what keeps the gate cheap in
          practice**: on this repository a Python-only branch never reaches
          step 5.
+
+         **AMENDED FOR DISPUTE D6 (P3 body): the exit is not taken when
+         :data:`DECLARATION_PATH` is among the changed paths.** The exit's
+         soundness argument is *"a branch that changed no file any analyzer can
+         read changed no call edge in any language this gate can see"*. That
+         sentence is TRUE and it does not cover the appeal file, because
+         withdrawing a declaration changes no edge — it changes the
+         ADJUDICATION, and the delta is then ``base=ACCEPTED`` →
+         ``head=BREACH`` on every line the appeal was holding.
+
+         *Measured under* ``8948a6e``: a branch whose ENTIRE diff is the
+         deletion of an appeal answering all ten findings the compiling edit
+         introduced is worth ten VIOLATIONs, and ``analyzable_paths`` over its
+         truthful changed-path list — ``('.dispatcher.staged.yaml',)`` — is
+         ``()``. Under the exit as written that branch is CLEAN. One line
+         fixes it and the line is here; the general shape is a contract
+         question and is filed: **the gate's inputs are not only the files an
+         analyzer can read**, and any future non-source input to the verdict
+         inherits this hole.
       4. confirm ``repo_root``'s HEAD IS ``branch_ref``, else return with
          :attr:`~ReachabilitySweepStatus.UNCHECKED_HEAD_NOT_CHECKED_OUT`.
          **This is the architectural gap and it must not be assumed away.**
@@ -1226,11 +1588,67 @@ def check_branch_reachability(
          assumption that holds is still an assumption, and this one silently
          judges the wrong revision when it stops holding. Same shape as step
          5b's "the branch moved while it was being checked", same answer.
-      5. derive the analyzable SUBTREE from step 3's paths — the shallowest
-         directory containing all of them, or the repository root when they
-         span more than one — and :func:`materialise_base_tree` it at
-         ``base_ref``. A failure is
+      5. :func:`materialise_base_tree` at ``base_ref``. A failure is
          :attr:`~ReachabilitySweepStatus.UNCHECKED_BASE_UNAVAILABLE`.
+
+         **AMENDED FOR DISPUTES D2 AND D3 (P3 body): the scope is the
+         REPOSITORY ROOT, for both halves, and no subtree is derived from the
+         changed paths at all.** The contract said "the shallowest directory
+         containing all of them". Both of the readings that sentence permits
+         are inadmissible and both were measured:
+
+           * **the mix the contract literally specifies** — base at the derived
+             subtree, head at ``repo_root`` (step 6's own words) — reports
+             **12 introduced on a ``cmd/gates``-only branch**, every one of them
+             ``cmd/iterate``'s pre-existing standing BREACHes, absent from a
+             base tree that holds only ``cmd/gates`` and therefore reading as
+             new. Sweeping the base one directory deeper instead gives **22**,
+             because a subject key is qualified by the package's directory
+             RELATIVE TO THE SWEPT ROOT and a base swept deeper matches
+             nothing. :func:`sweep_is_vacuous` catches **neither**: head 30
+             seals against base 12 trips no check. Through the gate the mix
+             reddens THIRTEEN rows;
+           * **the symmetric subtree reading** — both halves at the derived
+             subtree — is consistent and still inadmissible, and this is the
+             finding that decides it. Subject key, subject path and seal
+             ``test_id`` are ALL relative to the swept root, so a
+             :data:`DECLARATION_PATH` written from one branch's gate report
+             stops matching on the NEXT branch, whose different changed-file
+             set derives a different scope. **An appeal whose validity depends
+             on which files the branch happened to edit is not an appeal.** It
+             reddens 2 rows.
+
+         So: the repository root for both halves. Its price is a whole-tree
+         archive rather than a subtree one and that price is measured on
+         :func:`materialise_base_tree` — 0.85 s and 273 MB against 0.01 s and
+         472 KB on the primary target, which is +5.5% on the delta's own
+         15.4 s. The contract bought its cheapness by making the appeal file's
+         keys a function of the diff, and that was not a trade a seal author
+         could hide or a body could take.
+
+         **AND DO NOT REINTRODUCE A COMMON ROOT AS AN OPTIMISATION.** "The
+         shallowest directory containing all of them" cuts a module in half:
+         *measured under* ``8948a6e`` on ``tests/fixtures/d6_import_scope``,
+         one Go module, the whole tree reports **2 seals / 1 BREACH** and
+         ``cmd/app`` extracted alone reports **0 seals, 0 findings, 0
+         production roots and NO ERROR**. A branch editing only
+         ``cmd/app/main.go`` would be swept over a tree with no ``go.mod``,
+         take :attr:`~ReachabilitySweepStatus.NO_SEAL_IN_TREE` — *CLEAN, and
+         loud* — and state that a tree holding two seals holds none. The cheap
+         exit and the honest-status ruling would both be satisfied and the
+         answer false. D2's ruling makes this moot; it is written down so that
+         the next person to notice the 273 MB does not un-fix it.
+      5b. :func:`declarations_at` for BOTH refs. **Ordered here rather than at
+         step 9, deliberately and narrowly**: the declarations are an INPUT to
+         :func:`~claude_dispatcher.call_site_reachability.check_tree`, and
+         passing them down is what makes ``report.dispositions`` and
+         ``report.stale_declarations`` the SHIPPED mechanism's own answers
+         instead of a tally this module would otherwise have to keep — a second
+         implementation of adjudication, in the module contracted to own none.
+         Step 9 keeps its remaining job. Nothing else moves: a failure here
+         still cannot preempt
+         :attr:`~ReachabilitySweepStatus.UNCHECKED_BASE_UNAVAILABLE`, because
+         step 5 has already run.
       6. :func:`~claude_dispatcher.call_site_reachability.check_tree` over the
          base tree, then over ``repo_root``. Both, through a module global so
          one seam is substitutable, as ``check_branch`` does for its three git
@@ -1245,8 +1663,49 @@ def check_branch_reachability(
          sentence.
       8. both ``seals_examined`` zero ⇒
          :attr:`~ReachabilitySweepStatus.NO_SEAL_IN_TREE`, with the counts.
-      9. :func:`declarations_at` for BOTH refs, :func:`introduced_findings`,
-         and assemble. :attr:`~ReachabilitySweepStatus.CHECKED`.
+      9. :func:`introduced_findings` over the pair and step 5b's two
+         declaration sets, and assemble.
+         :attr:`~ReachabilitySweepStatus.CHECKED`.
+
+    DISPUTE D4 — WHAT A ``declarations_at`` FAILURE IS CALLED
+    ---------------------------------------------------------
+    :func:`declarations_at` RAISES on an unreadable or malformed appeal file
+    and this function may not raise, and the contract named no status for the
+    gap. **Ruled here:
+    :attr:`~ReachabilitySweepStatus.UNCHECKED_SWEEP_VACUOUS`**, carrying the
+    sentence :func:`declarations_at` raised with. It blocks on the BODIES role,
+    which is the property the gap actually needs — an appeal file nobody could
+    read is something an author can fix and re-running clears — and it is the
+    enum's designated *"both sweeps ran and the pair does not support a delta"*
+    state, which is exactly what has happened: the delta is
+    ``dispositions(base) → dispositions(head)``, a disposition is a function of
+    a report AND its declarations, and one side's declarations are unavailable.
+    Its docstring names ``sweep_is_vacuous`` as the thing that usually says
+    which; here ``detail`` says which instead, and ``detail`` is printed on the
+    verdict line either way.
+
+    CHOICE (rejected, and it is the seal author's own recommendation: a TENTH
+    :class:`ReachabilitySweepStatus` member, blocking). It is the right answer
+    and **P3 is mechanically barred from giving it.**
+    ``tests/test_branch_reachability.py::_STATUS_WITNESSES`` requires every
+    member to name a producing row, and
+    ``test_every_sweep_status_has_a_witness_and_none_reads_as_a_pass`` asserts
+    it over ``for status in ReachabilitySweepStatus`` — so a tenth member
+    reddens a seal, in a file BODIES may not touch. That seal says so in as
+    many words ("Predicted (unmeasured, and unmeasurable — the enum is closed)
+    under: adding a tenth member — claim 1 fails"). The tenth member is
+    therefore a P4 amendment shaped exactly like the wiring escalation: one
+    edit touching this module AND a seal file. **Filed, not closed.** Reusing
+    an existing member is the honest interim and it is honest only because the
+    member reused refuses.
+
+    CHOICE (rejected: :attr:`~ReachabilitySweepStatus.UNCHECKED_BASE_UNAVAILABLE`).
+    It fits the base-side read and lies about the head-side one, and half a
+    status that names the wrong revision is worse on a CI log than one that
+    names the right failure in ``detail``. CHOICE (rejected:
+    :attr:`~ReachabilitySweepStatus.UNCHECKED_ANALYZER_FAULT`). Nothing about
+    the mechanism faulted; the appeal is not a language and ``check_tree`` did
+    not raise.
 
     THE COST'S PLACEMENT — steps 1-3 are the ruling
     -----------------------------------------------
@@ -1290,6 +1749,249 @@ def check_branch_reachability(
     ``tests/test_floor_closure.py``, a seal file BODIES may not touch. Take it
     to P4.
     """
-    raise NotImplementedError(
-        "D7 P1 scaffold: check_branch_reachability is a stub; see its contract"
+    try:
+        obligation = obligation_for_role(role)
+    except BranchReachabilityError as exc:
+        # An unmapped Role. The obligation on the record is BLOCKING and the
+        # status refuses: a role this gate has never heard of is the one case
+        # where "we did not ask about your branch" would be a guess, and the
+        # module's own doctrine is that an unhandled member must not fall
+        # through to the permissive branch.
+        return BranchReachability(
+            status=_APPEAL_UNREADABLE_STATUS,
+            obligation=ReachabilityObligation.BLOCKING,
+            detail=str(exc),
+        )
+
+    # 1. Whose gate it is. First, because it is free and it answers three of
+    #    the five roles.
+    if obligation is ReachabilityObligation.NOT_RUN:
+        return BranchReachability(
+            status=ReachabilitySweepStatus.NOT_THIS_ROLES_GATE,
+            obligation=obligation,
+            detail=(
+                f"reachability is not {role.value}'s gate: a role that cannot "
+                "FIX a BREACH is not BLOCKED by one, and no sweep ran — this "
+                "gate did not ask about your branch and did not clear it"
+            ),
+        )
+
+    # 2. The branch is already refused. Before step 3, so that the cheapest
+    #    exit of all is not what a doomed branch is reported under.
+    if already_violation:
+        return BranchReachability(
+            status=ReachabilitySweepStatus.NOT_REACHED_ALREADY_VIOLATION,
+            obligation=obligation,
+            detail=(
+                "the cheap checks already refused this branch; the verdict "
+                "cannot get worse than VIOLATION and a second reason changes "
+                "nothing except the bill. The sweep runs on the next push"
+            ),
+        )
+
+    # 3. The cheap exit, and DISPUTE D6's one line beside it.
+    analyzable = analyzable_paths(changed_paths)
+    appeal_changed = DECLARATION_PATH in tuple(changed_paths)
+    if not analyzable and not appeal_changed:
+        return BranchReachability(
+            status=ReachabilitySweepStatus.NO_ANALYZABLE_FILE_IN_DIFF,
+            obligation=obligation,
+            detail=(
+                f"none of the {len(tuple(changed_paths))} changed path(s) has "
+                "an ANALYZERS row and none is "
+                f"{DECLARATION_PATH}: a branch that changed no file any "
+                "analyzer can read, and no appeal, changed no call edge this "
+                "gate can see. Nothing the branch commits clears this, so it "
+                "does not refuse"
+            ),
+        )
+
+    try:
+        return _swept_branch_reachability(
+            Path(repo_root), base_ref, branch_ref, obligation, run
+        )
+    except BranchReachabilityError as exc:
+        # DISPUTE D4's ruling, and the "never raise" obligation's last line.
+        return BranchReachability(
+            status=_APPEAL_UNREADABLE_STATUS,
+            obligation=obligation,
+            detail=str(exc),
+        )
+    except Exception as exc:  # noqa: BLE001 - see "never raise" above
+        return BranchReachability(
+            status=_APPEAL_UNREADABLE_STATUS,
+            obligation=obligation,
+            detail=(
+                f"the reachability gate could not finish: {type(exc).__name__}: "
+                f"{exc}. check_branch is contracted never to raise, so a fault "
+                "here is a named refusal and never a traceback — but a refusal "
+                "reported through this arm is a DEFECT in this module, not a "
+                "fact about the branch, and it is meant to be read as one"
+            ),
+        )
+
+
+def _abstention_reasons(report: ReachabilityReport) -> tuple[UndecidedReason, ...]:
+    """Every abstention's :class:`UndecidedReason` in ``report``, in its order.
+
+    Derived through :func:`~claude_dispatcher.call_site_reachability.adjudicate`
+    — the shipped mechanism — rather than by reading ``finding.reason`` for
+    truthiness, so that "what counts as an abstention" is answered in the one
+    place that answers it. ``None`` is not filtered out: an abstention with no
+    reason is a record that was never validated, and
+    :func:`verdict_for_abstention` refuses it rather than picking a side.
+    """
+    return tuple(
+        finding.reason
+        for finding in report.findings
+        if adjudicate(finding, None) is Disposition.ABSTAIN
+    )
+
+
+def _production_roots(report: ReachabilityReport) -> int:
+    return sum(1 for root in report.roots if root.root_kind is RootKind.PRODUCTION)
+
+
+def _swept_branch_reachability(
+    repo_root: Path,
+    base_ref: str,
+    branch_ref: str,
+    obligation: ReachabilityObligation,
+    run: Callable[..., object] | None,
+) -> BranchReachability:
+    """Steps 4-9 of :func:`check_branch_reachability`. Never called elsewhere.
+
+    Split out so that the entrypoint's "never raise" guard is one ``try`` around
+    everything that can fail, rather than a guard per step that a later edit
+    can slip past. Raises :class:`BranchReachabilityError`; the caller names it.
+    """
+    # 4. The head TREE must BE the checkout. check_branch reads blobs and never
+    #    needs one; check_tree takes a directory. The assumption holds at both
+    #    of today's call sites and an assumption that holds is still one.
+    head_sha = _resolved_sha(repo_root, "HEAD", run)
+    branch_sha = _resolved_sha(repo_root, branch_ref, run)
+    if head_sha is None or branch_sha is None or head_sha != branch_sha:
+        seen = head_sha or "an unresolvable HEAD"
+        wanted = branch_sha or "unresolvable"
+        return BranchReachability(
+            status=ReachabilitySweepStatus.UNCHECKED_HEAD_NOT_CHECKED_OUT,
+            obligation=obligation,
+            detail=(
+                f"{repo_root} is checked out at {seen} and branch_ref "
+                f"{branch_ref} is {wanted}; there is no head TREE to sweep, "
+                "and sweeping this one would judge the wrong revision and "
+                "report CLEAN for it"
+            ),
+        )
+
+    # 5. The base tree. DISPUTE D2: the REPOSITORY ROOT, both halves — the
+    #    empty pathspec is the whole repository. Outside repo_root, and removed
+    #    on every path including the failure ones.
+    destination = Path(tempfile.mkdtemp(prefix="d7-base-tree-"))
+    try:
+        try:
+            base_root = materialise_base_tree(
+                repo_root, base_ref, "", destination, run=run
+            )
+        except BranchReachabilityError as exc:
+            return BranchReachability(
+                status=ReachabilitySweepStatus.UNCHECKED_BASE_UNAVAILABLE,
+                obligation=obligation,
+                detail=(
+                    f"{exc}. A delta with one side missing is not a delta: "
+                    "'then everything is new' refuses the branch for the whole "
+                    "tree's standing set and 'then nothing is' clears it for "
+                    "anything, and both are a verdict about a revision nobody "
+                    "read"
+                ),
+            )
+
+        # 5b. The appeals, from each ref's own object store. Read here so that
+        #     check_tree computes the dispositions and the stale set.
+        base_declarations = declarations_at(repo_root, base_ref, run=run)
+        head_declarations = declarations_at(repo_root, branch_ref, run=run)
+
+        # 6. Both sweeps, through the module global `check_tree`.
+        try:
+            base_report = check_tree(base_root, declarations=base_declarations)
+            head_report = check_tree(repo_root, declarations=head_declarations)
+        except CallSiteReachabilityError as exc:
+            return BranchReachability(
+                status=ReachabilitySweepStatus.UNCHECKED_ANALYZER_FAULT,
+                obligation=obligation,
+                detail=(
+                    f"{exc}. Since D6 enrolment a tree holding a .go file on a "
+                    "host with no usable `go` RAISES where it used to return a "
+                    "silent empty report; a broken image must never clear a Go "
+                    "branch"
+                ),
+            )
+    finally:
+        # 472 KB on a subtree, 273 MB on a whole tree — a gate that leaks
+        # either is a gate someone turns off in a month.
+        shutil.rmtree(destination, ignore_errors=True)
+
+    counts = dict(
+        head_seals_examined=head_report.seals_examined,
+        base_seals_examined=base_report.seals_examined,
+        head_production_roots=_production_roots(head_report),
+    )
+
+    # 7. Delta's own evasion, refused before the delta is believed.
+    vacuous = sweep_is_vacuous(base_report, head_report)
+    if vacuous is not None:
+        return BranchReachability(
+            status=ReachabilitySweepStatus.UNCHECKED_SWEEP_VACUOUS,
+            obligation=obligation,
+            head_dispositions=head_report.dispositions,
+            base_dispositions=base_report.dispositions,
+            stale_declarations=head_report.stale_declarations,
+            detail=vacuous,
+            **counts,
+        )
+
+    # 8. Nothing to say, said out loud.
+    if head_report.seals_examined == 0 and base_report.seals_examined == 0:
+        return BranchReachability(
+            status=ReachabilitySweepStatus.NO_SEAL_IN_TREE,
+            obligation=obligation,
+            head_dispositions=head_report.dispositions,
+            base_dispositions=base_report.dispositions,
+            stale_declarations=head_report.stale_declarations,
+            detail=(
+                "both sweeps ran and neither found a seal; D5 judges the "
+                "SUBJECTS OF SEALS, so a tree with no seal yields no finding "
+                "and this gate has nothing to say about it. Nothing the branch "
+                "commits changes that, so it does not refuse — and it is on "
+                "the verdict line, because a CLEAN that does not say why is "
+                "indistinguishable from a CLEAN that checked something"
+            ),
+            **counts,
+        )
+
+    # 9. The delta.
+    introduced = introduced_findings(
+        base_report,
+        head_report,
+        base_declarations=base_declarations,
+        head_declarations=head_declarations,
+    )
+    return BranchReachability(
+        status=ReachabilitySweepStatus.CHECKED,
+        obligation=obligation,
+        introduced=introduced,
+        head_dispositions=head_report.dispositions,
+        base_dispositions=base_report.dispositions,
+        stale_declarations=head_report.stale_declarations,
+        abstention_reasons=_abstention_reasons(head_report),
+        detail=(
+            f"{len(introduced)} finding(s) introduced by this branch, over "
+            f"{head_report.seals_examined} seal(s) at head and "
+            f"{base_report.seals_examined} at base; "
+            f"{head_report.dispositions.get(Disposition.BREACH, 0)} BREACH and "
+            f"{head_report.dispositions.get(Disposition.ACCEPTED, 0)} ACCEPTED "
+            "stand in the tree, and this gate reports only what the branch "
+            "added to them"
+        ),
+        **counts,
     )
