@@ -463,6 +463,28 @@ DEFAULT_ROLE_RULES: tuple[RoleRule, ...] = (
             "**/testdata/**",
             "**/conftest.py",
             "**/.dispatcher.yaml",
+            # D7, P4 2026-08-12, and this row goes BEYOND the escalation, which
+            # named BODIES alone. The wider reading is the one that survives,
+            # and the reason is a measured composition rather than symmetry:
+            # `_DISPOSITION_VERDICTS` maps ACCEPTED to CLEAN, and the head
+            # declarations are read out of `branch_ref`'s object store — which
+            # holds every commit on the branch's history, not only the ones the
+            # judged phase made. So a SCAFFOLD branch that lands an appeal
+            # beside its stub pre-clears the BREACH the BODY has not written
+            # yet: at P3 the finding is introduced, `adjudicate` turns it
+            # ACCEPTED, `verdict_of` answers CLEAN, and the body discloses
+            # nothing and touches nothing. That is the rubber stamp the appeal
+            # was designed to make expensive, arriving one commit early.
+            #
+            # It costs SCAFFOLD nothing real: its own obligation is NOT_RUN, so
+            # a scaffold branch is never shown a finding, and an appeal written
+            # without one is a declaration about something nobody measured.
+            # SEALS needs no row — its rule is ALLOW_ONLY_GLOBS and this path
+            # is neither a test file nor under `docs/`, so it is refused as an
+            # allowlist miss. LEGACY is UNRESTRICTED and is out of scope here
+            # by construction; the floor is the only thing that reaches it, and
+            # the entry above records why this path is not on the floor.
+            "**/.dispatcher.staged.yaml",
             "**/roles/*.md",
             "**/reviewer_prompts/**",
             "**/verifier_prompts/**",
@@ -545,14 +567,40 @@ DEFAULT_ROLE_RULES: tuple[RoleRule, ...] = (
             "**/conftest.py",
             "**/schema/**",
             "**/.dispatcher.yaml",
+            # D7 escalation 3, ruled 2026-08-12 (P4). This is
+            # `branch_reachability.DECLARATION_PATH`, and the sentence that
+            # forces the row is that module's own: without it, the ONE tooth
+            # between a BREACH and the word "TODO" is `wiring` being
+            # non-whitespace, and P4's earlier ruling already said four teeth
+            # were not enough. BODIES is the role the reachability gate BLOCKS,
+            # and an appeal written by the party being judged is the honour
+            # system this whole protocol opens by naming as the thing that
+            # produced 24 vacuous seals.
+            #
+            # Spelled `**/.dispatcher.staged.yaml` and measured under the
+            # module's own lens on this revision: it matches the file at the
+            # root, at `sub/project/`, and under any directory, and does NOT
+            # match `.dispatcher.yaml` one row up — the two files are
+            # different artifacts with different rules and one glob must not
+            # quietly cover both.
+            #
+            # NOT on `FLOOR_GLOBS`, and that is the ruling rather than an
+            # oversight: a floored path is writable by NOBODY, so the appeal
+            # would not exist. The floor is for things no role may touch; this
+            # is a thing exactly one role may touch, and ADJUDICATE reaches it
+            # through `disputed_paths:`, which is per-task, reviewed, and
+            # names the artifact out loud.
+            "**/.dispatcher.staged.yaml",
             "**/roles/*.md",
             "**/reviewer_prompts/**",
             "**/verifier_prompts/**",
         ),
         rationale=(
             "P3 makes the seals pass by implementing them, never by editing "
-            "them (plan §2a); the schema is the sole source and the role "
-            "policy is not the body agent's to widen"
+            "them (plan §2a); the schema is the sole source, the role policy "
+            "is not the body agent's to widen, and the reachability appeal "
+            "(.dispatcher.staged.yaml) is written by the adjudicator that "
+            "reviewed the finding, never by the branch the finding is against"
         ),
     ),
     RoleRule(
@@ -9347,6 +9395,84 @@ def _print_report(result: RoleDiffResult) -> None:
             print(f"  CHANGED SIGNATURE {change.path}::{change.symbol}")
             print(f"    before: {change.before}")
             print(f"    after:  {after}")
+
+    # D7 escalation 4, ruled 2026-08-12 (P4). "A verdict a caller cannot read
+    # the reason for is the vacuous half of this gate."
+    #
+    # PRINTED ON EVERY VERDICT, INCLUDING CLEAN, and that is the whole point of
+    # the block rather than a formatting choice. `BranchReachability` contracts
+    # it in as many words — "``status`` / ``obligation``: the two named states.
+    # Both are printed, always, including on a CLEAN verdict" — because "this
+    # gate cleared your branch" and "this gate did not ask about your branch"
+    # are different sentences and only one of them is a pass. It is the same
+    # sentence `role_protocol` bought its two CLEAN signature rows with.
+    #
+    # `None` IS A STATE AND IT IS PRINTED AS ONE. It means the question was
+    # never put — the P1 scaffold's state, and now only reachable through a
+    # `RoleDiffResult` some other caller built. Printing nothing for it would
+    # make the one shape this unit exists to refuse the one shape the report is
+    # silent about.
+    reachability = result.reachability
+    if reachability is None:
+        print(
+            "  reachability: NOT ASKED — this result carries no D7 record at "
+            "all, which is not a pass and is not a clean sweep"
+        )
+    else:
+        print(
+            f"  reachability: {reachability.status.value} "
+            f"(obligation: {reachability.obligation.value})"
+        )
+        # The non-vacuity pair, and the third figure that makes it readable —
+        # but ONLY when both sweeps actually produced a report. A "seals
+        # examined: head 0, base 0" line printed under NOT_THIS_ROLES_GATE
+        # reads as a measurement and is a default, and this whole unit is about
+        # not letting "nobody looked" wear the clothes of "nothing was there".
+        #
+        # The discriminator is DERIVED and not a written-out list of statuses:
+        # `head_dispositions` is None on exactly the exits that never got a
+        # report, because every arm that carries the counts carries the
+        # dispositions with them. A list would be a second enumeration of
+        # `ReachabilitySweepStatus` in a module that does not own that enum,
+        # and it would go stale on the tenth member.
+        if reachability.head_dispositions is None:
+            print("    no sweep ran under this status, so there is nothing to count")
+        else:
+            print(
+                f"    seals examined: head "
+                f"{reachability.head_seals_examined}, base "
+                f"{reachability.base_seals_examined}; production roots at "
+                f"head: {reachability.head_production_roots}"
+            )
+            print(
+                "    dispositions at head: "
+                + ", ".join(
+                    f"{disposition.value}={count}"
+                    for disposition, count in sorted(
+                        reachability.head_dispositions.items(),
+                        key=lambda item: item[0].value,
+                    )
+                )
+            )
+        for finding in reachability.introduced:
+            print(
+                f"  INTRODUCED {finding.disposition.value.upper()} "
+                f"{finding.subject_key}"
+            )
+            print(f"    seal: {finding.test_id}")
+            if finding.detail:
+                print(f"    {finding.detail}")
+        # Reported, never blocking — a declaration goes stale exactly when the
+        # wiring lands, so refusing the branch that retires it would punish the
+        # good outcome. It still has to be deleted, and ADJUDICATE is the role
+        # that owns the file and reads this.
+        for stale in reachability.stale_declarations:
+            print(
+                f"  STALE DECLARATION {stale.subject_key} (seal "
+                f"{stale.test_id}) answered no finding — delete the row"
+            )
+        if reachability.detail:
+            print(f"    {reachability.detail}")
 
     if result.detail:
         print(f"  detail: {result.detail}")
