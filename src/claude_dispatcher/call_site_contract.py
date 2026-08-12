@@ -439,6 +439,12 @@ would get a bare ``KeyError`` for a ninth member. But:
      mutation-probe string literals in ``tests/test_call_site_reachability.py``
      that require it to be a dict with no default.
 
+     **Re-located by P4 on the composed tree, 2026-08-11: the same three reads
+     are at :1203, :1204 and :2515.** The numbers above are correct for the
+     base they are stamped with; the ``feat/D6-floor2`` merge inserted lines
+     above all three. Recorded rather than overwritten, because a citation and
+     the revision it was measured under travel together.
+
 Those three seal sites are also why ``call_site_reachability`` keeps
 ``_ROOT_KIND_BY_ENTRYPOINT = ROOT_KIND_BY_ENTRYPOINT`` — the SAME object, not a
 copy, so ``csr._ROOT_KIND_BY_ENTRYPOINT[k] is ROOT_KIND_BY_ENTRYPOINT[k]`` and
@@ -448,6 +454,49 @@ three lines. Rejected alternative: repointing them in this commit, which is a
 P1 editing a sibling unit's seals to keep its own suite green — the thing this
 process exists to stop, and the thing ``IMPORTS_NOT_SUPPLIED``'s own note
 refused one round ago for the same reason.
+
+**P4 RULING, 2026-08-11 (composed tree). The shim STAYS, and the event that
+retires it is ENROLMENT — the round that makes ``ANALYZERS`` non-empty.**
+
+Not a date and not "the next round that happens to open the file", because a
+shim owed removal to no named event is a shim that never goes. Enrolment is the
+right event for three reasons, and the third is the one that makes it binding:
+
+  1. it is the round that must already touch both halves — the registry in the
+     mechanism and the row in ``go_reachability`` — so the three reads are
+     repointed by someone who has the files open for their own reasons;
+  2. it is the last moment the removal is cheap. After enrolment the gate is
+     live and every edit to it is a change to something that returns a
+     ``Disposition`` a branch is judged by;
+  3. **it cannot be skipped.** Enrolment is mechanically gated:
+     :func:`call_site_reachability._refuse_enrolment_before_flooring` fails the
+     IMPORT when a row is enrolled while the artifacts its answer is computed
+     from are off the floor, so enrolment is a P4-adjudicated round by
+     construction. The retiring event is therefore guaranteed to be
+     adjudicated, which is the property "owed removal" was missing.
+
+**What the P1 asserted and did not seal, and what this ruling adds.** The
+justification for keeping the shim is that it is the SAME OBJECT, so the three
+reads stay true rather than merely green. Measured 2026-08-11 on the composed
+tree, before anything was written: **no seal in the suite imported this module
+at all, and no row anywhere pinned that identity.** The property the shim rests
+on was a docstring claim. It is now
+``tests/test_call_site_reachability.py::test_the_root_kind_shim_is_the
+_contracts_own_table_and_not_a_copy``, which asserts the ``is`` and covers the
+table against :class:`EntrypointKind` for non-vacuity.
+
+That row is also the removal notice: it is the only place naming both
+spellings, so the enrolment round deletes it and the shim together.
+
+**Why this one name and not the other seventeen.** A divergence in the enums
+and classes fails loudly — ``go_reachability`` imports them from here, the
+seals read them through the mechanism, and two distinct enum objects compare
+unequal. :data:`ROOT_KIND_BY_ENTRYPOINT` is a plain ``dict`` and the shim line
+is already a REBINDING, so widening it to ``{**ROOT_KIND_BY_ENTRYPOINT, ...}``
+diverges in SILENCE. Falsified 2026-08-11 in a scratch copy with the smallest
+version of that mutation, ``dict(ROOT_KIND_BY_ENTRYPOINT)`` — equal, not
+identical: the new row reddens, and ``tests/test_go_reachability.py`` stays
+104 passed / 0 failed. That is the gap, measured, and it is now closed.
 
 
 THE SEAL BLAST RADIUS
@@ -483,6 +532,131 @@ here): **kept.** Rejected alternative costs 22 seal-file import edits by a P1,
 buys the property that a reader of a seal sees which module defines the name,
 and would have been worth it in a round that owned those files. It does not
 belong to this one.
+
+**P4 RULING, 2026-08-11 (composed tree). ACCEPTABLE STANDING DEBT. Do not pay
+it now, and do not schedule it on its own.** Re-derived by AST on the composed
+tree rather than inherited: 22 moved-name import sites, 13 in
+``tests/test_call_site_reachability.py`` and 9 in
+``tests/test_go_reachability.py``, and **zero in production** — both
+``call_site_reachability`` and ``go_reachability`` import the moved names from
+here directly (``go_reachability.py:342``, eleven names). The coupling is
+entirely between two seal files and a re-export.
+
+Four reasons, in the order they weigh:
+
+  1. **The debt is bounded and re-derivable.** It is 22 import statements in
+     exactly 2 files and one AST sweep recomputes the number on demand. A debt
+     you can re-measure in one command does not rot; the debts that rot are the
+     ones nobody can size.
+  2. **It carries no behaviour.** Repointing an import changes no assertion and
+     no measurement. It buys legibility — a seal's reader sees which module
+     defines the name — and legibility is real but it is not correctness.
+  3. **Paying it here would damage the thing this commit exists to protect.**
+     This round lands an indivisible floor edit. Sweeping 22 cosmetic import
+     lines through two seal files in the same commit makes the floor edit
+     harder to review, and reviewability is the floor's entire mechanism.
+  4. **The re-export is load-bearing for what already happened.** It is what
+     made the extraction cost ZERO seal edits, which is what let a P1 do the
+     extraction at all without editing a sibling unit's seals.
+
+**The one thing that made "acceptable" NOT obviously true, named and closed.**
+A re-export whose consumers all read through the shim can diverge from the
+definition by SHADOWING: redefine a name in ``call_site_reachability`` instead
+of re-exporting it, and production (which imports from here) and the seals
+(which import through the mechanism) read two different objects with every seal
+green. Measured: for the enums and classes this fails loudly on the first
+comparison; for :data:`ROOT_KIND_BY_ENTRYPOINT` it does not, because it is a
+``dict`` and the shim is already a rebinding. That single silent case is sealed
+by the row named in the ruling above. With it closed, the remaining debt is
+legibility only, and legibility waits.
+
+**When to pay it:** in the enrolment round, beside the shim removal, or never.
+Both are "repoint seal imports in files this round already owns". If it is never
+paid, nothing breaks — which is the definition of standing debt rather than a
+deferred fix.
+
+
+THE INVERTED SPLIT, AND WHY IT IS REFUSED
+=========================================
+**P4 RULING, 2026-08-11 (composed tree). The rejection is CONFIRMED, and the
+measurement is worse than the argument that produced it.**
+
+The shape: invert this extraction — leave the vocabulary in the
+already-floored ``call_site_reachability`` and move ``ANALYZERS``,
+``check_tree`` and ``adjudicate`` into a new, unfloored ``call_site_gate.py``.
+It lands green with no floor edit at all, which is why it has to be ruled on
+rather than left to taste.
+
+Simulated and measured on the composed tree, 2026-08-11, by mechanically
+moving those three top-level statements into a new module and running the real
+analyzer — ``tests/test_d5_floor.py::_d5_delegation_closure`` — over the
+mutated sources through its own ``read`` seam:
+
+  * the closure is **byte-for-byte the closure of the unmutated tree**:
+    ``{call_site_contract, role_protocol, seal_verify, mechanical_verify}``.
+    ``call_site_gate`` is not in it and cannot be, because the closure walks
+    OUTWARD from the anchor's imports and the gate imports the anchor, not the
+    reverse. **The arrow points the wrong way, so the seal is not weakened by
+    the inverted split — it is blind to it;**
+  * ``_D5_MODULE`` is the literal string ``"call_site_reachability"``, so the
+    seal follows the NAME and not the decision. Move the decision and the seal
+    keeps watching the vocabulary;
+  * ``first_matching_glob("src/claude_dispatcher/call_site_gate.py",
+    FLOOR_GLOBS)`` returns ``None`` — no floor glob names it;
+  * the moved text contains ``Disposition.BREACH``.
+
+So the shape puts the module that decides ``BREACH`` in an unfloored file and
+satisfies the seal by moving the gate out from under it. That is the P1's
+argument, and it is correct.
+
+**What the measurement adds.** There IS a backstop, and it is not good enough
+to change the ruling. ``_refuse_enrolment_before_flooring`` collects
+``Path(__file__)`` first, so after the inversion it would ask whether the GATE
+is floored, and it is not — it would raise. But it opens with ``if not
+ANALYZERS: return``, and ``ANALYZERS`` is ``()``. **In the pending state the
+inverted split lands completely green and nothing in the suite notices.** The
+backstop fires a round later, at enrolment, and it fires as an ``ImportError``
+— a collection error, not a FAILED line, which on this unit is precisely the
+signal that has already been mistaken for "no failures".
+
+A shape whose only objection surfaces one round later, as the one signal this
+unit is known to misread, is refused now. **Confirmed: the split runs
+contract <- mechanism, as landed.**
+
+
+THE BOTTOM-OF-MODULE PLACEMENT, RE-MEASURED
+===========================================
+Recorded, not acted on. The P1 measured that with an analyzer row enrolled at
+BOTTOM-OF-MODULE — below the ``_refuse_enrolment_before_flooring()`` call — and
+the floor glob deleted, i.e. enrolled and unfloored, the exact state the guard
+exists to refuse, the module **imports cleanly and the guard saw** ``()``. It
+also recorded that the placement fails only CONDITIONALLY: mechanism-first
+succeeds, row-first raises.
+
+Reproduced on the composed tree, 2026-08-11, in a scratch copy with the two D6
+floor globs deleted and ``ANALYZERS = (GoReachabilityAnalyzer(),)`` appended
+below the guard call:
+
+  * **mechanism-first imports cleanly.** ``ANALYZERS`` is non-empty afterwards,
+    ``first_matching_glob`` reports ``go_reachability.py`` UNFLOORED, and the
+    very same guard, invoked by hand one line later, raises ``ImportError``
+    naming three unfloored paths. The guard is right; the placement ran it
+    before there was anything to see;
+  * **row-first now imports cleanly TOO, and the conditional half of the P1's
+    finding no longer holds.** On ``feat/D6-floor2`` the row-first order raised
+    because ``go_reachability`` imported ``call_site_reachability`` at module
+    level (``131e044``, line 335) and dragged the mechanism into a half-built
+    import. On the composed tree it imports THIS module instead
+    (``go_reachability.py:342``), so importing the row never imports the
+    mechanism at all — verified: after ``import go_reachability``,
+    ``"claude_dispatcher.call_site_reachability" not in sys.modules``. The
+    guard does not run, in either order.
+
+**This extraction removed the cycle, and in removing it removed the only
+condition under which the bad placement failed.** The case against
+bottom-of-module is therefore no longer "it fails conditionally" — it is that
+after composition it does not fail at all. Enrolment must bind ``ANALYZERS``
+ABOVE the guard call, where it is today (line 1214, guard call at line 1579).
 
 
 WIRING

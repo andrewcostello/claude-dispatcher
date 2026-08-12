@@ -2875,6 +2875,71 @@ def test_root_kind_is_derived_from_the_kind_and_never_asserted_by_the_row(
         discover_roots(tree)
 
 
+def test_the_root_kind_shim_is_the_contracts_own_table_and_not_a_copy() -> None:
+    """The shim's identity, sealed rather than asserted in a docstring.
+
+    **P4, 2026-08-11 (unit D5, composed tree).** ``call_site_reachability``
+    binds ``_ROOT_KIND_BY_ENTRYPOINT = ROOT_KIND_BY_ENTRYPOINT`` so that the
+    three seal reads of ``csr._ROOT_KIND_BY_ENTRYPOINT`` in
+    ``tests/test_go_reachability.py`` keep resolving across the vocabulary
+    extraction. Those reads are at **:1203, :1204 and :2515 on this composed
+    revision**, re-located rather than copied: the numbers the extraction's own
+    docstring records (:1157, :1158, :2469) were measured at base ``6e18fc0``
+    and the ``feat/D6-floor2`` merge inserted lines above all three.
+    The P1 that made that binding stated —
+    correctly, and measured — that it is the SAME OBJECT and that the three
+    reads therefore stay *true* rather than merely green.
+
+    **Nothing sealed it, and that is what this row is for.** Measured on this
+    revision before it was written: no seal in the suite imports
+    ``call_site_contract`` at all, and no row anywhere pins the identity. So
+    the property the shim's whole justification rests on was a docstring claim.
+
+    The gap is not hypothetical and it is not symmetric with the other
+    seventeen re-exported names. For the ENUMS and CLASSES a divergence fails
+    loudly: ``go_reachability`` imports them from the contract, the seals read
+    them through the mechanism, and two distinct enum objects compare unequal,
+    so a shadowing redefinition reddens immediately. ``ROOT_KIND_BY_ENTRYPOINT``
+    is a plain ``dict``, and the shim line is already a REBINDING. Widen it to
+    ``{**ROOT_KIND_BY_ENTRYPOINT, EntrypointKind.X: RootKind.PRODUCTION}`` and
+    the mechanism's copy and the contract's diverge silently: the three reads
+    above would agree with the mechanism's copy while ``go_reachability`` —
+    which imports the public name from the contract directly, measured at
+    ``src/claude_dispatcher/go_reachability.py:342`` — derives root kinds from
+    the contract's. Seals green, production reading a different table, and the
+    thing that decides which entrypoints count as PRODUCTION roots is the
+    thing that diverged.
+
+    GREEN at HEAD. Falsify (measured on this revision, in a scratch copy):
+    change the shim line to ``dict(ROOT_KIND_BY_ENTRYPOINT)`` — a copy that is
+    equal and not identical, the smallest possible version of the mutation —
+    and this row reddens on the first assertion while the three reads in
+    ``test_go_reachability.py`` stay green, which is the whole point.
+
+    This row is also the shim's REMOVAL NOTICE. It is the one place that names
+    both spellings, so the round that repoints those three reads deletes this
+    row and the shim in the same edit.
+    """
+    from claude_dispatcher import call_site_contract as csc
+
+    assert csr._ROOT_KIND_BY_ENTRYPOINT is csc.ROOT_KIND_BY_ENTRYPOINT, (
+        "the shim is no longer the contract's own table but a copy of it, so "
+        "the three `csr._ROOT_KIND_BY_ENTRYPOINT` reads in "
+        "tests/test_go_reachability.py now measure the mechanism's copy while "
+        "`go_reachability` derives root kinds from the contract's. Either "
+        "restore the binding or repoint those reads and delete the shim"
+    )
+    # Non-vacuity: an empty table would make the identity above cheap and the
+    # per-key check below trivially true. The table is the derivation, so it
+    # must cover `EntrypointKind` exactly — the sweep in
+    # `test_root_kind_is_derived_from_the_kind_and_never_asserted_by_the_row`
+    # relies on that and states it as prose; here it is data.
+    assert set(csc.ROOT_KIND_BY_ENTRYPOINT) == set(EntrypointKind), (
+        "the root-kind table no longer covers `EntrypointKind` exactly, so "
+        "this row and the derivation sweep are both measuring a partial table"
+    )
+
+
 def test_a_root_that_disagrees_with_its_own_file_or_names_no_kind_is_refused(
     tmp_path, monkeypatch
 ):

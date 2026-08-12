@@ -887,6 +887,52 @@ FLOOR_GLOBS: tuple[str, ...] = (
     # protects no file in the helper it names; measured 2026-08-11, it misses
     # `main.go`, `go.mod` and a nested `internal/parse/decl.go` alike.
     "**/src/claude_dispatcher/go_call_reachability/**",
+    # The gate's EIGHTH artifact (D5 P4 ruling, 2026-08-11, on the composed
+    # tree): the shared VOCABULARY. A FILE glob, and PATH-QUALIFIED. All four
+    # alternatives were re-measured under this module's own lens on the
+    # composed tree rather than inherited from the D5/D6 entries above, against
+    # six probes — the module, its `sub/project/...` spelling, a vendored
+    # `vendor/thirdparty/...` copy, an installed `site-packages/...` copy, and
+    # the two still-writable controls `plan.py` and `blast_radius.py`:
+    #   * the entry below matches the first two and none of the other four;
+    #   * the basename-only spelling `**/call_site_contract.py` also matches
+    #     BOTH the `vendor/thirdparty/` copy and the `site-packages/` copy, and
+    #     a floor has no override to buy either back;
+    #   * the package subtree `**/src/claude_dispatcher/**` also matches
+    #     `plan.py` and `blast_radius.py`, and buys NO plan-time reach, because
+    #     a pure-wildcard tail is exactly what `_floor_glob_named_by` refuses.
+    #     This entry is a BASENAME, not a fourth subtree;
+    #   * the brace-compressed spelling
+    #     `**/src/claude_dispatcher/{call_site_contract,call_site_reachability}.py`
+    #     matches NONE of the six — this engine has no brace expansion, the
+    #     point the delegation-closure block above makes and which was
+    #     re-measured here, not inherited. It is a silent no-op that reads as
+    #     protection;
+    #   * a `**` tail on a file — `.../call_site_contract.py/**` — matches none
+    #     of the six either.
+    #
+    # WHY IT IS HERE, and why it is not "just a vocabulary file". This module
+    # holds no `def` and imports nothing in-package (measured on this
+    # revision: 0 module-level functions, 0 in-package imports). It is
+    # nevertheless on the D5 decision path, and the seal that says so —
+    # `test_every_module_a_d5_decision_reaches_is_already_on_the_floor` — was
+    # RED for exactly this row from `84e7c10` until this edit. What it holds is
+    # `RootKind`, `EntrypointKind`, `ROOT_KIND_BY_ENTRYPOINT`, `Edge`,
+    # `EdgeKind`, `CallGraph` and the rest of the eighteen names BOTH the
+    # mechanism and the row import at module level. A branch that can rewrite
+    # one row of `ROOT_KIND_BY_ENTRYPOINT` changes which entrypoints count as
+    # PRODUCTION roots, and therefore changes the `Disposition` it is itself
+    # judged by, while touching neither of the two files the floor already
+    # names. Flooring the mechanism and the row while leaving the vocabulary
+    # they both read writable protects the two halves and not the words they
+    # agree in — the same "one artifact, two files" argument the sixth entry
+    # makes, one extraction later.
+    #
+    # It lands BEFORE enrolment (`ANALYZERS` is still `()`), which is the rule
+    # the Go and D5 entries above set and which this one does not get to
+    # shortcut by being new: a floor that arrives with enrolment is a floor
+    # that was absent for every commit that built the thing it protects.
+    "**/src/claude_dispatcher/call_site_contract.py",
 )
 
 #: What a floor violation prints, and deliberately NOT the violated role's own

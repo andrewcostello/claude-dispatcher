@@ -747,6 +747,23 @@ _FLOOR_ROWS: tuple[tuple[str, str], ...] = (
         "**/src/claude_dispatcher/go_call_reachability/**",
         "src/claude_dispatcher/go_call_reachability/internal/parse/decl.go",
     ),
+    # The gate's EIGHTH artifact (D5 P4 ruling, 2026-08-11, on the composed
+    # tree): the shared VOCABULARY both the mechanism and the row import at
+    # module level. TWO rows and not four, and the row shape was MEASURED
+    # rather than copied from the entry above it: the sixth entry took two
+    # because it is a file and the seventh took four because it is a subtree,
+    # and this one is a single file — `call_site_contract.py` — so the extra
+    # pair that exists to make a SUBTREE half falsifiable has nothing here to
+    # be falsifiable about. The real path and the vendored layout are the two
+    # probes every file glob in this table carries.
+    (
+        "**/src/claude_dispatcher/call_site_contract.py",
+        "src/claude_dispatcher/call_site_contract.py",
+    ),
+    (
+        "**/src/claude_dispatcher/call_site_contract.py",
+        "sub/project/src/claude_dispatcher/call_site_contract.py",
+    ),
 )
 
 
@@ -842,6 +859,23 @@ def test_the_floor_is_exactly_the_written_out_set_of_globs() -> None:
     being judged by this floor — so the set difference above and the sibling
     seal below are both GREEN across the edit and the bound is again the only
     thing that makes deleting the six rows visible.
+
+    **P4, 2026-08-11 (unit D5, composed tree): the bound moves 32 -> 34** for
+    the shared vocabulary's two rows. TWO and not four: the row shape was
+    measured, not copied from the entry above — the seventh entry took four
+    because it is a SUBTREE, and `call_site_contract.py` is a single file, so
+    there is no subtree half for the extra pair to make falsifiable. Same
+    argument as every move before it, and it is the whole argument here,
+    because this round lands the constant and the rows in ONE commit — the
+    glob alone leaves THIS seal red and the rows alone leave the closure seal
+    red, so neither half is landable on its own. With both landed, the set
+    difference above and the sibling seal below are GREEN across the edit, and
+    the bound is again the only thing that makes deleting the two rows visible.
+    Measured both ways on this revision: narrow only `FLOOR_GLOBS` to
+    `.../call_site_reachability.py` (i.e. drop the new entry) and the CLOSURE
+    seal in `tests/test_d5_floor.py` fires naming `call_site_contract`; delete
+    the constant entry and these two rows together and this bound is what
+    fires. A bound left at 32 would let both rows go with everything green.
     """
     written = {glob for glob, _probe in _FLOOR_ROWS}
     unsealed = sorted(set(FLOOR_GLOBS) - written)
@@ -857,7 +891,7 @@ def test_the_floor_is_exactly_the_written_out_set_of_globs() -> None:
             f"{probe!r} does not match floor glob {glob!r} — the probe, not "
             "the floor, is wrong"
         )
-    assert len(_FLOOR_ROWS) >= 32, _FLOOR_ROWS
+    assert len(_FLOOR_ROWS) >= 34, _FLOOR_ROWS
 
 
 def test_every_floor_glob_the_ruling_wrote_out_is_in_the_constant() -> None:
@@ -946,8 +980,20 @@ def test_every_floor_glob_the_ruling_wrote_out_is_in_the_constant() -> None:
     # by construction, so `_DECLARATIONS_THAT_NAME_THE_FLOOR` cannot carry a
     # behavioural row for it and this bound is the only thing in either file
     # that notices its deletion.
-    assert len(written) >= 13, (
-        f"_FLOOR_ROWS no longer writes out thirteen distinct floor globs, so "
+    #
+    # 13 -> 14 (D5 P4, 2026-08-11, composed tree): the shared VOCABULARY,
+    # `call_site_contract.py`. Same argument, and here it guards the entry that
+    # is easiest to argue away, because the module it names holds no `def` and
+    # imports nothing in-package (measured on this revision: 0 module-level
+    # functions, 0 in-package imports) and so reads as inert. It is not: it
+    # holds `ROOT_KIND_BY_ENTRYPOINT`, the table that says which entrypoints
+    # are PRODUCTION roots, which both the mechanism and the row import at
+    # module level and which the `Disposition` a branch is judged by is derived
+    # from. A bound left at 13 would let the whole entry — glob, both rows —
+    # be deleted with this seal green, and the words the two floored halves
+    # agree in become writable by the branch they are judging.
+    assert len(written) >= 14, (
+        f"_FLOOR_ROWS no longer writes out fourteen distinct floor globs, so "
         f"this seal is measuring a shrunken table rather than the floor: "
         f"{written}"
     )
