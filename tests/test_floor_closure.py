@@ -642,6 +642,55 @@ _DELEGATION_TARGETS: tuple[tuple[str, str, str, str, str], ...] = (
         "seal_verify imports it at MODULE level, so its body executes on the "
         "gate path and can rebind anything the gate is about to call",
     ),
+    # THREE ROWS ADDED BY THE D7 WIRING (P4, 2026-08-12), and they arrive
+    # together because they arrive from ONE line: `check_branch`'s step 6
+    # `from . import branch_reachability`. That single function-local import
+    # is the first row; the other two are that module's own MODULE-LEVEL
+    # imports, so their bodies execute the moment the gate reaches step 6.
+    #
+    # Measured on the wiring revision, and this is the derivation and not a
+    # reading of it: with the call present and these rows absent,
+    # `test_the_delegation_closure_is_exactly_the_written_out_table` reddens
+    # naming all three. `yaml_io` and `role_protocol` are the other two
+    # module-level imports of `branch_reachability`; the first is already a row
+    # above and the second is dropped from every closure by `_delegation_
+    # closure` itself.
+    #
+    # NONE of these three is discharge-able by the "make the import
+    # function-local" move the P4 checklist above already refuses: the closure
+    # walk FOLLOWS function-local imports out of the floor-decision roots, and
+    # `check_branch` IS a floor-decision root. There is no import spelling that
+    # takes `branch_reachability` off this table while the call stands. The
+    # only honest way to delete these rows is to delete the call.
+    (
+        "branch_reachability",
+        "src/claude_dispatcher/branch_reachability.py",
+        "sub/project/src/claude_dispatcher/branch_reachability.py",
+        "vendor/thirdparty/branch_reachability.py",
+        "check_branch calls branch_reachability.check_branch_reachability at "
+        "step 6 and unions verdict_of's answer into the verdict, so this "
+        "module DECIDES part of every bodies verdict rather than merely "
+        "serving one",
+    ),
+    (
+        "call_site_reachability",
+        "src/claude_dispatcher/call_site_reachability.py",
+        "sub/project/src/claude_dispatcher/call_site_reachability.py",
+        "vendor/thirdparty/call_site_reachability.py",
+        "branch_reachability imports check_tree, adjudicate, Disposition and "
+        "six more names from it at MODULE level, so the mechanism that answers "
+        "'what is dark in this tree' now executes on the gate path",
+    ),
+    (
+        "call_site_contract",
+        "src/claude_dispatcher/call_site_contract.py",
+        "sub/project/src/claude_dispatcher/call_site_contract.py",
+        "vendor/thirdparty/call_site_contract.py",
+        "branch_reachability imports RootKind from it at MODULE level, and "
+        "call_site_reachability imports it at module level too; it holds "
+        "ROOT_KIND_BY_ENTRYPOINT, which decides which entrypoints count as "
+        "PRODUCTION roots and therefore which findings are BREACHes",
+    ),
 )
 
 
@@ -787,6 +836,146 @@ def test_every_floor_decision_is_reachable_from_the_written_out_roots() -> None:
         "these functions make a floor decision but are not reachable from "
         f"{list(_FLOOR_DECISION_ROOTS)!r}, so the delegation closure was "
         f"computed without them: {unreachable}"
+    )
+
+
+#: The step-6 call, written out as three strings: the module `check_branch`
+#: reaches for, the entrypoint it calls on it, and the composer whose answer
+#: must reach the verdict. Written out rather than read off the source, because
+#: a row that derived the names it looks for from the file it is judging would
+#: report whatever that file happened to say.
+_D7_GATE_MODULE = "branch_reachability"
+_D7_GATE_CALL = "check_branch_reachability"
+_D7_GATE_COMPOSER = "verdict_of"
+_D7_GATE_UNION = "worst_verdict"
+
+
+def _calls_on_in_package_modules(source: str, function: str) -> frozenset[str]:
+    """Attribute calls — ``something.name(...)`` — inside one function of
+    `role_protocol`, as bare attribute names.
+
+    Deliberately blind to the receiver's spelling. What the D1 row needs to
+    know is that the FUNCTION is called from here at all; pinning the local
+    alias would make the seal red for a rename that changes no behaviour, and
+    would make it green for an alias rebound to something else — both of which
+    are the wrong direction.
+    """
+    tree = ast.parse(source, filename="role_protocol.py")
+    found: set[str] = set()
+    for stmt in tree.body:
+        if (
+            isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and stmt.name == function
+        ):
+            for node in ast.walk(stmt):
+                if isinstance(node, ast.Call) and isinstance(
+                    node.func, ast.Attribute
+                ):
+                    found.add(node.func.attr)
+    return frozenset(found)
+
+
+def test_check_branch_actually_calls_the_reachability_gate() -> None:
+    """DISPUTE D1, CLOSED (P4, 2026-08-12). **The gate is sealed as REACHED.**
+
+    This is the row the whole D7 lineage was missing and the row P2 could not
+    write. Every other seal in `tests/test_branch_reachability.py` proves that
+    `check_branch_reachability` BEHAVES; not one of them proves that anything
+    RUNS it, and the seal author said so in as many words ("no row proves the
+    gate RUNS, and none can: the wiring is a P4 amendment"). That is this
+    repository's twice-recorded protocol gap — *a seal proves a function
+    behaves, never that it runs* — reproduced in the final step of the unit
+    built to close it. It is closable HERE, in the commit that adds the call,
+    and by no earlier commit.
+
+    THREE claims, each derived from `role_protocol`'s own source and none of
+    them read off a docstring:
+
+      1. `check_branch` imports `branch_reachability` — so the module is on the
+         gate path, which is also what puts it in the derived delegation
+         closure and therefore on the floor;
+      2. `check_branch` CALLS `check_branch_reachability`. An import that
+         nothing calls is the exact shape of a gate that was wired and then
+         quietly unwired, and it would still satisfy claim 1 and every floor
+         row in this file;
+      3. `check_branch` calls `verdict_of`. Claim 2 alone is satisfied by a
+         `check_branch` that runs the whole sweep, pays for it, and then throws
+         the answer away — which is worse than not calling it at all, because
+         it costs the same and reports a pass;
+      4. `check_branch` calls `worst_verdict`. Claim 3 alone is satisfied by a
+         `check_branch` that computes the reachability verdict and stores it on
+         the record without unioning it into the one it RETURNS, and that shape
+         was measured rather than imagined: it leaves this whole file green and
+         reddens exactly one row anywhere in the suite. Claim 4 is here so this
+         row is not the file that misses it.
+
+    WHAT THIS ROW DOES NOT CLAIM, so that nobody reads more into a green than
+    is there: it is STATIC. It proves the call is written; it does not prove
+    the answer changes a verdict. That is
+    `tests/test_branch_reachability.py::
+    test_the_wired_gate_refuses_a_bodies_branch_through_check_branch`, which
+    drives a real repository through the real `check_branch` and watches the
+    verdict move. The two rows fail under different mutations on purpose — a
+    static row cannot see a union that drops the answer on the floor, and a
+    behavioural row over one repository cannot see the call being moved behind
+    a condition that repository does not meet.
+
+    GREEN TODAY and must stay green.
+    Falsify (measured): delete the step-6 block from `check_branch` — claims 1
+    and 2 fail together, `test_the_delegation_closure_is_exactly_the_written_
+    out_table` fails alongside with three stale rows, and so do the D7 rows in
+    `tests/test_branch_reachability.py` and `tests/test_d5_floor.py` — four
+    reds for one deletion.
+    Falsify (measured): keep the call and replace the `worst_verdict` union
+    with `unioned = verdict`, so the answer is computed, stored on the record
+    and never allowed to move the verdict — claim 4 fails. **Before claim 4
+    existed that mutation left this entire file green** and reddened exactly
+    one row in the suite; that measurement is why claim 4 is here.
+    """
+    source = _package_source("role_protocol")
+    assert source is not None
+
+    # The lens control, in this same call: the analyzer sees a call that IS
+    # there, so the assertions below can fail rather than being vacuously true
+    # about a function it failed to find.
+    calls = _calls_on_in_package_modules(source, "check_branch")
+    assert calls, (
+        "no attribute call at all was found inside check_branch; the analyzer "
+        "is reading the wrong function and every assertion below is vacuous"
+    )
+
+    tree = ast.parse(source, filename="role_protocol.py")
+    imported: set[str] = frozenset()
+    for stmt in tree.body:
+        if (
+            isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and stmt.name == "check_branch"
+        ):
+            for node in ast.walk(stmt):
+                imported = imported | _in_package_imports(node)
+
+    assert _D7_GATE_MODULE in imported, (
+        f"check_branch does not import {_D7_GATE_MODULE!r}, so unit D7's gate "
+        f"is not on the diff-time path at all: {sorted(imported)}"
+    )
+    assert _D7_GATE_CALL in calls, (
+        f"check_branch imports {_D7_GATE_MODULE!r} and never calls "
+        f"{_D7_GATE_CALL!r}. An import nothing calls keeps every floor row in "
+        "this file green while the gate does not run — which is exactly the "
+        f"state dispute D1 named: {sorted(calls)}"
+    )
+    assert _D7_GATE_COMPOSER in calls, (
+        f"check_branch calls {_D7_GATE_CALL!r} and never calls "
+        f"{_D7_GATE_COMPOSER!r}, so the sweep is paid for and its answer "
+        "reaches no verdict. A gate that runs and is not consulted is more "
+        f"expensive than one that does not run: {sorted(calls)}"
+    )
+    assert _D7_GATE_UNION in calls, (
+        f"check_branch computes a reachability verdict and never calls "
+        f"{_D7_GATE_UNION!r}, so the answer is carried on the record and is "
+        "not unioned into the verdict this function RETURNS. Measured: that "
+        "mutation leaves every other row in this file green"
+        f": {sorted(calls)}"
     )
 
 
@@ -1063,6 +1252,20 @@ _CLOSURE_ROWS: tuple[tuple[str, str], ...] = (
     ("legacy", "src/claude_dispatcher/repo_config.py"),
     ("legacy", "src/claude_dispatcher/yaml_io.py"),
     ("legacy", "src/claude_dispatcher/mechanical_verify.py"),
+    # D7 (P4, 2026-08-12). FIVE rows and not fifteen, and the asymmetry is the
+    # ruling rather than an omission. `call_site_reachability.py` and
+    # `call_site_contract.py` were already on `FLOOR_GLOBS` before this commit
+    # and their behavioural rows are already written out in `test_d5_floor.py`
+    # (D5's own entry) — a second copy here would be two notions of one fact,
+    # which is invariant 5's failure mode and which the `_FLOOR_x_ROLE_ROWS`
+    # note in `test_role_protocol_floor.py` already refuses for the gate's own
+    # halves. What is NEW to the floor in this commit is exactly one path, so
+    # exactly one path gets the five-role treatment here.
+    ("scaffold", "src/claude_dispatcher/branch_reachability.py"),
+    ("seals", "src/claude_dispatcher/branch_reachability.py"),
+    ("bodies", "src/claude_dispatcher/branch_reachability.py"),
+    ("adjudicate", "src/claude_dispatcher/branch_reachability.py"),
+    ("legacy", "src/claude_dispatcher/branch_reachability.py"),
 )
 
 

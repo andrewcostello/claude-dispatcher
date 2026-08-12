@@ -133,6 +133,16 @@ _GLOB_PROBES: dict[str, str] = {
     "**/src/**": "src/claude_dispatcher/plan.py",
     "**/schema/**": "schema/merge.yaml",
     "**/.dispatcher.yaml": ".dispatcher.yaml",
+    # D7's reachability APPEAL (P4, 2026-08-12). A probe distinct from
+    # `.dispatcher.yaml`'s, and it has to be: the two files are different
+    # artifacts under different rules — the policy is on `FLOOR_GLOBS` and
+    # writable by nobody, the appeal is deliberately NOT and is writable by
+    # ADJUDICATE through `disputed_paths:` — so a probe that either glob could
+    # cover would let one row pass on the other's protection. Measured on this
+    # revision under the module's own lens: `**/.dispatcher.staged.yaml` does
+    # NOT match `.dispatcher.yaml`, and `**/.dispatcher.yaml` does NOT match
+    # `.dispatcher.staged.yaml`.
+    "**/.dispatcher.staged.yaml": ".dispatcher.staged.yaml",
     "**/roles/*.md": "roles/reviewer.md",
     "**/reviewer_prompts/**": "pkg/reviewer_prompts/_shared.md",
     "**/verifier_prompts/**": "pkg/verifier_prompts/verifier.md",
@@ -214,11 +224,32 @@ _GLOB_PROBES: dict[str, str] = {
 # way in the other direction): `test_every_table_glob_has_exactly_one_probe_and_
 # one_cover` is RED right now and names all six by hand in its message. The row
 # goes green on exactly the edit that inverts the table and on no other.
+# P4 (2026-08-12, unit D7): TWO rows added, `bodies` and `scaffold`, both for
+# `**/.dispatcher.staged.yaml` — the reachability APPEAL,
+# `branch_reachability.DECLARATION_PATH`. This is the ADDITION direction the
+# note above describes working exactly as designed: the glob went into
+# `DEFAULT_ROLE_RULES` in the same commit and
+# `test_every_table_glob_has_exactly_one_probe_and_one_cover` went red naming
+# both pairs, because the live table carried a pair this list did not. The rows
+# and the `_GLOB_PROBES` entry are the answer it asked for.
+#
+# The `bodies` row is escalation 3 of `branch_reachability`'s module docstring:
+# the appeal is written by the adjudicator that reviewed the finding, never by
+# the branch the finding is against. The `scaffold` row goes beyond that
+# escalation and the reason is composition, not symmetry: `_DISPOSITION_
+# VERDICTS` maps ACCEPTED to CLEAN and head declarations are read from
+# `branch_ref`'s object store, which holds the whole branch history — so an
+# appeal landed at P1 pre-clears a BREACH P3 has not written yet, and P3
+# discloses nothing. There is no `seals` row: that rule is ALLOW_ONLY_GLOBS
+# since 2026-08-10 and this path is neither a test file nor under `docs/`, so
+# it is refused as an allowlist miss, which is where the five other departed
+# `seals` protections are paid too.
 _EXPECTED_TABLE_PAIRS: tuple[tuple[str, str], ...] = (
     ("bodies", "**/*.spec.*"),
     ("bodies", "**/*.test.*"),
     ("bodies", "**/*_test.go"),
     ("bodies", "**/*_test.py"),
+    ("bodies", "**/.dispatcher.staged.yaml"),
     ("bodies", "**/.dispatcher.yaml"),
     ("bodies", "**/conftest.py"),
     ("bodies", "**/reviewer_prompts/**"),
@@ -232,6 +263,7 @@ _EXPECTED_TABLE_PAIRS: tuple[tuple[str, str], ...] = (
     ("scaffold", "**/*.test.*"),
     ("scaffold", "**/*_test.go"),
     ("scaffold", "**/*_test.py"),
+    ("scaffold", "**/.dispatcher.staged.yaml"),
     ("scaffold", "**/.dispatcher.yaml"),
     ("scaffold", "**/conftest.py"),
     ("scaffold", "**/reviewer_prompts/**"),

@@ -47,10 +47,19 @@ where = ["src"]
 # and blocking, never "no TypeScript here" — and the fix is to run the fetcher
 # on the installed copy. The glob is FLAT and does not recurse, which is why
 # TS_HELPER_PACKAGE_DIR is a flat trio rather than a `node_modules` layout.
+#
+# The Go call-reachability helper (unit D6) is the D2 argument a third time and
+# with more force: it computes a CALL GRAPH, so a helper read out of the judged
+# repository would be supplied by the branch whose call graph it is computing.
+# An install that drops it is AnalyzerFault.HELPER_MISSING — named and blocking
+# — never "no Go analysis here". The glob is FLAT and ships two files, main.go
+# and go.mod; there is deliberately no built binary to ship, and the reason is
+# at GO_REACHABILITY_ANALYZER in go_reachability.py.
 claude_dispatcher = [
     "*_prompts/*.md",
     "go_signature_fingerprint/*",
     "ts_signature_fingerprint/*",
+    "go_call_reachability/*",
 ]
 
 [tool.pytest.ini_options]
