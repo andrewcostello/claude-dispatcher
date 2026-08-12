@@ -1210,13 +1210,135 @@ class ReachabilityAnalyzer(Protocol):
 #:      D5's enrolment schedule to the gate's. D3 refused a smaller floor
 #:      coordination than this one for the same reason.
 #:
+def _the_enrolled_analyzer_rows() -> tuple[ReachabilityAnalyzer, ...]:
+    """The rows :data:`ANALYZERS` is bound to. Called once, at import.
+
+    **The import is INSIDE this function and that is not style.**
+    ``go_reachability`` imports :mod:`claude_dispatcher.call_site_contract` for
+    the eleven contract names it needs and never this module, which is what the
+    contract extraction bought and what makes a module-level import here
+    acyclic TODAY. It is written function-local anyway, for two reasons that
+    outlive today's import graph: it is the shape ``tests/test_d5_floor.py``
+    states as fixture input for a row living in its own module
+    (``_ENROLMENT_FROM_ROW_MODULE_SOURCE``), where the row module DOES import
+    back out of this one; and this call sits above
+    :func:`validate_analyzers` and far above
+    :func:`_refuse_enrolment_before_flooring`, so binding here is what puts the
+    registry in front of both guards rather than behind them — the placement
+    ``call_site_contract``'s WIRING section ruled on and measured.
+
+    It does not swallow an :class:`ImportError`. A row that failed to import
+    would leave this module reporting an empty registry, which reads as "no
+    analyzer has been written" — the one claim :data:`ANALYZERS`' own docstring
+    forbids it to make falsely.
+    """
+    from .go_reachability import GO_REACHABILITY_ANALYZER
+
+    return (GO_REACHABILITY_ANALYZER,)
+
+
 #: Rejected alternative, spelled out because it is the tempting one: give D5 its
 #: own ``extensions`` per row and skip ``role_protocol`` entirely. That buys
 #: independence and costs the one property D1 spent a whole unit establishing —
 #: exactly one place in this codebase decides what language a file is. A second
 #: extension table would drift, and it would drift silently, because the two
 #: gates would disagree only on files neither had been pointed at yet.
-ANALYZERS: tuple[ReachabilityAnalyzer, ...] = ()
+#:
+#: **ENROLLED — the Go row, P4, ``feat/D6-enrol2``, base ``d8fd825``,
+#: 2026-08-11.** ``ANALYZERS`` was ``()`` from this module's first commit until
+#: this one. What it holds now is
+#: :data:`~claude_dispatcher.go_reachability.GO_REACHABILITY_ANALYZER` and
+#: nothing else; ``.py`` and ``.ts`` still resolve to a ``COMPARATORS`` row and
+#: to no analyzer, which is the state ``analyzer_for_path``'s second bullet
+#: describes and it is now instantiated by two real languages rather than by
+#: three hypothetical ones.
+#:
+#: **THE SIGN CHANGE, MEASURED IN BOTH DIRECTIONS ON REAL TREES**, by driving
+#: :func:`check_tree` against the SHIPPED registry — no monkeypatch, no
+#: hand-built relation — at this revision. A green suite is not evidence and
+#: D4's enrolment commit says so in its own words; these are the verdicts::
+#:
+#:     tests/fixtures/d6_import_scope          ok 0  breach 1  abstain 1
+#:       pkg/c.Dark    FROM_TESTS_ONLY  ->  BREACH    genuinely dark, reported
+#:       pkg/b.Dark    UNDECIDED/DYNAMIC_EDGE -> ABSTAIN  hole crosses the import
+#:
+#:     tests/fixtures/d6_g2_preserve   30 seals, 48 findings
+#:                                             ok 27 breach 12 abstain 9
+#:       cmd/iterate.VerifyPreservation   FROM_TESTS_ONLY -> BREACH   (x4 seals)
+#:       cmd/iterate.ApplyRoundRecord     FROM_PRODUCTION/resolved -> OK,
+#:         "production reaches ... from cmd/iterate.main over 3 edge(s)"
+#:       cmd/gates.VerifyPreservation     UNDECIDED/DYNAMIC_EDGE -> ABSTAIN (x3)
+#:
+#: A genuinely dark function is reported and a genuinely reached one is clean,
+#: on both trees, in the same call. ``pkg/b`` and ``pkg/c`` are the same shape
+#: in every respect that could move a verdict and differ only in that
+#: ``cmd/app``'s import block names one of them, so the ABSTAIN/BREACH split
+#: between them is the narrowing itself and not two separate measurements.
+#:
+#: **THE 3 THAT STILL ABSTAIN, and the citation defect that is now HALF fixed.**
+#: ``cmd/gates.VerifyPreservation`` abstains once per seal, 3 times, and is
+#: correct to: both remaining holes are ``context.CancelFunc`` values, at
+#: ``cmd/gates/main.go:754`` (in ``runOne``) and ``:1468`` (in ``runCmd``), both
+#: in the subject's OWN package and own module — verified by reading
+#: ``build_call_graph``'s hole set directly. Before ``_package_imports`` the
+#: abstention over a ``cmd/gates`` subject cited ``cmd/deepseek/main.go:46``, a
+#: hole in a DIFFERENT MODULE. **That is fixed: no finding on this tree cites
+#: any module but the subject's.** What is NOT fixed, and is recorded rather
+#: than papered over: all 9 abstentions name the COUNT and the FIRST hole only —
+#: *"2 call(s) … first at cmd/gates/main.go:1468"* — and ``:754`` appears in no
+#: finding on this tree. The detail is honest about the arithmetic and
+#: incomplete about the sites. Naming both is a body change to a floored
+#: module's message and is NOT this commit's; it is recorded here so the next
+#: reader finds a measured gap rather than a claim of completeness.
+#:
+#: **WHAT ENROLMENT NEWLY BLOCKS, measured and not claimed harmless** —
+#: :func:`check_tree` over a tree holding at least one ``.go`` file, on a host
+#: with no usable ``go``, RAISES out of :func:`discover_roots`
+#: (:attr:`~claude_dispatcher.call_site_contract.AnalyzerFault.
+#: TOOLCHAIN_MISSING`) where before it returned a silent empty report. Measured
+#: with ``PATH`` emptied, three trees, both registries::
+#:
+#:                            ANALYZERS = ()        the Go row enrolled
+#:     no .go file at all     report, 0 findings    report, 0 findings
+#:     one .go, no seal       report, 0 findings    **RAISES**
+#:     the primary target     report, 0 findings    **RAISES**
+#:
+#: The class is therefore "a Go tree judged on a machine that cannot read Go",
+#: and the boundary is real: a tree with no ``.go`` file never selects the row
+#: and is untouched in both states. **It is EMPTY on the primary target as
+#: things stand** — ``evenplay-mono/apps/website-public-api`` @ ``51a71736c``,
+#: this host's go1.24.4 — measured twice over: the toolchain is present so
+#: nothing raises, and the module declares ``go 1.25.0``, which
+#: :func:`~claude_dispatcher.go_reachability._go_environment`'s
+#: ``GOTOOLCHAIN=local`` correctly refuses, so all 13 units come back unreadable
+#: and ``package_imports`` is :class:`~claude_dispatcher.call_site_contract.
+#: ImportsUnavailable`. That degrades; it does not raise. And the module carries
+#: no ``TestSeal_`` function, so ``check_tree`` answers 0 seals and 0 findings
+#: and enrolment moves no verdict there at all. **On a CI image with no Go
+#: toolchain the class is NOT empty**: that target has 52 ``.go`` files and
+#: would raise. Recorded as the price, not as an accident.
+#:
+#: **THE RULED PRICE, re-measured at this revision** by spying on every
+#: ``subprocess.run`` the mechanism makes, three repetitions per tree::
+#:
+#:     tree                      pkgs   discover_roots   build_call_graph   check_tree
+#:     d6_import_scope              3   0.64 s / 3 exec  0.64 s / 3 exec    1.28 s / 6
+#:     d6_g2_preserve               2   0.67 s / 2 exec  0.68 s / 2 exec    1.32 s / 4
+#:     website-public-api          13         —                —           7.58 s / 26
+#:
+#: Three corrections to the figure this enrolment was handed ("``go list`` runs
+#: twice per ``check_tree``, ~0.83 s per Go module"). The mechanism issues **no
+#: ``go list`` from Python at all**; the unit of work is the vendored helper and
+#: it is exec'd **once per PACKAGE**, not per module. The DOUBLING is real and
+#: is the load-bearing half of that figure: :meth:`GoReachabilityAnalyzer.roots`
+#: and :meth:`~GoReachabilityAnalyzer.graph` each sweep every package and share
+#: nothing, and the two phases cost the same to within 2% on both fixtures. The
+#: helper BINARY is built once per process (0.19 s) and reused across trees.
+#: And :func:`check_tree` takes a TREE, never a diff, so the full price is paid
+#: whatever the branch size — a one-line branch on the primary target would pay
+#: the whole 7.58 s. **Halving it is available and is a body change, not this
+#: commit's**: one sweep feeding both phases.
+ANALYZERS: tuple[ReachabilityAnalyzer, ...] = _the_enrolled_analyzer_rows()
 
 
 def validate_analyzers(analyzers: Sequence[ReachabilityAnalyzer]) -> None:

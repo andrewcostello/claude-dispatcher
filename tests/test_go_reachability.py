@@ -636,8 +636,56 @@ def test_the_shape_check_accepts_a_row_whose_analysis_methods_raise():
     assert GO_REACHABILITY_ANALYZER.test_id(probe) == "cmd/gates.TestSeal_G1_X"
 
 
-def test_nothing_in_this_commit_enrols_the_go_row():
-    """``ANALYZERS`` is ``()``, no path resolves to a Go analyzer, no floor edit.
+def test_the_go_row_is_enrolled_and_its_module_and_helper_are_on_the_floor():
+    """``ANALYZERS`` holds the Go row, ``.go`` resolves to it, and the floor
+    covers everything its answer is computed from.
+
+    **AMENDED AND RENAMED BY P4, ``feat/D6-enrol2``, base ``d8fd825``,
+    2026-08-11, on the enrolling commit.** It was
+    ``test_nothing_in_this_commit_enrols_the_go_row``, and its first three
+    assertions were the tripwire enrolment falsifies. Everything after them is
+    the floor half and is UNCHANGED, including the upper bound.
+
+    **What the row becomes is stronger than what it was, and this is the whole
+    of the amendment.** It used to state the ORDERING — a row may not arrive
+    before its floor — with the antecedent FALSE: nothing was enrolled, so the
+    implication was satisfied by its first disjunct and the floor assertions
+    were a standing requirement rather than a live consequence. The antecedent
+    is now TRUE. The row therefore asserts the ordering in the only direction
+    that can still be violated: the Go row IS enrolled, so the gate, the row's
+    own defining module and the helper subtree MUST all be on the floor, and
+    deleting any one of them is a branch judging itself with a program it can
+    rewrite.
+
+    It is red in BOTH directions, which is what D4's enrolment precedent asks of
+    an enrolling commit's own row and what the two-state shape it replaces could
+    never manage. Measured in a clone at this revision:
+
+      * ``ANALYZERS`` rebound to ``()`` — the enrolment half reddens on the
+        first assertion, naming the empty registry, and this file still
+        collects;
+      * ``**/src/claude_dispatcher/go_call_reachability/**`` deleted from
+        ``FLOOR_GLOBS``, and separately
+        ``**/src/claude_dispatcher/go_reachability.py`` deleted — **each is a
+        COLLECTION ERROR for this whole file and not a FAILED line**, because
+        ``_refuse_enrolment_before_flooring`` now has a row to refuse and
+        refuses the import at module level, naming the exact unfloored paths.
+        That is louder than a red row and it is the second, independent refusal
+        finally doing work; it is written out because a reader counting FAILED
+        lines would see zero and conclude the floor was unguarded. The
+        consequence for THIS row is that its three floor assertions are
+        DOMINATED by the guard and can no longer be reached by deleting a glob;
+      * the UPPER BOUND is the floor half the guard does not cover and it is
+        still this row's alone. ``**/src/claude_dispatcher/plan.py`` ADDED to
+        ``FLOOR_GLOBS`` — an ordinary source module bought by flooring the
+        package — reddens the last assertion, and the file collects normally.
+
+    The old row's stated job — making an accidental enrolment visible from HERE
+    rather than as failures elsewhere — is discharged rather than deleted. The
+    enrolment it was watching for happened, deliberately, with its evidence in
+    the commit message.
+
+    The prose below is the history and is kept verbatim.
 
     The non-vacuity guard on "do not enrol". Without it, every ``UNSUPPORTED_LANGUAGE``
     answer elsewhere in the suite would be indistinguishable from an answer this
@@ -672,13 +720,21 @@ def test_nothing_in_this_commit_enrols_the_go_row():
     **This row's tripwire half is UNCHANGED and stays green.** ``ANALYZERS`` is
     ``()``, no path resolves to a Go analyzer, and nothing in the floor edit
     touches either fact — measured on this revision, both before and after.
+    (That paragraph is the D6 floor round's, and its first sentence stopped
+    being true at the enrolling commit. See the amendment at the top.)
     """
-    assert csr.ANALYZERS == (), (
-        "ANALYZERS grew a row; enrolment is a separate decision with separate "
-        "evidence, and this unit does not make it"
+    assert csr.ANALYZERS == (GO_REACHABILITY_ANALYZER,), (
+        "the Go row is not the registry. Enrolment was a ruling with measured "
+        f"evidence; un-enrolling is another one: {csr.ANALYZERS!r}"
     )
-    assert csr.analyzer_for_path("cmd/gates/preserve.go") is None
-    assert csr.analyzer_for_path("src/claude_dispatcher/risk.py") is None
+    assert csr.analyzer_for_path("cmd/gates/preserve.go") is GO_REACHABILITY_ANALYZER, (
+        "a .go path does not resolve to the enrolled Go row, so the registry "
+        "and the lookup disagree about what this build covers"
+    )
+    assert csr.analyzer_for_path("src/claude_dispatcher/risk.py") is None, (
+        "a .py path resolved to the Go analyzer; the lookup is not keyed on "
+        "the language support_for_path reports"
+    )
 
     from claude_dispatcher.role_protocol import FLOOR_GLOBS, first_matching_glob
 

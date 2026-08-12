@@ -902,33 +902,78 @@ def test_the_naive_scan_certifies_the_canonical_defect():
 
 
 # --------------------------------------------------------------------------- #
-# Part 1 — ANALYZERS is empty and empty is a claim.
+# Part 1 — ANALYZERS holds exactly the enrolled rows, and the table is a claim.
 #
-# The four rows over validate_analyzers and analyzer_for_path are GREEN at
+# The five rows over validate_analyzers and analyzer_for_path are GREEN at
 # HEAD; the scaffold implements both on purpose and says why. Each names the
 # mutation that reddens it, measured in a clone.
+#
+# This part's heading said "ANALYZERS is empty and empty is a claim" until the
+# Go row was enrolled (P4, `feat/D6-enrol2`, base d8fd825, 2026-08-11). Empty
+# was never the property; a table nobody may disagree with was.
 # --------------------------------------------------------------------------- #
 
 
-def test_analyzers_is_empty_and_no_path_in_any_tree_can_be_analyzed():
-    """The table is empty, so every path — including the enrolled ones — has
-    no analyzer, and ``analyzer_for_path`` says so by returning None.
+def test_the_registry_is_exactly_the_enrolled_rows_and_the_lookup_agrees():
+    """The table holds the Go row and nothing else, and every lookup follows it.
 
-    Empty is a claim: not "nobody thought about the languages" but "no analyzer
-    has been WRITTEN". The claim is only worth something if the lookup really
-    is keyed on the table, which is the second half of this row: a ``.go`` path
-    resolves to a ``COMPARATORS`` row and STILL gets no analyzer, and that is a
-    different fact from ``.sql``, which resolves to nothing at all.
+    **AMENDED AND RENAMED BY P4, `feat/D6-enrol2`, base d8fd825, 2026-08-11, on
+    the enrolling commit.** It was
+    `test_analyzers_is_empty_and_no_path_in_any_tree_can_be_analyzed` and its
+    first two assertions were `ANALYZERS == ()`. Those are the assertions
+    enrolment falsifies, and they are the only ones: the row's real subject was
+    never emptiness but the CLAIM a table makes, and the claim survives the
+    table growing. It is amended rather than deleted for the reason P4 gave when
+    it amended `test_go_is_still_not_enrolled` — a tripwire whose pending state
+    the operator has decided to leave is discharged, not thrown away.
 
-    Reddens on: enrolling any row (which is what makes this a live tripwire on
-    an unenrolled mechanism rather than a tautology).
+    The three facts, and the middle one is the one that got sharper rather than
+    weaker on enrolment:
+
+      * the registry is EXACTLY the enrolled set. One row, its language `GO`,
+        and `validate_analyzers` accepts the shipped tuple. "No second Go row"
+        and "no row for a language nobody enrolled" are the two shapes that
+        table exists to refuse and they are refused against the SHIPPED value,
+        not against a fixture;
+      * **a path that resolves to a `COMPARATORS` row and STILL gets no
+        analyzer.** This was the row's sharpest fact and it was instantiated by
+        three hypothetical languages; it is now instantiated by two real ones,
+        `.py` and `.ts`, which have comparators and no analyzer. That is a
+        different remediation from `.sql` — "write an analyzer row" versus
+        "decide whether the language belongs in the gate" — and the row still
+        separates them;
+      * `.sql`, `.java` and an extensionless path resolve to nothing at all.
+
+    Green when: all three hold.
+    Falsify: drop the Go row from `ANALYZERS` — the first and the `.go`
+    assertion redden. Enrol a Python row — the `.py` assertion reddens, which is
+    the direction that matters, because a language quietly acquiring an analyzer
+    is coverage nobody reviewed. Key `analyzer_for_path` on anything but the
+    table — the `.go` and `.py` assertions disagree with it. All three measured
+    in a clone at this revision.
     """
-    assert ANALYZERS == ()
-    assert csr.ANALYZERS == ()
+    assert len(csr.ANALYZERS) == 1, (
+        "the registry is not the one-row table this commit enrolled; a row "
+        f"arrived or left without a ruling: {csr.ANALYZERS!r}"
+    )
+    assert ANALYZERS == csr.ANALYZERS, "the module-level name and the attribute differ"
+    (go_row,) = csr.ANALYZERS
+    assert go_row.language is Language.GO
+    csr.validate_analyzers(csr.ANALYZERS)
 
-    for path in ("src/claude_dispatcher/risk.py", "cmd/classify/main.go", "web/app.ts"):
+    assert support_for_path("cmd/classify/main.go") is not None
+    assert analyzer_for_path("cmd/classify/main.go") is go_row, (
+        "a .go path does not resolve to the enrolled Go row, so the lookup is "
+        "not keyed on this table"
+    )
+
+    # A COMPARATORS row and STILL no analyzer — two real languages now.
+    for path in ("src/claude_dispatcher/risk.py", "web/app.ts"):
         assert support_for_path(path) is not None, f"{path} lost its COMPARATORS row"
-        assert analyzer_for_path(path) is None, f"{path} acquired an analyzer"
+        assert analyzer_for_path(path) is None, (
+            f"{path} acquired an analyzer. Enrolling a language is a ruling with "
+            "its own evidence, and this row is where an unruled one shows up"
+        )
 
     for path in ("store/queries/x.sql", "Main.java", "README"):
         assert support_for_path(path) is None
@@ -1177,13 +1222,15 @@ def test_validate_analyzers_refuses_a_row_no_path_can_reach():
         csr.COMPARATORS = original
 
 
-def test_an_unenrolled_mechanism_abstains_rather_than_passing_everything():
-    """``check_tree`` over a real tree with an empty registry must not read clean.
+def test_a_mechanism_with_no_row_for_the_language_abstains_rather_than_passing(
+    monkeypatch,
+):
+    """``check_tree`` over a real tree it cannot read must not read clean.
 
     The discipline ``PENDING_COMPARATORS`` exists for, applied to D5's own
     table: a mechanism that has been WRITTEN and has no analyzer must say "I
-    did not look" over every file, not "there is nothing wrong here". With
-    ``ANALYZERS`` empty every path is
+    did not look" over every file, not "there is nothing wrong here". With no
+    row for the language every path is
     :attr:`UndecidedReason.UNSUPPORTED_LANGUAGE`, so the report must carry
     every file in ``unanalyzed_paths``, must show ``seals_examined == 0``, and
     must not report a single OK.
@@ -1194,11 +1241,38 @@ def test_an_unenrolled_mechanism_abstains_rather_than_passing_everything():
     language belongs in the gate", and the report separates the two situations
     ``analyzer_for_path`` deliberately collapses.
 
-    RED at HEAD: ``check_tree`` raises :class:`NotImplementedError`.
-    Reddens under a body on: returning an empty report with no
-    ``unanalyzed_paths``; folding the two unanalyzed reasons together;
-    reporting ``dispositions[OK] > 0`` for a tree nobody read.
+    **AMENDED AND RENAMED BY P4, ``feat/D6-enrol2``, base ``d8fd825``,
+    2026-08-11, on the enrolling commit.** It was
+    ``test_an_unenrolled_mechanism_abstains_rather_than_passing_everything`` and
+    it read the SHIPPED registry, so it reddened on enrolment — the third
+    pending-state tripwire, and the one no earlier count had, because it names
+    no registry in its title. **The property is not touched. Its INSTANTIATION
+    is**: the registry is emptied for the duration of this one call, which is
+    exactly how the row two above it (``…_holds_no_second_extension_table``)
+    already builds the world it judges. The row now states a fact about the
+    MECHANISM — no row for the language, therefore an abstention over every
+    file — instead of a fact about today's table, and it is total over both.
+
+    Nothing is lost by the move, and the check on that is explicit: the claim
+    the old row also carried, *"the shipped registry is empty"*, is now carried
+    by ``test_the_registry_is_exactly_the_enrolled_rows_and_the_lookup_agrees``,
+    which asserts the shipped tuple exactly. Were it not, this amendment would
+    be a deletion wearing a rename.
+
+    Green when: an emptied registry abstains over every file of a real Go tree.
+    Falsify: return an empty report with no ``unanalyzed_paths``; fold the two
+    unanalyzed reasons together; report ``dispositions[OK] > 0`` for a tree
+    nobody read; or drop the ``monkeypatch`` and let the enrolled row answer —
+    ``seals_examined`` goes to 0 -> 2 and the ``.go`` assertion reddens, which is
+    the control that keeps the emptying load-bearing.
     """
+    monkeypatch.setattr(csr, "ANALYZERS", ())
+    assert analyzer_for_path("cmd/gates/preserve.go") is None, (
+        "the control failed: a .go path still resolves to an analyzer with the "
+        "registry emptied, so nothing below is a statement about a mechanism "
+        "with no row"
+    )
+
     report = check_tree(_FIXTURE)
 
     assert isinstance(report, ReachabilityReport)
