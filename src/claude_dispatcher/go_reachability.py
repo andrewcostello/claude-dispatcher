@@ -349,6 +349,10 @@ from .call_site_contract import (
     Edge,
     EdgeKind,
     EntrypointKind,
+    ImportEvidence,
+    ImportRelation,
+    ImportsUnavailable,
+    PackageImports,
     Root,
     Symbol,
 )
@@ -670,11 +674,33 @@ class GoReachabilityResponse:
         layer that knows the string came from the helper — the same R1
         discriminator that puts rule 4's echo check and the whole-tree
         emptiness guard a layer up. Empty means "not stated".
+    ``imports``
+        **The second field that is not a function of the request**, added on
+        ``feat/D6-supply-imports``, 2026-08-11: every package this unit imports,
+        as ``go/types`` resolved it, sorted and deduplicated. It is the FACT
+        :attr:`CallGraph.package_imports` is built from; see
+        :func:`_package_imports`.
+
+        ``None`` MEANS "THIS DOCUMENT DID NOT SAY" AND ``()`` MEANS "THIS
+        PACKAGE IMPORTS NOTHING", and the two may not be collapsed. A package
+        with no imports is legal Go and is an isolated node of the import graph
+        — the most NARROWING answer there is — so a silent helper reading as one
+        would scope holes away from subjects on evidence nobody collected, which
+        is the one direction the relation refuses. The type is therefore
+        ``| None`` and not a defaulted tuple, on ``parse_error``'s precedent in
+        this same record rather than on ``import_path``'s: an empty string names
+        no package and an empty tuple names a real answer.
+
+        Not required by the decoder and required at :func:`_analyzed_units`, for
+        ``import_path``'s reason verbatim. A ``parse_error`` document carries no
+        imports and is not asked for any: it did not read its own files, so it
+        has nothing to report about their import blocks.
     """
 
     schema: str
     unit: GoUnit
     import_path: str = ""
+    imports: tuple[str, ...] | None = None
     symbols: tuple[GoWireSymbol, ...] = ()
     roots: tuple[GoWireRoot, ...] = ()
     edges: tuple[GoWireEdge, ...] = ()
@@ -1033,10 +1059,30 @@ def decode_go_reachability_response(stdout: str) -> GoReachabilityResponse:
             f"the response 'import_path' is {import_path!r} and not a string"
         )
 
+    # Typed but not required HERE, for ``import_path``'s reason verbatim, and
+    # ABSENT IS NOT EMPTY: ``[]`` is the answer for a package that imports
+    # nothing, which is legal Go, and ``None`` is "this document did not say".
+    # The two must stay apart all the way to :func:`_analyzed_units`, which is
+    # the layer that knows the document came from the helper and is where the
+    # requirement lives. Collapsing them here would let a silent helper read as
+    # a package with no imports — an isolated node, which NARROWS.
+    imports = document.get("imports")
+    if imports is not None:
+        if not isinstance(imports, list) or not all(
+            isinstance(path, str) for path in imports
+        ):
+            raise _output_invalid(
+                f"the response 'imports' is {imports!r} and not a list of "
+                "strings; the import relation is keyed on these paths and a "
+                "coerced one places an import on the wrong package"
+            )
+        imports = tuple(imports)
+
     return GoReachabilityResponse(
         schema=schema,
         unit=unit,
         import_path=import_path,
+        imports=imports,
         symbols=tuple(symbols),
         roots=tuple(roots),
         edges=tuple(edges),
@@ -1990,6 +2036,18 @@ def _analyzed_units(
 
     A ``parse_error`` document carries no import path and is not asked for one:
     it declares no symbols, so nothing can be rejoined to it.
+
+    **AND SO IS THE ``imports`` REQUIREMENT (P3, D6 imports round, 2026-08-11),
+    for the same reason pointing the other way.** A graph document must STATE
+    its imports; one that does not is :attr:`AnalyzerFault.HELPER_OUTPUT_INVALID`
+    here rather than at the decoder, which has never seen a helper. ``[]`` is the
+    answer for a package that imports nothing and ``None`` is "this document did
+    not say", and read as ``[]`` the absence would make the package an isolated
+    node of the import graph — the MOST narrowing value the relation can carry —
+    so every other package's holes would be scoped away from every subject here
+    on evidence nobody collected. The import-path refusal above guards against a
+    manufactured BREACH; this one guards against a manufactured silence, and a
+    silence is the direction :class:`ImportsUnavailable` exists to refuse.
     """
     binary = _go_reachability_binary()
     root = Path(tree)
@@ -2015,6 +2073,16 @@ def _analyzed_units(
                 "every cross-package edge into this package is dropped by the "
                 "both-ends rule — a function production calls would read as "
                 "uncalled, which is a manufactured BREACH arriving as silence"
+            )
+        if response.parse_error is None and response.imports is None:
+            raise _output_invalid(
+                f"the helper's graph document for {unit} does not state its "
+                "imports. `[]` is the answer for a package that imports "
+                "nothing and an absent field is not an answer at all: read as "
+                "`[]` it makes the package an ISOLATED NODE of the import "
+                "graph — the most narrowing answer the relation can carry — so "
+                "holes in every other package would be scoped away from every "
+                "subject here, on evidence nobody collected"
             )
         analyzed.append((unit, files, response))
     return tuple(analyzed)
@@ -2273,6 +2341,276 @@ def _import_path_qualifiers(
         claimed_by[import_path] = unit
         qualifiers[import_path] = _qualifier_of(unit)
     return qualifiers
+
+
+def _package_imports(
+    analyzed: Sequence[tuple[GoUnit, GoReachabilityResponse]],
+    qualifiers: Mapping[str, str],
+    declaring_unit: Mapping[str, GoUnit],
+    edges: Sequence[Edge],
+    unreadable: Sequence[str],
+) -> ImportEvidence:
+    """This tree's :class:`ImportRelation`, or the named refusal.
+
+    **Landed on ``feat/D6-supply-imports``, 2026-08-11, base ``6e18fc0``.** It
+    closes the defect that made D5's import relation inert: every
+    :class:`CallGraph` this row produced carried the DEFAULT
+    :data:`IMPORTS_NOT_SUPPLIED`, so :func:`holes_in_scope` returned its input
+    unchanged on the only tree that exists and step 3 applied every hole in the
+    tree to every subject in it. **Measured on the acceptance tree
+    (``feat/G2-adj`` @ ``83b0b97``, 29 ``.go`` files, 7 modules) before this
+    function existed:** 13 unresolved production-closure holes, spread over 5
+    packages in 5 different modules, applied to all 7 ``VerifyPreservation``
+    findings, every one of them ABSTAIN — and the abstention over a
+    ``cmd/gates`` subject cited ``cmd/deepseek/main.go:46``, in another module,
+    as its reason.
+
+    THE FOUR PROPERTIES D5 CONTRACTS, and where each is met here:
+
+      1. **ABSENCE IS NOT AN EMPTY RELATION.** Two states return
+         :class:`ImportsUnavailable` rather than a relation with holes in it —
+         an unreadable unit (below) and a document that did not state its
+         imports (refused a layer up, at :func:`_analyzed_units`, because there
+         it is a mechanism fault and not a fact about the tree). Both degrade to
+         today's behaviour: no relation, no narrowing.
+      2. **AN EMPTY RELATION OVER A NON-EMPTY GRAPH RAISES**, in
+         :func:`validate_import_relation`, which ``build_call_graph`` runs over
+         whatever this returns. Nothing here needs to re-check it, and this
+         function cannot produce that shape anyway: every unit that parsed
+         becomes a package.
+      3. **AN UNPLACED IMPORT IS AN EDGE TO EVERY PACKAGE** — D5's rule, applied
+         by :func:`import_components`. **This function produces no unplaced
+         import on any tree it can currently read, and that is a LIMIT rather
+         than a claim; it is written out under THE RESIDUAL below so a reader
+         does not mistake an always-empty tuple for a tree with nothing
+         unplaceable in it.**
+      4. **A PLACED OUT-OF-TREE IMPORT CONTRIBUTES NO EDGE**, and is counted in
+         ``external_import_count`` instead. The dependency declares no
+         :class:`Symbol` in this tree, so it cannot be the subject's package.
+
+    **PLACEMENT IS THE QUALIFIER MAP AND NOTHING ELSE**, which is D5's shouted
+    requirement — *this relation subsumes* :func:`_import_path_qualifiers`, *do
+    not build a second derivation of import paths*. An import path is in-tree
+    exactly when that map carries it, and the identity it places onto is that
+    map's own value, which is :func:`_qualifier_of` — i.e.
+    :func:`go_symbol_key`'s qualifier, the identity every :attr:`Symbol.key` in
+    the package is spelled with. So the node table of this relation and the map
+    ``_join_callee`` rewrites cross-package callees through are ONE table, read
+    twice. That is what stops the cancellation D6's P4 measured from one side
+    and D5's seals pin from the other: a relation keyed on any other identity
+    would let an edge survive between two packages the relation reports as
+    unable to name each other, and nothing would be red.
+
+    **MEMBERSHIP IS DATA, NEVER STRING SURGERY.** ``declaring_unit`` is the map
+    :meth:`GoReachabilityAnalyzer.graph` already builds while it de-duplicates
+    keys across units, so which package declares a symbol is READ and not
+    re-derived. A method key is ``…/cmd/gates.(*Runner).dispatch`` and the
+    qualifier is not "everything before the last dot".
+
+    **AN EDGE THIS TREE HOLDS IS ALSO EVIDENCE THAT ONE PACKAGE CAN NAME
+    ANOTHER, and it is unioned in.** The import blocks are the primary source
+    and this is a second, narrower one that can only ADD edges. It is here for a
+    shape the import blocks genuinely miss: ``P`` imports ``A``, holds an ``A``
+    value whose type EMBEDS a type from ``Q``, and calls the promoted method —
+    go/types resolves the callee into ``Q``, this row emits the edge, and ``P``'s
+    import block never mentions ``Q``. ``P`` can therefore hand a function value
+    to ``Q`` (``x.Register(myFunc)``) while a relation built from import
+    statements alone reports the two as unable to name each other, and step 3
+    would scope a hole away from a subject a KEPT EDGE proves is in reach.
+    Adding it is monotone in the safe direction — it merges components, so it can
+    only make the mechanism abstain MORE, never manufacture a BREACH.
+    **Measured on both fixtures under this revision: it adds NOTHING on either,
+    so it is defence in depth and not a load-bearing term** — 0 edges added over
+    the acceptance tree (``feat/G2-adj`` @ ``83b0b97``) and 0 over
+    ``evenplay-mono/apps/website-public-api`` @ ``51a71736c``.
+
+    **THE RESIDUAL, and it is the one direction this function can be wrong in.**
+    An import path that the qualifier map does not carry is counted as
+    out-of-tree. That is right for the standard library and for a module
+    dependency, and it is WRONG for exactly one shape: a package of this tree
+    that some importer knows by a name no unit claims for itself — a renaming
+    ``replace``, where ``go list`` in the target directory answers
+    ``example.com/localfork`` while the importing module's block says
+    ``example.com/upstream``. P4 ruled that shape unclosable by any per-unit
+    field (see :func:`_import_path_qualifiers`) and left the CALL EDGE dropped,
+    which is conservative. **Here the same miss points the other way**: a missing
+    import edge SPLITS a component, and a split component narrows harder. It is
+    recorded rather than papered over, and the fix is the same one P4 priced —
+    the per-import resolved DIRECTORY as a second wire field, which makes both
+    the join and this placement directory-to-unit and needs no import-path
+    arithmetic at all. Until then this function cannot tell that shape from a
+    dependency, so it cannot record it as ``unplaced_imports`` either: a body
+    that marked EVERY unmatched import unplaced would collapse every tree to one
+    component on 41 stdlib imports (D5's :class:`PackageImports` rejects exactly
+    that alternative by name), and one that guessed would be worse.
+
+    **WHAT IT ANSWERS. Measured under ``feat/D6-supply-imports``, 2026-08-11, by
+    driving the real :func:`check_tree` with this row in ``ANALYZERS`` over the
+    acceptance tree ``feat/G2-adj`` @ ``83b0b97`` — before and after, and diffed
+    per (seal, subject) rather than in aggregate:**
+
+        acceptance case (VerifyPreservation)   0 of 7  ->  **4 of 7**
+        tree-wide  ok                          257     ->  257
+                   report                      4       ->  4
+                   breach                      0       ->  **37**
+                   abstain                     56      ->  19
+        findings that MOVED                    37, every one of them
+                                               UNDECIDED/ABSTAIN -> FROM_TESTS_ONLY/BREACH
+
+    **Zero OK became anything else, zero FROM_PRODUCTION was lost, and no
+    finding became FROM_PRODUCTION or OK that was not already** — asserted over
+    all 317 findings, not eyeballed. That is the contracted direction and it is
+    guaranteed by construction rather than by this measurement:
+    :func:`holes_in_scope` builds its output by appending a SUBSEQUENCE of its
+    input, step 3 abstains iff that set is non-empty, and step 1's production
+    path search runs before step 3 and reads no relation at all. Supplying a
+    relation can therefore only remove an abstention; it cannot invent a path
+    and cannot invent a hole. The 37 are subjects whose FROM_TESTS_ONLY reach
+    was already computed and was being MASKED by holes in other modules — the
+    same defect the acceptance case names, at the scale of the whole tree.
+
+    The three ``cmd/gates`` findings still abstain, and they are correct to:
+    both remaining holes are ``context.CancelFunc`` values called in
+    ``cmd/gates/main.go`` at 754 and 1468, in the subject's own package. Before
+    this function, the abstention over a ``cmd/gates`` subject cited
+    ``cmd/deepseek/main.go:46`` — a hole in a different MODULE.
+
+    **THE FOUR READINGS, separated on a tree where they differ.** The acceptance
+    tree cannot separate them: 7 packages, 0 in-tree imports, so the truth and an
+    empty relation are both 7 singletons and both answer 4 of 7. Run instead over
+    ``evenplay-mono/apps/website-public-api`` @ ``51a71736c`` — 13 units (the 12
+    packages ``go list`` reports, plus the ``postgres_test`` external test
+    package, whose file is behind ``//go:build integration`` and which ``go
+    list`` therefore does not report), 26 directed in-tree imports — the
+    partition this relation induces through :func:`import_components` is **ONE
+    component of 13, which is the TRUTH** and is none of the other three: the
+    empty relation gives 13 singletons, a directed-only reading gives member-set
+    sizes {9,6,5,4,3,2,1} and a direct-only reading {9,8,7,6,5,4,3}. The
+    analyzer's 24 in-tree edges over the 12 non-xtest packages are EXACTLY the 24
+    the D5 seals transcribe, and its ``external_import_count`` values reproduce
+    ``go list -e -json ./...``'s own per-package figures and their total of 156.
+    (That run needs one environment fact relaxed and it is not a code fact: the
+    module declares ``go 1.25.0`` and this machine's toolchain is go1.24.4, which
+    :func:`_go_environment`'s ``GOTOOLCHAIN=local`` correctly refuses. With the
+    pin in place the tree is 13 unreadable files and this function returns
+    :class:`ImportsUnavailable`, which is the fail-closed answer.)
+
+    **DISPUTE I1 — THIS BODY LEAVES ONE SEAL RED AND MAY NOT EDIT IT.**
+    ``tests/test_go_reachability.py``'s
+    ``test_the_step_three_abstention_is_measured_and_the_implication_is_total``
+    branches on ``report.unresolved_call_count``, which is a WHOLE-TREE count,
+    and requires that a non-zero one implies *all seven* findings abstain. Subject
+    scoping makes that implication false by design: the tree's hole count is 2
+    and four of the seven findings are now answerable, which is the number D5's
+    :func:`holes_in_scope` contract states and measures. The row's own prose
+    anticipates this — "scoping step 3's hole set to the SUBJECT rather than to
+    the tree would make it four … ESCALATED, not taken here" — so the row is a
+    correct statement about the world before the escalation landed. The
+    amendment is the row's condition, not its conclusion: it must branch on the
+    hole set IN SCOPE FOR THE SUBJECT rather than on the tree-wide count, which
+    makes it total over three states instead of two. **A seal author's edit, not
+    this body's.**
+
+    **DISPUTE I2 — THE SUITE REWARDS THE DEFECT, AND THAT IS THE MEASUREMENT A
+    SEAL AUTHOR NEEDS FIRST.** Measured in a ``cp -a`` clone, whole suite, each
+    mutation applied alone (2026-08-11; the 7 floor/provenance rows cannot run
+    in a clone with no ``.git`` and error, expected and constant across all of
+    them):
+
+        this function reverted to ImportsUnavailable   2423 passed, 0 FAILED
+        every package's unplaced_imports made non-empty
+          (one component, today's whole-tree behaviour) 2423 passed, 0 FAILED
+        every package's `imports` emptied (the FAIL-OPEN) 1 failed — the row
+          above, and NOTHING else
+        the unreadable-unit guard removed               same, nothing else
+        the `imports`-required refusal removed          same, nothing else
+        package identity by ``key.rpartition('.')``     2 failed — the row
+          above plus ``…_seven_seal_subject_pairs_over_two_keys``
+
+    So: no row in the suite requires the relation to be supplied, one row
+    forbids its consequence, and the fail-open — an analyzer that reads no
+    import blocks at all — is indistinguishable from this body on every tree the
+    suite touches, because both fixtures have ZERO in-tree imports. The rows that
+    would separate them exist and are D5's, over a hand-built relation; what is
+    missing is a Go-row seal over a tree with in-tree imports. The reach fixture
+    above is that tree and its two load-bearing figures are re-measured here.
+    """
+    if unreadable:
+        # A unit that did not parse or did not type-check reported no imports
+        # and claimed no import path, so it is absent from the node table AND
+        # from the qualifier map — an import of it from elsewhere in this tree
+        # would be counted as out-of-tree and its component silently split.
+        # `build_call_graph` takes the same position on SourceUnreadable and for
+        # the same reason: one language's silence suspends the narrowing for the
+        # whole tree.
+        return ImportsUnavailable(
+            reason=(
+                f"the Go analyzer could not read {len(unreadable)} file(s) of "
+                f"this tree, first {unreadable[0]}; the packages declared there "
+                "are missing from the import graph, so an import of one would "
+                "read as out-of-tree and split a component that should be "
+                "joined"
+            )
+        )
+
+    members: dict[str, set[str]] = {}
+    identity_of: dict[GoUnit, str] = {}
+    for unit, response in analyzed:
+        # REDUNDANT WITH THE GUARD ABOVE AND DELIBERATELY SO: `unreadable` is
+        # the caller's bookkeeping, and a unit that reported no imports must
+        # not become a package here on the strength of a list this function
+        # does not build. The two agree today; a relation that placed a unit
+        # which declared nothing would be wrong quietly.
+        if response.parse_error is not None:
+            continue
+        identity = _qualifier_of(unit)
+        if identity in members:
+            raise _output_invalid(
+                f"two units share the package identity {identity!r}; one "
+                "identity naming two packages would put their symbols in one "
+                "component and their imports in one bag"
+            )
+        members[identity] = set()
+        identity_of[unit] = identity
+    for key, unit in declaring_unit.items():
+        # Never `key.rpartition('.')`: a method key is `…/pkg.(*T).M` and the
+        # qualifier is not everything before the last dot. Which unit declared
+        # a symbol is data this row already holds.
+        members[identity_of[unit]].add(key)
+
+    named: dict[str, set[str]] = {identity: set() for identity in members}
+    for edge in edges:
+        source = identity_of[declaring_unit[edge.caller.key]]
+        target = identity_of[declaring_unit[edge.callee.key]]
+        if source != target:
+            named[source].add(target)
+
+    packages: dict[str, PackageImports] = {}
+    for unit, response in analyzed:
+        if response.parse_error is not None:
+            continue
+        identity = identity_of[unit]
+        imports: set[str] = set(named[identity])
+        external = 0
+        for path in response.imports or ():
+            target = qualifiers.get(path)
+            if target is None:
+                # PLACED OUT OF THE TREE: it declares no Symbol here, so it
+                # cannot be the subject's package and contributes no edge. This
+                # is also where the residual above lands.
+                external += 1
+            elif target != identity:
+                imports.add(target)
+        packages[identity] = PackageImports(
+            package=identity,
+            symbols=frozenset(members[identity]),
+            imports=frozenset(imports),
+            unplaced_imports=(),
+            external_import_count=external,
+        )
+    return ImportRelation(
+        packages={identity: packages[identity] for identity in sorted(packages)}
+    )
 
 
 def _join_callee(
@@ -2670,6 +3008,14 @@ class GoReachabilityAnalyzer:
             layer that knows how many Go files the sweep found, so it is the
             only layer that can tell the two apart.
           * **Determinism.** Two runs over one tree produce equal graphs.
+          * **THE IMPORT RELATION IS SUPPLIED**, and it is built from the same
+            qualifier map ``_join_callee`` joins cross-package edges through —
+            one table read twice, never two derivations. Landed on
+            ``feat/D6-supply-imports``, 2026-08-11; before it, every
+            :class:`CallGraph` this row produced carried the DEFAULT
+            :data:`IMPORTS_NOT_SUPPLIED` and D5's relation was inert on the only
+            row that exists. See :func:`_package_imports` for the four
+            properties, the measurements, and two disputes.
 
         The fault ORDER on the first invocation is HELPER_MISSING,
         TOOLCHAIN_MISSING, TOOLCHAIN_UNUSABLE, then the build's own — helper
@@ -2838,6 +3184,16 @@ class GoReachabilityAnalyzer:
             edges=tuple(sorted(edges, key=_edge_order)),
             unresolved_calls=tuple(sorted(holes, key=lambda hole: (hole[0].key, hole[1], hole[2]))),
             unreadable_paths=tuple(sorted(dict.fromkeys(unreadable))),
+            # THE IMPORT RELATION, and it is built from the SAME qualifier map
+            # `_join_callee` joins cross-package edges through — one table read
+            # twice, never two derivations. See `_package_imports`.
+            package_imports=_package_imports(
+                [(unit, response) for unit, _, response in analyzed],
+                qualifiers,
+                declaring_unit,
+                edges,
+                tuple(sorted(dict.fromkeys(unreadable))),
+            ),
         )
 
     def test_root_predicate(self, symbol: Symbol) -> bool:
