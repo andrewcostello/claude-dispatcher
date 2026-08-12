@@ -572,6 +572,91 @@ every entry: ``**/orchestrator.py`` would also match
      second, independent reason. Recorded here because the alternative is a
      unit whose own gate refuses its own owed list, discovered later by
      whoever first switches the gate on.
+
+     **RULED (P4, 2026-08-12) — dispute P3-3. P3's diagnosis is adopted in
+     full, and the ruling is written to generalise, because this will recur.**
+     Reproduced by P4 at ``90ddca0``, role BODIES, base ``6d94190``: VIOLATION,
+     ``0 forbidden path(s) and 2 changed scaffolded signature(s)``, naming
+     ``RunConfig`` (gained ``enable_role_loop_gate``) and ``TaskSnapshot``
+     (gained ``role_specs``). No path violation. The block is entirely step 5.
+
+     **THE RULE. An edit that changes a scaffolded signature is SCAFFOLD work.
+     It may not appear on an owed list handed to P3, and no ordering of
+     commits makes it legal.**
+
+     TWO INDEPENDENT TESTS disqualify BODIES, and the scaffold applied only
+     one:
+
+       1. **the floor test** — does the edit touch a :data:`~claude_dispatcher.
+          role_protocol.FLOOR_GLOBS` path? If yes, it is P4, for every role.
+       2. **the signature test** — does the edit change a
+          ``_scaffolded_signatures`` fingerprint of a ``*.py`` file that exists
+          at the merge-base? If yes, it is not BODIES work, whatever (1) says.
+
+     The scaffold reasoned from (1) alone and concluded (a) was a P3 edit that
+     would BECOME P4 if it landed after the floor entries. That is wrong twice
+     over. Order does not enter into it: step 5 compares the merge-base of
+     ``base_ref`` and ``branch_ref`` against the branch tip, so a field added
+     anywhere in the branch's history is a changed signature at judgement time.
+     And (2) disqualifies it with the floor out of the picture entirely — which
+     is the whole content of P3's finding.
+
+     **WHERE THE FIELD BELONGS: the scaffold commit.**
+     :func:`~claude_dispatcher.role_protocol._class_fingerprint` counts every
+     annotated class field — name, annotation and has-default — so a dataclass
+     field IS a declared type shape, and declaring type shapes is the entirety
+     of what a scaffold does. The second reason is the ordering the whole
+     protocol is built on: a field that arrives at P3 arrives AFTER P2 wrote
+     the seals, so no seal could have bound to it. Measured here, and it is not
+     hypothetical — see the routing block at the end of this docstring: no row
+     in the seal file drives the orchestrator's write of either new field.
+
+     **FOR A SCAFFOLD AUTHOR.** If your hook needs a field on a record you do
+     not otherwise own, put the field in the SCAFFOLD COMMIT, typed and
+     defaulted, and put it in the contract. Do not put it on the owed list.
+     "Owed" is for work whose SHAPE is already declared; a field is the shape.
+
+     **FOR A BODY AUTHOR WHO FINDS ONE ON ITS LIST.** Do not add it — escalate,
+     exactly as P3 did here. The field then lands either in a fresh
+     SCAFFOLD-role task on the same base (measured: step 5 gives every role but
+     BODIES :data:`~claude_dispatcher.role_protocol.SignatureCheckStatus.
+     NOT_APPLICABLE`, and SCAFFOLD's deny list does not cover ``src/``), or, if
+     the record's file is floored, in a P4 commit. Either way it must precede
+     the body commit that is judged.
+
+     **WHICH OF THE TWO SHAPES THE BODY NAMED.** For a future unit whose record
+     lives in an UNFLOORED file: SCAFFOLD-shaped, not ADJUDICATE-shaped.
+     ADJUDICATE exists for disputes and an omission is not a dispute; and its
+     writable set is the per-row ``disputed_paths:``, so routing a type
+     declaration through it makes the declaration depend on a worklist line,
+     which is the direction invariant 6 spends this whole module resisting.
+     For the orchestrator SPECIFICALLY, neither shape survives this
+     adjudication: as of the floor commit ``orchestrator.py`` is on
+     ``FLOOR_GLOBS`` and no declaration buys it back (measured — an ADJUDICATE
+     spec naming it is still refused with ``FLOOR_RATIONALE``). §7(a)-shaped
+     work on the task loop is P4-only from here, which is the same fact the
+     floor entry records as its accepted cost.
+
+     **WHAT IS NOT DONE ABOUT ``90ddca0``, and why.** Reverting the two fields
+     and re-landing them in a P4 commit does NOT clear the branch: step 5
+     compares merge-base to tip, so a revert-and-reland leaves the net
+     signature change identical and the report identical — it names the FIELD
+     DIFF, not the commit. The honest disposition is recorded rather than
+     engineered away: ``feat/D8-body``'s orchestrator half was never BODIES
+     work, it is carried onto the adjudicate branch where P4 owns it, and a
+     true gate finding is not made false by rearranging commits.
+
+     **A GAP THIS RULING EXPOSES, named because nothing else names it.** There
+     is no role under which a P4 branch comes out CLEAN. Measured on
+     ``feat/D8-adj``: as BODIES, VIOLATION (the floor, plus ``tests/**``); as
+     ADJUDICATE with every changed path declared, ``signature status:
+     NOT_APPLICABLE`` and VIOLATION on the three floored paths alone. That is
+     CORRECT by construction — ``FLOOR_RATIONALE`` says a change to a floored
+     path is *"a reviewed edit on the protected base (a plan amendment), never
+     a line in the branch being judged"* — but it means the adjudicator's own
+     work has no mechanical check at all, which is the honour system this
+     protocol replaces, one level up. Not closable inside this unit; recorded
+     so the next unit that wants to close it starts from a measurement.
   b. `role_protocol.validate` should refuse a batch whose rows carry more
      than one role (§4, measured to load clean today). Floored file → P4.
      Until it lands, :data:`LoopGateStatus.ROLE_UNRESOLVED` is the only thing
@@ -746,6 +831,72 @@ and the whole seal file re-run. Measured under `6d94190` + this commit.
     author said it means: closing a behavioural row here is not evidence that
     this implementation is the intended one, and row 22 is the only row that
     can tell one gate from two.
+
+
+P4 ROUTING — the seal-coverage gap, and whether D8 is complete without it
+========================================================================
+**Writing these rows is a P2's job and P4 did not write them.** A P4 that
+writes the seal it wants its own rulings judged by is the circular oracle this
+protocol opens by naming, and it is a worse instance than the ordinary one:
+the rows below are about work P4 just landed.
+
+**RE-DERIVED BY P4 on this tree, not carried from P3's report.** Each mutation
+applied to a `cp -a` clone, `tests/test_loop_gate.py` re-run whole:
+
+  * drop the rule-equivalence guard in :func:`resolve_inputs` — **22 green**;
+  * make `orchestrator._run_task` never WRITE the row stamp while still
+    referencing :data:`ROW_STAMPS` — **22 green**;
+  * hardcode ``enabled=True`` at the call site — **22 green**.
+
+And one measurement P4 added, because the P3-2 ruling might have been thought
+to close the third and does not: with ``enabled=True`` hardcoded, the three
+journal-sequence rows amended by that ruling stay **31 passed**. They pin the
+event TYPE and its POSITION, never its payload. The amendment proves the gate
+speaks on every task; it proves nothing about what it says.
+
+FOUR ROWS ARE OWED, with their shapes named so a P2 does not have to
+rediscover them:
+
+  1. **The rule-equivalence refusal.** Now writable in its own name: the P3-1
+     ruling gives it :data:`LoopGateStatus.RULE_UNRESOLVED`. Drive
+     :func:`check_after_implementer` with two ADJUDICATE specs differing only
+     in ``disputed_paths:`` and assert status RULE_UNRESOLVED, decision BLOCK,
+     and a `blocked_reason` distinct from the mixed-role one. It must go
+     through the hook and NOT through :func:`sole_role`, which returns a role
+     for this input and is not where the refusal lives.
+  2. **The row stamp is actually written.** Row 21 reads `orchestrator.py`'s
+     SOURCE for a reference to :data:`ROW_STAMPS`; no row drives the write.
+     The shape is a real run — the fixture machinery in
+     `tests/test_orchestrator_journal.py` and `tests/test_mechanical_verify.py`
+     already builds one — asserting the task's YAML row carries
+     ``ROW_STAMPS[0]`` with the expected VALUE.
+  3. **The run flag is honoured.** Same fixture, default config, asserting the
+     stamp and the journal PAYLOAD both read ``not_enabled``; then a second
+     row with the flag on. This is the row the P3-2 amendment does not
+     substitute for, measured above.
+  4. **Row 22 is alone, and a fifth behavioural row will not help.** The seal
+     author disclosed it and P3 re-derived it: a second implementation
+     agreeing on every fixture reddens row 22 and nothing else. The right P2
+     move is to STRENGTHEN row 22's closure walk, not to add behaviour — the
+     fixtures in that file are exactly the fixtures a reimplementation would be
+     written against, so more of them buy nothing.
+
+**IS D8 COMPLETE WITHOUT THEM? No, and the honest counter is recorded with
+the answer.** The counter is real: this file's rows are about WIRING, and a
+gate that is wired but whose flag is hardcoded is still wired — row 4 locates
+the call by AST inside `_run_task`, and it would still hold. So the unit's
+stated subject is sealed.
+
+It is still not complete, because two of the three uncovered mutations are not
+about wiring at all — they are about whether the wiring DOES anything. A gate
+whose flag is hardcoded ``True`` runs on every task of every repository,
+including the Go tree where §3 measured fifteen minutes per BODIES branch and
+ruled the gate must not go in front of it; a gate that never writes its stamp
+leaves `dispatcher blocked` unable to say why a row was blocked and leaves
+`unblock._STALE_STAMPS` clearing keys that were never set. Neither is a wiring
+defect and neither reddens anything. **The unit is wired and it is not
+guarded.** D8 is complete as a wiring unit and incomplete as a shipped one,
+and the gate should not be switched on by default until rows 1-3 exist.
 """
 
 from __future__ import annotations
