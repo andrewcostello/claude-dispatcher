@@ -324,6 +324,36 @@ _ACCEPTANCE_SEALS = {
 _RECORDED_GO_MOD = "go.mod.recorded"
 _LIVE_GO_MOD = "go.mod"
 
+#: The vendored IMPORT-SCOPE fixture — the tree with an in-tree import, which
+#: the acceptance tree above is not. See its ``PROVENANCE.md`` for every count
+#: and for why it had to be authored rather than copied from anywhere.
+#:
+#: It exists to close DISPUTE I2 in ``_package_imports``: both acceptance
+#: packages have ZERO in-tree imports, so the correct relation and an analyzer
+#: that never read an import block emit byte-identical relations there and no
+#: seal over that tree can tell them apart.
+_IMPORT_FIXTURE = _TESTS_DIR / "fixtures" / "d6_import_scope"
+
+#: Its one module path and its three package IDENTITIES — the qualifier half of
+#: every ``Symbol.key`` the tree declares. Pinned against the recorded
+#: ``go.mod`` by
+#: :func:`test_the_import_scope_fixture_supplies_the_in_tree_import_the_acceptance_tree_cannot`,
+#: so a fixture edit reddens a row instead of quietly agreeing with a literal.
+_IMPORT_MODULE = "example.com/importscope"
+_PKG_A = f"{_IMPORT_MODULE}/cmd/app"
+_PKG_B = f"{_IMPORT_MODULE}/pkg/b"
+_PKG_C = f"{_IMPORT_MODULE}/pkg/c"
+
+#: The dark function each of ``pkg/b`` and ``pkg/c`` declares, and the seal that
+#: calls it. One name in two packages, deliberately: the two findings must
+#: differ in their IMPORT POSITION and in nothing a reader could mistake for a
+#: reason.
+_IMPORT_SUBJECT_NAME = "Dark"
+_IMPORT_SEALS = {
+    _PKG_B: "TestSeal_B_DarkAnswersItsOwnVersionAndNothingElse",
+    _PKG_C: "TestSeal_C_DarkAnswersItsOwnTagAndNothingElse",
+}
+
 
 # --------------------------------------------------------------------------- #
 # Helpers. None of these implements anything under seal: they build inputs and
@@ -342,6 +372,24 @@ def _acceptance_tree(tmp_path: Path) -> Path:
     """
     tree = tmp_path / "acceptance"
     shutil.copytree(_FIXTURE, tree)
+    (tree / "PROVENANCE.md").unlink()
+    for recorded in tree.rglob(_RECORDED_GO_MOD):
+        recorded.rename(recorded.with_name(_LIVE_GO_MOD))
+    return tree
+
+
+def _import_scope_tree(tmp_path: Path) -> Path:
+    """The vendored import-scope fixture, copied into ``tmp_path``, ``go.mod`` live.
+
+    The same discipline as :func:`_acceptance_tree` and for the same two
+    reasons: the analyzer is contracted never to write into the tree it reads,
+    and a run that mutated the fixture would make the next row's input a
+    function of the previous row's body. The directory name differs from the
+    acceptance tree's so that a row taking both can hold them side by side under
+    one ``tmp_path``.
+    """
+    tree = tmp_path / "importscope"
+    shutil.copytree(_IMPORT_FIXTURE, tree)
     (tree / "PROVENANCE.md").unlink()
     for recorded in tree.rglob(_RECORDED_GO_MOD):
         recorded.rename(recorded.with_name(_LIVE_GO_MOD))
@@ -3802,3 +3850,865 @@ def test_two_units_claiming_one_import_path_are_never_silently_joined_to_one(
         "site. P4 ruled: make the collision loud. See "
         "_import_path_qualifiers' WHAT THIS DOES NOT CLOSE, item 3"
     )
+
+
+# =========================================================================== #
+# Part 12 — the import-scope fixture, and the fail-open a seal can finally see
+#
+# DISPUTE I2 in ``_package_imports`` ruled enrolment BLOCKED because no fixture
+# in this row's suite has an in-tree import: ``_package_imports`` already
+# returns ``imports=frozenset()`` for both acceptance packages, so the correct
+# analyzer and one that never read an import block emit BYTE-IDENTICAL
+# relations, and a seal cannot separate two functions that return the same
+# value. This part is that fixture and its rows.
+#
+# **THE ACCEPTANCE TEST FOR THE ROUND, measured under ``feat/D6-import-fixture``,
+# base ``444b1fb``, 2026-08-11, each mutation applied alone to
+# ``_package_imports`` in a ``cp -a`` clone (the ``.git`` FILE removed, so the
+# same 7 floor/provenance rows ERROR in every run below — expected, and constant
+# across all of them), whole suite. "Before" is the same clone with this part's
+# rows and fixture removed:**
+#
+#     clone baseline                             2425 / 13 / 7   2429 / 13 / 7
+#
+#     mutation                                   before this part   after
+#     every package's `imports` emptied
+#       — THE FAIL-OPEN                          **0 FAILED**       3 failed
+#     import blocks never read, call edges only  **0 FAILED**       3 failed
+#     reverted to ImportsUnavailable             1 failed           5 failed
+#     every package's unplaced_imports non-empty
+#       (one component, whole-tree behaviour)    1 failed           3 failed
+#
+# **The first line is the whole point: the fail-open went from invisible to
+# red.** The two "before" 1-faileds reproduce P4's figures at
+# ``feat/D6-stepthree-adj`` exactly, and both are the amended step-three row,
+# which reddens because the mechanism abstains MORE — it never could see the
+# fail-open, which makes it abstain LESS. The second line is measured here for
+# the first time: the NARROWER fail-open the dispute actually names, "an
+# analyzer that reads no import blocks at all", was equally invisible.
+#
+# The full per-row attribution, and five further mutations, are at each row.
+#
+# NOTHING HERE ENROLS THE ROW. Every row below reaches the analyzer through
+# :func:`_with_go_row`'s ``monkeypatch``, exactly as Part 9's do, and
+# :data:`~claude_dispatcher.call_site_reachability.ANALYZERS` is still ``()``
+# — which :func:`test_nothing_in_this_commit_enrols_the_go_row` asserts.
+# =========================================================================== #
+
+
+#: The acceptance tree's DISTINCT out-of-tree import paths per package, as the
+#: analyzer counts them. Transcribed from ``_ACCEPTANCE_DISTINCT_EXTERNAL`` in
+#: ``tests/test_call_site_reachability.py`` rather than imported, because a
+#: seal file importing another seal file's expectation makes one number two
+#: rows deep and neither of them a measurement. Re-measured here — see
+#: :func:`test_the_go_row_counts_distinct_out_of_tree_paths_and_never_import_lines`,
+#: which derives it from the vendored text in the same call.
+_ACCEPTANCE_DISTINCT_EXTERNAL_HERE = {
+    f"{_GATES_MODULE}/cmd/gates": 20,
+    f"{_ITERATE_MODULE}/cmd/iterate": 19,
+}
+
+#: The acceptance tree's import-block LINE counts, which are a DIFFERENT
+#: quantity and are 41 and 39. Kept beside the one above so the two are never
+#: again one number — the confusion P4 CORRECTION 3 had to unpick.
+_ACCEPTANCE_IMPORT_LINES = {
+    f"{_GATES_MODULE}/cmd/gates": 41,
+    f"{_ITERATE_MODULE}/cmd/iterate": 39,
+}
+
+_IMPORT_BLOCK = re.compile(r"^import\s*\(([^)]*)\)", re.M | re.S)
+_IMPORT_SINGLE = re.compile(r'^import\s+(?:\w+\s+)?("[^"]+")\s*$', re.M)
+_IMPORT_QUOTED = re.compile(r'"([^"]+)"')
+
+
+def _import_specs(package_dir: Path) -> list[str]:
+    """Every import SPEC in every ``.go`` file of one package directory.
+
+    Deliberately a crude text sweep and NOT a parser of anything under seal:
+    it is the independent derivation the rows below compare the analyzer
+    against, and a derivation that shared code with the analyzer would be the
+    analyzer agreeing with itself. Test files included, because they are in the
+    package's unit — ``discover_units``' third obligation — and so an analyzer
+    reading import blocks reads them.
+
+    One entry per import LINE, so duplicates across the files of a package are
+    kept. That is what makes "lines" and "distinct paths" two measurable
+    quantities rather than one.
+    """
+    specs: list[str] = []
+    for go_file in sorted(package_dir.glob("*.go")):
+        text = go_file.read_text(encoding="utf-8")
+        for match in _IMPORT_BLOCK.finditer(text):
+            specs += [
+                line.strip()
+                for line in match.group(1).splitlines()
+                if line.strip() and not line.strip().startswith("//")
+            ]
+        specs += [match.group(1) for match in _IMPORT_SINGLE.finditer(text)]
+    return specs
+
+
+def _import_paths(
+    package_dir: Path, in_tree: tuple[str, ...]
+) -> tuple[list[str], set[str], set[str]]:
+    """``(every line, distinct out-of-tree paths, distinct in-tree paths)``.
+
+    ``in_tree`` is the module path prefixes that make an import in-tree. Passed
+    in rather than derived, so this helper states no opinion about which tree it
+    is reading.
+    """
+    lines = _import_specs(package_dir)
+    external: set[str] = set()
+    internal: set[str] = set()
+    for spec in lines:
+        quoted = _IMPORT_QUOTED.search(spec)
+        if quoted is None:
+            continue
+        path = quoted.group(1)
+        placed = any(path == p or path.startswith(f"{p}/") for p in in_tree)
+        (internal if placed else external).add(path)
+    return lines, external, internal
+
+
+def test_the_import_scope_fixture_supplies_the_in_tree_import_the_acceptance_tree_cannot(
+    tmp_path, monkeypatch
+):
+    """GREEN, mutation-verified. The DERIVATION, and the acceptance tree as its control.
+
+    **This is the row DISPUTE I2 said could not be written, and the reason it
+    can be written now is the fixture and not a sharper assertion.** The dispute
+    is precise about why: *"``_package_imports`` already returns
+    ``imports=frozenset()`` for both acceptance packages, because the tree has no
+    in-tree imports to report. Emptying every package's ``imports`` is therefore
+    a LITERAL NO-OP on every tree the suite touches — the mutated analyzer and
+    the correct one emit byte-identical relations."* No assertion separates two
+    functions that return the same value. A different INPUT does.
+
+    **THE CONTROL IS THE ACCEPTANCE TREE, JUDGED IN THE SAME CALL, and it is
+    not decoration.** Both halves run the same derivation — the real
+    :func:`~claude_dispatcher.call_site_reachability.build_call_graph` with the
+    Go row in ``ANALYZERS`` — over two real Go trees, and read
+    :attr:`CallGraph.package_imports` off the result. The acceptance half must
+    come back all-empty and all-singleton; the import-scope half must come back
+    with one edge and two components. Without the control, an empty answer here
+    would be indistinguishable from a derivation that answers empty always, and
+    that is exactly the state the suite was in before this fixture. With it, the
+    two halves differ ONLY in the tree, so the difference is caused by the tree.
+
+    **THE FIXTURE PIN IS THE FIRST ASSERTION.** The three package identities are
+    spelled in this file as :data:`_PKG_A`, :data:`_PKG_B`, :data:`_PKG_C`, and a
+    literal nobody checks is fiction — the failure this codebase calls "a
+    fixture stating only the world the fix wanted". The recorded ``go.mod`` is
+    read here and must name the module those three are built from, so a fixture
+    edit reddens this row instead of drifting into agreement with a constant.
+
+    **HOW PRODUCTION PRODUCES THIS INPUT.** A Go module with three packages, one
+    importing another for a constant. That is not a contrived shape: it is the
+    ordinary shape of every multi-package Go module, and the acceptance tree is
+    the unusual one — seven ``cmd/`` modules that happen to share no code. The
+    fixture is `gofmt`-clean, `go vet`-clean and `go test`-green, measured; see
+    ``PROVENANCE.md``.
+
+    **Measured under** ``feat/D6-import-fixture``, base ``444b1fb``,
+    2026-08-11, each mutation applied alone to ``_package_imports`` in a ``cp
+    -a`` clone:
+
+        every package's `imports` emptied — THE FAIL-OPEN      **RED**, on
+          cmd/app's imports, which must be {pkg/b} and comes back frozenset()
+        import blocks never read, call edges only              **RED**, same
+          assertion — this fixture has NO cross-package call edge, which is
+          test_the_import_block_is_the_only_evidence... below
+        reverted to ImportsUnavailable                         **RED**, on the
+          relation's type
+        every package's unplaced_imports made non-empty        **RED**, on the
+          components — pkg/c joins the other two
+        the `external += 1` branch neutered, so out-of-tree
+          imports go uncounted                                 **RED**, on the
+          control's LAST assertion — which is what that assertion is for: it is
+          the difference between "read 41 lines and placed none in the tree"
+          and "did not read the blocks", and without it the acceptance half of
+          this row proves nothing about the derivation
+        in-tree imports counted as external as well            GREEN here,
+          RED on test_the_go_row_counts_distinct_out_of_tree_paths... — the
+          count is that row's, and this row's control reads only its sign
+        `key.rpartition('.')` for package identity             GREEN here, and
+          correctly so: every key on this fixture is a plain top-level func, so
+          the last dot IS the package boundary. That seam is
+          test_a_method_key_is_placed_through_package_of_and_never_by_string_surgery's.
+
+    **Predicted (unmeasured) under:** a body that placed an in-tree import onto
+    the IMPORT PATH rather than onto the qualifier map's value. On this fixture
+    the two coincide (the module has no ``cmd/`` nesting that separates them),
+    so this row would stay green and
+    ``test_a_cross_package_edge_survives_only_because_the_callee_key_is_rejoined``
+    is where that is caught.
+    """
+    recorded = (_IMPORT_FIXTURE / _RECORDED_GO_MOD).read_text(encoding="utf-8")
+    assert f"module {_IMPORT_MODULE}\n" in recorded, (
+        f"the fixture's recorded go.mod does not declare {_IMPORT_MODULE}, so "
+        f"the three identities this file spells ({_PKG_A}, {_PKG_B}, {_PKG_C}) "
+        "are built from a module path the tree no longer has. A literal nobody "
+        "checks is fiction"
+    )
+
+    _with_go_row(monkeypatch)
+
+    scope = csr.build_call_graph(_import_scope_tree(tmp_path))
+    assert scope.unreadable_paths == (), (
+        f"the fixture came back unreadable ({scope.unreadable_paths}); every "
+        "assertion below would then be about the environment. The tree "
+        "declares go 1.21 precisely so no toolchain in range refuses it"
+    )
+    relation = scope.package_imports
+    assert isinstance(relation, csr.ImportRelation), (
+        "the import-scope fixture produced "
+        f"{type(relation).__name__} rather than a relation. This tree has three "
+        "readable packages and one in-tree import; a refusal here is the "
+        "mechanism declining to answer a question it can answer"
+    )
+    assert set(relation.packages) == {_PKG_A, _PKG_B, _PKG_C}, (
+        f"the relation is keyed on {sorted(relation.packages)}; the three "
+        "packages of this tree are what it must carry, and an identity that is "
+        "not one of them is a package the qualifier map and the node table "
+        "spell differently"
+    )
+    assert relation.packages[_PKG_A].imports == frozenset({_PKG_B}), (
+        f"{_PKG_A} imports {sorted(relation.packages[_PKG_A].imports)}. It "
+        f"imports exactly {_PKG_B}, in one line of its own import block, and "
+        "that one edge is the whole of what this fixture exists to make "
+        "visible. An empty answer here is the FAIL-OPEN DISPUTE I2 ruled "
+        "enrolment blocked behind"
+    )
+    assert relation.packages[_PKG_B].imports == frozenset()
+    assert relation.packages[_PKG_C].imports == frozenset(), (
+        f"{_PKG_C} imports nothing in this tree and nothing imports it; an "
+        "edge here would make it the same component as the holed package and "
+        "destroy the only asymmetry this fixture has"
+    )
+
+    components = csr.import_components(relation)
+    assert components[_PKG_B] == frozenset({_PKG_A, _PKG_B}), (
+        f"{_PKG_B}'s component is {sorted(components[_PKG_B])}. The import is "
+        "UNDIRECTED — cmd/app can hand pkg/b a function value and pkg/b's call "
+        "can hand one back — so the two are one component"
+    )
+    assert components[_PKG_C] == frozenset({_PKG_C}), (
+        f"{_PKG_C}'s component is {sorted(components[_PKG_C])}; a package no "
+        "import reaches is its own component, and that is what makes a hole in "
+        "cmd/app out of scope for it"
+    )
+
+    # THE CONTROL, in the same call: the same derivation over the tree that
+    # cannot exercise it. Zero in-tree imports, three singleton components — and
+    # therefore an answer the fail-open reproduces exactly.
+    acceptance = csr.build_call_graph(_acceptance_tree(tmp_path))
+    control = acceptance.package_imports
+    assert isinstance(control, csr.ImportRelation)
+    assert all(package.imports == frozenset() for package in control.packages.values()), (
+        "the acceptance tree reported an in-tree import. Every row in Part 9 "
+        "rests on it having NONE — that is what makes its true relation and the "
+        "fail-open's relation the same value, and therefore what makes this "
+        "part necessary. If this changed, this part's justification changed"
+    )
+    control_components = csr.import_components(control)
+    assert all(len(member) == 1 for member in control_components.values()), (
+        f"the acceptance tree partitioned into {control_components}; with zero "
+        "in-tree imports every package must be its own component, which is the "
+        "premise test_the_step_three_abstention_is_measured_and_the_implication"
+        "_is_total derives its scope from"
+    )
+    assert all(
+        package.external_import_count > 0 for package in control.packages.values()
+    ), (
+        "the acceptance tree's packages report ZERO out-of-tree imports as "
+        "well, so its all-empty relation is 'the analyzer read nothing' and "
+        "not 'the analyzer read 41 lines and placed none of them in the tree'. "
+        "Without this the control half proves nothing about the derivation"
+    )
+
+
+def test_a_hole_in_the_importing_package_abstains_the_imported_one_and_never_the_third(
+    tmp_path, monkeypatch
+):
+    """GREEN, mutation-verified. **The acceptance row of this whole round.**
+
+    Two subjects, one tree, one hole, one call. ``pkg/b.Dark`` must ABSTAIN and
+    ``pkg/c.Dark`` must BREACH, and the two packages are the same shape in every
+    respect that could move a verdict — one exported dark function, one seal
+    calling it directly twice from its own body, no test helper, no production
+    caller, one stdlib import in the test file. **The only difference between
+    them is that ``cmd/app``'s import block names ``pkg/b`` and does not name
+    ``pkg/c``.** So ``pkg/c`` is not a second assertion: it is the IN-TEST
+    CONTROL, judged in the same call, and it is what stops a green here from
+    being "the mechanism abstains about everything" or "the mechanism breaches
+    about everything".
+
+    **WHY THIS IS NOT A TRANSCRIPTION OF TODAY'S ANSWER.** The row writes no
+    verdict count down and does not name which package abstains. It DERIVES the
+    scoping from the fixture's own text — ``_import_paths`` over the vendored
+    ``.go`` files, a crude sweep sharing no code with anything under seal — and
+    then asserts the mechanism agrees, finding by finding. Three properties keep
+    the derivation independent of the thing it judges:
+
+      1. **it does not call**
+         :func:`~claude_dispatcher.call_site_reachability.holes_in_scope`, and it
+         does not read :attr:`CallGraph.package_imports` either. A row that
+         asked the mechanism whose consequence it is judging what the answer is
+         would be green under every mutation of that mechanism. The sibling row
+         above judges the relation; this one judges its CONSEQUENCE, and the two
+         must not share a source;
+      2. **package membership is a known-prefix test against the three
+         identities this file spells**, never ``rpartition('.')``. Every key
+         must be placed in EXACTLY ONE of the three, so a key it cannot place is
+         red rather than silently unplaced;
+      3. **it re-derives the closure hole set** from the module's published
+         primitives (:func:`~claude_dispatcher.call_site_reachability.
+         build_call_graph`, :func:`~claude_dispatcher.call_site_reachability.
+         discover_roots`, :func:`~claude_dispatcher.call_site_reachability.
+         reachable_from`) and cross-checks it against
+         ``report.unresolved_call_count``, exactly as
+         :func:`test_the_step_three_abstention_is_measured_and_the_implication_is_total`
+         does.
+
+    **THE PARTITION GUARD.** In the holed regime BOTH sides must be witnessed.
+    That is not a count — it is the statement that this fixture still
+    discriminates. A tree where every package shared a component with the hole,
+    or none did, would make the implication vacuously true, and this row goes
+    red saying so rather than green measuring nothing. It is the same guard the
+    step-three row carries, and it is the direct answer to two shapes this unit
+    has measured: a row that iterated an empty list and was green because no
+    finding existed, and a collapsed input space.
+
+    **THE HOLE IS A GENUINE ONE AND PRODUCTION PRODUCES IT.** ``cmd/app.run``
+    binds ``ctx, cancel := context.WithTimeout(...)`` and defers ``cancel()``.
+    ``cancel`` is a ``context.CancelFunc`` — a value of function type bound by a
+    TUPLE assignment — and the Go helper's SOLE-BINDING FUNC LITERAL rule
+    declines a tuple binding by name. This is one of the two hole shapes
+    MEASURED on the acceptance tree, not one invented here: ``cmd/gates/main.go``
+    does the same thing twice, at 754 and 1468.
+
+    **Measured under** ``feat/D6-import-fixture``, base ``444b1fb``,
+    2026-08-11, each mutation applied alone to ``_package_imports`` in a ``cp
+    -a`` clone, verdicts read off the real :func:`check_tree`:
+
+        mutation                                      pkg/b.Dark   pkg/c.Dark
+        none (HEAD)                                   ABSTAIN      BREACH
+        every package's `imports` emptied
+          — THE FAIL-OPEN                             **BREACH**   BREACH  -> RED
+        import blocks never read, call edges only     **BREACH**   BREACH  -> RED
+        reverted to ImportsUnavailable                ABSTAIN      **ABSTAIN** -> RED
+        every package's unplaced_imports non-empty    ABSTAIN      **ABSTAIN** -> RED
+
+    **The first line is the acceptance test for this round.** On the acceptance
+    tree that same mutation moved NOTHING — 0 FAILED over 2432 passed, measured
+    by P4 at ``feat/D6-stepthree-adj`` and reproduced at this base before this
+    part landed. Here it turns a correct ABSTAIN into a BREACH against innocent
+    code, which is the over-call the whole mechanism exists to refuse, and it is
+    red.
+
+    **The row fails in BOTH directions**, which is the property the amended
+    step-three row bought and which this one inherits: the last two mutations
+    make the mechanism abstain MORE and are caught on ``pkg/c``; the first two
+    make it abstain LESS and are caught on ``pkg/b``.
+
+    **AND IT REACHES PAST THE RELATION, measured at the same revision:**
+
+        `check_subject`'s scoped hole list forced empty — the fail-open of
+          STEP 3 itself rather than of the relation             **RED**, on
+          pkg/b, together with
+          test_unresolved_calls_abstain_only_over_the_production_closure and
+          the step-three row. This row re-derives the hole set from the GRAPH,
+          so a filter that throws the set away cannot make it agree
+
+    **THE S1 CONTROL, and it is measured rather than asserted.** If the tree
+    ever loses its hole, no scoping question arises and both findings must
+    breach; the row takes that branch explicitly rather than falling through
+    the partition guard. **Measured under** ``feat/D6-import-fixture``, base
+    ``444b1fb``, 2026-08-11, with the analyzer's ``unresolved_calls`` forced to
+    ``()``: this row is **GREEN via S1** — a legible green about a different
+    state — while the three rows that own hole detection
+    (``…_a_call_the_walk_cannot_name_is_a_hole…``,
+    ``…_a_named_out_of_tree_target_is_not_a_hole…``,
+    ``…_the_sole_binding_func_literal_rule_clears_one_shape…``) go red, which is
+    the correct owner for that defect. So S1 is reachable and is not a dead
+    branch dressed as totality.
+    """
+    _with_go_row(monkeypatch)
+    tree = _import_scope_tree(tmp_path)
+
+    report = csr.check_tree(tree)
+    findings = [
+        f for f in report.findings
+        if f.subject.key.endswith(f".{_IMPORT_SUBJECT_NAME}")
+    ]
+    assert len(findings) == 2, (
+        f"this tree has two seals and each calls exactly one production symbol, "
+        f"so it owes two findings about {_IMPORT_SUBJECT_NAME} and produced "
+        f"{len(findings)}: {sorted(f.subject.key for f in findings)}. A missing "
+        "finding is the shape where a row iterates an empty list and is green"
+    )
+    assert {f.seal.test_id for f in findings} == {
+        f"pkg/b.{_IMPORT_SEALS[_PKG_B]}",
+        f"pkg/c.{_IMPORT_SEALS[_PKG_C]}",
+    }, (
+        "the two findings are not the two seals this fixture declares; "
+        f"got {sorted(f.seal.test_id for f in findings)}"
+    )
+
+    # THE HOLE SET step 3 starts from, re-derived from the published primitives
+    # rather than read off the report. The closure conjunct has its own row —
+    # test_unresolved_calls_abstain_only_over_the_production_closure.
+    graph = csr.build_call_graph(tree)
+    roots = csr.discover_roots(tree)
+    production_reach = csr.reachable_from(
+        graph, tuple(r for r in roots if r.root_kind is csr.RootKind.PRODUCTION)
+    )
+    closure_holes = [
+        hole for hole in graph.unresolved_calls if hole[0].key in production_reach
+    ]
+    assert len(closure_holes) == report.unresolved_call_count, (
+        f"this row re-derived {len(closure_holes)} hole(s) in the production "
+        f"closure and the report says {report.unresolved_call_count}; until "
+        "that is settled nothing below means anything"
+    )
+
+    # SCOPE, derived from the FIXTURE'S OWN TEXT and never by calling
+    # holes_in_scope or by reading graph.package_imports. The relation is what
+    # the sibling row judges; this row must not rest on it.
+    directory_of = {_PKG_A: "cmd/app", _PKG_B: "pkg/b", _PKG_C: "pkg/c"}
+    declared: dict[str, set[str]] = {}
+    for identity, directory in directory_of.items():
+        _, _, in_tree = _import_paths(_IMPORT_FIXTURE / directory, (_IMPORT_MODULE,))
+        declared[identity] = in_tree
+    assert declared[_PKG_A] == {_PKG_B}, (
+        f"cmd/app's import block names {sorted(declared[_PKG_A])} in this tree; "
+        f"the fixture's whole content is that it names {_PKG_B} and nothing else"
+    )
+    assert declared[_PKG_B] == set() and declared[_PKG_C] == set(), (
+        "pkg/b or pkg/c grew an in-tree import; the fixture's asymmetry is one "
+        "directed edge and one only"
+    )
+    # The UNDIRECTED, TRANSITIVE closure of that one edge, computed here in four
+    # lines rather than by calling import_components, which is the mechanism's.
+    component: dict[str, set[str]] = {k: {k} for k in directory_of}
+    for source, targets in declared.items():
+        for target in targets:
+            merged = component[source] | component[target]
+            for member in merged:
+                component[member] = merged
+    assert component[_PKG_B] == {_PKG_A, _PKG_B}
+    assert component[_PKG_C] == {_PKG_C}
+
+    def _home(key: str) -> str:
+        # A known-prefix test against three spelled identities. NOT rpartition:
+        # a method key's last dot is not its package boundary, and a body that
+        # split on it would invent a package, find it in no component, and keep
+        # a hole the truth scopes away.
+        placed = [p for p in directory_of if key.startswith(f"{p}.")]
+        assert len(placed) == 1, (
+            f"{key} was placed in {len(placed)} of this tree's three packages. "
+            "An unplaceable key is a red, not a hole quietly kept or dropped"
+        )
+        return placed[0]
+
+    if not closure_holes:
+        # S1. No hole in the closure at all: scoping cannot arise and both
+        # subjects must reach step 4. A legible green about a different state.
+        assert all(f.reach is Reach.FROM_TESTS_ONLY for f in findings)
+        assert all(
+            csr.adjudicate(f, None) is Disposition.BREACH for f in findings
+        ), (
+            "a fully resolved production closure is the only state in which "
+            "this mechanism may breach about both at once"
+        )
+        return
+
+    assert len(closure_holes) == 1 and _home(closure_holes[0][0].key) == _PKG_A, (
+        "this fixture's hole is one call through `cancel` in cmd/app.run and "
+        f"the closure holds {[(h[0].key, h[1]) for h in closure_holes]}. A hole "
+        "in pkg/b or pkg/c would be in the subject's OWN package and the "
+        "scoping question would never be asked"
+    )
+
+    in_scope = {
+        f.subject.key: [
+            hole for hole in closure_holes
+            if _home(hole[0].key) in component[_home(f.subject.key)]
+        ]
+        for f in findings
+    }
+    holed = [f for f in findings if in_scope[f.subject.key]]
+    clear = [f for f in findings if not in_scope[f.subject.key]]
+    assert len(holed) + len(clear) == 2
+
+    # THE PARTITION GUARD. No count is asserted; a partition with one side empty
+    # proves nothing about an implication, and this row will not report a
+    # vacuous green as a measurement.
+    assert holed and clear, (
+        f"both findings fell on one side of the scoping question ({len(holed)} "
+        f"in scope of a hole, {len(clear)} not), so this tree no longer "
+        "separates 'abstains because a hole could be its missing call site' "
+        "from 'abstains because SOME hole exists somewhere'. That separation is "
+        "the only reason this fixture exists"
+    )
+
+    for finding in holed:
+        assert finding.reach is Reach.UNDECIDED, (
+            f"{finding.subject.key} shares an import component with cmd/app, "
+            "which holds a call through a func value; that call MAY be this "
+            f"subject's missing call site, so the mechanism owes an abstention. "
+            f"It answered {finding.reach}, which is a BREACH against innocent "
+            "code — and it is exactly what the fail-open produces, because with "
+            "`imports` empty pkg/b is its own component and the hole is scoped "
+            "away from a subject it genuinely reaches"
+        )
+        assert finding.reason is UndecidedReason.DYNAMIC_EDGE, finding.subject.key
+        assert csr.adjudicate(finding, None) is Disposition.ABSTAIN
+        assert "SCOPED to this subject" in finding.detail, (
+            "the abstention did not say which REGIME produced its hole count. "
+            "'1 hole' under scoping and '1 hole' with no relation are different "
+            f"facts about the mechanism's confidence. detail: {finding.detail}"
+        )
+
+    for finding in clear:
+        assert finding.reach is Reach.FROM_TESTS_ONLY, (
+            f"{finding.subject.key} has no unresolved call in scope — the one "
+            "hole in this closure is in cmd/app, which does not import this "
+            "package and which this package does not import, so no function "
+            "value can cross between them. Abstaining here is the whole-tree "
+            "defect the D5 escalation closed, and it is what reverting the "
+            "relation to ImportsUnavailable puts back"
+        )
+        assert finding.quality is PathQuality.NOT_APPLICABLE, finding.subject.key
+        assert finding.reason is None, finding.subject.key
+        assert csr.adjudicate(finding, None) is Disposition.BREACH
+
+
+def test_the_import_block_is_the_only_evidence_that_two_packages_can_name_each_other(
+    tmp_path, monkeypatch
+):
+    """GREEN, mutation-verified. The row that makes the NARROWER fail-open visible.
+
+    ``_package_imports`` builds each package's ``imports`` from TWO sources and
+    unions them: the import blocks, and the analyzer's own cross-package CALL
+    EDGES (*"AN EDGE THIS TREE HOLDS IS ALSO EVIDENCE THAT ONE PACKAGE CAN NAME
+    ANOTHER, and it is unioned in"*). So there are two distinguishable
+    fail-opens, not one:
+
+      * the coarse one DISPUTE I2 names — ``imports`` emptied outright;
+      * the narrow one it is really about — **the import blocks are never read**
+        and the relation is whatever the call edges happen to say. That is
+        literally *"an analyzer that reads no import blocks at all"*, the phrase
+        the dispute uses.
+
+    A fixture where ``A`` CALLED into ``B`` would catch the first and MISS the
+    second, because the call edge would supply the same relation edge the import
+    block does. **Measured under** ``feat/D6-import-fixture``, base ``444b1fb``,
+    2026-08-11, by driving the real :func:`check_tree` over this fixture and over
+    a variant identical except that ``run`` calls a ``b.Announce()`` instead of
+    reading ``b.Version``:
+
+        mutation                                 this fixture   call-edge variant
+        none (HEAD)                              B ABSTAIN      B ABSTAIN
+        `imports=frozenset()`                    B **BREACH**   B **BREACH**
+        import blocks never read, edges only     B **BREACH**   B ABSTAIN <- INVISIBLE
+
+    That is why ``cmd/app`` uses ``b.Version``, a CONSTANT, and calls nothing in
+    ``pkg/b``. This row is what states the property the two rows above silently
+    depend on, and what goes red if a later fixture edit takes it away.
+
+    **THE POSITIVE CONTROL, judged in the same call, and without it the zero is
+    a blind instrument.** The same instrument — a scan of ``graph.edges`` for a
+    caller and callee in different packages — is run over a synthetic
+    two-package tree in ``tmp_path`` where ``app`` DOES call ``lib.Do``. It must
+    find that edge, and ``_package_imports`` must union it into ``imports``. So
+    the zero over the fixture is a fact about the fixture and not about the
+    scan: the union term is live, and this fixture simply gives it nothing.
+
+    **A SECOND CONTROL, cheaper and just as necessary:** the fixture's graph must
+    hold in-tree edges AT ALL — five of them, measured. "No cross-package edge"
+    over an empty edge set would be true and would mean nothing, and an empty
+    edge set is a shape this codebase has measured (a pass satisfiable by
+    executing nothing).
+
+    **HOW PRODUCTION PRODUCES THIS INPUT.** Importing a package for a constant,
+    a type, or a variable and never calling a function in it is ordinary Go —
+    ``const`` blocks of error codes, table keys, version strings. The Go
+    compiler is what forces the import to be USED at all, and using it for a
+    non-function is the common half of that.
+
+    **Measured under** ``feat/D6-import-fixture``, base ``444b1fb``,
+    2026-08-11, in a ``cp -a`` clone:
+
+        import blocks never read, call edges only    GREEN here — correctly:
+          the FIXTURE half of this row is about the fixture's edge set, which
+          no mutation of `_package_imports` touches, and the POSITIVE CONTROL
+          half survives because the control tree's relation edge is exactly the
+          one the call edges supply. It reddens the two rows above, and this
+          row is what explains why they can be red at all
+        every package's `imports` emptied — THE FAIL-OPEN   **RED**, on the
+          POSITIVE CONTROL's last assertion — the control tree's relation must
+          carry the edge its call and its import block both attest, and with
+          `imports` emptied it carries nothing. Recorded because it was NOT
+          predicted: this row was written for the fixture half
+        reverted to ImportsUnavailable                **RED**, on the positive
+          control's relation type
+        every package's unplaced_imports non-empty    GREEN — `unplaced` moves
+          the components, and this row reads `imports` and the edge set
+        the fixture edited so `run` calls `b.Announce()`   **RED**, on the
+          cross-package edge assertion — and, measured over the whole suite, on
+          NO other row, which is the correct blast radius for that edit and is
+          recorded so it is not mistaken for collateral. That single red is the
+          fixture's guard: it is what stops a later edit from silently turning
+          the "import blocks never read" mutation invisible again
+    """
+    _with_go_row(monkeypatch)
+    tree = _import_scope_tree(tmp_path)
+    graph = csr.build_call_graph(tree)
+
+    identities = (_PKG_A, _PKG_B, _PKG_C)
+
+    def _home(key: str) -> str:
+        placed = [p for p in identities if key.startswith(f"{p}.")]
+        assert len(placed) == 1, f"{key} is in {len(placed)} of three packages"
+        return placed[0]
+
+    # THE CHEAP CONTROL FIRST: an empty edge set would satisfy the assertion
+    # below by executing nothing.
+    assert len(graph.edges) == 5, (
+        f"the fixture's graph holds {len(graph.edges)} edge(s); it must hold "
+        "five — cmd/app.main -> cmd/app.run, and two seal -> Dark edges in each "
+        "of pkg/b and pkg/c. 'No cross-package edge' over an empty edge set is "
+        "true and means nothing"
+    )
+    crossing = [
+        (edge.caller.key, edge.callee.key, edge.site)
+        for edge in graph.edges
+        if _home(edge.caller.key) != _home(edge.callee.key)
+    ]
+    assert not crossing, (
+        f"the fixture grew a cross-package call edge: {crossing}. "
+        "`_package_imports` unions its own cross-package edges into `imports`, "
+        "so that edge is a SECOND, independent source of the cmd/app -> pkg/b "
+        "relation, and an analyzer that stopped reading import blocks would "
+        "still answer it. Measured: with such an edge in place, the "
+        "'import blocks never read' mutation moves no verdict on this tree. "
+        "cmd/app must use pkg/b for its CONSTANT and call nothing in it"
+    )
+
+    # THE POSITIVE CONTROL: the same scan, over a tree that HAS the edge.
+    control_tree = tmp_path / "crosscall"
+    for relative, source in {
+        "go.mod": "module example.com/crosscall\n\ngo 1.21\n",
+        "lib/lib.go": "package lib\n\nfunc Do() int { return 1 }\n",
+        "app/main.go": (
+            "package main\n\n"
+            'import "example.com/crosscall/lib"\n\n'
+            "func main() { _ = lib.Do() }\n"
+        ),
+    }.items():
+        path = control_tree / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source)
+    control = csr.build_call_graph(control_tree)
+    control_app = "example.com/crosscall/app"
+    control_lib = "example.com/crosscall/lib"
+    control_crossing = [
+        (edge.caller.key, edge.callee.key)
+        for edge in control.edges
+        if edge.caller.key.startswith(f"{control_app}.")
+        and edge.callee.key.startswith(f"{control_lib}.")
+    ]
+    assert control_crossing, (
+        "the positive control failed: a tree where app CALLS lib.Do produced no "
+        "cross-package edge, so the scan above is a blind instrument and its "
+        f"zero over the fixture proves nothing. Edges: "
+        f"{[(e.caller.key, e.callee.key) for e in control.edges]}"
+    )
+    control_relation = control.package_imports
+    assert isinstance(control_relation, csr.ImportRelation)
+    assert control_relation.packages[control_app].imports == frozenset({control_lib}), (
+        "the control tree's relation does not carry the edge its call and its "
+        "import block both attest. Both sources agree there, which is exactly "
+        "why that shape cannot be the fixture"
+    )
+
+
+def test_the_go_row_counts_distinct_out_of_tree_paths_and_never_import_lines(
+    tmp_path, monkeypatch
+):
+    """GREEN, mutation-verified. **Discharges the obligation recorded at ``_ACCEPTANCE_EXTERNAL``.**
+
+    That obligation, in ``tests/test_call_site_reachability.py``, is verbatim:
+    *"Nothing in the suite compares either number to analyzer output; the
+    divergence above was found by measuring, not by a red row. A row that drives
+    the Go analyzer over this fixture and asserts the relation's
+    ``external_import_count`` is a seal author's, and it belongs with the
+    fail-open fixture ruled at DISPUTE I2 in ``go_reachability.py``, because both
+    are the same missing thing: no Go-row seal reads the relation the Go row
+    builds."* This is that row, and it lands with that fixture.
+
+    P4 CORRECTION 3 unpicked two quantities that had been read as one:
+
+      * **41 and 39 are import LINES** over the acceptance packages' ``.go``
+        files, which is what the crude sweep in
+        ``test_the_acceptance_trees_import_counts_are_the_measured_ones``
+        counts. That row reads vendored TEXT and asks the analyzer nothing;
+      * **20 and 19 are DISTINCT out-of-tree import PATHS**, which is what
+        ``external_import_count`` reports. The duplicates are ``fmt``, ``os``,
+        ``testing`` and friends imported by more than one file of the package.
+
+    A body that hit 41 and 39 would be wrong and nothing was red. This row is
+    what makes it red: it derives BOTH quantities from the vendored text in the
+    same call, drives the real analyzer, and asserts the analyzer's number is
+    the DISTINCT one — **and, separately, that the two quantities actually
+    differ somewhere in this call**, without which "equals the distinct count"
+    and "equals the line count" would be the same assertion and the row would
+    discriminate nothing. That last clause is the non-vacuity field, and it is
+    the same shape as the ``zeros == two`` assertion in
+    ``test_a_placed_out_of_tree_import_contributes_no_edge``.
+
+    **BOTH FIXTURES, in one call.** The acceptance tree is where the two
+    quantities diverge (41 vs 20, 39 vs 19); the import-scope tree is where they
+    partly coincide (``pkg/b``: 1 line, 1 distinct). A row over the divergent
+    tree alone could be satisfied by a body that always subtracted; a row over
+    the coincident tree alone could be satisfied by a body that counted lines.
+    Together they are neither.
+
+    **``external_import_count`` IS A REPORT AND NOT A GUARD, and this row does
+    not pretend otherwise.** P4's ruling is explicit: it *"is contracted not to
+    be structure, and no verdict moves when it is zero"*. Sealing it is worth
+    doing because it is *"the field D5 put there precisely so a reader can tell
+    'read the blocks and found nothing' from 'did not read the blocks'"* — a
+    diagnostic a human uses to tell an empty relation from an absent one. It is
+    NOT what closes DISPUTE I2; the two rows above are. Recorded so nobody reads
+    this row's green as coverage of the fail-open.
+
+    **HOW PRODUCTION PRODUCES THIS INPUT.** Both trees are real Go the analyzer
+    reads with the shipped helper under the shipped ``_go_environment``.
+
+    **Measured under** ``feat/D6-import-fixture``, base ``444b1fb``,
+    2026-08-11, in a ``cp -a`` clone, each mutation alone:
+
+        the `external += 1` branch neutered, so out-of-tree imports go
+          uncounted                                                  **RED**,
+          on cmd/gates (0 != 20), together with the sibling row above and
+          nothing else
+        in-tree imports counted as external as well                  **RED**,
+          on cmd/app (4 != 3) — and, measured over the whole suite, **on NO
+          other row**. That is the sharpest mutation this row owns: it is the
+          one place in the suite where the distinction between "an import this
+          tree declares" and "a dependency" is a number anybody checks
+        import blocks never read, call edges only                    **RED**,
+          on cmd/gates (0 != 20) — the count goes to zero with the blocks
+        reverted to ImportsUnavailable                               **RED**,
+          on the relation's type
+        every package's `imports` emptied — THE FAIL-OPEN            GREEN,
+          and correctly: the fail-open does not touch this field. That is P4's
+          "a REPORT, not a guard" as an executable fact, and it is why this row
+          is a companion to the two above and not a substitute for them
+        every package's unplaced_imports made non-empty              GREEN —
+          `unplaced` moves the components and not the counts
+
+    **A MUTATION THAT CANNOT BE WRITTEN, and it is worth recording because P4
+    CORRECTION 3 words the defect as though it could.** The correction says "a
+    body that hit 41 and 39 would be wrong". **Measured under**
+    ``feat/D6-import-fixture``, base ``444b1fb``, 2026-08-11: no body of
+    ``_package_imports`` can hit 41, because the wire field it counts is
+    ``resolvedImports``' output — ``pkg.Imports()``, "sorted and deduplicated"
+    — so the duplicates that make 41 differ from 20 are already gone before the
+    Python side sees a thing. 41 was a number a HUMAN transcribed across, not a
+    number a body could emit. This row therefore does not seal against 41; it
+    seals ``external_import_count`` against an independently derived set of
+    distinct paths, and pins 41 and 20 side by side so the two quantities can
+    never again be read as one.
+    """
+    _with_go_row(monkeypatch)
+
+    trees = (
+        (
+            _acceptance_tree(tmp_path),
+            ("github.com/yourorg/claude-workflow",),
+            {
+                f"{_GATES_MODULE}/cmd/gates": "cmd/gates",
+                f"{_ITERATE_MODULE}/cmd/iterate": "cmd/iterate",
+            },
+            _FIXTURE,
+        ),
+        (
+            _import_scope_tree(tmp_path),
+            (_IMPORT_MODULE,),
+            {_PKG_A: "cmd/app", _PKG_B: "pkg/b", _PKG_C: "pkg/c"},
+            _IMPORT_FIXTURE,
+        ),
+    )
+
+    divergent = 0
+    for tree, prefixes, directories, fixture in trees:
+        relation = csr.build_call_graph(tree).package_imports
+        assert isinstance(relation, csr.ImportRelation), (
+            f"{tree.name} produced {type(relation).__name__}; a refusal carries "
+            "no external_import_count at all and there is nothing to compare"
+        )
+        assert set(relation.packages) == set(directories), (
+            f"{tree.name}'s relation is keyed on {sorted(relation.packages)}, "
+            f"not on {sorted(directories)}"
+        )
+        for identity, directory in directories.items():
+            lines, external, _ = _import_paths(fixture / directory, prefixes)
+            reported = relation.packages[identity].external_import_count
+            assert reported == len(external), (
+                f"{identity} reports external_import_count {reported}; the "
+                f"vendored text holds {len(external)} DISTINCT out-of-tree "
+                f"import path(s) over {len(lines)} import line(s). "
+                "external_import_count counts distinct resolved paths, and a "
+                "body that counted lines would answer "
+                f"{len(lines)} here. That confusion is P4 CORRECTION 3 and it "
+                "was found by hand, not by a red row — this is the row"
+            )
+            if len(lines) != len(external):
+                divergent += 1
+
+    assert divergent, (
+        "no package in either fixture has more import LINES than distinct "
+        "out-of-tree paths, so 'equals the distinct count' and 'equals the line "
+        "count' are the same assertion in this call and this row discriminates "
+        "nothing. The acceptance tree is here precisely because it diverges — "
+        "41 lines over 20 paths, and 39 over 19"
+    )
+
+    # The two recorded figures, re-measured rather than trusted, and kept apart:
+    # one is what the analyzer reports and the other is what the text holds.
+    gates = f"{_GATES_MODULE}/cmd/gates"
+    iterate = f"{_ITERATE_MODULE}/cmd/iterate"
+    acceptance_relation = csr.build_call_graph(trees[0][0]).package_imports
+    for identity in (gates, iterate):
+        assert (
+            acceptance_relation.packages[identity].external_import_count
+            == _ACCEPTANCE_DISTINCT_EXTERNAL_HERE[identity]
+        ), (
+            f"{identity} reports "
+            f"{acceptance_relation.packages[identity].external_import_count} "
+            f"and _ACCEPTANCE_DISTINCT_EXTERNAL records "
+            f"{_ACCEPTANCE_DISTINCT_EXTERNAL_HERE[identity]}. Those two are "
+            "cited in three docstrings across two seal files; if the fixture "
+            "moved, this is what goes red instead of them going quietly wrong"
+        )
+        directory = "cmd/gates" if identity == gates else "cmd/iterate"
+        lines, _, _ = _import_paths(
+            _FIXTURE / directory, ("github.com/yourorg/claude-workflow",)
+        )
+        assert len(lines) == _ACCEPTANCE_IMPORT_LINES[identity], (
+            f"{directory} holds {len(lines)} import line(s) and "
+            f"{_ACCEPTANCE_IMPORT_LINES[identity]} is recorded. The LINE count "
+            "and the DISTINCT-PATH count are two quantities and both are "
+            "pinned here so neither can drift into the other again"
+        )
+        assert (
+            _ACCEPTANCE_IMPORT_LINES[identity]
+            != _ACCEPTANCE_DISTINCT_EXTERNAL_HERE[identity]
+        ), (
+            f"the two recorded quantities for {identity} collapsed to one "
+            "value. They are 41 and 20, and 39 and 19; a body that hit the "
+            "line count is the defect P4 CORRECTION 3 found by hand"
+        )
