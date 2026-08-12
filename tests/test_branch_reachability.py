@@ -2408,6 +2408,202 @@ def test_materialise_base_tree_refuses_a_destination_inside_the_repository(
 
 
 # --------------------------------------------------------------------------- #
+# DISPUTES D7-NEW-2 and D7-NEW-3, both CONFIRMED — and now sealed
+# --------------------------------------------------------------------------- #
+
+
+def test_the_appeals_are_read_before_the_sweeps_and_are_passed_to_them(
+    scenarios: _Scenarios, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DISPUTE D7-NEW-2, CONFIRMED and SEALED (P4, 2026-08-12).
+
+    The complaint was exact and its second half is what this row answers:
+    declarations are read at step 5b, not step 9, so a failure there preempts
+    step 6's analyzer fault and step 7's vacuity guard — **and no seal
+    distinguished the orders.** The ruling confirms 5b (see
+    :func:`check_branch_reachability`; reordering means either sweeping without
+    the declarations, which publishes a report where every ACCEPTED finding
+    reads as a BREACH, or sweeping twice at 445 s a sweep). A ruling that
+    confirms an order and leaves it unsealed has changed nothing, so the order
+    is pinned here BY OBSERVATION.
+
+    **The seam is the contracted one.** ``check_branch_reachability`` calls
+    ``check_tree`` through this module's global precisely so that "one seam is
+    substitutable, as ``check_branch`` does for its three git functions" — the
+    contract's own words. Substituting it is using the seam, not defeating the
+    mechanism, and the row asserts on WHAT REACHED IT rather than on a return
+    value the spy invented.
+
+    TWO HALVES, and the second is what makes the first mean something:
+
+      1. with an UNREADABLE appeal, ``check_tree`` is never invoked at all. If
+         5b moved after step 6 it would have been invoked twice before the
+         appeal was ever opened, so this is the order and not a coincidence;
+      2. with a READABLE appeal, it is invoked exactly twice and each call
+         carries the declarations for ITS OWN ref — base tree with base
+         declarations, head tree with head declarations. This is why the order
+         is what it is: the declarations are an INPUT, and a gate that read
+         them at step 9 would have to re-implement adjudication in the module
+         contracted to own none. Without this half, "check_tree was not called"
+         is satisfied by a gate that never calls it.
+
+    Measured under: 5b moved below step 6 and the sweeps handed ``()`` — half
+    1 fails, because both sweeps run before the appeal is opened. TWO rows
+    redden in this file, and the second one is the argument: ``test_ten_
+    declarations_clear_the_branch_and_the_same_ten_with_whitespace_do_not``
+    fails too, because a sweep handed no declarations reports ten ACCEPTED
+    findings as BREACHes. That is the report the ruling refuses to publish,
+    measured rather than asserted.
+    Measured under: the declarations dropped from the ``check_tree`` calls —
+    half 2 fails on the head call's kwargs, and NOTHING else in this file does.
+    """
+    repo, base = scenarios.acceptance, scenarios.base
+    calls: list[tuple[Path, Any]] = []
+    real_check_tree = br.check_tree
+
+    def _spy(tree, *, declarations=None, **kwargs):
+        calls.append((Path(tree), declarations))
+        return real_check_tree(tree, declarations=declarations, **kwargs)
+
+    # Half 1 — an unreadable appeal, and the sweeps never start.
+    _git(repo, "checkout", "-q", "-b", "order-broken", scenarios.head_compiling)
+    (repo / DECLARATION_PATH).write_text("not a list\n", encoding="utf-8")
+    broken_ref = _commit_all(repo, "an unreadable appeal")
+    _checkout(repo, broken_ref)
+
+    monkeypatch.setattr(br, "check_tree", _spy)
+    result = check_branch_reachability(
+        repo,
+        base,
+        broken_ref,
+        Role.BODIES,
+        (_EDITED_PATH, DECLARATION_PATH),
+        already_violation=False,
+    )
+    assert result.status is ReachabilitySweepStatus.UNCHECKED_APPEAL_UNREADABLE
+    assert calls == [], (
+        "check_tree ran before the appeal was opened, so the declarations are "
+        "no longer an input to the sweep and step 5b has moved. Whatever the "
+        f"report says, it was computed without them: {calls}"
+    )
+
+    # Half 2 — a readable appeal, and it reaches BOTH sweeps, per ref.
+    calls.clear()
+    _git(repo, "checkout", "-q", "-b", "order-ok", scenarios.head_compiling)
+    (repo / DECLARATION_PATH).write_text("[]\n", encoding="utf-8")
+    ok_ref = _commit_all(repo, "a readable appeal")
+    _checkout(repo, ok_ref)
+
+    ok = check_branch_reachability(
+        repo,
+        base,
+        ok_ref,
+        Role.BODIES,
+        (_EDITED_PATH, DECLARATION_PATH),
+        already_violation=False,
+    )
+    assert ok.status is ReachabilitySweepStatus.CHECKED, ok.status
+    assert len(calls) == 2, (
+        f"expected exactly two sweeps, base then head: {calls}"
+    )
+    base_tree, base_declarations = calls[0]
+    head_tree, head_declarations = calls[1]
+    assert head_tree == Path(repo), (
+        "the SECOND sweep must be the head tree at repo_root; the order "
+        f"decides which declaration set each half was judged with: {calls}"
+    )
+    assert base_tree != Path(repo), base_tree
+    assert base_declarations is not None and head_declarations is not None, (
+        "a sweep was handed no declarations at all, so `report.dispositions` "
+        "is computed as though the tree had no appeals — which is the report "
+        "this ordering exists to avoid publishing"
+    )
+    # The base ref carries no appeal and the head ref carries an empty one;
+    # both are (), and the ASSERTION is that each call was handed the set read
+    # for its OWN ref rather than one set handed to both.
+    assert declarations_at(repo, base) == tuple(base_declarations)
+    assert declarations_at(repo, ok_ref) == tuple(head_declarations)
+
+
+def test_an_unknown_key_in_an_appeal_is_refused_and_a_misspelling_is_caught_earlier(
+    tmp_path: Path,
+) -> None:
+    """DISPUTE D7-NEW-3, CONFIRMED and SEALED (P4, 2026-08-12).
+
+    The strict reading STANDS and its recorded reason is CORRECTED, and the
+    correction is the point of the row. ``declarations_at``'s own message said
+    an unrecognised key *"is a misspelling far more often than an extension,
+    and a misspelled subject_key is an appeal that answers nothing while
+    reading as one"*. That sentence is true and **the missing-field check one
+    line above already catches it**: a row spelling ``subject_ke`` is a row
+    MISSING ``subject_key``. If that were the whole argument, the unknown-key
+    check would be dead code that reads as a guard.
+
+    What it earns its place on is the ADDITION. A row carrying all four fields
+    correctly PLUS a fifth the author believes is meaningful — ``expires:`` is
+    the sharp case — is silently narrowed by a permissive reader into a
+    PERMANENT exemption that was written, reviewed and approved as a temporary
+    one. An appeal that adjudicates more broadly than it reads is worse than no
+    appeal, because it passes review.
+
+    THREE ROWS, and the middle one is the correction:
+
+      1. all four fields plus ``expires`` — REFUSED. This is the case the
+         strict reading exists for and the only one it uniquely catches;
+      2. ``subject_ke`` instead of ``subject_key`` — refused by the MISSING
+         check, named in the message. Asserted so the recorded reason cannot
+         drift back;
+      3. exactly the four fields — ACCEPTED. Without it, "unknown keys are
+         refused" is satisfied by a reader that refuses every appeal, and the
+         gate would then have no working appeal at all.
+
+    Measured under: the unknown-key check deleted — row 1 fails and rows 2 and
+    3 stay green, which is the whole shape of the dispute.
+    """
+    repo = tmp_path / "appeal-keys"
+    repo.mkdir()
+    (repo / "README.md").write_text("x\n", encoding="utf-8")
+    _init_repo(repo)
+
+    def _at(text: str) -> str:
+        (repo / DECLARATION_PATH).write_text(text, encoding="utf-8")
+        return _commit_all(repo, "an appeal")
+
+    four = (
+        "- test_id: pkg/x_test.go::TestThing\n"
+        "  subject_key: pkg.Thing\n"
+        "  wiring: wired behind the flag in cmd/app/main.go\n"
+        "  reason: ships next sprint\n"
+    )
+
+    # 1. The addition. This is what the strict reading uniquely buys.
+    with pytest.raises(BranchReachabilityError) as addition:
+        declarations_at(repo, _at(four + "  expires: 2026-09-01\n"))
+    assert "expires" in str(addition.value), str(addition.value)
+
+    # 2. The misspelling — caught one check EARLIER, by the missing-field
+    #    check, which is the correction to the recorded reason.
+    with pytest.raises(BranchReachabilityError) as misspelled:
+        declarations_at(repo, _at(four.replace("subject_key", "subject_ke")))
+    assert "missing" in str(misspelled.value), (
+        "a misspelled required key was not reported as a MISSING field, so "
+        "the unknown-key check is doing work the missing check was credited "
+        f"with: {misspelled.value}"
+    )
+    assert "subject_key" in str(misspelled.value), str(misspelled.value)
+
+    # 3. The control: the exact four fields are a declaration.
+    accepted = declarations_at(repo, _at(four))
+    assert len(accepted) == 1, accepted
+    assert accepted[0].subject_key == "pkg.Thing"
+    assert accepted[0].wiring.strip(), (
+        "the control must carry a non-empty `wiring`, or it is the row "
+        "`adjudicate` ignores and this seal proves nothing about a working "
+        "appeal"
+    )
+
+
+# --------------------------------------------------------------------------- #
 # DISPUTE D4, CLOSED — the tenth status, and the eleventh it forced
 # --------------------------------------------------------------------------- #
 
@@ -2704,7 +2900,19 @@ def test_the_wired_gate_refuses_a_bodies_branch_through_check_branch(
 # --------------------------------------------------------------------------- #
 
 _DISPUTES = """
-D1  THE GATE IS NOT SEALED AS REACHED, AND THIS FILE CANNOT SEAL IT.
+ALL SIX DISPUTES ARE CLOSED. D5 and D6 by the P3 body (`308aa07`); D1, D2, D3,
+D4 and the three raised at P4 (D7-NEW, D7-NEW-2, D7-NEW-3) by the adjudication
+round of 2026-08-12. Each entry below is left as it was WRITTEN, with its
+resolution stated first, because the reasoning that produced a dispute is worth
+more than the fact that it went away.
+
+D1  CLOSED at the wiring commit: `tests/test_floor_closure.py::test_check_
+    branch_actually_calls_the_reachability_gate` (static, four claims) and
+    `test_the_wired_gate_refuses_a_bodies_branch_through_check_branch` in this
+    file (behavioural, no monkeypatch). Deleting the step-6 call reddens four
+    rows across three files; dropping only the verdict union reddens two.
+
+    THE GATE IS NOT SEALED AS REACHED, AND THIS FILE CANNOT SEAL IT.
     `check_branch_reachability` has no production caller, which is the exact
     defect the unit exists to close, one level up. Wiring it into
     `role_protocol.check_branch` requires an edit to `FLOOR_GLOBS` (a floored
@@ -2826,4 +3034,44 @@ D6  THE CHEAP EXIT CLEARS A BRANCH THAT WITHDRAWS AN APPEAL.
     shape is a contract question a P4 should answer once: the gate's inputs are
     not only the files an analyzer can read, and any future non-source input to
     the verdict inherits this hole.
+
+D7-NEW    CAN THE GATE BE SWITCHED ON FOR THE PRIMARY TARGET? P4 ruled NO, NOT
+    YET, and the ruling is written in full in `branch_reachability`'s module
+    docstring. Two independent reasons, both measured on this host at this
+    revision: (1) `check_tree` over evenplay-mono @ 51a71736c RAISES in 1.53 s
+    — helper_failed on apps/finance-domain/wallet/docs, `go: ../go.mod requires
+    go >= 1.25.0 (running go 1.24.4; GOTOOLCHAIN=local)` — so every BODIES
+    branch is UNDETERMINED. Ruled a HOST FACT by experiment: the same tree with
+    only the go directives rewritten to something this host satisfies sweeps to
+    455 seals / 707 findings / 488 roots. (2) That successful sweep took 445 s,
+    and the gate runs TWO, so the honest cost is ~15 min per branch — the
+    15.4 s quoted throughout this module is the acceptance FIXTURE's, not the
+    target's. A gate that answers UNDETERMINED on every branch and a gate too
+    expensive to run are the same failure through two doors.
+
+    A FALSE COMFORT, measured and named: "the apps/website-public-api subtree
+    sweeps fine" is not a sweep. All thirteen of its units fail to type-check
+    before the helper ever reaches `go list`, so it returns 0 seals, 0 findings
+    and 0 production roots without raising. Whether an old toolchain produces a
+    loud raise or a silent empty report turns on whether any package in the
+    tree happens to be stdlib-only — `docs/embed.go` is, and it is what takes
+    the whole-tree sweep down.
+
+D7-NEW-2  DECLARATIONS ARE READ AT STEP 5b, NOT STEP 9, AND CAN PREEMPT TWO
+    BLOCKING STATUSES. CONFIRMED and sealed by `test_the_appeals_are_read_
+    before_the_sweeps_and_are_passed_to_them`. The preemption costs no verdict
+    — all three statuses block — and reordering costs either a manufactured
+    report (sweeping without declarations makes every ACCEPTED finding read as
+    a BREACH; measured, it reddens a second row in this file) or a second pair
+    of sweeps at 445 s each. The order is forced by the data flow, not chosen.
+
+D7-NEW-3  `declarations_at` REJECTS UNKNOWN KEYS, REQUIRED BY NO SEAL.
+    CONFIRMED, and the recorded REASON is corrected. "A misspelled subject_key
+    is an appeal that answers nothing while reading as one" is true and is
+    caught one check earlier, by the missing-field check — measured. What the
+    strict reading uniquely buys is the ADDITION: a row with all four fields
+    plus `expires: 2026-09-01` is, under a permissive reader, a PERMANENT
+    exemption that was written and reviewed as a temporary one. Sealed in three
+    rows, one per case, in `test_an_unknown_key_in_an_appeal_is_refused_and_a_
+    misspelling_is_caught_earlier`.
 """

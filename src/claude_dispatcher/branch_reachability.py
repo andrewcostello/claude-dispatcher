@@ -215,18 +215,103 @@ asks is asked *of the report*, after the fact: the mechanism keeps answering
 "what is dark in this tree" and this module answers "what did this branch make
 dark", which is a different question asked of the same honest answer.
 
+CAN THIS GATE BE SWITCHED ON FOR THE REPOSITORY IT WAS COMMISSIONED FOR?
+========================================================================
+**NO. NOT YET — P4 RULING, 2026-08-12, and the two reasons are independent.**
+Everything in this section is measured on this host at this revision. The unit
+is COMPLETE and the gate is WIRED; what follows is about ``evenplay-mono``, not
+about the mechanism.
+
+**FINDING 1 — the primary target answers UNDETERMINED on every BODIES branch
+today, and it is a HOST FACT.** ``check_tree`` over ``evenplay-mono`` @
+``51a71736c``, extracted whole, RAISES ``CallSiteReachabilityError`` in 1.53 s:
+``helper_failed`` on ``apps/finance-domain/wallet/docs``, ``go: ../go.mod
+requires go >= 1.25.0 (running go 1.24.4; GOTOOLCHAIN=local)``. Through the
+gate that is :attr:`ReachabilitySweepStatus.UNCHECKED_ANALYZER_FAULT`, which
+BLOCKS, so every BODIES branch on that repository is UNDETERMINED.
+
+Ruled a HOST FACT and not a structural one, and the experiment is the ruling
+rather than an argument: the SAME extracted tree with every ``go``/``toolchain``
+directive rewritten to a version this host's toolchain satisfies, and NOTHING
+else changed, sweeps to completion — **455 seals, 707 findings, 488 roots,
+3 955 unanalyzed paths**. 37 of the tree's 38 ``go.mod`` files require
+``go >= 1.25``; this host has go1.24.4. Nothing about the tree's structure or
+about this mechanism produces the fault.
+
+**The mechanism by which it surfaces is worth writing down, because "the
+subtree sweeps fine" is a FALSE COMFORT and was measured to be one.** The Go
+helper asks ``go list`` for a unit's import path ONLY AFTER that unit has
+parsed and type-checked. Under an old toolchain a unit that fails to
+type-check exits quietly as a ``parse_error`` and never runs ``go list``; a
+unit that type-checks — a stdlib-only one, such as ``apps/finance-domain/
+wallet/docs/embed.go``, whose single import is ``embed`` — proceeds to
+``go list``, which fails, and the helper exits 1 and takes the whole sweep
+down. ``apps/website-public-api`` "sweeps fine" only because ALL THIRTEEN of
+its units fail to type-check first: measured, that subtree returns **0 seals,
+0 findings, 0 production roots**. It did not sweep; it fell over quietly. So
+whether the whole-tree answer is a loud raise or a silent empty report turns
+on whether any single package in the tree happens to be stdlib-only. That
+fragility is real and is named here; it is not what causes this finding, and
+it disappears with the toolchain.
+
+**FINDING 2 — AND FIXING THE HOST DOES NOT MAKE THE GATE ENABLE-ABLE, WHICH IS
+THE FINDING THAT ACTUALLY DECIDES IT.** That successful whole-tree sweep took
+**445 s**. :func:`check_branch_reachability` runs TWO — base tree and head
+tree — so the honest cost of this gate on the primary target is on the order of
+**fifteen minutes per BODIES branch**, and the 15.4 s figure quoted throughout
+this module is the ACCEPTANCE FIXTURE's, not the target's. (The 445 s is
+measured under downgraded language directives, so it is an estimate of the
+right order and not a promise; a toolchain that type-checks MORE units does
+more work, not less.)
+
+This repository's own recorded principle decides it: *"a gate that expensive is
+a gate that always gets waived, which is indistinguishable from not having
+one"*. A gate that answers UNDETERMINED on every branch is the same failure
+through a different door, and both doors are open here. **A gate that cannot
+run is not safer than no gate; it is a gate that teaches people to bypass it.**
+
+**WHAT MUST CHANGE FIRST, and the order is not arbitrary — 2 is worthless
+without 1, and 1 alone buys a gate nobody can afford:**
+
+  1. **a ``go`` on the running host that satisfies the tree.** The tree asks
+     for ``>= 1.25``; the gate pins ``GOTOOLCHAIN=local`` deliberately, and
+     that pin is CORRECT and must not be relaxed to buy this — a gate that
+     downloads a toolchain over the network to decide a verdict has made the
+     verdict a function of the network. This is an image change, not a code
+     change;
+  2. **the second sweep must stop costing a first sweep.** The extraction was
+     never the cost (+5.5%); the sweep is, and there are two of them because
+     the gate is a DELTA and the delta ruling is sound. Until a base sweep can
+     be cached, reused across branches off one base, or answered incrementally,
+     the bill is two whole-tree sweeps per branch and nothing about this unit
+     reduces it. **This is the open problem and it is NOT in this module**;
+  3. only then, enable it for BODIES on the primary target.
+
+**WHAT IS SAFE TO DO NOW, and is what this ruling recommends.** The gate is
+wired, sealed as reached, and fails CLOSED. On repositories whose toolchain the
+host satisfies and whose trees are small it is correct and cheap, and step 3's
+cheap exit means a Python-only branch never pays at all. Leave it wired. Do not
+put it in front of ``evenplay-mono``'s BODIES branches until 1 and 2 are done,
+because the first week of UNDETERMINED-on-every-branch is the week the waiver
+becomes routine, and that is not recoverable by later fixing the host.
+
 ESCALATIONS — production changes this design needs that P1 did not make
 =======================================================================
-Each is left undone on purpose; see the report accompanying this commit.
+**ALL FOUR ARE DISCHARGED (P4, 2026-08-12).** 1 and 2 landed together in the
+wiring commit, because they are one edit; 3 and 4 landed in the commit after
+it. Each is left in place below rather than deleted, with what it became, so
+that the reasoning that produced them stays readable next to the result.
 
-  1. **``role_protocol.check_branch`` must call
+  1. DISCHARGED — landed at the wiring commit. **``role_protocol.check_branch``
+     must call
      :func:`check_branch_reachability`** (the step 6 its docstring now names),
      and ``role_protocol.py`` is on ``FLOOR_GLOBS``. Every diff-time surface is:
      the floor holds "the machinery that … computes the verdict" by
      construction, so wiring a new question into the verdict is *necessarily* a
      floored edit. D5's and D6's enrolment commits set the precedent — they are
      P4 rulings on floored files, ratified as plan amendments.
-  2. **This module must join ``FLOOR_GLOBS``, and
+  2. DISCHARGED — same commit as 1, which is what it demanded. **This module
+     must join ``FLOOR_GLOBS``, and
      ``tests/test_floor_closure.py::_DELEGATION_TARGETS`` must gain a row, in
      the SAME edit as (1).** Not a prediction — *measured under* ``2e0dc89`` by
      inserting one function-local ``from . import blast_radius`` into
@@ -242,15 +327,26 @@ Each is left undone on purpose; see the report accompanying this commit.
      file, so it is not a P3 edit — bodies may not touch ``tests/``.** D7's
      wiring is a P4/operator amendment or it is a role violation. This is the
      escalation that matters most.
-  3. **:data:`DECLARATION_PATH` must be denied to BODIES** in
+  3. DISCHARGED, and WIDENED to SCAFFOLD as well: an appeal landed beside P1's
+     stub pre-clears the BREACH P3 has not written yet, because ACCEPTED is
+     CLEAN and the head declarations are read from the branch's whole history.
+     **:data:`DECLARATION_PATH` must be denied to BODIES** in
      ``role_protocol.DEFAULT_ROLE_RULES``, so that the appeal is written by the
      reviewer and not by the party being judged. That is an edit to a floored
      module's rule table and it is left for the ruling that takes (1).
-  4. **``role_protocol._print_report`` must print the reachability block.** A
+  4. DISCHARGED — printed on EVERY verdict including CLEAN, with ``None``
+     printed as the named state it is.
+     **``role_protocol._print_report`` must print the reachability block.** A
      verdict a caller cannot read the reason for is the vacuous half of this
      gate. Left with (1), same file, same reason.
 
 Every figure above is stamped. Nothing here is inherited.
+
+P4, 2026-08-12: the figures added by the adjudication round are stamped the
+same way and were re-measured on this host at this revision, including the two
+the brief said to carry rather than re-derive — the whole-tree archive (0.77 s /
+274 MB / 6 285 files) was re-run anyway, because it is the number the
+``git archive`` contract bullet above now rests on.
 """
 
 from __future__ import annotations
@@ -1236,14 +1332,39 @@ def declarations_at(
                 "four fields, and a row with no `wiring` KEY cannot even be "
                 "the empty-wiring case adjudicate already rules on"
             )
+        # DISPUTE D7-NEW-3, CONFIRMED (P4, 2026-08-12) — the strict reading
+        # stands, and its RECORDED REASON is corrected, because the reason it
+        # was given is one the check above already covers.
+        #
+        # "A misspelled subject_key is an appeal that answers nothing while
+        # reading as one" is true and is caught ONE CHECK EARLIER: a row that
+        # spells `subject_ke` is missing `subject_key`, so `missing` fires and
+        # this branch is never reached. Measured on this revision. If that were
+        # the only argument, this check would be dead code that reads as a
+        # guard — the failure mode `FLOOR_GLOBS` spends a paragraph refusing.
+        #
+        # WHAT IT ACTUALLY EARNS ITS PLACE ON is the ADDITION, not the
+        # misspelling: a row carrying all four fields correctly PLUS a fifth
+        # the author believes is meaningful. `expires: 2026-09-01` is the
+        # sharp case — under a permissive reading the key is silently dropped,
+        # the appeal never expires, and the author has written and reviewed a
+        # time-limited exemption that is permanent. An appeal that reads as
+        # narrower than it adjudicates is precisely the rubber stamp the five
+        # teeth exist to prevent, and it is worse than no appeal because it
+        # passes review.
+        #
+        # The cost is forward compatibility, and it is not a cost here: the
+        # appeal is read out of the SAME repository's object store by the gate
+        # compiled into that repository, so there is no version skew to
+        # tolerate, and the schema and the reader move in one commit.
         unknown = [key for key in row if key not in _DECLARATION_FIELDS]
         if unknown:
             raise BranchReachabilityError(
                 f"{where} carries {unknown!r}, which is not one of "
-                f"{list(_DECLARATION_FIELDS)}; an unrecognised key is a "
-                "misspelling far more often than it is an extension, and a "
-                "misspelled subject_key is an appeal that answers nothing "
-                "while reading as one"
+                f"{list(_DECLARATION_FIELDS)}; a key this reader does not know "
+                "is DROPPED, so an appeal carrying one adjudicates differently "
+                "from how it reads — an `expires:` nobody honours is a "
+                "permanent exemption that passed review as a temporary one"
             )
         values = {}
         for field in _DECLARATION_FIELDS:
@@ -1417,12 +1538,21 @@ def materialise_base_tree(
 
     Contract:
 
-      * ``git archive``, not ``git worktree add``. **Measured 75× cheaper and
-        580× smaller**, and it needs no cleanup of git's worktree registry —
-        which, measured while taking the figure above, is itself a trap: a
-        removed directory leaves a registered worktree and the next ``add``
-        fails until ``git worktree prune``. A gate that can wedge a repository
-        it was only supposed to read is not a gate anyone leaves on;
+      * ``git archive``, not ``git worktree add``, **and the reason is the
+        worktree registry and NOT the cost.** This bullet used to read
+        "measured 75× cheaper and 580× smaller", which was true of the SUBTREE
+        the contract budgeted for and is false of the whole tree D2 ruled on:
+        re-measured by P4 on 2026-08-12 against ``evenplay-mono`` @
+        ``51a71736c``, ``git archive <ref> | tar -x`` is 0.77 s / 274 MB /
+        6 285 files against ``git worktree add --detach``'s 0.74–0.76 s /
+        275 MB. **The two routes cost the same at this scale.** The surviving
+        reason is sufficient on its own: ``git archive`` touches no worktree
+        registry, and a removed directory leaves a REGISTERED worktree so the
+        next ``add`` fails until ``git worktree prune``. A gate that can wedge
+        a repository it was only supposed to read is not a gate anyone leaves
+        on. The dead cost argument is struck out here rather than left to be
+        re-derived, because the next author to look at 274 MB will look here
+        first;
       * ``destination`` MUST be outside ``repo_root``.
         ``check_tree``'s own obligation — *"never write into ``tree``"*, on
         ``fixture_reachability.construct_witness``'s reasoning that a workspace
@@ -1729,6 +1859,44 @@ def check_branch_reachability(
          still cannot preempt
          :attr:`~ReachabilitySweepStatus.UNCHECKED_BASE_UNAVAILABLE`, because
          step 5 has already run.
+
+         **DISPUTE D7-NEW-2, CONFIRMED (P4, 2026-08-12), and now SEALED.** The
+         complaint is exact: a failure here DOES preempt step 6's analyzer
+         fault and step 7's vacuity guard, and no seal distinguished the two
+         orderings. Both of the preempted statuses BLOCK and both answer
+         UNDETERMINED, so the preemption costs no verdict and buys a branch
+         nothing — the "break the build to buy CLEAN" evasion is unavailable
+         through this door too, because breaking the appeal as well swaps one
+         refusal for another. What it costs is DIAGNOSTIC PRECEDENCE, and that
+         is a real cost now that the tenth member makes the statuses say
+         different things.
+
+         It is confirmed because reordering is not available at any price
+         worth paying, and the two ways to try are both worse:
+
+           * **read the appeals after step 6 and sweep without them.**
+             ``check_tree`` would compute ``dispositions`` and
+             ``stale_declarations`` against an EMPTY declaration set, and both
+             are carried on the record and PRINTED. The gate would publish a
+             report in which every ACCEPTED finding reads as a BREACH, to
+             announce that it could not read the appeals. Manufacturing a
+             false report to improve a status line is not a trade;
+           * **sweep twice.** 445 s per sweep on the primary target (P4
+             measurement, recorded in the module docstring) says what that
+             costs.
+
+         The order is therefore FORCED BY THE DATA FLOW and is not a
+         preference: the declarations are an INPUT to ``check_tree``, and
+         passing them down is what keeps ``report.dispositions`` and
+         ``report.stale_declarations`` the shipped mechanism's own answers
+         instead of a second implementation of adjudication kept here.
+
+         Sealed by ``tests/test_branch_reachability.py::
+         test_the_appeals_are_read_before_the_sweeps_and_are_passed_to_them``,
+         which pins the order by OBSERVATION rather than by reading this
+         paragraph: with an unreadable appeal the ``check_tree`` seam is never
+         invoked at all, and with a readable one it is invoked twice and each
+         call carries the declarations for its own ref.
       6. :func:`~claude_dispatcher.call_site_reachability.check_tree` over the
          base tree, then over ``repo_root``. Both, through a module global so
          one seam is substitutable, as ``check_branch`` does for its three git
@@ -1828,12 +1996,21 @@ def check_branch_reachability(
         REPORT, afterwards, in :func:`introduced_findings`;
       * **never write into ``repo_root``.**
 
-    P3 NOTE — THE CALL SITE IS NOT YOURS TO ADD ALONE. Wiring this into
-    ``check_branch`` puts this module into the floor's derived delegation
-    closure (measured; escalation 2 in the module docstring), which requires an
-    edit to ``FLOOR_GLOBS`` in a floored file AND a row in
-    ``tests/test_floor_closure.py``, a seal file BODIES may not touch. Take it
-    to P4.
+    P3 NOTE — THE CALL SITE IS NOT YOURS TO ADD ALONE. **TAKEN TO P4 AND
+    LANDED, 2026-08-12.** Wiring this into ``check_branch`` puts this module
+    into the floor's derived delegation closure (measured; escalation 2 in the
+    module docstring), which required an edit to ``FLOOR_GLOBS`` in a floored
+    file AND rows in ``tests/test_floor_closure.py``, a seal file BODIES may
+    not touch. The note is kept because it is the correct instruction for the
+    NEXT such call: this function now has a production caller and the fact is
+    sealed twice — ``tests/test_floor_closure.py::
+    test_check_branch_actually_calls_the_reachability_gate`` (static, and it
+    reddens if the call or the union leaves ``check_branch``) and
+    ``tests/test_branch_reachability.py::
+    test_the_wired_gate_refuses_a_bodies_branch_through_check_branch``
+    (behavioural). **Whether the gate may be TURNED ON for the primary target
+    is a different question and the answer is currently no** — see "CAN THIS
+    GATE BE SWITCHED ON" in the module docstring.
     """
     try:
         obligation = obligation_for_role(role)

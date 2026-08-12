@@ -2818,8 +2818,13 @@ class RoleDiffResult:
     policy_source: PolicySource | None = None
     detail: str = ""
     #: D7's answer, or ``None`` when :func:`check_branch` did not ask — which
-    #: is the state TODAY, at the P1 scaffold, and the state until the wiring
-    #: escalation is ruled. **``None`` is not "clean"**, exactly as
+    #: was the state at the P1 scaffold and is NO LONGER REACHABLE through
+    #: :func:`check_branch`: since the D7 wiring (P4, 2026-08-12) every return
+    #: from this function that gets past the diff read carries a record, and
+    #: the arms that return before it return through ``_undetermined`` and are
+    #: UNDETERMINED, never CLEAN. It stays ``None``-able because a caller may
+    #: build a :class:`RoleDiffResult` itself, and because that is the state
+    #: the field's whole warning is about. **``None`` is not "clean"**, exactly as
     #: ``signature=None`` is not "unchanged": the sub-record carries its own
     #: :class:`~claude_dispatcher.branch_reachability.ReachabilitySweepStatus`
     #: for every way of not having run, and ``None`` means the question was
