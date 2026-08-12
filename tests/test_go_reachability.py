@@ -18,8 +18,20 @@ skipped.**
 NOTHING HERE ENROLS THE ROW
 ===========================
 :data:`~claude_dispatcher.call_site_reachability.ANALYZERS` is ``()`` at HEAD
-and this commit does not change it; ``role_protocol`` and ``FLOOR_GLOBS`` are
-untouched. Rows that need ``check_tree`` to reach the Go row monkeypatch
+and this commit does not change it.
+
+**AMENDED (P4, 2026-08-11, ``feat/D6-floor2``): "``role_protocol`` and
+``FLOOR_GLOBS`` are untouched" was true of the P2 seal commit and is FALSE of
+this branch.** The D6 floor round landed
+``**/src/claude_dispatcher/go_reachability.py`` and
+``**/src/claude_dispatcher/go_call_reachability/**`` — items 1 and 2 of the
+scaffold's WHAT IS OWED BEFORE ENROLMENT — with their six literal rows in
+``_FLOOR_ROWS`` and both bounds. The ENROLMENT half of "nothing here enrols the
+row" is untouched and is what
+:func:`test_nothing_in_this_commit_enrols_the_go_row` still holds; that row's
+FLOOR half is inverted, and its docstring names the before and after.
+
+Rows that need ``check_tree`` to reach the Go row monkeypatch
 ``ANALYZERS`` for the duration of one call, which is
 ``tests/test_call_site_reachability.py``'s own established move (it does it at
 twenty-odd sites) and is not enrolment: the module's tuple is unchanged, the
@@ -593,6 +605,24 @@ def test_nothing_in_this_commit_enrols_the_go_row():
     assertion, and the module's own import-time guard
     (``_refuse_enrolment_before_flooring``) then refuses the import outright,
     which is the second, independent refusal working.
+
+    **AMENDED BY P4, 2026-08-11 (unit D6 floor round, ``feat/D6-floor2``), and
+    the third assertion is INVERTED.** As written, that assertion said the Go
+    helper must be ABSENT from ``FLOOR_GLOBS``, with the message "that entry and
+    its literal row in ``_FLOOR_ROWS`` are one P4 commit, not a P2 one". This is
+    that P4 commit: the helper subtree and the row module are on the floor,
+    their six literal rows are in ``_FLOOR_ROWS``, and both bounds moved. Left
+    as it stood, the assertion would forbid the very edit whose absence it was
+    written to keep visible — a pending-state marker that outlived its pending
+    state and became a lock on the fix. It is not deleted, because the property
+    it guards is still live in the other direction: the floor is what makes
+    enrolment permissible later, so a round that DELETED it must redden here as
+    loudly as the round that had not yet added it. The row now asserts the floor
+    covers both halves and reddens on the deletion of either.
+
+    **This row's tripwire half is UNCHANGED and stays green.** ``ANALYZERS`` is
+    ``()``, no path resolves to a Go analyzer, and nothing in the floor edit
+    touches either fact — measured on this revision, both before and after.
     """
     assert csr.ANALYZERS == (), (
         "ANALYZERS grew a row; enrolment is a separate decision with separate "
@@ -601,11 +631,27 @@ def test_nothing_in_this_commit_enrols_the_go_row():
     assert csr.analyzer_for_path("cmd/gates/preserve.go") is None
     assert csr.analyzer_for_path("src/claude_dispatcher/risk.py") is None
 
-    from claude_dispatcher.role_protocol import FLOOR_GLOBS
+    from claude_dispatcher.role_protocol import FLOOR_GLOBS, first_matching_glob
 
-    assert not any(GO_REACHABILITY_PACKAGE_DIR in glob for glob in FLOOR_GLOBS), (
-        "the Go reachability helper reached FLOOR_GLOBS; that entry and its "
-        "literal row in _FLOOR_ROWS are one P4 commit, not a P2 one"
+    package = f"src/claude_dispatcher/{GO_REACHABILITY_PACKAGE_DIR}"
+    for probe in (f"{package}/main.go", f"{package}/go.mod", f"sub/project/{package}/main.go"):
+        assert first_matching_glob(probe, FLOOR_GLOBS) is not None, (
+            f"{probe} is off the floor, so a branch under judgement may rewrite "
+            "the program that computes its own call graph. The subtree entry "
+            "and its four literal rows in _FLOOR_ROWS land together"
+        )
+    # The ROW's own module, which is the half D6's checklist listed second and
+    # which the D5 guard could not see: it derived only its OWN path.
+    row_module = "src/claude_dispatcher/go_reachability.py"
+    assert first_matching_glob(row_module, FLOOR_GLOBS) is not None, (
+        f"{row_module} is off the floor. Flooring the registry while leaving "
+        "the only row writable protects the table and not the answer"
+    )
+    # The upper bound, in the same call: neither entry may have been bought by
+    # flooring the package. An ordinary source module stays writable.
+    assert first_matching_glob("src/claude_dispatcher/plan.py", FLOOR_GLOBS) is None, (
+        "the floor grew to cover an ordinary source module; flooring the "
+        "package is not flooring the analyzer"
     )
 
 
