@@ -248,6 +248,13 @@ _PKG_ROOT = Path(__file__).resolve().parents[1] / "src" / "claude_dispatcher"
 _COULD_NOT_CHECK = (
     LoopGateStatus.CHECKED_UNDETERMINED,
     LoopGateStatus.ROLE_UNRESOLVED,
+    # P4 ruling on dispute P3-1, 2026-08-12. The ninth status, and it is listed
+    # here for the reason this tuple is derived by hand rather than imported:
+    # its job is to name, independently of `_DECISIONS`, every status that
+    # means "the gate could not answer". A new blocking status left out of this
+    # tuple reddens NOTHING — the loop below only visits what is written here —
+    # so omitting it would silently narrow the row that checks they all BLOCK.
+    LoopGateStatus.RULE_UNRESOLVED,
     LoopGateStatus.BASE_UNRESOLVED,
     LoopGateStatus.DEADLINE_EXCEEDED,
     LoopGateStatus.GATE_ERROR,
@@ -1142,8 +1149,19 @@ def test_the_decision_table_is_exactly_the_status_enum_and_is_a_member_lookup(
         f"{sorted(s.name for s in set(LoopGateStatus) - set(_DECISIONS))}; "
         f"stale: {sorted(getattr(s, 'name', s) for s in set(_DECISIONS) - set(LoopGateStatus))}"
     )
-    assert len(LoopGateStatus) == 8, (
-        f"LoopGateStatus has {len(LoopGateStatus)} members, not the eight the "
+    # 8 -> 9 (P4 ruling on dispute P3-1, 2026-08-12). This bound is a tripwire
+    # requiring a ruling, not a prohibition, and its own message says so: "a
+    # member added without a ruling gets whichever decision the table happened
+    # to give it". `RULE_UNRESOLVED` arrives WITH its ruling (reasoned on the
+    # member itself), with its `_DECISIONS` row, with its
+    # `_BLOCKED_REASON_PREFIXES` row, and in `_COULD_NOT_CHECK` above — so the
+    # three things this bound exists to force all happened before it moved.
+    # It is the ONLY row in this file the ruling reddens: P3 measured, and P4
+    # re-derived on this tree, that dropping the rule-equivalence guard leaves
+    # all 22 rows green, so nothing here binds to the status that refusal
+    # raises. That gap is routed to P2 and is not closed by this move.
+    assert len(LoopGateStatus) == 9, (
+        f"LoopGateStatus has {len(LoopGateStatus)} members, not the nine the "
         "contract enumerates. A member added without a ruling gets whichever "
         "decision the table happened to give it"
     )

@@ -580,6 +580,26 @@ every entry: ``**/orchestrator.py`` would also match
      carry DIFFERENT ``immutable_paths:`` / ``disputed_paths:`` additions are
      the same defect one level down, and :func:`resolve_inputs` refuses them
      through ROLE_UNRESOLVED for want of a better-named state. Dispute P3-1.
+
+     **EXTENDED AND STILL OWED (P4, 2026-08-12, ruling on dispute P3-1).** P3
+     is right that this is the better shape and the ruling adopts BOTH halves
+     of it: `validate` owes TWO refusals, not one — a batch whose rows do not
+     share a role, and a batch whose rows share a role and not a rule. Both
+     are worklist defects and plan time is where a worklist defect belongs;
+     the two loop states are the safety net for a worklist that reached the
+     dispatcher another way, which is why they are named rather than made
+     unreachable and deleted (the DEADLINE_EXCEEDED rule, applied here).
+
+     **NOT LANDED IN THIS ADJUDICATION, deliberately.** The seal file's own
+     dispute P2-3 assigns the consequence to this item's commit: *"Row 18
+     measures that a mixed-role batch loads clean today, and §7(b) owes a
+     plan-time refusal that will redden it. The amendment belongs to §7(b)'s
+     own commit."* Landing the refusal here would make this ruling carry a
+     whole owed item AND perform a seal amendment another commit is specified
+     to make. Re-measured on this tree: row 18
+     (``test_todays_dispatcher_really_does_hand_one_branch_two_roles``) is
+     GREEN and is the reachability proof for row 17's input, so it is doing
+     its job today and will redden exactly once, by design, when §7(b) lands.
   c. **LANDED (P3).** `unblock._STALE_STAMPS` gains :data:`ROW_STAMPS` — by
      splatting the constant, not by re-spelling the keys, for the reason
      dispute P2-1 gives. Measured under `81591e4` and re-measured under
@@ -823,7 +843,11 @@ class LoopGateDecision(Enum):
 
 
 class LoopGateStatus(Enum):
-    """Why the gate produced the decision it did. Eight states, exhaustive.
+    """Why the gate produced the decision it did. NINE states, exhaustive.
+
+    **Eight until 2026-08-12; the ninth is P4's ruling on dispute P3-1 and it
+    is recorded at :data:`LoopGateStatus.RULE_UNRESOLVED` below.**
+
 
     Every one is NAMED, and the naming is the point: the requirement comes
     from `skills/explicit-state.md` by way of
@@ -853,6 +877,51 @@ class LoopGateStatus(Enum):
         carrying no role spec, or an empty group. → BLOCK. The gate does not
         pick one, because a branch judged under a rule its author was not
         working to is wrong in both directions at once.
+
+        Its scope is now EXACTLY the role, because the case that used to
+        borrow it has its own member below. Read the two together: this one is
+        "which rulebook", the next is "which page of it".
+    RULE_UNRESOLVED
+        The dispatched rows DID yield exactly one :class:`Role` and did not
+        yield one RULE: they carry different ``immutable_paths:`` additions, or
+        different ``disputed_paths:``, which are the two per-row fields
+        `check_branch` reads off a :class:`TaskRoleSpec`. → BLOCK, and the gate
+        does not pick ``specs[0]``, for §4's argument one level down from the
+        role: an ADJUDICATE row's ``disputed_paths:`` IS its writable set, so
+        judging row B's work under row A's set reports legitimate work as a
+        violation and clears work nobody authorised — wrong in both directions
+        on the same branch.
+
+        **P4 ruling, 2026-08-12, dispute P3-1.** P3 implemented the refusal and
+        raised it through ROLE_UNRESOLVED "for want of a better-named state",
+        offering P4 three ways out: widen that state's wording, add a ninth
+        member, or extend the plan-time refusal. The ruling takes the second
+        and ALSO extends §7(b); the wording option is refused. The reason the
+        wording is not enough is this module's own standard, applied evenly:
+        §4 rules that a human reading the queue must be able to tell "your
+        worklist batches two roles" from "git would not resolve a SHA", and the
+        mechanism that carries that distinction is
+        :data:`_BLOCKED_REASON_PREFIXES`, which is keyed by STATUS. Two defects
+        sharing a status share a queue label and differ only in a detail
+        excerpt. They are also two different things to fix: a mixed-role batch
+        is a protocol error, while two ADJUDICATE rows with different
+        ``disputed_paths:`` may each be perfectly legal and merely unable to
+        share a branch.
+
+        It is also the answer that makes the gap P3 measured writable. Dropping
+        the rule-equivalence guard leaves the seal file 22-of-22 green (P3's
+        own measurement, re-derived by P4 on this tree), so no row covers this
+        refusal at all. A refusal with no state of its own is a refusal a seal
+        cannot name in its title; this member is what a P2 row binds to.
+
+        Cost, measured rather than asserted: adding a member reddens exactly
+        one seal row —
+        ``test_the_decision_table_is_exactly_the_status_enum_and_is_a_member_
+        lookup``'s ``len(LoopGateStatus) == 8`` — whose own message says "a
+        member added without a ruling gets whichever decision the table
+        happened to give it". That row is a tripwire REQUIRING a ruling, not a
+        prohibition; this is the ruling, and the bound moves 8 → 9 in the same
+        commit.
     BASE_UNRESOLVED
         ``pre_spawn_sha`` is ``None`` — `_branch_sha` returned ``None`` on a
         git failure. → BLOCK. There is deliberately no fallback base (§4).
@@ -872,13 +941,14 @@ class LoopGateStatus(Enum):
     CHECKED_VIOLATION = "checked_violation"
     CHECKED_UNDETERMINED = "checked_undetermined"
     ROLE_UNRESOLVED = "role_unresolved"
+    RULE_UNRESOLVED = "rule_unresolved"
     BASE_UNRESOLVED = "base_unresolved"
     DEADLINE_EXCEEDED = "deadline_exceeded"
     GATE_ERROR = "gate_error"
 
 
-#: **Status → decision, as DATA.** Eight rows and every :class:`LoopGateStatus`
-#: member is one.
+#: **Status → decision, as DATA.** NINE rows (eight until the P4 ruling on
+#: dispute P3-1, 2026-08-12) and every :class:`LoopGateStatus` member is one.
 #:
 #: A table and not a chain of ``if``\ s, for the reason
 #: :data:`~claude_dispatcher.branch_reachability._ROLE_OBLIGATIONS` records: a
@@ -887,14 +957,17 @@ class LoopGateStatus(Enum):
 #: :func:`decision_for`'s raise, never in a silent PROCEED.
 #:
 #: Read the column: exactly TWO rows proceed, and one of those two is the gate
-#: being switched off. Everything else — including all three "I could not
-#: check" states — blocks. That asymmetry is §2 and §3, as data.
+#: being switched off. Everything else — including all FOUR "the rows/refs did
+#: not resolve" states — blocks. That asymmetry is §2 and §3, as data, and it is
+#: what makes adding a member cheap in the safe direction and never in the
+#: other: a new member absent from this table raises out of :func:`decision_for`.
 _DECISIONS: Mapping[LoopGateStatus, LoopGateDecision] = {
     LoopGateStatus.NOT_ENABLED: LoopGateDecision.PROCEED,
     LoopGateStatus.CHECKED_CLEAN: LoopGateDecision.PROCEED,
     LoopGateStatus.CHECKED_VIOLATION: LoopGateDecision.BLOCK,
     LoopGateStatus.CHECKED_UNDETERMINED: LoopGateDecision.BLOCK,
     LoopGateStatus.ROLE_UNRESOLVED: LoopGateDecision.BLOCK,
+    LoopGateStatus.RULE_UNRESOLVED: LoopGateDecision.BLOCK,
     LoopGateStatus.BASE_UNRESOLVED: LoopGateDecision.BLOCK,
     LoopGateStatus.DEADLINE_EXCEEDED: LoopGateDecision.BLOCK,
     LoopGateStatus.GATE_ERROR: LoopGateDecision.BLOCK,
@@ -923,9 +996,16 @@ _VERDICT_STATUSES: Mapping[DiffVerdict, LoopGateStatus] = {
 #:
 #: Distinct per status because the review queue (`unblock.list_blocked`) prints
 #: the reason and nothing else on its first line, and the human's first
-#: question is which of these six happened. `check_body_branch.sh` already
+#: question is which of these SEVEN happened. `check_body_branch.sh` already
 #: spends two exit codes on the violation/undetermined half of that
-#: distinction; this table spends six strings on all of it.
+#: distinction; this table spends seven strings on all of it.
+#:
+#: The seventh is ``role_diff_loop_rule_unresolved`` (P4, dispute P3-1,
+#: 2026-08-12), and this table is WHY that ruling took a ninth status rather
+#: than a widened wording: the queue label is keyed by STATUS, so two defects
+#: sharing a status share a label. Neither new string is a prefix of any other,
+#: which is the property row 8 asserts — measured, `..._role_unresolved` and
+#: `..._rule_unresolved` differ at their eighteenth character.
 #:
 #: Prefixed ``role_diff_loop_`` and not ``role_diff_``: §5 rules that PR time
 #: is the check that judges what lands, and a reason that reads like the
@@ -934,6 +1014,7 @@ _BLOCKED_REASON_PREFIXES: Mapping[LoopGateStatus, str] = {
     LoopGateStatus.CHECKED_VIOLATION: "role_diff_loop_violation",
     LoopGateStatus.CHECKED_UNDETERMINED: "role_diff_loop_undetermined",
     LoopGateStatus.ROLE_UNRESOLVED: "role_diff_loop_role_unresolved",
+    LoopGateStatus.RULE_UNRESOLVED: "role_diff_loop_rule_unresolved",
     LoopGateStatus.BASE_UNRESOLVED: "role_diff_loop_base_unresolved",
     LoopGateStatus.DEADLINE_EXCEEDED: "role_diff_loop_deadline_exceeded",
     LoopGateStatus.GATE_ERROR: "role_diff_loop_gate_error",
@@ -1188,6 +1269,19 @@ def resolve_inputs(
     :class:`Role`", which this case technically does; P4 owes either a widened
     wording, a ninth status, or (better, and the shape §7(b) already takes) a
     plan-time refusal. What P3 will not do is pick one and say nothing.
+
+    **RULED (P4, 2026-08-12): the ninth status, AND the plan-time refusal.**
+    The refusal P3 wrote is kept exactly as written; only the status it raises
+    changes, to :data:`LoopGateStatus.RULE_UNRESOLVED`, which is reasoned in
+    full on that member. The widened-wording option is refused there. §7(b) is
+    extended in the same ruling to owe BOTH plan-time refusals, and it is
+    deliberately NOT landed here — see §7(b) for why the seal author assigned
+    the row-18 amendment to that item's own commit.
+
+    What did NOT change, and it is the load-bearing half: this function still
+    refuses rather than picking, and P3's reason for refusing is the ruling's
+    reason too. The ninth status is about what the queue is TOLD; the refusal
+    itself was already right.
     """
     role = sole_role(specs)
     if role is None:
@@ -1200,16 +1294,19 @@ def resolve_inputs(
             "other role's legitimate work as a violation",
         )
 
-    # One role, but possibly several rows. See the P3 block above.
+    # One role, but possibly several rows. See the P3 block above and the P4
+    # ruling on it at :data:`LoopGateStatus.RULE_UNRESOLVED`.
     rules = {(spec.added_immutable_globs, spec.disputed_paths) for spec in specs}
     if len(rules) != 1:
         raise _UnresolvedInput(
-            LoopGateStatus.ROLE_UNRESOLVED,
+            LoopGateStatus.RULE_UNRESOLVED,
             f"the dispatched rows {[spec.task_key for spec in specs]} share "
             f"role {role.value!r} but not one rule: their immutable_paths / "
             "disputed_paths additions differ, so one branch would be judged "
             "under one row's writable set and the other row's work reported "
-            "against it (dispute P3-1)",
+            "against it. The role IS resolved; the rulebook page is not — "
+            "which is why this is RULE_UNRESOLVED and not ROLE_UNRESOLVED "
+            "(P4 ruling on dispute P3-1, 2026-08-12)",
         )
 
     if pre_spawn_sha is None:
