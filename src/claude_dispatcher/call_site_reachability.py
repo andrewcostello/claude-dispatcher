@@ -686,11 +686,31 @@ Two coordinations this scaffold may NOT perform, raised for P4:
     ``seal_verify.is_test_path``; both are already on the floor, so no new
     closure member arrives with it. Wiring D5 into a floor decision would put
     D5 itself into ``_DELEGATION_TARGETS`` and needs the same P4 round.
+
+AMENDED on ``feat/D5-contract-module``, 2026-08-11, base ``6e18fc0``
+--------------------------------------------------------------------
+Two of the three paragraphs above have been overtaken and are kept because the
+reasoning in them is still the reasoning:
+
+  * ``FLOOR_GLOBS`` acquired ``**/src/claude_dispatcher/call_site_reachability.py``
+    in the D5 P4 round of 2026-08-11, so the first coordination is DONE for this
+    module. It is NOT done for ``call_site_contract``, which now holds the
+    vocabulary every BREACH is spelled in and is not yet on the floor; the glob
+    that is owed, the four spellings that do not work, and the two measured reds
+    the landing passes through are all written out in that module's docstring.
+  * the delegation closure grew by exactly one member, ``call_site_contract``,
+    and by nothing else — that module imports no in-package module at all.
+    ``role_protocol`` still does not import this one, so
+    ``_DELEGATION_TARGETS`` in ``tests/test_floor_closure.py`` still needs no
+    row.
+
+``ANALYZERS`` is still ``()``. This round removed the obstacle to enrolment; it
+did not enrol.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Mapping, Protocol, Sequence
@@ -703,6 +723,58 @@ from .role_protocol import (
     support_for_path,
 )
 from .seal_verify import is_test_path
+
+# The shared vocabulary, DEFINED in `call_site_contract` and re-exported
+# here. The eighteen names below used to be defined in this file, which made
+# `go_reachability`'s module-level import of eleven of them a cycle and made
+# enrolment impossible in both available placements — measured, with the
+# tracebacks, in that module's docstring. The dependency now runs
+# contract <- mechanism and contract <- row, and the row imports its eleven
+# from the contract rather than from here.
+#
+# THE RE-EXPORT IS LOAD-BEARING AND IT IS A SHIM. It is what makes this
+# extraction cost zero seal edits: `tests/test_call_site_reachability.py`
+# imports 13 of these by name from this module and
+# `tests/test_go_reachability.py` imports 9, and a re-export binds the same
+# object rather than copying it, so those seals stay TRUE and not merely
+# green. Removing it is a P4 round that repoints 22 import sites.
+#
+# Nothing may be added to `call_site_contract` that DECIDES; the rule and its
+# five edges are written out there, and this module is the one that would be
+# hollowed out by breaking it.
+from .call_site_contract import (
+    AnalyzerError,
+    AnalyzerFault,
+    AnalyzerUnavailable,
+    CallGraph,
+    Edge,
+    EdgeKind,
+    EntrypointKind,
+    GO_REACHABILITY_PACKAGE_DIR,
+    GO_REACHABILITY_SCHEMA,
+    IMPORTS_NOT_SUPPLIED,
+    ImportEvidence,
+    ImportRelation,
+    ImportsUnavailable,
+    PackageImports,
+    ROOT_KIND_BY_ENTRYPOINT,
+    Root,
+    RootKind,
+    Symbol,
+)
+
+#: The pre-move spelling of :data:`ROOT_KIND_BY_ENTRYPOINT`, bound to THE SAME
+#: OBJECT and not to a copy. A COMPATIBILITY SHIM, owed removal by the P4
+#: round that repoints its three seal reads
+#: (`tests/test_go_reachability.py:1157`, `:1158`, `:2469` — measured
+#: 2026-08-11 at base `6e18fc0`, all subscript reads of
+#: `csr._ROOT_KIND_BY_ENTRYPOINT`). It exists so that a P1 scaffold did not
+#: have to edit a sibling unit's seals to keep its own suite green.
+#:
+#: The underscore does NOT cross a module boundary: `go_reachability` imports
+#: the public name from the contract. This binding is internal to this module
+#: and to the seals that already read it here.
+_ROOT_KIND_BY_ENTRYPOINT = ROOT_KIND_BY_ENTRYPOINT
 
 __all__ = [
     "CallSiteReachabilityError",
@@ -804,111 +876,10 @@ class CallSiteReachabilityError(RuntimeError):
 # --------------------------------------------------------------------------- #
 
 
-class AnalyzerFault(Enum):
-    """Why an analyzer that EXISTS could not run. A closed, exhaustive set.
-
-    Modelled on ``role_protocol.ComparatorFault`` and for the same stated
-    reason: **a fault is not an unsupported language.** A language nobody can
-    analyze is a permanent fact about the gate; a missing ``go`` binary is a
-    fact about the machine the gate ran on. Conflating them is a live
-    fail-open — a Go tree analyzed in a CI image with no toolchain would report
-    "nothing to analyze here" for as long as the image stayed broken.
-
-    **P4 RULING (2026-08-11), on the contradiction the seal author raised as
-    R1.** The scaffold said every member here maps to an
-    ``UndecidedReason.ANALYZER_FAULT`` abstention, while the only two functions
-    that run an analyzer — :func:`discover_roots` and :func:`build_call_graph`
-    — both RAISE on :class:`AnalyzerError`. Both could not be true.
-
-    **The raises are right and the abstention is UNBUILDABLE, so
-    ``UndecidedReason.ANALYZER_FAULT`` is struck.** A fault is carried on the
-    raised :class:`AnalyzerUnavailable` and reaches the caller as a
-    :class:`CallSiteReachabilityError`; no member here maps to a finding.
-
-    The reason is not a preference between two workable designs. An abstention
-    is a statement ABOUT A SUBJECT, and both faulting sites are upstream of the
-    subject population: a fault in :func:`discover_roots` leaves no roots,
-    therefore no seals, therefore no subjects to abstain over, and a report
-    that abstains over zero subjects is a report of zero findings — which is
-    the exact artifact this module exists to stop anyone shipping. **An
-    abstention you cannot enumerate is not an abstention; it is silence with a
-    label on it.** The raise is the honest form of the same refusal: it is not
-    a pass, it is not a silent skip, and :class:`CallSiteReachabilityError`
-    already contracts that a caller may not catch it and continue.
-
-    What the ruling costs, stated so it is a decision: in a tree with two
-    analyzer rows, one faulting toolchain takes down the judgement of the
-    healthy language too. That binds nothing today (:data:`ANALYZERS` is empty,
-    and the first row will be Go alone) and it is recorded rather than
-    engineered around. The trigger for revisiting: the first tree with two
-    analyzer rows in which one language's toolchain is routinely absent — at
-    which point the member comes back, but it comes back attached to a layer
-    that KNOWS the subject population, which neither of these two is.
-
-    That is also the difference from ``ComparatorFault``, which maps to
-    statuses of several kinds: D5 has exactly one honest thing to say when its
-    analyzer did not run, and it says it by refusing to answer.
-
-    TOOLCHAIN_MISSING
-        The external program the analyzer needs (``go``) is not on PATH.
-    TOOLCHAIN_UNUSABLE
-        On PATH and did not answer: a failing version probe, a version older
-        than the helper's language version, a ``GOCACHE``/``HOME`` the process
-        cannot write. On PATH is not the same as working.
-    HELPER_MISSING
-        The helper program's source is not where this package looked. An
-        install that dropped a non-Python asset (``tests/test_packaging.py``
-        exists for exactly this; hit live twice on 2026-07-13) must not read as
-        "no Go here".
-    HELPER_FAILED
-        The helper ran and exited non-zero.
-    HELPER_TIMEOUT
-        The helper exceeded its budget. A gate that hangs enforces nothing, and
-        CI reports the hang as infrastructure rather than as an unanalyzed
-        tree.
-    HELPER_OUTPUT_INVALID
-        Exit 0 and stdout is not a well-formed document of the expected schema
-        — **including an EMPTY graph where a graph was expected.** "The tree has
-        no edges" and "the helper returned nothing" must not be the same
-        answer: the first would make every subject FROM_NEITHER, which is the
-        loudest state this module has, so the failure direction here is a
-        flood rather than a silence. Both are unacceptable; both are faults.
-    """
-
-    TOOLCHAIN_MISSING = "toolchain_missing"
-    TOOLCHAIN_UNUSABLE = "toolchain_unusable"
-    HELPER_MISSING = "helper_missing"
-    HELPER_FAILED = "helper_failed"
-    HELPER_TIMEOUT = "helper_timeout"
-    HELPER_OUTPUT_INVALID = "helper_output_invalid"
 
 
-class AnalyzerError(Exception):
-    """Base for the two things an analyzer may raise.
-
-    Deliberately not a subclass of anything in ``role_protocol``: the four
-    handlers there map their own exception types to UNDETERMINED with a message
-    about git, and an analyzer failure swept into one of those would lose both
-    the fault and the tree. Two different failures with one name is invariant
-    5's shape. ``ComparatorError``'s own docstring makes the same argument for
-    the same reason, and the two hierarchies are separate for a third: an
-    analyzer failure and a fingerprinter failure have different remediations
-    and different reportable states.
-    """
 
 
-class AnalyzerUnavailable(AnalyzerError):
-    """An analyzer that EXISTS could not run. Carries the named fault.
-
-    A fact about the ENVIRONMENT, never about the file or the language.
-    ``role_protocol.ComparatorUnavailable``'s shape, adopted verbatim including
-    the constructor, so a reader of one recognises the other.
-    """
-
-    def __init__(self, fault: AnalyzerFault, message: str) -> None:
-        super().__init__(f"{fault.value}: {message}")
-        self.fault = fault
-        self.message = message
 
 
 class SourceUnreadable(AnalyzerError):
@@ -1446,60 +1417,7 @@ def analyzer_for_path(path: str) -> ReachabilityAnalyzer | None:
     return None
 
 
-#: The Go helper's protocol version, on every request and every response.
-#: Checked rather than assumed, exactly as ``GO_HELPER_SCHEMA`` is: a helper
-#: source that a branch, an install or a partial upgrade left at a different
-#: version is :attr:`AnalyzerFault.HELPER_OUTPUT_INVALID`, never a best-effort
-#: read of whatever came back. Bump it whenever the SYMBOL SPELLING or the edge
-#: grammar changes, because a symbol key is compared for equality across the
-#: root set and the subject set and a spelling change would otherwise read as
-#: every subject being unreachable — the loudest possible false report.
-GO_REACHABILITY_SCHEMA = "claude-dispatcher/go-call-reachability/v1"
 
-#: Where the Go helper's source will live, relative to this package. Inside
-#: ``src/claude_dispatcher/`` and NOT in ``tools/``, for ``GO_HELPER_PACKAGE_DIR``'s
-#: stated reason and it applies with more force here: the gate judges trees in
-#: OTHER repositories, so a helper read out of the judged repo would be a
-#: CALL-GRAPH ANALYZER supplied by the branch whose call graph it is computing.
-#:
-#: Nothing is written at this path by this commit. The constant exists so that
-#: the floor entry it will need is nameable before the directory exists —
-#: D4's precedent, whose commit message is "the floor lands before the 9.1 MB
-#: blob does", and whose reasoning was that a floor arriving WITH the asset was
-#: absent for the commit that added it.
-#:
-#: CHOICE (the design does not say how the Go side is read): a stdlib-only Go
-#: helper doing NAME-LEVEL resolution over ``go/ast``, in a module of its own
-#: with no dependencies — the ``go_signature_fingerprint/go.mod`` pattern,
-#: which states the rule as "stdlib only, forever". Rejected alternative:
-#: ``golang.org/x/tools/go/ssa`` with ``callgraph/rta``, which is the correct
-#: tool for this job and would resolve interface dispatch properly. It is out
-#: on that go.mod's own recorded reasoning: "a dependency would need a module
-#: cache, and a module cache is a network fetch and a writable HOME on the gate
-#: path — two more ways to be TOOLCHAIN_UNUSABLE in CI". Buying precision with
-#: two new fail-open surfaces is the trade this effort has refused three times.
-#:
-#: What the rejection costs, measured against the case that motivated the unit:
-#: nothing. ``ResolveConfigDual`` is a package-level function in ``package
-#: main``, and every reference to it within that package is a bare identifier
-#: an AST walk resolves exactly. The cost lands on method and interface calls,
-#: where name-level resolution over-approximates
-#: (:attr:`PathQuality.OVER_APPROXIMATED`) rather than guesses.
-#:
-#: CHOICE (the design does not say what one helper invocation covers): a FILE
-#: SET — one whole Go package, or module, per invocation — and NOT one file, so
-#: this protocol diverges from ``GoHelperRequest``'s "one revision of one file,
-#: not a batch". The divergence is forced: a call graph is not a per-file
-#: property, and a per-file protocol would make every cross-file call in a
-#: package an unresolved edge, i.e. would abstain on almost everything. What is
-#: kept from ``GoHelperRequest``: source travels as TEXT rather than as
-#: filenames, so the analysis never depends on the working tree that the branch
-#: controls. What is lost, and must be replaced: the per-file timeout that made
-#: "which file" answerable. Rejected alternative: keeping per-file requests and
-#: stitching the graph on the Python side, which moves Go's name-resolution
-#: rules into Python — a second implementation of Go scoping, in the wrong
-#: language, maintained by nobody.
-GO_REACHABILITY_PACKAGE_DIR = "go_call_reachability"
 
 
 # --------------------------------------------------------------------------- #
@@ -1507,181 +1425,10 @@ GO_REACHABILITY_PACKAGE_DIR = "go_call_reachability"
 # --------------------------------------------------------------------------- #
 
 
-class RootKind(Enum):
-    """Whether a root is production or test. Two states, exhaustively.
-
-    The single most important distinction in this module, because
-    :attr:`Reach.FROM_TESTS_ONLY` — the B1 defect — is definable only against
-    it. Kept as its own two-valued enum rather than as a ``bool`` on
-    :class:`Root` for the reason ``skills/explicit-state.md`` gives about
-    policy-bearing booleans: a truthy non-bool, or a field somebody later
-    defaults, would silently reclassify a test root as production and turn
-    every BREACH into an OK.
-
-    PRODUCTION
-        A way the shipped program starts. Reaching a subject from one of these
-        is what "production calls it" means.
-    TEST
-        A way the test suite starts. Reaching a subject from one of these and
-        from nothing else is the defect.
-
-    There is no third member and no UNKNOWN. A root whose kind cannot be
-    decided is not a root: :func:`discover_roots` RAISES
-    :class:`CallSiteReachabilityError` rather than admit one, because the two
-    failure directions are both intolerable — classified as PRODUCTION it
-    silently certifies everything below it, classified as TEST it floods the
-    report with false BREACHes.
-    """
-
-    PRODUCTION = "production"
-    TEST = "test"
 
 
-class EntrypointKind(Enum):
-    """How a root starts. A CLOSED set, and every dispatch over it must be
-    exhaustive and RAISE on an unknown member.
-
-    The brief asks for these exhaustively and the honest answer has two parts:
-    the set below is exhaustive over the mechanisms this module can DERIVE from
-    a tree, and limit 1 in the module docstring names what that leaves out. A
-    kind is here only when some analyzer emits it; a kind with no analyzer
-    "will never fire and will be read as coverage".
-
-    Go — PRODUCTION
-    ---------------
-    GO_MAIN
-        ``func main()`` in a file declaring ``package main``. Derived by
-        sweeping the tree; seven of them in ``claude-workflow`` today
-        (``cmd/{classify,iterate,recheck,repro,deepseek,reviewer,gates}``).
-    GO_INIT
-        ``func init()`` in any package that a ``GO_MAIN`` package transitively
-        imports. Go runs every such function before ``main`` and it is a
-        genuine root, not a curiosity: a package whose only job is to register
-        itself in a table does it here. Zero instances in ``cmd/classify``
-        today, measured 2026-08-10 — so this member is written on the
-        LANGUAGE's semantics rather than on an instance, which is the one place
-        this module admits a kind with no measured example, because omitting it
-        would make everything an ``init`` reaches a false BREACH.
-    GO_PACKAGE_VAR
-        A package-level ``var x = f()``. Runs before ``init``. Same argument as
-        ``GO_INIT`` and the same admission.
-
-    Python — PRODUCTION
-    -------------------
-    PYTHON_CONSOLE_SCRIPT
-        A ``[project.scripts]`` entry in ``pyproject.toml``. Derived by reading
-        that file. One today: ``dispatcher = "claude_dispatcher.cli:main"``.
-    PYTHON_MODULE_MAIN
-        A ``__main__.py`` in a package, making ``python -m pkg`` a start.
-        One today: ``src/claude_dispatcher/__main__.py``.
-    PYTHON_SCRIPT_MAIN
-        The body of an ``if __name__ == "__main__":`` block. Six today, in
-        ``cli.py``, ``__main__.py``, ``role_protocol.py``, ``ts_parser_vendor.py``,
-        ``tools/retroactive_sweep.py`` and ``tools/cross_family_panel.py``.
-    PYTHON_IMPORT_TIME
-        Module-level statements of any module another root imports. Not a
-        technicality: ``role_protocol.py`` calls
-        ``validate_registry(COMPARATORS, PENDING_COMPARATORS)`` at module level,
-        and that call is the only thing keeping a malformed registry out of the
-        build. A mechanism that did not name this kind would report the repo's
-        own registry validator as dead.
-
-    TEST
-    ----
-    TEST_FUNCTION
-        A function in a file ``seal_verify.is_test_path`` calls a test, whose
-        name the analyzer's ``test_root_predicate`` accepts. One kind for both
-        languages, because the FILE half of the question is answered by one
-        shared matcher and only the naming half is per-language.
-
-    THERE IS NO ``PUBLIC_API`` AND THERE MUST NOT BE
-    ------------------------------------------------
-    CHOICE (the brief asks what an entrypoint is for a library, and this is the
-    answer): **a library's exported surface is NOT a root.** A tree with no
-    root of any kind above is :attr:`UndecidedReason.NO_ENTRYPOINT` — an
-    abstention over the whole tree — and never "everything exported is
-    reachable" and never "nothing is reachable".
-
-    Rejected alternative: treat exported symbols (``__all__``, a capitalised Go
-    identifier, a package's public API) as roots. It is the obvious answer, it
-    is what a linter would do, and it is measurably fatal here:
-    ``ResolveConfigDual`` is capitalised, therefore exported, therefore a root
-    under that rule — so the mechanism built to catch the B1 defect would
-    certify the B1 defect as REACHED on its first run. The same objection
-    applies in Python to any module whose ``__all__`` lists a dark function.
-
-    The cost is real and is limit 5: a genuine library, consumed only from
-    another repository, gets an abstention rather than an answer. That is the
-    correct trade — an abstention says "this mechanism has nothing to tell you
-    about this tree", which is true, whereas the exported-surface rule says
-    "everything here is fine", which is false and is the exact sentence this
-    module exists to stop being said.
-    """
-
-    GO_MAIN = "go_main"
-    GO_INIT = "go_init"
-    GO_PACKAGE_VAR = "go_package_var"
-    PYTHON_CONSOLE_SCRIPT = "python_console_script"
-    PYTHON_MODULE_MAIN = "python_module_main"
-    PYTHON_SCRIPT_MAIN = "python_script_main"
-    PYTHON_IMPORT_TIME = "python_import_time"
-    TEST_FUNCTION = "test_function"
 
 
-@dataclass(frozen=True)
-class Root:
-    """One place execution starts.
-
-    ``symbol``
-        The :class:`Symbol` execution enters at. For ``PYTHON_IMPORT_TIME`` and
-        ``GO_PACKAGE_VAR`` this is a synthetic module-level symbol rather than
-        a declared function, and :class:`Symbol` says how those are spelled —
-        synthetic rather than omitted, because a root with no symbol has no
-        outgoing edges and would silently contribute nothing.
-    ``kind``
-        Which mechanism starts it.
-    ``root_kind``
-        PRODUCTION or TEST. **Derived from ``kind`` and from
-        ``seal_verify.is_test_path`` over the declaring file, never asserted by
-        the analyzer independently**, so a row cannot mark its own roots
-        production. The declaring file is the SENIOR half: a kind the table
-        calls production, declared in a test file, is a **TEST root**. A ``func
-        init()`` in a ``z_test.go`` runs — in the test binary — and everything
-        it reaches is genuinely reached under test. See :func:`_validate_root`
-        for the derivation and for what refusals remain.
-
-        **STRUCK on ``feat/D5-relation-body``, 2026-08-11, base ``3eedd07``,
-        and recorded rather than silently deleted, because the code implemented
-        it for as long as it stood:** this paragraph used to end "a production
-        kind found in a test file is a :class:`CallSiteReachabilityError`
-        rather than a coin flip — a ``func main()`` inside ``_test.go`` is a
-        tree this module does not understand, and saying so is cheaper than
-        being wrong in either direction." It contradicted
-        :func:`_validate_root`'s own docstring, which has contracted the
-        two-half derivation from the start, and it was measurably wrong rather
-        than merely cautious: it dropped D6's ``<vars:test>`` root and every
-        ``init`` in a ``_test.go``, and a dropped root under-approximates into
-        :attr:`Reach.FROM_NEITHER`, which RAISES for a seal-derived subject.
-        The reading it protected against — a ``GO_MAIN`` inside
-        ``contract_seal_test.go`` silently certifying the whole test closure as
-        FROM_PRODUCTION — is still refused, and by the derivation itself: such
-        a root derives TEST, so a row asserting PRODUCTION for it disagrees
-        with the derivation and is refused. The mirror, a ``TEST_FUNCTION``
-        outside the tests, remains a refusal for a reason that is not
-        symmetric; :func:`_validate_root` gives it.
-    ``evidence``
-        What was read to derive this root, in a form a human can check by hand:
-        ``"pyproject.toml [project.scripts] dispatcher"``,
-        ``"cmd/classify/main.go:180 func main, package main"``. Not decoration.
-        A root nobody can verify is a root nobody will believe when it produces
-        a BREACH, and the derived-not-hand-listed property is only auditable
-        through this field.
-    """
-
-    symbol: "Symbol"
-    kind: EntrypointKind
-    root_kind: RootKind
-    evidence: str
 
 
 def discover_roots(tree: Path) -> tuple[Root, ...]:
@@ -1747,36 +1494,6 @@ def discover_roots(tree: Path) -> tuple[Root, ...]:
     return tuple(roots)
 
 
-#: Which :class:`RootKind` each :class:`EntrypointKind` yields. A TABLE and not
-#: a chain of ``if``\ s, so that a member added without visiting this file is
-#: absent from it and :func:`_validate_root` raises rather than defaulting — the
-#: step 3 of ``skills/explicit-state.md`` that actually bites. ``TEST_FUNCTION``
-#: is the only kind on the TEST side. That asymmetry used to be offered as the
-#: reason the struck fallback's TEST half was a derivation rather than a guess;
-#: the ruling was that a constrained guess is still not a derivation, so the
-#: table now says only what it is — the derivation of ``root_kind`` from
-#: ``kind``.
-#:
-#: **It is HALF of :func:`_validate_root`'s authority and not the whole of it**
-#: (amended on ``feat/D5-relation-body``, 2026-08-11, base ``3eedd07``, where
-#: the sentence used to read "which is the whole of ``_validate_root``'s
-#: authority"). The other half is ``seal_verify.is_test_path`` over the
-#: declaring file, and it is SENIOR to this table: a kind named PRODUCTION
-#: here, declared in a test file, derives TEST. This table is what that
-#: derivation falls back to for a production file, and it is still the thing a
-#: ninth member added without visiting this file falls off — the raise above it
-#: is unchanged.
-
-_ROOT_KIND_BY_ENTRYPOINT: Mapping[EntrypointKind, RootKind] = {
-    EntrypointKind.GO_MAIN: RootKind.PRODUCTION,
-    EntrypointKind.GO_INIT: RootKind.PRODUCTION,
-    EntrypointKind.GO_PACKAGE_VAR: RootKind.PRODUCTION,
-    EntrypointKind.PYTHON_CONSOLE_SCRIPT: RootKind.PRODUCTION,
-    EntrypointKind.PYTHON_MODULE_MAIN: RootKind.PRODUCTION,
-    EntrypointKind.PYTHON_SCRIPT_MAIN: RootKind.PRODUCTION,
-    EntrypointKind.PYTHON_IMPORT_TIME: RootKind.PRODUCTION,
-    EntrypointKind.TEST_FUNCTION: RootKind.TEST,
-}
 
 
 def _language_of(analyzer: ReachabilityAnalyzer) -> str:
@@ -1934,122 +1651,8 @@ def _analyzers_present(
 # --------------------------------------------------------------------------- #
 
 
-@dataclass(frozen=True)
-class Symbol:
-    """One callable thing, spelled so two analyzers cannot disagree about it.
-
-    ``key``
-        The comparison key, and the ONLY field any decision reads. Fully
-        qualified and language-owned: ``claude_dispatcher.risk.evaluate`` for
-        Python, ``github.com/yourorg/claude-workflow/classify.ResolveConfigDual``
-        for Go, ``…classify.(*Config).Match`` for a Go method. Qualified rather
-        than bare so two packages may own same-named functions, which is not
-        hypothetical — ``main`` is the package name of all seven ``cmd/``
-        binaries.
-
-        A synthetic root (``PYTHON_IMPORT_TIME``, ``GO_PACKAGE_VAR``) is
-        spelled with a suffix no declaration can produce, e.g.
-        ``claude_dispatcher.role_protocol.<module>``. Synthetic rather than
-        omitted: a root with no symbol has no outgoing edges and would
-        contribute silently nothing, which is the failure this module is about.
-    ``path``
-        The file it is declared in, posix, repository-relative. Read for
-        exactly two things and nothing else: reporting, and
-        ``seal_verify.is_test_path``.
-    ``line``
-        Where, so a finding names a place a human can open.
-
-    ``path`` and ``line`` are deliberately NOT part of the identity: a symbol
-    that moved file is the same symbol, and a graph keyed on location would
-    report every refactor as a mass unreachability event.
-
-    **P4 FIX (2026-08-11), and it is a production change made rather than
-    handed on.** The scaffold declared this identity in prose and then left a
-    plain ``@dataclass(frozen=True)``, whose generated ``__eq__`` and
-    ``__hash__`` compare all three fields — so a symbol that moved file WAS a
-    different symbol, and the class contradicted its own docstring. That is a
-    defect in the scaffold, not a task for a body: the contract was already
-    written, the fix is declarative, and this class is used as a dict key and a
-    set member by the seals themselves and by every traversal below, so a body
-    written against the wrong semantics would be wrong everywhere at once.
-    ``field(compare=False)`` excludes both fields from ``__eq__`` and from the
-    generated ``__hash__``, so identity is over ``key`` alone.
-    ``test_symbol_equality_and_hashing_are_over_the_key_alone`` was red for this
-    defect and is green because the defect is gone — not because the row moved.
-    """
-
-    key: str
-    path: str = field(compare=False)
-    line: int = field(compare=False)
 
 
-class EdgeKind(Enum):
-    """How well an edge is known. Four states, exhaustively.
-
-    This enum is where "what counts as reached" is actually decided, and the
-    brief's list maps onto it as follows:
-
-    DIRECT
-        A call by name, resolved to exactly one declaration. ``findConfig(wt)``
-        inside ``package main``.
-    METHOD
-        A call on a receiver whose declared type the analyzer knows, resolved
-        to exactly one declaration. Distinguished from DIRECT because the
-        stdlib-only Go analyzer resolves these less often than a type-checked
-        one would, and the report should be able to say which kind of
-        resolution it was leaning on.
-    INTERFACE
-        A call through an interface method, or a Python call on a value whose
-        type is not known. Resolved to the SET of in-repo declarations that
-        could satisfy it. **Over-approximating**: it may create a path that no
-        execution takes. It is followed rather than dropped, because dropping
-        it under-approximates and under-approximation manufactures BREACHes,
-        which is the over-call direction; and it is MARKED rather than followed
-        silently, because an unmarked over-approximation manufactures OKs,
-        which is the permissive direction. A path using one is
-        :attr:`PathQuality.OVER_APPROXIMATED` and is never spelled the same as
-        a resolved one.
-    REFERENCE
-        The symbol is mentioned as a VALUE and not called: assigned, passed to
-        another function, put in a table, registered as a callback,
-        ``sort.Slice(xs, less)``. This is a real way production reaches code and
-        omitting it would be a large false-BREACH source. It is a weaker fact
-        than a call — the value may never be invoked — so a path through one is
-        also :attr:`PathQuality.OVER_APPROXIMATED`.
-
-    An edge whose target the analyzer cannot name at all is NOT a member here.
-    It is not an edge; it is a hole, counted in
-    :attr:`CallGraph.unresolved_calls`, and its consequence is
-    :attr:`UndecidedReason.DYNAMIC_EDGE`. Naming it as a fifth EdgeKind was the
-    first draft and it was wrong: an "edge to nowhere" is not something a path
-    can traverse, and putting it in this enum invites a body to treat the
-    absence of a target as a target.
-
-    CHOICE (the brief asks about a call behind a flag): **a flag-guarded call
-    is REACHED, at DIRECT strength, and no member here marks it.** A call site
-    behind ``if opts.enableX`` is a wiring decision that has been made; the
-    flag decides whether it runs today, not whether production knows about the
-    function. Rejected alternative: path-sensitive analysis, which would need
-    to evaluate conditions, would need to know a deployment's configuration,
-    and would turn a reachability check into a symbolic executor. The cost is
-    limit 4: a call behind ``if false`` reads as REACHED. Recorded rather than
-    narrowed, and the direction of the error is the permissive one, which is
-    the one this module is otherwise strict about — so it is the single largest
-    concession in the design and a seal author should say so out loud.
-
-    CHOICE (the design is silent on transitive reach): **transitive counts,
-    with no depth limit.** A subject called by a helper that main calls is
-    reached. Rejected alternative: direct calls from a root only, which is
-    trivially cheap and would report essentially every function in the
-    repository as unreachable — a check whose first run produces a thousand
-    findings is a check that gets deleted, and D3's own note that "an
-    over-calling check is one nobody runs twice" applies with full force.
-    """
-
-    DIRECT = "direct"
-    METHOD = "method"
-    INTERFACE = "interface"
-    REFERENCE = "reference"
 
 
 #: The two edge kinds that resolve to exactly ONE declaration, and the two that
@@ -2075,16 +1678,6 @@ def _edge_is_resolved(kind: EdgeKind) -> bool:
     )
 
 
-@dataclass(frozen=True)
-class Edge:
-    """``caller`` reaches ``callee``, this well, from here."""
-
-    caller: Symbol
-    callee: Symbol
-    kind: EdgeKind
-    #: ``file:line`` of the call site itself, which is where a human looks and
-    #: — for a BREACH — where the missing call has to be written.
-    site: str
 
 
 # --------------------------------------------------------------------------- #
@@ -2098,342 +1691,14 @@ class Edge:
 # --------------------------------------------------------------------------- #
 
 
-@dataclass(frozen=True)
-class ImportsUnavailable:
-    """**The named state "this analyzer does not supply the import relation".**
-
-    Requirement 2 of the brief, and the whole reason this is a CLASS and not a
-    ``None`` and not an empty :class:`ImportRelation`:
-
-      an empty relation reads as "no package imports anything", which makes
-      every package its own component, which silently MAXIMISES the narrowing
-      of step 3's hole set. That is fail-open, and it is the one direction this
-      mechanism refuses.
-
-    **Measured under ``feat/D5-import-relation``, base ``f4c7c46``, 2026-08-11,
-    and this is why the refusal has to be a type rather than a convention:**
-
-      * on the acceptance tree the fail-open and the truth are INDISTINGUISHABLE
-        — 2 packages, **0** in-tree import edges, so the true component count
-        and the empty-relation component count are both 2 and both answer 4 of
-        7. A seal written only against this fixture cannot tell an analyzer that
-        computed the relation from one that returned nothing;
-      * on ``evenplay-mono/apps/website-public-api`` (12 Go packages, 25
-        undirected in-tree import edges) the truth is **1** component and the
-        empty relation says **12**. Every hole in that module would be scoped
-        away from every subject outside its own package, on evidence nobody
-        collected;
-      * on ``evenplay-mono/apps/platform-domain/core`` (33 packages, 93 edges)
-        the truth is **6** components — one of 28 and five singletons — and the
-        empty relation says **33**.
-
-    So: an analyzer that cannot answer says so HERE, by name, with a ``reason``
-    it is required to write; and the consequence, contracted at
-    :func:`holes_in_scope`, is **no narrowing at all** — step 3 keeps its
-    whole-tree hole set and behaves exactly as it does today. The absent
-    relation degrades to the CURRENT, SEALED behaviour and never to the
-    maximally-narrowed one.
-
-    ``reason``
-        Required, no default. Why the relation is absent, in a sentence a report
-        can print: "no analyzer ran over this tree", "the Go row does not
-        compute imports yet", "the toolchain could not be reached". Required
-        because the three are different problems with different remediations,
-        and a bare "unavailable" makes them one.
-
-    CHOICE (the design could have spelled the absence as ``None`` on the field,
-    or as an ``ImportCoverage`` enum member beside the relation): a distinct
-    RECORD carrying a required reason. Rejected alternatives and why:
-
-      * ``None`` — it is what an author writes when they have not thought about
-        the field, and it is what a partially-migrated construction site leaves
-        behind. The absence must cost a class name and a sentence, so that a
-        body cannot arrive at it by omission;
-      * a three-state enum ``COMPLETE`` / ``PARTIAL`` / ``UNAVAILABLE`` beside
-        an always-present relation — ``PARTIAL`` is derivable from
-        :attr:`PackageImports.unplaced_imports` being non-empty, so the enum
-        would be a second source of truth for a fact the data already carries,
-        and the two could disagree. Two answers to "was this import placed" is
-        exactly the drift a registry exists to prevent.
-    """
-
-    reason: str
 
 
-@dataclass(frozen=True)
-class PackageImports:
-    """One package: what it declares, and what it can NAME.
-
-    A node of the import graph. The rule this serves (operator ruling relayed
-    by the P4, restated here so a body does not have to go looking) is that a
-    hole stays in scope for subject ``S`` unless this POSITIVE claim can be
-    discharged:
-
-        *this hole cannot be the missing call site, because no execution frame
-        in the hole's package can hold ``S``'s value and no code in the hole's
-        package can name ``S``.*
-
-    A function value crosses a package boundary by exactly three routes — call
-    argument, call return, or a package-level variable both packages can see —
-    and each of the three requires an IMPORT. So the claim holds exactly when
-    the two packages are in different connected components of the tree's
-    **undirected** import graph.
-
-    ``package``
-        This package's identity, spelled as the qualifier half of the
-        :attr:`Symbol.key` its declarations carry — for Go,
-        ``github.com/yourorg/claude-workflow/gates/cmd/gates``. **The identity
-        is the KEY QUALIFIER and never the import path**, and the two are not
-        the same string; see :func:`ImportRelation.package_of` and the note on
-        ``go_reachability._import_path_qualifiers``.
-    ``symbols``
-        Every :attr:`Symbol.key` declared in this package, synthetic root
-        symbols included. This is what makes the relation usable from
-        :func:`check_subject`, which holds keys and not packages: it has
-        ``subject.key`` and ``hole[0].key`` and nothing else, and it must not
-        split a key into a package by string surgery. A Go method key is
-        ``…/classify.(*Config).Match`` — the package qualifier is not
-        "everything before the last dot", and a layer that guessed would place
-        methods in a package called ``…/classify.(*Config)``, which is in no
-        component and would fail closed on every method in the repository.
-        Membership is DATA the analyzer already has (it knows which unit emitted
-        each symbol) and is never re-derived here.
-    ``imports``
-        The identities of the IN-TREE packages this package can name, taken from
-        its import statements. Directed as recorded; :func:`import_components`
-        reads it undirected, because a value flows both ways across one import
-        (an argument goes in, a return value comes out).
-    ``unplaced_imports``
-        **One entry per import this analyzer could neither place onto a package
-        of this tree NOR establish as out-of-tree**, each a detail string a
-        human can act on. NON-EMPTY IS AN EDGE TO EVERY PACKAGE, never an
-        absence — see :func:`import_components`. An import whose target could be
-        anything can be an import of ``S``'s package, so the positive claim
-        above cannot be discharged against any ``S`` at all.
-
-        What a body must do when an import cannot be resolved: **record it here
-        and stop**. Not drop it (that is the absence the rule forbids), not
-        guess a target (a wrong edge is a wrong component in the permissive
-        direction if it is missing and merely conservative if it is spurious —
-        but a guessed edge that is missing is unrecoverable), and not raise (one
-        unplaceable import in one file must not take the whole check down; that
-        is :func:`build_call_graph`'s own recorded-not-raised discipline).
-    ``external_import_count``
-        How many of this package's imports were placed OUT of the tree — the
-        standard library, a module dependency. **The non-vacuity field of this
-        record**, and it earns its place for :attr:`CallGraph.unresolved_calls`'
-        exact reason: a relation reporting zero ``imports`` and zero
-        ``unplaced_imports`` for every package is either a tree of genuinely
-        isolated packages or an analyzer that is not reading import statements,
-        and those two must not be the same value. **Measured on the acceptance
-        tree under ``feat/D5-import-relation``, base ``f4c7c46``, 2026-08-11:
-        41 for ``cmd/gates`` and 39 for ``cmd/iterate``, against 0 in-tree
-        imports and 0 unplaced.** A seal that pins 41/39 falsifies "the analyzer
-        is not counting"; a seal that pins only the two zeros does not.
-
-    CHOICE (``external_import_count`` could have been the import PATHS): a
-    COUNT. Rejected alternative — the paths — because nothing downstream reads
-    them, they are unbounded in a vendored tree, and the count alone falsifies
-    the one claim the field exists to falsify. A body that later needs the paths
-    for a report should widen this field rather than add a second one.
-
-    CHOICE (an out-of-tree import could have been treated as unplaceable, i.e.
-    as an edge to everything): **a placed import to a package outside the tree
-    contributes NO edge.** The dependency is not in the tree, so it declares no
-    :class:`Symbol` here and cannot be ``S``'s package. Rejected alternative —
-    counting every stdlib import as an unknown — because on the acceptance tree
-    that is all 80 imports and the relation would collapse to one component on
-    every tree ever analysed, which is a mechanism that is never consulted. The
-    residual risk is named and is real: a dependency that itself imports THIS
-    tree's module and hands a value back is a route this relation does not
-    model. It is out of reach for a source-only analyzer, it needs a published
-    module and a circular dependency to occur, and the ``REFERENCE`` edge that
-    :class:`CallGraph`'s both-ends CHOICE already keeps is what covers the
-    common shape of it.
-    """
-
-    package: str
-    symbols: frozenset[str]
-    imports: frozenset[str]
-    unplaced_imports: tuple[str, ...]
-    external_import_count: int
 
 
-@dataclass(frozen=True)
-class ImportRelation:
-    """One tree's packages and the imports between them.
-
-    ``packages``
-        Package identity -> :class:`PackageImports`. Every package the analyzers
-        read, and — enforced by :func:`validate_import_relation` — every symbol
-        in the graph belongs to exactly one of them.
-
-    **THE SHAPE CHOICE, which is question 1 of the brief.** The P4 recorded two
-    acceptable shapes and this is the first: an IMPORT/VISIBILITY relation, with
-    the component computation living in D5. **Rejected alternative: a per-hole
-    CANDIDATE-TARGET SET with an explicit unbounded member** — for each entry in
-    :attr:`CallGraph.unresolved_calls`, the set of symbols the missing call
-    could be, or a named ``UNBOUNDED``. Four reasons, in ascending order of how
-    much they should bind the next author:
-
-      1. **It asks the analyzer for a dataflow answer that D6 measured as
-         unavailable.** Every one of the acceptance tree's holes is a call
-         through a FUNCTION VALUE — measured on this base, 2 in the production
-         closure, both ``cancel`` in ``cmd/gates/main.go``, plus 1 outside it —
-         and D6's adjudication measured that ``go/types`` moves the verdict on
-         none of them, because a type is not an identity. A candidate set over
-         those holes is ``UNBOUNDED`` or it is a guess, so the shape would carry
-         an ``UNBOUNDED`` member on every hole this repository actually has and
-         would answer 0 of 7. The import shape answers **4 of 7 on the same
-         tree, measured** (:func:`holes_in_scope`).
-      2. **It puts the RULE in the analyzer instead of in the judge.** The
-         ruled rule — undirected, unresolved-import-counts-as-an-edge — is a
-         ruling about JUDGEMENT, not a fact about a language. Under the
-         candidate-set shape every language row re-derives it, so there would be
-         one chance per row to get the undirected half or the unresolved half
-         wrong, and a row that got either wrong would silently NARROW harder,
-         which is the fail-open direction. Under this shape each row supplies
-         FACTS (its import statements) and D5 applies the rule once, where one
-         seal can pin it.
-      3. **``call_site_reachability.py`` is on ``FLOOR_GLOBS`` and
-         ``go_reachability.py`` is not.** The narrowing decision moves an
-         ABSTAIN to a BREACH and back; it belongs behind the floor. Putting the
-         candidate sets in the analyzer would put the whole of that decision in
-         a module four of the five roles may rewrite while being judged by it.
-         This reason is decisive on its own.
-      4. **The shapes are not equally cheap to be wrong in.** A wrong import
-         edge merges two components and abstains MORE. A wrong candidate set
-         omits the real target and abstains LESS.
-
-    The candidate-set shape has one property this one had to be given
-    deliberately, and the brief is right to flag it: it makes "we cannot bound
-    this hole" a NAMED STATE rather than an absence. That property is imported
-    wholesale rather than lost — twice, at two different granularities:
-    :class:`ImportsUnavailable` names "no relation at all" and
-    :attr:`PackageImports.unplaced_imports` names "this package's reach cannot
-    be bounded". Neither is spellable as an empty container.
-
-    ================================================================
-    THIS RELATION SUBSUMES ``go_reachability._import_path_qualifiers``.
-    DO NOT BUILD A SECOND DERIVATION OF IMPORT PATHS.
-    ================================================================
-    Stated at this volume because two mechanisms deriving import paths
-    differently is how this gets wrong twice, in two directions that cancel in
-    the reports and not in the truth.
-
-    D6's body found and repaired a live defect: a Go symbol's key is qualified
-    ``<module_path>/<tree-relative dir>`` while its real import path is
-    ``<module_path>/<dir relative to the nearest go.mod>``, so a cross-package
-    in-tree call arrives with a callee key matching no symbol and
-    :class:`CallGraph`'s both-ends rule DROPS a real production edge — a false
-    BREACH, the direction anti-requirement 2 forbids. ``_import_path_qualifiers``
-    computes import path -> key qualifier per unit and ``_join_callee`` rewrites
-    the callee through it, longest prefix first.
-
-    That map is exactly this relation's node table. Its VALUES are
-    :attr:`PackageImports.package` — the key qualifier, which is the identity
-    this relation uses — and its KEYS are the strings an import statement is
-    written with, which is precisely what a body must match an import against to
-    place it. **Measured under ``feat/D5-import-relation``, base ``f4c7c46``,
-    2026-08-11**, on the acceptance tree it returns the two pairs
-
-        …/gates   -> …/gates/cmd/gates
-        …/iterate -> …/iterate/cmd/iterate
-
-    and those two values are exactly the two package identities the measured
-    2-component partition is over.
-
-    So the obligation on the body is not "write an import-path derivation", it
-    is **"build the relation FROM the one that exists"** — hoist
-    ``_import_path_qualifiers`` to serve both callers, or call it, but do not
-    re-derive. A body that writes a second one gets the cancellation for free:
-    ``_join_callee`` would join an edge between two packages while this relation
-    reported no import between them, i.e. the call graph would say the packages
-    talk and the import graph would say they cannot, and step 3 would scope away
-    a hole that a kept edge proves is in reach. Nothing would be red. A seal
-    author should pin the two node sets as EQUAL — the values of
-    ``_import_path_qualifiers`` and the keys of :attr:`ImportRelation.packages`
-    — because that single row is what makes the shared derivation checkable
-    rather than merely intended.
-
-    What this relation adds beyond that map, and therefore why it is a
-    superset rather than a duplicate: the qualifier map answers "what is this
-    package called", and the relation additionally carries which in-tree
-    packages each one IMPORTS, which symbols each one declares, which of its
-    imports could not be placed, and how many were placed outside the tree.
-    """
-
-    packages: Mapping[str, PackageImports]
-
-    def package_of(self, key: str) -> str | None:
-        """Which package declares ``key``, or None if this relation cannot say.
-
-        **IMPLEMENTED and not stubbed, on :func:`analyzer_for_path`'s precedent
-        verbatim: it is the single answer site for "which package is this
-        symbol in", and a seal that re-spelled the lookup could drift from the
-        implementation with both of them green.** It is also the one place that
-        could be tempted into string surgery on a :attr:`Symbol.key`, and the
-        way to prove this module never does that is to write the lookup that
-        does not.
-
-        ``None`` is a real answer and a caller must fail CLOSED on it: a key
-        this relation cannot place is a key whose component is unknown, and an
-        unknown component may be the subject's. See :func:`holes_in_scope`.
-
-        Linear in the number of packages, not in the number of symbols, because
-        the membership sets are hashed. A body that finds this hot should build
-        the reverse index INSIDE this record at construction; it must not build
-        one beside it, for the reason the first paragraph gives.
-        """
-        for package in self.packages.values():
-            if key in package.symbols:
-                return package.package
-        return None
 
 
-#: ``ImportRelation`` when an analyzer computed one, ``ImportsUnavailable`` when
-#: none did. **A union and never an Optional**, so that the absence has to be
-#: constructed by name; see :class:`ImportsUnavailable`.
-ImportEvidence = ImportRelation | ImportsUnavailable
 
 
-#: The value :attr:`CallGraph.package_imports` carries when nobody supplied a
-#: relation, and the DEFAULT of that field.
-#:
-#: CHOICE (the field could have been REQUIRED, with no default): defaulted, to
-#: the REFUSAL. This is the one place in this round that has to argue with a
-#: standing D5 ruling, so it argues with it directly rather than around it.
-#: :func:`check_subject`'s ``roots`` parameter had its default STRUCK in P4
-#: round 2, on the sentence "a missing argument is a signature defect; inventing
-#: the value is a verdict defect". That ruling stands and it does not reach
-#: here, because the two defaults point in opposite directions:
-#:
-#:   * the struck default INVENTED EVIDENCE — a synthesised :class:`Root` record
-#:     that bypassed :func:`_validate_root` and could mint a ``GO_MAIN`` root in
-#:     a test file. A caller with no evidence got a judgement built on a fact
-#:     nobody established;
-#:   * this default invents the CONFESSION. A caller with no evidence gets
-#:     "there is no import evidence", which is true, and whose contracted
-#:     consequence is no narrowing — i.e. today's sealed behaviour, unchanged.
-#:
-#: The rejected alternative was measured rather than argued: making the field
-#: required breaks **4** construction sites on this base, of which **2 are in
-#: seal files** (``tests/test_go_reachability.py`` and
-#: ``tests/test_call_site_reachability.py``) — measured under
-#: ``feat/D5-import-relation``, base ``f4c7c46``, 2026-08-11. A P1 scaffold that
-#: edits a sibling unit's seals to keep its own suite green has done the thing
-#: this process exists to stop. The property a required field buys — every
-#: construction site must THINK — is bought instead at the layer that matters,
-#: by the row-level ``supplies_import_relation`` claim contracted on
-#: :class:`ReachabilityAnalyzer` and the cross-check it licenses in
-#: :func:`build_call_graph`.
-IMPORTS_NOT_SUPPLIED = ImportsUnavailable(
-    reason=(
-        "no analyzer supplied an import relation for this tree, so no hole can "
-        "be scoped away from any subject and step 3 keeps its whole-tree hole "
-        "set"
-    )
-)
 
 
 def validate_import_relation(
@@ -2866,60 +2131,6 @@ def holes_in_scope(
     return tuple(kept)
 
 
-@dataclass(frozen=True)
-class CallGraph:
-    """One tree's symbols and edges, plus an honest account of what is missing.
-
-    ``symbols``
-        Every symbol declared in the tree, keyed by ``Symbol.key``. Every
-        declaration, including the ones nothing references: a symbol absent
-        from this map cannot be a subject, and a subject that cannot be found
-        is :attr:`UndecidedReason.SUBJECT_UNIDENTIFIED`, not a pass.
-    ``edges``
-        Every edge, in no guaranteed order.
-    ``unresolved_calls``
-        Every call site whose target the analyzer could not name, as
-        ``(caller, site, detail)``. **THE non-vacuity field of the graph, and
-        the second thing a reader should look at after the root list.** It is
-        the exact quantity that decides whether a "no path" answer is
-        conclusive (:attr:`UndecidedReason.DYNAMIC_EDGE`), so a graph that
-        reports zero of them is either a very well-resolved tree or an analyzer
-        that is not counting — and those two must not be the same value. A
-        seal should pin a tree with a known dynamic call and require it here.
-    ``unreadable_paths``
-        Files the analyzer could not parse. Non-empty means the whole tree
-        abstains; see :class:`SourceUnreadable`.
-    ``package_imports``
-        The tree's :class:`ImportRelation`, or the named
-        :class:`ImportsUnavailable` when no analyzer supplied one. **The field
-        that makes step 3's hole set scopable to a subject**, added on
-        ``feat/D5-import-relation``, 2026-08-11. It rides on the GRAPH and not
-        on a new parameter of :func:`check_subject`, because
-        :func:`check_subject` already receives the graph and because the
-        relation is a fact about the same tree the edges came from — a second
-        channel carrying facts about one tree is two things to keep in step.
-
-        Defaulted to :data:`IMPORTS_NOT_SUPPLIED`, which is the REFUSAL and not
-        an empty relation; the argument for defaulting it at all, and the
-        measurement behind it, are on that constant. Nothing reads this field
-        yet: :func:`holes_in_scope` is the seam and it is a stub.
-
-    CHOICE (the design does not say what "in-repo" means for the edge set):
-    **edges are kept only when BOTH ends are declared in the tree.** A call
-    into the standard library or a vendored dependency is dropped, and a
-    callback PASSED to one is kept as a ``REFERENCE`` edge from the caller to
-    the callback. Rejected alternative: modelling dependency internals, which
-    would need their sources, would make the graph size unbounded, and would
-    add nothing — a subject in this tree is reached from this tree's roots, and
-    a dependency that calls back into it does so through a value this tree
-    handed it, which the REFERENCE edge already records.
-    """
-
-    symbols: Mapping[str, Symbol]
-    edges: tuple[Edge, ...]
-    unresolved_calls: tuple[tuple[Symbol, str, str], ...]
-    unreadable_paths: tuple[str, ...]
-    package_imports: ImportEvidence = IMPORTS_NOT_SUPPLIED
 
 
 def build_call_graph(tree: Path) -> CallGraph:

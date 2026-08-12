@@ -316,9 +316,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from .call_site_reachability import (
+# The shared vocabulary, from the CONTRACT and no longer from the mechanism.
+# These eleven names used to be imported from `call_site_reachability`, which
+# defines them after its own `ANALYZERS` anchor; that made this line a cycle the
+# moment a row was put in the registry, in both available placements. The
+# measurement, the two tracebacks and the ruling are in `call_site_contract`.
+# This module still does NOT import the mechanism, and must not: the row depends
+# on the mechanism for enrolment, never the other way round.
+from .call_site_contract import (
     GO_REACHABILITY_PACKAGE_DIR,
     GO_REACHABILITY_SCHEMA,
+    ROOT_KIND_BY_ENTRYPOINT,
     AnalyzerFault,
     AnalyzerUnavailable,
     CallGraph,
@@ -327,7 +335,6 @@ from .call_site_reachability import (
     EntrypointKind,
     Root,
     Symbol,
-    _ROOT_KIND_BY_ENTRYPOINT,
 )
 from .role_protocol import Language, support_for_path
 from .seal_verify import is_test_path
@@ -2473,7 +2480,7 @@ class GoReachabilityAnalyzer:
         written to avoid. There is no unreachable arm to harden: RULE 10 in the
         decoder already refuses a root naming an undeclared symbol, so
         ``symbols[wire.symbol]`` cannot miss, and
-        ``_ROOT_KIND_BY_ENTRYPOINT`` is total over :class:`EntrypointKind`
+        ``ROOT_KIND_BY_ENTRYPOINT`` is total over :class:`EntrypointKind`
         because ``entrypoint_kind_for_wire`` raises before this line on
         anything else.
 
@@ -2498,7 +2505,7 @@ class GoReachabilityAnalyzer:
         reaches is genuinely reached under test.
 
         The row cannot say so. D5 derives ``root_kind`` from ``kind`` ALONE
-        (``_ROOT_KIND_BY_ENTRYPOINT``) and ``_validate_root`` then REFUSES the
+        (``ROOT_KIND_BY_ENTRYPOINT``) and ``_validate_root`` then REFUSES the
         disagreement with the file, and that refusal is sealed —
         ``test_root_kind_is_derived_from_the_kind_and_never_asserted_by_the_row``
         pins "``func main`` inside ``contract_seal_test.go``" as a refusal. So
@@ -2519,7 +2526,7 @@ class GoReachabilityAnalyzer:
         already on this side of the argument:** ``_validate_root``'s own
         docstring says ``root_kind`` is "DERIVED from ``kind`` and from
         ``seal_verify.is_test_path`` over the declaring file", while
-        ``_ROOT_KIND_BY_ENTRYPOINT`` derives it from ``kind`` alone. The two
+        ``ROOT_KIND_BY_ENTRYPOINT`` derives it from ``kind`` alone. The two
         agree only if a production kind in a test file is impossible, and it is
         idiomatic. The fix is one table lookup — ``RootKind.TEST`` whenever
         ``is_test_path`` is true, whatever the ``kind`` — and it belongs to D5,
@@ -2589,7 +2596,7 @@ class GoReachabilityAnalyzer:
             for wire in response.roots:
                 kind = entrypoint_kind_for_wire(wire.kind)
                 symbol = symbols[wire.symbol]
-                root_kind = _ROOT_KIND_BY_ENTRYPOINT[kind]
+                root_kind = ROOT_KIND_BY_ENTRYPOINT[kind]
                 in_test_file = is_test_path(symbol.path)
                 if (kind is EntrypointKind.TEST_FUNCTION) != in_test_file:
                     continue
