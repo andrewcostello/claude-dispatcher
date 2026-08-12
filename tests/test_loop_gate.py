@@ -146,6 +146,42 @@ recorded in their rows:
     doing its job well; it is ten rows failing to say what happened. Row 15's
     message is the one that names it.
 
+AMENDMENT — row 22 strengthened (D8-guard P2, 2026-08-12)
+=========================================================
+On the P4 routing block's item 4, which rules that the answer to "a second
+implementation reddens only row 22" is to strengthen row 22 rather than add a
+fifth behavioural row: *"the fixtures in that file are exactly the fixtures a
+reimplementation would be written against, so more of them buy nothing."*
+
+Row 22 gained two claims — the verdict fed to `status_for_verdict` must be
+`check_branch`'s own return value (a fixed point over the closure, so any depth
+of helper is legal), and the closure must reach none of `role_protocol`'s other
+diff-decision entry points. The gap they close is measured under `9d21ef0` and
+is not the one the original row named: the disclosed second implementation
+reddens row 22 **because it stops calling `check_branch`**. One that KEEPS the
+call and decides the verdict itself was **22 of 22 green** before this
+amendment. Two rows in the table above are therefore restated, and one is new:
+
+  ===================================================== ===== ================
+  mutation applied to the reference implementation      rows  which
+  ===================================================== ===== ================
+  extract the `check_branch` call into a helper             0  none — by
+                                                               design, row 22,
+                                                               re-measured
+                                                               after the
+                                                               strengthening
+  inline reimplementation agreeing on every fixture         1  22
+  `check_branch` called AND the verdict decided inline      1  22 — **0 before
+                                                               the amendment**
+  ===================================================== ===== ================
+
+Nothing else in this file changed. The three rows the same routing block owes
+— the rule-equivalence refusal, the row stamp's write, and the run flag in the
+payload — are in `tests/test_loop_gate_guard.py` rather than here, so that this
+file's 22 rows and their falsification matrix stay the artefact the D8 P2
+measured. That file's header carries its own baseline, its own matrix, and the
+dispute (D8G-1) that ``LoopGateStatus.RULE_UNRESOLVED`` already exists.
+
 Which rows need §7's owed P4 floor commit, and in what sense
 ============================================================
 The owed commit is two `FLOOR_GLOBS` entries —
@@ -1922,9 +1958,141 @@ def test_the_wired_orchestrator_writes_the_loop_stamp_and_not_the_pr_one() -> No
     )
 
 
+#: The `role_protocol` entry points that answer "does this diff break the
+#: rule" other than through :func:`~claude_dispatcher.role_protocol.check_branch`
+#: — i.e. the parts a second implementation of this gate has to be built from.
+#:
+#: Named as data, and every name is CHECKED to exist on `role_protocol` before
+#: it is used (row 22's third control): a misspelling here makes the claim that
+#: reads it vacuous in the silent direction, which is the whole failure mode
+#: this row exists to catch, one level up.
+#:
+#: Measured under `9d21ef0`: the closure out of `check_after_implementer`
+#: reaches NONE of these today, so requiring their absence refuses nothing the
+#: shipped implementation does.
+_RIVAL_DECISION_PRIMITIVES = (
+    "changed_paths_between",
+    "evaluate_changed_paths",
+    "effective_rule",
+    "first_matching_glob",
+)
+
+
+def _callee_name(func: ast.AST) -> str | None:
+    """The bare callee name of a call target, blind to the receiver spelling."""
+    return (
+        func.id if isinstance(func, ast.Name)
+        else func.attr if isinstance(func, ast.Attribute)
+        else None
+    )
+
+
+def _call_bindings(fn: ast.AST) -> dict[str, set[str | None]]:
+    """``name -> {callee names it is assigned the result of}``, within ``fn``.
+
+    Deliberately flow-INSENSITIVE and deliberately a SET: a name rebound twice
+    carries both origins, so a body that binds the honest source once and the
+    dishonest one once is judged by both. Over-approximating in the direction
+    that reports MORE origins is the safe direction here — the claim below is
+    that at least one origin is check_branch's, so a missed rebinding can only
+    make the row refuse, never let something through.
+    """
+    out: dict[str, set[str | None]] = {}
+    for node in ast.walk(fn):
+        target_names: list[str] = []
+        value: ast.AST | None = None
+        if isinstance(node, ast.Assign):
+            value = node.value
+            target_names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            value = node.value
+            if isinstance(node.target, ast.Name):
+                target_names = [node.target.id]
+        elif isinstance(node, ast.NamedExpr):
+            value = node.value
+            if isinstance(node.target, ast.Name):
+                target_names = [node.target.id]
+        if value is None or not isinstance(value, ast.Call):
+            continue
+        for name in target_names:
+            out.setdefault(name, set()).add(_callee_name(value.func))
+    return out
+
+
+def _returned_callees(fn: ast.AST) -> set[str | None]:
+    """The callee names whose value ``fn`` can hand back to its caller."""
+    binds = _call_bindings(fn)
+    out: set[str | None] = set()
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Return) or node.value is None:
+            continue
+        if isinstance(node.value, ast.Call):
+            out.add(_callee_name(node.value.func))
+        elif isinstance(node.value, ast.Name):
+            out |= binds.get(node.value.id, set())
+    return out
+
+
 def test_the_loop_reaches_the_same_check_branch_the_pr_gate_reaches() -> None:
     """**Row 22. Invariant 1: one callable, so the three enforcement points
     cannot disagree about a RULE.** RED TODAY.
+
+    **STRENGTHENED 2026-08-12 by the D8-guard P2, on the P4 routing block's
+    item 4** — *"the right P2 move is to STRENGTHEN row 22's closure walk, not
+    to add behaviour, because the fixtures in that file are exactly the
+    fixtures a reimplementation would be written against."* Three claims below
+    are original; two (**4** and **5**) are the strengthening, and the reason
+    they were needed is measured, not assumed:
+
+      the disclosed second implementation reddens this row **because it stops
+      calling `check_branch` at all**. A second implementation that KEEPS the
+      call — for its name, for a log line, for anything — and then decides the
+      verdict itself passes claims 1-3 unchanged. Measured under `9d21ef0` in a
+      `git clone`: ``raw = check_branch(...)`` followed by
+      ``result = _inline_check(inputs, raw)`` leaves this row **GREEN** as it
+      stood, 22 of 22 green over the whole file. Calling the shared callable is
+      not the same as being ANSWERED by it, and claims 1-3 could only see the
+      first.
+
+    Claim **4** is therefore a flow claim rather than a reachability one: the
+    object whose ``.verdict`` feeds :func:`status_for_verdict` must be bound to
+    `check_branch`'s return value, or to an in-module function that returns it
+    — computed as a fixed point, so any depth of helper is fine. Claim **5** is
+    the negative: the closure reaches none of `role_protocol`'s other
+    diff-decision entry points, which is what a second implementation must be
+    built from.
+
+    **HOW THE FALSE REFUSAL IS AVOIDED, since it is the reason this row is
+    shaped as a closure at all.** The original note records that a direct-call
+    assertion *"reddens when P3 factors the call into a private helper —
+    behaviourally identical code, a false refusal with no override, and exactly
+    the kind of seal that gets waived once and then always."* Both new claims
+    are computed over the same closure and over a fixed point across it, so:
+
+      * `check_branch` called inside a private helper — tolerated (claim 4's
+        source set grows to include the helper).
+      * the result threaded through two or three helpers — tolerated, same
+        mechanism.
+      * ``status_for_verdict(check_branch(...).verdict)`` written inline
+        without an intermediate name — tolerated (claim 4 accepts a Call as the
+        attribute's receiver).
+      * the argument spelled positionally or by keyword — tolerated.
+
+      Measured under `9d21ef0` in a `git clone`: the helper-extraction mutation
+      the original row was rewritten to tolerate — moving the `check_branch`
+      call into a module-private `_run_check` that
+      `check_after_implementer` calls and whose result it uses — leaves this
+      row and the whole file **GREEN**, exactly as before the strengthening.
+      That measurement is the strengthening's own control and is the reason
+      claim 4 is a fixed point rather than a per-function rule.
+
+    `check_branch`'s own contract names its callers: *"`scripts/
+    check_body_branch.sh` (PR time and CI) and the orchestrator's task loop …
+    One callable, so a PR-time pass and a task-loop pass can never disagree."*
+    §5 rules that the two checks may disagree about a BRANCH — different base,
+    different diff, differently-sourced policy — and that is fine and expected.
+    What they may never disagree about is the rule, and the only mechanism for
+    that is being the same function.
 
     `check_branch`'s own contract names its callers: *"`scripts/
     check_body_branch.sh` (PR time and CI) and the orchestrator's task loop …
@@ -1951,31 +2119,60 @@ def test_the_loop_reaches_the_same_check_branch_the_pr_gate_reaches() -> None:
     always. The closure tolerates the helper and still catches the
     reimplementation.
 
-    THE LENS CONTROL, in this same call: the walk must reach at least one
-    in-module function before it may conclude anything about what is missing.
+    THE LENS CONTROLS, all in this same call: the walk must reach at least one
+    in-module function before it may conclude anything about what is missing;
+    it must find at least one :func:`status_for_verdict` call before claim 4
+    may conclude anything about how the verdict is sourced; and every name in
+    :data:`_RIVAL_DECISION_PRIMITIVES` must really exist on `role_protocol`
+    before claim 5 may conclude anything from their absence. The third control
+    is the one worth naming: a misspelled rival name is a claim that can never
+    fire, which is this row's own failure mode written into its detector.
 
-    Two claims: the closure reaches `check_branch`, and it reaches
-    `resolve_inputs` — the second because §4's whole ruling about WHICH ref
-    goes in WHICH slot lives in `resolve_inputs`, and a
-    `check_after_implementer` that assembled its own arguments inline would be
-    a second place those rulings are spelled.
+    Five claims:
+
+      1. the closure reaches `check_branch`;
+      2. it reaches `resolve_inputs` — because §4's whole ruling about WHICH
+         ref goes in WHICH slot lives there, and a `check_after_implementer`
+         that assembled its own arguments inline would be a second place those
+         rulings are spelled;
+      3. (the control above) it reaches some in-module function at all;
+      4. **the verdict handed to `status_for_verdict` is `check_branch`'s**,
+         by name-binding over the closure's fixed point;
+      5. **no rival diff-decision primitive is reached** from the closure.
 
     RED TODAY: `check_after_implementer` is a stub whose body is one `raise`,
     so the control fails first and says so.
     GREEN WHEN: P3 implements the docstring's four steps.
-    FALSIFY (measured, reference implementation): move the `check_branch` call
-    into a module-private helper that `check_after_implementer` calls — this
-    row stays GREEN, which is the false-refusal it was rewritten to avoid.
-    Replace the call with an inline path comparison built from
-    `changed_paths_between` + `evaluate_changed_paths` that agrees with
-    `check_branch` on every fixture in this file — this row reddens **alone**,
-    21 of 22 green. That measurement is the row's whole justification, and it
-    is uncomfortable rather than reassuring: every behavioural row in this file
-    is satisfied by a second implementation of the gate, because the fixtures
-    here are the fixtures such an implementation would be written against.
-    This is the only row that sees it.
 
-    Depends on the P4 floor commit: NO.
+    FALSIFY (each measured under `9d21ef0` in a `git clone`, whole file re-run):
+
+      * move the `check_branch` call into a module-private helper that
+        `check_after_implementer` calls — this row stays GREEN, 22 of 22, which
+        is the false refusal it was shaped to avoid and which claim 4 was
+        written as a fixed point in order to preserve.
+      * replace the call with an inline path comparison built from
+        `changed_paths_between` + `evaluate_changed_paths` that agrees with
+        `check_branch` on every fixture in this file — this row reddens
+        **alone**, 21 of 22 green. That measurement is the row's original
+        justification, and it is uncomfortable rather than reassuring: every
+        behavioural row in this file is satisfied by a second implementation of
+        the gate, because the fixtures here are the fixtures such an
+        implementation would be written against. This is the only row that
+        sees it.
+      * **keep the `check_branch` call AND decide the verdict inline** —
+        ``raw = check_branch(...)`` then ``result = _inline_check(inputs, raw)``.
+        Before the strengthening: **GREEN**, 22 of 22, and the gate is a second
+        implementation wearing the shared callable's name. After: this row
+        reddens on claims 4 and 5. That mutation is the strengthening's whole
+        reason for existing.
+
+    Depends on the P4 floor commit: LANDED — and it changes this line rather
+    than merely dating it. Measured under `9d21ef0`:
+    ``**/src/claude_dispatcher/loop_gate.py`` is `FLOOR_GLOBS` entry 16 of 17,
+    so the module this row judges is one no role may write and every repair to
+    it is a P4 amendment. The header's warning that *"the run judging that
+    branch uses the module the branch just edited"* no longer applies to this
+    row.
     """
     source = (_PKG_ROOT / "loop_gate.py").read_text(encoding="utf-8")
     tree = ast.parse(source, filename="loop_gate.py")
@@ -2030,4 +2227,106 @@ def test_the_loop_reaches_the_same_check_branch_the_pr_gate_reaches() -> None:
         "check_after_implementer assembles its own check_branch arguments "
         "instead of calling resolve_inputs, so §4's rulings about which ref "
         f"goes in which slot are spelled in two places: {sorted(reached)}"
+    )
+
+    # ---- CLAIM 4: the verdict that drives the status is check_branch's ------
+    #
+    # Claims 1-3 see a CALL. They cannot see whether its answer is used, and a
+    # second implementation that keeps the call and decides for itself passes
+    # all three (measured: 22 of 22 green). The fixed point below is the set of
+    # names that hand back check_branch's own return value — `check_branch`
+    # itself, plus any in-module function that returns it, at any depth. That
+    # is what keeps a helper extraction legal while refusing a rival source.
+    closure_fns = {name for name in seen if name in functions}
+    verdict_sources: set[str | None] = {"check_branch"}
+    while True:
+        grown = {
+            name for name in closure_fns
+            if name not in verdict_sources
+            and _returned_callees(functions[name]) & verdict_sources
+        }
+        if not grown:
+            break
+        verdict_sources |= grown
+
+    status_calls: list[tuple[str, ast.expr]] = []
+    for name in sorted(closure_fns):
+        for node in ast.walk(functions[name]):
+            if (isinstance(node, ast.Call)
+                    and _callee_name(node.func) == "status_for_verdict"):
+                status_calls.extend(
+                    (name, a) for a in
+                    [*node.args, *(k.value for k in node.keywords)]
+                )
+
+    assert status_calls, (
+        "the control failed: nothing in the closure out of "
+        "check_after_implementer calls status_for_verdict, so there is no "
+        "verdict-to-status step for this claim to judge and the assertion "
+        f"below would pass vacuously. Closure: {sorted(closure_fns)}"
+    )
+
+    offenders: list[str] = []
+    for fn_name, arg in status_calls:
+        if not (isinstance(arg, ast.Attribute) and arg.attr == "verdict"):
+            offenders.append(
+                f"{fn_name}: status_for_verdict({ast.dump(arg)[:70]}…) — the "
+                "argument is not a `.verdict` read at all"
+            )
+            continue
+        receiver = arg.value
+        if isinstance(receiver, ast.Call):
+            origins = {_callee_name(receiver.func)}
+        elif isinstance(receiver, ast.Name):
+            origins = _call_bindings(functions[fn_name]).get(receiver.id, set())
+        else:
+            offenders.append(
+                f"{fn_name}: the `.verdict` receiver is "
+                f"{ast.dump(receiver)[:70]}…, which this row cannot trace"
+            )
+            continue
+        if not (origins & verdict_sources):
+            offenders.append(
+                f"{fn_name}: the `.verdict` fed to status_for_verdict comes "
+                f"from {sorted(str(o) for o in origins)}, none of which "
+                f"returns check_branch's answer (sources: "
+                f"{sorted(str(s) for s in verdict_sources)})"
+            )
+
+    assert not offenders, (
+        "the status this gate reports is NOT derived from check_branch's "
+        "return value:\n  " + "\n  ".join(offenders) + "\n"
+        "Calling the shared callable is not the same as being answered by it. "
+        "A gate that calls check_branch and then decides the verdict itself "
+        "satisfies every other row in this file — measured, 22 of 22 green — "
+        "while being a second implementation of the rule, which is exactly "
+        "what invariant 1 forbids: the PR gate, CI and the task loop must "
+        "disagree about a BRANCH only, never about the RULE"
+    )
+
+    # ---- CLAIM 5: no rival diff-decision primitive is reached ---------------
+    #
+    # A second implementation has to be BUILT from something. These are the
+    # parts. The control comes first: a misspelled name here is a claim that
+    # can never fire, which is this row's own failure mode written into its
+    # detector.
+    missing = [
+        n for n in _RIVAL_DECISION_PRIMITIVES if not hasattr(rp_mod, n)
+    ]
+    assert not missing, (
+        f"the control failed: {missing} are not attributes of role_protocol, "
+        "so the assertion below is testing for names that can never appear "
+        "and passes no matter what loop_gate.py does. Re-derive the list "
+        "against the module rather than deleting the entry"
+    )
+    rivals = reached & set(_RIVAL_DECISION_PRIMITIVES)
+    assert not rivals, (
+        f"the closure out of check_after_implementer reaches {sorted(rivals)} "
+        "— role_protocol's own diff-decision parts. This module asks "
+        "check_branch a question with the arguments it already has (§4's "
+        "standing rule) and owns no second notion of which paths a rule "
+        "forbids. Two sources for one fact is invariant 5, and here it is the "
+        "specific shape the P4 measured: a gate agreeing with check_branch on "
+        "every fixture in this file, and free to disagree on the branch that "
+        "matters"
     )
