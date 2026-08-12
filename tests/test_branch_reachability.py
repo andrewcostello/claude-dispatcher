@@ -121,6 +121,7 @@ from claude_dispatcher import yaml_io
 from claude_dispatcher.branch_reachability import (
     BranchReachability,
     BranchReachabilityError,
+    DECLARATION_PATH,
     IntroducedFinding,
     ReachabilityObligation,
     ReachabilitySweepStatus,
@@ -1187,11 +1188,27 @@ _STATUS_WITNESSES: dict[ReachabilitySweepStatus, str] = {
     ReachabilitySweepStatus.UNCHECKED_BASE_UNAVAILABLE: "test_a_base_that_cannot_be_materialised_is_refused_not_emptied",
     ReachabilitySweepStatus.UNCHECKED_ANALYZER_FAULT: "test_an_analyzer_fault_is_refused_on_the_role_whose_gate_it_is",
     ReachabilitySweepStatus.UNCHECKED_SWEEP_VACUOUS: "test_a_branch_cannot_buy_clean_by_breaking_the_build",
+    # P4, 2026-08-12 — DISPUTE D4 closed. The tenth member and the eleventh it
+    # forced, each with the row that PRODUCES it through the shipped code path
+    # rather than by building a record. This dict going from nine rows to
+    # eleven in the same commit as the enum is the whole mechanism the D4
+    # ruling was blocked on: P3 could not add a member without reddening this
+    # file, and P4 adds both halves at once.
+    ReachabilitySweepStatus.UNCHECKED_APPEAL_UNREADABLE: "test_an_unreadable_appeal_is_its_own_status_and_not_a_vacuous_sweep",
+    ReachabilitySweepStatus.UNCHECKED_GATE_DEFECT: "test_a_role_this_gate_cannot_map_is_a_defect_and_says_so",
 }
 
 
 def test_every_sweep_status_has_a_witness_and_none_reads_as_a_pass() -> None:
-    """Nine states, nine producing rows, and no CLEAN state that is silent.
+    """ELEVEN states, eleven producing rows, and no CLEAN state that is silent.
+
+    **NINE until D7 P4, 2026-08-12.** The tenth
+    (``UNCHECKED_APPEAL_UNREADABLE``) closes dispute D4 and the eleventh
+    (``UNCHECKED_GATE_DEFECT``) is forced by it — see both members' docstrings.
+    The line below that read "A tenth member reddens this rather than arriving
+    unchecked" is no longer a prediction: it is what happened, and the
+    prediction at the bottom of this docstring is upgraded from *Predicted
+    (unmeasured, and unmeasurable — the enum is closed)* to a measurement.
 
     Three claims, and the third is the one the ruling is about:
 
@@ -1226,8 +1243,11 @@ def test_every_sweep_status_has_a_witness_and_none_reads_as_a_pass() -> None:
     ``_BLOCKING_SWEEP_STATUSES`` — claim 2 fails.
     Measured under: giving ``BranchReachability.status`` a default of
     ``CHECKED`` — claim 3 fails.
-    Predicted (unmeasured, and unmeasurable — the enum is closed) under: adding a
-    tenth member — claim 1 fails.
+    Measured under (2026-08-12, and it was `Predicted (unmeasured, and
+    unmeasurable — the enum is closed)` until the enum was opened): the tenth
+    and eleventh members added and their `_STATUS_WITNESSES` rows withheld —
+    claim 1 fails, naming `UNCHECKED_APPEAL_UNREADABLE` first. That is the
+    mechanism P3 was blocked by, doing exactly what it is for.
     Measured under: the shipped ``not in`` guard — the string case fails, which
     is the state today.
     Measured under: ``isinstance(status, ReachabilitySweepStatus)`` — every
@@ -1249,6 +1269,8 @@ def test_every_sweep_status_has_a_witness_and_none_reads_as_a_pass() -> None:
         ReachabilitySweepStatus.UNCHECKED_BASE_UNAVAILABLE,
         ReachabilitySweepStatus.UNCHECKED_ANALYZER_FAULT,
         ReachabilitySweepStatus.UNCHECKED_SWEEP_VACUOUS,
+        ReachabilitySweepStatus.UNCHECKED_APPEAL_UNREADABLE,
+        ReachabilitySweepStatus.UNCHECKED_GATE_DEFECT,
     }
     for status in ReachabilitySweepStatus:
         expected = (
@@ -2382,6 +2404,162 @@ def test_materialise_base_tree_refuses_a_destination_inside_the_repository(
     ), (
         "the base tree's subject keys must carry the same qualifier the head "
         "sweep produces, or every head finding reads as introduced"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# DISPUTE D4, CLOSED — the tenth status, and the eleventh it forced
+# --------------------------------------------------------------------------- #
+
+
+def test_an_unreadable_appeal_is_its_own_status_and_not_a_vacuous_sweep(
+    scenarios: _Scenarios,
+) -> None:
+    """DISPUTE D4's TENTH MEMBER, produced (P4, 2026-08-12). **The witness row.**
+
+    P3 ruled a :func:`declarations_at` failure onto
+    :attr:`ReachabilitySweepStatus.UNCHECKED_SWEEP_VACUOUS` and said in the
+    same breath that a tenth member was the right answer and that P3 was
+    mechanically barred from giving it — ``_STATUS_WITNESSES`` requires a
+    producing row per member and lives in this file, which BODIES may not
+    touch. This is that row, landing in the same commit as the member.
+
+    **WHAT IT PRODUCES IT WITH.** A real branch carrying a real
+    ``.dispatcher.staged.yaml`` that is present and is not a list of mappings —
+    the shape ``load_role_policy_from_base`` refuses for the policy, refused
+    here for the appeal. The appeal path is in the changed set, so DISPUTE D6's
+    clause keeps the branch out of step 3's cheap exit and it reaches step 5b
+    for real. Nothing is monkeypatched and no record is hand-built.
+
+    **THE CONTROL, in the same call, and it is the whole point of the row:** the
+    SAME repository and the SAME refs with a WELL-FORMED appeal reaches a
+    different status. Without it, "a malformed appeal is
+    UNCHECKED_APPEAL_UNREADABLE" is satisfied by a gate that answers that for
+    every branch it is handed.
+
+    **THE SECOND CONTROL: the status is not the vacuity one.** That is the
+    ruling, stated as an assertion rather than as prose — the interim answer
+    blocks exactly as this one does, so a verdict-only row cannot tell the two
+    apart, and telling them apart is the entire content of the amendment.
+
+    Measured under: the tenth member reverted, ``_APPEAL_UNREADABLE_STATUS``
+    pointed back at ``UNCHECKED_SWEEP_VACUOUS`` — this row fails on the status,
+    and ``test_every_sweep_status_has_a_witness_and_none_reads_as_a_pass``
+    fails on the missing member.
+    Measured under: ``declarations_at`` returning ``()`` instead of raising for
+    a present-and-unparseable file — this row fails, because the branch then
+    reaches step 6 and answers with a real sweep.
+    """
+    repo, base = scenarios.acceptance, scenarios.base
+
+    _git(repo, "checkout", "-q", "-b", "appeal-broken", scenarios.head_compiling)
+    (repo / DECLARATION_PATH).write_text(
+        "this is a string, not a list of mappings\n", encoding="utf-8"
+    )
+    broken_ref = _commit_all(repo, "an appeal file nobody can read")
+    _checkout(repo, broken_ref)
+
+    broken = _gate(
+        repo, base, broken_ref, Role.BODIES, (_EDITED_PATH, DECLARATION_PATH)
+    )
+    assert (
+        broken.status is ReachabilitySweepStatus.UNCHECKED_APPEAL_UNREADABLE
+    ), broken.status
+    assert broken.status is not ReachabilitySweepStatus.UNCHECKED_SWEEP_VACUOUS, (
+        "the interim answer is back. It blocks exactly as the tenth member "
+        "does, so no verdict-only assertion can see this — and a CI log that "
+        "says the two sweeps disagree sends a reader to the tree when the "
+        "fault is in one YAML file"
+    )
+    assert verdict_of(broken) is DiffVerdict.UNDETERMINED
+    assert DECLARATION_PATH in broken.detail, (
+        "the refusal does not name the file that caused it, so a reader has "
+        f"the status and nothing to act on: {broken.detail!r}"
+    )
+    assert broken.introduced == ()
+
+    # The control: same repository, same base, a well-formed appeal.
+    _git(repo, "checkout", "-q", "-b", "appeal-ok", scenarios.head_compiling)
+    (repo / DECLARATION_PATH).write_text("[]\n", encoding="utf-8")
+    ok_ref = _commit_all(repo, "an appeal file that reads")
+    _checkout(repo, ok_ref)
+
+    ok = _gate(repo, base, ok_ref, Role.BODIES, (_EDITED_PATH, DECLARATION_PATH))
+    assert ok.status is not ReachabilitySweepStatus.UNCHECKED_APPEAL_UNREADABLE, (
+        "a readable appeal was reported as unreadable, so the row above "
+        "measures nothing about the appeal"
+    )
+    assert ok.status is ReachabilitySweepStatus.CHECKED, ok.status
+
+
+def test_a_role_this_gate_cannot_map_is_a_defect_and_says_so(
+    scenarios: _Scenarios,
+) -> None:
+    """The ELEVENTH member, produced (P4, 2026-08-12). **The witness row.**
+
+    The tenth member forced this one. `_APPEAL_UNREADABLE_STATUS` had THREE
+    users before the amendment and only one of them was about an appeal; the
+    other two are an unmapped :class:`Role` and
+    :func:`check_branch_reachability`'s last-resort arm, and both already said
+    in their own code comments that they are a DEFECT in that module rather
+    than a fact about the branch. Labelling them "appeal unreadable" would have
+    been a manufactured lie where the interim ruling only had an inherited one.
+
+    **WHAT IT PRODUCES IT WITH.** :data:`_ROLE_OBLIGATIONS` maps all five
+    :class:`Role` members, so the arm is unreachable through the enum — and it
+    is NOT unreachable in production, which is why it must not be raised
+    through. A caller that did not validate is the shape it holds against, and
+    :class:`_NotAMember` is that caller's argument. **This is not a
+    hypothetical**: the D7 wiring commit measured a live one — ``python -m
+    claude_dispatcher.role_protocol`` loads ``role_protocol`` twice, so
+    ``__main__.Role.BODIES`` is not ``claude_dispatcher.role_protocol.
+    Role.BODIES``, and every run through the CI entrypoint hit exactly this arm
+    until the ``__main__`` guard was fixed.
+
+    **THE CONTROL, in the same call:** the same repository and refs with a real
+    :class:`Role` do NOT get this status. Without it, "an unmappable role is a
+    gate defect" is satisfied by a gate that answers it for everything.
+
+    Measured under: the eleventh member reverted, both sites pointed at the
+    appeal status — this row fails on the status, and
+    ``test_every_sweep_status_has_a_witness_and_none_reads_as_a_pass`` fails on
+    the missing member.
+    Measured under: the ``obligation_for_role`` guard removed so an unmapped
+    role falls through — the ``KeyError`` reaches the last-resort arm, which is
+    the SAME status, so this row stays green and the module's own
+    ``obligation_for_role`` seal is the one that reddens. Named because a
+    reader must not take this row for a seal on that dispatch.
+    """
+    repo, base = scenarios.acceptance, scenarios.base
+    _checkout(repo, scenarios.head_compiling)
+
+    defect = check_branch_reachability(
+        repo,
+        base,
+        scenarios.head_compiling,
+        _NotAMember(),  # type: ignore[arg-type]
+        (_EDITED_PATH,),
+        already_violation=False,
+    )
+    assert defect.status is ReachabilitySweepStatus.UNCHECKED_GATE_DEFECT, (
+        defect.status
+    )
+    assert defect.obligation is ReachabilityObligation.BLOCKING, (
+        "a role this gate has never heard of must not be recorded as NOT_RUN; "
+        "'we did not ask about your branch' would be a guess"
+    )
+    assert verdict_of(defect) is DiffVerdict.UNDETERMINED
+    assert defect.detail.strip(), (
+        "a defect a reader cannot see the reason for is worse than a crash"
+    )
+
+    # The control: a real Role over the same repository does not take this arm.
+    real = _gate(
+        repo, base, scenarios.head_compiling, Role.BODIES, (_EDITED_PATH,)
+    )
+    assert real.status is not ReachabilitySweepStatus.UNCHECKED_GATE_DEFECT, (
+        "a mapped role was reported as a gate defect, so the row above says "
+        "nothing about the unmapped one"
     )
 
 

@@ -444,6 +444,57 @@ class ReachabilitySweepStatus(Enum):
         Both sweeps ran and the pair does not support a delta —
         :func:`sweep_is_vacuous` says which. The measured shape is the
         broken-build evasion in the module docstring.
+
+        **NARROWED at D7 P4, 2026-08-12**, and the narrowing is the whole
+        content of the tenth and eleventh members below: until this commit
+        this member ALSO stood for an unreadable appeal and for a defect in
+        this module, because the interim ruling had nowhere else to put them.
+    UNCHECKED_APPEAL_UNREADABLE
+        **THE TENTH MEMBER (D7 P4, 2026-08-12), closing dispute D4 the way the
+        seal author recommended and P3 was mechanically barred from doing.**
+        :func:`declarations_at` RAISED for one of the two refs: the appeal file
+        is present and is not readable YAML, or does not parse to a list of
+        mappings, or a row is missing a field. The sweeps may or may not have
+        run; what is unavailable is the ADJUDICATION, because a disposition is
+        a function of a report AND its declarations.
+
+        It REFUSES, and it refuses for the discriminator this repository rules
+        every such question with: an appeal file nobody could read is something
+        an author can fix, and re-running clears it.
+
+        Why not the interim answer, :attr:`UNCHECKED_SWEEP_VACUOUS` — which was
+        honest as an interim and is not honest as a permanent home: it is the
+        enum's designated *"both sweeps ran and the pair does not support a
+        delta"* state, and :func:`sweep_is_vacuous` did not fire. A CI log that
+        says the sweeps disagreed sends a reader to the tree; the sentence in
+        ``detail`` says the appeal file, and the two send them to different
+        files. Why not :attr:`UNCHECKED_BASE_UNAVAILABLE`: it fits the base-side
+        read and lies about the head-side one. Why not
+        :attr:`UNCHECKED_ANALYZER_FAULT`: nothing about the mechanism faulted —
+        the appeal is not a language and :func:`check_tree` did not raise.
+        Both of those are P3's rejections, re-derived here rather than
+        inherited, and both still hold.
+    UNCHECKED_GATE_DEFECT
+        **THE ELEVENTH MEMBER (D7 P4, 2026-08-12), and it is FORCED BY THE
+        TENTH rather than added beside it.** This gate could not finish for a
+        reason that is a fact about THIS MODULE and not about the branch: an
+        :class:`~claude_dispatcher.role_protocol.Role` that
+        :data:`_ROLE_OBLIGATIONS` does not map, or any other exception escaping
+        into :func:`check_branch_reachability`'s last-resort arm.
+
+        It exists because the tenth member would otherwise have inherited these
+        two sites and labelled them ``unchecked_appeal_unreadable``, which is a
+        NEWLY INTRODUCED lie where the interim ruling only had an inherited
+        one. Both sites already say the same sentence about themselves in the
+        code — *"a role this gate has never heard of"* and *"a refusal reported
+        through this arm is a DEFECT in this module, not a fact about the
+        branch, and it is meant to be read as one"* — so they are one state and
+        this is its name.
+
+        It REFUSES, and the discriminator is unchanged: a defect is something
+        an operator can act on and re-running a fixed gate clears it. It is the
+        one status whose right response is to fix the GATE, and a reader can
+        only know that if the status says so.
     """
 
     CHECKED = "checked"
@@ -455,6 +506,8 @@ class ReachabilitySweepStatus(Enum):
     UNCHECKED_BASE_UNAVAILABLE = "unchecked_base_unavailable"
     UNCHECKED_ANALYZER_FAULT = "unchecked_analyzer_fault"
     UNCHECKED_SWEEP_VACUOUS = "unchecked_sweep_vacuous"
+    UNCHECKED_APPEAL_UNREADABLE = "unchecked_appeal_unreadable"
+    UNCHECKED_GATE_DEFECT = "unchecked_gate_defect"
 
 
 #: The sweep statuses that REFUSE a branch on the role whose gate this is.
@@ -463,9 +516,12 @@ class ReachabilitySweepStatus(Enum):
 #: — *a check that started and could not finish, on the role whose gate that is,
 #: is not a pass* — so a reader who has understood one gate has understood two.
 #:
-#: The four that are here all name something an author or an operator can act
+#: The six that are here all name something an author or an operator can act
 #: on and that re-running clears: check the branch out, fix the checkout, put a
-#: usable ``go`` on the image, fix the tree. Neither is terminal.
+#: usable ``go`` on the image, fix the tree, fix the appeal file, fix the gate.
+#: None is terminal. (Four until D7 P4, 2026-08-12; the two new members are the
+#: two states the interim D4 ruling had been folding into
+#: ``UNCHECKED_SWEEP_VACUOUS``, and they are here for the same reason it was.)
 #:
 #: The five that are NOT here are the specification, and each is here-omitted
 #: for the SAME discriminator ``role_protocol`` ruled with on 2026-08-09:
@@ -482,18 +538,42 @@ _BLOCKING_SWEEP_STATUSES: frozenset[ReachabilitySweepStatus] = frozenset(
         ReachabilitySweepStatus.UNCHECKED_BASE_UNAVAILABLE,
         ReachabilitySweepStatus.UNCHECKED_ANALYZER_FAULT,
         ReachabilitySweepStatus.UNCHECKED_SWEEP_VACUOUS,
+        ReachabilitySweepStatus.UNCHECKED_APPEAL_UNREADABLE,
+        ReachabilitySweepStatus.UNCHECKED_GATE_DEFECT,
     }
 )
 
-#: DISPUTE D4's ruling in one name, so that the three sites that use it cannot
-#: drift and so that the P4 who adds the tenth member has one line to change.
-#: See :func:`check_branch_reachability`'s D4 section for why this member and
-#: not one of the other three that refuse. It is asserted below to be one of
-#: them, because a D4 ruling that resolved to a CLEARING status would be the
-#: permissive answer with a third spelling.
+#: DISPUTE D4's ruling in one name, so that the sites that use it cannot drift.
+#:
+#: **P4, 2026-08-12: the tenth member arrived and this constant now points at
+#: it.** P3 wrote it so *"the P4 who adds the tenth member has one line to
+#: change"*, and that is what happened — but the change was not one line, and
+#: the reason is worth keeping: this constant had THREE users and only ONE of
+#: them was about an appeal. The other two — an unmapped :class:`Role`, and the
+#: last-resort arm — are :attr:`ReachabilitySweepStatus.UNCHECKED_GATE_DEFECT`
+#: now, because pointing them at a member named "appeal unreadable" would have
+#: replaced an inherited lie with a manufactured one. See both members'
+#: docstrings.
+#:
+#: It is asserted below to be a status that REFUSES, because a D4 ruling that
+#: resolved to a CLEARING status would be the permissive answer with a third
+#: spelling.
 _APPEAL_UNREADABLE_STATUS: ReachabilitySweepStatus = (
-    ReachabilitySweepStatus.UNCHECKED_SWEEP_VACUOUS
+    ReachabilitySweepStatus.UNCHECKED_APPEAL_UNREADABLE
 )
+
+#: The counterpart for the two sites that are about THIS MODULE and not about
+#: an appeal. Same shape, same guard below, same reason for both.
+_GATE_DEFECT_STATUS: ReachabilitySweepStatus = (
+    ReachabilitySweepStatus.UNCHECKED_GATE_DEFECT
+)
+
+if _GATE_DEFECT_STATUS not in _BLOCKING_SWEEP_STATUSES:  # pragma: no cover
+    raise BranchReachabilityError(
+        "the status a defect in this gate is reported under must REFUSE on "
+        "the role whose gate this is; a gate that answers CLEAN when it is "
+        "broken is the fail-open this whole unit exists to remove"
+    )
 
 if _APPEAL_UNREADABLE_STATUS not in _BLOCKING_SWEEP_STATUSES:  # pragma: no cover
     # An `if`/`raise` and NOT an `assert`, deliberately: `python -O` strips
@@ -1671,33 +1751,38 @@ def check_branch_reachability(
     ---------------------------------------------------------
     :func:`declarations_at` RAISES on an unreadable or malformed appeal file
     and this function may not raise, and the contract named no status for the
-    gap. **Ruled here:
-    :attr:`~ReachabilitySweepStatus.UNCHECKED_SWEEP_VACUOUS`**, carrying the
-    sentence :func:`declarations_at` raised with. It blocks on the BODIES role,
-    which is the property the gap actually needs — an appeal file nobody could
-    read is something an author can fix and re-running clears — and it is the
-    enum's designated *"both sweeps ran and the pair does not support a delta"*
-    state, which is exactly what has happened: the delta is
-    ``dispositions(base) → dispositions(head)``, a disposition is a function of
-    a report AND its declarations, and one side's declarations are unavailable.
-    Its docstring names ``sweep_is_vacuous`` as the thing that usually says
-    which; here ``detail`` says which instead, and ``detail`` is printed on the
-    verdict line either way.
+    gap.
 
-    CHOICE (rejected, and it is the seal author's own recommendation: a TENTH
-    :class:`ReachabilitySweepStatus` member, blocking). It is the right answer
-    and **P3 is mechanically barred from giving it.**
+    **CLOSED (P4, 2026-08-12): the TENTH member,
+    :attr:`~ReachabilitySweepStatus.UNCHECKED_APPEAL_UNREADABLE`**, blocking,
+    carrying the sentence :func:`declarations_at` raised with. That is the seal
+    author's own recommendation and P3's own preference, and P3 was
+    mechanically barred from taking it:
     ``tests/test_branch_reachability.py::_STATUS_WITNESSES`` requires every
-    member to name a producing row, and
-    ``test_every_sweep_status_has_a_witness_and_none_reads_as_a_pass`` asserts
-    it over ``for status in ReachabilitySweepStatus`` — so a tenth member
-    reddens a seal, in a file BODIES may not touch. That seal says so in as
-    many words ("Predicted (unmeasured, and unmeasurable — the enum is closed)
-    under: adding a tenth member — claim 1 fails"). The tenth member is
-    therefore a P4 amendment shaped exactly like the wiring escalation: one
-    edit touching this module AND a seal file. **Filed, not closed.** Reusing
-    an existing member is the honest interim and it is honest only because the
-    member reused refuses.
+    member to name a producing row, asserted over
+    ``for status in ReachabilitySweepStatus``, so a tenth member reddens a seal
+    in a file BODIES may not touch. The member and its witness row land in one
+    P4 commit, which is the shape the wiring escalation had.
+
+    **AND AN ELEVENTH,
+    :attr:`~ReachabilitySweepStatus.UNCHECKED_GATE_DEFECT`, forced by the
+    tenth.** The interim constant had THREE users and only one was about an
+    appeal: the other two are an unmapped :class:`Role` and this function's
+    last-resort arm, both of which say in their own code comments that they are
+    a defect in this module. Pointing them at a member named "appeal
+    unreadable" would have replaced an inherited misnomer with a manufactured
+    one, on the two states whose right response is to fix the GATE.
+
+    **WHAT THE INTERIM ANSWER WAS, and why it was honest as an interim and not
+    as a home.** :attr:`~ReachabilitySweepStatus.UNCHECKED_SWEEP_VACUOUS`
+    blocks, which is the property the gap actually needs, and the argument for
+    it was real: the delta is ``dispositions(base) → dispositions(head)``, a
+    disposition is a function of a report AND its declarations, and one side's
+    declarations are unavailable. What it could not do is send a reader to the
+    right file. ``sweep_is_vacuous`` did not fire; a log line that says the two
+    sweeps disagree points at the TREE, and the failure is in one YAML file
+    that the ``detail`` line names and the status line contradicts. A status
+    exists to be the thing a reader acts on before reading the detail.
 
     CHOICE (rejected: :attr:`~ReachabilitySweepStatus.UNCHECKED_BASE_UNAVAILABLE`).
     It fits the base-side read and lies about the head-side one, and half a
@@ -1705,7 +1790,8 @@ def check_branch_reachability(
     names the right failure in ``detail``. CHOICE (rejected:
     :attr:`~ReachabilitySweepStatus.UNCHECKED_ANALYZER_FAULT`). Nothing about
     the mechanism faulted; the appeal is not a language and ``check_tree`` did
-    not raise.
+    not raise. Both are P3's rejections; both were re-derived at the P4 round
+    rather than inherited, and both still hold.
 
     THE COST'S PLACEMENT — steps 1-3 are the ruling
     -----------------------------------------------
@@ -1757,8 +1843,13 @@ def check_branch_reachability(
         # where "we did not ask about your branch" would be a guess, and the
         # module's own doctrine is that an unhandled member must not fall
         # through to the permissive branch.
+        #
+        # `_GATE_DEFECT_STATUS` since D7 P4, 2026-08-12, and not the appeal
+        # status it shared until then: `_ROLE_OBLIGATIONS` missing a member is
+        # a fact about THIS MODULE, and a CI log that names an appeal file
+        # sends the reader to a file that has nothing wrong with it.
         return BranchReachability(
-            status=_APPEAL_UNREADABLE_STATUS,
+            status=_GATE_DEFECT_STATUS,
             obligation=ReachabilityObligation.BLOCKING,
             detail=str(exc),
         )
@@ -1819,7 +1910,7 @@ def check_branch_reachability(
         )
     except Exception as exc:  # noqa: BLE001 - see "never raise" above
         return BranchReachability(
-            status=_APPEAL_UNREADABLE_STATUS,
+            status=_GATE_DEFECT_STATUS,
             obligation=obligation,
             detail=(
                 f"the reachability gate could not finish: {type(exc).__name__}: "
