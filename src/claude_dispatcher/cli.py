@@ -348,6 +348,19 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument(
+        "--enable-role-loop-gate",
+        action="store_true",
+        default=False,
+        help=(
+            "Run the role-protocol diff check (the same one the PR gate runs) "
+            "inside the task loop, right after each implementer returns — a "
+            "body agent that wrote to tests/** is Blocked before four more "
+            "spawns commit to its branch. Off by default: on trees where the "
+            "check's reachability sweep engages it costs minutes per branch "
+            "and answers 'could not check', which this gate blocks on."
+        ),
+    )
+    run.add_argument(
         "--cheap-first",
         action="store_true",
         default=False,

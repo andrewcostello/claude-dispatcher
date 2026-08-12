@@ -249,6 +249,17 @@ def test_full_run_journal_chain_and_sequence(repo: Path, monkeypatch) -> None:
             "task_started",
             "task_spawn_finished",
             "summary_parsed",
+            # D8 + P4 ruling on dispute P3-2, 2026-08-12. The role loop gate
+            # journals on EVERY task, including when the run has it switched
+            # off (`not_enabled`), which is what this fixture exercises — no
+            # `--enable-role-loop-gate`. Emitting only when the gate RAN was
+            # measured to leave the run's only append-only per-task record
+            # unable to distinguish "gate off" from "every branch clean", and
+            # the two substitutes (the YAML row stamp, run.log) are both erased
+            # by `dispatcher unblock`. Sits here, before the mechanical gate,
+            # because that is where the hook is: `_retry_for_test_fix` commits,
+            # so a gate after it judges a diff two agents wrote.
+            "role_diff_loop_gate",
             "verification_mechanical",  # no .dispatcher.yaml → skipped
             "verification_started",     # VG-4 LLM verifier (VERIFIED stub)
             "task_spawn_finished",      # verifier spawn (cost folds into rollup)
@@ -291,6 +302,11 @@ def test_single_task_exact_sequence(repo: Path, monkeypatch) -> None:
         "task_started",
         "task_spawn_finished",
         "summary_parsed",
+        # D8 + P4 ruling on dispute P3-2, 2026-08-12. See the note on the
+        # sibling row above: the loop gate journals per task whether or not the
+        # run enabled it, because a status nobody can read after an unblock is
+        # not a named state.
+        "role_diff_loop_gate",
         "verification_mechanical",  # no .dispatcher.yaml → skipped
         "verification_started",     # VG-4 LLM verifier (VERIFIED stub)
         "task_spawn_finished",      # verifier spawn (cost folds into rollup)

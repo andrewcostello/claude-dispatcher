@@ -129,6 +129,14 @@ class EventType(str, Enum):
     # skip / malformed-config outcomes. See orchestrator's
     # _verify_mechanical_and_maybe_retry.
     verification_mechanical = "verification_mechanical"
+    # Role-protocol loop gate (unit D8): one event per task, emitted at the
+    # hook inside the cascade loop right after the implementer returns and
+    # before the mechanical gate. Payload: status, decision, the underlying
+    # check_branch verdict (null when no check was made), the two refs, the
+    # violating paths and the detail. Emitted on EVERY outcome including
+    # not_enabled — a run with the gate off says so per task rather than
+    # looking like a run whose every branch was clean. See loop_gate.py.
+    role_diff_loop_gate = "role_diff_loop_gate"
     # Seal-inversion gate (VG-3): for fix-shaped tasks, the new tests must
     # FAIL with the non-test half of the change reverted to base. One event
     # per evaluation (outcome: passed / failed / skipped / error). See
