@@ -1,9 +1,16 @@
 """Unit D8 — the post-implementer role check inside the orchestrator's task loop.
 
-**P1 scaffold. This module is CONTRACT plus five implemented tables; the hook
-itself and its input resolution are stubs. P2 writes the seals, P3 the bodies,
-P4 adjudicates. Nothing here changes `orchestrator.py`: the call site is
-specified, not made.**
+**P1 scaffold, P2 seals, P3 bodies — this is the P3 state.** The contract and
+the five tables below are P1's and are unchanged. The two stubs are now
+implemented, and the call site the scaffold could only specify is MADE:
+`orchestrator._run_task` calls :func:`check_after_implementer` inside its
+cascade loop, at §1's position. What P3 changed outside this module, all of it
+named by the scaffold as owed and none of it in a floored or sealed file:
+`orchestrator.py` (the hook, one `TaskSnapshot` field per §7(a), the row stamp,
+the `RunConfig` flag), `unblock.py` (§7(c), plus dispute P2-6 — see §7),
+`journal.py` (one event type) and `cli.py` (the flag that turns the gate on).
+Every ruling below is P1's; where P3 had to decide something P1 did not settle,
+it is marked **P3** and raised as a dispute rather than settled quietly.
 
 Every citation below carries `Measured under:` or `Predicted (unmeasured)
 under:`. The revision is `81591e4` (`feat/D1-role-protocol`, the base of
@@ -70,7 +77,9 @@ which a scaffold does not write.
   * :data:`ROW_STAMPS` — the row keys this gate writes, named here so
     `unblock` can clear them.
   * :class:`LoopGateInputs`, :class:`LoopGateOutcome` — the two records.
-  * :func:`resolve_inputs`, :func:`check_after_implementer` — STUBS.
+  * :func:`resolve_inputs`, :func:`check_after_implementer` — the control
+    flow. Stubs at P1; implemented at P3, to the four steps each docstring
+    already carried.
 
 Two things this unit does not do, stated so a later reader does not have to
 infer it: it does not weaken, widen or add a parameter to
@@ -531,19 +540,61 @@ every entry: ``**/orchestrator.py`` would also match
 
 **The rest of what is owed, from the sections above.**
 
-  a. `TaskSnapshot` gains a frozen role spec, populated in `_dispatch_drain`
-     (§4). `orchestrator.py` is not floored today, so this is a P3 edit —
-     unless (a) lands after the floor entries above, in which case it is P4.
-     Sequence matters; name it in the plan.
+  a. **LANDED (P3).** `TaskSnapshot` gains ``role_specs`` — the frozen
+     :class:`TaskRoleSpec` of every row in the dispatched group, not the
+     primary's only, because the batch shares one branch and §4's refusal
+     needs to SEE both roles. Populated at the `_dispatch_drain` construction
+     site from `role_protocol.parse_task_role_spec(t.raw, task_key=t.key)`, in
+     the loop that already reads ``primary.raw`` for the risk tier. A row that
+     will not parse is left OUT of the list rather than defaulted, so the gate
+     answers ROLE_UNRESOLVED and blocks. Landed before the §7 floor entries,
+     so it was a P3 edit; after them it would have been P4.
+
+     **P3 finding, and it is about this owed item rather than about the code
+     — dispute P3-3.** The scaffold says (a) is a P3 edit unless it lands
+     after the floor entries. Measured: the FLOOR is not what makes it P4.
+     Adding a field to a `@dataclass` CHANGES that class's signature, and
+     `check_branch`'s step 5 refuses a changed signature on BODIES. So this
+     very commit, judged by the gate it wires — role BODIES, base
+     ``6d94190``, branch ``feat/D8-body`` — answers **VIOLATION: 0 forbidden
+     path(s) and 2 changed scaffolded signature(s)**, naming
+     ``orchestrator.RunConfig`` (gained ``enable_role_loop_gate``) and
+     ``orchestrator.TaskSnapshot`` (gained ``role_specs``). Both fields are
+     items this owed list ASKED P3 for. No path violation: the block is
+     entirely the signature rule.
+
+     That is the gate working, not misfiring — a body author really did widen
+     two scaffolded records. What is wrong is the assignment: an owed item
+     that adds a dataclass field cannot be a BODIES edit under this protocol,
+     whatever the floor says. P4 owes a ruling — the orchestrator half of this
+     unit is SCAFFOLD-shaped or ADJUDICATE-shaped work with the two records in
+     its ``disputed_paths:``, or (a) moves to P4 with the floor entries for a
+     second, independent reason. Recorded here because the alternative is a
+     unit whose own gate refuses its own owed list, discovered later by
+     whoever first switches the gate on.
   b. `role_protocol.validate` should refuse a batch whose rows carry more
      than one role (§4, measured to load clean today). Floored file → P4.
      Until it lands, :data:`LoopGateStatus.ROLE_UNRESOLVED` is the only thing
-     standing between a mixed-role batch and an unjudgeable branch.
-  c. `unblock._STALE_STAMPS` must gain :data:`ROW_STAMPS`. Measured under
-     `81591e4`: `_STALE_STAMPS` (unblock.py:44) lists nine keys and neither of
-     ours; a cleared row would carry a stale `role_diff_loop` into its re-run,
-     which is the contradiction that list exists to prevent. `unblock.py`
-     matches no `FLOOR_GLOBS` entry — measured — so this is a P3 edit.
+     standing between a mixed-role batch and an unjudgeable branch. **P3 adds
+     one case to what P4 should refuse there**: rows that share a role but
+     carry DIFFERENT ``immutable_paths:`` / ``disputed_paths:`` additions are
+     the same defect one level down, and :func:`resolve_inputs` refuses them
+     through ROLE_UNRESOLVED for want of a better-named state. Dispute P3-1.
+  c. **LANDED (P3).** `unblock._STALE_STAMPS` gains :data:`ROW_STAMPS` — by
+     splatting the constant, not by re-spelling the keys, for the reason
+     dispute P2-1 gives. Measured under `81591e4` and re-measured under
+     `6d94190`: `_STALE_STAMPS` listed nine keys and neither of ours, so a
+     cleared row carried a stale loop verdict into its re-run.
+
+     **And `unblock._DETAIL_FIELDS` gains ``ROW_STAMPS[1]``** — the seal
+     author's dispute P2-6, which this owed list did not name. `list_blocked`
+     prints ONLY the keys in `_DETAIL_FIELDS`, so without the row this gate
+     would write a detail nobody can read, and :data:`ROW_STAMPS`'s own
+     justification for splitting one stamp into a short verdict key plus an
+     excerptable detail key would be vacuous. P3 agrees it is in scope: it is
+     one line in the same unfloored, unsealed file §7(c) already hands P3, and
+     it makes the scaffold's own stated reason TRUE rather than widening the
+     spec. No seal asserts it — it was landed on the argument, not on a row.
   d. `role_protocol`'s module docstring must move this hook from the "NOT
      wired" paragraph into "Wired by P3", and this is MECHANICALLY CHECKED:
      `tests/test_role_protocol_wiring.py::
@@ -552,9 +603,29 @@ every entry: ``**/orchestrator.py`` would also match
      ``REQUIRED_WIRED_TARGETS`` pins the minimum set so a bullet cannot be
      deleted to make a claim true. Floored file + seal file → P4, exactly as
      D7's step-6 wiring was.
-  e. the killable face a deadline needs (§6).
+  e. the killable face a deadline needs (§6). Until then
+     :func:`check_after_implementer` RAISES on a non-``None``
+     ``deadline_seconds`` — the disjunction's honest branch, and the reason
+     :data:`LoopGateStatus.DEADLINE_EXCEEDED` is still unreachable.
   f. a check of the post-hook iterate spawns (§5), or an explicit ruling that
      PR time is the only gate on them.
+  g. **NEW, P3, dispute P3-2.** §3 rules that NOT_ENABLED is "logged and
+     journaled per task". Logged: yes, one run.log line per task. Stamped on
+     the YAML row: yes, on EVERY task, which is the "says so on every row"
+     half in full. Journalled: only when the gate RAN. Measured under
+     `6d94190` + this commit: emitting the event unconditionally reddens three
+     rows that pin the EXACT per-task journal sequence —
+     ``tests/test_orchestrator_journal.py::
+     test_full_run_journal_chain_and_sequence``,
+     ``::test_single_task_exact_sequence`` and
+     ``tests/test_mechanical_verify.py::
+     test_no_config_skips_and_preserves_done_flow`` — and the amendment is
+     three lines in ``tests/**``, which BODIES may not write. The precedent
+     runs AGAINST the shortfall and is worth stating: `verification_mechanical`
+     and `verification_skipped` both journal their own skips, and both appear
+     in those pinned sequences. So P4 owes either the three-line amendment in
+     one commit with the unconditional emit, or a ruling that the row stamp
+     and the log line are the whole of "says so".
 
 
 Notes for the seal author (P2)
@@ -601,9 +672,41 @@ because a stub makes their contract untestable:
     is the half that matters.
   * :data:`ROW_STAMPS` — data, and §7(c) is owed against its exact contents.
 
-Everything else is a stub: :func:`resolve_inputs` and
+Everything else was a stub at P1: :func:`resolve_inputs` and
 :func:`check_after_implementer` are the control flow, and control flow is what
-a scaffold does not write.
+a scaffold does not write. **P3 wrote it**, and the two functions' own
+docstrings carry the P3-marked decisions the four steps did not settle.
+
+What P3 measured about its own closes, recorded because a green row is not
+evidence
+=========================================================================
+Every mutation below was applied to this implementation in a ``cp -a`` clone
+and the whole seal file re-run. Measured under `6d94190` + this commit.
+
+  * ``base_ref=base_branch`` → 4 red (rows 1, 2, 3, 15).
+    ``base_ref=pre_spawn_sha or base_branch`` → 2 red (2, 15). Dropping
+    ``policy=`` → 2 red (3, 16). Letting the policy failure fall through to
+    `check_branch` → 1 red (16). Disabled returning CHECKED_CLEAN → 2 red
+    (13, 15). Ignoring ``deadline_seconds`` → 1 red (14). Picking the primary's
+    role → 2 red (15, 17). Moving the hook below the mechanical gate → 1 red
+    (4). ``continue`` on the block path → 1 red (7). Dropping :data:`ROW_STAMPS`
+    from `unblock._STALE_STAMPS` → 1 red (9). Re-spelling the stamps as
+    orchestrator literals → 1 red (21). Every one reproduces the seal author's
+    own matrix.
+  * **Three mutations of the P3 code redden NOTHING**, and they are the honest
+    limits of this file's coverage: dropping the rule-equivalence guard in
+    :func:`resolve_inputs` (dispute P3-1) — 22 green; making
+    `orchestrator._run_task` never WRITE the row stamp while still referencing
+    :data:`ROW_STAMPS` — 22 green, because row 21 reads the source and no row
+    drives the orchestrator's row write; and hardcoding ``enabled=True`` at the
+    call site — 22 green, because no row in this file drives the run flag.
+  * **A second implementation of the gate** — `changed_paths_between` +
+    `evaluate_changed_paths` inline, agreeing with `check_branch` on every
+    fixture in the seal file — reddens row 22 **alone**, 21 of 22 green. P3
+    re-derived that rather than taking it on trust. It means what the seal
+    author said it means: closing a behavioural row here is not evidence that
+    this implementation is the intended one, and row 22 is the only row that
+    can tell one gate from two.
 """
 
 from __future__ import annotations
@@ -613,7 +716,14 @@ from enum import Enum
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from .role_protocol import DiffVerdict, Role, RoleDiffResult, TaskRoleSpec
+from .role_protocol import (
+    DiffVerdict,
+    Role,
+    RoleDiffResult,
+    TaskRoleSpec,
+    check_branch,
+    load_role_policy_from_base,
+)
 
 # CHOICE — this module imports `role_protocol` at MODULE level rather than
 # inside its functions. Rejected alternative: a function-local import, the
@@ -629,13 +739,43 @@ from .role_protocol import DiffVerdict, Role, RoleDiffResult, TaskRoleSpec
 class LoopGateError(RuntimeError):
     """A fault in the loop gate's own dispatch — never a verdict about a branch.
 
-    Raised only by the total dispatches below when handed an enum member no
-    table maps. It is deliberately NOT the way this module reports "the check
-    could not be made": that is :data:`LoopGateStatus.GATE_ERROR`, which
-    carries a decision. An exception escaping into `_run_task` would be caught
-    by `_dispatch_drain`'s worker guard (orchestrator.py:2440, measured) and
-    turn into ``worker_exception``, losing the reason.
+    Raised by the total dispatches below when handed an enum member no table
+    maps. It is deliberately NOT the way this module reports "the check could
+    not be made": that is :data:`LoopGateStatus.GATE_ERROR`, which carries a
+    decision. An exception escaping into `_run_task` would be caught by
+    `_dispatch_drain`'s worker guard (orchestrator.py:2440, measured) and turn
+    into ``worker_exception``, losing the reason.
+
+    **P3 note — two more raisers, both named rather than left to be
+    discovered.** The scaffold's sentence "raised only by the total dispatches
+    below" was true of the scaffold and is not true of the body, because
+    :func:`resolve_inputs`'s own contract instructs P3 to raise this type
+    (steps 1 and 2), and §6 permits P3 to raise it for a ``deadline_seconds``
+    it cannot honour. Both are still "a fault in the loop gate's own
+    dispatch"; neither is a verdict about a branch. The resolution raises are
+    caught by :func:`check_after_implementer` and become
+    :class:`LoopGateStatus` members with decisions — see
+    :class:`_UnresolvedInput`, which is what carries the status across the
+    ``raise``. The deadline raise is deliberately NOT caught: a parameter this
+    unit cannot honour must reach the caller, not be recorded as a verdict.
     """
+
+
+class _UnresolvedInput(LoopGateError):
+    """A resolution failure that already knows which status it is.
+
+    Private, and a subclass rather than a second exception type, because
+    :func:`resolve_inputs`'s contract says it raises :class:`LoopGateError`
+    and row 14 catches exactly that. Carrying the status on the exception is
+    the alternative :func:`resolve_inputs`'s own CHOICE block rules FOR: a
+    ``None`` return would collapse ROLE_UNRESOLVED and BASE_UNRESOLVED into
+    one answer, and re-deriving which one happened from the message text at
+    the catch site would be a second notion of "why did this not resolve".
+    """
+
+    def __init__(self, status: LoopGateStatus, message: str) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 # --------------------------------------------------------------------------- #
@@ -975,7 +1115,7 @@ class LoopGateOutcome:
 
 
 # --------------------------------------------------------------------------- #
-# The hook — STUBS. This is the control flow, and a scaffold does not write it.
+# The hook. This is the control flow: stubbed by the scaffold, written by P3.
 # --------------------------------------------------------------------------- #
 
 
@@ -987,9 +1127,9 @@ def resolve_inputs(
     pre_spawn_sha: str | None,
     specs: Sequence[TaskRoleSpec],
 ) -> LoopGateInputs:
-    """Turn the loop's live state into one :class:`LoopGateInputs`. **STUB.**
+    """Turn the loop's live state into one :class:`LoopGateInputs`.
 
-    P3 implements, to §4 exactly:
+    Implemented by P3 to §4 exactly, which is the four steps P1 wrote here:
 
       1. :func:`sole_role` over ``specs``; ``None`` → raise
          :class:`LoopGateError` so :func:`check_after_implementer` can report
@@ -1011,10 +1151,72 @@ def resolve_inputs(
     Rejected so this module has no import of, and no opinion about, the
     orchestrator's shapes. The five scalars above are the entire dependency,
     which is also what makes the seals need no dispatcher fixture.
+
+    **P3 — the one thing the four steps do not say, and it is reachable.**
+    Step 4 says "the group's own spec", singular. A group that resolves to ONE
+    role may still carry SEVERAL specs, and those specs may differ in the two
+    fields `check_branch` reads off them — ``added_immutable_globs`` and
+    ``disputed_paths``. Measured under `6d94190`: `plan.load_tasks` and
+    `role_protocol.validate` accept two ADJUDICATE rows with different
+    ``disputed_paths:`` in one ``batch_id``, exactly as row 18 measures for two
+    roles. Passing ``specs[0]`` there would judge row B's disputed work under
+    row A's writable set, which is §4's own "wrong in both directions on the
+    same branch" argument one level down from the role. So: specs that agree on
+    both fields are interchangeable and the first is passed; specs that
+    disagree do not yield one RULE and are refused through the same raise as a
+    mixed-role group. Recorded as **dispute P3-1** — the status is spelled
+    ROLE_UNRESOLVED and its docstring says "did not yield exactly one
+    :class:`Role`", which this case technically does; P4 owes either a widened
+    wording, a ninth status, or (better, and the shape §7(b) already takes) a
+    plan-time refusal. What P3 will not do is pick one and say nothing.
     """
-    raise NotImplementedError(
-        "D8 P1 scaffold: resolve_inputs is a contract, not an implementation. "
-        "P3 implements it to the four steps in this docstring."
+    role = sole_role(specs)
+    if role is None:
+        raise _UnresolvedInput(
+            LoopGateStatus.ROLE_UNRESOLVED,
+            "the dispatched rows do not share exactly one role "
+            f"({sorted({spec.role.value for spec in specs})} over "
+            f"{[spec.task_key for spec in specs]}), and check_branch takes "
+            "one: judging this branch under either role would report the "
+            "other role's legitimate work as a violation",
+        )
+
+    # One role, but possibly several rows. See the P3 block above.
+    rules = {(spec.added_immutable_globs, spec.disputed_paths) for spec in specs}
+    if len(rules) != 1:
+        raise _UnresolvedInput(
+            LoopGateStatus.ROLE_UNRESOLVED,
+            f"the dispatched rows {[spec.task_key for spec in specs]} share "
+            f"role {role.value!r} but not one rule: their immutable_paths / "
+            "disputed_paths additions differ, so one branch would be judged "
+            "under one row's writable set and the other row's work reported "
+            "against it (dispute P3-1)",
+        )
+
+    if pre_spawn_sha is None:
+        raise _UnresolvedInput(
+            LoopGateStatus.BASE_UNRESOLVED,
+            "pre_spawn_sha is None — _branch_sha reported a git failure for "
+            "this rung's pre-implementer tip. There is deliberately no "
+            "fallback to the base branch: the diff would then contain the "
+            "dependency merge, i.e. the SEALS author's tests/** on every "
+            "well-formed unit (§4)",
+        )
+
+    # Step 3. From ``base_branch`` and never from ``pre_spawn_sha``: base_ref
+    # is a commit ON the branch under judgement, and a branch that merged a
+    # dependency touching `.dispatcher.yaml` would otherwise supply the policy
+    # that judges it (invariant 6). Raised failures are the caller's
+    # GATE_ERROR — `load_role_policy_from_base` has deliberately no fallback.
+    policy = load_role_policy_from_base(repo_root, base_branch)
+
+    return LoopGateInputs(
+        repo_root=repo_root,
+        base_ref=pre_spawn_sha,
+        branch_ref=branch_ref,
+        role=role,
+        spec=specs[0],
+        policy=policy,
     )
 
 
@@ -1028,9 +1230,9 @@ def check_after_implementer(
     specs: Sequence[TaskRoleSpec],
     deadline_seconds: float | None = None,
 ) -> LoopGateOutcome:
-    """THE hook. Called from `orchestrator._run_task` at §1's position. **STUB.**
+    """THE hook. Called from `orchestrator._run_task` at §1's position.
 
-    P3 implements:
+    Implemented by P3, to the four steps P1 wrote here:
 
       1. ``enabled`` false → :data:`LoopGateStatus.NOT_ENABLED`, PROCEED. The
          caller still logs and journals it: §3's default-off ruling only works
@@ -1065,9 +1267,80 @@ def check_after_implementer(
     can substitute git, and two seams for one fact is invariant 5's shape. P3
     may add it if the seals need it — and if it does, it is one parameter
     forwarded verbatim, never a second seam of this module's own.
+
+    **P3 — which branch of §6's disjunction was taken, and where the raise
+    sits.** §7(e) is not implemented here (it is a killable process face, new
+    machinery, and owed), so a non-``None`` ``deadline_seconds`` RAISES. The
+    raise is the FIRST statement, before the ``enabled`` short-circuit and
+    outside every ``except``: a caller asking for a facility this unit does not
+    have must not have that request recorded as a verdict about a branch, and
+    a refusal swallowed into :data:`LoopGateStatus.GATE_ERROR` would be exactly
+    that. No production caller passes the parameter today (measured under
+    `6d94190`: `orchestrator._run_task`'s call omits it), so the raise is
+    unreachable from the dispatcher and reachable from anyone who tries to use
+    the parameter — which is the point of it.
+
+    **P3 — what GATE_ERROR catches, and what it deliberately does not.** The
+    ``except`` covers :func:`resolve_inputs` and nothing else, because that is
+    the only step of the four that can raise: `check_branch`'s own contract is
+    that it never does, and every failure of its own arrives as UNDETERMINED.
+    If `check_branch` ever breaks that contract the exception propagates rather
+    than being relabelled — a gate that reports GATE_ERROR for a crash inside
+    the shared callable would hide invariant 1's most important failure behind
+    this unit's own name.
     """
-    raise NotImplementedError(
-        "D8 P1 scaffold: check_after_implementer is the contract for the call "
-        "site, not the call site. Wiring it into orchestrator._run_task is "
-        "P3's edit, and the docstring's four steps are its specification."
+    if deadline_seconds is not None:
+        raise LoopGateError(
+            f"deadline_seconds={deadline_seconds!r} was given and this unit "
+            "cannot honour it: a real deadline needs a killable process face "
+            "(§7(e)) and check_branch is an ordinary in-process call CPython "
+            "cannot interrupt. Timing the call and reporting DEADLINE_EXCEEDED "
+            "after it completed measures nothing and blocks a task whose check "
+            "succeeded, so this refuses instead of pretending"
+        )
+
+    if not enabled:
+        # A named state, not an absence — the caller logs and journals it on
+        # every task, so a run with the gate off says so per row rather than
+        # looking like a run whose every branch was clean (§3).
+        return LoopGateOutcome(
+            decision=decision_for(LoopGateStatus.NOT_ENABLED),
+            status=LoopGateStatus.NOT_ENABLED,
+        )
+
+    try:
+        inputs = resolve_inputs(
+            repo_root=repo_root,
+            base_branch=base_branch,
+            branch_ref=branch_ref,
+            pre_spawn_sha=pre_spawn_sha,
+            specs=specs,
+        )
+    except _UnresolvedInput as exc:
+        return LoopGateOutcome(
+            decision=decision_for(exc.status),
+            status=exc.status,
+            detail=str(exc),
+        )
+    except Exception as exc:  # noqa: BLE001 — see the docstring block above
+        return LoopGateOutcome(
+            decision=decision_for(LoopGateStatus.GATE_ERROR),
+            status=LoopGateStatus.GATE_ERROR,
+            detail=f"{type(exc).__name__}: {exc}",
+        )
+
+    result = check_branch(
+        inputs.repo_root,
+        inputs.base_ref,
+        inputs.branch_ref,
+        inputs.role,
+        spec=inputs.spec,
+        policy=inputs.policy,
+    )
+    status = status_for_verdict(result.verdict)
+    return LoopGateOutcome(
+        decision=decision_for(status),
+        status=status,
+        result=result,
+        detail=result.detail,
     )

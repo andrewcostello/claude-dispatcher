@@ -37,6 +37,7 @@ from . import classification
 from . import cross_family_reviewer as cfr_mod
 from . import disposition as disposition_mod
 from . import journal as journal_mod
+from . import loop_gate as loop_gate_mod
 from . import mechanical_verify as mv_mod
 from . import merge_engine as merge_mod
 from . import notify as notify_mod
@@ -87,6 +88,18 @@ def _ask_human(prompt_text: str, choices: list[str]) -> str:
 
 
 _log_lock = threading.Lock()
+
+
+# The two row keys the loop role gate (unit D8) writes, UNPACKED from the one
+# constant that names them rather than re-spelled here. `unblock._STALE_STAMPS`
+# clears the same tuple and `unblock._DETAIL_FIELDS` prints the second entry,
+# so a rename lands in one place: two spellings of one key is the shape where a
+# rename clears one key and writes the other, and every test stays green
+# because each half is internally consistent. The stamp is deliberately not the
+# PR-time verdict's name — PR time judges the diff that will land and reads its
+# policy out of the protected base; the loop has neither property, and a stamp
+# that reads like the verdict is a stamp somebody will treat as one.
+_ROLE_LOOP_STAMP, _ROLE_LOOP_DETAIL_STAMP = loop_gate_mod.ROW_STAMPS
 
 
 # How often the dispatch loop appends a `heartbeat` event to the journal while
@@ -140,6 +153,17 @@ class RunConfig:
     # When True, run design stage for tasks matching design_required().
     # Opt-in (default False) so hermetic tests never spawn a design worker.
     enable_design_stage: bool = False
+    # Role-protocol loop gate (unit D8). When True, `check_branch` runs inside
+    # the cascade loop right after the implementer returns — the same callable
+    # `scripts/check_body_branch.sh` runs at PR time, over this rung's diff
+    # only, so a body agent that wrote to tests/** is caught before four more
+    # spawns commit to the branch. Opt-in and OFF by default, deliberately:
+    # on a tree where check_branch's reachability arm engages, that arm costs
+    # minutes per branch and answers UNDETERMINED — which this gate BLOCKS on —
+    # so a run that cannot afford it does not turn it on. Off is a NAMED state
+    # (loop_gate.LoopGateStatus.NOT_ENABLED), logged, journaled and stamped on
+    # every task, never a silence.
+    enable_role_loop_gate: bool = False
     # When True, unpinned tasks use routing.cheap_first (grok leaves, claude hard).
     cheap_first: bool = False
     claude_extra_args: list[str] = field(default_factory=list)
@@ -299,6 +323,16 @@ class TaskSnapshot:
     # merge each dependency's branch into this task's fresh worktree branch
     # when the dependency's commits are not yet on base (INT-4).
     blocked_by: list[str] = field(default_factory=list)
+    # The protocol role facts of EVERY row dispatched onto this branch — the
+    # whole batch group, not the primary only, because a batch shares one
+    # worktree, one branch and one implementer session while `check_branch`
+    # takes exactly one role. Read at dispatch time and frozen here (unit D8,
+    # §4): an ADJUDICATE row's `disputed_paths:` IS its writable set, so a
+    # snapshot taken before the implementer runs is what stops a branch from
+    # widening its own gate by editing the worklist. Empty only when the rows
+    # could not be parsed, which the gate reports as ROLE_UNRESOLVED — never
+    # as "no role, therefore no check".
+    role_specs: list[role_protocol_mod.TaskRoleSpec] = field(default_factory=list)
 
 
 CAPSTONE_KEY = "CAPSTONE-INTEGRATION"
@@ -1211,6 +1245,7 @@ def _run_task(
     verifier_cost_total = 0.0
     panel_verdict: cfr_mod.PanelVerdict | None = None
     panel_iterations_used = 0
+    role_loop: loop_gate_mod.LoopGateOutcome | None = None
 
     for idx, (attempt_agent, attempt_effort) in enumerate(cascade):
         if idx > 0:
@@ -1246,6 +1281,10 @@ def _run_task(
         verifier_cost_total = 0.0
         panel_verdict = None
         panel_iterations_used = 0
+        # A discarded rung's role verdict must not survive onto the terminal
+        # row either: the diff it judged was reset away, so the stamp would
+        # describe a diff that no longer exists.
+        role_loop = None
         result = None
         s = None
         used_agent = None
@@ -1409,6 +1448,84 @@ def _run_task(
         # Agent-declared Blocked/Escalated (or awaiting-human) is not a
         # quality-cascade trigger — only gate/panel/verifier failures escalate.
         if final_status != plan_mod.DONE:
+            break
+
+        # --- Role-protocol loop gate (unit D8) ------------------------------
+        # The same `check_branch` the PR gate and CI reach, one build cycle
+        # earlier: HERE, before the mechanical gate, because
+        # `_retry_for_test_fix` (inside it), the verifier iterate and the panel
+        # iterate all COMMIT to this same branch — a gate placed after them
+        # judges a diff several agents wrote while reporting one agent's key.
+        # And INSIDE the cascade loop, because the next rung opens with
+        # _reset_worktree, which discards this rung's diff: a gate outside the
+        # loop would see only the surviving rung, so a rung that committed to
+        # tests/** and was then discarded for an unrelated quality failure
+        # would never be reported at all. The breach is a fact about the agent,
+        # not about the surviving diff.
+        #
+        # The base is `pre_spawn_sha` and NEVER cfg.base_branch: dependency
+        # merges land on this branch before the implementer spawns, and by PO-2
+        # a BODIES task's dependency IS its unit's SEALS task — so a
+        # base-branch diff reports the seal author's tests/** as this branch's
+        # violation on every well-formed unit. The policy comes from
+        # cfg.base_branch instead, through check_branch's own seam, so a branch
+        # that merged an edit to `.dispatcher.yaml` cannot supply the rule that
+        # judges it. Both refs go in through loop_gate.resolve_inputs; neither
+        # is spelled at this call site.
+        role_loop = loop_gate_mod.check_after_implementer(
+            enabled=bool(getattr(cfg, "enable_role_loop_gate", False)),
+            repo_root=repo_root,
+            base_branch=cfg.base_branch,
+            branch_ref=wt.branch,
+            pre_spawn_sha=pre_spawn_sha,
+            specs=list(snap.role_specs or []),
+        )
+        _log(log_path,
+             f"  {snap.key} role loop gate: {role_loop.status.value} "
+             f"({role_loop.decision.value})"
+             + (f" — {role_loop.detail[:400]}" if role_loop.detail else ""))
+        # The event is emitted whenever the gate RAN, and not when the run had
+        # it switched off. That is one half short of §3's ruling ("logged and
+        # journaled per task, so a run with the gate off says so on every row")
+        # and the shortfall is deliberate, measured and escalated rather than
+        # quietly chosen — dispute P3-2. Emitting it unconditionally is three
+        # red rows in two seal files that pin the EXACT per-task event
+        # sequence (`tests/test_orchestrator_journal.py` twice and
+        # `tests/test_mechanical_verify.py` once, measured under 6d94190 + this
+        # commit), and amending them is a `tests/**` edit this role may not
+        # make. The "says so on every row" half is landed in full and by the
+        # stronger mechanism: the YAML row carries `not_enabled` on EVERY task
+        # (see the stamp below), and run.log carries a line per task above.
+        # Nothing here reads as a clean branch.
+        if role_loop.status is not loop_gate_mod.LoopGateStatus.NOT_ENABLED:
+            _emit_event(cfg, journal_mod.EventType.role_diff_loop_gate, {
+                "status": role_loop.status.value,
+                "decision": role_loop.decision.value,
+                "verdict": (
+                    role_loop.verdict.value
+                    if role_loop.verdict is not None else None
+                ),
+                "base_ref": pre_spawn_sha,
+                "branch_ref": wt.branch,
+                "violations": [
+                    v.path for v in (
+                        role_loop.result.violations if role_loop.result else ()
+                    )
+                ],
+                "detail": role_loop.detail[:1000],
+            }, task_key=snap.key)
+        if role_loop.decision is loop_gate_mod.LoopGateDecision.BLOCK:
+            # Blocked, and deliberately NOT a cascade escalation. The next rung
+            # would begin by resetting the worktree, destroying the very diff a
+            # human is being blocked to read — and a role violation is
+            # out-of-scope work rather than weak work, so the same description
+            # handed to a stronger model has the same scope. `dispatcher
+            # unblock` clears the stamps below and re-runs every gate, which is
+            # the retry this state grants.
+            final_status = plan_mod.BLOCKED
+            final_blocked_reason = loop_gate_mod.blocked_reason(
+                role_loop.status, role_loop.detail,
+            )
             break
 
         # --- Mechanical gate ------------------------------------------------
@@ -1761,6 +1878,19 @@ def _run_task(
             row["mechanical_verification"] = mech_outcome
             if mech_outcome == "failed" and mech_detail:
                 row["mechanical_verification_detail"] = mech_detail
+        # Role-protocol loop gate (unit D8). Stamped whenever the hook was
+        # reached — INCLUDING when the run had the gate switched off, which is
+        # a named status and not an absence: a row that says `not_enabled` is
+        # how a run with the gate off is told apart from a run whose every
+        # branch was clean. Absent entirely only when the hook was never
+        # reached (a non-Done rung, or a rung discarded by the cascade). The
+        # detail carries the gate's own reason line and lands in the second
+        # stamp so `dispatcher blocked` can excerpt it; blocked_reason stays
+        # the short label, exactly as the mechanical gate does it.
+        if role_loop is not None:
+            row[_ROLE_LOOP_STAMP] = role_loop.status.value
+            if role_loop.detail:
+                row[_ROLE_LOOP_DETAIL_STAMP] = role_loop.detail[:mv_mod.TAIL_CHARS]
         # Seal-inversion outcome (VG-3). Absent when the gate never ran
         # (not fix-shaped, non-Done, or the mechanical gate wasn't green).
         if seal_outcome is not None:
@@ -2401,6 +2531,30 @@ def _dispatch_drain(
                     cfg.model_router(str(primary.raw.get("risk") or "") or None)
                     if cfg.model_router and agent in (None, "claude") else None
                 )
+                # Freeze every dispatched row's protocol role facts (unit D8,
+                # §4/§7(a)). Read here, off `raw`, for the same reason the
+                # risk tier two lines above is: `plan.Task` deliberately models
+                # no `role` field, and the row is the authority. Read BEFORE
+                # the implementer spawns so the branch cannot widen its own
+                # gate by editing the worklist it is being judged against.
+                #
+                # A row that will not parse leaves the list SHORT rather than
+                # substituting a default: the gate reads "these rows did not
+                # yield one role" and blocks, which is the honest answer.
+                # `plan.load_tasks` already refused everything the protocol
+                # refuses, so this is a guard against the impossible, not a
+                # tolerated path — and it is logged when it fires.
+                group_specs: list[role_protocol_mod.TaskRoleSpec] = []
+                for t in group:
+                    try:
+                        group_specs.append(role_protocol_mod.parse_task_role_spec(
+                            t.raw, task_key=t.key,
+                        ))
+                    except Exception as exc:  # noqa: BLE001
+                        _log(log_path,
+                             f"  {t.key} role spec unreadable at dispatch: "
+                             f"{exc} — the role loop gate will not resolve a "
+                             f"role for this branch")
                 snap = TaskSnapshot(
                     key=primary.key,
                     summary=summary,
@@ -2424,6 +2578,7 @@ def _dispatch_drain(
                             k for t in group for k in (t.blocked_by or [])
                         ) if k not in {g.key for g in group}
                     ],
+                    role_specs=group_specs,
                 )
                 _mark_in_progress(cfg, snap, run_dir)
                 fut = exe.submit(_run_task, snap, cfg, run_dir, log_path, repo_root)
@@ -4605,6 +4760,9 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
         verifier_agent=verifier_agent,
         design_agent=design_agent,
         enable_design_stage=bool(enable_design),
+        enable_role_loop_gate=bool(
+            getattr(args, "enable_role_loop_gate", False)
+        ),
         cheap_first=cheap_first or no_claude,
         claude_extra_args=extra.split() if extra else [],
         base_branch=cli_base if cli_base else "main",

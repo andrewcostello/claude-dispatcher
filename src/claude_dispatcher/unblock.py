@@ -34,6 +34,7 @@ import datetime as dt
 import sys
 
 from . import yaml_io
+from .loop_gate import ROW_STAMPS as _LOOP_GATE_STAMPS
 
 BLOCKED = "Blocked"
 TODO = "To Do"
@@ -41,18 +42,36 @@ TODO = "To Do"
 # Row keys that describe the PREVIOUS attempt's gate verdicts. Cleared on
 # unblock so a To Do row doesn't carry contradictory "failed" stamps into
 # its re-run (each gate re-stamps on the next attempt).
+#
+# The loop role gate's keys (unit D8, §7(c)) come from `loop_gate.ROW_STAMPS`
+# rather than being spelled again here: the orchestrator writes them from the
+# same constant, and two spellings of one key is the failure where a rename
+# clears one and writes the other while both halves stay internally
+# consistent.
 _STALE_STAMPS = (
     "blocked_reason",
     "mechanical_verification", "mechanical_verification_detail",
     "seal_verification", "seal_verification_detail",
     "verified", "verification_iterations", "verification_detail",
+    *_LOOP_GATE_STAMPS,
 )
 
 # Detail fields shown in the review queue, in display order.
+#
+# `_LOOP_GATE_STAMPS[1]` is the loop role gate's detail key, and it is here
+# because `list_blocked` prints ONLY the keys in this tuple: without the row,
+# the gate would write a detail no reader of the queue ever sees, and
+# `ROW_STAMPS`'s own justification for splitting one stamp into a short
+# verdict key plus an excerptable detail key would be vacuous. Raised by the
+# D8 seal author as dispute P2-6 and NOT sealed there (widening a P3's owed
+# list from a seal file is how a seal becomes a specification nobody agreed
+# to); landed here by P3, which owns this file, because shipping the write
+# without the read is strictly worse than either.
 _DETAIL_FIELDS = (
     "mechanical_verification_detail",
     "seal_verification_detail",
     "verification_detail",
+    _LOOP_GATE_STAMPS[1],
     "panel_summary",
 )
 
