@@ -836,6 +836,19 @@ _GLOB_METACHARACTERS = "*?[]"
 #: :func:`ts_parser_home` resolves it against ``Path(__file__).parent`` and
 #: :data:`TS_HELPER_PACKAGE_DIR` is sealed FLAT.
 #:
+#: **SEVENTEEN globs as of unit D8 (2026-08-12): FOURTEEN FILE globs, refused
+#: at plan time as well as at diff time, and THREE subtree globs, diff-time
+#: only.** Measured on this revision under this module's own lens, not counted
+#: by hand. The two D8 entries are the twelfth and thirteenth basenames and
+#: they are the first added for a CALLER-SIDE hole: the derived closure in
+#: ``tests/test_floor_closure.py`` seeds at :func:`check_branch` and follows
+#: delegations DOWNWARD, so a module that CALLS the gate is invisible to it
+#: however much of the verdict's effect that module decides. Measured: a probe
+#: call at the D8 hook point leaves the three floor files at 183 passed, 0
+#: failed. The lesson generalises past this unit and is written beside the
+#: entries: the closure walk proves nothing about callers, and a caller that
+#: turns a VIOLATION into a control-flow decision has to be named by hand.
+#:
 #: **FOURTEEN globs as of unit D7 (2026-08-12): ELEVEN FILE globs, refused at
 #: plan time as well as at diff time, and THREE subtree globs, diff-time
 #: only.** The D7 entry is the eleventh basename and it is the first one added
@@ -1075,6 +1088,125 @@ FLOOR_GLOBS: tuple[str, ...] = (
     # own MODULE-LEVEL imports — are already floored, two and four entries up,
     # so the closure grows by three rows and the floor by one string.
     "**/src/claude_dispatcher/branch_reachability.py",
+    # The gate's TENTH and ELEVENTH artifacts (D8 P4 ruling, 2026-08-12): the
+    # loop gate and its ONE caller. TWO FILE globs, both PATH-QUALIFIED, and
+    # they are the first entries in this tuple added for a CALLER-SIDE hole
+    # rather than for a delegate.
+    #
+    # WHY THE CLOSURE WALK DID NOT FIND THEM, stated first because it is the
+    # generalisation and not a detail of this unit. `tests/test_floor_
+    # closure.py` seeds at `_FLOOR_DECISION_ROOTS = ("check_branch",
+    # "_floor_glob_named_by")` and follows delegations DOWNWARD, out of those
+    # functions. `loop_gate` and `orchestrator` are CALLERS of `check_branch`,
+    # and nothing about calling a floored function puts the caller in a walk
+    # that only ever descends. Measured under `81591e4` by the D8 scaffold, and
+    # re-derived at `90ddca0`: a probe call to `check_branch` inserted at the
+    # hook point leaves `test_floor_closure.py` + `test_d5_floor.py` +
+    # `test_role_protocol_floor.py` at **183 passed, 0 failed**. The derived
+    # closure is sound and it is not complete in this direction; a caller that
+    # decides whether a VIOLATION stops anything has to be named by hand.
+    #
+    # WHAT IS AT STAKE. `loop_gate` maps VIOLATION → BLOCK and `orchestrator`
+    # is what performs the block. Measured at `90ddca0` before this commit:
+    # neither path matched any entry of this tuple, and `DEFAULT_ROLE_RULES`
+    # denies BODIES `tests/**` and the schema paths, not `src/`. So a BODIES
+    # branch could flip `_DECISIONS[CHECKED_VIOLATION]` to PROCEED, or delete
+    # the four-line call at the hook, and then be judged by the gate it had
+    # just switched off. That is the 2026-08-08 `FLOOR_GLOBS = ()` measurement
+    # — *"a branch could delete the floor from this module and then walk
+    # through it"* — arriving through the CALLER instead of the callee, and the
+    # floor is the only thing that closes it: every seal that would catch it
+    # lives in `tests/**` and is evaluated by the very module the branch
+    # rewrote.
+    #
+    # THE SPELLINGS, measured under this module's own lens (`risk.matches_any_
+    # glob`) on THIS revision rather than inherited from the D5/D6/D7 entries,
+    # against ten probes — each module, each module's `sub/project/...`
+    # spelling, a `vendor/thirdparty/...` copy of each, a
+    # `.venv/lib/python3.12/site-packages/...` copy of each, `notsrc/claude_
+    # dispatcher/orchestrator.py`, and the two still-writable controls
+    # `plan.py` and `blast_radius.py`:
+    #
+    #   * the two entries below match their own module and its `sub/project/`
+    #     spelling, and NOTHING else in the ten — not the other module, not
+    #     either vendored copy, not either installed copy, not `notsrc/`, and
+    #     neither control;
+    #   * the basename-only spellings are refused and the refusal is worse here
+    #     than at any previous entry, because these are ORDINARY names.
+    #     `**/loop_gate.py` also matches `vendor/thirdparty/loop_gate.py` AND
+    #     `.venv/.../site-packages/someproj/loop_gate.py`; `**/orchestrator.py`
+    #     also matches BOTH of those AND `notsrc/claude_dispatcher/
+    #     orchestrator.py`. "Orchestrator" is a name a third-party package is
+    #     genuinely likely to carry, and a floor has no override to buy any of
+    #     them back;
+    #   * the package subtree `**/src/claude_dispatcher/**` also matches
+    #     `plan.py` and `blast_radius.py` — still-writable controls — and buys
+    #     NO plan-time reach, because a pure-wildcard tail is exactly what
+    #     `_floor_glob_named_by` refuses by design. These are the eleventh and
+    #     twelfth BASENAMES, not a fourth subtree;
+    #   * the brace-compressed spelling
+    #     `**/src/claude_dispatcher/{loop_gate,orchestrator}.py` matches NONE
+    #     of the ten — this engine has no brace expansion, the point the
+    #     delegation-closure block above makes and which was re-measured here,
+    #     not inherited. It is a silent no-op that reads as protection, which
+    #     is the one failure mode a floor may not have.
+    #
+    # PLAN-TIME REACH, measured 2026-08-12 against the tuple WITH these two
+    # entries: `loop_gate.py`, `orchestrator.py` and both full paths all return
+    # their glob from `_floor_glob_named_by`, where against the tuple WITHOUT
+    # them all four returned None. So both entries are refused at plan time as
+    # well as at diff time, and the accepted asymmetry the delegation-closure
+    # block records widens by two on the same terms: a declaration naming
+    # either basename is refused at plan time even where diff time would clear
+    # the path, it can only false-refuse, and the false refusal has a spelling
+    # that works. Measured on this revision: no worklist in this repository
+    # carries an `immutable_paths:` or `disputed_paths:` key at all, so the
+    # widening costs nothing today.
+    #
+    # WHEN IT LANDS. `orchestrator.py` is where the call already is, so
+    # "before the thing it protects" is not available — this is the D7 branch
+    # gate's position, not the sixth and eighth entries' "before enrolment".
+    # It lands in the FIRST P4 commit after the wiring, which is the earliest
+    # point at which the party that may write this file is not the party being
+    # judged.
+    #
+    # THE COST OF THE SECOND ENTRY, MEASURED, AND IT IS THE LARGEST ANY ENTRY
+    # IN THIS TUPLE HAS CARRIED. Every glob above names a single-purpose
+    # artifact: a comparator, a matcher, a config reader, a gate module.
+    # `orchestrator.py` is 5,304 lines and is the dispatcher itself, of which
+    # roughly eighty are this gate. Measured 2026-08-12 on this branch's
+    # history: **76 of the last 200 commits touch it.** From this commit every
+    # one of those is a protected-base edit — and NOT buyable back by a
+    # `disputed_paths:` declaration, measured on this revision:
+    # `_floor_violations` is unioned in at step 3b against the path git
+    # reported, so an ADJUDICATE row naming this file is still refused with
+    # FLOOR_RATIONALE. The practical consequence, stated in as many words
+    # rather than discovered by the first unit that hits it: **no future unit
+    # may wire anything into the orchestrator's task loop from inside this
+    # protocol.** D8 is the last one that could.
+    #
+    # It is landed anyway, because the alternative was measured and is worse,
+    # and because nothing narrower buys the property. What the entry buys is
+    # exactly one thing — "the four-line call at the hook may not be deleted or
+    # moved by the branch the call judges" — and that call lives in this file,
+    # so no smaller glob can say it. Extracting the hook into a module of its
+    # own does not help: whatever then calls THAT is the caller, and the
+    # caller-side hole moves with it. The seals catch a deleted call site
+    # (rows 4, 7 and 21 of `tests/test_loop_gate.py`, in `tests/**`, which
+    # BODIES may not write) — but they catch it at TEST time, and the window
+    # this entry closes is the one where the gate running live inside the loop
+    # has already been switched off by the diff it is judging.
+    #
+    # RECORDED AS AN OPEN QUESTION FOR THE OPERATOR, not settled here: whether
+    # the 76-in-200 price is worth the window, or whether the orchestrator
+    # entry should be reverted and the call site left to the seals alone. That
+    # is a policy call about how this repository develops itself, it is not a
+    # fact this module can measure, and an adjudicator that quietly made it by
+    # landing a string would be doing the thing this protocol exists to stop.
+    # The entry is here so the question is asked against a floor that holds
+    # rather than against one that does not.
+    "**/src/claude_dispatcher/loop_gate.py",
+    "**/src/claude_dispatcher/orchestrator.py",
 )
 
 #: What a floor violation prints, and deliberately NOT the violated role's own

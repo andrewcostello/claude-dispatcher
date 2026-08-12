@@ -593,6 +593,56 @@ def _spec(role: Role, *disputed: str) -> TaskRoleSpec:
 #: asymmetry widens by one with it on the same terms: a declaration naming that
 #: basename is refused at plan time even where diff time would clear the path,
 #: it can only false-refuse, and the false refusal has a spelling that works.
+#:
+#: **THE GATE'S TENTH AND ELEVENTH ARTIFACTS — the loop gate and its caller (P4
+#: ruling, 2026-08-12, unit D8). P3: use these strings, or escalate — do not
+#: edit this table.**
+#:
+#:     **/src/claude_dispatcher/loop_gate.py
+#:     **/src/claude_dispatcher/orchestrator.py
+#:
+#:   20. PATH-QUALIFIED, and the point above about ORDINARY basenames is what
+#:       forces it rather than symmetry with the entries above. Measured
+#:       2026-08-12 under this module's own lens: `**/orchestrator.py` also
+#:       matches `vendor/thirdparty/orchestrator.py`, a
+#:       `site-packages/someproj/orchestrator.py` install AND
+#:       `notsrc/claude_dispatcher/orchestrator.py`; `**/loop_gate.py` also
+#:       matches the vendored and installed copies. `orchestrator` is a name a
+#:       third-party package is genuinely likely to carry, and a floor has no
+#:       override. The path-qualified spellings match their own module and its
+#:       `sub/project/...` layout and nothing else in a ten-probe sweep.
+#:   21. FOUR ROWS, two per glob, because both name a FILE. There is no subtree
+#:       half here for the extra pair to make falsifiable — the rule the fifth,
+#:       sixth, eighth and ninth entries each carry.
+#:   22. THE CLOSURE SEAL CANNOT BACK THESE UP, and that is why the bound below
+#:       matters more for this entry than for any before it.
+#:       `tests/test_floor_closure.py` seeds its walk at `check_branch` and
+#:       follows delegations DOWNWARD; both of these modules are CALLERS.
+#:       Measured: a probe call to `check_branch` at the D8 hook point leaves
+#:       that file, `test_d5_floor.py` and this one at 183 passed, 0 failed.
+#:       For every previous entry a deletion reddened a sibling closure row as
+#:       well; for these two the set difference, the per-row match assertion and
+#:       the length bound are the entire coverage.
+#:   23. `_FLOOR_x_ROLE_ROWS` IS NOT EXTENDED, and this is a ruling rather than
+#:       an omission — it is the standing decision recorded above, restated here
+#:       because the D8 hand-off asked for rows in both tables. That table's job
+#:       is every role times every probe under a policy that omits the floor,
+#:       and `_GATE_ROWS` in `test_role_protocol_provenance.py` already performs
+#:       exactly that job with twenty written-out rows. A second copy here would
+#:       be two notions of one fact — invariant 5's failure mode — and the two
+#:       copies would drift. Measured 2026-08-12: no floor entry since the three
+#:       originals has been written into `_FLOOR_x_ROLE_ROWS`, which carries ten
+#:       rows, all of them `**/.dispatcher.yaml`, and the set-difference seal
+#:       reads `_FLOOR_ROWS` alone. Its assertion MESSAGE still says "and
+#:       _FLOOR_x_ROLE_ROWS"; that text is stale by five rulings and is left for
+#:       the P2 that owns the wording.
+#:
+#: SEVENTEEN globs as of unit D8 (2026-08-12): FOURTEEN refused at plan time and
+#: THREE diff-time only. The basename count moves 12 -> 14 with `loop_gate.py`
+#: and `orchestrator.py`, and the accepted asymmetry widens by two on the same
+#: terms — measured on this revision, no worklist in this repository carries an
+#: `immutable_paths:` or `disputed_paths:` key at all, so the widening costs
+#: nothing today.
 _FLOOR_ROWS: tuple[tuple[str, str], ...] = (
     ("**/.dispatcher.yaml", ".dispatcher.yaml"),
     ("**/.dispatcher.yaml", "sub/project/.dispatcher.yaml"),
@@ -779,6 +829,33 @@ _FLOOR_ROWS: tuple[tuple[str, str], ...] = (
         "**/src/claude_dispatcher/branch_reachability.py",
         "sub/project/src/claude_dispatcher/branch_reachability.py",
     ),
+    # The gate's TENTH and ELEVENTH artifacts (D8 P4 ruling, 2026-08-12): the
+    # loop gate and its one caller. TWO rows each and not four, on the measured
+    # rule the fifth, sixth, eighth and ninth entries carry — both globs name a
+    # FILE, and the extra pair the Go and TypeScript entries take exists solely
+    # to make a SUBTREE half falsifiable, which a single file has nothing to be
+    # falsifiable about. The real path and the vendored layout are the two
+    # probes every file glob in this table carries.
+    #
+    # These two are the first entries added because the DERIVED closure could
+    # not find them: it walks delegations out of `check_branch` and these are
+    # CALLERS. Reasoned in full beside the entries in `FLOOR_GLOBS`.
+    (
+        "**/src/claude_dispatcher/loop_gate.py",
+        "src/claude_dispatcher/loop_gate.py",
+    ),
+    (
+        "**/src/claude_dispatcher/loop_gate.py",
+        "sub/project/src/claude_dispatcher/loop_gate.py",
+    ),
+    (
+        "**/src/claude_dispatcher/orchestrator.py",
+        "src/claude_dispatcher/orchestrator.py",
+    ),
+    (
+        "**/src/claude_dispatcher/orchestrator.py",
+        "sub/project/src/claude_dispatcher/orchestrator.py",
+    ),
 )
 
 
@@ -910,7 +987,21 @@ def test_the_floor_is_exactly_the_written_out_set_of_globs() -> None:
     # brings. The bound moves with the table for the reason it has moved four
     # times before — a bound left behind lets the whole entry, glob and rows,
     # be deleted with this seal green.
-    assert len(_FLOOR_ROWS) >= 36, _FLOOR_ROWS
+    #
+    # 36 -> 40 (D8 P4, 2026-08-12): the four rows the loop gate and its caller
+    # bring, two apiece because both globs name a FILE. The argument is the
+    # bound's own and it bites harder here than at any move before it. These
+    # two globs are the ONLY thing in the repository that protects them:
+    # `test_floor_closure.py` cannot name them — it walks delegations DOWNWARD
+    # out of `check_branch` and these are CALLERS, measured at 183 passed with
+    # a probe call in place — so there is no sibling closure seal to redden if
+    # the entry is deleted. Set difference plus per-row match plus this bound
+    # is the whole of the coverage. Measured both ways on this revision: delete
+    # only the two `FLOOR_GLOBS` entries and the D8 seal file's rows stay GREEN
+    # while `test_every_floor_glob_the_ruling_wrote_out_is_in_the_constant`
+    # fires naming both; delete the constant entries and these four rows
+    # together and THIS bound is the only thing that fires.
+    assert len(_FLOOR_ROWS) >= 40, _FLOOR_ROWS
 
 
 def test_every_floor_glob_the_ruling_wrote_out_is_in_the_constant() -> None:
