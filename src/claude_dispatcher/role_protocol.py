@@ -165,15 +165,48 @@ Wired by P3 (invariant 7 — each claim here has its call site):
     branch that rewrites the script owns the exit code, so the CALLER must
     invoke a copy of the script the branch cannot write. Stated in the script;
     this repository tracks no CI configuration to pin it against.
+  * `loop_gate.check_after_implementer` → :func:`check_branch` inside the
+    orchestrator's task loop, right after the implementer returns and before
+    verify. This is the post-implementer call the P1 rulings name as the point
+    that actually saves a build cycle, and until unit D8 it was the one entry
+    in this section's neighbourhood that said "no call site yet". It has one:
+    `orchestrator._run_task` calls `loop_gate.check_after_implementer` inside
+    its cascade loop, between ``if final_status != plan_mod.DONE: break`` and
+    the mechanical gate, and acts on the answer — BLOCK flips the row to
+    `plan.BLOCKED` with a distinct `blocked_reason` and does NOT escalate the
+    cascade, because the next rung opens with `_reset_worktree` and would
+    destroy the diff a human is being blocked to read.
 
-**NOT wired, stated rather than implied:** the post-implementer call the P1
-rulings name as the point that actually saves a build cycle —
-:func:`check_branch` inside the orchestrator's task loop, right after the
-implementer returns and before verify — has no call site yet. Until it does,
-a role's diff is checked at PR time and in CI only, which is one build cycle
-later than the plan wants. That hook changes task-loop control flow and has
-no seal in this unit; it is named here so nobody reads this module as
-already providing it.
+    Two honest qualifications, stated here because a claim in this section is
+    checked mechanically and its PROSE is not. **The gate is OFF by default**
+    (`RunConfig.enable_role_loop_gate`, opt-in): on a tree where
+    :func:`check_branch`'s reachability arm engages, that arm costs minutes per
+    branch, so a run that cannot afford it does not turn it on. Off is a NAMED
+    state — `loop_gate.LoopGateStatus.NOT_ENABLED` — logged, journalled and
+    stamped on every row, never a silence. And a CLEAN from the loop is NOT a
+    verdict about what will land: four later spawns commit to the same branch,
+    so PR time and CI remain the gate on the diff that ships. The loop saves
+    the build cycle; it does not replace the two enforcement points above it.
+
+**NOT wired, stated rather than implied**, and this paragraph is kept — with
+its contents replaced — because the shape of it is what stopped this module
+from reading as more enforced than it is. Three items, each owed and each
+named at `loop_gate`'s §7:
+
+  1. :func:`validate` does not refuse a batch whose rows carry more than one
+     role, and it does not refuse rows that share a role but carry different
+     ``immutable_paths:`` / ``disputed_paths:`` additions. Measured: such a
+     worklist loads with zero errors and zero warnings. Both are caught at
+     diff time by `loop_gate.LoopGateStatus.ROLE_UNRESOLVED` → BLOCK, which is
+     one build cycle later than plan time and is the whole reason the item is
+     still listed here.
+  2. There is no deadline on the loop-time call. `loop_gate` NAMES
+     `DEADLINE_EXCEEDED` and refuses a ``deadline_seconds`` it cannot honour
+     rather than timing the call after the fact; the state is unreachable
+     until a killable process face exists.
+  3. Nothing checks the diffs the post-hook iterate spawns commit —
+     `_retry_for_test_fix`, `_spawn_verifier_iterate`, `_spawn_panel_iterate`.
+     PR time is the only gate on those today.
 
 Notes for the seal author (P2)
 ------------------------------
