@@ -764,6 +764,21 @@ _FLOOR_ROWS: tuple[tuple[str, str], ...] = (
         "**/src/claude_dispatcher/call_site_contract.py",
         "sub/project/src/claude_dispatcher/call_site_contract.py",
     ),
+    # The gate's NINTH artifact (D7 P4 ruling, 2026-08-12): the BRANCH gate,
+    # `branch_reachability.py`. TWO rows and not four, on the same measured
+    # rule the fifth, sixth and eighth entries carry — this glob names a FILE,
+    # and the extra pair the Go and TypeScript entries take exists solely to
+    # make a SUBTREE half falsifiable, which a single file has nothing to be
+    # falsifiable about. The real path and the vendored layout are the two
+    # probes every file glob in this table carries.
+    (
+        "**/src/claude_dispatcher/branch_reachability.py",
+        "src/claude_dispatcher/branch_reachability.py",
+    ),
+    (
+        "**/src/claude_dispatcher/branch_reachability.py",
+        "sub/project/src/claude_dispatcher/branch_reachability.py",
+    ),
 )
 
 
@@ -891,7 +906,11 @@ def test_the_floor_is_exactly_the_written_out_set_of_globs() -> None:
             f"{probe!r} does not match floor glob {glob!r} — the probe, not "
             "the floor, is wrong"
         )
-    assert len(_FLOOR_ROWS) >= 34, _FLOOR_ROWS
+    # 34 -> 36 (D7 P4, 2026-08-12): the two rows the branch gate's own glob
+    # brings. The bound moves with the table for the reason it has moved four
+    # times before — a bound left behind lets the whole entry, glob and rows,
+    # be deleted with this seal green.
+    assert len(_FLOOR_ROWS) >= 36, _FLOOR_ROWS
 
 
 def test_every_floor_glob_the_ruling_wrote_out_is_in_the_constant() -> None:
@@ -992,8 +1011,17 @@ def test_every_floor_glob_the_ruling_wrote_out_is_in_the_constant() -> None:
     # from. A bound left at 13 would let the whole entry — glob, both rows —
     # be deleted with this seal green, and the words the two floored halves
     # agree in become writable by the branch they are judging.
-    assert len(written) >= 14, (
-        f"_FLOOR_ROWS no longer writes out fourteen distinct floor globs, so "
+    #
+    # 14 -> 15 (D7 P4, 2026-08-12): the BRANCH gate, `branch_reachability.py`.
+    # Same argument, and this entry is the one the argument was written for.
+    # The other fourteen protect an artifact the gate READS; this one names the
+    # module `check_branch` step 6 CALLS and whose `verdict_of` is unioned into
+    # every bodies verdict. A bound left at 14 would let the glob and both rows
+    # be deleted with this seal green, and the branch under judgement would get
+    # to rewrite `_ROLE_OBLIGATIONS` — turning its own gate to NOT_RUN — while
+    # this file reported a floor of fourteen intact globs.
+    assert len(written) >= 15, (
+        f"_FLOOR_ROWS no longer writes out fifteen distinct floor globs, so "
         f"this seal is measuring a shrunken table rather than the floor: "
         f"{written}"
     )

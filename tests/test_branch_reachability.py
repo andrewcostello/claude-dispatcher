@@ -146,7 +146,7 @@ from claude_dispatcher.call_site_reachability import (
     analyzer_for_path,
     check_tree,
 )
-from claude_dispatcher.role_protocol import DiffVerdict, Role
+from claude_dispatcher.role_protocol import DiffVerdict, Role, check_branch
 
 _TESTS_DIR = Path(__file__).resolve().parent
 _ACCEPTANCE_FIXTURE = _TESTS_DIR / "fixtures" / "d6_g2_preserve"
@@ -2383,6 +2383,142 @@ def test_materialise_base_tree_refuses_a_destination_inside_the_repository(
         "the base tree's subject keys must carry the same qualifier the head "
         "sweep produces, or every head finding reads as introduced"
     )
+
+
+# --------------------------------------------------------------------------- #
+# DISPUTE D1, CLOSED — the gate, sealed as REACHED, end to end
+# --------------------------------------------------------------------------- #
+
+
+def test_the_wired_gate_refuses_a_bodies_branch_through_check_branch(
+    tmp_path: Path,
+) -> None:
+    """DISPUTE D1's behavioural half (P4, 2026-08-12). **No monkeypatch.**
+
+    The static half —
+    ``tests/test_floor_closure.py::test_check_branch_actually_calls_the_
+    reachability_gate`` — proves the call is WRITTEN. This one proves the
+    answer MOVES A VERDICT, through the real :func:`check_branch`, over a real
+    repository, with nothing substituted: no ``run`` seam, no patched module
+    global, no hand-built :class:`BranchReachability`. A row that patched
+    ``branch_reachability.check_branch_reachability`` and watched the verdict
+    change would prove the call site exists and would prove nothing about which
+    answers reach it.
+
+    **THE SHAPE, and why it needs no Go toolchain.** ``repo_root``'s HEAD is
+    left at ``main`` while ``branch_ref`` is ``feat/x``, which is step 4's
+    :attr:`ReachabilitySweepStatus.UNCHECKED_HEAD_NOT_CHECKED_OUT` — a BLOCKING
+    status on BODIES, reached before step 5 materialises anything and before
+    step 6 sweeps anything. So the row costs one ``git rev-parse`` and is
+    deterministic on a host with no ``go``, and it still traverses every line
+    of the wiring: the call, the obligation table, the status table,
+    :func:`verdict_of`, and the union at ``_VERDICT_PRECEDENCE``.
+
+    **THREE CONTROLS, all judged in this same call, because a bare "BODIES is
+    UNDETERMINED" is satisfied by half a dozen unrelated defects:**
+
+      1. the SAME repository, the SAME refs, role SCAFFOLD — CLEAN. Scaffold's
+         obligation is NOT_RUN, so this separates "the reachability arm refused
+         it" from "this repository is broken in some way that refuses
+         everybody";
+      2. the SAME repository, role BODIES, with the changed path a ``.py``
+         file instead of a ``.go`` file — CLEAN, through step 3's cheap exit.
+         This separates "the arm ran and refused" from "the arm refuses any
+         branch it is asked about", and it is the control that would catch a
+         wiring that ignored :func:`analyzable_paths`;
+      3. the verdict's own ``detail`` names the reachability arm. A verdict
+         that moved for a reason the report does not state is the vacuous half
+         of this gate, and ``detail`` is the only line a caller that logs the
+         verdict keeps.
+
+    Measured under: the step-6 call deleted from ``check_branch`` — the BODIES
+    row reads CLEAN and this reddens; the two controls stay green, which is
+    what makes them controls.
+    Measured under: the ``worst_verdict`` union replaced by ``unioned =
+    verdict``, the call left in place — the BODIES row reads CLEAN and this
+    reddens. **Before the static row grew its fourth claim, this was the ONLY
+    red in the whole suite under that mutation** — one row standing between a
+    gate that runs and a gate that is consulted. It is now two, in two files,
+    failing for two different reasons.
+    Measured under: ``_ROLE_OBLIGATIONS[Role.BODIES]`` set to ``NOT_RUN`` —
+    the BODIES row reads CLEAN and this reddens.
+    """
+    repo = tmp_path / "wired"
+    (repo / "cmd").mkdir(parents=True)
+    (repo / "cmd" / "main.go").write_text(
+        "package main\n\nfunc main() {}\n", encoding="utf-8"
+    )
+    (repo / "note.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _init_repo(repo)
+
+    _git(repo, "checkout", "-q", "-b", "feat/x")
+    (repo / "cmd" / "main.go").write_text(
+        "package main\n\nfunc main() { _ = 1 }\n", encoding="utf-8"
+    )
+    _commit_all(repo, "a bodies edit to a go file")
+
+    _git(repo, "checkout", "-q", "-b", "feat/py", "main")
+    (repo / "note.py").write_text("VALUE = 2\n", encoding="utf-8")
+    _commit_all(repo, "a bodies edit to a python file")
+
+    # HEAD is `feat/py`, so neither `feat/x` nor `main` is checked out. That is
+    # step 4's refusal for the Go branch and is invisible to the Python one,
+    # which never reaches step 4.
+    head = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
+    assert head == "feat/py", head
+
+    go_branch = check_branch(repo, "main", "feat/x", Role.BODIES)
+
+    assert go_branch.reachability is not None, (
+        "check_branch produced no BranchReachability at all, so unit D7's gate "
+        "did not run. `reachability=None` is the state the P1 scaffold left "
+        "and it is NOT a pass"
+    )
+    assert (
+        go_branch.reachability.status
+        is ReachabilitySweepStatus.UNCHECKED_HEAD_NOT_CHECKED_OUT
+    ), go_branch.reachability.status
+    assert go_branch.reachability.obligation is ReachabilityObligation.BLOCKING
+    assert go_branch.verdict is DiffVerdict.UNDETERMINED, (
+        "a bodies branch whose reachability could not be checked was not "
+        f"refused: {go_branch.verdict} — {go_branch.detail}"
+    )
+    assert not go_branch.violations, (
+        "the refusal came from the path gate, not from the reachability arm, "
+        "so this row measures the wrong thing"
+    )
+
+    # Control 3: the verdict says why, on the line a caller keeps.
+    assert "reachability" in go_branch.detail, go_branch.detail
+    assert (
+        ReachabilitySweepStatus.UNCHECKED_HEAD_NOT_CHECKED_OUT.value
+        in go_branch.detail
+    ), go_branch.detail
+
+    # Control 1: the same branch, a role whose gate this is not.
+    scaffold = check_branch(repo, "main", "feat/x", Role.SCAFFOLD)
+    assert scaffold.verdict is DiffVerdict.CLEAN, (
+        "role scaffold was refused by a gate whose obligation to it is "
+        f"NOT_RUN: {scaffold.verdict} — {scaffold.detail}"
+    )
+    assert scaffold.reachability is not None
+    assert (
+        scaffold.reachability.status
+        is ReachabilitySweepStatus.NOT_THIS_ROLES_GATE
+    ), scaffold.reachability.status
+
+    # Control 2: bodies again, on a diff no analyzer can read.
+    python_branch = check_branch(repo, "main", "feat/py", Role.BODIES)
+    assert python_branch.verdict is DiffVerdict.CLEAN, (
+        "a bodies branch whose whole diff is unanalyzable was refused, so the "
+        "arm refuses every branch it is asked about rather than the ones it "
+        f"could not check: {python_branch.verdict} — {python_branch.detail}"
+    )
+    assert python_branch.reachability is not None
+    assert (
+        python_branch.reachability.status
+        is ReachabilitySweepStatus.NO_ANALYZABLE_FILE_IN_DIFF
+    ), python_branch.reachability.status
 
 
 # --------------------------------------------------------------------------- #

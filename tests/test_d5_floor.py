@@ -284,6 +284,14 @@ from test_role_protocol_provenance import (  # noqa: F401
 _D5_MODULE = "call_site_reachability"
 _REACHABILITY_GATE = "src/claude_dispatcher/call_site_reachability.py"
 
+#: The module the D7 wiring puts on the floor's decision path, which is what
+#: carries D5 into the floor's own delegation closure. Written out here, beside
+#: the module it carries, for the same reason `_D5_MODULE` is: nothing in this
+#: file may read a module name off `FLOOR_GLOBS` or off the package directory,
+#: or the seal measures whatever the code happens to say.
+_D7_CARRIER = "branch_reachability"
+_D7_CARRIER_PATH = "src/claude_dispatcher/branch_reachability.py"
+
 #: The vendored layout. This repository can sit inside another tree, which is
 #: why every glob in `DEFAULT_ROLE_RULES` is spelled `**/x/**`.
 _REACHABILITY_GATE_NESTED = (
@@ -647,25 +655,57 @@ def test_every_module_a_d5_decision_reaches_is_already_on_the_floor() -> None:
 
 
 def test_flooring_d5_adds_no_row_to_the_floors_own_delegation_closure() -> None:
-    """The other direction, and the reason this round needs no D1 coordination.
+    """THE DAY THIS ROW WAS WRITTEN FOR ARRIVED. Amended, P4, 2026-08-12.
 
-    GREEN TODAY. `role_protocol` does not import `call_site_reachability` — the
-    dependency runs the other way — so D5 is not in the FLOOR's delegation
-    closure, `_DELEGATION_TARGETS` needs no new row, and this round touches
-    `tests/test_floor_closure.py` not at all. Measured: `call_site_reachability`
-    is absent from `_delegation_closure()`, and nothing in the package imports
-    it today (nobody: it is unenrolled, which is the state Part 6 pins).
-
-    This is a real property and not bookkeeping. The day D5 is WIRED into a
-    floor decision — `role_protocol` calling it, or importing it at module level
-    — it enters the floor's own closure, `_DELEGATION_TARGETS` acquires a row,
+    **What this row said, and it was TRUE when it said it.** At D5,
+    `role_protocol` did not import `call_site_reachability` — the dependency
+    ran the other way — so D5 was not in the FLOOR's delegation closure,
+    `_DELEGATION_TARGETS` needed no new row, and that round touched
+    `tests/test_floor_closure.py` not at all. The row then named its own
+    expiry, in as many words: *"The day D5 is WIRED into a floor decision …
+    it enters the floor's own closure, `_DELEGATION_TARGETS` acquires a row,
     and that is a P4 round rather than a P3 edit. This row is what makes that
-    day visible instead of silent.
+    day visible instead of silent."*
 
+    **It worked.** The D7 wiring commit put `check_branch` step 6 on
+    `branch_reachability.check_branch_reachability`, and this row went RED with
+    the reason string `executed at import of branch_reachability (module-level
+    import)` — naming the exact route and demanding the exact P4 round it
+    predicted. The row is amended and not deleted, and the amendment is its
+    CONDITION rather than its conclusion: the same shape D6's dispute I1
+    amendment took, for the same reason.
+
+    **What it asserts now**, and all three are re-derived here rather than read
+    off any table:
+
+      1. `call_site_reachability` IS in the floor's delegation closure, and the
+         reason string says it arrived INDIRECTLY — through
+         `branch_reachability`'s module-level imports — and not because
+         `role_protocol` imports it. That distinction is the whole D7 wiring in
+         one string, and a revert of the wiring makes this assertion fail;
+      2. its path is on `FLOOR_GLOBS`, under the module's own glob lens. A
+         module in the floor's closure that the floor does not protect is the
+         hole this whole file exists to refuse;
+      3. the module that carried it in — `branch_reachability` — is in the
+         closure too, and is floored. Without this, deleting the D7 floor entry
+         while leaving D5's would satisfy 1 and 2 and leave the branch gate
+         writable by the branch it judges.
+
+    The direction this row LOSES is real and is not lost: "a NEW module entered
+    the closure and nobody wrote it down" is still caught, by
+    `test_the_delegation_closure_is_exactly_the_written_out_table` in
+    `tests/test_floor_closure.py`, which is a set equality against a hand-typed
+    table and which reddened for all three D7 entrants before they were
+    written.
+
+    Measured under: the D7 step-6 call removed from `check_branch` — claim 1
+    fails, because the closure loses both modules.
+    Measured under: the D7 `FLOOR_GLOBS` entry deleted — claim 3 fails.
     Measured under: planting `from . import call_site_reachability` inside
-    `_floor_violations` (a function that reads `FLOOR_GLOBS`) — the first
-    assertion below FAILS. That mutation is run in this same call, so the row
-    is proven falsifiable rather than asserted to be.
+    `_floor_violations` (a function that reads `FLOOR_GLOBS`) — the planted
+    control below reports the DIRECT route, distinguishing it from the indirect
+    one claim 1 pins. That mutation is run in this same call, so the lens is
+    proven able to see a direct delegation rather than assumed to be.
     Measured under: `_delegation_closure` returning `{}` — the lens control
     fails first.
     """
@@ -698,17 +738,54 @@ def test_flooring_d5_adds_no_row_to_the_floors_own_delegation_closure() -> None:
     def read(module: str) -> str | None:
         return mutated if module == "role_protocol" else _package_source(module)
 
-    assert _D5_MODULE in _delegation_closure(read), (
+    planted_closure = _delegation_closure(read)
+    assert _D5_MODULE in planted_closure, (
         "a floor decision that imports the reachability gate was not reported "
-        "as a delegation, so the assertion below cannot fail"
+        "as a delegation, so the assertions below cannot fail"
+    )
+    assert "role_protocol." in planted_closure[_D5_MODULE], (
+        "the planted DIRECT delegation was not reported as one, so the "
+        "assertion that today's route is INDIRECT proves nothing: "
+        f"{planted_closure[_D5_MODULE]!r}"
     )
 
-    assert _D5_MODULE not in floors_closure, (
-        "the reachability gate is now in the FLOOR's own delegation closure, "
-        "so flooring it is no longer only D5's business: it needs a row in "
-        "`_DELEGATION_TARGETS` and `_CLOSURE_ROWS` in tests/test_floor_"
-        f"closure.py, which is a P4 round. Reason: {floors_closure[_D5_MODULE]}"
+    # 1. It is in the closure, and it got there THROUGH the branch gate.
+    assert _D5_MODULE in floors_closure, (
+        "the reachability gate has left the floor's delegation closure. "
+        "Either `check_branch`'s step-6 call to "
+        "`branch_reachability.check_branch_reachability` is gone — in which "
+        "case the D7 gate is no longer wired and the rows that seal the "
+        "wiring must say so — or the closure analyzer stopped following "
+        f"module-level imports: {sorted(floors_closure)}"
     )
+    assert floors_closure[_D5_MODULE] == (
+        f"executed at import of {_D7_CARRIER} (module-level import)"
+    ), (
+        "the reachability gate is in the floor's closure by a route this row "
+        "does not describe. At D7 it arrives INDIRECTLY, because "
+        f"`check_branch` imports {_D7_CARRIER} and that module imports D5 at "
+        "its own module level; `role_protocol` importing D5 directly is a "
+        f"different fact and needs its own ruling: {floors_closure[_D5_MODULE]!r}"
+    )
+
+    # 2 and 3. Both halves of the route are protected by the floor they are now
+    #          inside the closure of. A module the floor's own decision runs
+    #          through and does not protect is the hole this file exists for.
+    for module, path in (
+        (_D5_MODULE, _REACHABILITY_GATE),
+        (_D7_CARRIER, _D7_CARRIER_PATH),
+    ):
+        assert module in floors_closure, (
+            f"{module} is not in the floor's delegation closure, so the "
+            "assertion that it is floored proves nothing about the gate path: "
+            f"{sorted(floors_closure)}"
+        )
+        assert first_matching_glob(path, FLOOR_GLOBS) is not None, (
+            f"{path} runs on the floor's own decision path "
+            f"({floors_closure[module]}) and no floor glob protects it, so a "
+            "branch can dissolve the D7 verdict while touching nothing the "
+            "floor names"
+        )
 
 
 # --------------------------------------------------------------------------- #

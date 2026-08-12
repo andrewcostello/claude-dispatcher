@@ -788,6 +788,15 @@ _GLOB_METACHARACTERS = "*?[]"
 #: :func:`ts_parser_home` resolves it against ``Path(__file__).parent`` and
 #: :data:`TS_HELPER_PACKAGE_DIR` is sealed FLAT.
 #:
+#: **FOURTEEN globs as of unit D7 (2026-08-12): ELEVEN FILE globs, refused at
+#: plan time as well as at diff time, and THREE subtree globs, diff-time
+#: only.** The D7 entry is the eleventh basename and it is the first one added
+#: by a commit that WIRED something rather than by one that protected an
+#: artifact already in place — see the last entry in the tuple for why "before
+#: the thing it protects" was not available there. The paragraph below is the
+#: D6 arithmetic, left standing because each entry's reasoning is written
+#: beside the entry itself and this header has been stale twice.
+#:
 #: **THIRTEEN globs as of unit D6 (2026-08-11), and the arithmetic is restated
 #: here because "TEN globs now" above was already stale.** Unit D5 added
 #: ``call_site_reachability.py`` (eleven, and the ninth basename); unit D6 adds
@@ -958,6 +967,66 @@ FLOOR_GLOBS: tuple[str, ...] = (
     # shortcut by being new: a floor that arrives with enrolment is a floor
     # that was absent for every commit that built the thing it protects.
     "**/src/claude_dispatcher/call_site_contract.py",
+    # The gate's NINTH artifact (D7 P4 ruling, 2026-08-12): the BRANCH gate
+    # itself. A FILE glob, and PATH-QUALIFIED. Every alternative was
+    # re-measured under this module's own lens (`risk.matches_any_glob`) on
+    # THIS revision rather than inherited from the D5/D6 entries, against seven
+    # probes — the module, its `sub/project/...` spelling, a vendored
+    # `vendor/thirdparty/...` copy, an installed `site-packages/...` copy, a
+    # `.venv/lib/python3.12/site-packages/...` copy, and the two still-writable
+    # controls `plan.py` and `blast_radius.py`:
+    #
+    #   * the entry below matches the first two and NONE of the other five;
+    #   * the basename-only spelling `**/branch_reachability.py` also matches
+    #     the `vendor/thirdparty/` copy AND both installed copies, and a floor
+    #     has no override to buy any of them back;
+    #   * the package subtree `**/src/claude_dispatcher/**` also matches
+    #     `plan.py` and `blast_radius.py`, and buys NO plan-time reach, because
+    #     a pure-wildcard tail is exactly what `_floor_glob_named_by` refuses
+    #     by design. This entry is a BASENAME, not a fourth subtree;
+    #   * the brace-compressed spelling
+    #     `**/src/claude_dispatcher/{branch_reachability,call_site_reachability}.py`
+    #     matches NONE of the seven — this engine has no brace expansion, the
+    #     point the delegation-closure block above makes and which was
+    #     re-measured here, not inherited. It is a silent no-op that reads as
+    #     protection, which is the one failure mode a floor may not have;
+    #   * a `**` tail on a file — `.../branch_reachability.py/**` — matches
+    #     none of the seven either.
+    #
+    # WHY IT IS HERE, and it is the least optional entry in this tuple. This
+    # module is not a delegate the gate happens to reach: as of this commit
+    # `check_branch` CALLS `check_branch_reachability` at step 6 and unions
+    # `verdict_of`'s answer into the verdict at `_VERDICT_PRECEDENCE`. It is
+    # therefore machinery "that computes the verdict" in FLOOR_RATIONALE's own
+    # words, in the most literal sense the phrase has — a branch that could
+    # rewrite `_ROLE_OBLIGATIONS` to `NOT_RUN`, or `verdict_of` to `return
+    # DiffVerdict.CLEAN`, would switch this gate off for itself and then walk
+    # through it, which is the 2026-08-08 `FLOOR_GLOBS = ()` measurement one
+    # module to the left.
+    #
+    # It lands IN THE SAME COMMIT as the call, and not before and not after,
+    # which is the one place this entry's rule differs from the sixth and
+    # eighth entries' "it lands BEFORE enrolment". Those protect an artifact
+    # that already existed; here the call and the exposure are the same edit,
+    # so "before" is not available and "after" would be a floor absent for the
+    # commit that created what it protects.
+    #
+    # LOAD-BEARING, and measured on this revision rather than predicted: with
+    # the step-6 call present and this ONE STRING deleted and nothing else
+    # changed, the whole suite goes **14 failed / 2464 passed / 13 skipped**
+    # (plus the 7 clone-only provenance rows, which error rather than fail for
+    # their usual unrelated reason). Thirteen of the fourteen are the floor's
+    # own files: `test_every_module_in_the_derived_closure_is_on_the_floor`
+    # ("floor them, or take them off the gate path: branch_reachability"),
+    # `test_every_delegation_target_is_on_the_floor[branch_reachability]`,
+    # `test_the_floor_glob_over_a_delegation_target_is_path_qualified`, the ten
+    # role×probe rows, and `test_every_floor_glob_the_ruling_wrote_out_is_in_
+    # the_constant`. The
+    # other two modules the call newly pulls into the derived closure —
+    # `call_site_reachability` and `call_site_contract`, through this module's
+    # own MODULE-LEVEL imports — are already floored, two and four entries up,
+    # so the closure grows by three rows and the floor by one string.
+    "**/src/claude_dispatcher/branch_reachability.py",
 )
 
 #: What a floor violation prints, and deliberately NOT the violated role's own
@@ -7770,25 +7839,38 @@ def check_branch(
          UNDETERMINED rather than CLEAN in its own name (D1-inputs I3). No
          other role reads anything after step 3, so no other role has the
          window.
-      6. **NOT WIRED. Unit D7's step, contracted and left.**
+      6. **WIRED (D7 P4 ruling, 2026-08-12).**
          :func:`~claude_dispatcher.branch_reachability.
-         check_branch_reachability` over ``changed_paths`` and the two refs,
-         its answer onto :attr:`RoleDiffResult.reachability`, and
+         check_branch_reachability` over ``changed``, the two refs and the
+         role, its answer onto :attr:`RoleDiffResult.reachability`, and
          :func:`~claude_dispatcher.branch_reachability.verdict_of` unioned into
          the verdict block below at
          :data:`~claude_dispatcher.branch_reachability._VERDICT_PRECEDENCE`
          (VIOLATION over UNDETERMINED over CLEAN — the order this block already
          applies). Placed HERE, last, so a branch that is already VIOLATION
-         does not pay for it; that skip is a named state and not a silence.
-         **Why P1 left it**: this module is on :data:`FLOOR_GLOBS`, and adding
-         the call additionally puts ``branch_reachability`` into the floor's
-         DERIVED delegation closure, which requires a new
-         :data:`FLOOR_GLOBS` entry *and* a row in
-         ``tests/test_floor_closure.py`` — a seal file BODIES may not touch.
-         Measured on this revision by inserting one function-local in-package
-         import into this function: ``tests/test_floor_closure.py`` goes 2
-         failed / 82 passed. So D7's wiring is not a P3 edit; see that module's
-         escalations.
+         does not pay for it; that skip is a named state and not a silence, and
+         the boolean that carries it is the verdict block's OWN VIOLATION
+         condition rather than a second derivation of it.
+
+         **What the wiring cost, and why it was P4's.** This module is on
+         :data:`FLOOR_GLOBS`, and the call puts three modules into the floor's
+         DERIVED delegation closure — ``branch_reachability`` by the
+         function-local import itself, and ``call_site_reachability`` and
+         ``call_site_contract`` transitively through that module's own
+         module-level imports. So the commit that adds the call also adds one
+         :data:`FLOOR_GLOBS` entry (the other two were already floored) and
+         three rows to ``tests/test_floor_closure.py::_DELEGATION_TARGETS`` —
+         a seal file BODIES may not touch. That is why the call is a P4
+         amendment and not a P3 edit.
+
+         **The call is SEALED as reached** (dispute D1, closed here):
+         ``tests/test_floor_closure.py::
+         test_check_branch_actually_calls_the_reachability_gate`` reddens if
+         the call leaves this function, and
+         ``tests/test_branch_reachability.py::
+         test_the_wired_gate_refuses_a_bodies_branch_through_check_branch``
+         reddens if the answer stops reaching the verdict. Neither reads this
+         docstring; both re-derive the fact.
 
     Verdict: VIOLATION if any path violation or any signature change;
     UNDETERMINED on any :class:`RoleDiffError`, unreadable policy, missing
@@ -8136,6 +8218,61 @@ def check_branch(
             checked_paths=changed,
         )
 
+    # 6. The reachability arm (D7). WIRED HERE, and this call is the whole
+    #    content of the D7 P4 wiring amendment; everything it composes lives in
+    #    `branch_reachability` and nothing about the answer is re-decided here.
+    #
+    #    The import is FUNCTION-LOCAL and must stay so: `branch_reachability`
+    #    imports THIS module at its own module level for `Role` and
+    #    `DiffVerdict`, so a module-level import here is a cycle. That is also
+    #    the line that puts `branch_reachability` — and, transitively through
+    #    its own module-level imports, `call_site_reachability` and
+    #    `call_site_contract` — into the floor's DERIVED delegation closure, so
+    #    this call cannot land without the `FLOOR_GLOBS` entry and the
+    #    `_DELEGATION_TARGETS` rows that land with it.
+    #
+    #    `already_violation` is the verdict block's own VIOLATION condition,
+    #    read one line before the block applies it, and not a re-derivation:
+    #    the two must not be able to disagree about whether the branch is
+    #    already refused, because that boolean is what decides whether a doomed
+    #    branch pays for a whole-tree sweep.
+    #    THE `try` IS NOT DEFENSIVE PADDING AND IT IS NOT A SECOND GUARD ON
+    #    `check_branch_reachability`, WHICH IS CONTRACTED NEVER TO RAISE. It
+    #    covers the two things on this arm that are NOT covered by that
+    #    contract: the import itself, and `verdict_of`, which raises by design
+    #    on an unmapped `ReachabilityObligation` and, through `worst_verdict`,
+    #    on a `DiffVerdict` nothing ranked. Both are exactly the "a new member
+    #    must be ruled on, not defaulted" refusals this lineage keeps, and
+    #    `check_branch` is contracted never to raise — so they land as
+    #    UNDETERMINED carrying the sentence, which is what "I do not know how
+    #    bad this is" is worth. Swallowing them into CLEAN would give the
+    #    permissive answer a new spelling, on the one arm whose whole unit is
+    #    about refusing exactly that.
+    try:
+        from . import branch_reachability as branch_reachability_mod
+
+        already_violation = bool(violations) or bool(signature.changes)
+        reachability = branch_reachability_mod.check_branch_reachability(
+            repo_root,
+            base_ref,
+            branch_ref,
+            role,
+            changed,
+            already_violation=already_violation,
+            run=run,
+        )
+        reachability_verdict = branch_reachability_mod.verdict_of(reachability)
+    except Exception as exc:  # noqa: BLE001 - check_branch never raises
+        return _undetermined(
+            f"the reachability arm could not be composed into the verdict: "
+            f"{type(exc).__name__}: {exc}. check_branch is contracted never to "
+            "raise; a gate whose new arm turns a traceback into a CI mystery "
+            "has replaced exit 3 with nothing",
+            policy_source=source,
+            checked_paths=changed,
+            signature=signature,
+        )
+
     if violations or signature.changes:
         verdict = DiffVerdict.VIOLATION
         detail = (
@@ -8202,6 +8339,50 @@ def check_branch(
                 )
             detail += ", ".join(signature.unsupported_paths)
 
+    # 6b. The union, at `_VERDICT_PRECEDENCE` — VIOLATION over UNDETERMINED
+    #     over CLEAN, which is the order this block already applies. Done
+    #     AFTER the block rather than inside it so that the three arms above
+    #     keep computing exactly what they computed before this amendment, and
+    #     the reachability arm can only ever make the verdict WORSE. It can
+    #     never make it better: `worst_verdict` is monotone and CLEAN is its
+    #     bottom, so an arm that answers CLEAN — which is every NOT_RUN and
+    #     every ADVISORY role, always — changes nothing at all.
+    #
+    #     WHEN THE ARM MOVES THE VERDICT, IT SAYS SO ON `detail`. That is
+    #     forced rather than chosen: `detail` is the line `_print_report` puts
+    #     on stdout and the only line a caller that logs the verdict keeps, and
+    #     a verdict whose stated reason is the signature arm's while the actual
+    #     reason is the reachability arm's is a report that answers a question
+    #     nobody asked. When the arm does NOT move the verdict its status is
+    #     still printed, by `_print_report`, off `RoleDiffResult.reachability`
+    #     — so "this gate did not ask about your branch" is legible on a pass
+    #     without rewriting the three details above, which several seals in
+    #     this suite pin verbatim.
+    #
+    #     `worst_verdict` raises on a `DiffVerdict` nothing ranked, for the
+    #     same reason `verdict_of` does, so it is guarded the same way and for
+    #     the same contract: this function never raises.
+    try:
+        unioned = branch_reachability_mod.worst_verdict(
+            (verdict, reachability_verdict)
+        )
+    except Exception as exc:  # noqa: BLE001 - check_branch never raises
+        return _undetermined(
+            f"the reachability verdict {reachability_verdict!r} could not be "
+            f"unioned with {verdict!r}: {type(exc).__name__}: {exc}",
+            policy_source=source,
+            checked_paths=changed,
+            signature=signature,
+        )
+    if unioned is not verdict:
+        detail = (
+            f"{detail}; and the reachability gate answers "
+            f"{reachability_verdict.value.upper()} "
+            f"({reachability.status.value}"
+            f"{': ' + reachability.detail if reachability.detail else ''})"
+        )
+        verdict = unioned
+
     return RoleDiffResult(
         verdict=verdict,
         role=role,
@@ -8212,6 +8393,7 @@ def check_branch(
         checked_paths=changed,
         policy_source=source,
         detail=detail,
+        reachability=reachability,
     )
 
 
@@ -9180,4 +9362,35 @@ def _print_report(result: RoleDiffResult) -> None:
 if __name__ == "__main__":  # pragma: no cover - script face
     import sys
 
-    raise SystemExit(main(sys.argv[1:]))
+    # NOT `main(...)`, AND THE DIFFERENCE IS A LIVE VERDICT (D7 P4, 2026-08-12).
+    #
+    # `scripts/check_body_branch.sh` runs `python -P -m
+    # claude_dispatcher.role_protocol`, and `-m` on a MODULE loads that module
+    # TWICE: once as `__main__`, and again as `claude_dispatcher.role_protocol`
+    # the moment anything imports it under its real name. The two module
+    # objects have two `Role` enums, two `DiffVerdict` enums and two of every
+    # class here, and `A.Role.BODIES is not B.Role.BODIES`.
+    #
+    # That was INERT until step 6 was wired, because nothing on the diff-time
+    # path had ever crossed into a sibling module holding a table KEYED BY a
+    # type defined here. `branch_reachability._ROLE_OBLIGATIONS` is such a
+    # table, and it is keyed by the PACKAGE's `Role`. Measured on this
+    # revision, with the wiring in and this delegation out: every run through
+    # the CI entrypoint answered
+    #
+    #     UNDETERMINED … unchecked_sweep_vacuous: no reachability obligation
+    #     is defined for role <Role.BODIES: 'bodies'>
+    #
+    # — the gate refusing every legal bodies branch, from `obligation_for_role`
+    # doing exactly its job on a `Role` member that genuinely was not a key of
+    # the mapping it was handed. Eleven rows in this suite reddened, all of
+    # them through the real `check_body_branch.sh`.
+    #
+    # So the ONE copy that runs is the package's. This is not a workaround for
+    # the enum dispatch: the alternative — making the lookups tolerant of a
+    # foreign `Role` by matching on `.value` — is the D5 defect this unit just
+    # removed, wearing a different hat, and it would leave two live `Role`
+    # classes in the process for every other table to trip over later.
+    from claude_dispatcher.role_protocol import main as _packaged_main
+
+    raise SystemExit(_packaged_main(sys.argv[1:]))
