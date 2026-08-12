@@ -582,6 +582,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -841,13 +842,38 @@ type ParseError struct {
 // directory is the answer of the module that OWNS the directory, and a renaming
 // replace means the importing module knows the same package by a different
 // name. "The import path of a directory" is not a function of the directory.
+// P3 (D6, imports round, 2026-08-11) — `imports` IS THE SECOND FIELD THAT IS
+// NOT A FUNCTION OF THE REQUEST TEXT ALONE, AND IT EXISTS TO MAKE D5'S IMPORT
+// RELATION COMPUTABLE.
+//
+// `CallGraph.package_imports` decides, per subject, which unresolved calls could
+// be the missing call site: two packages in different components of the
+// UNDIRECTED import graph cannot hand each other a function value, so a hole in
+// one is out of scope for a subject in the other. D5 owns that rule; this field
+// is the FACT the rule is applied to, and without it every analyzed tree carries
+// `ImportsUnavailable` and no hole is ever scoped away from any subject.
+//
+// It is `pkg.Imports()` — the packages go/types RESOLVED for this unit's import
+// blocks — and never the literal strings of the import specs. The reason is the
+// one property that cancels invisibly: a callee in another package is spelled
+// `fn.Pkg().Path()` by calleeKey above, and `Imports()` is the same vocabulary
+// from the same type-check. Reading the import specs instead would put the
+// relation in a second vocabulary, and then an edge could be joined between two
+// packages the relation reports as unable to name each other, with nothing red.
+//
+// Empty is an ANSWER (a package that imports nothing is legal Go) and absent is
+// not, so the field is not `,omitempty` and the caller refuses a graph document
+// that omits it — the same discipline, for the same reason, as ImportPath.
 type Response struct {
 	Schema string `json:"schema"`
 	Unit   Unit   `json:"unit"`
 	// ImportPath is the import path the Go toolchain resolves for this unit's
 	// own directory. Not `,omitempty`: a graph document must NAME it, and an
 	// absent field and an empty one must not be two spellings of one answer.
-	ImportPath string      `json:"import_path"`
+	ImportPath string `json:"import_path"`
+	// Imports is every package this unit's files import, as go/types resolved
+	// them, sorted and deduplicated. See the note above the type.
+	Imports    []string    `json:"imports"`
 	Symbols    []Symbol    `json:"symbols"`
 	Roots      []Root      `json:"roots"`
 	Edges      []Edge      `json:"edges"`
@@ -908,6 +934,7 @@ func analyze(request Request) (Response, error) {
 	// caller's GoReachabilityAnalyzer.graph, which is the only layer that knows
 	// how many Go files the sweep found.
 	response := Response{
+		Imports:    []string{},
 		Symbols:    []Symbol{},
 		Roots:      []Root{},
 		Edges:      []Edge{},
@@ -964,6 +991,7 @@ func analyze(request Request) (Response, error) {
 		return Response{}, err
 	}
 	response.ImportPath = importPath
+	response.Imports = resolvedImports(pkg)
 
 	walk := &walker{
 		unit:      request.Unit,
@@ -988,6 +1016,53 @@ func analyze(request Request) (Response, error) {
 	walk.declare(parsed, request)
 	walk.walk(parsed, request)
 	return response, nil
+}
+
+// resolvedImports is every package this unit imports, as go/types resolved it.
+//
+// COSTS NOTHING NEW. `conf.Check` a few lines above has already resolved every
+// import of every file in this unit — that is what makes a cross-package callee
+// nameable at all — so this reads a list the type-checker built. No `go list`
+// pass is added by this field, and the per-unit exec count is unchanged at one.
+//
+// `pkg.Imports()` AND NOT THE IMPORT SPECS, and the choice is the whole reason
+// the field is trustworthy. The two differ:
+//
+//   - go/types reports the path the importer RESOLVED, which is what
+//     `fn.Pkg().Path()` returns for a callee in that package. The caller places
+//     an import onto an in-tree package by matching this string against the
+//     import paths the toolchain gave each unit, and joins a cross-package edge
+//     by matching the SAME string. One vocabulary, one join, one failure mode;
+//   - the specs are the text of the import block. Where the two disagree the
+//     relation would say two packages cannot name each other while the edge set
+//     said they do, and D5 would scope a hole away from a subject an edge proves
+//     is in reach. Nothing would be red.
+//
+// Blank and dot imports are included, and must be: go/types records them in
+// pkg.Imports() and both give the importing package a route to the imported
+// one — `_` runs its initialisers, `.` puts its names in this file's scope.
+//
+// Sorted and deduplicated, because two runs over one unit must produce one
+// document and the same package may be imported by several files of the unit.
+func resolvedImports(pkg *types.Package) []string {
+	paths := make([]string, 0, len(pkg.Imports()))
+	seen := make(map[string]bool, len(pkg.Imports()))
+	for _, imported := range pkg.Imports() {
+		if imported == nil {
+			continue
+		}
+		path := imported.Path()
+		// An unnamed package is a package nothing can be joined to. It is
+		// dropped rather than emitted as "", which would read as an import of
+		// the empty path and could match nothing but would still be counted.
+		if path == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 // unitImportPath asks the Go toolchain what this package's import path is.
