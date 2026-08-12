@@ -762,6 +762,20 @@ _GLOB_METACHARACTERS = "*?[]"
 #: could be moved out from under ``src/``, while this one cannot, because
 #: :func:`ts_parser_home` resolves it against ``Path(__file__).parent`` and
 #: :data:`TS_HELPER_PACKAGE_DIR` is sealed FLAT.
+#:
+#: **THIRTEEN globs as of unit D6 (2026-08-11), and the arithmetic is restated
+#: here because "TEN globs now" above was already stale.** Unit D5 added
+#: ``call_site_reachability.py`` (eleven, and the ninth basename); unit D6 adds
+#: the Go reachability ROW and its helper subtree. Each entry's reasoning is
+#: written beside the entry itself rather than here, so that a reader who greps
+#: for a string lands on the argument for that string. The counts, MEASURED
+#: 2026-08-11 under this module's own lens: **ten FILE globs, refused at plan
+#: time as well as at diff time, and THREE subtree globs, diff-time only** —
+#: ``go_signature_fingerprint/**``, ``ts_signature_fingerprint/**`` and now
+#: ``go_call_reachability/**``. The subtree rule generalises exactly as the D4
+#: paragraph above predicted it would, and D6 is its third instance rather than
+#: a new discovery: a ``**`` tail is what :func:`_floor_glob_named_by` refuses,
+#: so any artifact protected as a TREE buys diff-time enforcement only.
 FLOOR_GLOBS: tuple[str, ...] = (
     "**/.dispatcher.yaml",
     "**/scripts/check_body_branch.sh",
@@ -827,6 +841,52 @@ FLOOR_GLOBS: tuple[str, ...] = (
     # lines at all — the module refuses to import and the run ends in a
     # collection error, which is the guard doing exactly what it is for.
     "**/src/claude_dispatcher/call_site_reachability.py",
+    # The gate's SIXTH artifact (D6 P4 ruling, 2026-08-11). A FILE glob, and
+    # PATH-QUALIFIED, measured under this module's own lens on 2026-08-11:
+    #   * it matches `src/claude_dispatcher/go_reachability.py` and the vendored
+    #     `sub/project/...` layout, and does NOT match
+    #     `vendor/thirdparty/go_reachability.py`, `plan.py` or
+    #     `blast_radius.py`;
+    #   * the basename-only spelling `**/go_reachability.py` also matches
+    #     `vendor/thirdparty/go_reachability.py`, and a floor has no override to
+    #     buy that back;
+    #   * the brace-compressed spelling
+    #     `**/src/claude_dispatcher/{go_reachability,call_site_reachability}.py`
+    #     matches NONE of those probes — this engine has no brace expansion, the
+    #     point the delegation-closure block above makes and which was
+    #     re-measured here rather than inherited.
+    # WHY IT IS HERE. `call_site_reachability.py` is the MECHANISM and it is
+    # already floored one entry up; this module is the ROW — the thing that
+    # answers "what does this Go tree start from" and "what calls what", from
+    # which the `Disposition` a branch is judged by is computed. Flooring the
+    # registry while leaving the only row writable protects the table and not
+    # the answer, which is the 2026-08-09 "one artifact, two files" argument
+    # about the library and the entrypoint, one unit later.
+    "**/src/claude_dispatcher/go_reachability.py",
+    # The gate's SEVENTH artifact (D6 P4 ruling, 2026-08-11). A SUBTREE, not a
+    # file, for `go_signature_fingerprint`'s recorded reason: `go.mod` fixes the
+    # language version the parse runs under and pins the module to stdlib-only,
+    # so it is a parser input as much as `main.go` is, and any future file
+    # beside them is one the day it lands.
+    #
+    # This is the THIRD entry whose last segment is `**`, so it inherits the
+    # generalisation the Go and TypeScript subtrees already recorded and it is
+    # named here rather than rediscovered: a subtree glob has NO PLAN-TIME
+    # REACH, because `_floor_glob_named_by` probes each floor glob's last
+    # segment and refuses a pure-wildcard tail by design. Measured 2026-08-11
+    # against this tuple: `go_call_reachability`, `main.go`, `go.mod` and the
+    # full `src/claude_dispatcher/go_call_reachability/main.go` all return None.
+    # The entry is diff-time enforced like every other, because
+    # `_floor_violations` reads the whole tuple.
+    #
+    # The basename-only spelling `**/go_call_reachability/**` is refused for the
+    # file globs' reason, measured the same way: it also matches
+    # `vendor/thirdparty/go_call_reachability/main.go`. The directory spelling
+    # WITHOUT the `**` tail — `**/src/claude_dispatcher/go_call_reachability` —
+    # matches the directory path and NOTHING INSIDE IT, so it is a floor that
+    # protects no file in the helper it names; measured 2026-08-11, it misses
+    # `main.go`, `go.mod` and a nested `internal/parse/decl.go` alike.
+    "**/src/claude_dispatcher/go_call_reachability/**",
 )
 
 #: What a floor violation prints, and deliberately NOT the violated role's own

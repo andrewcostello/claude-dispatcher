@@ -172,6 +172,16 @@ from the seal author's record; every recorded measurement reproduced.
      and collects 34 still. A 34 that becomes a 0 is the rename, and it is the
      only reading under which that is visible.
 
+     **P4, 2026-08-11 (unit D6 floor round, ``feat/D6-floor2``): 34 -> 35, 0
+     red.** The D6 round adds ONE row —
+     `test_the_guard_judges_the_rows_own_module_and_its_helper` — and three
+     defaulted axes to `_package_copy` that no existing row passes. The count
+     obligation above is why the change is recorded here rather than only at the
+     row: a file whose collected count moves without a line saying so is exactly
+     the reading that hides a rename. Everything this file's dispute rulings say
+     about the D5 round stands as written; the 17-red state they describe is
+     history, and the whole file is green on this branch.
+
 Disputes as the seal author raised them, kept verbatim below so the rulings can
 be read against what was actually asked.
 
@@ -1314,6 +1324,68 @@ ANALYZERS: tuple[ReachabilityAnalyzer, ...] = (_EnrolmentProbe(),)'''
 _A_FLOOR_THAT_WOULD_COVER_D5 = "**/src/claude_dispatcher/call_site_reachability.py"
 
 
+#: P4, 2026-08-11 (unit D6). The same probe row, moved OUT of the gate module
+#: into a module of its own, because that is the shape every real row has: D5 is
+#: the mechanism, and a row is a class in another file. The inline probe above
+#: cannot express the defect the D6 floor round found — with the row defined
+#: inside `call_site_reachability.py`, "the row's defining module" and "this
+#: module" are the same path, and a guard that checks only its own path looks
+#: correct.
+#:
+#: The module name is the real row's, so the copy's floor surgery below can be
+#: driven by the same repo-relative paths the floor names. It REPLACES the real
+#: `go_reachability.py` in the copy rather than sitting beside it, so nothing
+#: here depends on that scaffold's contents.
+_ROW_MODULE_NAME = "go_reachability"
+_ROW_MODULE = f"src/claude_dispatcher/{_ROW_MODULE_NAME}.py"
+
+#: The row's HELPER: a program under the row's package whose output IS the call
+#: graph. Two files, because the subtree half of a floor entry is only
+#: falsifiable against more than one.
+_ROW_HELPER_DIR = "go_call_reachability"
+_ROW_HELPER_ENTRY = f"src/claude_dispatcher/{_ROW_HELPER_DIR}/main.go"
+
+_ROW_MODULE_SOURCE = '''"""A registry row in a module of its own — the shape every real row has."""
+from .call_site_reachability import ReachabilityAnalyzer
+from .role_protocol import Language
+
+
+class _RowInItsOwnModule:
+    language = Language.GO
+    negative_is_conclusive = True
+
+    def roots(self, tree):
+        raise NotImplementedError("a shape probe, never an analysis")
+
+    def graph(self, tree):
+        raise NotImplementedError("a shape probe, never an analysis")
+
+    def test_root_predicate(self, symbol):
+        raise NotImplementedError("a shape probe, never an analysis")
+
+
+ROW = _RowInItsOwnModule()
+'''
+
+#: What replaces `ANALYZERS = ()` when the row lives in its own module. The
+#: import is INSIDE a function called on the next line, not at module level: the
+#: row module imports `ReachabilityAnalyzer` back out of this one, so a
+#: module-level import here is a cycle that fails before the guard can run. This
+#: is the shape a real enrolment will need too, and it is stated as fixture
+#: input rather than as a claim about how enrolment must be written.
+_ENROLMENT_FROM_ROW_MODULE_SOURCE = f'''ANALYZERS: tuple[ReachabilityAnalyzer, ...] = ()
+
+
+def _enrol_from_the_row_module():
+    global ANALYZERS
+    from .{_ROW_MODULE_NAME} import ROW
+
+    ANALYZERS = (ROW,)
+
+
+_enrol_from_the_row_module()'''
+
+
 def _enrolment_is_ordered(*, enrolled: bool, floored: bool) -> bool:
     """The ordering property, as one expression: a row may not arrive first."""
     return floored or not enrolled
@@ -1374,8 +1446,17 @@ def test_the_module_is_not_enrolled_while_it_is_off_the_floor() -> None:
     )
 
 
-def _package_copy(tmp_path, *, enrolled: bool, floored: bool | None, layout: str = "src"):
-    """An importable copy of `claude_dispatcher`, doctored along three axes.
+def _package_copy(
+    tmp_path,
+    *,
+    enrolled: bool,
+    floored: bool | None,
+    layout: str = "src",
+    row_in_its_own_module: bool = False,
+    helper: bool = False,
+    unfloor: tuple[str, ...] = (),
+):
+    """An importable copy of `claude_dispatcher`, doctored along six axes.
 
     Only the package's top-level `.py` files are copied — enough to import
     `call_site_reachability` and everything it reaches, and it leaves the 8.8 MB
@@ -1421,10 +1502,35 @@ def _package_copy(tmp_path, *, enrolled: bool, floored: bool | None, layout: str
         None   the copy is left alone, which is the control that proves the
                copy reflects this tree.
 
+    **P4, 2026-08-11 (unit D6): THREE MORE AXES, all defaulting to the world
+    every existing row already builds, so nothing above this line changed.**
+
+        `row_in_its_own_module`  the enrolled row is defined in
+                                 `go_reachability.py` instead of inline. This is
+                                 the shape every real row has, and it is the
+                                 axis without which "the row's defining module"
+                                 and "this module" are the same path and a guard
+                                 that checks only its own path looks correct;
+        `helper`                 the row's package gets a
+                                 `go_call_reachability/` directory holding two
+                                 files — a program whose output would BE the
+                                 call graph;
+        `unfloor`               repo-relative paths whose covering globs are
+                                 removed from the copy's floor, applied AFTER
+                                 `floored`. It is what lets one world floor the
+                                 gate and un-floor the row, which is exactly the
+                                 world the D5 guard permitted.
+
     Nothing is monkeypatched and no mechanism is named: this constructs a world
     and then imports it.
     """
-    root = tmp_path / f"pkg-e{int(enrolled)}-f{floored}-{layout}" / layout
+    # The directory name must separate worlds that differ ONLY in `unfloor`, or
+    # the second such copy lands on the first and the fixture silently judges a
+    # world it did not build. Measured: with the count alone in the slug, the
+    # row-un-floored and helper-un-floored worlds collided.
+    named = "".join(sorted(p.rpartition("/")[2].partition(".")[0] for p in unfloor))
+    slug = f"-r{int(row_in_its_own_module)}h{int(helper)}u{named}"
+    root = tmp_path / f"pkg-e{int(enrolled)}-f{floored}-{layout}{slug}" / layout
     package = root / "claude_dispatcher"
     package.mkdir(parents=True)
     copied = 0
@@ -1432,6 +1538,17 @@ def _package_copy(tmp_path, *, enrolled: bool, floored: bool | None, layout: str
         shutil.copy2(source, package / source.name)
         copied += 1
     assert copied > 20, f"the copy took {copied} modules; it is not the package"
+
+    if row_in_its_own_module:
+        (package / f"{_ROW_MODULE_NAME}.py").write_text(
+            _ROW_MODULE_SOURCE, encoding="utf-8"
+        )
+
+    if helper:
+        directory = package / _ROW_HELPER_DIR
+        directory.mkdir()
+        (directory / "main.go").write_text("package main\n", encoding="utf-8")
+        (directory / "go.mod").write_text("module probe\n", encoding="utf-8")
 
     if enrolled:
         target = package / "call_site_reachability.py"
@@ -1441,7 +1558,12 @@ def _package_copy(tmp_path, *, enrolled: bool, floored: bool | None, layout: str
             "the `ANALYZERS` definition was not found exactly once, so this "
             "fixture enrolled nothing and would prove nothing"
         )
-        text = text.replace(anchor, _ENROLMENT_PROBE_SOURCE, 1)
+        enrolment = (
+            _ENROLMENT_FROM_ROW_MODULE_SOURCE
+            if row_in_its_own_module
+            else _ENROLMENT_PROBE_SOURCE
+        )
+        text = text.replace(anchor, enrolment, 1)
         target.write_text(text, encoding="utf-8")
 
     if floored is not None:
@@ -1466,6 +1588,23 @@ def _package_copy(tmp_path, *, enrolled: bool, floored: bool | None, layout: str
             )
         text = text.replace(guard, rebinding + guard, 1)
         assert text.index(rebinding) < text.index(guard)
+        target.write_text(text, encoding="utf-8")
+
+    if unfloor:
+        target = package / "role_protocol.py"
+        text = target.read_text(encoding="utf-8")
+        guard = 'if __name__ == "__main__":'
+        assert guard in text, "the gate library has no script face to insert before"
+        removal = (
+            "\n# --- this fixture removes every glob covering these paths\n"
+            "FLOOR_GLOBS = tuple(\n"
+            "    _g for _g in FLOOR_GLOBS\n"
+            "    if not any(\n"
+            f"        first_matching_glob(_p, (_g,)) is not None for _p in {list(unfloor)!r}\n"
+            "    )\n"
+            ")\n\n"
+        )
+        text = text.replace(guard, removal + guard, 1)
         target.write_text(text, encoding="utf-8")
 
     return root
@@ -1719,4 +1858,112 @@ def test_enrolment_is_impossible_while_the_floor_row_is_red(tmp_path) -> None:
         "every install of a repository that floors this module correctly — "
         "which is the opposite of the property this row is asking for.\n"
         f"stderr={installed.stderr}"
+    )
+
+
+def test_the_guard_judges_the_rows_own_module_and_its_helper(tmp_path) -> None:
+    """ONE ROW, GREEN as of the D6 floor round, and it is the row the D5 guard
+    could not have passed.
+
+    **The finding, measured at ``feat/D5-relation-body`` @ ``6e18fc0``.** The
+    guard resolved ``_floor_relative_path()`` from ``Path(__file__)`` — its own
+    path and nothing else — so the conjunction it enforced was "the MECHANISM is
+    floored", not "the artifacts this row's answer is computed from are
+    floored". A row is a class in another file, and that file's helper is a
+    program whose output IS the call graph. Both were writable: measured on that
+    revision, ``first_matching_glob`` returned None for
+    ``src/claude_dispatcher/go_reachability.py`` and for both entry points under
+    ``src/claude_dispatcher/go_call_reachability/``, and neither this guard nor
+    ``validate_analyzers`` looked at either.
+
+    Four worlds, and the first two are the finding:
+
+      a. ENROLLED from a row in ITS OWN MODULE, gate floored, ROW MODULE
+         un-floored — must NOT import. **Measured against HEAD~ (the guard as
+         D5 shipped it): this world IMPORTS CLEANLY.** That is the defect, and
+         it is why this row is not a restatement of the one above.
+      b. the same, ROW MODULE floored, HELPER SUBTREE un-floored — must NOT
+         import. **Measured against HEAD~: imports cleanly.**
+      c. all three floored — must import. The control that stops "refuse every
+         non-empty registry" from passing this row, and it also proves the
+         cycle-shaped enrolment the fixture writes really produces a registry
+         with a row in it.
+      d. all three UN-floored, in an INSTALLED layout — must import. Control (e)
+         of the row above, asked of the widened subject: a wheel derives
+         ``site-packages/claude_dispatcher/...`` for the row module and for
+         every file of the helper, not just for the gate, so the widening had to
+         carry the skip forward for all three kinds at once. A guard that reads
+         "I cannot find myself on the floor" as "I am not on the floor" bricks
+         every installed copy, and widening the subject widens the brick.
+
+    Reddens on: reverting the guard's subject to ``Path(__file__)`` (worlds a
+    and b, measured); dropping the ``_floor_relative_path`` None-is-a-skip
+    conjunct (world d); refusing whenever the registry is non-empty (world c).
+
+    Measured under: ``feat/D6-floor2``, 2026-08-11, four package copies imported
+    in fresh interpreters. Measured under (the same four against
+    ``6e18fc0``'s ``call_site_reachability.py``): a and b IMPORT, c and d
+    import, so exactly the two worlds this row exists for flip.
+    """
+    common = dict(enrolled=True, row_in_its_own_module=True, helper=True)
+
+    floored = _import_the_copy(_package_copy(tmp_path, floored=True, **common))
+    assert floored.returncode == 0, (
+        "a copy whose gate, row module and helper subtree are ALL on the floor "
+        "does not import. Enrolment after flooring is the whole point of the "
+        f"ordering; refusing it is a permanent refusal\nstderr={floored.stderr}"
+    )
+    assert floored.stdout.split() == ["IMPORTED", "1", "True"], (
+        "the enrolled-and-floored copy did not come up with one analyzer row, "
+        "so the three worlds below are not statements about an enrolled "
+        f"registry: {floored.stdout!r}"
+    )
+
+    row_unfloored = _import_the_copy(
+        _package_copy(tmp_path, floored=True, unfloor=(_ROW_MODULE,), **common)
+    )
+    assert row_unfloored.returncode != 0, (
+        "a copy carrying an analyzer row whose DEFINING MODULE is off the floor "
+        "imported cleanly. The gate is floored and the row is not, so the "
+        "branch being judged may rewrite what its tree starts from and what "
+        "calls what, while the guard reports the mechanism protected. That is "
+        "the defect the D6 floor round found in the guard as D5 shipped it.\n"
+        f"stdout={row_unfloored.stdout!r}"
+    )
+    assert _ROW_MODULE in row_unfloored.stderr, (
+        "the copy refused, but not for a reason anyone reading the traceback "
+        f"could act on: it must name {_ROW_MODULE}\n{row_unfloored.stderr}"
+    )
+
+    helper_unfloored = _import_the_copy(
+        _package_copy(tmp_path, floored=True, unfloor=(_ROW_HELPER_ENTRY,), **common)
+    )
+    assert helper_unfloored.returncode != 0, (
+        "a copy carrying an analyzer row whose HELPER SUBTREE is off the floor "
+        "imported cleanly. The helper is a program whose output IS the call "
+        "graph, so a branch that can rewrite it can make every subject in its "
+        "own tree reachable — with the gate and the row both floored and the "
+        f"guard silent.\nstdout={helper_unfloored.stdout!r}"
+    )
+    assert _ROW_HELPER_ENTRY in helper_unfloored.stderr, (
+        "the copy refused without naming the helper file that is off the "
+        f"floor\n{helper_unfloored.stderr}"
+    )
+
+    installed = _import_the_copy(
+        _package_copy(
+            tmp_path,
+            floored=True,
+            layout="site-packages",
+            unfloor=(_REACHABILITY_GATE, _ROW_MODULE, _ROW_HELPER_ENTRY),
+            **common,
+        )
+    )
+    assert installed.returncode == 0, (
+        "an INSTALLED copy failed to import. `pyproject.toml` builds with "
+        '`where = ["src"]`, so a wheel has no `src/` component and NO path a '
+        "floor glob can match — not the gate's, not the row module's, and not "
+        "one file of the helper's. A None derivation must be a skip, never a "
+        "refusal, or the widened guard bricks every install of a repository "
+        f"that floors all three correctly.\nstderr={installed.stderr}"
     )

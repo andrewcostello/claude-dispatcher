@@ -1,5 +1,24 @@
 r"""D5 — call-site reachability: does production call this?
 
+P4 FLOOR ROUND (2026-08-11, unit D6, ``feat/D6-floor2``) — THE GUARD'S SUBJECT
+==============================================================================
+**STILL NOT ENROLLED.** :data:`ANALYZERS` is ``()``, nothing is wired, and the
+two pending-state tripwires
+(``test_nothing_in_this_commit_enrols_the_go_row``,
+``test_analyzers_is_empty_and_no_path_in_any_tree_can_be_analyzed``) are green
+before and after. What changed is ONE production property and it is a fix, not
+a feature: :func:`_refuse_enrolment_before_flooring` used to derive
+``_floor_relative_path()`` from ``Path(__file__)`` — its own path and nothing
+else — so it would have permitted enrolment with the ROW's defining module and
+the row's Go helper subtree both writable by the branch under judgement.
+Measured at ``feat/D5-relation-body`` @ ``6e18fc0``: ``go_reachability.py`` and
+both entry points under ``go_call_reachability/`` were off ``FLOOR_GLOBS``, and
+neither this guard nor :func:`validate_analyzers` looked at either. Both globs
+land in the same round; the guard's subject is now
+:func:`_paths_the_enrolled_registry_is_judged_from`. The None-is-a-skip
+conjunct is carried forward for all three kinds of path at once — see there and
+see ``test_the_guard_judges_the_rows_own_module_and_its_helper``.
+
 The scaffold that wrote these contracts left every function raising
 :class:`NotImplementedError` except the two named at their definitions
 (:func:`validate_analyzers`, :func:`analyzer_for_path`) and the reason each was
@@ -710,6 +729,7 @@ did not enrol.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -1281,58 +1301,146 @@ validate_analyzers(ANALYZERS)
 _CHECKOUT_PACKAGE_ROOT = "src"
 
 
-def _floor_relative_path() -> str | None:
-    """This module's path as the floor spells paths, or None if it cannot be.
+def _floor_relative_path(path: Path) -> str | None:
+    """``path`` as the floor spells paths, or None if it cannot be spelled.
 
     ``FLOOR_GLOBS`` is written in repo-relative, git-emitted form, and every
-    entry naming a file in this package is path-qualified — the leading ``**/``
-    matches zero or more leading segments, so the last three components of this
-    file's resolved location are exactly what a floor glob can be matched
-    against, in a nested checkout as well as at a repository root.
+    entry naming something in this package is path-qualified — the leading
+    ``**/`` matches zero or more leading segments, so a path spelled relative
+    to the directory ABOVE :data:`_CHECKOUT_PACKAGE_ROOT` is exactly what a
+    floor glob can be matched against, in a nested checkout as well as at a
+    repository root.
 
-    None is returned when this module is NOT sitting in a source checkout, and
-    that return is the whole point of this function rather than defensive
-    padding. An installed dispatcher derives
-    ``site-packages/claude_dispatcher/<this module>``, which NO path-qualified
-    floor glob matches and which no repository could make match. Reading that
-    "I cannot find myself on the floor" as "I am not on the floor" would refuse
-    every installed copy the moment the module is enrolled, including copies
-    whose repository floors it correctly.
+    None is returned when this package is NOT sitting in a source checkout, or
+    when ``path`` is not inside that checkout, and that return is the whole
+    point of this function rather than defensive padding. An installed
+    dispatcher derives ``site-packages/claude_dispatcher/<module>``, which NO
+    path-qualified floor glob matches and which no repository could make match.
+    Reading that "I cannot find myself on the floor" as "I am not on the floor"
+    would refuse every installed copy the moment the module is enrolled,
+    including copies whose repository floors it correctly. **A None derivation
+    is a SKIP, never a refusal, and every caller owes that.**
+
+    **P4, 2026-08-11 (unit D6): it takes a path now, and the derivation is
+    anchored rather than counted.** It used to be ``Path(__file__).resolve().
+    parts[-3:]`` with ``parts[0] == "src"``, which is right for exactly one
+    input — a file sitting directly in the package — and silently wrong for
+    every other: measured on this revision, the last three components of
+    ``src/claude_dispatcher/go_call_reachability/main.go`` are
+    ``claude_dispatcher/go_call_reachability/main.go``, whose first component
+    is not ``src``, so the old shape would have returned None for every file in
+    the Go helper subtree and the widened guard below would have SKIPPED the
+    whole helper while reading as if it had checked it. The anchor — this
+    package's own directory, whose parent must be
+    :data:`_CHECKOUT_PACKAGE_ROOT` — gives the identical answer for this module
+    and the right one for a nested asset.
 
     Measured 2026-08-11 under ``risk._glob_to_regex`` via
-    :func:`role_protocol.first_matching_glob`, against the eleven-entry
-    ``FLOOR_GLOBS`` this round lands: the checkout spelling returns
-    ``**/src/claude_dispatcher/call_site_reachability.py`` and the
-    ``site-packages`` spelling returns None.
+    :func:`role_protocol.first_matching_glob`, against the thirteen-entry
+    ``FLOOR_GLOBS``: the checkout spelling of this module returns
+    ``**/src/claude_dispatcher/call_site_reachability.py``, the checkout
+    spelling of the Go helper's ``main.go`` returns
+    ``**/src/claude_dispatcher/go_call_reachability/**``, and the
+    ``site-packages`` spelling of either returns None.
     """
-    parts = Path(__file__).resolve().parts[-3:]
-    if len(parts) < 3 or parts[0] != _CHECKOUT_PACKAGE_ROOT:
+    package = Path(__file__).resolve().parent
+    if package.parent.name != _CHECKOUT_PACKAGE_ROOT:
         return None
-    return "/".join(parts)
+    try:
+        relative = path.resolve().relative_to(package.parent.parent)
+    except ValueError:
+        # Outside the checkout entirely — a row shipped by another
+        # distribution. This repository's floor cannot name it, so this
+        # repository's guard does not judge it.
+        return None
+    return "/".join(relative.parts)
+
+
+def _paths_the_enrolled_registry_is_judged_from() -> tuple[Path, ...]:
+    """Every file a branch could rewrite to change what :data:`ANALYZERS` says.
+
+    Three kinds, and the second and third are P4's 2026-08-11 correction to a
+    guard that only ever knew the first:
+
+      1. **This module**, the MECHANISM. It was the guard's only subject, and
+         checking it alone floors the registry while leaving every row writable
+         — the table protected and not the answer.
+      2. **Each row's DEFINING MODULE**, derived from ``type(row).__module__``
+         and never from a hand-list. A row is a class in a file, and that file
+         decides what this tree starts from and what calls what; a branch that
+         can rewrite it supplies its own judge just as squarely as one that can
+         rewrite this module. Measured 2026-08-11 against ``6e18fc0``:
+         ``go_reachability.py`` was off the floor, and the guard as it stood
+         would have permitted enrolment.
+      3. **Each helper subtree**, resolved as
+         ``<the row's package directory>/<a declared helper package dir>`` and
+         enumerated FILE BY FILE rather than probed as a directory. Two reasons,
+         both measured: a floor glob whose tail is ``**`` matches paths INSIDE
+         the directory and not the directory path itself, so a directory probe
+         would report the helper unfloored while the floor covers every byte of
+         it; and enumerating is what makes a file somebody adds to the helper
+         later part of the question rather than outside it.
+
+    A row whose module is not in ``sys.modules``, or has no ``__file__``, or
+    whose helper directory is absent from this install, contributes nothing.
+    That is the same doctrine :func:`_floor_relative_path` states: an
+    underivable path is a SKIP. A guard that refused what it could not locate
+    would refuse every wheel, which is the failure that deferred this whole
+    check for a round.
+    """
+    paths: list[Path] = [Path(__file__)]
+    for row in ANALYZERS:
+        module = sys.modules.get(type(row).__module__)
+        source = getattr(module, "__file__", None)
+        if source is None:
+            continue
+        home = Path(source).resolve()
+        paths.append(home)
+        for name in _HELPER_PACKAGE_DIRS:
+            helper = home.parent / name
+            if not helper.is_dir():
+                continue
+            paths.extend(child for child in sorted(helper.rglob("*")) if child.is_file())
+    return tuple(paths)
 
 
 def _refuse_enrolment_before_flooring() -> None:
-    """Fail the IMPORT when this module carries an analyzer row off the floor.
+    """Fail the IMPORT when an enrolled row is judged from off the floor.
 
     The ordering D5's first P4 escalated, as a property of the ARTIFACT rather
     than of a test run: this module decides, per seal, whether a subject is
     reachable from a production root, and turns that into a ``Disposition`` a
     branch is judged by. A branch that could rewrite it while it is being asked
     the question is the delegation-closure defect, so :data:`ANALYZERS` may not
-    acquire a row before ``FLOOR_GLOBS`` acquires this module. Enforced here so
-    the failure arrives at the first import instead of at the end of a build
-    cycle.
+    acquire a row before ``FLOOR_GLOBS`` acquires the artifacts that row's
+    answer is computed from. Enforced here so the failure arrives at the first
+    import instead of at the end of a build cycle.
+
+    **P4 RULING, 2026-08-11 (unit D6): the subject is the ROW's artifacts, not
+    this file.** As shipped, the check resolved ``_floor_relative_path()`` from
+    ``Path(__file__)`` — its own path and nothing else — so it would have
+    permitted enrolment with ``go_reachability.py`` and the whole
+    ``go_call_reachability/`` helper writable by the branch under judgement.
+    Measured on ``feat/D5-relation-body`` @ ``6e18fc0``: both were off the
+    floor, and neither this guard nor :func:`validate_analyzers` looked at
+    either. :func:`_paths_the_enrolled_registry_is_judged_from` is the widened
+    subject; the conjunction below is unchanged in shape.
 
     THE REFUSAL IS A CONJUNCTION and each conjunct is load-bearing:
 
       * an EMPTY registry never refuses — that is today's world, and a rule
         that refused it would make the package unimportable as it ships;
-      * a FLOORED module never refuses — enrolment after flooring is the whole
-        point of the ordering, and a rule that refused it too would not be a
-        guard but a permanent refusal that the next author deletes;
-      * a module that cannot be spelled the way the floor spells paths never
+      * a FLOORED artifact never refuses — enrolment after flooring is the
+        whole point of the ordering, and a rule that refused it too would not
+        be a guard but a permanent refusal that the next author deletes;
+      * a path that cannot be spelled the way the floor spells paths never
         refuses — see :func:`_floor_relative_path`. This is a fact about the
-        FLOOR, not about where the package happens to be sitting.
+        FLOOR, not about where the package happens to be sitting, and it is the
+        conjunct the widening had to carry forward rather than reinvent: a
+        wheel derives ``site-packages/claude_dispatcher/...`` for EVERY path
+        this function now collects, so the widened guard skips an installed
+        copy exactly as the narrow one did, and skips it for all three kinds at
+        once.
 
     Deliberately NOT written as ``validate_analyzers`` refusing a well-formed
     row: measured 2026-08-11, that reddens a live sibling seal, since
@@ -1349,25 +1457,39 @@ def _refuse_enrolment_before_flooring() -> None:
     """
     if not ANALYZERS:
         return
-    path = _floor_relative_path()
-    if path is None:
-        return
-    if first_matching_glob(path, FLOOR_GLOBS) is not None:
+    unfloored = []
+    for candidate in _paths_the_enrolled_registry_is_judged_from():
+        path = _floor_relative_path(candidate)
+        if path is None:
+            continue
+        if first_matching_glob(path, FLOOR_GLOBS) is None:
+            unfloored.append(path)
+    if not unfloored:
         return
     raise ImportError(
-        "this module carries an analyzer row while its own path is off the "
-        "non-overridable floor. It decides, per seal, whether a subject is "
-        "reachable from a production root, and a branch it is judging may "
-        "still rewrite it: four of the five roles get a clean verdict for "
-        "editing an unfloored gate. Land the floor glob covering "
-        f"{path} in role_protocol.FLOOR_GLOBS on the protected base — a "
+        "this module carries an analyzer row while the artifacts that row's "
+        "answer is computed from are off the non-overridable floor. They "
+        "decide, per seal, whether a subject is reachable from a production "
+        "root, and a branch being judged may still rewrite them: four of the "
+        "five roles get a clean verdict for editing an unfloored gate. Land "
+        "the floor globs covering "
+        f"{unfloored} in role_protocol.FLOOR_GLOBS on the protected base — a "
         "reviewed edit, never a line in the branch being judged — and enrol "
         "after that, not before. The floor as imported here is "
         f"{list(FLOOR_GLOBS)}"
     )
 
 
-_refuse_enrolment_before_flooring()
+# `_refuse_enrolment_before_flooring()` USED TO BE CALLED HERE, immediately
+# below its own definition and beside `validate_analyzers(ANALYZERS)`. P4 moved
+# the CALL — and only the call — below `_HELPER_PACKAGE_DIRS`, because the
+# widened guard reads that constant and a call from here would raise NameError
+# before it could read anything. It still runs while this module's body runs,
+# which is the whole of what "the failure arrives at the first import" asks for;
+# nothing between here and there has a side effect. The NameError is deliberate
+# rather than defended against: a future edit that moves the call back up fails
+# loudly, where a `globals().get(...)` would have skipped the helper check in
+# silence.
 
 
 def analyzer_for_path(path: str) -> ReachabilityAnalyzer | None:
@@ -1418,6 +1540,43 @@ def analyzer_for_path(path: str) -> ReachabilityAnalyzer | None:
 
 
 
+
+
+#: Every helper package directory this gate declares, as DIRECTORY NAMES to be
+#: resolved against the package directory of whichever module defines a row —
+#: never as paths, and never against a repository root or the CWD.
+#:
+#: It exists so that :func:`_refuse_enrolment_before_flooring` has ONE place to
+#: read "what non-Python source does an enrolled row's answer come out of", and
+#: it is spelled from the constants above rather than restating them, so the
+#: helper's location is still declared exactly once. A row's helper is a program
+#: whose output IS the call graph: leaving it writable by the branch whose call
+#: graph it computes is the defect flooring the row module alone would not
+#: close.
+#:
+#: NOT a per-row field on :class:`ReachabilityAnalyzer`, and the reason is
+#: measured rather than aesthetic (2026-08-11): adding a member to that Protocol
+#: reddens every analyzer double in the suite — ``_Analyzer`` and ``_go`` /
+#: ``_python`` in ``tests/test_call_site_reachability.py``, ``_Unimplemented`` in
+#: ``tests/test_go_reachability.py`` — which is the coupled seal amendment
+#: ``supplies_import_relation`` and ``test_id`` are both already waiting on. The
+#: guard must not be held behind that queue, so it reads the gate's own
+#: declaration instead. When those four coupled edits land, this tuple is the
+#: thing to replace with a row member, and it is two lines.
+#:
+#: The consequence of being gate-wide rather than per-row, stated because it is
+#: a real over-approximation: with a second language enrolled, that row's
+#: enrolment would also require the GO helper to be floored. It runs in the safe
+#: direction — the check can only refuse enrolment, never permit it — and it
+#: cannot bite today, because this round floors the Go helper.
+_HELPER_PACKAGE_DIRS: tuple[str, ...] = (GO_REACHABILITY_PACKAGE_DIR,)
+
+
+# The guard, called here rather than beside its definition: it reads
+# `_HELPER_PACKAGE_DIRS`, which is bound one statement up. See the note at the
+# definition for why the call moved and why the failure mode of moving it back
+# is a NameError rather than a silent skip.
+_refuse_enrolment_before_flooring()
 
 
 # --------------------------------------------------------------------------- #

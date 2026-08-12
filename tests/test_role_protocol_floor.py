@@ -535,6 +535,64 @@ def _spec(role: Role, *disputed: str) -> TaskRoleSpec:
 #: diff time would clear the path. It runs in the safe direction — plan time
 #: strictly stricter, so it can only false-refuse — and the false refusal has a
 #: spelling that works, because a subtree declaration is not a plan-time hit.
+#:
+#: **THE GATE'S SIXTH AND SEVENTH ARTIFACTS — the reachability ROW and its Go
+#: helper (P4 ruling, 2026-08-11, unit D6). P3: use these strings, or escalate
+#: — do not edit this table.**
+#:
+#:     **/src/claude_dispatcher/go_reachability.py
+#:     **/src/claude_dispatcher/go_call_reachability/**
+#:
+#: D5 floored the MECHANISM. These floor the ROW and the program the row's
+#: answer is computed by, and they are items 1 and 2 of that unit's own "WHAT IS
+#: OWED BEFORE ENROLMENT". Measured 2026-08-11 against `feat/D5-relation-body` @
+#: `6e18fc0`, before this edit: `first_matching_glob` returns None for
+#: `src/claude_dispatcher/go_reachability.py`,
+#: `src/claude_dispatcher/go_call_reachability/main.go` and
+#: `src/claude_dispatcher/go_call_reachability/go.mod` alike. The mechanism was
+#: floored and both halves of the only row that will use it were writable.
+#:
+#:   16. PATH-QUALIFIED, both of them, decided as points 1-3, 4, 9 and 12 decide
+#:      it and MEASURED here rather than inherited: `**/go_reachability.py` also
+#:      matches `vendor/thirdparty/go_reachability.py`, and
+#:      `**/go_call_reachability/**` also matches
+#:      `vendor/thirdparty/go_call_reachability/main.go`. A floor has no
+#:      override, so neither vendored path could ever be bought back.
+#:   17. A FILE for the row, a SUBTREE for the helper, and the asymmetry is the
+#:      Go fingerprinter's, unchanged: `go.mod` fixes the language version the
+#:      parse runs under and pins the module stdlib-only, so a floor over
+#:      `main.go` alone protects the shape of the program and not its behaviour.
+#:      Measured 2026-08-11, the third spelling a reader will reach for —
+#:      `**/src/claude_dispatcher/go_call_reachability` with no `**` tail —
+#:      matches the DIRECTORY PATH and nothing inside it: not `main.go`, not
+#:      `go.mod`, not a nested `internal/parse/decl.go`. It is a floor entry
+#:      that protects no file in the helper it names.
+#:   18. THE SUBTREE ENTRY HAS NO PLAN-TIME REACH, and this is said here rather
+#:      than discovered later. Its last segment is `**`, which is exactly what
+#:      `_floor_glob_named_by` refuses, so no declaration can name it at plan
+#:      time. Measured 2026-08-11 against the thirteen-entry tuple:
+#:      `go_call_reachability`, `main.go`, `go.mod`,
+#:      `src/claude_dispatcher/go_call_reachability/main.go` and
+#:      `src/claude_dispatcher/go_call_reachability/**` all return None, while
+#:      `go_reachability.py`, the full path AND
+#:      `vendor/thirdparty/go_reachability.py` all return the new FILE glob.
+#:      The subtree is diff-time enforced like everything else —
+#:      `_floor_violations` reads the whole tuple — but the helper buys no early
+#:      refusal, which is the generalisation D4 licensed and D6 is the third
+#:      instance of.
+#:   19. NO SPLIT THIS ROUND. D5's coordination was forced — `role_protocol.py`
+#:      is on the floor and `check_branch` refuses it to ADJUDICATE, so P4 could
+#:      land the rows and not the constant. That reasoning is about the branch
+#:      UNDER JUDGEMENT, and `feat/D6-floor2` is not being judged by this floor;
+#:      the constant, the six rows and the two bounds are one commit, which is
+#:      the shape D2 and D4 each landed and the shape a floor entry should have.
+#:
+#: THIRTEEN globs as of unit D6 (2026-08-11). The split is now TEN refused at
+#: plan time and THREE diff-time only, the third subtree being the Go helper.
+#: The basename count moves 9 -> 10 with `go_reachability.py`, and the accepted
+#: asymmetry widens by one with it on the same terms: a declaration naming that
+#: basename is refused at plan time even where diff time would clear the path,
+#: it can only false-refuse, and the false refusal has a spelling that works.
 _FLOOR_ROWS: tuple[tuple[str, str], ...] = (
     ("**/.dispatcher.yaml", ".dispatcher.yaml"),
     ("**/.dispatcher.yaml", "sub/project/.dispatcher.yaml"),
@@ -652,6 +710,43 @@ _FLOOR_ROWS: tuple[tuple[str, str], ...] = (
         "**/src/claude_dispatcher/call_site_reachability.py",
         "sub/project/src/claude_dispatcher/call_site_reachability.py",
     ),
+    # The gate's SIXTH artifact (D6 P4 ruling, 2026-08-11): the reachability
+    # ROW. Two rows, because this glob is a FILE — the real path and the
+    # vendored layout, which is what every file glob in this table carries.
+    (
+        "**/src/claude_dispatcher/go_reachability.py",
+        "src/claude_dispatcher/go_reachability.py",
+    ),
+    (
+        "**/src/claude_dispatcher/go_reachability.py",
+        "sub/project/src/claude_dispatcher/go_reachability.py",
+    ),
+    # The gate's SEVENTH artifact (D6 P4 ruling, 2026-08-11): the Go
+    # call-reachability helper. FOUR rows on the two subtrees' pattern — two
+    # that pin the path qualification (real layout and vendored layout) and two
+    # that pin the SUBTREE half. The second pair is the whole point: a spelling
+    # that named `main.go` alone would leave `go.mod` — which fixes the language
+    # version the parse runs under and pins the module stdlib-only — writable by
+    # the branch whose call graph is being computed, and a spelling that named
+    # the DIRECTORY without a `**` tail would protect nothing inside it at all
+    # (measured 2026-08-11: it matches the directory path and neither entry
+    # point).
+    (
+        "**/src/claude_dispatcher/go_call_reachability/**",
+        "src/claude_dispatcher/go_call_reachability/main.go",
+    ),
+    (
+        "**/src/claude_dispatcher/go_call_reachability/**",
+        "sub/project/src/claude_dispatcher/go_call_reachability/main.go",
+    ),
+    (
+        "**/src/claude_dispatcher/go_call_reachability/**",
+        "src/claude_dispatcher/go_call_reachability/go.mod",
+    ),
+    (
+        "**/src/claude_dispatcher/go_call_reachability/**",
+        "src/claude_dispatcher/go_call_reachability/internal/parse/decl.go",
+    ),
 )
 
 
@@ -736,6 +831,17 @@ def test_the_floor_is_exactly_the_written_out_set_of_globs() -> None:
     before P3 lands it, the bound and the per-row match assertion below are the
     only things holding these two rows in place, and the sibling seal is the
     one that is red.
+
+    **P4, 2026-08-11 (unit D6): the bound moves 26 -> 32** for the reachability
+    ROW's two rows and the Go call-reachability helper subtree's four, on the
+    same argument. SIX and not four because the second entry is a SUBTREE: the
+    extra pair is what makes the subtree half falsifiable, exactly as the Go and
+    TypeScript fingerprinter subtrees each carry it, and there is no subtree
+    half in the file entry to make falsifiable. Unlike D5, this round lands the
+    constant in the SAME commit as the rows — the D6 branch is not the branch
+    being judged by this floor — so the set difference above and the sibling
+    seal below are both GREEN across the edit and the bound is again the only
+    thing that makes deleting the six rows visible.
     """
     written = {glob for glob, _probe in _FLOOR_ROWS}
     unsealed = sorted(set(FLOOR_GLOBS) - written)
@@ -751,7 +857,7 @@ def test_the_floor_is_exactly_the_written_out_set_of_globs() -> None:
             f"{probe!r} does not match floor glob {glob!r} — the probe, not "
             "the floor, is wrong"
         )
-    assert len(_FLOOR_ROWS) >= 26, _FLOOR_ROWS
+    assert len(_FLOOR_ROWS) >= 32, _FLOOR_ROWS
 
 
 def test_every_floor_glob_the_ruling_wrote_out_is_in_the_constant() -> None:
@@ -833,9 +939,17 @@ def test_every_floor_glob_the_ruling_wrote_out_is_in_the_constant() -> None:
     # the constant — a bound left at 10 would let the ruling be "resolved" by
     # deleting its two rows instead of by landing its glob, and this row would
     # go green on the deletion.
-    assert len(written) >= 11, (
-        f"_FLOOR_ROWS no longer writes out eleven distinct floor globs, so this "
-        f"seal is measuring a shrunken table rather than the floor: {written}"
+    #
+    # 11 -> 13 (D6 P4, 2026-08-11): the reachability ROW and the Go
+    # call-reachability helper subtree. Same argument, and the subtree half is
+    # the one that needs it: `go_call_reachability/**` is plan-time invisible
+    # by construction, so `_DECLARATIONS_THAT_NAME_THE_FLOOR` cannot carry a
+    # behavioural row for it and this bound is the only thing in either file
+    # that notices its deletion.
+    assert len(written) >= 13, (
+        f"_FLOOR_ROWS no longer writes out thirteen distinct floor globs, so "
+        f"this seal is measuring a shrunken table rather than the floor: "
+        f"{written}"
     )
     missing = sorted(written - set(FLOOR_GLOBS))
     assert not missing, (

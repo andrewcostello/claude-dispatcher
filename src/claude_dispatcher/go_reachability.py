@@ -13,11 +13,27 @@ which was the same commit one unit earlier: a registry with no rows, and then
 one.
 
 **IT IS NOT ENROLLED BY THIS COMMIT.** ``ANALYZERS`` is untouched and still
-``()``; ``role_protocol`` is untouched; ``FLOOR_GLOBS`` is untouched; no call
-site is added. See WHAT IS OWED BEFORE ENROLMENT. D5's import-time guard
+``()``; no call site is added. See WHAT IS OWED BEFORE ENROLMENT.
+
+**CORRECTION (P4, 2026-08-11, unit D6 floor round ``feat/D6-floor2``).** This
+paragraph used to end: *"D5's import-time guard
 (``_refuse_enrolment_before_flooring``) already refuses a row while the module
-is off the floor, so enrolment cannot happen by accident — that is not a reason
-to do it deliberately.
+is off the floor, so enrolment cannot happen by accident."* **That sentence was
+FALSE as written, and it was the load-bearing kind of false — it told a reader
+that a mechanism was standing guard over THIS module when nothing was.**
+Measured at ``6e18fc0``: the guard resolved its path from ``Path(__file__)``,
+which is ``call_site_reachability.py``'s own path and no other, and neither it
+nor ``validate_analyzers`` read a row's defining module or its helper subtree.
+"the module" in that sentence was D5's module, not this one, and this one was
+off the floor. Both halves are now true rather than the prose repaired around
+them: items 1 and 2 of WHAT IS OWED BEFORE ENROLMENT are DISCHARGED by that
+round — ``FLOOR_GLOBS`` carries
+``**/src/claude_dispatcher/go_call_reachability/**`` and
+``**/src/claude_dispatcher/go_reachability.py``, so ``role_protocol`` and
+``FLOOR_GLOBS`` are no longer untouched — and the guard's subject is now every
+path an enrolled row's answer is computed from, this module and its helper
+included. Enrolment still cannot happen by accident, and that is still not a
+reason to do it deliberately.
 
 Provenance discipline
 =====================
