@@ -216,6 +216,21 @@ if TYPE_CHECKING:  # `plan` imports this module at its own call site (P3), so a
     # does for spawn. Type-only here; nothing at runtime.
     from . import plan as plan_mod
 
+    # D7 (P1 scaffold, `feat/D7-gate-wiring`). Same reason and the same
+    # spelling: `branch_reachability` imports THIS module at its own module
+    # level, for `Role` and `DiffVerdict`, so a runtime import here would be a
+    # cycle. Type-only, and deliberately so — `tests/test_floor_closure.py`
+    # excludes `if TYPE_CHECKING:` from the derived delegation closure exactly
+    # because such an import executes nothing and can rebind nothing, so
+    # `RoleDiffResult` may name the type without putting a new module on the
+    # gate path. **The moment `check_branch` actually CALLS it (step 6 below,
+    # not done here), that stops being true** — measured on this revision by
+    # inserting one function-local in-package import into `check_branch`:
+    # `tests/test_floor_closure.py` goes 2 failed / 82 passed and names the new
+    # module as an unfloored delegation. See `branch_reachability`'s
+    # escalations.
+    from .branch_reachability import BranchReachability
+
 # --------------------------------------------------------------------------- #
 # The closed role universe
 # --------------------------------------------------------------------------- #
@@ -2685,6 +2700,15 @@ class RoleDiffResult:
     checked_paths: tuple[str, ...] = ()
     policy_source: PolicySource | None = None
     detail: str = ""
+    #: D7's answer, or ``None`` when :func:`check_branch` did not ask — which
+    #: is the state TODAY, at the P1 scaffold, and the state until the wiring
+    #: escalation is ruled. **``None`` is not "clean"**, exactly as
+    #: ``signature=None`` is not "unchanged": the sub-record carries its own
+    #: :class:`~claude_dispatcher.branch_reachability.ReachabilitySweepStatus`
+    #: for every way of not having run, and ``None`` means the question was
+    #: never put. A caller that treats ``None`` as a pass has invented the one
+    #: reading this whole unit exists to refuse.
+    reachability: BranchReachability | None = None
 
 
 def first_matching_glob(path: str, patterns: Sequence[str]) -> str | None:
@@ -7746,6 +7770,25 @@ def check_branch(
          UNDETERMINED rather than CLEAN in its own name (D1-inputs I3). No
          other role reads anything after step 3, so no other role has the
          window.
+      6. **NOT WIRED. Unit D7's step, contracted and left.**
+         :func:`~claude_dispatcher.branch_reachability.
+         check_branch_reachability` over ``changed_paths`` and the two refs,
+         its answer onto :attr:`RoleDiffResult.reachability`, and
+         :func:`~claude_dispatcher.branch_reachability.verdict_of` unioned into
+         the verdict block below at
+         :data:`~claude_dispatcher.branch_reachability._VERDICT_PRECEDENCE`
+         (VIOLATION over UNDETERMINED over CLEAN — the order this block already
+         applies). Placed HERE, last, so a branch that is already VIOLATION
+         does not pay for it; that skip is a named state and not a silence.
+         **Why P1 left it**: this module is on :data:`FLOOR_GLOBS`, and adding
+         the call additionally puts ``branch_reachability`` into the floor's
+         DERIVED delegation closure, which requires a new
+         :data:`FLOOR_GLOBS` entry *and* a row in
+         ``tests/test_floor_closure.py`` — a seal file BODIES may not touch.
+         Measured on this revision by inserting one function-local in-package
+         import into this function: ``tests/test_floor_closure.py`` goes 2
+         failed / 82 passed. So D7's wiring is not a P3 edit; see that module's
+         escalations.
 
     Verdict: VIOLATION if any path violation or any signature change;
     UNDETERMINED on any :class:`RoleDiffError`, unreadable policy, missing
@@ -7837,6 +7880,28 @@ def check_branch(
     deleted line would buy the right to rewrite the file that configures every
     role's permissions. The narrowing costs role-less rows nothing outside
     :data:`FLOOR_GLOBS`.
+
+    **The reachability arm (D7), in one place, for the reason the signature
+    table above gives — a state whose verdict has to be inferred is a state
+    somebody will infer wrongly.** It is the same shape as the signature arm
+    and deliberately so: on the ONE role whose gate it is, a check that could
+    not finish is not a pass. It differs in one thing and the difference is the
+    whole unit: :func:`~claude_dispatcher.call_site_reachability.check_tree`
+    judges a TREE and this gate must judge a DIFF, so what refuses is a finding
+    the BRANCH INTRODUCED — measured over the base tree and the head tree —
+    and never the tree's standing BREACH set. Measured on this revision, that
+    distinction is worth 12 findings on one vendored fixture with nothing
+    edited at all, which is what a whole-tree arm would refuse every branch for
+    forever. The tables are
+    :data:`~claude_dispatcher.branch_reachability._ROLE_OBLIGATIONS` (BODIES
+    blocks, ADJUDICATE is advisory, the other three do not run),
+    :data:`~claude_dispatcher.branch_reachability._DISPOSITION_VERDICTS` (all
+    five, raising on a sixth) and
+    :data:`~claude_dispatcher.branch_reachability._BLOCKING_UNDECIDED_REASONS`
+    — the counterpart of :data:`_BODIES_BLOCKING_SIGNATURE_STATUSES`, ruled
+    with THIS module's own 2026-08-09 discriminator: an abstention refuses when
+    somebody can act on it and clears when nothing the branch could commit
+    would.
 
     **P3 implementation notes**, each an addition the contract implies rather
     than states, and every one of them fails *closed*:
