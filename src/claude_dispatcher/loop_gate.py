@@ -609,23 +609,42 @@ every entry: ``**/orchestrator.py`` would also match
      :data:`LoopGateStatus.DEADLINE_EXCEEDED` is still unreachable.
   f. a check of the post-hook iterate spawns (§5), or an explicit ruling that
      PR time is the only gate on them.
-  g. **NEW, P3, dispute P3-2.** §3 rules that NOT_ENABLED is "logged and
-     journaled per task". Logged: yes, one run.log line per task. Stamped on
-     the YAML row: yes, on EVERY task, which is the "says so on every row"
-     half in full. Journalled: only when the gate RAN. Measured under
-     `6d94190` + this commit: emitting the event unconditionally reddens three
-     rows that pin the EXACT per-task journal sequence —
-     ``tests/test_orchestrator_journal.py::
+  g. **CLOSED (P4, 2026-08-12) — dispute P3-2, ruled FOR the unconditional
+     emit.** P3 raised that §3's "logged and journaled per task" was landed at
+     three quarters: logged per task, stamped on every row, journalled only
+     when the gate RAN; and that emitting unconditionally reddens three rows
+     pinning the EXACT per-task sequence
+     (``tests/test_orchestrator_journal.py::
      test_full_run_journal_chain_and_sequence``,
-     ``::test_single_task_exact_sequence`` and
+     ``::test_single_task_exact_sequence``,
      ``tests/test_mechanical_verify.py::
-     test_no_config_skips_and_preserves_done_flow`` — and the amendment is
-     three lines in ``tests/**``, which BODIES may not write. The precedent
-     runs AGAINST the shortfall and is worth stating: `verification_mechanical`
-     and `verification_skipped` both journal their own skips, and both appear
-     in those pinned sequences. So P4 owes either the three-line amendment in
-     one commit with the unconditional emit, or a ruling that the row stamp
-     and the log line are the whole of "says so".
+     test_no_config_skips_and_preserves_done_flow``), which BODIES may not
+     amend. Re-measured by P4 at ``90ddca0``: exactly those three, and the
+     insertion point is index 3 in every one — immediately after
+     ``summary_parsed`` and before ``verification_mechanical``, which is where
+     the hook is.
+
+     **The ruling, and the argument is not the precedent P3 offered.** That
+     precedent does run the same way — `verification_mechanical` and
+     `verification_skipped` journal their own skips and already sit in the
+     sequences being amended — but a precedent is a habit, not a reason. The
+     reason is that the two records P3 offered as the stronger substitute are
+     the two this unit itself makes erasable. `unblock._STALE_STAMPS` POPS both
+     :data:`ROW_STAMPS` (§7(c), measured at unblock.py:148-149) — deliberately,
+     because unblocking grants a retry and not a waiver — so one `dispatcher
+     unblock` removes the row's record that the gate was off on the attempt
+     that produced the block, and run.log is an unchained text file. The
+     journal is hash-chained and append-only and is the ONLY per-task record
+     that survives the clearing this unit performs on itself. A named state
+     whose every witness can be erased by the next command a human runs is a
+     silence with a delay on it, which is precisely what NOT_ENABLED exists not
+     to be.
+
+     Landed in ONE commit with the three-line amendment, because either half
+     alone is red, and falsified in both directions: guard present + seals
+     unamended → those three red; guard restored + seals amended → the same
+     three red. A seal amendment forced by a ruling is the one thing P4 may
+     write into a seal file, and each amended row names the ruling in place.
 
 
 Notes for the seal author (P2)

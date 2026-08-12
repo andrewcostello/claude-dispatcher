@@ -1484,36 +1484,51 @@ def _run_task(
              f"  {snap.key} role loop gate: {role_loop.status.value} "
              f"({role_loop.decision.value})"
              + (f" — {role_loop.detail[:400]}" if role_loop.detail else ""))
-        # The event is emitted whenever the gate RAN, and not when the run had
-        # it switched off. That is one half short of §3's ruling ("logged and
-        # journaled per task, so a run with the gate off says so on every row")
-        # and the shortfall is deliberate, measured and escalated rather than
-        # quietly chosen — dispute P3-2. Emitting it unconditionally is three
-        # red rows in two seal files that pin the EXACT per-task event
-        # sequence (`tests/test_orchestrator_journal.py` twice and
-        # `tests/test_mechanical_verify.py` once, measured under 6d94190 + this
-        # commit), and amending them is a `tests/**` edit this role may not
-        # make. The "says so on every row" half is landed in full and by the
-        # stronger mechanism: the YAML row carries `not_enabled` on EVERY task
-        # (see the stamp below), and run.log carries a line per task above.
-        # Nothing here reads as a clean branch.
-        if role_loop.status is not loop_gate_mod.LoopGateStatus.NOT_ENABLED:
-            _emit_event(cfg, journal_mod.EventType.role_diff_loop_gate, {
-                "status": role_loop.status.value,
-                "decision": role_loop.decision.value,
-                "verdict": (
-                    role_loop.verdict.value
-                    if role_loop.verdict is not None else None
-                ),
-                "base_ref": pre_spawn_sha,
-                "branch_ref": wt.branch,
-                "violations": [
-                    v.path for v in (
-                        role_loop.result.violations if role_loop.result else ()
-                    )
-                ],
-                "detail": role_loop.detail[:1000],
-            }, task_key=snap.key)
+        # UNCONDITIONAL, including when the run had the gate switched off.
+        #
+        # **Dispute P3-2, ruled by P4 2026-08-12, FOR the emit.** P3 emitted
+        # only when the gate had RUN and escalated the shortfall rather than
+        # hiding it, offering the YAML row stamp plus the run.log line as the
+        # whole of §3's "logged and journaled per task". The argument that
+        # settles it is not the precedent P3 cited — though that runs the same
+        # way, `verification_mechanical` and `verification_skipped` both
+        # journal their own skips and both already sit in the pinned sequences
+        # this amendment touches — it is that the two substitutes offered are
+        # the two records this very unit makes erasable. `unblock._STALE_STAMPS`
+        # POPS both loop-gate stamps (§7(c), measured: unblock.py:148-149), by
+        # design, because unblocking grants a retry and not a waiver. So after
+        # one unblock the row no longer says the gate was off on the attempt
+        # that produced the block, and run.log is an unchained text file. The
+        # journal is hash-chained and append-only and is the only per-task
+        # record that survives the clearing this unit itself performs. A named
+        # state whose only witnesses can be erased by the next command a human
+        # runs is not a named state; it is a silence with a delay on it.
+        #
+        # The amendment this forces is three lines in `tests/**` — one
+        # `"role_diff_loop_gate",` after `"summary_parsed"` in each of
+        # `tests/test_orchestrator_journal.py::
+        # test_full_run_journal_chain_and_sequence`, `::
+        # test_single_task_exact_sequence` and `tests/test_mechanical_verify.py
+        # ::test_no_config_skips_and_preserves_done_flow` — and it lands in the
+        # SAME commit as this edit, because either half alone is red. P3 was
+        # right that it could not make it; it is a seal amendment forced by a
+        # ruling, which is the one thing P4 may write into a seal file.
+        _emit_event(cfg, journal_mod.EventType.role_diff_loop_gate, {
+            "status": role_loop.status.value,
+            "decision": role_loop.decision.value,
+            "verdict": (
+                role_loop.verdict.value
+                if role_loop.verdict is not None else None
+            ),
+            "base_ref": pre_spawn_sha,
+            "branch_ref": wt.branch,
+            "violations": [
+                v.path for v in (
+                    role_loop.result.violations if role_loop.result else ()
+                )
+            ],
+            "detail": role_loop.detail[:1000],
+        }, task_key=snap.key)
         if role_loop.decision is loop_gate_mod.LoopGateDecision.BLOCK:
             # Blocked, and deliberately NOT a cascade escalation. The next rung
             # would begin by resetting the worktree, destroying the very diff a
