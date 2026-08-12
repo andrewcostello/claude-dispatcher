@@ -660,10 +660,20 @@ _GLOB_METACHARACTERS = "*?[]"
 #: the shape of the helper and not its behaviour — the struct-tag lesson at
 #: :class:`GoSignatureFingerprinter`, applied to the gate's own source.
 #:
-#: It is deliberately NOT enrolled yet (:data:`GO_SUPPORT` is in
-#: :data:`PENDING_COMPARATORS`), and the floor entry lands FIRST on purpose: a
-#: floor that arrives with enrolment is a floor that was absent for every commit
-#: that built the thing it protects.
+#: The floor entry landed FIRST on purpose: a floor that arrives with enrolment
+#: is a floor that was absent for every commit that built the thing it protects.
+#:
+#: **CORRECTED BY P4, ``feat/D6-enrol2``, base ``d8fd825``, 2026-08-11.** This
+#: read "It is deliberately NOT enrolled yet (:data:`GO_SUPPORT` is in
+#: :data:`PENDING_COMPARATORS`)". That was TRUE when it landed at ``fcb4900``,
+#: 2026-08-09, and went stale at ``f45b2ab``, 2026-08-10, when the row moved.
+#: Measured at ``d8fd825``: ``COMPARATORS`` holds python, go and typescript and
+#: ``PENDING_COMPARATORS`` is ``()``. The ORDERING claim is what this note was
+#: for and it is kept; the registry-state claim is struck rather than updated,
+#: because a note about the floor has no reason to restate a registry's contents
+#: and restating them is how it went stale. ``enrolled_languages()`` and
+#: ``test_the_go_row_is_in_exactly_one_registry_and_the_lookup_agrees`` are
+#: where that question is answered.
 #:
 #: **The DELEGATION CLOSURE, 2026-08-09 (P4, second ruling).** Naming the two
 #: halves protected the file that CALLS the matcher and not the matcher. This

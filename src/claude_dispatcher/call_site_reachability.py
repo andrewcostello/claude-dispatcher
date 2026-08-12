@@ -2,11 +2,16 @@ r"""D5 — call-site reachability: does production call this?
 
 P4 FLOOR ROUND (2026-08-11, unit D6, ``feat/D6-floor2``) — THE GUARD'S SUBJECT
 ==============================================================================
-**STILL NOT ENROLLED.** :data:`ANALYZERS` is ``()``, nothing is wired, and the
-two pending-state tripwires
+**NOT ENROLLED AS OF THIS ROUND.** :data:`ANALYZERS` is ``()``, nothing is
+wired, and the pending-state tripwires
 (``test_nothing_in_this_commit_enrols_the_go_row``,
 ``test_analyzers_is_empty_and_no_path_in_any_tree_can_be_analyzed``) are green
-before and after. What changed is ONE production property and it is a fix, not
+before and after. **The count here said "two" and it is THREE — P4,
+``feat/D6-enrol2``, ``d8fd825``, 2026-08-11**, measured by enrolling in a clone
+rather than by grepping for ``ANALYZERS``; the third is
+``test_an_unenrolled_mechanism_abstains_rather_than_passing_everything``, in
+this module's own seal file, which names no registry in its title.
+What changed in THIS round is ONE production property and it is a fix, not
 a feature: :func:`_refuse_enrolment_before_flooring` used to derive
 ``_floor_relative_path()`` from ``Path(__file__)`` — its own path and nothing
 else — so it would have permitted enrolment with the ROW's defining module and

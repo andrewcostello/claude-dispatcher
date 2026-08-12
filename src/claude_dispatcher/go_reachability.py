@@ -2632,10 +2632,71 @@ def _package_imports(
         Go-row seal reads the relation this row builds, in any field.
 
     **THE TRIGGER, recorded so the obligation cannot be discharged by
-    forgetting**: the fixture and its rows are a precondition of moving
-    ``GO_SUPPORT`` out of ``PENDING_COMPARATORS`` or adding a row to
-    ``ANALYZERS``, whichever is attempted first. Both are still untouched at
-    this revision and the three pending-state tripwires that pin them are green.
+    forgetting**: the fixture and its rows are a precondition of adding a row to
+    :data:`~claude_dispatcher.call_site_reachability.ANALYZERS`.
+
+    **DISPUTE F1 — THE TRIGGER NAMED A SECOND AXIS AND HAD NO BUSINESS ON IT.
+    P4, ``feat/D6-enrol2``, base ``d8fd825``, 2026-08-11.** As written at
+    ``444b1fb`` this paragraph also claimed the fixture gated *"moving
+    ``GO_SUPPORT`` out of ``PENDING_COMPARATORS``"*, and asserted that *"both are
+    still untouched at this revision"*. The second half was FALSE THE DAY IT WAS
+    WRITTEN: ``GO_SUPPORT`` moved at ``f45b2ab``, 2026-08-10, and this paragraph
+    landed at ``444b1fb``, 2026-08-11. The first half was never true. Both are
+    struck, and the ruling is recorded rather than the prose quietly repaired,
+    because a stale gate is the failure mode this whole unit is about.
+
+    **THE RULING: the two registries are INDEPENDENT, the dependency between
+    them runs the other way, and D2's enrolment jumped no gate of D6's.**
+    Measured under ``d8fd825``:
+
+      * ``GO_SUPPORT`` is a :class:`~claude_dispatcher.role_protocol.
+        LanguageSupport` — ``(language, extensions, fingerprinter)``, a claim
+        about reading SIGNATURES. An ``ANALYZERS`` row is a
+        :class:`~claude_dispatcher.call_site_reachability.ReachabilityAnalyzer`
+        — a claim about reading CALL EDGES. That they are different tables is
+        not an inference; it is a written CHOICE, with three reasons, at
+        :data:`~claude_dispatcher.call_site_reachability.ANALYZERS`, whose
+        second reason is *"different membership"* in as many words;
+      * **``role_protocol`` imports neither reachability module, and the D2
+        gate path never loads one.** Measured: after
+        ``support_for_path("cmd/x/main.go")`` and a real
+        ``compare_signatures`` over two Go revisions — status ``CHECKED``,
+        changes found — ``sys.modules`` holds neither
+        ``claude_dispatcher.go_reachability`` nor
+        ``claude_dispatcher.call_site_reachability``. This function cannot have
+        been on the path ``GO_SUPPORT``'s enrolment took, because nothing on
+        that path imports the module it lives in;
+      * **the coupling that DOES exist points from D6 to D2.**
+        ``analyzer_for_path`` asks ``support_for_path``, which reads
+        ``COMPARATORS`` alone. Measured: with the Go row in ``ANALYZERS`` and
+        ``GO_SUPPORT`` moved back to ``PENDING_COMPARATORS``,
+        ``analyzer_for_path("cmd/x/main.go")`` is ``None``. D2's enrolment is a
+        PRECONDITION OF D6's, which is the exact reverse of what the trigger
+        claimed;
+      * **D2's real gate was a four-item checklist and it is met.** It is
+        written out at :data:`~claude_dispatcher.role_protocol.GO_SUPPORT`, all
+        four items are marked DONE with their dates, and not one of them names
+        this fixture, this function, or ``ANALYZERS``.
+
+    The pin the trigger cited, ``test_the_go_row_is_in_exactly_one_registry_
+    and_the_lookup_agrees``, asserts ``enrolled != pending`` and is green in
+    either state by construction, so it could never have caught the staleness
+    and was not written to. What pins the RULING is
+    ``test_the_analyzer_table_and_the_comparator_table_are_independent``
+    (``tests/test_call_site_reachability.py``), landed with it: it reddens if
+    ``role_protocol`` ever imports a reachability module, which is the only way
+    the struck claim could become true again. It would NOT have caught this
+    drift, and nothing in the suite could have — a docstring in module B making
+    a state claim about module A is not reachable by any assertion. The durable
+    fix is therefore the one applied here: this module states obligations on
+    ``ANALYZERS``, which it owns, and none on ``COMPARATORS``, which it does
+    not.
+
+    ``role_protocol.py``'s own stale copy of the claim — ``GO_SUPPORT`` is *"in
+    ``PENDING_COMPARATORS``"*, at :data:`~claude_dispatcher.role_protocol.
+    FLOOR_GLOBS` — is corrected in the same commit. That one landed at
+    ``fcb4900``, 2026-08-09, and was TRUE when written; it went stale at
+    ``f45b2ab``. Two different errors, and only this one was born wrong.
     """
     if unreadable:
         # A unit that did not parse or did not type-check reported no imports

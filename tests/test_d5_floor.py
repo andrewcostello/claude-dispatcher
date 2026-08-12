@@ -1386,6 +1386,72 @@ def _enrol_from_the_row_module():
 _enrol_from_the_row_module()'''
 
 
+#: The binding `_package_copy` doctors, written out once because BOTH
+#: directions now read it: `_unenrol` rewrites the shipped binding to this, and
+#: the enrolment surgery replaces this with a row. The ANNOTATION is the anchor
+#: and the VALUE never is, so the fixture keeps working whatever the shipped
+#: registry holds — which is the property whose absence caused the defect ruled
+#: below.
+_REGISTRY_BINDING_PREFIX = "ANALYZERS: tuple[ReachabilityAnalyzer, ...] = "
+_EMPTY_REGISTRY_BINDING = f"{_REGISTRY_BINDING_PREFIX}()"
+
+
+def _unenrol(target: Path) -> None:
+    """Rewrite the copy's registry binding back to the empty tuple.
+
+    **P4 RULING, `feat/D6-enrol2`, base `d8fd825`, 2026-08-11 — THE FIXTURE
+    NAMED A WORLD AND BUILT ANOTHER.** `_package_copy`'s `enrolled` parameter
+    used to be applied in ONE direction only: `True` doctored the copy, `False`
+    did nothing and INHERITED whatever the shipped module carried. That is
+    correct exactly while `ANALYZERS` is empty, and it is correct by accident of
+    that state rather than by construction. Measured, by enrolling the Go row in
+    a `cp -a` clone: every `enrolled=False` copy came up reporting `IMPORTED 1`,
+    so `test_enrolment_is_impossible_while_the_floor_row_is_red`'s undoctored
+    and bare controls — and `test_the_guard_judges_the_rows_own_module_and_its_
+    helper`'s four worlds — were describing worlds they had not built. Two of
+    them reddened and said so; the rest would have gone on passing for the wrong
+    reason.
+
+    **It is landed here, BEFORE any enrolment, and while `ANALYZERS` is still
+    `()`.** The defect is a fact about this fixture and not about enrolment, so
+    it is not the enrolment's to carry, and a fixture repaired in the same
+    commit as the change that exposed it is a repair nobody can review
+    separately.
+
+    The surgery is on the BINDING LINE, found by its annotation and never by its
+    value, and deliberately not on the enrolment machinery around it: a helper
+    the shipped module defines and no longer calls is dead code in the copy, and
+    dead code moves no verdict — whereas a fixture that excised a function body
+    by string matching would be the string surgery this codebase refuses
+    everywhere else.
+
+    Asserts there is exactly ONE such line, for `_package_copy`'s own reason: a
+    module that grew a second binding is one this fixture can no longer
+    normalise, and a silent partial normalisation is the failure the helper
+    exists to end.
+
+    Measured under: `_unenrol` mutated to write a well-formed row INSTEAD of the
+    empty tuple, at `d8fd825` with the shipped registry still empty — exactly
+    two rows redden, `…_enrolment_is_impossible_while_the_floor_row_is_red` and
+    `…_the_guard_judges_the_rows_own_module_and_its_helper`, and the other 31
+    stay green. So the normalisation is load-bearing in this file TODAY and not
+    only on the day the registry grows.
+    """
+    text = target.read_text(encoding="utf-8")
+    lines = text.splitlines(keepends=True)
+    hits = [
+        index
+        for index, line in enumerate(lines)
+        if line.startswith(_REGISTRY_BINDING_PREFIX)
+    ]
+    assert len(hits) == 1, (
+        f"the copy carries {len(hits)} registry bindings, not one; this fixture "
+        "cannot state which world it built"
+    )
+    lines[hits[0]] = f"{_EMPTY_REGISTRY_BINDING}\n"
+    target.write_text("".join(lines), encoding="utf-8")
+
+
 def _enrolment_is_ordered(*, enrolled: bool, floored: bool) -> bool:
     """The ordering property, as one expression: a row may not arrive first."""
     return floored or not enrolled
@@ -1550,10 +1616,16 @@ def _package_copy(
         (directory / "main.go").write_text("package main\n", encoding="utf-8")
         (directory / "go.mod").write_text("module probe\n", encoding="utf-8")
 
+    # NORMALISE FIRST, in BOTH directions. `enrolled=False` must BUILD the
+    # un-enrolled world, never inherit it from whatever the shipped module
+    # happens to carry — see `_unenrol` for the measurement that made this
+    # necessary and for why it lands before any enrolment rather than with one.
+    _unenrol(package / "call_site_reachability.py")
+
     if enrolled:
         target = package / "call_site_reachability.py"
         text = target.read_text(encoding="utf-8")
-        anchor = "ANALYZERS: tuple[ReachabilityAnalyzer, ...] = ()"
+        anchor = _EMPTY_REGISTRY_BINDING
         assert text.count(anchor) == 1, (
             "the `ANALYZERS` definition was not found exactly once, so this "
             "fixture enrolled nothing and would prove nothing"

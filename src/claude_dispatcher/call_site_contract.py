@@ -661,9 +661,18 @@ ABOVE the guard call, where it is today (line 1214, guard call at line 1579).
 
 WIRING
 ======
-``ANALYZERS`` is still ``()``. This round unblocks enrolment and does not
-perform it: the row is still not in the registry, no call site is added, and the
-two pending-state tripwires that pin the empty registry are untouched and green.
+``ANALYZERS`` is still ``()`` as of this round. It unblocks enrolment and does
+not perform it: the row is not in the registry, no call site is added, and the
+pending-state tripwires that pin the empty registry are untouched and green.
+
+**THE COUNT WAS TWO AND IT IS THREE. P4, ``feat/D6-enrol2``, base ``d8fd825``,
+2026-08-11**, measured by enrolling the Go row in a ``cp -a`` clone and running
+the whole suite rather than by listing rows that mention ``ANALYZERS``. The
+third is ``test_an_unenrolled_mechanism_abstains_rather_than_passing_
+everything`` (``tests/test_call_site_reachability.py``), which never names the
+registry in its title and reddens on enrolment because it asserts the vendored
+Go files come back UNANALYZED. Both places that said "two" — here and
+``call_site_reachability``'s header — were counting by grep.
 Enrolment needs the floor entry above first, which is the ordering
 ``_refuse_enrolment_before_flooring`` enforces at import and which this module
 does not get to shortcut by being new.

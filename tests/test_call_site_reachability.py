@@ -253,8 +253,11 @@ it is not):
 from __future__ import annotations
 
 import ast
+import os
 import re
 import shutil
+import subprocess
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -930,6 +933,140 @@ def test_analyzers_is_empty_and_no_path_in_any_tree_can_be_analyzed():
     for path in ("store/queries/x.sql", "Main.java", "README"):
         assert support_for_path(path) is None
         assert analyzer_for_path(path) is None
+
+
+def test_the_analyzer_table_and_the_comparator_table_are_independent(monkeypatch):
+    """``COMPARATORS`` cannot be gated on ``ANALYZERS``, and the reverse can.
+
+    **THE PIN ON P4's DISPUTE F1 RULING** (``feat/D6-enrol2``, base ``d8fd825``,
+    2026-08-11; the ruling is written out at ``go_reachability._package_imports``
+    under THE TRIGGER). ``go_reachability`` had claimed, in a docstring, that its
+    import fixture was *"a precondition of moving ``GO_SUPPORT`` out of
+    ``PENDING_COMPARATORS``"* — a gate on a table it does not own, asserted a day
+    AFTER that row had already moved. The ruling is that the two registries are
+    independent and that what dependency exists runs D6 -> D2. This row is the
+    executable half of it.
+
+    Three facts, and the third is the one that decides the dispute:
+
+      1. **the row types are disjoint.** A ``COMPARATORS`` row is a
+         ``LanguageSupport`` and satisfies no analyzer's shape; an ``ANALYZERS``
+         row carries no ``fingerprinter``. A registry that accepted the other
+         kind would make "who reads Go signatures" and "who reads Go call edges"
+         one answer, which is the CHOICE at :data:`ANALYZERS` refused in as many
+         words;
+      2. **``role_protocol`` loads no reachability module.** Checked in a FRESH
+         interpreter driving the real D2 path — ``support_for_path`` on a ``.go``
+         path, then ``compare_signatures`` over two Go revisions — and asserting
+         that neither reachability module is in ``sys.modules`` afterwards. A
+         claim that D6 gates D2 cannot be true of code D2 never imports, and a
+         subprocess is used because this file's own session has both modules
+         loaded already;
+      3. **the coupling runs the other way.** With the Go row in ``ANALYZERS``
+         and ``GO_SUPPORT`` taken out of ``COMPARATORS``,
+         ``analyzer_for_path`` on a ``.go`` path is ``None``: D2's enrolment is a
+         PRECONDITION of D6's, not the reverse.
+
+    This row does NOT claim to be the pin that would have caught the drift.
+    Nothing could have: a docstring in module B making a state claim about
+    module A is out of reach of any assertion, which is why the ruling's durable
+    half is the prose edit that stops this module's neighbours from restating
+    each other's registries. What this row catches is the drift that would make
+    the STRUCK CLAIM TRUE — the day something couples the two tables — and on
+    that day the ruling must be reopened rather than inherited.
+
+    Green when: all three hold.
+    Falsify: give ``role_protocol`` a module-level import of
+    ``call_site_reachability`` — fact 2 reddens (measured). Derive
+    ``analyzer_for_path`` from ``COMPARATORS + PENDING_COMPARATORS``, or from a
+    table of its own — fact 3 reddens (measured). Make ``LanguageSupport`` carry
+    the analyzer methods — fact 1 reddens.
+    """
+    from claude_dispatcher import role_protocol as rp
+
+    # 1 — disjoint row types, checked against the shapes each registry validates.
+    assert isinstance(rp.GO_SUPPORT, rp.LanguageSupport)
+    assert not all(
+        callable(getattr(rp.GO_SUPPORT, name, None))
+        for name in ("roots", "graph", "test_root_predicate")
+    ), "a COMPARATORS row satisfies the analyzer protocol; the tables have merged"
+    for row in csr.ANALYZERS:
+        assert not isinstance(row, rp.LanguageSupport), (
+            "an ANALYZERS row is a LanguageSupport; the tables have merged"
+        )
+        assert getattr(row, "fingerprinter", None) is None
+
+    # 2 — the D2 gate path, in a fresh interpreter, loads no reachability module.
+    probe = (
+        "import sys;"
+        "from claude_dispatcher.role_protocol import"
+        " support_for_path, compare_signatures;"
+        "assert support_for_path('cmd/x/main.go') is not None;"
+        "r = compare_signatures('cmd/x/main.go',"
+        " 'package p\\nfunc F(a int) {}\\n', 'package p\\nfunc F(a, b int) {}\\n');"
+        "print(r.status.value,"
+        " sorted(m for m in sys.modules if m.endswith('reachability')))"
+    )
+    source_root = str(Path(csr.__file__).resolve().parent.parent)
+    completed = subprocess.run(
+        [sys.executable, "-P", "-c", probe],
+        capture_output=True,
+        text=True,
+        # The environment is INHERITED and only ``PYTHONPATH`` is set: the Go
+        # comparator shells out to a toolchain that reads ``PATH``, ``HOME`` and
+        # ``GOCACHE``, and a stripped environment returns
+        # UNCHECKED_COMPARATOR_UNAVAILABLE without ever reading the two
+        # revisions — which the status assertion below catches rather than
+        # tolerates (measured: it did, on the first run of this row). ``-P``
+        # still keeps the cwd from supplying a different package, which is the
+        # isolation this row actually needs.
+        env={**os.environ, "PYTHONPATH": source_root},
+    )
+    assert completed.returncode == 0, (
+        "the D2 comparator path did not run at all, so nothing below is a "
+        f"statement about what it imports\nstderr={completed.stderr}"
+    )
+    status, _, loaded = completed.stdout.strip().partition(" ")
+    assert status == "checked", (
+        "the fresh interpreter did not actually read the two Go revisions, so "
+        f"the module list is a fact about an unexercised path: {completed.stdout!r}"
+    )
+    assert loaded == "[]", (
+        "the D2 comparator path imported a reachability module. The two "
+        "registries are coupled, so P4's DISPUTE F1 ruling — that D6's fixture "
+        "obligation is not a gate on COMPARATORS — no longer follows and must "
+        f"be reopened at `_package_imports`: {loaded}"
+    )
+
+    # 3 — the coupling that exists points from D6 at D2, and never back.
+    class _GoAnalyzer:
+        language = Language.GO
+        negative_is_conclusive = True
+
+        def roots(self, tree):
+            raise NotImplementedError("a shape probe, never an analysis")
+
+        def graph(self, tree):
+            raise NotImplementedError("a shape probe, never an analysis")
+
+        def test_root_predicate(self, symbol):
+            raise NotImplementedError("a shape probe, never an analysis")
+
+    row = _GoAnalyzer()
+    monkeypatch.setattr(csr, "ANALYZERS", (row,))
+    assert analyzer_for_path("cmd/x/main.go") is row, (
+        "the control failed: an enrolled Go analyzer is not selected for a .go "
+        "path even while GO_SUPPORT is in COMPARATORS, so the assertion below "
+        "would pass without saying anything"
+    )
+    monkeypatch.setattr(
+        rp, "COMPARATORS", tuple(r for r in rp.COMPARATORS if r is not rp.GO_SUPPORT)
+    )
+    monkeypatch.setattr(rp, "PENDING_COMPARATORS", (rp.GO_SUPPORT,))
+    assert analyzer_for_path("cmd/x/main.go") is None, (
+        "an analyzer row answered for a language with no COMPARATORS row, so "
+        "ANALYZERS is not keyed on what support_for_path says a file is"
+    )
 
 
 def test_analyzer_for_path_holds_no_second_extension_table(monkeypatch):
