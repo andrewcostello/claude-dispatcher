@@ -1,0 +1,437 @@
+project: claude-dispatcher
+epic: Dogfood wave 1 — the dispatcher builds its own remaining defects
+
+# Every unit below is a defect MEASURED during the 2026-08-07..12 effort, with
+# the measurement quoted in its description. None is speculative.
+#
+# WHY THESE FOUR. They are all Python in this repository, which is where the
+# loop gate runs in 0.004s and the reachability arm takes the cheap exit. The Go
+# work (#18, #25, #26, #28 in the operator's list) is deliberately held back:
+# the reachability sweep costs 445s x2 on a Go tree and is ruled off until the
+# host toolchain is fixed.
+#
+# ORDER. DF-1 (merged_sha) comes before DF-2 (merge authorization) because DF-2
+# must not pin to a SHA source DF-1 proves is wrong.
+#
+# ROLE CHAIN. scaffold -> seals -> bodies -> adjudicate, each blockedBy the
+# previous. The protocol refuses a 'bodies' task that names no 'seals' task in
+# blockedBy: "an absent edge is a refusal, never an empty unit that passes".
+
+tasks:
+
+  # ---- DF-1  merged_sha is stale in 7/7 recorded merges -------------------
+  - key: DF-1-1
+    summary: scaffold — name what a merge record must prove about the SHA it names
+    description: |
+      MEASURED: every recorded merge stamps a merged_sha that does not track
+      origin. Two DIFFERENT PRs merged in the same run record IDENTICAL
+      post-merge SHAs, which is impossible if the ref followed origin.
+      `_sync_local_feature_branch`'s `git fetch origin fb:fb` appears never to
+      have succeeded. All 7 recorded pr_merged events are affected.
+
+      Consequence: the audit trail cannot say what was merged.
+
+      Contract must answer: where the authoritative SHA comes from (origin, not
+      a local ref); what a merge record must carry to be checkable afterwards;
+      and what happens when the fetch fails — that is a named state, never a
+      silently stale stamp.
+
+      DO NOT reuse `_feature_branch_sha` as the source. That is the value this
+      unit proves wrong.
+
+      Note test_merge_engine.py:313 is a truthiness check on that stamp — a seal
+      passing on a value now known to be wrong. Say whether it is in scope.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+    role: scaffold
+    status: To Do
+
+  - key: DF-1-2
+    summary: seals — a merge record that cannot be checked against origin is red
+    description: |
+      Seal the contract DF-1-1 writes. The row that matters is the one that
+      fails today: two PRs merged in one run must not be able to record the
+      same post-merge SHA.
+
+      Non-vacuity bar: this codebase has measured twelve shapes of vacuous seal.
+      The live one here is "a seal asserting truthiness of a value now known to
+      be wrong" — test_merge_engine.py:313 is exactly that. Do not write its
+      twin.
+
+      Prove each row red by the specific defect it names, carry an in-test
+      control judged in the same call, and use `Measured under:` /
+      `Predicted (unmeasured) under:`.
+    type: Task
+    estimate: 2h
+    labels: [size:M, area:dispatcher]
+    agent: claude
+    role: seals
+    status: To Do
+    blockedBy: [DF-1-1]
+
+  - key: DF-1-3
+    summary: bodies — make the merge record name the SHA origin actually merged
+    description: |
+      Turn DF-1-2's rows green. Every row must close for a stated mechanical
+      reason; a row that goes green for a reason you cannot name is a finding.
+
+      Report which rows would still pass under an implementation you consider
+      wrong — three separate authors in this effort found rows that stayed green
+      under a wrong implementation, and disclosed it against their own interest.
+    type: Task
+    estimate: 2h
+    labels: [size:M, area:dispatcher]
+    agent: claude
+    role: bodies
+    status: To Do
+    blockedBy: [DF-1-2]
+
+  - key: DF-1-4
+    summary: adjudicate — rule the stale-stamp seal and any disputes DF-1-3 raises
+    description: |
+      Rule whether test_merge_engine.py:313 is amended or struck, and any
+      dispute the body raises. Amend only what a ruling forces; name each row
+      and its before/after.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+    role: adjudicate
+    disputed_paths:
+      - tests/test_merge_engine.py
+    status: To Do
+    blockedBy: [DF-1-3]
+
+  # ---- DF-2  merge authorization vs the ref the merge acts on -------------
+  - key: DF-2-1
+    summary: scaffold — authorization and action must name the same ref
+    description: |
+      MEASURED, and the recorded description of this defect DID NOT SURVIVE
+      MEASUREMENT. It was filed as "a verdict is produced and the merge does not
+      prove the tree it merges is the tree judged". Wrong: the merge consumes NO
+      verdict — grep for panel_consensus|panel_verdict_ across merge_engine.py,
+      merge_prs.py, pr.py, plan.py, risk.py returns zero hits and the only
+      readers are display code.
+
+      ACCURATE STATEMENT: `risk.classify` diffs the LOCAL refs/heads/<branch> in
+      repo_root with no fetch, while `gh pr merge` acts on ORIGIN's head.
+      Authorization and action are computed against different refs.
+
+      pr.py:226 builds [gh, pr, merge, N, --merge] with no --match-head-commit;
+      that flag is real in the installed gh 2.46.0, so the fix is a dispatcher
+      argv change, not a git operation.
+
+      NOT hypothetical: 7 real pr_merged events across 25 runs against
+      EvenPlay/evenplay-mono (#809/811/813/815) and andrewcostello/
+      claude-dispatcher (#35/36/39). Loss is potential, not historical — both
+      externally-approved merges had approval-commit == merged head (~21 and ~10
+      minute windows).
+
+      THE CONSTRAINT THAT SHAPES THE FIX: five of seven merges were low-risk
+      SELF-APPROVALS. A fix that only hardens the `elevated` branch misses the
+      majority path.
+
+      CHEAPER THAN IT LOOKS: `gh pr view --json reviews` ALREADY returns a
+      per-review commit.oid, and pr.py:158-177 iterates those objects keeping
+      only state and author.login. Measured live against PR 813.
+
+      The Go reviewer half is already fixed (reviewed_sha, cmd/reviewer/
+      main.go:843) and claude-workflow contains no `gh pr merge`.
+    type: Task
+    estimate: 2h
+    labels: [size:M, area:dispatcher]
+    agent: claude
+    role: scaffold
+    status: To Do
+    blockedBy: [DF-1-4]
+
+  - key: DF-2-2
+    summary: seals — a merge authorised for one SHA must not act on another
+    description: |
+      Seal DF-2-1's contract. Cover the SELF-APPROVAL path, not only the
+      elevated one — five of seven recorded merges took it.
+
+      No seal covers any of this today. The one SHA assertion in the merge suite
+      (test_merge_engine.py:313) is the stale stamp DF-1 repairs.
+    type: Task
+    estimate: 2h
+    labels: [size:M, area:dispatcher]
+    agent: claude
+    role: seals
+    status: To Do
+    blockedBy: [DF-2-1]
+
+  - key: DF-2-3
+    summary: bodies — pin the merge to the SHA the authorization was computed for
+    description: |
+      Turn DF-2-2's rows green. Do not use a SHA source DF-1 proved stale.
+
+      The fake `gh` in the test harness already logs argv, so an argv assertion
+      is cheap — but note `_num()` at line 47 grabs the first all-digit token
+      and would break on a digits-only fixture SHA.
+    type: Task
+    estimate: 2h
+    labels: [size:M, area:dispatcher]
+    agent: claude
+    role: bodies
+    status: To Do
+    blockedBy: [DF-2-2]
+
+  - key: DF-2-4
+    summary: adjudicate — rule DF-2-3's disputes and the self-approval boundary
+    description: |
+      Rule any dispute the body raises, and in particular whether the
+      self-approval path takes the same pinning as the externally-approved one.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+    role: adjudicate
+    disputed_paths:
+      - tests/test_merge_engine.py
+      - tests/test_pr.py
+    status: To Do
+    blockedBy: [DF-2-3]
+
+  # ---- DF-3  mixed-role batches are legal at plan time --------------------
+  - key: DF-3-1
+    summary: scaffold — a batch that mixes roles has no judgeable branch
+    description: |
+      MEASURED during D8: unit A's BODIES row and unit B's SCAFFOLD row sharing
+      a batch_id load with 0 errors / 0 warnings, are both runnable, and
+      `_take_batch_group` dispatches them as ONE BRANCH, TWO ROLES.
+
+      `loop_gate.sole_role` returns None and BLOCKs rather than picking — but
+      that is the loop gate catching it at dispatch time. Until `validate`
+      refuses it at PLAN time, the loop is the only thing between a mixed batch
+      and a branch nothing can judge.
+
+      Related and in scope to rule on: rows sharing one role may still carry
+      DIFFERENT immutable_paths:/disputed_paths:. `resolve_inputs` refuses them
+      through ROLE_UNRESOLVED, whose docstring says "did not yield exactly one
+      Role" — which that case technically DOES. D8's P4 ruled a ninth status
+      (RULE_UNRESOLVED) rather than a wording change, because
+      _BLOCKED_REASON_PREFIXES is keyed by status and is what the queue prints.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+    role: scaffold
+    status: To Do
+
+  - key: DF-3-2
+    summary: seals — plan time refuses a mixed-role batch and a mixed rulebook
+    description: |
+      Seal both refusals. The row that matters fails today: the two-task fixture
+      above must load with 0 errors, and must not after the fix.
+
+      Watch the shape D8's P2 corrected in its own draft: driven over a
+      nonexistent repo_root, every world collapsed to one error and the control
+      passed while proving nothing. Build on a real worklist.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+    role: seals
+    status: To Do
+    blockedBy: [DF-3-1]
+
+  - key: DF-3-3
+    summary: bodies — validate refuses the mixed batch and the mixed rulebook
+    description: |
+      Turn DF-3-2's rows green in plan.py / role_protocol.validate.
+
+      NOTE role_protocol.py is FLOORED (glob 3 of 17). If the refusal must live
+      there, that is a P4 amendment, not a body edit — say so rather than
+      attempting it, and put whatever you can in the unfloored layer.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+    role: bodies
+    status: To Do
+    blockedBy: [DF-3-2]
+
+  - key: DF-3-4
+    summary: adjudicate — land any floored half of DF-3-3 and rule its disputes
+    description: |
+      DF-3-3 is expected to escalate: the refusal may need to live in
+      role_protocol.py, which no body may edit.
+
+      MEASURED WHILE WRITING THIS WORKLIST: role_protocol.py cannot be named in
+      disputed_paths at all. The gate refuses it — "the file that configures
+      every role's permissions is not an adjudicable artifact: declaring it is
+      how the most privileged role would grant itself the policy". So the
+      floored half is NOT reachable from this task system by any role. Adjudicate
+      what it can here (the seal file), and hand the role_protocol.py half to the
+      operator as a separate commit, exactly as every floored edit in the
+      2026-08 effort was handed over.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+    role: adjudicate
+    disputed_paths:
+      - tests/test_role_protocol_table.py
+    status: To Do
+    blockedBy: [DF-3-3]
+
+  # ---- DF-4  the cp -a clone hazard --------------------------------------
+  - key: DF-4-1
+    summary: scaffold — a scratch clone of a worktree must not reach the real repo
+    description: |
+      MEASURED, three separate agents this session, most recently a
+      `git revert --no-commit` probe that MOVED THE REAL INDEX.
+
+      Cause: `cp -a` of a LINKED WORKTREE copies `.git` as a FILE containing a
+      gitdir pointer, so any git command inside the copy operates on the real
+      repository.
+
+      Every brief in this effort already says "remove the .git FILE first" and it
+      kept happening. The durable fix is a helper, not another sentence.
+
+      Contract must answer: what a scratch clone guarantees; how it fails when it
+      cannot make that guarantee (a named state, never a silent copy); and
+      whether it also handles the two adjacent hazards measured this session —
+      `git checkout <tree> -- .` with --work-tree pointed elsewhere writing to
+      the wrong index, and CPython keying bytecode on (mtime_seconds, size) so a
+      same-size mutation restored within one second reports as covered when it is
+      not.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+    role: scaffold
+    status: To Do
+
+  - key: DF-4-2
+    summary: seals — the helper refuses rather than producing a dangerous clone
+    description: |
+      Seal that a clone of a linked worktree cannot reach the source repository.
+
+      The row that matters must FAIL against a naive `cp -a`. Build the case
+      where a git command inside the copy would mutate the original, and prove
+      the helper prevents it — not that the helper was called.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+    role: seals
+    status: To Do
+    blockedBy: [DF-4-1]
+
+  - key: DF-4-3
+    summary: bodies — implement the scratch-clone helper
+    description: |
+      Turn DF-4-2's rows green. Keep it small: this is a tool the protocol's own
+      agents use, so its failure mode must be loud and its success must be
+      checkable without reading it.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+    role: bodies
+    status: To Do
+    blockedBy: [DF-4-2]
+
+  - key: DF-4-4
+    summary: adjudicate — rule DF-4-3's disputes
+    description: |
+      Rule any dispute, and decide whether the helper becomes mandatory in role
+      briefs or stays advisory.
+    type: Task
+    estimate: 30m
+    labels: [size:XS, area:dispatcher]
+    agent: claude
+    role: adjudicate
+    disputed_paths:
+      - roles/coder.md
+    status: To Do
+    blockedBy: [DF-4-3]
+
+  # ---- DF-5  the financial-paths fallback is a hand-maintained copy -------
+  - key: DF-5-1
+    summary: scaffold — the money-path fallback must not be a second hand-list
+    description: |
+      FOUND BY THE DRY RUN OF THIS VERY WORKLIST, before any task ran.
+
+      `cli.py`'s FINANCIAL_PATHS default is a hand-maintained copy of
+      evenplay-mono's money table. Measured: six patterns that PR #1387 added to
+      close the wallet-calling-layer gap are ABSENT from it —
+      bet_service, grpc_xwallet, adapter/wallet, playerfunds, liability,
+      process_shot.
+
+      This has happened before. Commit 0a457ff is titled "fix(pr-raise): sync
+      the financial-paths fallback; it drifted within a day". Syncing it again
+      buys another day.
+
+      The class is already named in this repository: an earlier hand-list
+      omitted `recheck_min_severity`, the safety floor, and an emitter built
+      from it would have silently skipped every MEDIUM finding. The standing
+      answer there was to DERIVE the list from the consumers' ASTs and fail hard
+      when a consumer cannot be read — "a generator that degrades when it cannot
+      see a consumer is the hand-list bug with an AST in front of it".
+
+      Contract must answer: where the authoritative money table lives when the
+      target repo is not checked out; what the fallback is FOR, given that
+      `.agent/risk-paths.json` is now tracked in evenplay-mono by PR #1387; and
+      whether the honest answer is a derived list, a fail-closed refusal, or a
+      drift detector — a hand-list with a test that catches drift is a third
+      option and may be the right one.
+
+      Say plainly whether the fallback should exist at all.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+    role: scaffold
+    status: To Do
+
+  - key: DF-5-2
+    summary: seals — a fallback that has drifted from the table is red
+    description: |
+      Seal DF-5-1's contract. The row that matters fails today: the shipped
+      fallback is missing six patterns the tracked table carries.
+
+      Non-vacuity: do NOT seal "the list contains N entries" or "the list equals
+      this literal" — both are transcriptions that go green the moment someone
+      pastes a new literal, which is exactly how the previous sync lasted a day.
+      Seal the RELATIONSHIP between the fallback and the table.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+    role: seals
+    status: To Do
+    blockedBy: [DF-5-1]
+
+  - key: DF-5-3
+    summary: bodies — close the drift the way DF-5-1 ruled
+    description: |
+      Turn DF-5-2's rows green. If the ruling was "derive", derive it; if it was
+      "refuse", refuse; if it was "detect", make the detector fail loudly and
+      name what drifted.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+    role: bodies
+    status: To Do
+    blockedBy: [DF-5-2]
+
+  - key: DF-5-4
+    summary: adjudicate — rule DF-5-3's disputes
+    description: |
+      Rule any dispute, and in particular whether a fallback that cannot see the
+      target repository should ship a list at all or should refuse.
+    type: Task
+    estimate: 30m
+    labels: [size:XS, area:dispatcher]
+    agent: claude
+    role: adjudicate
+    disputed_paths:
+      - tests/test_default_financial_paths.py
+    status: To Do
+    blockedBy: [DF-5-3]
