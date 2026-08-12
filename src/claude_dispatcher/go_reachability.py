@@ -2365,6 +2365,16 @@ def _package_imports(
     ``cmd/gates`` subject cited ``cmd/deepseek/main.go:46``, in another module,
     as its reason.
 
+    **P4 CHECKED THE "5" (D6 adjudication, ``feat/D6-stepthree-adj``, base
+    ``e9f09a8``, 2026-08-11).** The operator's brief to the body said those 13
+    holes spanned "7 independent modules"; the body measured 5 and wrote 5, and
+    5 is what stands. The two figures in this paragraph are DIFFERENT claims and
+    are easy to read as one: the acceptance repository has **7** modules in
+    total — the seven ``cmd/`` modules :func:`go_symbol_key` and
+    ``call_site_reachability``'s header both count — and the holes span **5** of
+    them. No correction is owed here; it is stamped because a number that was
+    disputed and survives is worth marking as checked rather than as unexamined.
+
     THE FOUR PROPERTIES D5 CONTRACTS, and where each is met here:
 
       1. **ABSENCE IS NOT AN EMPTY RELATION.** Two states return
@@ -2511,6 +2521,22 @@ def _package_imports(
     makes it total over three states instead of two. **A seal author's edit, not
     this body's.**
 
+    **DISPUTE I1 IS DISCHARGED — P4, ``feat/D6-stepthree-adj``, base ``e9f09a8``,
+    2026-08-11.** The amendment the body specified is the amendment that landed,
+    to the letter: the row now re-derives the subject's in-scope hole set and is
+    total over three states (clean closure / hole in scope / hole out of scope).
+    The body's diagnosis was correct and its restraint was correct — it disclosed
+    a red row it was forbidden to edit rather than editing it. Two things the
+    body could not know, both measured at the amendment:
+
+      * the row derives its scope WITHOUT calling :func:`holes_in_scope`, from
+        the fixture's zero in-tree imports, so it is not a mirror of the
+        mechanism it judges. It writes no count down;
+      * the amended row is RED in BOTH directions — under the narrowing
+        collapsed to ``()`` and under the narrowing reverted to the identity —
+        where the two-state row could only ever see the mechanism abstaining
+        LESS.
+
     **DISPUTE I2 — THE SUITE REWARDS THE DEFECT, AND THAT IS THE MEASUREMENT A
     SEAL AUTHOR NEEDS FIRST.** Measured in a ``cp -a`` clone, whole suite, each
     mutation applied alone (2026-08-11; the 7 floor/provenance rows cannot run
@@ -2534,6 +2560,82 @@ def _package_imports(
     would separate them exist and are D5's, over a hand-built relation; what is
     missing is a Go-row seal over a tree with in-tree imports. The reach fixture
     above is that tree and its two load-bearing figures are re-measured here.
+
+    **P4 RULING ON DISPUTE I2 — ``feat/D6-stepthree-adj``, base ``e9f09a8``,
+    2026-08-11. THE GO ROW MAY NOT BE ENROLLED BEFORE THIS IS CLOSED.**
+
+    **What was re-measured, whole suite, each mutation applied alone, AFTER the
+    amendment to** ``…_step_three_abstention_is_measured_and_the_implication_is_
+    total``:
+
+        this function reverted to ImportsUnavailable    **1 failed** — the
+          amended row (was: 0 FAILED)
+        every package's `unplaced_imports` made non-empty
+          (one component, the whole-tree behaviour)     **1 failed** — the
+          amended row (was: 0 FAILED)
+        every package's `imports` emptied (the FAIL-OPEN)
+                                                       **0 FAILED**, 2432
+          passed / 13 skipped — STILL INVISIBLE
+
+    The amendment closed two of the three by accident of being total: a row that
+    reddens when the mechanism abstains MORE now catches every way of putting
+    the narrowing back to sleep. **It did not close the fail-open, and no seal
+    over these fixtures ever can.** The reason is not seal quality and it is not
+    a gap a better assertion reaches. **Measured at the same revision by driving
+    the real :func:`~claude_dispatcher.call_site_reachability.build_call_graph`
+    over the vendored fixture: this function already returns
+    ``imports=frozenset()`` for both acceptance packages**, because the tree has
+    no in-tree imports to report. Emptying every package's ``imports`` is
+    therefore a LITERAL NO-OP on every tree the suite touches — the mutated
+    analyzer and the correct one emit byte-identical relations. A seal cannot
+    separate two functions that return the same value.
+
+    **THE RULING.** Enrolment is blocked. An analyzer whose fail-open no seal can
+    see is the shape this whole mechanism exists to refuse, and
+    ``external_import_count`` — the field D5 put there precisely so a reader can
+    tell "read the blocks and found nothing" from "did not read the blocks" — is
+    a REPORT, not a guard: it is contracted not to be structure, and no verdict
+    moves when it is zero. Nothing else stands between an empty ``imports`` and
+    a wrong ABSTAIN-to-BREACH.
+
+    **WHAT CLOSES IT: a vendored Go fixture with real in-tree imports, and
+    nothing less.** The three options weighed, with the reason each other one
+    fails:
+
+      * **borrowing D5's reach tree — REJECTED.** ``_REACH_EDGES`` /
+        ``_REACH_EXTERNAL`` is a TRANSCRIBED RELATION, not Go source. It proves
+        :func:`~claude_dispatcher.call_site_reachability.import_components`
+        reads an undirected, transitive graph, which is a different function
+        from this one. The gap is in the DERIVATION — does this row read import
+        blocks at all — and a hand-built relation cannot exercise a derivation
+        it substitutes for. Pointing the row at the live
+        ``evenplay-mono/apps/website-public-api`` fails for a second,
+        independent reason already recorded above: the module declares ``go
+        1.25.0``, :func:`_go_environment`'s ``GOTOOLCHAIN=local`` correctly
+        refuses it, and the tree comes back 13 unreadable files and
+        :class:`ImportsUnavailable`. A seal may not depend on the machine's
+        toolchain;
+      * **ruling it a P2 obligation and enrolling anyway — REFUSED.** That is
+        the trade this unit exists to refuse. The floor entry for this file
+        landed BEFORE enrolment on exactly this principle (see
+        ``FLOOR_GLOBS``' sixth entry): a guard that arrives with the thing it
+        guards was absent for every commit that built it;
+      * **a new vendored fixture — ADOPTED, and it is a P2 obligation with
+        enrolment BLOCKED behind it.** Minimum shape, so a seal author is not
+        left to guess: ONE module, at least THREE packages, ``A`` importing
+        ``B`` and ``C`` importing neither, and at least one unresolved call in
+        ``A``. Then a subject in ``B`` must ABSTAIN (the hole crosses the import
+        both ways) and a subject in ``C`` must BREACH, and emptying ``imports``
+        flips ``B`` to BREACH and reddens. That single fixture separates this
+        body from the fail-open, and it is also the tree
+        :data:`_ACCEPTANCE_DISTINCT_EXTERNAL`'s recorded obligation needs — no
+        Go-row seal reads the relation this row builds, in any field.
+
+    **THE TRIGGER, recorded so the obligation cannot be discharged by
+    forgetting**: the fixture and its rows are a precondition of moving
+    ``GO_SUPPORT`` out of ``PENDING_COMPARATORS`` or adding a row to
+    ``ANALYZERS``, whichever is attempted first. Both are still untouched at
+    this revision and the three pending-state tripwires that pin them are green.
     """
     if unreadable:
         # A unit that did not parse or did not type-check reported no imports

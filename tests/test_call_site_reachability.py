@@ -3517,6 +3517,40 @@ def test_discover_seals_reports_in_root_order_and_never_sorts():
 #       TRUE components               1   (all 12)
 #       EMPTY-relation components    12
 #
+#   **P4 CORRECTION 1 (D6 adjudication, ``feat/D6-stepthree-adj``, base
+#   ``e9f09a8``, 2026-08-11) — THE TREE IS 13 UNITS AND ``go list`` REPORTS 12.**
+#   ``internal/source/postgres`` carries a second, EXTERNAL test package —
+#   ``postgres_integration_test.go``, ``package postgres_test``, behind
+#   ``//go:build integration`` — which ``go list -e -json ./...`` does not report
+#   under the default build tags and which is therefore absent from the table
+#   above and from :data:`_REACH_EDGES` below. **Measured**: the file exists at
+#   ``51a71736c``, its package clause is ``postgres_test``, and it imports two
+#   in-tree packages (``internal/builder`` and ``internal/source/postgres``), so
+#   the tree is 13 units and 26 directed in-tree imports — the figures
+#   :func:`~claude_dispatcher.go_reachability._package_imports` records, which
+#   the analyzer reaches because it enumerates units rather than asking ``go
+#   list``. The 13th unit is NOT transcribed below, deliberately: both of its
+#   in-tree imports land inside the one component the 12 already form, so adding
+#   it moves no partition, and a P4 amending one seal does not restructure
+#   another role's fixture. **The transcription below is of the 12 units ``go
+#   list`` reports and that is now said rather than implied.**
+#
+#   **P4 CORRECTION 2 (same revision) — :data:`_REACH_EXTERNAL`'s PER-PACKAGE
+#   VALUES WERE IN THE WRONG UNIT AND ARE REPLACED.** As first transcribed they
+#   summed to **212**, against the 156 this block's own header states two lines
+#   up. Measured: 212 is what you get counting ``Imports``, ``TestImports`` and
+#   ``XTestImports`` SEPARATELY and adding the three lengths, so a package that
+#   imports ``fmt`` in both its production and its test files counts it twice.
+#   156 is the number of DISTINCT out-of-module packages per package, summed —
+#   and 156 is what ``go list`` and
+#   :func:`~claude_dispatcher.go_reachability._package_imports` both produce,
+#   because ``external_import_count`` is a count of distinct import PATHS
+#   resolved out of the tree. The per-package values below are now the measured
+#   distinct counts and they sum to 156. **Nothing structural moved**: the count
+#   is contracted not to be structure, which
+#   :func:`test_a_placed_out_of_tree_import_contributes_no_edge` asserts by
+#   driving every external count to zero and requiring the partition to hold.
+#
 #   **DISPUTE R1 (figures).** :class:`ImportsUnavailable`'s docstring records
 #   this tree as "12 packages, 25 undirected in-tree import edges". Re-measured
 #   here it is **24**, by every counting this author could construct — 24
@@ -3572,10 +3606,40 @@ _ACCEPTANCE_IMPORT_PATHS = (
     "github.com/yourorg/claude-workflow/iterate",
 )
 
-#: The acceptance tree's measured external import counts, per package. Pinned
+#: The acceptance tree's measured import-block LINE counts, per package. Pinned
 #: against the vendored fixture by
 #: :func:`test_the_acceptance_trees_import_counts_are_the_measured_ones`.
+#:
+#: **P4 CORRECTION 3 (D6 adjudication, ``feat/D6-stepthree-adj``, base
+#: ``e9f09a8``, 2026-08-11) — 41 AND 39 ARE IMPORT LINES, NOT THE ANALYZER'S
+#: NUMBER, AND THE ROW BELOW SAYS SO NOW.** ``external_import_count`` is a count
+#: of DISTINCT out-of-tree import PATHS. **Measured over the vendored fixture**:
+#: ``cmd/gates`` has 41 import lines across its four ``.go`` files naming **20**
+#: distinct packages, and ``cmd/iterate`` has 39 lines naming **19** — the
+#: duplicates are ``fmt``, ``os``, ``testing`` and friends imported by more than
+#: one file of the same package. **Measured at the same revision by driving the
+#: real :func:`~claude_dispatcher.call_site_reachability.build_call_graph` over
+#: the fixture with the Go row in ``ANALYZERS``: the relation it builds carries
+#: ``external_import_count`` 20 and 19**, not 41 and 39. So the numbers here are
+#: a true measurement of a DIFFERENT quantity from the one the analyzer reports,
+#: they are kept because the row below is a fixture pin and lines are what it
+#: counts, and the claim that they are "the number a body must hit" is
+#: WITHDRAWN — see that row's docstring.
+#:
+#: **OBLIGATION, recorded and not discharged here.** Nothing in the suite
+#: compares either number to analyzer output; the divergence above was found by
+#: measuring, not by a red row. A row that drives the Go analyzer over this
+#: fixture and asserts the relation's ``external_import_count`` is a seal
+#: author's, and it belongs with the fail-open fixture ruled at DISPUTE I2 in
+#: ``go_reachability.py``, because both are the same missing thing: no Go-row
+#: seal reads the relation the Go row builds.
 _ACCEPTANCE_EXTERNAL = {_GATES_PKG: 41, _ITERATE_PKG: 39}
+
+#: What the ANALYZER reports for the same two packages — distinct out-of-tree
+#: import paths. Measured, and spelled here so the two units are never again one
+#: number. Not wired into :func:`_acceptance_relation`, which is a hand-built
+#: input to mechanism rows and whose counts are contracted not to be structure.
+_ACCEPTANCE_DISTINCT_EXTERNAL = {_GATES_PKG: 20, _ITERATE_PKG: 19}
 
 
 def _g(name: str, path: str = "cmd/gates/main.go", line: int = 1) -> Symbol:
@@ -3628,19 +3692,25 @@ def _acceptance_relation(**overrides) -> ImportRelation:
 
 _REACH_MOD = "github.com/EvenPlay/evenplay-mono/apps/website-public-api"
 
+#: DISTINCT out-of-module import paths per package, summing to the 156 the
+#: header states. Corrected by P4 on ``feat/D6-stepthree-adj``, base ``e9f09a8``,
+#: 2026-08-11: the values first transcribed here summed to 212, which is
+#: ``len(Imports) + len(TestImports) + len(XTestImports)`` without deduplicating
+#: across the three lists, and is not the unit ``external_import_count`` carries.
+#: See P4 CORRECTION 2 in the block above.
 _REACH_EXTERNAL = {
-    "cmd/public-api": 46,
-    "cmd/snapshot-builder": 19,
-    "internal/builder": 10,
-    "internal/domain": 15,
-    "internal/inquiry": 32,
-    "internal/metrics": 15,
+    "cmd/public-api": 34,
+    "cmd/snapshot-builder": 17,
+    "internal/builder": 7,
+    "internal/domain": 12,
+    "internal/inquiry": 21,
+    "internal/metrics": 11,
     "internal/seams": 3,
-    "internal/snapshot": 6,
-    "internal/source/postgres": 13,
-    "internal/source/redshift": 20,
-    "internal/store/cache": 12,
-    "internal/store/s3": 21,
+    "internal/snapshot": 5,
+    "internal/source/postgres": 11,
+    "internal/source/redshift": 13,
+    "internal/store/cache": 8,
+    "internal/store/s3": 14,
 }
 
 #: Directed, as the import statements are written. 24 of them.
@@ -4058,10 +4128,24 @@ def test_the_acceptance_trees_import_counts_are_the_measured_ones():
     ``cmd/classify``. It exists for two reasons and both are about the rows
     above rather than about this one:
 
-      1. :data:`_ACCEPTANCE_EXTERNAL` is the number a body must hit, and a
-         hand-written number nobody checks is fiction. The scaffold cites 41 and
-         39 in three docstrings; if the fixture ever changes, this row is what
-         goes red instead of those three going quietly wrong;
+      1. :data:`_ACCEPTANCE_EXTERNAL` pins the FIXTURE, and a hand-written
+         number nobody checks is fiction. The scaffold cites 41 and 39 in three
+         docstrings; if the fixture ever changes, this row is what goes red
+         instead of those three going quietly wrong;
+
+         **P4 CORRECTION 3 (``feat/D6-stepthree-adj``, base ``e9f09a8``,
+         2026-08-11) — THIS CLAUSE USED TO READ "the number a body must hit" AND
+         THAT WAS FALSE.** 41 and 39 are import LINES, which is what the sweep
+         below counts. The analyzer's ``external_import_count`` is DISTINCT
+         out-of-tree import PATHS, and measured over this same fixture by
+         driving the real
+         :func:`~claude_dispatcher.call_site_reachability.build_call_graph` with
+         the Go row in ``ANALYZERS`` it is **20 and 19** — recorded as
+         :data:`_ACCEPTANCE_DISTINCT_EXTERNAL`. A body that hit 41 and 39 would
+         be wrong, and this row would not have noticed, because this row reads
+         vendored text and never asks the analyzer anything. The obligation to
+         compare the two is recorded at :data:`_ACCEPTANCE_EXTERNAL` and is a
+         seal author's, not this row's;
       2. **it is the measurement that disqualifies the acceptance tree as
          non-vacuity evidence for every other row in this part.** ZERO in-tree
          imports is what makes the fail-open and the truth agree there, so the
@@ -4172,6 +4256,18 @@ def test_the_import_graph_is_read_undirected_and_transitively():
     nodes = frozenset(relation.packages)
     assert len(nodes) == 12
     assert sum(len(p.imports) for p in relation.packages.values()) == 24
+    # P4 CORRECTION 2 (feat/D6-stepthree-adj, base e9f09a8, 2026-08-11), given a
+    # row rather than left as a comment so it cannot drift silently a second
+    # time: the per-package external counts are DISTINCT out-of-module import
+    # paths and they must sum to the 156 this part's header states. The first
+    # transcription summed to 212 — the three import lists added without
+    # deduplication — and nothing compared it to the header.
+    assert sum(p.external_import_count for p in relation.packages.values()) == 156, (
+        "the reach fixture's external counts no longer sum to the 156 that "
+        "`go list -e -json ./...` and `_package_imports` both produce for this "
+        "module. Either the transcription drifted or it is back in the wrong "
+        "unit; 212 is the wrong unit"
+    )
 
     components = import_components(relation)
     assert set(components) == nodes

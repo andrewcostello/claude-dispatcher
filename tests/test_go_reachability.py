@@ -126,7 +126,8 @@ DISPUTES — RAISED FOR P4, NOT PAPERED OVER
 
   This file does NOT seal "it abstains", which would seal the failure, and does
   not seal "it breaches", which would demand a name-level walk that types
-  ``time.Time``. It seals the IMPLICATION, total over the two states, at
+  ``time.Time``. It seals the IMPLICATION, total over the three states subject
+  scoping leaves — clean closure, hole in scope, hole out of scope — at
   :func:`test_the_step_three_abstention_is_measured_and_the_implication_is_total`
   — and :func:`test_a_fully_resolved_production_closure_reaches_the_tests_only_verdict`
   is the row that keeps the other branch from being a dead letter, because a
@@ -2954,15 +2955,19 @@ def test_the_acceptance_case_is_seven_seal_subject_pairs_over_two_keys(tmp_path,
 
 
 def test_the_step_three_abstention_is_measured_and_the_implication_is_total(tmp_path, monkeypatch):
-    """RED at HEAD. DISPUTE D2 — no longer a prediction, and the row is total.
+    """GREEN. DISPUTE D2 — no longer a prediction, and the row is total.
 
-    ``check_subject`` reaches step 4 only past step 3, which abstains on ANY
-    unresolved call in the production closure. The contract marks this
-    *Predicted (unmeasured)* and calls it "the likeliest way this unit fails to
-    earn its keep".
+    ``check_subject`` reaches step 4 only past step 3, which abstains on any
+    unresolved call in the production closure THAT IS IN SCOPE FOR THE SUBJECT.
+    The contract marks this *Predicted (unmeasured)* and calls it "the likeliest
+    way this unit fails to earn its keep". **P4 AMENDED THE CONDITION of this
+    row on ``feat/D6-stepthree-adj``, 2026-08-11 — see "P4 ROUND 3" below for
+    the before, the after, and the mutations that prove it can still fail. The
+    two paragraphs on the round-2 arithmetic are kept as written because they
+    record how the number was got, not because their conclusion still binds.**
 
-    **P4 AMENDED THIS DOCSTRING (D6 adjudication, 2026-08-11). The row's code is
-    unchanged and correct; its measurement was not.** The seal author's number
+    **P4 AMENDED THIS DOCSTRING (D6 adjudication, 2026-08-11). The row's code was
+    unchanged and correct at round 2; its measurement was not.** The seal author's number
     was 55 unresolved sites in the production closure, of which ~51 were method
     calls through untypeable receivers. **That was a measurement of a
     non-conformant walk, not of the tree.** ``main.go``'s EDGE GRAMMAR files a
@@ -3034,22 +3039,140 @@ def test_the_step_three_abstention_is_measured_and_the_implication_is_total(tmp_
     ``call_site_reachability.py``, which is on ``FLOOR_GLOBS`` — D5's file and
     D5's ruling. **ESCALATED, not taken here.**
 
-    **This row seals the IMPLICATION and is total over the two states**, because
-    the alternatives are both wrong: asserting the abstention seals the failure
-    and would go red the day a body improved, and asserting the BREACH demands a
-    name-level walk that types ``time.Time``. It survives round 2 untouched in
-    code for the same reason it survived round 1, and that is the point of
-    having written it that way. Which branch runs today is
-    recorded, not required — and the branch that does NOT run today is kept from
-    being a dead letter by
-    :func:`test_a_fully_resolved_production_closure_reaches_the_tests_only_verdict`,
-    which reaches step 4 over a package whose closure is genuinely clean.
+    **P4 ROUND 3 (D6 adjudication, 2026-08-11) — THE ESCALATION LANDED AND THIS
+    ROW'S CONDITION IS AMENDED. The row predicted its own obsolescence in the
+    paragraph directly above and the prediction came true: the escalation was
+    taken.** ``feat/D5-import-relation`` scoped step 3's hole set to the
+    SUBJECT, ``feat/D5-relation-body`` wired :func:`~claude_dispatcher.
+    call_site_reachability.holes_in_scope` into :func:`check_subject`, and
+    ``feat/D6-supply-imports`` made the Go row supply the relation those two
+    read. This is not a regression and it is not a body defect: it is a row
+    whose condition the mechanism outgrew, and the ONLY thing amended is the
+    condition. The purpose — that step 3's abstention is MEASURED and that its
+    implication is TOTAL — is unchanged, and so is every verdict this row
+    demands of the mechanism.
 
-    **Measured under** ``feat/D6-seals`` @ ``b451cfc``, 2026-08-11: red today by
-    ``NotImplementedError``. In the clone the abstention branch runs and is
-    green; forcing the closure's hole list empty while leaving the graph alone
-    switches it to the other branch, which then also passes — which is what
-    "total over the two states" has to mean.
+    **BEFORE.** ``if report.unresolved_call_count:`` — the WHOLE-TREE,
+    closure-filtered hole count — ``-> all seven findings abstain``, ``else ->
+    all seven breach``. Two states. That condition is now FALSE BY DESIGN, and
+    it is false in the direction the amendment must respect: the tree-wide count
+    is non-zero (2) while four of the seven subjects have no hole in scope at
+    all. ``unresolved_call_count`` did not change meaning — D5's contract states
+    it stays the whole-tree figure, deliberately, because it is a coverage
+    metric about the TREE. The row was reading a tree-level number to predict a
+    subject-level verdict, and those came apart the moment scoping landed.
+
+    **AFTER.** The row re-derives, per finding, the hole set IN SCOPE FOR THAT
+    SUBJECT, and is total over THREE states:
+
+      * **S1 — the production closure holds no hole at all.** Scoping cannot
+        arise; every one of the seven must reach step 4 and BREACH. This is the
+        old ``else`` branch, unchanged, and it is still the branch that
+        :func:`test_a_fully_resolved_production_closure_reaches_the_tests_only_verdict`
+        keeps from being a dead letter;
+      * **S2 — the closure is holed AND a hole is in the subject's scope.**
+        UNDECIDED / DYNAMIC_EDGE / ABSTAIN — the old ``if`` branch, now
+        predicated on the right set;
+      * **S3 — the closure is holed AND no hole is in the subject's scope.**
+        FROM_TESTS_ONLY / NOT_APPLICABLE / BREACH. This state did not exist
+        before scoping and is the whole content of the amendment.
+
+    **WHY THIS IS NOT A TRANSCRIPTION OF TODAY'S ANSWER, which is the failure
+    shape this codebase has measured nine times.** The row does not assert "four
+    abstain" and does not assert "three abstain": it writes NO count down. It
+    DERIVES the scoped hole set itself, from the tree, and then asserts that the
+    mechanism agrees with the derivation finding by finding. Two properties make
+    the derivation independent of the thing it judges:
+
+      1. **it does not call** :func:`~claude_dispatcher.call_site_reachability.
+         holes_in_scope`. A row that asked the mechanism whose consequence it is
+         judging what the answer is would be green under every mutation of that
+         mechanism, which is exactly the vacuity being avoided;
+      2. **"in the subject's import component" is "in the subject's package" on
+         this fixture, and that is pinned elsewhere.** The acceptance tree has
+         ZERO in-tree imports — asserted, not assumed, by
+         ``test_the_acceptance_trees_import_counts_are_the_measured_ones`` in
+         ``tests/test_call_site_reachability.py`` — so every package is its own
+         import component and the two readings coincide. Package membership is
+         read as a known-prefix test against the two identities this file
+         already spells from the recorded ``go.mod`` files, NEVER by splitting
+         an unknown key on its last dot: a Go method key is
+         ``…/cmd/gates.(*Runner).dispatch`` and ``rpartition('.')`` invents the
+         package ``…/cmd/gates.(*Runner)``. The prefix test asserts it placed
+         each key in EXACTLY ONE of the two, so a key it cannot place is red
+         rather than silently unplaced.
+
+    The row also carries a **partition guard**: in the holed regime it requires
+    BOTH S2 and S3 to be witnessed. That is not a count — it is the statement
+    that this fixture still discriminates. A tree that holed every package, or
+    none, would make the implication vacuously true, and this row would go red
+    saying so rather than going green measuring nothing.
+
+    **THE CLOSURE CONJUNCT IS TAKEN AS GIVEN HERE, deliberately.** Step 3's hole
+    set is two conjuncts — inside the production closure, and in scope for the
+    subject — and they get two rows, so a defect in either cannot be blamed on
+    the other. The closure half is pinned by
+    ``test_unresolved_calls_abstain_only_over_the_production_closure``; this row
+    re-derives it with the module's own published primitives
+    (:func:`~claude_dispatcher.call_site_reachability.build_call_graph`,
+    :func:`~claude_dispatcher.call_site_reachability.discover_roots`,
+    :func:`~claude_dispatcher.call_site_reachability.reachable_from`) and
+    cross-checks its own count against ``report.unresolved_call_count``. That
+    cross-check incidentally gives ``unresolved_call_count``'s "stays
+    whole-tree" contract the row it did not have.
+
+    **Measured under** ``feat/D6-stepthree-adj``, base ``e9f09a8``, 2026-08-11,
+    over the vendored fixture with the Go row in ``ANALYZERS``:
+
+        tree symbols                       218
+        production closure                 104   (test closure 119)
+        unresolved calls, tree-wide          3   (two ``cancel`` in
+                                                 ``cmd/gates/main.go`` at 754
+                                                 and 1468; one ``mut`` struct
+                                                 field at
+                                                 ``cmd/iterate/preserve_seal_test.go:1065``)
+        unresolved calls, in the closure     2   == ``unresolved_call_count``
+        S2, derived and confirmed            3   (``cmd/gates``)
+        S3, derived and confirmed            4   (``cmd/iterate``)
+
+    The closure figure 104 recorded in round 2 REPRODUCES exactly. The
+    round-2 assertion message said "SEVEN holes over a 104-symbol closure" and
+    that is now stale by D6's own sole-binding func-literal rule, which cleared
+    the five ``setMember`` sites: it is TWO, both in ``cmd/gates/main.go``, and
+    the message is corrected below rather than left standing.
+
+    **PROOF THAT THE AMENDED ROW CAN STILL FAIL — the mutation it names, and its
+    opposite. Measured under** ``feat/D6-stepthree-adj``, base ``e9f09a8``,
+    2026-08-11, each mutation applied alone to the shipped
+    :func:`~claude_dispatcher.call_site_reachability.holes_in_scope` and this
+    row's exact assertions run against the real fixture:
+
+        the narrowing collapsed to ``()`` — the FAIL-OPEN of the
+          scoping, an analyzer or a filter that scopes every hole away
+                                                          **RED**, on
+          ``gates.VerifyPreservation`` answering FROM_TESTS_ONLY where the
+          row's own derivation says a hole sits in its own package
+        the narrowing reverted to the identity — the pre-D5 whole-tree
+          behaviour this row was WRITTEN for                **RED**, on
+          ``iterate.VerifyPreservation`` abstaining where the row's own
+          derivation says nothing is in scope
+        the closure hole list forced empty, graph otherwise
+          untouched                                       GREEN, via S1 —
+          which is what "total over three states" has to mean, and is the
+          same control round 2 recorded for the two-state row
+
+    So the row fails in BOTH directions, which the two-state version could not:
+    it went red only when the mechanism abstained LESS, and had no way to notice
+    a mechanism that abstained more.
+
+    **NOT caught here, and it is the right row's job:** package identity by
+    ``key.rpartition('.')`` leaves this row GREEN, measured at the same
+    revision. Every ``VerifyPreservation`` key on this fixture is a plain
+    top-level func, so the last dot is the package boundary and the defect does
+    not show. It shows on a METHOD key, and
+    ``test_a_method_key_is_placed_through_package_of_and_never_by_string_surgery``
+    is where it is caught. Recorded so nobody reads this row's green as coverage
+    of that seam.
     """
     tree = _acceptance_tree(tmp_path)
     _with_go_row(monkeypatch)
@@ -3058,22 +3181,100 @@ def test_the_step_three_abstention_is_measured_and_the_implication_is_total(tmp_
     findings = [f for f in report.findings if f.subject.key.endswith(f".{_SUBJECT_NAME}")]
     assert len(findings) == 7
 
-    if report.unresolved_call_count:
-        assert all(f.reach is Reach.UNDECIDED for f in findings)
-        assert all(f.reason is UndecidedReason.DYNAMIC_EDGE for f in findings), (
-            "with the production closure holed, one of those calls may be the "
-            "missing call site; the abstention is correct and is the measured "
-            "state of this tree — SEVEN holes over a 104-symbol closure, every "
-            "one a call through a function value"
+    # The hole set step 3 STARTS from, re-derived from the module's published
+    # primitives rather than read off the report. The closure conjunct is taken
+    # as given — see the docstring; it has its own row.
+    graph = csr.build_call_graph(tree)
+    roots = csr.discover_roots(tree)
+    production_reach = csr.reachable_from(
+        graph, tuple(r for r in roots if r.root_kind is csr.RootKind.PRODUCTION)
+    )
+    closure_holes = [
+        hole for hole in graph.unresolved_calls if hole[0].key in production_reach
+    ]
+    assert len(closure_holes) == report.unresolved_call_count, (
+        f"this row re-derived {len(closure_holes)} hole(s) in the production "
+        f"closure and the report says {report.unresolved_call_count}. One of "
+        "the two is wrong, and until that is settled nothing below means "
+        "anything. unresolved_call_count is contracted to be exactly this "
+        "number — whole-tree, closure-filtered — and this is the row that says so"
+    )
+
+    # SCOPE, derived HERE and never by calling holes_in_scope: a row may not ask
+    # the mechanism whose consequence it is judging what the answer is. Sound on
+    # THIS fixture because it has zero in-tree imports, so every package is its
+    # own import component; that premise is pinned by
+    # test_the_acceptance_trees_import_counts_are_the_measured_ones.
+    packages = (f"{_GATES_MODULE}/cmd/gates", f"{_ITERATE_MODULE}/cmd/iterate")
+
+    def _home(key: str) -> str:
+        # A known-prefix test against two spelled identities. NOT rpartition:
+        # a method key's last dot is not its package boundary.
+        placed = [package for package in packages if key.startswith(f"{package}.")]
+        assert len(placed) == 1, (
+            f"{key} was placed in {len(placed)} of this tree's two packages. "
+            "An unplaceable key is a red, not a hole quietly kept or quietly "
+            "dropped"
         )
-        assert all(csr.adjudicate(f, None) is Disposition.ABSTAIN for f in findings)
-    else:
+        return placed[0]
+
+    in_scope = {
+        finding.subject.key: [
+            hole
+            for hole in closure_holes
+            if _home(hole[0].key) == _home(finding.subject.key)
+        ]
+        for finding in findings
+    }
+    holed = [f for f in findings if in_scope[f.subject.key]]
+    clear = [f for f in findings if not in_scope[f.subject.key]]
+    assert len(holed) + len(clear) == 7
+
+    if not closure_holes:
+        # S1. No hole anywhere in the closure: scoping cannot arise and every
+        # subject must reach step 4. The old else-branch, unchanged.
+        assert not holed
         assert all(f.reach is Reach.FROM_TESTS_ONLY for f in findings)
         assert all(f.quality is PathQuality.NOT_APPLICABLE for f in findings)
         assert all(csr.adjudicate(f, None) is Disposition.BREACH for f in findings), (
             "a fully resolved production closure is the only state in which "
-            "this mechanism may say BREACH about these seven"
+            "this mechanism may say BREACH about all seven at once"
         )
+        return
+
+    # S2 and S3. The partition guard: no count is asserted, but a partition with
+    # one side empty proves nothing about an implication and this row will not
+    # report a vacuous green as a measurement.
+    assert holed and clear, (
+        f"the seven findings all fell on one side of the scoping question "
+        f"({len(holed)} in scope of a hole, {len(clear)} not), so this tree no "
+        "longer separates 'abstains because a hole could be its missing call "
+        "site' from 'abstains because SOME hole exists somewhere'. That is the "
+        "distinction this row exists to seal and the fixture must keep "
+        "exhibiting it"
+    )
+
+    for finding in holed:
+        assert finding.reach is Reach.UNDECIDED, finding.subject.key
+        assert finding.reason is UndecidedReason.DYNAMIC_EDGE, (
+            f"{finding.subject.key} has a hole in its own import component, so "
+            "one of those calls may be the missing call site; the abstention is "
+            "correct and is the measured state of this tree — TWO holes over a "
+            "104-symbol closure, both calls through the func-typed variable "
+            "`cancel` in cmd/gates/main.go, at 754 and 1468"
+        )
+        assert csr.adjudicate(finding, None) is Disposition.ABSTAIN
+
+    for finding in clear:
+        assert finding.reach is Reach.FROM_TESTS_ONLY, (
+            f"{finding.subject.key} has no unresolved call in scope — every "
+            "hole in this closure is in the other module, which no function "
+            "value can cross because neither package imports the other. "
+            "Abstaining here is the whole-tree defect the escalation closed"
+        )
+        assert finding.quality is PathQuality.NOT_APPLICABLE, finding.subject.key
+        assert finding.reason is None, finding.subject.key
+        assert csr.adjudicate(finding, None) is Disposition.BREACH
 
 
 def test_a_fully_resolved_production_closure_reaches_the_tests_only_verdict(tmp_path, monkeypatch):
