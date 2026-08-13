@@ -199,18 +199,25 @@ Tables and shapes are DATA and are implemented; the control flow is stubbed.
   * :class:`ScratchClone`, :class:`SwapToken` — the two records.
   * :data:`MTIME_ADVANCE_SECONDS` — the bytecode-key stride, with its why.
   * :data:`GIT_ENV_PINS` / :func:`scrubbed_git_env` — the environment every
-    git subprocess of this module runs under. Implemented (it is a table
-    and a pure fold over one), because the bodies MUST NOT be writable
-    without it and a stub cannot be depended on.
+    git subprocess of this module runs under. CHOICE — implemented in the
+    scaffold, not stubbed like the control flow; the rejected alternative
+    (stub everything uniformly) would leave the guarantee's standing rule
+    undependable until P3: it is a table and a pure fold over one, the
+    bodies MUST NOT be writable without it, and a seal cannot be written
+    against a stub.
   * :func:`make_scratch_clone`, :func:`assert_isolated`, :func:`swap_in`,
     :func:`swap_back`, :func:`main` — STUBS.
 
-What this unit does NOT do, stated so a later reader does not infer it: it
-does not touch `worktree.py` — that module CREATES real worktrees and its
-callers want the real repo reached; this one exists so probes cannot. And it
-adds no orchestrator call site: the callers are the protocol's own agents
-(briefs and probe scripts), which is why :func:`main` is part of the
-contract rather than an afterthought.
+What this unit does NOT do — each a CHOICE, stated so a later reader does
+not infer omission: it does not touch `worktree.py` — that module CREATES
+real worktrees and its callers want the real repo reached; this one exists
+so probes cannot, and folding the two would put the quarantine one import
+away from the machinery it quarantines against. And it adds no orchestrator
+call site — the rejected alternative, wiring it into the dispatch loop now,
+would decide at P1 what P4 owns (whether the helper becomes mandatory in
+role briefs); the callers are the protocol's own agents (briefs and probe
+scripts), which is why :func:`main` is part of the contract rather than an
+afterthought.
 """
 
 from __future__ import annotations
@@ -240,8 +247,8 @@ def scrubbed_git_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
     """A copy of `base` (default ``os.environ``) safe to hand a git child.
 
     Drops EVERY variable whose name starts with ``GIT_``, then applies
-    :data:`GIT_ENV_PINS`. A drop-by-prefix rather than an allowlist of the
-    known routing variables (``GIT_DIR``, ``GIT_COMMON_DIR``,
+    :data:`GIT_ENV_PINS`. CHOICE — a drop-by-prefix rather than an
+    allowlist of the known routing variables (``GIT_DIR``, ``GIT_COMMON_DIR``,
     ``GIT_WORK_TREE``, ``GIT_INDEX_FILE``, ``GIT_OBJECT_DIRECTORY``,
     ``GIT_ALTERNATE_OBJECT_DIRECTORIES``, ``GIT_CONFIG_COUNT`` and its
     numbered ``GIT_CONFIG_KEY_n``/``GIT_CONFIG_VALUE_n`` rows,
@@ -268,6 +275,11 @@ def scrubbed_git_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
 #: and 2 clears it with a margin for filesystems that round rather than
 #: truncate. Measured: a same-second same-size rewrite imported as the OLD
 #: content; +2s imported as the new (module docstring, Hazard B).
+#: CHOICE — advance mtimes rather than flip the clone to hash-based pyc
+#: validation (PEP 552's checked-hash mode): that mode governs only pycs
+#: compiled with the flag set, and this helper does not control how a probe
+#: invokes the clone's interpreter. The stride is enforceable from this
+#: side of the seam; the compile flag is not.
 MTIME_ADVANCE_SECONDS = 2
 
 
@@ -281,15 +293,19 @@ class Refusal(Enum):
     and a silent copy is the incident.
     """
 
-    #: The source is not an existing directory. Also the answer for a
-    #: source that is not a git worktree AT ALL — a scratch clone of a
-    #: plain directory is `cp -a`, and lending this helper's name to one
-    #: would let "I used the helper" mean less than the guarantee.
+    #: The source is not an existing directory. CHOICE — also the answer
+    #: for a source that is not a git worktree AT ALL; the rejected
+    #: alternative, accepting any directory, is `cp -a` wearing this
+    #: helper's name, and lending the name would let "I used the helper"
+    #: mean less than the guarantee.
     SOURCE_UNUSABLE = "source_unusable"
 
-    #: The destination already exists — file, dir, symlink, anything. The
-    #: helper never deletes what it did not create, so it never overwrites;
-    #: choosing a fresh path is the caller's one obligation.
+    #: The destination already exists — file, dir, symlink, anything.
+    #: CHOICE — the helper never deletes what it did not create, so it
+    #: never overwrites; the rejected alternative, clobbering (or a --force
+    #: to opt into clobbering), turns a typo'd destination into deleting a
+    #: tree this module never made. Choosing a fresh path is the caller's
+    #: one obligation.
     DEST_COLLISION = "dest_collision"
 
     #: One of the two paths contains the other. A clone into its own source
@@ -317,8 +333,9 @@ class Refusal(Enum):
     #: A symlink under the clone — under ANY name — resolves outside the
     #: clone. Measured (escape channel 4): ``clone/notgit →
     #: <source>/.git`` accepted a write that landed in the source git dir,
-    #: and a scan keyed on the name ``.git`` never sees it. Conservative
-    #: by construction: a benign out-of-tree symlink is refused too,
+    #: and a scan keyed on the name ``.git`` never sees it. CHOICE —
+    #: conservative by construction: a benign out-of-tree symlink is
+    #: refused too,
     #: because a standalone check cannot tell a benign target from the
     #: source repository spelled differently, and unprovable gets the same
     #: answer as unsafe.
@@ -362,9 +379,10 @@ class Refusal(Enum):
 
 
 #: Refusal → the single line an agent transcript shows. Total over
-#: :class:`Refusal`; :func:`refusal_message` guards totality rather than
-#: defaulting, for the same reason `loop_gate` guards its tables — a fold
-#: with a default is where a tenth member would silently read as the ninth.
+#: :class:`Refusal`; CHOICE — :func:`refusal_message` guards totality
+#: rather than defaulting, for the same reason `loop_gate` guards its
+#: tables: a fold with a default (the rejected alternative) is where a
+#: twelfth member would silently read as the eleventh.
 _REFUSAL_MESSAGES: dict[Refusal, str] = {
     Refusal.SOURCE_UNUSABLE: (
         "scratch-clone REFUSED: source is not an existing git worktree"
@@ -483,9 +501,11 @@ class ScratchClone:
 class SwapToken:
     """What :func:`swap_in` hands back; what :func:`swap_back` requires.
 
-    Restoration needs the original BYTES (the incident's restore path —
-    checkout from the real repo — is the thing being replaced, so the token
-    carries the content itself) and the mutated file's post-swap mtime in
+    CHOICE — restoration carries the original BYTES in the token: the
+    rejected alternative, restoring by checkout from a repository, IS the
+    incident's restore path (Hazard A), and a backup file parked on disk is
+    state a crashed probe leaves behind. The token also carries the mutated
+    file's post-swap mtime in
     nanoseconds, so :func:`swap_back` can advance PAST it rather than past
     a wall clock that may not have ticked (Hazard B).
     """
@@ -540,9 +560,10 @@ def make_scratch_clone(source: Path, dest: Path) -> ScratchClone:
     raised error has ``cleanup_failed=True`` and ``detail`` names the
     leftovers. Returns the :class:`ScratchClone` receipt only after step 5.
 
-    P1 STUB — the seals in `tests/test_scratch_clone.py` (P2) drive this
-    signature; P3 writes the body. The row that matters must FAIL against a
-    naive ``cp -a``, per DF-4-2.
+    P1 STUB — the seals (P2, DF-4-2, a DIFFERENT author: a scaffold that
+    writes the seals it will be judged by re-creates the circular oracle)
+    drive this signature; P3 writes the body. The row that matters must
+    FAIL against a naive ``cp -a``, per DF-4-2.
     """
     raise NotImplementedError(
         "DF-4 P1 scaffold: make_scratch_clone is contract only — "
@@ -590,8 +611,9 @@ def assert_isolated(clone_path: Path) -> None:
     Raises :class:`ScratchCloneError` with
     :data:`Refusal.ISOLATION_UNVERIFIED` on any other answer, including a
     failed probe invocation: unprovable and unsafe are the same state here.
-    Returns None on proof; there is deliberately no boolean form for a
-    brief to `if` around and forget.
+    Returns None on proof — CHOICE: no boolean form; the rejected
+    alternative, ``is_isolated() -> bool``, is one `if` a brief writes and
+    forgets, and a forgotten False is a silent copy.
 
     P1 STUB — P3 writes the body.
     """
@@ -652,8 +674,9 @@ def main(argv: Sequence[str]) -> int:
     Exactly two positional arguments; on success prints the clone path
     alone on stdout (so ``$(...)`` captures it) and exits 0. On refusal
     prints :func:`refusal_message` to stderr and exits 2. Anything else
-    about the invocation is usage, exit 3. No flag weakens the guarantee;
-    a --force would be the silent copy with a receipt. The face inherits
+    about the invocation is usage, exit 3. CHOICE — no flags at all: the
+    rejected alternative, a --force / --skip-probe escape hatch, is the
+    silent copy with a receipt. The face inherits
     the scrub by delegation — it calls :func:`make_scratch_clone` and adds
     no git subprocess of its own — which is why it is the recommended
     entry for an agent shell whose environment may carry ``GIT_*``.
