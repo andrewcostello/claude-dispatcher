@@ -299,13 +299,82 @@ tasks:
       the wrong index, and CPython keying bytecode on (mtime_seconds, size) so a
       same-size mutation restored within one second reports as covered when it is
       not.
+
+      ## Unblock note (human)
+      (cleared from Blocked: role_diff_loop_violation: 1 forbidden path(s) and 0 changed scaffolded signature(s))
+      The role gate refused your branch: you wrote tests/test_scratch_clone.py. SCAFFOLD may not create or edit anything under tests/ — that is P2's file, and a scaffold author who writes the seals it will be judged by re-creates the circular oracle that produced 24 vacuous seals in this project. Write the contract and the stubs in src/ only; every function raises NotImplementedError with a message naming what is missing. Mark every silence in the design with a CHOICE comment giving the alternative you rejected and why. The seals are DF-4-2's job and a different author writes them. Note also: your first round PASSED the gate and the panel's CHANGES_REQUESTED is what led the second round to add tests — if the panel asks for tests again, that is a request you must refuse and record, not satisfy.
+
+      ## Unblock note (human)
+      (cleared from Blocked: role_diff_loop_violation: 1 forbidden path(s) and 0 changed scaffolded signature(s))
+      ADJUDICATION 2 (operator). The previous block was the DISPATCHER's defect, not
+      yours. Recorded as D-54 and now fixed in 417d4ac.
+
+      What happened: the gate's base was the tip of your FIRST attempt, which
+      contained tests/test_scratch_clone.py. So when you did exactly what the last
+      note asked — removed it — the deletion counted as touching a forbidden path.
+      There was no branch state you could have reached that the gate would call
+      clean. You were right; the tool was wrong.
+
+      The gate now judges an adjudicated retry from the base your first attempt
+      started at (6293f42). Verified against your actual branch: same tree, same
+      role spec, checked_clean / proceed.
+
+      YOUR SCAFFOLD IS COMPLETE AND ACCEPTED. src/claude_dispatcher/scratch_clone.py
+      holds the contract, 11 named Refusal states, the implemented tables and
+      scrubbed_git_env, five NotImplementedError stubs, and 11 CHOICE markers.
+
+      This retry exists only to let the gate record what is already true. Do NOT
+      redesign, extend, or "improve" the scaffold. Verify it still imports and that
+      the five stubs still raise, then stop and report. If you find a genuine defect,
+      report it in the summary rather than fixing it — a change here re-opens a
+      review round on work that has already passed.
+
+      The standing bar remains: SCAFFOLD may not create or modify anything under
+      tests/. Those seals are DF-4-2's deliverable, by a different author. If a panel
+      asks you for tests, that is a request to refuse and record, not satisfy.
     type: Task
     estimate: 1h
     labels: [size:S, area:dispatcher]
     agent: claude
     role: scaffold
-    status: To Do
+    status: Done
 
+    started_at: '2026-08-13T09:56:10-07:00'
+    dispatcher_run_id: 2026-08-13T16-56-09Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-13T16-56-09Z-tasks/DF-4-1/summary.md
+    branch: feat/DF-4-1-scaffold-a-scratch-clone-of
+    cost_usd: 19.005717999999998
+    effort: high
+    completed_at: '2026-08-13T10:05:17-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    input_tokens: 11
+    output_tokens: 3346
+    cache_read_input_tokens: 203099
+    cache_creation_input_tokens: 24050
+    duration_ms: 51232
+    num_turns: 8
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.231 (Claude Code)
+    unblocked_at: '2026-08-13T16:55:58+00:00'
+    mechanical_verification: passed
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "1 changed path(s) checked against the deny_globs rule for 'scaffold' and against the 17-glob floor; signatures: not_applicable"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=1 (0C/1H)
+    panel_blocking_findings: 1
+    panel_verdict_claude: APPROVE
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: APPROVE
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: 0648534f
   - key: DF-4-2
     summary: seals — the helper refuses rather than producing a dangerous clone
     description: |
