@@ -1,0 +1,508 @@
+project: claude-dispatcher
+epic: Dogfood wave 2 — the three Python defects wave 1 did not take
+
+# REPOSITORY: claude-dispatcher. Every path below is in THIS repo. The Go work
+# lives in `features/dogfood-go/tasks.yaml` against `claude-workflow`, because
+# the dispatcher runs against one repo at a time.
+#
+# Every unit is a defect RE-MEASURED while writing this file, at
+# `feat/D1-role-protocol @ 6293f42` unless a line says otherwise. Nothing is
+# transcribed from DECISIONS.md: five figures in that log were wrong when first
+# quoted and corrected later, so it was read as a map and every number below was
+# taken again. Where the re-measurement DISAGREED with the record, the measured
+# value is the one written here and the disagreement is named.
+#
+# WHAT IS NOT HERE, AND WHY.
+#
+#   * The TypeScript comparator's price. Re-derived at `6293f42` with the
+#     vendored parser (typescript 5.9.3): 12 files x 2 revisions in 3.999 s =
+#     333 ms per FILE, i.e. ~167 ms per node INVOCATION, one invocation per
+#     revision per file. Extrapolated: a 200-file branch is 66.7 s. The record's
+#     "169 ms/file / ~68 s" reproduces at the branch level almost exactly; its
+#     per-file wording is per-invocation. This is a RULED PRICE with a stated
+#     revisit trigger (TS branches routinely exceeding ~200 files), the trigger
+#     has not fired, and `role_protocol.py`'s own note already carries the
+#     argument to argue WITH. A ruled price with an unfired trigger is a
+#     decision, not work. It stays in DECISIONS.md.
+#
+# ORDER. The three units are independent and are deliberately left unchained:
+#   4 waves, one role per wave (3 scaffolds, 3 seals, 3 bodies, 3 adjudicates).
+# Mixed-role batches are legal at plan time today (that is DF-3 in wave 1), so
+# a chain that put two roles at one depth would be the defect wave 1 is fixing.
+#
+# ROLE CHAIN. scaffold -> seals -> bodies -> adjudicate, each blockedBy the
+# previous. The protocol refuses a 'bodies' task that names no 'seals' task in
+# blockedBy: "an absent edge is a refusal, never an empty unit that passes".
+#
+# FLOOR. `FLOOR_GLOBS` has 17 entries, counted at `6293f42`, and three of them
+# matter to this file: `**/src/claude_dispatcher/role_protocol.py`,
+# `**/src/claude_dispatcher/orchestrator.py`, `**/src/claude_dispatcher/loop_gate.py`.
+# Measured while writing this file, by driving `role_protocol.validate` over a
+# four-task probe: naming ANY of those three in `disputed_paths:` raises
+# ValidationError — "which names a path on the non-overridable floor ... The
+# file that configures every role's permissions is not an adjudicable
+# artifact". So a floored half is not reachable from this task system by any
+# role, and every unit below that has one routes it to the operator in words
+# rather than declaring it.
+
+tasks:
+
+  # ---- W2-1  ADJUDICATE may rewrite the prompt that is about to judge it ----
+  - key: W2-1-1
+    summary: scaffold — the instructions the reviewer executes must not be writable by the branch under review
+    description: |
+      MEASURED at `feat/D1-role-protocol @ 6293f42`, by driving
+      `role_protocol.validate` over a four-task probe worklist, one run per
+      candidate path:
+
+          ACCEPT  src/claude_dispatcher/reviewer_prompts/claude.md
+          ACCEPT  src/claude_dispatcher/reviewer_prompts/_shared.md
+          ACCEPT  src/claude_dispatcher/verifier_prompts/verifier.md
+          RAISE   src/claude_dispatcher/role_protocol.py   (floor)
+          RAISE   src/claude_dispatcher/orchestrator.py    (floor)
+          RAISE   src/claude_dispatcher/loop_gate.py       (floor)
+
+      ADJUDICATE's rule is `ALLOW_ONLY_GLOBS` with `globs=()`, "supplied per
+      task by `disputed_paths:`". `**/reviewer_prompts/**` and
+      `**/verifier_prompts/**` are DENY globs for SCAFFOLD and BODIES and an
+      allowlist miss for SEALS — all three roles are refused. ADJUDICATE has no
+      such row, and neither directory is on the floor. So a P4 task may declare
+      the reviewer's prompt in `disputed_paths:` and rewrite it.
+
+      THE PROTOCOL ALREADY STATES WHY THIS IS WRONG, in the comment that
+      installs those deny globs for the other three roles: "those are
+      machine-read instructions that the review gate executes, so editing them
+      edits the reviewer that is about to judge the change." The rationale is
+      not role-specific. ADJUDICATE is the one role it was never applied to.
+
+      THE SHAPE. D1 closed the case where the most privileged role grants
+      itself the POLICY (`role_protocol.py` in `disputed_paths:`). This is one
+      level up: not the permission table, the PROMPT. A P4 that cannot widen
+      what it may write can still rewrite the instructions of the thing that
+      reads what it wrote.
+
+      `_shared.md` is concatenated into EVERY reviewer seat's prompt by
+      `cross_family_reviewer._load_prompt`, so one file reaches all seats.
+
+      TWO MEASUREMENTS THAT SHAPE THE FIX, both taken at `6293f42`:
+
+      (a) `cross_family_reviewer._PROMPTS_DIR = Path(__file__).parent /
+          "reviewer_prompts"` — the prompt is read from the RUNNING package,
+          not from the judged branch's worktree. So the exposure is not "this
+          run is judged by the prompt this task just wrote"; it is "the edit
+          lands, is merged, and every later run is judged by it", plus the
+          dogfooding case where the running package IS the tree being built.
+          State which of those the contract is closing. Do not overclaim the
+          first: the honest statement is the one that survives.
+
+      (b) `journal.py:578` already writes `"reviewer_prompts_hash":
+          hash_tree(reviewer_prompts_dir)` into the run record. Measured:
+          `grep -rn reviewer_prompts_hash src/ tests/` returns the writer, the
+          `_REQUIRED` key list, and four test rows — and NOTHING that compares
+          the hash to anything. It is a recorded fact, not a gate. A contract
+          that turns it into a comparison is cheaper than a new mechanism.
+
+      Contract must answer: whether the prompt trees join `FLOOR_GLOBS`, or
+      ADJUDICATE gains a deny row, or the prompt is resolved from the BASE
+      revision the way `scripts/check_body_branch.sh` already reads the gate's
+      own code from the base; what a run does when the recorded hash and the
+      loaded tree disagree (a NAMED state, never a silent load); and whether
+      `docs/templates/planner-prompt.md` is in the same class.
+
+      SAY WHICH HALF IS FLOORED. A `FLOOR_GLOBS` entry or an ADJUDICATE deny
+      row is a `role_protocol.py` edit, which no role may make. The base-read
+      fix in `cross_family_reviewer.py` and the hash comparison in
+      `journal.py` are NOT floored. Prefer the unfloored fix if it is the
+      honest one, and say so rather than choosing it because it is reachable.
+    type: Task
+    estimate: 2h
+    labels: [size:M, area:dispatcher]
+    agent: claude
+    role: scaffold
+    status: To Do
+
+  - key: W2-1-2
+    summary: seals — a role that writes the reviewer's instructions is refused
+    description: |
+      Seal W2-1-1's contract. The row that matters FAILS today: a four-task
+      worklist whose adjudicate row declares
+      `src/claude_dispatcher/reviewer_prompts/_shared.md` in `disputed_paths:`
+      loads with 0 errors and 0 warnings at `6293f42`, and must not after the
+      fix.
+
+      Carry the CONTROL in the same call: the three floored paths above must
+      still raise, with the floor's own message, so a row cannot go green by
+      making `validate` refuse everything. Wave 1's D8 P2 corrected exactly
+      this in its own draft — driven over a nonexistent `repo_root`, every
+      world collapsed to one error and the control passed while proving
+      nothing. Build on a real worklist.
+
+      NON-VACUITY BAR, and it is specific here: do NOT seal
+      `"**/reviewer_prompts/**" in FLOOR_GLOBS`, or `len(FLOOR_GLOBS) == 18`,
+      or any assertion over the table. This codebase has already ruled that
+      shape: "a registry seal that asserts on the table ... proves nothing
+      about dispatch". Assert through `validate` and, if the ruling was the
+      base-read, through the function that loads the prompt — a second copy of
+      the rule elsewhere shows up as one assertion not moving.
+
+      Use `Measured under:` / `Predicted (unmeasured) under:`. Do not use the
+      bare `Reddens under a body on:` spelling — W2-3 exists because 41 of
+      those clauses in this repo record nothing checkable.
+    type: Task
+    estimate: 2h
+    labels: [size:M, area:dispatcher]
+    agent: claude
+    role: seals
+    status: To Do
+    blockedBy: [W2-1-1]
+
+  - key: W2-1-3
+    summary: bodies — close the reach in the unfloored layer and name what is left
+    description: |
+      Turn W2-1-2's rows green. Every row must close for a stated mechanical
+      reason; a row that goes green for a reason you cannot name is a finding.
+
+      EXPECT TO ESCALATE. If the ruling was a `FLOOR_GLOBS` entry or an
+      ADJUDICATE deny row, that is `role_protocol.py` — floored, glob 3 of 17.
+      Say so and stop; do not attempt it. Put whatever the ruling permits in
+      the unfloored layer (`cross_family_reviewer.py`, `journal.py`) and report
+      the split.
+
+      Report which rows would still pass under an implementation you consider
+      wrong. Three separate authors in the 2026-08 effort found rows that
+      stayed green under a wrong implementation and disclosed it against their
+      own interest; the D8 body found three such implementations leaving a
+      22-row file fully green.
+    type: Task
+    estimate: 2h
+    labels: [size:M, area:dispatcher]
+    agent: claude
+    role: bodies
+    status: To Do
+    blockedBy: [W2-1-2]
+
+  - key: W2-1-4
+    summary: adjudicate — rule W2-1-3's disputes and hand the floored half over
+    description: |
+      Rule any dispute the body raises, and in particular whether the
+      base-read is sufficient on its own or whether the floor entry is still
+      owed.
+
+      NOTE THE POSITION YOU ARE IN. This task's own role is the one the unit
+      indicts. You may not close the hole by declaring the prompt trees here —
+      that is the hole. Adjudicate the seal file; hand the `role_protocol.py`
+      half to the operator as a separate commit, exactly as every floored edit
+      in the 2026-08 effort was handed over.
+
+      Amend only what a ruling forces; name each row and its before/after.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+    role: adjudicate
+    disputed_paths:
+      - tests/test_cross_family_reviewer.py
+    status: To Do
+    blockedBy: [W2-1-3]
+
+  # ---- W2-2  a new file's symbols are all "added" -------------------------
+  - key: W2-2-1
+    summary: scaffold — a sealed interface widened from a second file is not an added symbol
+    description: |
+      RE-MEASURED at `feat/D1-role-protocol @ 6293f42` by driving
+      `compare_signatures` directly. The SAME widening, once in place and once
+      arriving as a new file:
+
+          compare_signatures("src/pkg/wallet.py",    sealed, widened) -> checked, 1 change
+          compare_signatures("src/pkg/wallet_v2.py", None,   widened) -> checked, 0 changes
+
+      And the same, for TypeScript, with the vendored parser:
+
+          compare_signatures("web/src/w.ts",  sealed, widened) -> checked, 1 change
+          compare_signatures("web/src/w2.ts", None,   widened) -> checked, 0 changes
+
+      `enrolled_languages()` at this revision is `['python', 'go',
+      'typescript']`. The rule is protocol-level, not comparator-level —
+      `compare_signatures`' own docstring: "What is NOT [language-specific] —
+      added is not a change, removed is, a differing fingerprint is, A NEW FILE
+      HAS NOTHING TO PRESERVE ... is decided HERE, once, for every language."
+      So D4 (TypeScript) and D6 (Go) did NOT change it and could not have: they
+      added rows to a registry that does not get to answer this question.
+
+      RECORDED AND ACCEPTED ONCE, and the record is in the module rather than
+      only in the log — `role_protocol.py`, "WHAT THIS DESIGN CANNOT DO":
+
+        "Cross-file declaration merging is invisible, and it is a real bypass.
+         The gate compares one file at a time. TypeScript lets a second file
+         widen an existing interface ... A NEW file has no base revision, so
+         every symbol in it is an ADDED symbol, and an added symbol is not a
+         change. A body agent can therefore widen a sealed type without editing
+         the file it was sealed in. Go has a weaker version of this (a new file
+         adding methods to an existing type); TypeScript's is a first-class
+         language feature and is THE SINGLE LARGEST HOLE IN THIS CONTRACT."
+
+      That paragraph also names the fix and its address: "Closing it needs a
+      whole-diff comparison rather than a per-file one, which is a change to
+      `_compare_branch_signatures`, not to a comparator."
+
+      THE COST THAT DECIDES THE SHAPE, and it is why this is a scaffold and not
+      a patch: `_compare_branch_signatures` lives in `role_protocol.py`, which
+      is FLOORED (glob 3 of 17). A whole-diff comparison is therefore a P4
+      commit, not a body edit, and the contract must be written so the
+      unfloored half is worth landing on its own.
+
+      Contract must answer: what "the sealed surface of a branch" means when it
+      is not one file (a symbol KEY that survives a move, or a per-module
+      union?); what happens to a legitimate move or rename, which is
+      indistinguishable from this attack by symbol identity alone and is
+      ordinary body work in Go; and whether Python's `_class_fingerprint`
+      asymmetry — "adding a field to a scaffolded struct IS a signature change,
+      adding a top-level declaration is not" — survives the widening or has to
+      be restated.
+
+      DO NOT propose "an added symbol is a change". That reverses an explicitly
+      ruled rule ("a body may add private helpers") and would fail every honest
+      branch. The measurement above is the same widening reaching the gate two
+      ways; the contract has to separate them, not ban one input shape.
+    type: Task
+    estimate: 2h
+    labels: [size:M, area:dispatcher]
+    agent: claude
+    role: scaffold
+    status: To Do
+
+  - key: W2-2-2
+    summary: seals — the widening is caught wherever in the diff it arrives
+    description: |
+      Seal W2-2-1's contract. Two rows carry it, and one of them is green today
+      for the wrong reason:
+
+        * the in-place widening (1 change) must STAY 1 change — this is the
+          control, and a fix that reddens it has broken the gate;
+        * the same widening arriving in a second file must stop being 0
+          changes.
+
+      Cover BOTH enrolled languages that can express it: Python (a re-declared
+      class) and TypeScript (declaration merging, `interface Bet { newField:
+      string }` in an importing file, and `declare module './bet' { … }` — the
+      module's own text calls the second one "augment another module
+      outright"). Go's weaker version — a new file adding methods to an
+      existing type — belongs in the same set and the module says so.
+
+      NON-VACUITY: do not seal `compare_signatures` alone. It is the per-file
+      function and it is CORRECT per-file; a row that pins its answer pins the
+      thing that is not wrong. The subject is `_compare_branch_signatures` and
+      `check_branch`'s verdict over a whole diff.
+
+      Expect rows RED against a driver that does not exist yet. Write them
+      anyway and say so in the docstring, as this project's seals already do
+      ("Red now: the member does not exist") — but do NOT write a row whose
+      only content is that a name is missing. That is this codebase's own
+      measured trap: "a row pinning a transient unimplementedness" goes green
+      when someone adds the name and proves nothing about behaviour. The D8 P2
+      declined exactly that commission and was right.
+    type: Task
+    estimate: 3h
+    labels: [size:L, area:dispatcher]
+    agent: claude
+    role: seals
+    status: To Do
+    blockedBy: [W2-2-1]
+
+  - key: W2-2-3
+    summary: bodies — build whatever of the whole-diff comparison is not floored
+    description: |
+      Turn W2-2-2's rows green.
+
+      `_compare_branch_signatures` is in `role_protocol.py`, FLOORED, glob 3 of
+      17. If the whole-diff comparison must live there, that is a P4 amendment
+      and NOT a body edit — say so rather than attempting it.
+
+      What is likely unfloored and worth landing on its own: the symbol-set
+      algebra (build a branch-wide sealed surface from per-file comparisons and
+      decide what a widening IS), as a module the floored driver can call in
+      one line. Build that, seal it, and hand the one-line call over. This is
+      D5's and D6's shape and it is why those units landed.
+
+      Report which rows would still pass under an implementation you consider
+      wrong.
+    type: Task
+    estimate: 3h
+    labels: [size:L, area:dispatcher]
+    agent: claude
+    role: bodies
+    status: To Do
+    blockedBy: [W2-2-2]
+
+  - key: W2-2-4
+    summary: adjudicate — rule the move/rename boundary and the floored call site
+    description: |
+      Rule any dispute the body raises, and in particular the boundary the
+      contract cannot dodge: a legitimate MOVE of a sealed symbol into a new
+      file and an illegitimate WIDENING from a new file are the same event to a
+      per-file comparator. Rule which one the gate is allowed to be wrong about
+      and in which direction, and say what that costs.
+
+      Then hand the `role_protocol.py` call site to the operator as a separate
+      commit.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+    role: adjudicate
+    disputed_paths:
+      - tests/test_ts_comparator.py
+      - tests/test_go_comparator.py
+    status: To Do
+    blockedBy: [W2-2-3]
+
+  # ---- W2-3  41 coverage claims nothing checks ---------------------------
+  - key: W2-3-1
+    summary: scaffold — a mutation-coverage claim needs a ledger, not a docstring
+    description: |
+      RE-COUNTED at `feat/D1-role-protocol @ 6293f42`:
+
+          "Reddens under a body on:"   41   ALL in tests/test_call_site_reachability.py
+          "Reddens on"                 19
+          "Reddens under"               3
+          other "Reddens ..." spellings 4
+
+      THE RECORDED FIGURE WAS 45 AND IT IS 41. Two of the record's claims did
+      not survive re-measurement and both make the unit SMALLER:
+
+        1. "The convention has spread to the G1 and G2 seal files." It has not.
+           Measured at `feat/G2-adj @ 83b0b97` and at `feat/G1-adj @ 11fd607`
+           in `claude-workflow`: `grep -rho "Reddens[a-z ]*" --include=*.go`
+           returns ZERO occurrences of any spelling. `cmd/gates/
+           preserve_seal_test.go` and `cmd/iterate/preserve_seal_test.go` use a
+           different convention entirely (`MEASURED:`, `PROOF OF EXECUTION:`,
+           `WHY IT DESERVES A ROW.`). They are also in a different repository,
+           which the dispatcher cannot reach in one run.
+        2. Therefore the recorded reason for deferring this work — "a
+           convention living in three files cannot be repaired in one" — NO
+           LONGER HOLDS. It lives in one file, in this repository. That is the
+           finding that makes this buildable.
+
+      What the clauses claim: each names the mutations under which its row
+      reddens. A prior P4 measured 43 of them and found 12 recorded against the
+      SHIPPED body, 31 against a REFERENCE IMPLEMENTATION THAT WAS DISCARDED —
+      so 31 clauses' evidence expired with it — and one that was never true
+      (injecting the `AnalyzerError` swallow reddens the gap-4 row's six
+      parametrisations and nothing else, so the header's claim that every
+      injected mutation reddened the rows naming it was FALSE, not stale). It
+      was struck.
+
+      THE REFUSAL THIS UNIT MUST RESPECT, quoted so it is not re-derived:
+
+        "A row over docstrings can check only that a clause is ACCOMPANIED by a
+         word, never that anything was measured — it is satisfied by typing. A
+         mechanism that can be defeated by a comment is not a mechanism.
+         Building it ships the defect it was built to fix, one level further
+         up."
+
+      So: no mechanical row over docstrings. The ruled direction was A DURABLE
+      LEDGER OUTSIDE THE DOCSTRINGS — a record of (row, mutation, revision,
+      observed result) that a later reader can RE-RUN rather than re-read.
+
+      The naming rule adopted instead has already spread and can be measured:
+      `Measured under:` 118 occurrences, `Predicted (unmeasured) under:` 26, at
+      `6293f42`. Where they live matters — `tests/test_branch_reachability.py`
+      73/16, `tests/test_d5_floor.py` 36/5 — and where they DO NOT is the
+      point: `tests/test_call_site_reachability.py`, the file holding all 41
+      unlabelled clauses, carries exactly 1 and 1. D5's own relabelling
+      obligation is still open.
+
+      Contract must answer: what a ledger ENTRY is and what makes one stale (a
+      revision that no longer exists, a body that changed, a reference
+      implementation that was discarded); how a claim is RE-DERIVED rather than
+      re-read; what happens when re-derivation disagrees with the record — a
+      named state, never a silently kept entry; and what the ledger costs to
+      run, because a ledger nobody runs is the docstring again in a file with a
+      different extension.
+
+      Say plainly whether the 41 clauses are migrated, relabelled in place, or
+      struck. A clause whose evidence expired with a discarded reference
+      implementation is not made true by being copied into a ledger.
+    type: Task
+    estimate: 2h
+    labels: [size:M, area:dispatcher]
+    agent: claude
+    role: scaffold
+    status: To Do
+
+  - key: W2-3-2
+    summary: seals — a ledger entry that no longer reproduces is red
+    description: |
+      Seal W2-3-1's contract. The row that matters must fail on a ledger entry
+      that DOES NOT REPRODUCE — that is the whole property, and it is the one a
+      docstring cannot have.
+
+      NON-VACUITY, and this unit is the one most at risk of it: do NOT seal
+      that an entry EXISTS, that the ledger has N entries, that every clause
+      has a companion entry, or that a field is non-empty. Every one of those
+      is satisfied by typing, which is the refusal this unit inherits. The row
+      must run the recorded mutation and compare the recorded result.
+
+      Build the red case from a real expired claim rather than a fixture: the
+      struck `AnalyzerError`-swallow clause is a measured example of a claim
+      that was never true, and the 31 clauses whose reference implementation
+      was discarded are measured examples of claims whose evidence is gone.
+
+      Carry an in-test control judged in the same call, and use `Measured
+      under:` / `Predicted (unmeasured) under:`.
+    type: Task
+    estimate: 2h
+    labels: [size:M, area:dispatcher]
+    agent: claude
+    role: seals
+    status: To Do
+    blockedBy: [W2-3-1]
+
+  - key: W2-3-3
+    summary: bodies — build the ledger and populate it from what is still true
+    description: |
+      Turn W2-3-2's rows green.
+
+      Populate from RE-DERIVATION, never from transcription: an entry copied
+      out of a docstring carries the docstring's problem into the ledger. For
+      each of the 41 clauses, either re-run the mutation and record what you
+      observed, or record that it could not be re-derived and why. The second
+      outcome is a result, not a failure, and 31 of them are expected to take
+      it.
+
+      Nothing here is floored — `tests/test_call_site_reachability.py` is a
+      test file and the ledger is new. But note
+      `**/src/claude_dispatcher/call_site_reachability.py` IS floored (glob 11
+      of 17): if re-deriving a clause requires editing the module to inject a
+      mutation, that is not a body edit. Re-derive by monkeypatching or by an
+      out-of-tree copy, and say which you used.
+
+      Report every clause whose re-derivation disagreed with its text.
+    type: Task
+    estimate: 3h
+    labels: [size:L, area:dispatcher]
+    agent: claude
+    role: bodies
+    status: To Do
+    blockedBy: [W2-3-2]
+
+  - key: W2-3-4
+    summary: adjudicate — rule the fate of the clauses the body could not re-derive
+    description: |
+      Rule what happens to each clause the body could not re-derive: struck,
+      relabelled `Predicted (unmeasured) under:`, or kept with a named expiry.
+
+      The precedent to apply, and it constrains YOU: "an adjudicator rewriting
+      30 docstrings in the file it is ruling on is the dissolvable-gate hazard
+      in miniature." Rule the policy and the boundary cases; the bulk
+      relabelling is the seal author's obligation, D5-local. Name each row you
+      do amend and its before/after.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+    role: adjudicate
+    disputed_paths:
+      - tests/test_call_site_reachability.py
+    status: To Do
+    blockedBy: [W2-3-3]
