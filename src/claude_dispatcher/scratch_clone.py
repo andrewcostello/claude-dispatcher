@@ -1,9 +1,9 @@
 """Unit DF-4 — a scratch clone of a worktree that cannot reach the real repo.
 
-**P1 scaffold. This module is CONTRACT plus the implemented tables; the four
-control-flow functions and the CLI face are stubs. P2 writes the seals, P3
-the bodies, P4 adjudicates and decides whether the helper becomes mandatory
-in role briefs.**
+**P1 wrote this contract and the tables; P2 (DF-4-2) sealed it from
+outside; P3 (DF-4-3, this revision) filled the four control-flow bodies and
+the CLI face against those seals. P4 adjudicates and decides whether the
+helper becomes mandatory in role briefs.**
 
 Every citation below is `Measured under:` `6293f424` (`main`, the base of
 `feat/DF-4-1-...`), git 2.51.0, CPython 3.13.7, 2026-08-13, unless a line
@@ -206,7 +206,8 @@ Tables and shapes are DATA and are implemented; the control flow is stubbed.
     bodies MUST NOT be writable without it, and a seal cannot be written
     against a stub.
   * :func:`make_scratch_clone`, :func:`assert_isolated`, :func:`swap_in`,
-    :func:`swap_back`, :func:`main` — STUBS.
+    :func:`swap_back`, :func:`main` — the control flow, implemented at P3
+    against the P2 seals.
 
 What this unit does NOT do — each a CHOICE, stated so a later reader does
 not infer omission: it does not touch `worktree.py` — that module CREATES
@@ -223,11 +224,14 @@ afterthought.
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+import shutil
+import subprocess
+import sys
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Sequence
+from typing import NoReturn, Sequence
 
 #: Pinned into every scrubbed environment AFTER the ``GIT_*`` drop.
 #: Discovery routing is handled by the drop itself; these close the CONFIG
@@ -520,6 +524,49 @@ class SwapToken:
     mutated_mtime_ns: int
 
 
+_NS_PER_SECOND = 1_000_000_000
+
+
+def _git_run(args: Sequence[str],
+             cwd: Path) -> subprocess.CompletedProcess[str]:
+    """A git child under the standing rule: every one runs scrubbed."""
+    return subprocess.run(
+        ["git", *args], cwd=cwd, env=scrubbed_git_env(),
+        capture_output=True, text=True,
+    )
+
+
+def _entries_under(root: Path) -> Iterator[Path]:
+    """Every filesystem entry under `root`, symlinks NOT followed — the
+    question here is what exists on disk, and following a link would walk
+    a tree outside the clone."""
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        base = Path(dirpath)
+        for name in dirnames + filenames:
+            yield base / name
+
+
+def _refuse(dest: Path, refusal: Refusal, detail: str = "") -> NoReturn:
+    """Remove the partial destination, then raise the named refusal.
+
+    Only for a destination THIS call created: preflight refusals raise
+    directly, because the helper never deletes what it did not make.
+    """
+    try:
+        if dest.is_symlink() or dest.is_file():
+            dest.unlink()
+        elif dest.is_dir():
+            shutil.rmtree(dest)
+    except OSError as exc:
+        raise ScratchCloneError(
+            refusal,
+            detail=(f"{detail}; " if detail else "")
+            + f"cleanup failed, left behind {dest}: {exc}",
+            cleanup_failed=True,
+        )
+    raise ScratchCloneError(refusal, detail=detail)
+
+
 def make_scratch_clone(source: Path, dest: Path) -> ScratchClone:
     """Copy the worktree at `source` to `dest` and QUARANTINE the copy.
 
@@ -560,16 +607,89 @@ def make_scratch_clone(source: Path, dest: Path) -> ScratchClone:
     raised error has ``cleanup_failed=True`` and ``detail`` names the
     leftovers. Returns the :class:`ScratchClone` receipt only after step 5.
 
-    P1 STUB — the seals (P2, DF-4-2, a DIFFERENT author: a scaffold that
-    writes the seals it will be judged by re-creates the circular oracle)
-    drive this signature; P3 writes the body. The row that matters must
-    FAIL against a naive ``cp -a``, per DF-4-2.
+    The seals (P2, DF-4-2, a DIFFERENT author: a scaffold that writes the
+    seals it will be judged by re-creates the circular oracle) drove this
+    signature; this body (P3, DF-4-3) exists to satisfy them — the row that
+    matters fails against a naive ``cp -a``.
     """
-    raise NotImplementedError(
-        "DF-4 P1 scaffold: make_scratch_clone is contract only — "
-        "P3 (DF-4-3) writes the body. Do NOT fall back to cp -a; that "
-        "fallback is the incident this unit exists to end."
-    )
+    # 1. preflight — refuse before any byte is copied. No cleanup on these
+    # paths: nothing here was created by this call, and DEST_COLLISION's
+    # whole point is that the existing destination survives untouched.
+    # "Is a worktree" is judged by the entry on disk (a linked worktree's
+    # gitdir FILE, a main worktree's directory) rather than by asking git:
+    # discovery walks up, so a plain directory under an umbrella repo would
+    # answer yes to git while being exactly the cp -a caller this refusal
+    # exists to turn away.
+    if not source.is_dir() or not os.path.lexists(source / ".git"):
+        raise ScratchCloneError(Refusal.SOURCE_UNUSABLE, detail=str(source))
+    if os.path.lexists(dest):
+        raise ScratchCloneError(Refusal.DEST_COLLISION, detail=str(dest))
+    source_res = source.resolve()
+    dest_res = dest.resolve()
+    if source_res.is_relative_to(dest_res) or dest_res.is_relative_to(
+            source_res):
+        raise ScratchCloneError(
+            Refusal.NESTED_PATHS, detail=f"{source} <-> {dest}")
+
+    # 2. copy — cp -a semantics (symlinks preserved as symlinks, so the
+    # escape scan below judges them; metadata preserved).
+    try:
+        shutil.copytree(source, dest, symlinks=True)
+    except Exception as exc:
+        _refuse(dest, Refusal.COPY_FAILED, detail=str(exc))
+
+    # 3a. sever — every .git entry of every kind, deepest first so a nested
+    # one is gone before its parent's turn.
+    try:
+        for entry in sorted(dest.rglob(".git"), reverse=True):
+            if entry.is_symlink() or entry.is_file():
+                entry.unlink()
+            else:
+                shutil.rmtree(entry)
+    except OSError as exc:
+        _refuse(dest, Refusal.SEVER_INCOMPLETE, detail=str(exc))
+    survivors = [str(p) for p in dest.rglob(".git")]
+    if survivors:
+        _refuse(dest, Refusal.SEVER_INCOMPLETE, detail=", ".join(survivors))
+
+    # 3b. symlink scan — no link under ANY name may resolve outside the
+    # clone; an unresolvable link gets the same answer (unprovable ==
+    # unsafe).
+    for entry in _entries_under(dest):
+        if not entry.is_symlink():
+            continue
+        try:
+            target = entry.resolve()
+        except OSError as exc:
+            _refuse(dest, Refusal.LINK_ESCAPES_CLONE,
+                    detail=f"{entry}: {exc}")
+        if not target.is_relative_to(dest_res):
+            _refuse(dest, Refusal.LINK_ESCAPES_CLONE,
+                    detail=f"{entry} -> {target}")
+
+    # 3c. purge inherited bytecode (Hazard B at full strength on day one).
+    try:
+        for cache_dir in sorted(dest.rglob("__pycache__"), reverse=True):
+            shutil.rmtree(cache_dir)
+        for pyc in dest.rglob("*.pyc"):
+            pyc.unlink()
+    except OSError as exc:
+        _refuse(dest, Refusal.PURGE_FAILED, detail=str(exc))
+
+    # 4. quarantine — empty template so nothing rides in from a template
+    # dir; scrubbed env so nothing rides in from the caller's shell.
+    init = _git_run(["init", "-q", "--template="], cwd=dest)
+    if init.returncode != 0 or not (dest / ".git").is_dir():
+        _refuse(dest, Refusal.QUARANTINE_FAILED,
+                detail=init.stderr.strip() or f"rc={init.returncode}")
+
+    # 5. prove — the probe's failure IS this function's failure.
+    try:
+        assert_isolated(dest)
+    except ScratchCloneError as err:
+        _refuse(dest, Refusal.ISOLATION_UNVERIFIED, detail=err.detail)
+
+    return ScratchClone(path=dest, source=source, git_dir=dest / ".git")
 
 
 def assert_isolated(clone_path: Path) -> None:
@@ -614,13 +734,101 @@ def assert_isolated(clone_path: Path) -> None:
     Returns None on proof — CHOICE: no boolean form; the rejected
     alternative, ``is_isolated() -> bool``, is one `if` a brief writes and
     forgets, and a forgotten False is a silent copy.
-
-    P1 STUB — P3 writes the body.
     """
-    raise NotImplementedError(
-        "DF-4 P1 scaffold: assert_isolated is contract only — "
-        "P3 (DF-4-3) writes the body."
-    )
+    def _unverified(detail: str) -> NoReturn:
+        raise ScratchCloneError(Refusal.ISOLATION_UNVERIFIED, detail=detail)
+
+    root = clone_path
+    if not root.is_dir():
+        _unverified(f"{root} is not a directory — nothing to probe")
+    root_res = root.resolve()
+
+    # Quarantine internals: a DIRECTORY (not a gitfile, not a link), no
+    # commondir, no alternates — the channels that split the two rev-parse
+    # answers or read foreign objects while both answer in-clone.
+    git_root = root / ".git"
+    if git_root.is_symlink() or not git_root.is_dir():
+        _unverified(f"root .git at {git_root} is not a plain directory")
+    quarantine = git_root.resolve()
+    if (git_root / "commondir").exists():
+        _unverified(f"quarantine carries a commondir file: {git_root}")
+    if (git_root / "objects" / "info" / "alternates").exists():
+        _unverified(
+            f"quarantine carries objects/info/alternates: {git_root}")
+
+    # Filesystem walk: no other .git entry of ANY kind, no symlink under
+    # ANY name resolving outside the clone; an unresolvable link is
+    # unprovable and gets the unsafe answer. The same pass finds the
+    # deepest probe-able directory (never inside a .git).
+    deepest = root
+    deepest_depth = 0
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        base = Path(dirpath)
+        for name in dirnames + filenames:
+            entry = base / name
+            if name == ".git" and entry.relative_to(root) != Path(".git"):
+                _unverified(f"a .git entry exists under the clone: {entry}")
+            if entry.is_symlink():
+                try:
+                    target = entry.resolve()
+                except OSError as exc:
+                    _unverified(f"unresolvable symlink {entry}: {exc}")
+                if not target.is_relative_to(root_res):
+                    _unverified(
+                        f"symlink {entry} resolves outside the clone "
+                        f"to {target}")
+        if ".git" in base.relative_to(root).parts:
+            continue
+        for name in dirnames:
+            if name == ".git":
+                continue
+            depth = len((base / name).relative_to(root).parts)
+            if depth > deepest_depth:
+                deepest_depth = depth
+                deepest = base / name
+
+    # Git's walk: BOTH rev-parse answers, from the root AND the deepest
+    # directory, resolved against the real filesystem before comparing —
+    # --git-common-dir answers relative to the invocation dir (measured).
+    probe_dirs = (root,) if deepest == root else (root, deepest)
+    for probe_cwd in probe_dirs:
+        for flag in ("--absolute-git-dir", "--git-common-dir"):
+            proc = _git_run(["rev-parse", flag], cwd=probe_cwd)
+            if proc.returncode != 0:
+                _unverified(
+                    f"probe git rev-parse {flag} failed at {probe_cwd}: "
+                    f"{proc.stderr.strip()}")
+            raw = Path(proc.stdout.strip())
+            answered = (raw if raw.is_absolute() else probe_cwd / raw
+                        ).resolve()
+            if answered != quarantine:
+                _unverified(
+                    f"rev-parse {flag} at {probe_cwd} answered {answered}, "
+                    f"not the quarantine {quarantine}")
+
+
+def _swap_target(clone: ScratchClone, relpath: str) -> Path:
+    """The one file a swap seam may touch, or the seam's named refusal.
+
+    Escape is judged on the RESOLVED path — ``..``, an absolute path, and
+    a symlink anywhere along the way all collapse to "where would the
+    write land", and that answer must be inside the clone. Escape is
+    checked before existence: a path that escapes is refused as an escape
+    even when its target exists.
+    """
+    if Path(relpath).is_absolute():
+        raise ScratchCloneError(Refusal.SWAP_ESCAPES_CLONE, detail=relpath)
+    root_res = clone.path.resolve()
+    try:
+        resolved = (clone.path / relpath).resolve()
+    except OSError as exc:
+        raise ScratchCloneError(
+            Refusal.SWAP_ESCAPES_CLONE, detail=f"{relpath}: {exc}")
+    if not resolved.is_relative_to(root_res):
+        raise ScratchCloneError(Refusal.SWAP_ESCAPES_CLONE, detail=relpath)
+    if not resolved.is_file():
+        raise ScratchCloneError(Refusal.SWAP_TARGET_MISSING, detail=relpath)
+    return resolved
 
 
 def swap_in(clone: ScratchClone, relpath: str, mutated: bytes) -> SwapToken:
@@ -637,13 +845,16 @@ def swap_in(clone: ScratchClone, relpath: str, mutated: bytes) -> SwapToken:
     outside ``clone.path`` (``..``, absolute, or through a symlink), and
     with :data:`Refusal.SWAP_TARGET_MISSING` when there is nothing there to
     mutate. Returns the :class:`SwapToken` that :func:`swap_back` requires.
-
-    P1 STUB — P3 writes the body.
     """
-    raise NotImplementedError(
-        "DF-4 P1 scaffold: swap_in is contract only — P3 (DF-4-3) writes "
-        "the body."
-    )
+    target = _swap_target(clone, relpath)
+    original = target.read_bytes()
+    original_ns = target.stat().st_mtime_ns
+    target.write_bytes(mutated)
+    new_ns = max(target.stat().st_mtime_ns,
+                 original_ns + MTIME_ADVANCE_SECONDS * _NS_PER_SECOND)
+    os.utime(target, ns=(new_ns, new_ns))
+    return SwapToken(relpath=relpath, original=original,
+                     mutated_mtime_ns=target.stat().st_mtime_ns)
 
 
 def swap_back(clone: ScratchClone, token: SwapToken) -> None:
@@ -656,13 +867,13 @@ def swap_back(clone: ScratchClone, token: SwapToken) -> None:
     so the restored file may never share a (whole-second mtime, size) key
     with the mutant. Same escape and existence refusals as
     :func:`swap_in`.
-
-    P1 STUB — P3 writes the body.
     """
-    raise NotImplementedError(
-        "DF-4 P1 scaffold: swap_back is contract only — P3 (DF-4-3) writes "
-        "the body."
-    )
+    target = _swap_target(clone, token.relpath)
+    target.write_bytes(token.original)
+    new_ns = max(
+        target.stat().st_mtime_ns,
+        token.mutated_mtime_ns + MTIME_ADVANCE_SECONDS * _NS_PER_SECOND)
+    os.utime(target, ns=(new_ns, new_ns))
 
 
 def main(argv: Sequence[str]) -> int:
@@ -680,16 +891,20 @@ def main(argv: Sequence[str]) -> int:
     the scrub by delegation — it calls :func:`make_scratch_clone` and adds
     no git subprocess of its own — which is why it is the recommended
     entry for an agent shell whose environment may carry ``GIT_*``.
-
-    P1 STUB — P3 writes the body.
     """
-    raise NotImplementedError(
-        "DF-4 P1 scaffold: main is contract only — P3 (DF-4-3) writes the "
-        "body."
-    )
+    args = list(argv)
+    if len(args) != 2 or any(arg.startswith("-") for arg in args):
+        print("usage: python -m claude_dispatcher.scratch_clone SRC DEST",
+              file=sys.stderr)
+        return 3
+    try:
+        clone = make_scratch_clone(Path(args[0]), Path(args[1]))
+    except ScratchCloneError as err:
+        print(err, file=sys.stderr)
+        return 2
+    print(clone.path)
+    return 0
 
 
 if __name__ == "__main__":  # pragma: no cover - script face
-    import sys
-
     raise SystemExit(main(sys.argv[1:]))
