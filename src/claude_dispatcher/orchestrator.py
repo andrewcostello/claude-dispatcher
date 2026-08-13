@@ -101,6 +101,12 @@ _log_lock = threading.Lock()
 # that reads like the verdict is a stamp somebody will treat as one.
 _ROLE_LOOP_STAMP, _ROLE_LOOP_DETAIL_STAMP = loop_gate_mod.ROW_STAMPS
 
+# The retry anchor (D-54). Read from the same constant the row is written from,
+# for the reason `_STALE_STAMPS` gives: two spellings of one key is the failure
+# where a rename clears one and writes the other, both halves internally
+# consistent. See `loop_gate.RETRY_ANCHOR_STAMP` for why it exists.
+_RETRY_ANCHOR_STAMP = loop_gate_mod.RETRY_ANCHOR_STAMP
+
 
 # How often the dispatch loop appends a `heartbeat` event to the journal while
 # running. The journal's most-recent-event age is the liveness signal
@@ -333,6 +339,12 @@ class TaskSnapshot:
     # could not be parsed, which the gate reports as ROLE_UNRESOLVED — never
     # as "no role, therefore no check".
     role_specs: list[role_protocol_mod.TaskRoleSpec] = field(default_factory=list)
+    # The retry anchor read off the row at dispatch (D-54, `loop_gate.
+    # RETRY_ANCHOR_STAMP`): the gate base of the attempt that first blocked
+    # this task, or None on a first attempt. Frozen here with `role_specs` and
+    # for the same reason — it is read BEFORE the implementer spawns, so a
+    # branch cannot move the ref it is judged from by editing its own row.
+    gate_base_sha: str | None = None
 
 
 CAPSTONE_KEY = "CAPSTONE-INTEGRATION"
@@ -1246,6 +1258,12 @@ def _run_task(
     panel_verdict: cfr_mod.PanelVerdict | None = None
     panel_iterations_used = 0
     role_loop: loop_gate_mod.LoopGateOutcome | None = None
+    # The ref the gate actually diffed from on the rung that produced
+    # `role_loop`. Recorded as the retry anchor if this attempt blocks, so the
+    # NEXT attempt is judged from the same place (D-54). Reset per rung with
+    # `role_loop` for the same reason: a discarded rung's base must not be
+    # written onto the terminal row.
+    gate_base_used: str | None = None
 
     for idx, (attempt_agent, attempt_effort) in enumerate(cascade):
         if idx > 0:
@@ -1285,6 +1303,7 @@ def _run_task(
         # row either: the diff it judged was reset away, so the stamp would
         # describe a diff that no longer exists.
         role_loop = None
+        gate_base_used = None
         result = None
         s = None
         used_agent = None
@@ -1472,14 +1491,28 @@ def _run_task(
         # that merged an edit to `.dispatcher.yaml` cannot supply the rule that
         # judges it. Both refs go in through loop_gate.resolve_inputs; neither
         # is spelled at this call site.
+        # ...with ONE exception, D-54: an adjudicated retry is judged from the
+        # anchor — the base of the attempt that first blocked. Without it the
+        # only compliant act available to the role (deleting the file it must
+        # not have written) is itself a changed path under the same deny glob,
+        # so an unblocked task can never clear the gate. The anchor only ever
+        # moves the base BACKWARDS to a prior pre_spawn_sha, so §4's reasoning
+        # is untouched: it is still never cfg.base_branch, and a dependency's
+        # SEALS commits are still on the far side of it.
+        gate_base_sha, gate_base_reason = _resolve_gate_base(
+            repo_root, snap, wt.branch, pre_spawn_sha, log_path,
+        )
+        if gate_base_sha != pre_spawn_sha:
+            _log(log_path, f"  {snap.key} role loop gate base: {gate_base_reason}")
         role_loop = loop_gate_mod.check_after_implementer(
             enabled=bool(getattr(cfg, "enable_role_loop_gate", False)),
             repo_root=repo_root,
             base_branch=cfg.base_branch,
             branch_ref=wt.branch,
-            pre_spawn_sha=pre_spawn_sha,
+            pre_spawn_sha=gate_base_sha,
             specs=list(snap.role_specs or []),
         )
+        gate_base_used = gate_base_sha
         _log(log_path,
              f"  {snap.key} role loop gate: {role_loop.status.value} "
              f"({role_loop.decision.value})"
@@ -1906,6 +1939,25 @@ def _run_task(
             row[_ROLE_LOOP_STAMP] = role_loop.status.value
             if role_loop.detail:
                 row[_ROLE_LOOP_DETAIL_STAMP] = role_loop.detail[:mv_mod.TAIL_CHARS]
+        # The retry anchor (D-54), written and cleared HERE and nowhere else.
+        #
+        # Recorded when the task ends Blocked and the gate had a base: the next
+        # attempt is then judged from this same ref, so the act that clears the
+        # violation is measured against the state BEFORE the violation. Written
+        # only when absent, because the anchor must name the FIRST blocked
+        # attempt's base — re-stamping it each retry would walk it forward one
+        # attempt at a time and reproduce the defect a block at a time.
+        #
+        # Cleared on Done: the task's next dispatch is new work, and a stale
+        # anchor would silently widen its gate window to a base it never ran
+        # from. Absence is the first-attempt state, so clearing is a return to
+        # the default, not a special case.
+        #
+        # Not cleared by `unblock` — deliberately, and the reason `ROW_STAMPS`
+        # does not contain it: `unblock._STALE_STAMPS` drops the PREVIOUS
+        # attempt's verdicts, and this is not a verdict. It is the coordinate
+        # the next verdict must be taken from.
+        _record_retry_anchor(row, final_status, gate_base_used)
         # Seal-inversion outcome (VG-3). Absent when the gate never ran
         # (not fix-shaped, non-Done, or the mechanical gate wasn't green).
         if seal_outcome is not None:
@@ -2594,6 +2646,16 @@ def _dispatch_drain(
                         ) if k not in {g.key for g in group}
                     ],
                     role_specs=group_specs,
+                    # Read off `raw` for the same reason `role` and `risk` are:
+                    # `plan.Task` models no such field and the row is the
+                    # authority. A non-string or blank value is read as absent
+                    # (no anchor -> first-attempt semantics), never coerced:
+                    # a malformed anchor must not become a base ref.
+                    gate_base_sha=(
+                        str(primary.raw.get(_RETRY_ANCHOR_STAMP)).strip() or None
+                        if isinstance(primary.raw.get(_RETRY_ANCHOR_STAMP), str)
+                        else None
+                    ),
                 )
                 _mark_in_progress(cfg, snap, run_dir)
                 fut = exe.submit(_run_task, snap, cfg, run_dir, log_path, repo_root)
@@ -3400,6 +3462,117 @@ def _append_panel_findings_to_summary(
         summary_path.write_text(existing + sep + block, encoding="utf-8")
     except OSError as e:
         _log(log_path, f"  {task_key} append-panel-to-summary failed: {e}")
+
+
+def _record_retry_anchor(row: dict, final_status: str,
+                         gate_base_used: str | None) -> None:
+    """Write or clear the retry anchor on a finished task's row (D-54).
+
+    A module-level function rather than four lines inside `_apply` so it can be
+    sealed directly: measured, a mutant swapping the `setdefault` below for a
+    plain assignment reddened NO row while the logic lived in the closure, and
+    that mutant is the defect coming back one block at a time.
+
+    * **Blocked, and the gate had a base** — record it, but only if the row
+      does not already carry one. The anchor must name the FIRST blocked
+      attempt's base. Re-stamping each retry walks it forward one attempt at a
+      time: attempt 2 would be judged from attempt 1's tip, attempt 3 from
+      attempt 2's, and every one of them from a tip that already contains the
+      violation. That is D-54 with extra steps.
+    * **Done** — clear it. The next dispatch of this row is new work, and a
+      stale anchor would widen its gate window to a base it never ran from.
+      Absence IS the first-attempt state, so clearing returns to the default
+      rather than encoding a special case.
+    * **Anything else** (Blocked with no base — the gate never resolved one,
+      or `pre_spawn_sha` was unreadable) — leave the row alone. An anchor is a
+      ref the next diff will be taken from; there is nothing honest to write
+      when this attempt could not name one, and a guess would be a base ref
+      invented by the failure path.
+
+    Not cleared by `unblock`, deliberately: `_STALE_STAMPS` drops the previous
+    attempt's VERDICTS, and this is not a verdict. It is the coordinate the
+    next verdict must be taken from.
+    """
+    if final_status == plan_mod.DONE:
+        row.pop(_RETRY_ANCHOR_STAMP, None)
+        return
+    if final_status == plan_mod.BLOCKED and gate_base_used:
+        row.setdefault(_RETRY_ANCHOR_STAMP, gate_base_used)
+
+
+def _is_ancestor(repo_root: Path, sha: str, ref: str,
+                 log_path: Path, task_key: str) -> bool:
+    """True iff `sha` is an ancestor of `ref` — i.e. usable as a diff base.
+
+    `git merge-base --is-ancestor` exits 0 for yes, 1 for no, and something
+    else for an error (bad object, not a repo). Only exit 0 is a yes: an
+    UNKNOWN sha exits 128, and reading that as "no" would be right by accident
+    while reading it as "yes" would hand the gate a base ref git cannot
+    resolve. Any non-zero answer is logged with its code so the two are told
+    apart in the run log.
+
+    This is the check the recorded false-divergence trap asks for (project
+    memory: three alarms raised by reading "not an ancestor" as "diverged").
+    Here the consequence of a wrong yes is narrow and stated: the gate would
+    fail to resolve its base and answer UNDETERMINED, which blocks — never a
+    silent pass.
+    """
+    import subprocess
+    try:
+        proc = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", sha, ref],
+            cwd=str(repo_root), capture_output=True, text=True,
+            check=False, timeout=30,
+        )
+    except Exception as e:  # noqa: BLE001
+        _log(log_path, f"  {task_key} ancestry check {sha}..{ref} failed: {e}")
+        return False
+    if proc.returncode == 0:
+        return True
+    if proc.returncode != 1:
+        _log(log_path,
+             f"  {task_key} `git merge-base --is-ancestor {sha} {ref}` "
+             f"exit={proc.returncode}: {proc.stderr.strip() or '(no stderr)'} "
+             f"— treated as NOT an ancestor")
+    return False
+
+
+def _resolve_gate_base(repo_root: Path, snap: "TaskSnapshot", branch: str,
+                       pre_spawn_sha: str | None,
+                       log_path: Path) -> tuple[str | None, str]:
+    """The ref the role loop gate diffs from, and a one-line reason (D-54).
+
+    Returns `pre_spawn_sha` — this rung's own base, the pre-D-54 behaviour —
+    unless the row carries a RETRY ANCHOR that is still an ancestor of the
+    branch, in which case the anchor wins and the gate judges everything the
+    task has done ACROSS attempts rather than only since the last unblock.
+
+    Three ways the anchor is declined, each logged rather than silent:
+
+    * no anchor: a first attempt, or a task that has never been unblocked;
+    * the anchor is not an ancestor of the branch — the branch was reset,
+      rebased or recreated, so the anchor names a base this diff cannot be
+      taken from. Falling back is the safe direction: `pre_spawn_sha` is a
+      NARROWER window, so the gate over-reports rather than under-reports;
+    * `pre_spawn_sha` itself is None (git failed). The anchor is not used to
+      paper over that — the caller's existing None handling stands, because a
+      run that could not read its own branch tip should not then be handed a
+      base ref from the YAML.
+    """
+    anchor = (snap.gate_base_sha or "").strip()
+    if not anchor:
+        return pre_spawn_sha, "pre_spawn_sha (no retry anchor)"
+    if pre_spawn_sha is None:
+        return None, "pre_spawn_sha unreadable; retry anchor NOT substituted"
+    if anchor == pre_spawn_sha:
+        return pre_spawn_sha, "retry anchor equals pre_spawn_sha"
+    if not _is_ancestor(repo_root, anchor, branch, log_path, snap.key):
+        _log(log_path,
+             f"  {snap.key} retry anchor {anchor[:12]} is not an ancestor of "
+             f"{branch} — falling back to pre_spawn_sha; the gate window is "
+             f"narrower than the anchor asked for, never wider")
+        return pre_spawn_sha, "retry anchor not an ancestor; fell back"
+    return anchor, f"retry anchor {anchor[:12]} (adjudicated retry)"
 
 
 def _branch_sha(repo_root: Path, branch: str,

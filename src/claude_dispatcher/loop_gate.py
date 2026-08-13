@@ -1188,6 +1188,35 @@ _BLOCKED_REASON_PREFIXES: Mapping[LoopGateStatus, str] = {
 #: printed whole into a queue meant to be scanned.
 ROW_STAMPS: tuple[str, ...] = ("role_diff_loop", "role_diff_loop_detail")
 
+#: The row key holding the RETRY ANCHOR: the gate base of the attempt that
+#: first blocked this task. Deliberately NOT in `ROW_STAMPS`, because
+#: `unblock._STALE_STAMPS` clears every key in that tuple and this one must
+#: SURVIVE an unblock — it exists only to be read by the retry.
+#:
+#: **Why the key exists at all (D-54, found by dogfooding DF-4-1).** The gate's
+#: base is `pre_spawn_sha`, captured when the implementer spawns. On a retry
+#: after an unblock, that tip is the VIOLATING one, so the role's only route to
+#: compliance — deleting the forbidden file — is itself a changed path under
+#: the same deny glob. Measured on `feat/DF-4-1-scaffold-a-scratch-clone-of`:
+#: `8df28a9...HEAD` reports `D tests/test_scratch_clone.py` (1 forbidden path,
+#: BLOCKED) while `6293f42...HEAD` — the same tree, judged from the attempt's
+#: own base — reports only `src/claude_dispatcher/scratch_clone.py` and is
+#: CLEAN. The remedy scored identically to the breach, and no branch state
+#: reachable from a violating tip was clean.
+#:
+#: **What it does NOT change.** A first attempt still carries no anchor, so its
+#: base is `pre_spawn_sha` exactly as before and `loop_gate.py`'s "a protocol
+#: breach is a fact about the agent, not about the surviving diff" stands
+#: unweakened for every un-adjudicated run. The anchor only ever widens the
+#: window BACKWARDS to the first attempt's base — never forwards, and never to
+#: `cfg.base_branch`, which §4 rules out because dependency merges land a SEALS
+#: task's `tests/**` on a BODIES branch before its implementer spawns.
+#:
+#: **Rejected: exempting deletions.** A BODIES agent deleting the seal that
+#: reddens it is the exact attack the deny table exists to stop. The fix is to
+#: judge the adjudicated retry on its NET diff, not to bless a file operation.
+RETRY_ANCHOR_STAMP: str = "gate_base_sha"
+
 
 def decision_for(status: LoopGateStatus) -> LoopGateDecision:
     """What the loop does, given a status. Total over :class:`LoopGateStatus`.
