@@ -350,6 +350,14 @@ def _sync_local_feature_branch(cfg: MergeEngineConfig, log) -> None:
     out), so ``git fetch origin <fb>:<fb>`` is a safe fast-forward of the local
     branch. Best-effort: a fetch failure (offline, non-ff, or the branch somehow
     checked out) leaves the local ref as-is — the prior behavior, no regression.
+
+    DF-1 MEASURED: in pr-mode runs the feature branch IS checked out at
+    ``repo_root``, so this fetch exits 128 (``refusing to fetch into branch``)
+    every time and the local ref never moves. The "best-effort" framing made
+    that silent. This function may keep its worktree-freshness job (DF-2/DF-3
+    own the ref-vs-action questions), but it is NO LONGER part of the audit
+    path: the merged-SHA contract lives in ``merge_record.py``, and DF-1-3
+    removes the audit stamp's dependence on this sync.
     """
     import subprocess
     fb = cfg.feature_branch
@@ -370,7 +378,19 @@ def _sync_local_feature_branch(cfg: MergeEngineConfig, log) -> None:
 def _feature_branch_sha(cfg: MergeEngineConfig) -> str | None:
     """The local feature-branch tip SHA, recorded in the pr_merged event.
 
-    By the time this runs after a successful merge, ``_sync_local_feature_branch``
+    DF-1 MEASURED: this value is WRONG as an audit source. The sync above it
+    never succeeds when the feature branch is checked out at ``repo_root``
+    (the pr-mode configuration), so this reads a frozen local tip — two
+    different PRs merged in the same run recorded IDENTICAL post-merge SHAs;
+    all 7 recorded pr_merged events are affected. The premise stated by the
+    paragraph below did not survive measurement. The replacement contract is
+    ``merge_record.witness_merged_sha`` (origin's record of the merge, or a
+    named unavailable state — never this fallback); DF-1-3 rewires the call
+    site and retires this function from the stamp path. Do NOT add new
+    callers.
+
+    Original (falsified) rationale, kept for the record:
+    by the time this runs after a successful merge, ``_sync_local_feature_branch``
     has fast-forwarded the local ref to origin, so this tip matches the merged
     remote. (On the standalone merge-prs path with no reachable origin the sync
     is a no-op and this falls back to the best-available local tip.)
