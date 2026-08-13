@@ -268,6 +268,13 @@ def load_tasks(doc: Any) -> list[Task]:
     from . import role_protocol as role_protocol_mod
 
     validation = role_protocol_mod.validate(tasks)
+    # OWED HERE by DF-3-3 (unit DF-3, P1 contract in batch_coherence.py):
+    # `batch_coherence.batch_errors(tasks, validation.specs)`, merged into
+    # the SAME ValidationError below — a batch whose rows do not share one
+    # role, or share a role and not a rule, is a worklist defect and this is
+    # the one point every load funnels through. The call lands with the
+    # body, in one commit, because wiring the raising stub alone breaks
+    # every load and landing the body unwired is a silent no-op.
     if validation.errors:
         raise ValidationError(
             "the build-protocol role check refused this worklist "
