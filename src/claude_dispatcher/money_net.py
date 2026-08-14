@@ -1,9 +1,9 @@
 """The money-path net: derived from the target repo's tracked table, or a
 named absence. Never a second hand-list.
 
-P1 of unit DF-5. Contract only — the one operative stub is
-:func:`derive_money_net`; its body is DF-5-3's, and the seals are DF-5-2's,
-by different authors.
+P1 of unit DF-5. The contract is DF-5-1's, the seals are DF-5-2's, and the
+:func:`derive_money_net` body plus its wiring landed with DF-5-3 — by
+different authors.
 
 The defect, re-measured on this tree (2026-08-14)
 -------------------------------------------------
@@ -73,8 +73,8 @@ disproportionate when the classification contract is already ADD-only — the
 honest fail-closed shape for an ADD-only net is "gate everything", not "run
 nothing".
 
-**Should the fallback exist at all? No.** ``DEFAULT_FINANCIAL_PATHS`` is
-condemned (see :data:`CONDEMNED_SURFACES`) and retires with DF-5-3's body,
+**Should the fallback exist at all? No.** ``DEFAULT_FINANCIAL_PATHS`` was
+condemned (see :data:`CONDEMNED_SURFACES`) and retired with DF-5-3's body,
 together with its parity test — there is no hand list left to keep in parity.
 What replaces it is not a better list but a different kind of thing: a
 :class:`MoneyNet` record whose provenance is structural.
@@ -121,9 +121,10 @@ Scope choices (each a CHOICE this scaffold makes on purpose)
 * Entry validation accepts exact-file rows (measurement 3). It enforces
   repo-relative forward-slash shape only — matching semantics belong to the
   consumer, not the record.
-* Wiring is OWED to DF-5-3 in one commit with the body (`run.py` /
-  ``orchestrator`` swap the argparse default for :func:`derive_money_net`;
-  the constant and its test file retire in the same commit). A wired stub
+* Wiring landed with DF-5-3 in one commit with the body: ``run.py`` and
+  ``orchestrator`` resolve the net at run start (operator override, else
+  :func:`derive_money_net` against the run's base ref), and the condemned
+  constant and its parity-test file retired in the same commit. A wired stub
   breaks every run; an unwired body is a silent no-op — the DF-3-1 rule.
 """
 
@@ -131,6 +132,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -142,9 +144,9 @@ TABLE_RELPATH = ".agent/risk-paths.json"
 #: for why this — and not "" or a sentinel word — is the fail-closed value.
 ABSENT_ENV_VALUE = "**"
 
-#: Surfaces this contract condemns; they retire with DF-5-3's body, in the
-#: same commit that wires :func:`derive_money_net` in. Named so the seals can
-#: bind to the retirement without this scaffold touching either file.
+#: Surfaces this contract condemned; DF-5-3 retired them in the same commit
+#: that wired :func:`derive_money_net` in. The record stays: the seals bind
+#: to it so the retirement cannot be quietly weakened or reverted.
 CONDEMNED_SURFACES = (
     "claude_dispatcher.cli.DEFAULT_FINANCIAL_PATHS",
     "tests/test_default_financial_paths.py",
@@ -328,19 +330,44 @@ def financial_globs_from_table(table_json: str) -> tuple[str, ...]:
     return tuple(out)
 
 
+def money_net_from_override(value: str) -> MoneyNet:
+    """Fold an explicit ``--financial-paths`` / ``$FINANCIAL_PATHS`` value to
+    a net with ``OPERATOR_OVERRIDE`` provenance.
+
+    An empty override folds to ABSENT (fail-closed): an operator typing
+    ``--financial-paths ""`` gets the universal glob and a named reason,
+    never the dead empty net (the GO-0 shape). A malformed override glob
+    raises :class:`ValueError` — an operator's explicit statement is refused
+    loudly, not folded away.
+    """
+    globs: list[str] = []
+    for entry in value.split(","):
+        entry = entry.strip()
+        if entry and entry not in globs:
+            globs.append(entry)
+    if not globs:
+        return MoneyNet(
+            state=MoneyNetState.ABSENT,
+            detail="--financial-paths override was empty",
+        )
+    return MoneyNet(
+        state=MoneyNetState.DERIVED,
+        financial_globs=tuple(globs),
+        source=MoneyNetSource.OPERATOR_OVERRIDE,
+    )
+
+
 def derive_money_net(repo_root: Path, base_ref: str) -> MoneyNet:
     """Derive the run's money net from the tracked table at ``base_ref``.
 
-    STUB — the body is DF-5-3's, wired in the same commit (see the OWED note
-    in the module docstring). The ruled mechanics, so the body is a
-    transcription and not a design:
+    The mechanics as ruled by DF-5-1 (module docstring):
 
-    * Resolve the blob with git object access —
+    * The blob is resolved with git object access —
       ``git -C repo_root rev-parse <base_ref>:.agent/risk-paths.json`` —
-      and read it with ``git cat-file blob <sha>``. NEVER the working-tree
+      and read with ``git cat-file blob <sha>``. NEVER the working-tree
       file: the measured trap is an untracked on-disk copy 49 globs stale.
-    * Path absent at the ref → ABSENT, detail naming the ref and
-      :data:`TABLE_RELPATH`.
+    * Path absent at the ref (or no usable repo/ref at all) → ABSENT, detail
+      naming the ref and :data:`TABLE_RELPATH`.
     * Unreadable or malformed table, or a table with zero financial rules →
       ABSENT, detail naming the failure (see
       :func:`financial_globs_from_table`).
@@ -348,7 +375,53 @@ def derive_money_net(repo_root: Path, base_ref: str) -> MoneyNet:
       blob SHA.
     * There is no constant to fall back to on ANY branch of this function.
     """
-    raise NotImplementedError(
-        "DF-5-3 lands the derivation body and its wiring; this scaffold "
-        "fixes only the contract (DF-5-1)"
-    )
+
+    def _git(*argv: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "-C", str(repo_root), *argv],
+            capture_output=True,
+            text=True,
+        )
+
+    def _absent(detail: str) -> MoneyNet:
+        return MoneyNet(state=MoneyNetState.ABSENT, detail=detail)
+
+    spec = f"{base_ref}:{TABLE_RELPATH}"
+    rev = _git("rev-parse", "--verify", spec)
+    if rev.returncode != 0:
+        return _absent(
+            f"no tracked {TABLE_RELPATH} at {base_ref} in {repo_root}: "
+            f"{rev.stderr.strip() or 'git rev-parse failed'}"
+        )
+    blob_sha = rev.stdout.strip()
+    if not _SHA_RE.match(blob_sha):
+        return _absent(
+            f"git rev-parse {spec} returned {blob_sha!r}, not a 40-hex blob "
+            "SHA — no freshness witness, no net"
+        )
+    blob = _git("cat-file", "blob", blob_sha)
+    if blob.returncode != 0:
+        return _absent(
+            f"unreadable {TABLE_RELPATH} blob {blob_sha[:12]} at {base_ref}: "
+            f"{blob.stderr.strip()}"
+        )
+    try:
+        globs = financial_globs_from_table(blob.stdout)
+    except ValueError as exc:
+        return _absent(f"{TABLE_RELPATH} at {base_ref} is malformed: {exc}")
+    if not globs:
+        return _absent(
+            f"{TABLE_RELPATH} at {base_ref} declares zero financial rules"
+        )
+    try:
+        return MoneyNet(
+            state=MoneyNetState.DERIVED,
+            financial_globs=globs,
+            source=MoneyNetSource.TRACKED_TABLE,
+            base_ref=base_ref,
+            table_blob_sha=blob_sha,
+        )
+    except ValueError as exc:
+        return _absent(
+            f"{TABLE_RELPATH} at {base_ref} carries an illegal glob: {exc}"
+        )
