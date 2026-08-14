@@ -30,6 +30,7 @@ def render(
     skip_design: bool,
     skip_security_linter: bool,
     financial_paths: str,
+    financial_paths_plan: str | None = None,
     filter_spec: str | None,
     only_keys: list[str] | None,
     all_tasks: list[plan_mod.Task],
@@ -54,7 +55,10 @@ def render(
         lines.append("  --skip-design:        on")
     if skip_security_linter:
         lines.append("  --skip-security-linter: on")
-    lines.append(f"  Financial paths: {financial_paths}")
+    # Human-facing line: provenance for a derived net, the reason for an
+    # absent one (MoneyNet.plan_value). The raw env value still rides on the
+    # FINANCIAL_PATHS= handoff line below.
+    lines.append(f"  Financial paths: {financial_paths_plan or financial_paths}")
     if filter_spec:
         lines.append(f"  --filter:        {filter_spec}")
     if only_keys:

@@ -71,17 +71,39 @@ def test_dry_run_with_only_restricts_to_specific_keys(
     assert "Selected by filter/only: 1" in out
 
 
-def test_dry_run_reports_default_financial_paths(
+def test_dry_run_reports_fail_closed_absent_financial_net(
     three_task_yaml: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The dispatcher exposes the financial-paths list it would hand to Tasker."""
+    """With no override and no tracked risk-paths table reachable from the
+    tasks YAML, the net folds fail-closed to the universal glob with a named
+    reason — never a shipped constant (DF-5)."""
     rc, out, _ = _invoke(
         ["run", str(three_task_yaml), "--mode", "dry-run"],
         capsys,
     )
     assert rc == 0
-    assert "apps/finance-domain/wallet/**" in out
-    assert "apps/platform-domain/bay-session/store/*settlement*" in out
+    assert "fail-closed" in out
+    assert "FINANCIAL_PATHS=**" in out
+
+
+def test_dry_run_reports_operator_override_financial_paths(
+    three_task_yaml: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An explicit --financial-paths value survives as named operator
+    provenance and rides the env handoff verbatim."""
+    rc, out, _ = _invoke(
+        [
+            "run", str(three_task_yaml), "--mode", "dry-run",
+            "--financial-paths", "apps/finance-domain/wallet/**,libs/go/wallet/**",
+        ],
+        capsys,
+    )
+    assert rc == 0
+    assert "operator override" in out
+    assert (
+        "FINANCIAL_PATHS=apps/finance-domain/wallet/**,libs/go/wallet/**"
+        in out
+    )
 
 
 def test_dry_run_reports_default_iteration_cap(
