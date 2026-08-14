@@ -454,13 +454,24 @@ Emitted just before the merge is attempted.
 **`pr_merged`** *(PRF-4)* — the PR landed via `gh pr merge --merge`. The row
 moves `Awaiting Review` → `Merged` (the terminal success state in PR mode).
 
-| Key                  | Type           | Notes |
-|----------------------|----------------|-------|
-| `number`             | int            | The merged PR number. |
-| `merger`             | string         | Always `dispatcher-agent` (the dispatcher owns merging). |
-| `approver`           | string         | Who approved it (mirrors the `pr_approved` `approver`). |
-| `target`             | string         | The feature branch the PR merged into. |
-| `feature_branch_sha` | string \| null | The feature-branch tip after the merge. |
+| Key                 | Type   | Notes |
+|---------------------|--------|-------|
+| `number`            | int    | The merged PR number. |
+| `merger`            | string | Always `dispatcher-agent` (the dispatcher owns merging). |
+| `approver`          | string | Who approved it (mirrors the `pr_approved` `approver`). |
+| `target`            | string | The feature branch the PR merged into. |
+| `merged_sha`        | string | *(observed only)* Origin's merge commit for **this** PR (`gh pr view <n> --json mergeCommit`), 40-hex. Absent — not null — when the state is `unavailable`. |
+| `merged_sha_source` | string | *(observed only)* Provenance of `merged_sha`. Currently always `origin_pr_merge_commit`. |
+| `merged_sha_state`  | string | `observed` (origin answered) or `unavailable` (it could not — the absence is recorded, never a stale value). |
+| `merged_sha_detail` | string | *(unavailable only)* Why origin could not answer. |
+
+> **Retired key (DF-1):** `feature_branch_sha`. Its documented meaning ("the
+> feature-branch tip after the merge") was a claim the recorded values never
+> satisfied — in pr-mode runs the local ref never advanced, so different PRs
+> merged in one run recorded identical SHAs (all 7 historical `pr_merged`
+> events are affected). Events written before DF-1-3 carry the old key;
+> events written after carry the witness keys above. The historical events
+> are not rewritten — the journal is append-only and hash-chained.
 
 **`pr_merge_failed`** *(PRF-4)* — the merge did not land. The row stays
 `Awaiting Review`; the engine does **not** auto-rebase (a deliberate non-goal —

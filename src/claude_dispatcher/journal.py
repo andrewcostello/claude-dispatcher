@@ -188,8 +188,14 @@ class EventType(str, Enum):
     #     external:<login>/external for a GitHub approval), risk_level, and the
     #     classifier reasons.
     #   pr_merged — the PR landed via `gh pr merge --merge`. Payload: number,
-    #     merger (dispatcher-agent), approver, target (the feature branch), and
-    #     feature_branch_sha (the feature-branch tip after the merge).
+    #     merger (dispatcher-agent), approver, target (the feature branch),
+    #     and the merged-SHA witness keys (DF-1, merge_record.py): observed →
+    #     merged_sha (origin's merge commit for THIS PR), merged_sha_source
+    #     ("origin_pr_merge_commit"), merged_sha_state ("observed");
+    #     unavailable → merged_sha_state ("unavailable") + merged_sha_detail,
+    #     and NO merged_sha key. The old feature_branch_sha key is RETIRED —
+    #     it recorded a frozen local tip (identical across different PRs
+    #     merged in one run), never the documented post-merge tip.
     #   pr_merge_failed — the merge did not land. Payload: number, kind
     #     ("conflict" for an unmergeable/conflicting PR, else "error"),
     #     needs_rebase (True only for a conflict), and detail. The row stays

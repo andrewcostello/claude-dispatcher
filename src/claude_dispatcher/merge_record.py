@@ -1,11 +1,12 @@
 """Unit DF-1 — what a merge record must prove about the SHA it names.
 
-**P1 scaffold. This module is CONTRACT plus the implemented record type and
-its stamp fold; the one observation function is a stub. P2 (DF-1-2) writes
-the seals — by a different author, per the DF-4 ruling that a scaffold may
-not write the seals it will be judged by. P3 (DF-1-3) writes the body and
-rewires the one call site in ``merge_engine._consider_one``. P4 (DF-1-4)
-rules on the condemned seal (below) and any dispute the body raises.**
+**P1 scaffold (DF-1-1) wrote this contract plus the record type and its
+stamp fold. P2 (DF-1-2) wrote the seals — by a different author, per the
+DF-4 ruling that a scaffold may not write the seals it will be judged by.
+P3 (DF-1-3) wrote the body of :func:`witness_merged_sha`, rewired the one
+call site in ``merge_engine._consider_one``, and closed the panel-named
+truthy-sha hole in ``__post_init__``. P4 (DF-1-4) rules on the condemned
+seal (below) and any dispute the body raises.**
 
 Every citation below is ``Measured under:`` ``24e72f0``
 (``feat/DF-1-1-scaffold-name-what-a-merge``), git 2.51.0, CPython 3.13.7,
@@ -114,12 +115,16 @@ judged by — and the unit's own structure, which places
 ``tests/test_merge_engine.py`` in DF-1-4's ``disputed_paths``: the ruling
 on amend-vs-strike is the adjudicator's, made with DF-1-2's replacement
 rows and DF-1-3's body in evidence. This contract's obligation is to name
-it, which this section does.
+it, which this section does. [DF-1-3 record: the cross-family panel that
+blocked DF-1-3's first attempt ORDERED the seal amended (the retired key
+cannot stay asserted in a suite that must end green), so the body task
+amended it to the contract keys and disclosed the edit as a Deviation for
+DF-1-4 to review — amendment under panel order, not a bodies-role choice.]
 
 Contract surface
 ================
 The record type and its folds are DATA and are implemented; the one
-control-flow function is stubbed.
+control-flow function's body landed with DF-1-3.
 
   * :class:`ShaSource` — named provenances. One member; the two rejected
     sources are documented refusals, not members.
@@ -132,7 +137,7 @@ control-flow function is stubbed.
     — CHOICE, mirroring DF-4's ``scrubbed_git_env``: they are pure shapes
     over the record, the seals must be written against the real key names,
     and a seal cannot be written against a stub.
-  * :func:`witness_merged_sha` — STUB. DF-1-3 writes the body.
+  * :func:`witness_merged_sha` — the one observation. Body by DF-1-3.
 
 What this unit does NOT do — each a CHOICE, stated so a later reader does
 not infer omission. It does not rewire ``merge_engine._consider_one`` —
@@ -151,10 +156,25 @@ opposite of an audit trail.
 
 from __future__ import annotations
 
+import json
+import re
+import subprocess
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any
+
+#: The one shape an auditor can re-ask origin about: a full 40-char lower-hex
+#: object name. Abbreviated, uppercase, or decorated values are refused — gh
+#: reports ``mergeCommit.oid`` in exactly this shape, so anything else is not
+#: origin's answer.
+_SHA40 = re.compile(r"[0-9a-f]{40}")
+
+#: Bound on the origin read, mirroring ``pr.pr_review_state``'s 60s. Module
+#: level so the timeout leg is demonstrable in-suite with a monkeypatched
+#: bound instead of a wall-clock-buying sleep (the DF-1-2 seals named that
+#: leg Predicted (unmeasured) and assigned its demonstration to DF-1-3).
+GH_TIMEOUT_SECONDS: float = 60.0
 
 
 class ShaSource(Enum):
@@ -220,6 +240,16 @@ class MergedShaWitness:
                     "MergedShaWitness: OBSERVED requires a non-empty sha and "
                     "a named source — an observed witness with neither is a "
                     "stale stamp wearing the success state"
+                )
+            if not _SHA40.fullmatch(self.sha):
+                # The DF-1-1 panel's hole (one defect, three reviewer
+                # families): truthiness alone let "not-a-sha" and whitespace
+                # wear the OBSERVED state. A value no auditor can re-ask
+                # origin about must not construct.
+                raise ValueError(
+                    "MergedShaWitness: OBSERVED requires a 40-char lower-hex "
+                    f"SHA, got {self.sha!r} — a value an auditor cannot "
+                    "re-ask origin about must not wear the success state"
                 )
         elif self.state is WitnessState.UNAVAILABLE:
             if self.sha is not None or self.source is not None:
@@ -288,18 +318,73 @@ def witness_merged_sha(
     the very record it was going to stamp.
 
     Consults no local ref in any branch of its body — not as a source, not
-    as a fallback, not as a tiebreak. ``_feature_branch_sha`` is the value
+    as a fallback, not as a tiebreak. ``_feature_branch_sha`` was the value
     this unit proves wrong.
 
-    P1 STUB — the seals (P2, DF-1-2, a different author) drive this
-    signature; P3 (DF-1-3) writes the body and rewires
-    ``merge_engine._consider_one`` to stamp ``stamp_fields()`` in place of
-    the ``_sync_local_feature_branch`` + ``_feature_branch_sha`` pair. The
-    row that matters must FAIL against today's behavior: two PRs merged in
-    one run recording the same SHA.
+    Body decisions (DF-1-3), each named so a later reader sees a choice and
+    not an accident:
+
+      * The subprocess captures BYTES and decodes with ``errors="replace"``
+        — a defined policy, so malformed gh output degrades to a readable
+        detail instead of a ``UnicodeDecodeError`` escaping a function that
+        promises totality (the exact HIGH the cross-family panel recorded
+        against the first attempt's ``text=True``).
+      * The timeout bound is :data:`GH_TIMEOUT_SECONDS` (60s, mirroring
+        ``pr.pr_review_state``), module-level so the timeout leg is
+        measured in-suite without a wall-clock-buying sleep.
+      * A final defensive handler converts any unforeseen exception into an
+        UNAVAILABLE witness naming the exception class: the totality
+        promise is the contract, not the enumeration's completeness.
+      * Every detail is capped at 300 chars, mirroring ``pr.merge_pr``.
     """
-    raise NotImplementedError(
-        "DF-1 P1 scaffold: witness_merged_sha is contract only — P3 "
-        "(DF-1-3) writes the body. Do NOT fall back to _feature_branch_sha "
-        "or any local ref; that value is the defect this unit exists to end."
-    )
+
+    def _unavailable(detail: str) -> MergedShaWitness:
+        return MergedShaWitness(
+            pr_number=pr_number, target=target,
+            state=WitnessState.UNAVAILABLE, detail=detail[:300],
+        )
+
+    cmd = [gh_bin, "pr", "view", str(pr_number), "--json", "mergeCommit"]
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, cwd=str(cwd), check=False,
+            timeout=GH_TIMEOUT_SECONDS,
+        )
+    except FileNotFoundError:
+        return _unavailable(f"gh binary not found: {gh_bin}")
+    except subprocess.TimeoutExpired:
+        return _unavailable(
+            f"gh pr view timed out after {GH_TIMEOUT_SECONDS:g}s")
+    except OSError as e:
+        return _unavailable(f"gh could not be executed: {e}")
+
+    try:
+        stdout = (proc.stdout or b"").decode("utf-8", errors="replace")
+        stderr = (proc.stderr or b"").decode("utf-8", errors="replace")
+
+        if proc.returncode != 0:
+            reason = (stderr.strip() or stdout.strip()
+                      or f"exit {proc.returncode}")
+            return _unavailable(f"gh pr view failed: {reason}")
+        try:
+            doc = json.loads(stdout or "{}")
+        except json.JSONDecodeError as e:
+            return _unavailable(f"could not parse gh mergeCommit JSON: {e}")
+        if not isinstance(doc, dict) or "mergeCommit" not in doc:
+            return _unavailable("no mergeCommit in gh answer")
+        merge_commit = doc["mergeCommit"]
+        if merge_commit is None:
+            return _unavailable(
+                "mergeCommit is null in gh answer (origin does not record "
+                "this PR as merged)")
+        oid = merge_commit.get("oid") if isinstance(merge_commit, dict) else None
+        if not isinstance(oid, str) or not _SHA40.fullmatch(oid):
+            return _unavailable(
+                f"mergeCommit oid is not a 40-hex SHA: {oid!r}")
+        return MergedShaWitness(
+            pr_number=pr_number, target=target, state=WitnessState.OBSERVED,
+            sha=oid, source=ShaSource.ORIGIN_PR_MERGE_COMMIT,
+        )
+    except Exception as e:  # noqa: BLE001 - the totality promise is the contract
+        return _unavailable(
+            f"unexpected {type(e).__name__} reading origin's answer: {e}")

@@ -18,7 +18,9 @@ post-run / next-morning catch-up, a *merge pass* runs:
           a PR always merges on top of merged dependency code.
 
     Merge is ``gh pr merge --merge``. Success → the row moves to ``Merged`` and
-    a ``pr_merged`` event is journaled (merger identity + feature-branch sha).
+    a ``pr_merged`` event is journaled (merger identity + the merged-SHA
+    witness: origin's record of the merge commit, or a named unavailable
+    state — see ``merge_record``).
     A conflict / unmergeable PR leaves the row Awaiting Review with
     ``needs_rebase: true`` + a ``pr_merge_failed`` event + a one-shot
     notification; the engine does NOT auto-rebase (a deliberate non-goal — the
@@ -50,6 +52,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import journal as journal_mod
+from . import merge_record
 from . import notify as notify_mod
 from . import plan as plan_mod
 from . import pr as pr_mod
@@ -264,9 +267,18 @@ def _consider_one(
         # ref to match before the next task forks its worktree from it (PRF-4 /
         # sequential-merge fix). Without this, a FIX/task dispatched right after
         # this merge would fork from the pre-merge tip and its PR would conflict.
+        # Worktree freshness ONLY — the audit stamp below no longer depends on
+        # this sync (DF-1).
         _sync_local_feature_branch(cfg, log)
-        sha = _feature_branch_sha(cfg)
-        _mutate_row(cfg, task.key, lambda r: _apply_merged(r, approver, sha))
+        # The audit record: origin's own answer for THIS merge, or a named
+        # absence — never a local ref (DF-1, merge_record module docstring).
+        # witness_merged_sha is total, so a lookup failure after the
+        # irreversible merge still stamps the row and journals the event.
+        witness = merge_record.witness_merged_sha(
+            cwd=cfg.repo_root, pr_number=number, target=cfg.feature_branch,
+            gh_bin=cfg.gh_bin,
+        )
+        _mutate_row(cfg, task.key, lambda r: _apply_merged(r, approver, witness))
         log(f"  merge: {task.key} MERGED PR #{number} into "
             f"{cfg.feature_branch} (approver={approver})")
         _emit(journal, journal_mod.EventType.pr_merged, {
@@ -274,7 +286,7 @@ def _consider_one(
             "merger": DISPATCHER_APPROVER,
             "approver": approver,
             "target": cfg.feature_branch,
-            "feature_branch_sha": sha,
+            **witness.stamp_fields(),
         }, task_key=task.key)
         return "merged"
 
@@ -307,16 +319,27 @@ def _consider_one(
     return "needs-rebase"
 
 
-def _apply_merged(row: Any, approver: str, sha: str | None) -> None:
+def _apply_merged(
+    row: Any, approver: str, witness: merge_record.MergedShaWitness,
+) -> None:
     """Stamp a row Merged: terminal status + the audit fields. Clears any stale
     ``needs_rebase`` / ``merge_error`` from an earlier failed attempt that has
-    since been resolved and re-merged."""
+    since been resolved and re-merged.
+
+    The merged-SHA keys come from ``witness.stamp_fields()`` — origin's record
+    of the merge (``merged_sha`` + ``merged_sha_source`` +
+    ``merged_sha_state: observed``) or a named absence
+    (``merged_sha_state: unavailable`` + ``merged_sha_detail``, and NO
+    ``merged_sha`` key). All four contract keys are popped first so a re-merge
+    can never leave one state's keys under the other state's stamp."""
     row["status"] = plan_mod.MERGED
     row["merged_at"] = _now_iso()
     row["pr_approved_by"] = approver
     row["merged_by"] = DISPATCHER_APPROVER
-    if sha:
-        row["merged_sha"] = sha
+    for key in ("merged_sha", "merged_sha_source", "merged_sha_state",
+                "merged_sha_detail"):
+        row.pop(key, None)
+    row.update(witness.stamp_fields())
     row.pop("needs_rebase", None)
     row.pop("merge_error", None)
 
@@ -375,38 +398,16 @@ def _sync_local_feature_branch(cfg: MergeEngineConfig, log) -> None:
             f"rc={proc.returncode}): {(proc.stderr or '').strip()[:200]}")
 
 
-def _feature_branch_sha(cfg: MergeEngineConfig) -> str | None:
-    """The local feature-branch tip SHA, recorded in the pr_merged event.
-
-    DF-1 MEASURED: this value is WRONG as an audit source. The sync above it
-    never succeeds when the feature branch is checked out at ``repo_root``
-    (the pr-mode configuration), so this reads a frozen local tip — two
-    different PRs merged in the same run recorded IDENTICAL post-merge SHAs;
-    all 7 recorded pr_merged events are affected. The premise stated by the
-    paragraph below did not survive measurement. The replacement contract is
-    ``merge_record.witness_merged_sha`` (origin's record of the merge, or a
-    named unavailable state — never this fallback); DF-1-3 rewires the call
-    site and retires this function from the stamp path. Do NOT add new
-    callers.
-
-    Original (falsified) rationale, kept for the record:
-    by the time this runs after a successful merge, ``_sync_local_feature_branch``
-    has fast-forwarded the local ref to origin, so this tip matches the merged
-    remote. (On the standalone merge-prs path with no reachable origin the sync
-    is a no-op and this falls back to the best-available local tip.)
-    """
-    import subprocess
-    try:
-        proc = subprocess.run(
-            ["git", "rev-parse", cfg.feature_branch],
-            cwd=str(cfg.repo_root), capture_output=True, text=True,
-            check=False, timeout=30,
-        )
-    except OSError:
-        return None
-    if proc.returncode != 0:
-        return None
-    return (proc.stdout or "").strip() or None
+# DF-1: `_feature_branch_sha` (the local feature-branch tip read) was DELETED
+# here by DF-1-3, not merely orphaned. It was WRONG as an audit source — the
+# sync above it never succeeds when the feature branch is checked out at
+# ``repo_root`` (the pr-mode configuration), so it read a frozen local tip;
+# two different PRs merged in the same run recorded IDENTICAL post-merge SHAs,
+# across all 7 recorded pr_merged events. The replacement is
+# ``merge_record.witness_merged_sha`` (origin's record of the merge, or a
+# named unavailable state — never a local-ref fallback). Deletion over
+# dead-code-with-a-warning: a function that cannot be called cannot drift
+# back into the stamp path.
 
 
 def _load_tasks(cfg: MergeEngineConfig) -> list[plan_mod.Task]:
