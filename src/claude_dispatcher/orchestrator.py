@@ -1238,6 +1238,30 @@ def _run_task(
     )
     original_primary = snap.agent or "claude"
     pre_spawn_sha = _branch_sha(repo_root, wt.branch, log_path, snap.key)
+    # Record the gate ORIGIN at the task's first spawn (D-54, corrected by
+    # D-59). `setdefault`, so a re-dispatch keeps the ref its FIRST spawn
+    # started from.
+    #
+    # This used to be written only when a task BLOCKED, and that was half the
+    # fix. `pre_spawn_sha` assumes the branch starts empty of the task's own
+    # output, and a re-dispatch breaks that assumption in BOTH directions:
+    #
+    #   * D-54 — the retained work is a VIOLATION, so deleting the forbidden
+    #     file (the only compliant act available) reads as touching it.
+    #   * D-59 — the retained work is the DELIVERABLE, so a re-dispatched task
+    #     that correctly changes nothing reads as "a role task that changed
+    #     nothing has not done its phase". Measured on DF-3-2: it had committed
+    #     `tests/test_batch_coherence.py` in an earlier run, the run was stopped
+    #     for an unrelated reason, and the restart blocked it as idle.
+    #
+    # Recording at first spawn answers both: every later attempt is judged from
+    # where the task actually began, so retained work is neither an accusation
+    # nor invisible. Cleared on Done by `_record_retry_anchor`, whose BLOCKED
+    # branch is now a defensive no-op (this write always precedes it).
+    if pre_spawn_sha:
+        _mutate_row(cfg, snap.batch_keys,
+                    lambda row: row.setdefault(_RETRY_ANCHOR_STAMP,
+                                               pre_spawn_sha))
     cascade_context = ""
     result: spawn_mod.SpawnResult | None = None
     used_agent: str | None = None

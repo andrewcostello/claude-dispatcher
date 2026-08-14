@@ -268,3 +268,71 @@ def test_seal_the_snapshot_freezes_the_anchor_before_the_implementer_runs():
     the ref it is judged from by editing its own row mid-session."""
     assert "gate_base_sha" in orch.TaskSnapshot.__dataclass_fields__
     assert orch.TaskSnapshot.__dataclass_fields__["gate_base_sha"].default is None
+
+
+# --- D-59: the mirror case -------------------------------------------------
+
+def test_seal_D59_the_anchor_is_recorded_at_first_spawn_not_at_first_block(df41):
+    """The correction to D-54. Writing the anchor only on a BLOCK fixed one
+    direction and left the other open.
+
+    Measured on DF-3-2: it committed its seals in one run, that run was stopped
+    for an unrelated reason, and on re-dispatch `pre_spawn_sha` was its own
+    completed tip — so the diff was empty and the gate answered
+    `checked_undetermined`, "a role task that changed nothing has not done its
+    'seals' phase". Its work was done and sitting on the branch.
+
+    Same root cause as D-54 pointing the other way: `pre_spawn_sha` assumes the
+    branch starts empty of the task's own output. Retained work is either an
+    accusation (D-54) or invisible (D-59) unless the origin is pinned at the
+    FIRST spawn.
+    """
+    import ast
+    import inspect
+
+    src = inspect.getsource(orch._run_task)
+    tree = ast.parse(src)
+
+    # The write must be a setdefault (never an assignment: re-stamping walks
+    # the origin forward and reproduces both defects one attempt at a time)
+    # and must sit in the spawn path, not in the terminal `_apply`.
+    setdefaults = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "setdefault"
+        and any(isinstance(a, ast.Name) and a.id == "_RETRY_ANCHOR_STAMP"
+                for a in n.args)
+    ]
+    assert setdefaults, (
+        "no setdefault of the retry anchor in _run_task: the origin is not "
+        "pinned at first spawn, so a re-dispatched task is judged from its own "
+        "retained work")
+    assert any(
+        isinstance(a, ast.Name) and a.id == "pre_spawn_sha"
+        for n in setdefaults for a in n.args
+    ), "the anchor must be pinned to pre_spawn_sha, not to a later ref"
+
+
+def test_seal_D59_a_completed_task_redispatched_is_judged_from_its_origin(df41, tmp_path):
+    """End to end on the DF-3-2 shape: the branch already carries the task's
+    own finished work. Judged from that tip the diff is EMPTY (the block);
+    judged from the origin the deliverable is visible."""
+    from claude_dispatcher.role_protocol import changed_paths_between
+
+    repo, branch = df41["repo"], df41["branch"]
+    tip = _git(repo, "rev-parse", branch)
+
+    # From its own completed tip: nothing. This is what blocked DF-3-2.
+    assert changed_paths_between(repo, tip, branch) == ()
+
+    # From the origin the task started at: its work is there.
+    assert changed_paths_between(repo, df41["base"], branch)
+
+    ref, reason = orch._resolve_gate_base(
+        repo, _snap(anchor=df41["base"]), branch,
+        pre_spawn_sha=tip, log_path=tmp_path / "log",
+    )
+    assert ref == df41["base"], reason
+    assert changed_paths_between(repo, ref, branch), (
+        "the resolved base must make the retained deliverable visible, or a "
+        "re-dispatched complete task reads as idle")
