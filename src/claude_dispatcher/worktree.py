@@ -20,6 +20,7 @@ Branch naming follows the .claude/workflow/skills/git-worktree-setup.md conventi
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass, field
 from enum import Enum
@@ -270,7 +271,83 @@ def create(
             f"git worktree add failed for {task_key} at {wt_path}",
             stderr=(exc.stderr or "").strip(),
         ) from exc
+    provision_untracked_deps(wt_path)
     return Worktree(path=wt_path, branch=branch)
+
+
+#: Files a task worktree needs that git will never bring: deliberately
+#: untracked, install-time artifacts. Paths are relative to the repository root
+#: and are copied from the RUNNING INSTALL's tree, never fetched.
+_UNTRACKED_DEPS: tuple[str, ...] = (
+    "src/claude_dispatcher/ts_signature_fingerprint/typescript.js",
+    "src/claude_dispatcher/ts_signature_fingerprint/LICENSE.typescript.txt",
+)
+
+
+def provision_untracked_deps(wt_path: Path, source_root: Path | None = None) -> list[str]:
+    """Copy install-time, gitignored dependencies into a fresh worktree (D-61).
+
+    Returns the relative paths actually copied, for logging.
+
+    **Why this exists.** `ts_parser_vendor`'s docstring is explicit that
+    fetching the TypeScript parser is "an INSTALL-TIME step, and never a
+    judgement-time one. Run it once per install." That is right for a checkout
+    and false for this dispatcher, because **every task runs in a fresh
+    worktree and a fresh worktree is a new install**. `typescript.js` (8.7 MB)
+    and its licence are gitignored by the operator ruling of 2026-08-10 — a
+    9.1 MB blob does not belong in git history — so `git worktree add` never
+    brings them.
+
+    Measured on a fresh worktree of this repository before this function
+    existed::
+
+        ls src/claude_dispatcher/ts_signature_fingerprint/
+          main.cjs                    <- and nothing else
+        pytest tests/test_ts_comparator.py
+          87 failed, 100 passed, 3 errors
+
+    so the mechanical gate went red on the FIRST run of EVERY TASK, the
+    dispatcher spawned a fix-the-tests agent whose real job was a file copy,
+    that agent committed NOTHING (the file is ignored), and the second suite
+    run passed. One wasted agent spawn plus a second full suite run per task,
+    on every wave.
+
+    **COPIED, not re-fetched.** Re-running the network vendor step per worktree
+    would mean one 8.7 MB download per task and a judgement-time network
+    dependency that `ts_parser_vendor`'s own design forbids. **And not
+    symlinked**: a worktree is meant to be self-contained, and a link pointing
+    out of the tree is precisely the escape channel `scratch_clone`'s isolation
+    contract (DF-4) exists to refuse.
+
+    **A bad copy cannot pass silently.** `role_protocol._ts_prepared_parser`
+    re-checks `TS_VENDORED_PARSER_SHA256` in every process that renders a
+    TypeScript signature, so a truncated or wrong file is refused at use rather
+    than trusted here.
+
+    **Absence is not an error.** An install that never ran the vendor step has
+    nothing to copy, and this must not turn that into a worktree-creation
+    failure — the TypeScript comparator is one enrolled language among several,
+    and the suite's own rows report its absence far better than a crash during
+    `git worktree add` would.
+    """
+    root = source_root or Path(__file__).resolve().parents[2]
+    copied: list[str] = []
+    for rel in _UNTRACKED_DEPS:
+        src = root / rel
+        dst = wt_path / rel
+        if not src.is_file() or dst.exists():
+            continue
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dst)
+            shutil.copymode(src, dst)
+            copied.append(rel)
+        except OSError:
+            # Best effort by design: see "Absence is not an error" above. The
+            # same reasoning covers a copy that fails — the parser's digest
+            # check refuses it at use, and the suite reports it.
+            continue
+    return copied
 
 
 def remove(repo_root: Path, wt: Worktree, force: bool = False) -> None:
