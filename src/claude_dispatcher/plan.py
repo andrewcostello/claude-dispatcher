@@ -265,21 +265,23 @@ def load_tasks(doc: Any) -> list[Task]:
     # `plan.Task`, so a module-level import in either direction is a cycle
     # (that module's own TYPE_CHECKING note names this call site as the
     # reason). `preflight.run_preflight` imports `spawn` the same way.
+    from . import batch_coherence as batch_coherence_mod
     from . import role_protocol as role_protocol_mod
 
     validation = role_protocol_mod.validate(tasks)
-    # OWED HERE by DF-3-3 (unit DF-3, P1 contract in batch_coherence.py):
-    # `batch_coherence.batch_errors(tasks, validation.specs)`, merged into
-    # the SAME ValidationError below — a batch whose rows do not share one
-    # role, or share a role and not a rule, is a worklist defect and this is
-    # the one point every load funnels through. The call lands with the
-    # body, in one commit, because wiring the raising stub alone breaks
-    # every load and landing the body unwired is a silent no-op.
-    if validation.errors:
+    # Batch coherence (unit DF-3): a batch whose rows do not share one role,
+    # or share a role and not a rule, is a worklist defect, and this is the
+    # one point every load funnels through. The defects merge into the SAME
+    # ValidationError as the role errors — one raise site, so a worklist
+    # author fixes every defect in one round trip. `validate`'s specs already
+    # exclude rows whose parse failed; each of those carries its own ROW
+    # error above, which is why the exclusion masks nothing.
+    batch_defects = batch_coherence_mod.batch_errors(tasks, validation.specs)
+    if validation.errors or batch_defects:
+        merged = list(validation.errors) + [d.message for d in batch_defects]
         raise ValidationError(
             "the build-protocol role check refused this worklist "
-            f"({len(validation.errors)} error(s)):\n  - "
-            + "\n  - ".join(validation.errors)
+            f"({len(merged)} error(s)):\n  - " + "\n  - ".join(merged)
         )
     return tasks
 
