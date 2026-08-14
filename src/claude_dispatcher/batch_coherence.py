@@ -1,9 +1,9 @@
 """Unit DF-3 — a batch that mixes roles (or rulebooks) is refused at PLAN time.
 
-**P1 scaffold. This module is CONTRACT plus the implemented data (the two
-rule ids and the defect record); the one control-flow function is a stub.
-P2 (DF-3-2) writes the seals, P3 (DF-3-3) the body and the wiring, P4
-(DF-3-4) adjudicates what cannot land from the task system.**
+**P1 scaffold (DF-3-1): contract plus the implemented data (the two rule
+ids and the defect record). P2 (DF-3-2) wrote the seals. P3 (DF-3-3) landed
+the body and the `plan.load_tasks` wiring in one commit, per the contract
+below. P4 (DF-3-4) adjudicates what cannot land from the task system.**
 
 Every citation below is `Measured under:` `24e72f0` (the base of
 `feat/DF-3-1-...`), CPython 3.13.7, git 2.51.0, 2026-08-13, re-measured for
@@ -99,8 +99,8 @@ DF-3-4's authoring measurement found it cannot even be named in
     dispatch including this unit's own remaining tasks. The wiring lands
     with the body in DF-3-3's ONE commit — half of it alone is either a
     broken loader (stub wired) or a silent no-op (body unwired), and both
-    halves red is the falsifiable shape. The owed call site is marked in
-    plan.py in as many words.
+    halves red is the falsifiable shape. DF-3-3 landed both halves; the
+    call sits in `plan.load_tasks`, right after `role_protocol.validate`.
 
 **The named divergence window, accepted rather than hidden:** until an
 operator (P4-handed, outside this task system — exactly as every floored
@@ -230,16 +230,71 @@ def batch_errors(
         member key and the differing pages;
       * :data:`RULE_BATCH_ROLE` preempts :data:`RULE_BATCH_RULE` per batch;
       * result ordered by (task_key, rule_id, batch_id).
-
-    P1 STUB — P3 (DF-3-3) writes the body AND the `plan.load_tasks` call in
-    one commit; neither half lands alone. Seals (DF-3-2) drive the loaded
-    worklist end-to-end: the two measured fixtures above load with 0 errors
-    today and must be refused once the body lands.
     """
-    raise NotImplementedError(
-        "DF-3 P1 scaffold: batch_errors is contract only — P3 (DF-3-3) "
-        "writes the body and wires it into plan.load_tasks in the same "
-        "commit. Do NOT wire this stub into the load path ahead of the "
-        "body: a raising stub there breaks every dispatch, including this "
-        "unit's own."
+    spec_by_key = {spec.task_key: spec for spec in specs}
+
+    # The batch relation comes off the rows; plan.py already normalised an
+    # empty/absent batch_id to None, so a truthiness test is the whole filter.
+    batches: dict[str, list[str]] = {}
+    for task in tasks:
+        if task.batch_id:
+            batches.setdefault(task.batch_id, []).append(task.key)
+
+    defects: list[BatchDefect] = []
+    for batch_id, keys in batches.items():
+        # Rows whose spec failed to parse are excluded (module docstring):
+        # each already carries its own ROW error, and guessing a role for one
+        # would be defaulting. A batch with no parsed member states no fact.
+        members = sorted(key for key in keys if key in spec_by_key)
+        if not members:
+            continue
+        member_specs = [spec_by_key[key] for key in members]
+
+        roles = {spec.role for spec in member_specs}
+        if len(roles) > 1:
+            listing = "; ".join(
+                f"{spec.task_key} is role {spec.role.value!r}"
+                for spec in member_specs
+            )
+            defects.append(BatchDefect(
+                task_key=members[0],
+                rule_id=RULE_BATCH_ROLE,
+                batch_id=batch_id,
+                message=(
+                    f"{RULE_BATCH_ROLE}: batch {batch_id!r} spans "
+                    f"{len(roles)} roles, and a batch is ONE worktree, ONE "
+                    f"branch and ONE implementer session, judged under "
+                    f"exactly one role: {listing}. Split the batch_id or "
+                    "align the roles"
+                ),
+            ))
+            continue  # role mixture preempts any rule verdict for this batch
+
+        pairs = {
+            (spec.added_immutable_globs, spec.disputed_paths)
+            for spec in member_specs
+        }
+        if len(pairs) > 1:
+            listing = "; ".join(
+                f"{spec.task_key} declares immutable_paths "
+                f"{list(spec.added_immutable_globs)} and disputed_paths "
+                f"{list(spec.disputed_paths)}"
+                for spec in member_specs
+            )
+            defects.append(BatchDefect(
+                task_key=members[0],
+                rule_id=RULE_BATCH_RULE,
+                batch_id=batch_id,
+                message=(
+                    f"{RULE_BATCH_RULE}: batch {batch_id!r} shares one role "
+                    "and not one rulebook — the (immutable_paths, "
+                    "disputed_paths) pairs differ under tuple equality, the "
+                    "comparison loop_gate.resolve_inputs makes over the one "
+                    f"branch: {listing}. Align the pairs, order included, or "
+                    "split the batch_id"
+                ),
+            ))
+
+    return tuple(
+        sorted(defects, key=lambda d: (d.task_key, d.rule_id, d.batch_id))
     )
