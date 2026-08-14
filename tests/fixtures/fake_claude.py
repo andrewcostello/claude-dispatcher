@@ -26,9 +26,13 @@ def _harness_path(name: str) -> Path:
 
     The committed-tree gate treats any uncommitted worktree file as a
     verification failure, so counters/sentinels that track invocation
-    state live in the system temp dir, keyed by a cwd hash (each test's
-    worktree is unique, so state never leaks across tests)."""
-    cwd_key = hashlib.md5(str(Path.cwd()).encode()).hexdigest()[:12]
+    state live in the system temp dir, keyed by a cwd hash. The path alone
+    is NOT unique across sessions (pytest's numbered dirs restart when the
+    temp root is wiped, resurrecting stale sentinels), so the key includes
+    the cwd's inode — a recreated path gets a fresh inode."""
+    cwd = Path.cwd()
+    cwd_key = hashlib.md5(
+        f"{cwd}:{cwd.stat().st_ino}".encode()).hexdigest()[:12]
     return Path(tempfile.gettempdir()) / f"{name}-{cwd_key}"
 
 SCENARIOS = {

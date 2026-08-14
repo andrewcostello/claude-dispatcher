@@ -65,3 +65,8 @@ claude_dispatcher = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra -q"
+# The suite builds ~50k files of git repos under tmp_path per run; the
+# default of retaining 3 session roots exhausts tmpfs inodes across runs.
+# (Per-test "failed"/"none" retention is NOT safe here: orchestrator tests
+# reference earlier tests' tmp dirs within a session.)
+tmp_path_retention_count = 1
