@@ -526,21 +526,54 @@ class SwapToken:
 
 _NS_PER_SECOND = 1_000_000_000
 
+#: Ceiling on any git child this module spawns. Every one — the init, the
+#: rev-parse probes — is a sub-second operation against a local empty
+#: repository; a git that has not answered in this long is stuck (or is not
+#: git at all), and a helper that hangs on it is a failure mode neither
+#: loud nor named.
+_GIT_TIMEOUT_SECONDS = 60
+
 
 def _git_run(args: Sequence[str],
              cwd: Path) -> subprocess.CompletedProcess[str]:
-    """A git child under the standing rule: every one runs scrubbed."""
-    return subprocess.run(
-        ["git", *args], cwd=cwd, env=scrubbed_git_env(),
-        capture_output=True, text=True,
-    )
+    """A git child under the standing rule: every one runs scrubbed.
+
+    Fails CLOSED as a RESULT, never as an escape or a hang: a git that
+    cannot be started (``OSError`` — missing binary, exec failure) or does
+    not answer within :data:`_GIT_TIMEOUT_SECONDS` comes back as a nonzero
+    returncode with the cause in stderr, so every caller's returncode check
+    turns it into that caller's NAMED refusal — with destination cleanup —
+    instead of a raw exception that skips both.
+    """
+    cmd = ["git", *args]
+    try:
+        return subprocess.run(
+            cmd, cwd=cwd, env=scrubbed_git_env(),
+            capture_output=True, text=True, timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=-1, stdout="",
+            stderr=f"git did not run: {exc}")
+
+
+def _raise_scan_error(exc: OSError) -> NoReturn:
+    """``onerror`` for every walk in this module. ``os.walk`` (and
+    ``Path.rglob``) SKIP a subtree they cannot read by default, so a scan
+    error reads as "nothing found there" — a sever or a probe that misses
+    an inherited nested ``.git`` that way has failed OPEN. Raising turns
+    every unreadable subtree into the walking step's named refusal."""
+    raise exc
 
 
 def _entries_under(root: Path) -> Iterator[Path]:
     """Every filesystem entry under `root`, symlinks NOT followed — the
     question here is what exists on disk, and following a link would walk
-    a tree outside the clone."""
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+    a tree outside the clone. Raises ``OSError`` on any subtree it cannot
+    read (see :func:`_raise_scan_error`): an incomplete answer to "what
+    exists on disk" must not read as a complete one."""
+    for dirpath, dirnames, filenames in os.walk(
+            root, followlinks=False, onerror=_raise_scan_error):
         base = Path(dirpath)
         for name in dirnames + filenames:
             yield base / name
@@ -639,39 +672,63 @@ def make_scratch_clone(source: Path, dest: Path) -> ScratchClone:
         _refuse(dest, Refusal.COPY_FAILED, detail=str(exc))
 
     # 3a. sever — every .git entry of every kind, deepest first so a nested
-    # one is gone before its parent's turn.
+    # one is gone before its parent's turn. The walk is _entries_under, not
+    # rglob: rglob SKIPS a subtree it cannot read, and a sever that missed
+    # an unreadable subtree's .git has failed open (the walk raising folds
+    # that subtree into this step's refusal instead).
     try:
-        for entry in sorted(dest.rglob(".git"), reverse=True):
+        for entry in sorted(
+                (e for e in _entries_under(dest) if e.name == ".git"),
+                reverse=True):
             if entry.is_symlink() or entry.is_file():
                 entry.unlink()
             else:
                 shutil.rmtree(entry)
+        survivors = [str(e) for e in _entries_under(dest)
+                     if e.name == ".git"]
     except OSError as exc:
         _refuse(dest, Refusal.SEVER_INCOMPLETE, detail=str(exc))
-    survivors = [str(p) for p in dest.rglob(".git")]
     if survivors:
         _refuse(dest, Refusal.SEVER_INCOMPLETE, detail=", ".join(survivors))
 
     # 3b. symlink scan — no link under ANY name may resolve outside the
-    # clone; an unresolvable link gets the same answer (unprovable ==
-    # unsafe).
-    for entry in _entries_under(dest):
-        if not entry.is_symlink():
-            continue
-        try:
-            target = entry.resolve()
-        except OSError as exc:
-            _refuse(dest, Refusal.LINK_ESCAPES_CLONE,
-                    detail=f"{entry}: {exc}")
-        if not target.is_relative_to(dest_res):
-            _refuse(dest, Refusal.LINK_ESCAPES_CLONE,
-                    detail=f"{entry} -> {target}")
+    # clone; an unresolvable link (dangling target, a loop) gets the same
+    # answer (unprovable == unsafe), so resolution is STRICT: the default
+    # lexical fallback would ACCEPT a dangling link whose unresolved text
+    # merely reads in-clone. A subtree the scan cannot read gets the same
+    # answer for the same reason — links there were never judged.
+    try:
+        for entry in _entries_under(dest):
+            if not entry.is_symlink():
+                continue
+            try:
+                # RuntimeError: pre-3.13 CPython reports a symlink loop as
+                # RuntimeError rather than OSError(ELOOP).
+                target = entry.resolve(strict=True)
+            except (OSError, RuntimeError) as exc:
+                _refuse(dest, Refusal.LINK_ESCAPES_CLONE,
+                        detail=f"{entry}: unresolvable: {exc}")
+            if not target.is_relative_to(dest_res):
+                _refuse(dest, Refusal.LINK_ESCAPES_CLONE,
+                        detail=f"{entry} -> {target}")
+    except OSError as exc:
+        _refuse(dest, Refusal.LINK_ESCAPES_CLONE,
+                detail=f"symlink scan could not complete: {exc}")
 
     # 3c. purge inherited bytecode (Hazard B at full strength on day one).
+    # Same strict walk as the sever, same reason: a .pyc in an unreadable
+    # subtree survives an rglob purge silently.
     try:
-        for cache_dir in sorted(dest.rglob("__pycache__"), reverse=True):
-            shutil.rmtree(cache_dir)
-        for pyc in dest.rglob("*.pyc"):
+        for cache_dir in sorted(
+                (e for e in _entries_under(dest)
+                 if e.name == "__pycache__"),
+                reverse=True):
+            if cache_dir.is_symlink() or cache_dir.is_file():
+                cache_dir.unlink()
+            else:
+                shutil.rmtree(cache_dir)
+        for pyc in [e for e in _entries_under(dest)
+                    if e.name.endswith(".pyc")]:
             pyc.unlink()
     except OSError as exc:
         _refuse(dest, Refusal.PURGE_FAILED, detail=str(exc))
@@ -757,35 +814,48 @@ def assert_isolated(clone_path: Path) -> None:
             f"quarantine carries objects/info/alternates: {git_root}")
 
     # Filesystem walk: no other .git entry of ANY kind, no symlink under
-    # ANY name resolving outside the clone; an unresolvable link is
-    # unprovable and gets the unsafe answer. The same pass finds the
-    # deepest probe-able directory (never inside a .git).
+    # ANY name resolving outside the clone; an unresolvable link (dangling
+    # target, a loop) is unprovable and gets the unsafe answer — resolution
+    # is STRICT, because the default lexical fallback accepts a dangling
+    # link whose unresolved text merely reads in-clone. The walk raises on
+    # a subtree it cannot read (default os.walk SKIPS it — a probe that
+    # never looked inside a subtree has not proven anything about it). The
+    # same pass finds the deepest probe-able directory (never inside a
+    # .git).
     deepest = root
     deepest_depth = 0
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        base = Path(dirpath)
-        for name in dirnames + filenames:
-            entry = base / name
-            if name == ".git" and entry.relative_to(root) != Path(".git"):
-                _unverified(f"a .git entry exists under the clone: {entry}")
-            if entry.is_symlink():
-                try:
-                    target = entry.resolve()
-                except OSError as exc:
-                    _unverified(f"unresolvable symlink {entry}: {exc}")
-                if not target.is_relative_to(root_res):
+    try:
+        for dirpath, dirnames, filenames in os.walk(
+                root, followlinks=False, onerror=_raise_scan_error):
+            base = Path(dirpath)
+            for name in dirnames + filenames:
+                entry = base / name
+                if (name == ".git"
+                        and entry.relative_to(root) != Path(".git")):
                     _unverified(
-                        f"symlink {entry} resolves outside the clone "
-                        f"to {target}")
-        if ".git" in base.relative_to(root).parts:
-            continue
-        for name in dirnames:
-            if name == ".git":
+                        f"a .git entry exists under the clone: {entry}")
+                if entry.is_symlink():
+                    try:
+                        # RuntimeError: pre-3.13 CPython reports a symlink
+                        # loop as RuntimeError rather than OSError(ELOOP).
+                        target = entry.resolve(strict=True)
+                    except (OSError, RuntimeError) as exc:
+                        _unverified(f"unresolvable symlink {entry}: {exc}")
+                    if not target.is_relative_to(root_res):
+                        _unverified(
+                            f"symlink {entry} resolves outside the clone "
+                            f"to {target}")
+            if ".git" in base.relative_to(root).parts:
                 continue
-            depth = len((base / name).relative_to(root).parts)
-            if depth > deepest_depth:
-                deepest_depth = depth
-                deepest = base / name
+            for name in dirnames:
+                if name == ".git":
+                    continue
+                depth = len((base / name).relative_to(root).parts)
+                if depth > deepest_depth:
+                    deepest_depth = depth
+                    deepest = base / name
+    except OSError as exc:
+        _unverified(f"filesystem scan could not complete: {exc}")
 
     # Git's walk: BOTH rev-parse answers, from the root AND the deepest
     # directory, resolved against the real filesystem before comparing —
