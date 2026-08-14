@@ -156,19 +156,26 @@ What a scratch clone GUARANTEES
 the last is proven by probe, not by construction:
 
   1. the clone's tree content equals the source worktree's tree content,
-     minus git metadata and Python bytecode;
+     minus git metadata, Python bytecode, and non-regular files (fifo,
+     socket, device node: a fifo blocks the copy forever with no named
+     refusal, and none of them is tree content);
   2. no git metadata exists under the clone except the quarantine's own:
      every ``.git`` entry of every kind — the root gitdir pointer FILE, a
      nested ``.git`` DIRECTORY (whose ``commondir``/alternates would route
      git outside while ``--absolute-git-dir`` answers in-clone; measured),
-     a ``.git`` symlink — is removed before the quarantine is created;
+     a ``.git`` symlink, and every CASE VARIANT (``.GIT``: honoured by git
+     on a case-insensitive filesystem) — is removed before the quarantine
+     is created;
   3. no symlink under the clone, whatever its name, resolves outside the
      clone;
   4. an empty SELF-CONTAINED quarantine repository sits at the clone root
      — init'd under :func:`scrubbed_git_env` with ``--template=``, holding
      no ``commondir`` and no ``objects/info/alternates`` — so git
      discovery from ANY directory under the clone terminates inside the
-     clone, including when the clone itself sits under an ancestor repo;
+     clone, including when the clone itself sits under an ancestor repo,
+     and git's effective WORK TREE is the clone root itself (no
+     ``core.worktree`` redirection: ``--show-toplevel`` must resolve to
+     the clone root from every probe directory);
   5. every git subprocess the helper ran to build and prove the clone was
      executed under :func:`scrubbed_git_env` — the guarantee is not
      conditional on the calling shell's environment being clean;
@@ -225,6 +232,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import subprocess
 import sys
 from collections.abc import Iterator, Mapping
@@ -362,10 +370,17 @@ class Refusal(Enum):
     #: (``--absolute-git-dir`` or ``--git-common-dir``) resolved somewhere
     #: other than the quarantine, the quarantine's internals carry
     #: indirection (a ``commondir`` file, ``objects/info/alternates``, a
-    #: gitfile root), a ``.git`` entry or escaping symlink survives under
-    #: the clone, or a git invocation needed by the probe itself failed.
-    #: The clone may even be fine; UNPROVABLE and UNSAFE get the same
-    #: answer here by design.
+    #: gitfile root), the repository at the root is not EMPTY (a ref, an
+    #: object, a remote, a registered worktree, a HEAD that resolves — the
+    #: REAL repository passes every self-containment check, and only
+    #: emptiness tells a quarantine from it), git's effective WORK TREE is
+    #: not the clone root (``core.worktree`` set, or ``--show-toplevel``
+    #: resolving elsewhere — writes would land in the configured tree
+    #: while every git-dir answer stays in-clone), a ``.git`` entry (any
+    #: case)
+    #: or escaping symlink survives under the clone, or a git invocation
+    #: needed by the probe itself failed. The clone may even be fine;
+    #: UNPROVABLE and UNSAFE get the same answer here by design.
     ISOLATION_UNVERIFIED = "isolation_unverified"
 
     #: A swap seam was handed a relpath that escapes the clone —
@@ -543,13 +558,17 @@ def _git_run(args: Sequence[str],
     not answer within :data:`_GIT_TIMEOUT_SECONDS` comes back as a nonzero
     returncode with the cause in stderr, so every caller's returncode check
     turns it into that caller's NAMED refusal — with destination cleanup —
-    instead of a raw exception that skips both.
+    instead of a raw exception that skips both. Output that is not valid
+    UTF-8 (a localized git, garbage from a killed child) is decoded with
+    replacement characters rather than letting ``UnicodeDecodeError`` — a
+    ``ValueError``, which no refusal path catches — escape the same way.
     """
     cmd = ["git", *args]
     try:
         return subprocess.run(
             cmd, cwd=cwd, env=scrubbed_git_env(),
-            capture_output=True, text=True, timeout=_GIT_TIMEOUT_SECONDS,
+            capture_output=True, text=True, errors="replace",
+            timeout=_GIT_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return subprocess.CompletedProcess(
@@ -579,11 +598,44 @@ def _entries_under(root: Path) -> Iterator[Path]:
             yield base / name
 
 
+def _copy_ignore(dirpath: str | os.PathLike[str],
+                 names: Sequence[str]) -> set[str]:
+    """``ignore`` callback for the clone copy: what must not be copied.
+
+    Two classes. Every ``.git`` name (any case — same rule as the sever
+    pass): copying a main worktree's object store only for the sever pass
+    to delete it is the dominant time and disk cost of a clone and can
+    fill the destination volume before the sever runs — the contract is
+    that no ``.git`` remains before ``git init``, not that one be copied
+    first (the sever and survivor walks stay, as proof that nothing
+    slipped through anyway). And every non-regular file — fifo, socket,
+    device — because ``copytree`` opening a fifo blocks forever with no
+    timeout and no named refusal, and a device node's bytes are not tree
+    content. Symlinks pass through (copied AS links; the escape scan
+    judges them). ``lstat`` failure propagates: an entry this filter could
+    not classify makes the copy fail loudly (COPY_FAILED), not silently
+    thin.
+    """
+    skip: set[str] = set()
+    for name in names:
+        if name.lower() == ".git":
+            skip.add(name)
+            continue
+        mode = os.lstat(os.path.join(dirpath, name)).st_mode
+        if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)
+                or stat.S_ISLNK(mode)):
+            skip.add(name)
+    return skip
+
+
 def _refuse(dest: Path, refusal: Refusal, detail: str = "") -> NoReturn:
     """Remove the partial destination, then raise the named refusal.
 
-    Only for a destination THIS call created: preflight refusals raise
-    directly, because the helper never deletes what it did not make.
+    Only for a destination THIS call CLAIMED — won the atomic ``os.mkdir``
+    in :func:`make_scratch_clone` — because the helper never deletes what
+    it did not make. Preflight refusals and a lost mkdir race raise
+    directly: two concurrent calls to the same destination must not end
+    with the loser recursively deleting the winner's clone-in-progress.
     """
     try:
         if dest.is_symlink() or dest.is_file():
@@ -664,28 +716,56 @@ def make_scratch_clone(source: Path, dest: Path) -> ScratchClone:
         raise ScratchCloneError(
             Refusal.NESTED_PATHS, detail=f"{source} <-> {dest}")
 
-    # 2. copy — cp -a semantics (symlinks preserved as symlinks, so the
-    # escape scan below judges them; metadata preserved).
+    # 2. claim, then copy. The destination is claimed with an ATOMIC
+    # os.mkdir before any byte lands: two concurrent calls to the same
+    # dest both pass the lexists preflight, and without a single winner
+    # the second's refusal cleanup would recursively delete the first's
+    # clone-in-progress. The mkdir loser refuses as a collision and
+    # deletes NOTHING; every _refuse below acts only on a tree whose
+    # mkdir this call won. Copy is cp -a semantics (symlinks preserved
+    # as symlinks, so the escape scan below judges them; metadata
+    # preserved, including the root dir's via copystat) MINUS what
+    # _copy_ignore drops: .git entries (severed at copy time rather than
+    # copied-then-deleted) and non-regular files (a fifo blocks copytree
+    # forever — the hang the git timeout does not cover).
     try:
-        shutil.copytree(source, dest, symlinks=True)
+        os.mkdir(dest)
+    except FileExistsError:
+        raise ScratchCloneError(Refusal.DEST_COLLISION, detail=str(dest))
+    except OSError as exc:
+        raise ScratchCloneError(
+            Refusal.COPY_FAILED,
+            detail=f"could not create destination: {exc}")
+    try:
+        shutil.copytree(source, dest, symlinks=True, dirs_exist_ok=True,
+                        ignore=_copy_ignore)
     except Exception as exc:
         _refuse(dest, Refusal.COPY_FAILED, detail=str(exc))
 
     # 3a. sever — every .git entry of every kind, deepest first so a nested
-    # one is gone before its parent's turn. The walk is _entries_under, not
-    # rglob: rglob SKIPS a subtree it cannot read, and a sever that missed
-    # an unreadable subtree's .git has failed open (the walk raising folds
-    # that subtree into this step's refusal instead).
+    # one is gone before its parent's turn. _copy_ignore already dropped
+    # them at copy time, so this pass normally removes nothing — it stays
+    # as the PROOF that nothing slipped through, independent of the copy's
+    # filter. Matched CASE-INSENSITIVELY:
+    # git honours `.GIT` (any case variant) on a case-insensitive
+    # filesystem, so a name-exact scan severs `.git` and walks past the
+    # same hazard spelled differently; on a case-sensitive filesystem the
+    # variant is inert and removing it is the conservative uniform answer.
+    # The walk is _entries_under, not rglob: rglob SKIPS a subtree it
+    # cannot read, and a sever that missed an unreadable subtree's .git
+    # has failed open (the walk raising folds that subtree into this
+    # step's refusal instead).
     try:
         for entry in sorted(
-                (e for e in _entries_under(dest) if e.name == ".git"),
+                (e for e in _entries_under(dest)
+                 if e.name.lower() == ".git"),
                 reverse=True):
             if entry.is_symlink() or entry.is_file():
                 entry.unlink()
             else:
                 shutil.rmtree(entry)
         survivors = [str(e) for e in _entries_under(dest)
-                     if e.name == ".git"]
+                     if e.name.lower() == ".git"]
     except OSError as exc:
         _refuse(dest, Refusal.SEVER_INCOMPLETE, detail=str(exc))
     if survivors:
@@ -740,11 +820,18 @@ def make_scratch_clone(source: Path, dest: Path) -> ScratchClone:
         _refuse(dest, Refusal.QUARANTINE_FAILED,
                 detail=init.stderr.strip() or f"rc={init.returncode}")
 
-    # 5. prove — the probe's failure IS this function's failure.
+    # 5. prove — the probe's failure IS this function's failure. The
+    # second handler is deliberate breadth: a probe that CRASHED (an
+    # OSError out of resolve(), anything not already converted to a
+    # ScratchCloneError) proved nothing, and a claimed destination must
+    # not survive an unproven clone — every post-claim exit runs _refuse.
     try:
         assert_isolated(dest)
     except ScratchCloneError as err:
         _refuse(dest, Refusal.ISOLATION_UNVERIFIED, detail=err.detail)
+    except Exception as exc:
+        _refuse(dest, Refusal.ISOLATION_UNVERIFIED,
+                detail=f"probe crashed: {exc!r}")
 
     return ScratchClone(path=dest, source=source, git_dir=dest / ".git")
 
@@ -778,8 +865,41 @@ def assert_isolated(clone_path: Path) -> None:
         ``objects/info/alternates`` (measured, escape channel 3: an
         alternates line reads the source's objects while
         ``--absolute-git-dir`` still answers in-clone);
-      * no other ``.git`` entry of ANY kind — file, directory, or symlink
-        — exists anywhere under the clone;
+      * the repository at the root is EMPTY the way only a quarantine is:
+        no ref anywhere (no file under ``refs/``, no ``packed-refs``), no
+        object (no file under ``objects/``), no ``worktrees/`` dir, no
+        configured remote, and a HEAD that resolves to no commit. Every
+        earlier bullet is satisfied BY THE REAL REPOSITORY ITSELF —
+        handed the real main worktree (or a symlink to it), a probe of
+        self-containment alone answers "isolated" while writes land in
+        the real repo, which is the precise hazard this unit exists to
+        refuse. A repository with any history, content, remote,
+        registered worktree, or redirected work tree can never pass.
+        LIMIT, stated so the claim stays true: what remains
+        indistinguishable — and is accepted — is a repository
+        byte-identical to a fresh quarantine, because a ``git init`` the
+        probe did not watch happen differs in NOTHING an in-tree probe
+        can read. Emptiness, not provenance, is what this function
+        establishes: "an empty quarantine-shaped repository whose git
+        walk and effective work tree both terminate here" — in which no
+        ref, object, or foreign tree exists for a write to reach — and
+        never "this module made it" (provenance would need a receipt
+        carried outside the tree; :class:`ScratchClone` is that receipt
+        for clones the helper made);
+      * git's EFFECTIVE WORK TREE is the clone root itself:
+        ``rev-parse --show-toplevel`` from the root and the deepest
+        directory resolves to the clone root, and ``core.worktree`` is
+        unset in the local config — the config door that redirects
+        ``checkout``/``clean``/``reset`` to a foreign tree while every
+        git-dir answer above stays in-clone (the --show-toplevel probe
+        closes the redirection class; the config probe names the known
+        door);
+      * `clone_path` itself is not a symlink — what the caller writes
+        through and what was probed must be the same tree, and a probe
+        cannot prove that through a link (unprovable == unsafe);
+      * no other ``.git`` entry of ANY kind — file, directory, symlink,
+        or CASE VARIANT (git honours ``.GIT`` on a case-insensitive
+        filesystem) — exists anywhere under the clone;
       * no symlink under the clone, whatever its name, resolves outside
         the clone (measured, escape channel 4; "outside the clone" is the
         checkable superset of "into the source repo" for a standalone
@@ -796,6 +916,10 @@ def assert_isolated(clone_path: Path) -> None:
         raise ScratchCloneError(Refusal.ISOLATION_UNVERIFIED, detail=detail)
 
     root = clone_path
+    if root.is_symlink():
+        _unverified(
+            f"{root} is a symlink — the tree probed and the tree written "
+            "through the link cannot be proven the same")
     if not root.is_dir():
         _unverified(f"{root} is not a directory — nothing to probe")
     root_res = root.resolve()
@@ -812,6 +936,31 @@ def assert_isolated(clone_path: Path) -> None:
     if (git_root / "objects" / "info" / "alternates").exists():
         _unverified(
             f"quarantine carries objects/info/alternates: {git_root}")
+
+    # Quarantine EMPTINESS: every check above is satisfied by the real
+    # repository itself — the real main worktree, handed to this probe
+    # directly or through a symlink, is self-contained too. What only a
+    # quarantine has is NOTHING: no ref, no object, no registered
+    # worktree, no remote. A refs file or an object file here means a
+    # repository somebody's history lives in, and a write there is the
+    # incident regardless of where discovery terminates.
+    if os.path.lexists(git_root / "packed-refs"):
+        _unverified(f"quarantine carries packed-refs: {git_root}")
+    if os.path.lexists(git_root / "worktrees"):
+        _unverified(
+            f"quarantine carries a worktrees dir — linked worktrees are "
+            f"registered against it: {git_root}")
+    for subdir, what in ((git_root / "refs", "a ref"),
+                         (git_root / "objects", "an object")):
+        try:
+            content = [e for e in _entries_under(subdir)
+                       if e.is_symlink() or not e.is_dir()]
+        except OSError as exc:
+            _unverified(f"quarantine scan could not complete: {exc}")
+        if content:
+            _unverified(
+                f"quarantine carries {what} — a repository with content "
+                f"is not a quarantine: {content[0]}")
 
     # Filesystem walk: no other .git entry of ANY kind, no symlink under
     # ANY name resolving outside the clone; an unresolvable link (dangling
@@ -830,7 +979,10 @@ def assert_isolated(clone_path: Path) -> None:
             base = Path(dirpath)
             for name in dirnames + filenames:
                 entry = base / name
-                if (name == ".git"
+                # Case-insensitive: git honours `.GIT` (any case variant)
+                # on a case-insensitive filesystem, and a probe that only
+                # matches the exact spelling walks past it there.
+                if (name.lower() == ".git"
                         and entry.relative_to(root) != Path(".git")):
                     _unverified(
                         f"a .git entry exists under the clone: {entry}")
@@ -845,10 +997,11 @@ def assert_isolated(clone_path: Path) -> None:
                         _unverified(
                             f"symlink {entry} resolves outside the clone "
                             f"to {target}")
-            if ".git" in base.relative_to(root).parts:
+            if any(part.lower() == ".git"
+                   for part in base.relative_to(root).parts):
                 continue
             for name in dirnames:
-                if name == ".git":
+                if name.lower() == ".git":
                     continue
                 depth = len((base / name).relative_to(root).parts)
                 if depth > deepest_depth:
@@ -857,12 +1010,65 @@ def assert_isolated(clone_path: Path) -> None:
     except OSError as exc:
         _unverified(f"filesystem scan could not complete: {exc}")
 
-    # Git's walk: BOTH rev-parse answers, from the root AND the deepest
-    # directory, resolved against the real filesystem before comparing —
-    # --git-common-dir answers relative to the invocation dir (measured).
+    # Git's own answers to emptiness and routing. Every probe here accepts
+    # exactly ONE answer — the one a fresh quarantine gives — and folds
+    # every other returncode, including _git_run's synthetic -1 (git did
+    # not run) and 128 (corrupt repository), into the unsafe answer: a
+    # probe that itself failed has proven nothing, and "proven nothing"
+    # must never read as "found nothing".
+    #
+    # HEAD: `rev-parse --verify --quiet HEAD` answers rc 1 and prints
+    # nothing for an unborn HEAD — the only passing shape. rc 0 means a
+    # repository with history.
+    head = _git_run(["rev-parse", "--verify", "--quiet", "HEAD"], cwd=root)
+    if head.returncode == 0:
+        _unverified(
+            f"HEAD resolves to {head.stdout.strip()} — a repository with "
+            "history is not a quarantine")
+    if head.returncode != 1 or head.stdout.strip():
+        _unverified(
+            "HEAD probe did not answer 'unborn': "
+            f"rc={head.returncode} {(head.stdout or head.stderr).strip()}")
+    # Remotes: a local-path remote.url is a door to the real repo that no
+    # filesystem walk of THIS tree can see. `git config --get-regexp`
+    # exits 1 for "no match" — the only passing answer.
+    remotes = _git_run(
+        ["config", "--local", "--get-regexp", r"^remote\."], cwd=root)
+    if remotes.returncode != 1:
+        _unverified(
+            "quarantine carries a configured remote (or the remote probe "
+            f"failed): rc={remotes.returncode} "
+            f"{(remotes.stdout or remotes.stderr).strip()}")
+    # core.worktree: the config door that redirects git's WORK TREE while
+    # every git-dir answer stays in-clone — `git checkout`/`git clean` run
+    # here would write to the configured tree, not this one. `--get` exits
+    # 1 for "unset" — the only passing answer. The --show-toplevel probe
+    # below closes work-tree redirection generically; this probe exists so
+    # the refusal NAMES the door when it is this one.
+    worktree_cfg = _git_run(
+        ["config", "--local", "--get", "core.worktree"], cwd=root)
+    if worktree_cfg.returncode != 1:
+        _unverified(
+            "quarantine configures core.worktree (or the probe failed): "
+            f"rc={worktree_cfg.returncode} "
+            f"{(worktree_cfg.stdout or worktree_cfg.stderr).strip()}")
+
+    # Git's walk: all three rev-parse answers, from the root AND the
+    # deepest directory, resolved against the real filesystem before
+    # comparing — --git-common-dir answers relative to the invocation dir
+    # (measured). --show-toplevel is the WORK-TREE half of the question:
+    # both git-dir answers stay in-clone while core.worktree (or any
+    # future work-tree redirection) points git's checkout/clean/reset at a
+    # foreign tree, so the effective toplevel must resolve to the clone
+    # root itself — from every probe cwd, closing the class, not the one
+    # config key. In a bare or otherwise toplevel-less repository the flag
+    # exits nonzero, which the rc check turns into the same refusal.
     probe_dirs = (root,) if deepest == root else (root, deepest)
+    expected = (("--absolute-git-dir", quarantine),
+                ("--git-common-dir", quarantine),
+                ("--show-toplevel", root_res))
     for probe_cwd in probe_dirs:
-        for flag in ("--absolute-git-dir", "--git-common-dir"):
+        for flag, want in expected:
             proc = _git_run(["rev-parse", flag], cwd=probe_cwd)
             if proc.returncode != 0:
                 _unverified(
@@ -871,10 +1077,10 @@ def assert_isolated(clone_path: Path) -> None:
             raw = Path(proc.stdout.strip())
             answered = (raw if raw.is_absolute() else probe_cwd / raw
                         ).resolve()
-            if answered != quarantine:
+            if answered != want:
                 _unverified(
                     f"rev-parse {flag} at {probe_cwd} answered {answered}, "
-                    f"not the quarantine {quarantine}")
+                    f"not {want}")
 
 
 def _swap_target(clone: ScratchClone, relpath: str) -> Path:
@@ -882,16 +1088,40 @@ def _swap_target(clone: ScratchClone, relpath: str) -> Path:
 
     Escape is judged on the RESOLVED path — ``..``, an absolute path, and
     a symlink anywhere along the way all collapse to "where would the
-    write land", and that answer must be inside the clone. Escape is
-    checked before existence: a path that escapes is refused as an escape
-    even when its target exists.
+    write land", and that answer must be inside the clone. Resolution is
+    STRICT, same rule as the clone scans: a dangling link or a link loop
+    has no provable landing place, and unprovable gets the escape answer
+    — the default lexical fallback would accept a dangling link whose
+    unresolved text merely reads in-clone. ``SWAP_TARGET_MISSING`` is
+    reserved for a target that is genuinely ABSENT along a resolvable
+    in-clone path. Escape is checked before existence: a path that
+    escapes is refused as an escape even when its target exists.
     """
     if Path(relpath).is_absolute():
         raise ScratchCloneError(Refusal.SWAP_ESCAPES_CLONE, detail=relpath)
     root_res = clone.path.resolve()
+    candidate = clone.path / relpath
     try:
-        resolved = (clone.path / relpath).resolve()
-    except OSError as exc:
+        resolved = candidate.resolve(strict=True)
+    except FileNotFoundError as exc:
+        # Absent vs unresolvable: only "nothing at the leaf, no symlink
+        # there, parent chain resolves inside the clone" is MISSING;
+        # any link involvement (dangling leaf, dangling parent) is an
+        # unprovable landing place and refuses as an escape.
+        try:
+            parent_res = candidate.parent.resolve(strict=True)
+        except (OSError, RuntimeError):
+            raise ScratchCloneError(
+                Refusal.SWAP_ESCAPES_CLONE, detail=f"{relpath}: {exc}")
+        if (not os.path.lexists(candidate)
+                and parent_res.is_relative_to(root_res)):
+            raise ScratchCloneError(
+                Refusal.SWAP_TARGET_MISSING, detail=relpath)
+        raise ScratchCloneError(
+            Refusal.SWAP_ESCAPES_CLONE, detail=f"{relpath}: {exc}")
+    except (OSError, RuntimeError) as exc:
+        # RuntimeError: pre-3.13 CPython reports a symlink loop as
+        # RuntimeError rather than OSError(ELOOP).
         raise ScratchCloneError(
             Refusal.SWAP_ESCAPES_CLONE, detail=f"{relpath}: {exc}")
     if not resolved.is_relative_to(root_res):
