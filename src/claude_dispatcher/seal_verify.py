@@ -464,6 +464,162 @@ def run_seal_inversion(
         f"suite went red without the fix (exit={result.exit_code})")
 
 
+def run_seal_redness(
+    *,
+    worktree: Path,
+    base: str,
+    test_command: str,
+    timeout_seconds: int,
+    log: Callable[[str], None] = lambda _m: None,
+) -> SealVerifyResult:
+    """A SEALS branch must be RED, and red only because of its own rows (D-58).
+
+    The mirror of :func:`run_seal_inversion`. That one reverts the NON-test
+    half and demands red; this one runs the branch as committed and demands
+    red, then reverts the TEST half and demands green. Same machinery, opposite
+    hand, and the same precondition: a committed-clean worktree.
+
+    Two exit codes, and **deliberately no output parsing**. Attributing
+    individual failures to individual files would be the stronger claim, but it
+    means reading `FAILED` lines — which this project has been burned by twice
+    (a collection error is not a `FAILED` line; grepping `UNVERIFIED` once
+    matched a domain enum and reported perfect coverage for a slice whose
+    scouts had all died). The weaker honest claim is the one that ships.
+
+    What each outcome means:
+
+    * **"passed"** — red as committed, green without the branch's test files.
+      The redness is the branch's own and nothing else broke.
+    * **"failed", green as committed** — the seals pin nothing. This is the
+      false-passing seal, the highest-frequency defect in the 2026-07 escape
+      audit and the shape that let a Critical money bug through in SMG-3966.
+    * **"failed", red without them** — the suite is red for reasons that are
+      NOT this branch's rows: a base that was already red, or a dependency
+      merge that broke something. The seals cannot be certified because their
+      redness cannot be attributed to them. Note this does NOT mean "the branch
+      broke a test it did not write" — SEALS is allow_only over test files, so
+      modifying an existing row IS its own row and reverts with the rest.
+    * **"error"** — no judgement was made (unpartitionable diff, a revert that
+      could not be completed, a suite that never reached a verdict, or a
+      restore that failed). The caller blocks.
+
+    **The limit, stated rather than buried.** This proves the branch's rows
+    CAUSE the redness. It does not prove they cause it BY ASSERTING: a seal
+    file with a syntax error or a bad import is red as committed and green once
+    removed, so it passes both runs. Catching that needs per-row attribution,
+    which needs the output parsing this function refuses to do.
+    """
+    try:
+        tests, non_tests = partition_changed(worktree, base)
+    except SealPartitionError as exc:
+        # Fail closed, exactly as the inversion sibling does: the tree is
+        # untouched, but there is no partition, so any verdict would be one
+        # this gate never made.
+        return SealVerifyResult("error", str(exc))
+    if not tests:
+        # A SEALS task that wrote no test file has pinned nothing. This is not
+        # "the gate does not apply" — it is the gate's own accusation, because
+        # the role's entire deliverable is the rows it did not write.
+        return SealVerifyResult(
+            "failed", "a SEALS branch changed no test file — it pins nothing")
+    if non_tests:
+        # The role rule for SEALS is allow_only_globs over test files and
+        # docs/**, so a non-test change here means either the row is
+        # mislabelled or something reached the tree the role gate did not
+        # judge. Either way the reversion below would not be the branch's own
+        # rows, so there is no honest verdict to give.
+        named = ", ".join(p for _st, p in non_tests[:5])
+        return SealVerifyResult(
+            "error",
+            f"a SEALS branch changed {len(non_tests)} non-test file(s) "
+            f"({named}) — the redness cannot be attributed to its own rows")
+
+    # --- run 1: the branch as committed, which must be RED ----------------
+    log("  seal-redness: running suite as committed (must be RED)")
+    committed = mv_mod.run_test_command(
+        test_command, worktree=worktree, timeout_seconds=timeout_seconds,
+        log=log,
+    )
+    if committed.exit_code is None:
+        # A run that did not finish is not a run that went red — the same
+        # non-judgement the inversion sibling documents at length.
+        return SealVerifyResult(
+            "error",
+            "the committed suite never reached a verdict: it was killed at "
+            f"the {timeout_seconds}s bound or never launched (no exit code), "
+            "so it said nothing about whether the seals are red. Tail of the "
+            "run:\n" + committed.output_tail[-500:])
+    if committed.passed:
+        return SealVerifyResult(
+            "failed",
+            "suite is GREEN as committed — the seals pass without the body "
+            "that has not been written yet, so they pin nothing "
+            "(false-passing seal). Tail of the green run:\n"
+            + committed.output_tail[-500:])
+
+    # --- revert the branch's own test files to base -----------------------
+    added = [p for st, p in tests if st == "A"]
+    existing_at_base = [p for st, p in tests if st != "A"]
+    try:
+        if existing_at_base:
+            proc = _git(worktree, "checkout", base, "--", *existing_at_base)
+            if proc.returncode != 0:
+                # Restore before reporting, for the measured reason the
+                # inversion sibling records: git updates the INDEX before a
+                # worktree write can fail, so a partial checkout leaves a
+                # mongrel tree that every later gate reads.
+                detail = (f"could not revert this branch's test files to base: "
+                          f"{proc.stderr.strip()[:300]}")
+                if not _restore(worktree):
+                    return SealVerifyResult(
+                        "error",
+                        "worktree restore after a partial revert failed — tree "
+                        f"state suspect. {detail}")
+                return SealVerifyResult("error", detail)
+        for p in added:
+            try:
+                (worktree / p).unlink()
+            except FileNotFoundError:
+                pass
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        _restore(worktree)
+        return SealVerifyResult("error", f"reverting the seals failed: {exc}")
+
+    # --- run 2: without the branch's rows, which must be GREEN ------------
+    log("  seal-redness: running suite without the new rows (must be GREEN)")
+    without = mv_mod.run_test_command(
+        test_command, worktree=worktree, timeout_seconds=timeout_seconds,
+        log=log,
+    )
+
+    if not _restore(worktree):
+        return SealVerifyResult(
+            "error",
+            "worktree restore after the seal-redness revert failed — tree "
+            "state suspect")
+
+    if without.exit_code is None:
+        return SealVerifyResult(
+            "error",
+            "the suite without the new rows never reached a verdict: it was "
+            f"killed at the {timeout_seconds}s bound or never launched (no "
+            "exit code), so it said nothing about whether the redness belongs "
+            "to this branch. Tail of the run:\n" + without.output_tail[-500:])
+    if not without.passed:
+        return SealVerifyResult(
+            "failed",
+            f"suite is STILL RED with this branch's test files reverted "
+            f"(exit={without.exit_code}) — the redness is INHERITED, not the "
+            "seals': the base was already red, or something merged onto this "
+            "branch broke it. The seals cannot be certified because their "
+            "redness cannot be attributed to them. Tail of the still-red "
+            "run:\n" + without.output_tail[-500:])
+    return SealVerifyResult(
+        "passed",
+        f"red as committed (exit={committed.exit_code}), green without this "
+        f"branch's {len(tests)} test file(s) — the redness is its own")
+
+
 def _restore(worktree: Path) -> bool:
     """Bring the worktree back to HEAD exactly; True on success."""
     try:

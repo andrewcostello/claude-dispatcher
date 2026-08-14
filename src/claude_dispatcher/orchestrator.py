@@ -1577,8 +1577,13 @@ def _run_task(
             break
 
         # --- Mechanical gate ------------------------------------------------
+        # `gate_base_sha` is the D-54-resolved base, threaded in because a
+        # SEALS task's expectation (D-58) is judged by reverting its OWN test
+        # files to that base — the same ref the role gate diffed from, so the
+        # two gates cannot disagree about what "this branch's rows" means.
         mech_outcome, mech_detail = _verify_mechanical_and_maybe_retry(
             cfg, snap, wt, summary_path, env, log_path,
+            gate_base_sha=gate_base_sha,
         )
         if mech_outcome == "failed":
             final_status = plan_mod.BLOCKED
@@ -1660,6 +1665,7 @@ def _run_task(
                 cfg=cfg, snap=snap, wt=wt, repo_root=repo_root,
                 summary_path=summary_path, env=env, log_path=log_path,
                 base_sha_before=base_sha_before,
+                gate_base_sha=gate_base_sha,
                 max_verify_iterations=max_v_iters,
             )
             verified = vout.verified
@@ -2968,6 +2974,7 @@ def _verify_llm_and_maybe_iterate(
     env: dict,
     log_path: Path,
     base_sha_before: str | None,
+    gate_base_sha: str | None = None,
     max_verify_iterations: int | None = None,
 ) -> _LlmVerifyOutcome:
     """Run the LLM verifier; iterate on INCOMPLETE up to the budget.
@@ -3058,6 +3065,7 @@ def _verify_llm_and_maybe_iterate(
         # verifier never burns tokens on a suite the iterate may have reddened.
         mech_outcome, mech_detail = _verify_mechanical_and_maybe_retry(
             cfg, snap, wt, summary_path, env, log_path,
+            gate_base_sha=gate_base_sha,
         )
         if mech_outcome == "failed":
             _log(log_path,
@@ -4470,6 +4478,7 @@ def _verify_mechanical_and_maybe_retry(
     summary_path: Path,
     env: dict,
     log_path: Path,
+    gate_base_sha: str | None = None,
 ) -> tuple[str, str | None]:
     """Run the worktree's `.dispatcher.yaml` `test:` command; retry once on red.
 
@@ -4544,6 +4553,34 @@ def _verify_mechanical_and_maybe_retry(
         }, task_key=snap.key)
         return "failed", detail
 
+    # --- D-58: what does THIS ROLE's suite state mean? ---------------------
+    # Everything above is role-independent (config, committed-tree). From here
+    # the answer depends on what the task was FOR, and only SEALS differs.
+    expectation = _suite_expectation_for(snap, log_path)
+    if expectation is role_protocol_mod.SuiteExpectation.UNJUDGED:
+        # A named abstention, journaled — never a silent pass. Returning HERE,
+        # before the suite is ever run, is also what makes the fix-the-tests
+        # re-spawn unreachable for this role: the corrective prompt tells an
+        # agent the suite is red and to make it green, and for a SEALS task the
+        # only route to green is weakening its own seals.
+        reason = (
+            f"role {expectation.value}: the gate does not judge this role's "
+            "suite state yet (two defensible P2 shapes, one of which exits "
+            "zero — see role_protocol.SuiteExpectation.UNJUDGED). No "
+            "fix-the-tests re-spawn fires for this role."
+        )
+        _log(log_path, f"  {snap.key} mechanical-verify skipped: {reason}")
+        _emit_event(cfg, journal_mod.EventType.verification_mechanical, {
+            "outcome": "skipped",
+            "reason": "role_suite_state_unjudged",
+            "expectation": expectation.value,
+        }, task_key=snap.key)
+        return "skipped", None
+    if expectation is role_protocol_mod.SuiteExpectation.RED_FROM_OWN_ROWS:
+        return _verify_seal_redness(
+            cfg, snap, wt, repo_cfg, log_path, gate_base_sha=gate_base_sha,
+        )
+
     first = _run_mechanical_test(cfg, snap, wt, repo_cfg,
                                  retried=False, log_path=log_path)
     if first.passed:
@@ -4560,6 +4597,95 @@ def _verify_mechanical_and_maybe_retry(
         _log(log_path, f"  {snap.key} mechanical-verify recovered after retry")
         return "passed", None
     return "failed", second.output_tail
+
+
+def _suite_expectation_for(
+    snap: TaskSnapshot, log_path: Path,
+) -> role_protocol_mod.SuiteExpectation:
+    """The suite state this task's role is expected to leave behind (D-58).
+
+    The role comes from `snap.role_specs`, frozen at dispatch — the same
+    snapshot the role loop gate reads, so a branch cannot change what it is
+    judged as by editing its own row mid-session.
+
+    Falls back to GREEN — today's behaviour — when the batch does not yield
+    exactly one role. That is the permissive answer and it is chosen anyway,
+    for a bounded reason: a batch with zero or mixed roles is ALREADY blocked
+    by the role loop gate (`ROLE_UNRESOLVED` / a mixed-role batch is refused at
+    plan time), so this path cannot ship anything the protocol has not already
+    stopped. Inventing a stricter answer here would add a second, differently
+    worded refusal for a state one gate already owns.
+    """
+    roles = {spec.role for spec in (snap.role_specs or [])}
+    if len(roles) != 1:
+        _log(log_path,
+             f"  {snap.key} suite expectation: {len(roles)} role(s) on this "
+             f"branch, not 1 — using GREEN; the role loop gate owns this state")
+        return role_protocol_mod.SuiteExpectation.GREEN
+    return role_protocol_mod.suite_expectation(next(iter(roles)))
+
+
+def _verify_seal_redness(
+    cfg: RunConfig,
+    snap: TaskSnapshot,
+    wt: wt_mod.Worktree,
+    repo_cfg: repo_config_mod.RepoConfig,
+    log_path: Path,
+    *,
+    gate_base_sha: str | None,
+) -> tuple[str, str | None]:
+    """The SEALS branch of the mechanical gate (D-58).
+
+    **NO fix-the-tests retry, and that is the point.** Both ways this gate
+    fails are things a human adjudicates, never things an agent should be told
+    to fix: "your seals are green" and "you reddened someone else's rows". The
+    corrective prompt says the suite is red and to make it green, and for a
+    SEALS task the only route to green is WEAKENING THE SEALS — which
+    manufactures the false-passing seal this gate exists to catch. Measured on
+    DF-1-2: the retry fired, then the cascade escalated effort and reset the
+    seals away, on a task that had done its job correctly.
+
+    Returns the same ``(outcome, detail)`` vocabulary as its green sibling, so
+    the caller's Blocked path is unchanged. ``seal_verify``'s fourth outcome
+    ("error" — no judgement was made) maps to "failed" here because the caller
+    has only two terminal words; the detail carries which it was.
+    """
+    if not gate_base_sha:
+        detail = (
+            "a SEALS task's suite expectation is judged by reverting its own "
+            "test files to the base its role gate diffed from, and that base "
+            "is unavailable on this run — so no verdict about the seals was "
+            "made. This blocks rather than falling back to a green check, "
+            "because a green check is the accusation D-58 exists to remove")
+        _log(log_path, f"  {snap.key} seal-redness: {detail}")
+        _emit_event(cfg, journal_mod.EventType.verification_mechanical, {
+            "outcome": "failed",
+            "reason": "no_gate_base",
+            "expectation": "red_from_own_rows",
+            "retried": False,
+        }, task_key=snap.key)
+        return "failed", detail
+
+    res = sv_mod.run_seal_redness(
+        worktree=wt.path,
+        base=gate_base_sha,
+        test_command=repo_cfg.test,
+        timeout_seconds=cfg.verify_test_timeout_seconds,
+        log=lambda m: _log(log_path, m),
+    )
+    _log(log_path,
+         f"  {snap.key} seal-redness {res.outcome}: {res.detail[:200]}")
+    _emit_event(cfg, journal_mod.EventType.verification_mechanical, {
+        "outcome": "passed" if res.outcome == "passed" else "failed",
+        "seal_redness_outcome": res.outcome,
+        "expectation": "red_from_own_rows",
+        "base": gate_base_sha,
+        "detail": res.detail[:mv_mod.TAIL_CHARS],
+        "retried": False,
+    }, task_key=snap.key)
+    if res.outcome == "passed":
+        return "passed", None
+    return "failed", res.detail
 
 
 def _run_mechanical_test(

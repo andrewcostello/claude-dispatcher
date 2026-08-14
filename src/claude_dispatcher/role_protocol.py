@@ -482,6 +482,113 @@ class RoleRule:
 #     concatenated into EVERY reviewer seat's prompt by
 #     `cross_family_reviewer._load_prompt`, which is why the directory glob is
 #     the right grain and a list of family names would have missed it.
+class SuiteExpectation(Enum):
+    """What the repo's test command is EXPECTED to say at the end of a role's
+    task. The mechanical gate reads this instead of assuming green.
+
+    **Why this exists (D-58, found by dogfooding DF-1-2).** The dispatcher was
+    built around FIX-SHAPED tasks: one task writes the fix AND its test, the
+    suite ends green, and :mod:`seal_verify` then reverts the fix and requires
+    red. The scaffold-first protocol inverts that: a SEALS task writes ONLY
+    tests, by a different author, and they must end RED — the body arrives in a
+    later task.
+
+    Measured on DF-1-2: the mechanical gate read its six own red seals as a
+    failure, spawned a fix-the-tests agent, then cascaded to a higher effort
+    rung which RESET the seals away. `seal_verify` skipped the same branch
+    ("test-only change — no fix to invert"), so the task got the worst of both
+    gates: accused by one, unexamined by the other.
+    """
+
+    #: The suite must end green. Every role's behaviour before D-58.
+    GREEN = "green"
+
+    #: The suite must end RED, and red ONLY because of rows this branch wrote.
+    #: Two exit codes, no output parsing (see :func:`seal_verify.
+    #: run_seal_redness`): the suite as committed must be red, and the suite
+    #: with the branch's own test files reverted to base must be green.
+    #:
+    #: **BUILT AND SEALED, NOT CURRENTLY ASSIGNED TO ANY ROLE.** See
+    #: :data:`SuiteExpectation.UNJUDGED` for why SEALS does not use it yet.
+    RED_FROM_OWN_ROWS = "red_from_own_rows"
+
+    #: The gate does not judge this role's suite state, and says so. A NAMED
+    #: state, journaled with its reason — never a silent pass, and never the
+    #: green check that would accuse the role of failing for doing its job.
+    #:
+    #: **Why SEALS sits here (operator ruling, 2026-08-14).** Two P2 authors in
+    #: wave 1 produced two different, both defensible, shapes:
+    #:
+    #:   * DF-1-2 wrote PLAINLY RED seals — the suite exits non-zero.
+    #:   * DF-4-2 wrote CONDITIONAL XFAIL seals:
+    #:     ``@pytest.mark.xfail(<seam still raises the P1 stub>,
+    #:     raises=NotImplementedError, strict=True)``. The condition is computed
+    #:     at import by CALLING the seam, so the marker self-retires when the
+    #:     body lands with no test edit — which matters because P3 may not touch
+    #:     ``tests/``. ``strict=True`` makes an unexpectedly PASSING seal a hard
+    #:     failure, so vacuity is caught by the marker itself, and ``raises=``
+    #:     makes any other exception a real failure.
+    #:
+    #: The second is the more disciplined shape and it EXITS ZERO. So run 1 and
+    #: run 2 of :func:`seal_verify.run_seal_redness` both exit 0 and are
+    #: indistinguishable — "eight xfailed seals" and "no seals at all" are the
+    #: same exit code. Exit codes cannot separate them, and the whole reason
+    #: that gate refuses to parse test output is that this project has twice
+    #: shipped a false green from doing so.
+    #:
+    #: Judging SEALS by the RED rule would therefore FAIL DF-4-2, which already
+    #: passed its panel and merged. Rather than standardise the weaker style to
+    #: fit the gate, the gate abstains until the style question is ruled. What
+    #: is NOT parked: a SEALS task still never gets a fix-the-tests re-spawn —
+    #: this returns before the suite is ever run, so the corrective prompt that
+    #: would tell an agent to weaken its own seals cannot fire.
+    UNJUDGED = "unjudged"
+
+
+#: Per-role suite expectation. TOTAL over :class:`Role` — a new member must
+#: land in :func:`suite_expectation`'s raise, not in a default, because the
+#: permissive answer here is "green" and green is what silently accused DF-1-2.
+#:
+#: ONLY ``SEALS`` differs from the pre-D-58 behaviour. The other four are
+#: written down as GREEN because that is what they already did, NOT because a
+#: ruling was made about them — and one of those rulings is measurably not safe
+#: to make yet. ``BODIES: GREEN`` here means "unchanged", not "a body task must
+#: end fully green": on this very branch D6 has THREE ``body(...)`` commits and
+#: D5 has two, so a unit's seals are turned green incrementally and an
+#: intermediate body task legitimately ends RED. Ruling BODIES explicitly would
+#: fail those tasks exactly the way SEALS is failing now. When partial-body
+#: units have been measured, this table is where that ruling lands — one entry,
+#: not a rewrite.
+_SUITE_EXPECTATIONS: dict[Role, SuiteExpectation] = {
+    Role.SCAFFOLD: SuiteExpectation.GREEN,
+    Role.SEALS: SuiteExpectation.UNJUDGED,
+    Role.BODIES: SuiteExpectation.GREEN,
+    Role.ADJUDICATE: SuiteExpectation.GREEN,
+    Role.LEGACY: SuiteExpectation.GREEN,
+}
+
+
+def suite_expectation(role: Role) -> SuiteExpectation:
+    """The suite state `role` is expected to leave behind. Total over
+    :class:`Role`; raises on an unmapped member rather than defaulting.
+
+    **IMPLEMENTED, not stubbed**, under the standing exception and for the
+    reason :func:`loop_gate.decision_for` gives: "every member is mapped, and
+    an unmapped one raises" is not checkable against a function that raises for
+    everything.
+    """
+    try:
+        return _SUITE_EXPECTATIONS[role]
+    except KeyError:
+        raise RoleProtocolError(
+            f"no suite expectation is defined for {role!r}; a new Role member "
+            "must be given one here, not fall through to whichever branch "
+            "happens to be last — and on this dispatch the permissive branch "
+            "is GREEN, which is the answer that accused DF-1-2 of failing for "
+            "doing its job"
+        ) from None
+
+
 DEFAULT_ROLE_RULES: tuple[RoleRule, ...] = (
     RoleRule(
         role=Role.SCAFFOLD,
