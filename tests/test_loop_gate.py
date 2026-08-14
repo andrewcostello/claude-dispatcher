@@ -1716,38 +1716,25 @@ def test_the_gate_never_picks_a_role_for_a_two_role_branch(tmp_path: Path) -> No
 
 
 def test_todays_dispatcher_really_does_hand_one_branch_two_roles() -> None:
-    """**Row 18. The reachability proof for row 17's input.** GREEN TODAY.
+    """**Row 18. The reachability answer for row 17's input — INVERTED.**
 
-    Row 17 asserts what the gate does with a two-role group. This row is how I
-    know the dispatcher can hand it one — the scaffold's §4 measurement,
-    re-derived here rather than quoted, through the REAL loader, the REAL
-    validator and the REAL `_take_batch_group`.
+    AMENDED (operator commit, handed over by DF-3-4 ruling R3; the amendment
+    P2-3 assigned to the refusal's landing commit, which BODIES could not
+    write). MEASURED under `06176f4` this row proved the real loader HANDS
+    the gate a one-branch/two-role group. DF-3-3 (`3917b45`) landed the
+    plan-time refusal, so the proof inverts: the loader now REFUSES the
+    worklist that produced row 17's input, and this row is the measurement.
+    Row 17 stays as the net for a two-role group that reaches the dispatcher
+    by any other road (an edited file between load and dispatch, a snapshot
+    that lost rows).
 
-    MEASURED under `06176f4`, on the worklist below (unit A complete and Done
-    through SEALS, unit B complete and untouched, A's BODIES row and B's
-    SCAFFOLD row sharing ``batch_id: MIX``):
+    The refusal's shape is sealed in tests/test_batch_coherence.py (rules,
+    wiring, determinism) and tests/test_role_protocol_table.py (the
+    divergence window and the once-count) — this row pins only what it
+    always pinned: what TODAY'S loader does with THIS worklist.
 
-        plan.load_tasks           -> accepted
-        role_protocol.validate    -> 0 errors, 0 warnings
-        plan.runnable_now         -> ['A-BODIES', 'B-SCAFFOLD']
-        _take_batch_group         -> group ['A-BODIES', 'B-SCAFFOLD'], rest []
-        roles in that one group   -> {BODIES, SCAFFOLD}
-
-    One branch, one worktree, one implementer session, two roles — with the
-    worklist passing every plan-time check the protocol has today.
-
-    **THIS ROW IS THE ONE §7(b) WILL REDDEN, and that is intended.** §7(b) owes
-    a plan-time refusal of mixed-role batches in `role_protocol.validate`, a
-    floored file and therefore a P4 amendment. When it lands, `load_tasks`
-    raises here and this row must be amended in that same commit — its redness
-    is §7(b)'s own proof that the refusal works. Recorded so that a later
-    reader does not mistake the amendment for a seal being weakened.
-    Predicted (unmeasured) under a tree where §7(b) has landed: this row fails
-    at `plan.load_tasks` with a `ValidationError` naming ``batch_id: MIX``.
-
-    FALSIFY (measured, `06176f4`): give both rows the same role — the
-    two-distinct-roles assertion reddens. Give them different ``batch_id``s —
-    the one-group assertion reddens with two singletons.
+    FALSIFY: change ``batch_id: MIX`` on B-SCAFFOLD to any other value —
+    the raises-control fails with the doc loading clean.
     """
     doc = {"tasks": [
         {"key": "A-SCAFFOLD", "summary": "a scaffold", "description": "d",
@@ -1770,40 +1757,14 @@ def test_todays_dispatcher_really_does_hand_one_branch_two_roles() -> None:
          "blockedBy": ["B-SEALS"], "status": "To Do"},
     ]}
 
-    tasks = plan_mod.load_tasks(doc)
-    validation = rp_mod.validate(tasks)
-    assert validation.errors == (), (
-        "a mixed-role batch is refused at plan time. If §7(b) has landed, this "
-        "row is the one its commit must amend — see the docstring: "
-        f"{validation.errors}"
-    )
-    assert validation.warnings == (), (
-        f"the fixture is not a clean worklist and this row is measuring "
-        f"something other than the mixed-role case: {validation.warnings}"
-    )
-
-    runnable = plan_mod.runnable_now(tasks)
-    assert [t.key for t in runnable] == ["A-BODIES", "B-SCAFFOLD"], (
-        f"the control failed: both rows must be runnable at once for the "
-        f"dispatcher to batch them: {[t.key for t in runnable]}"
-    )
-
-    group, rest = orch_mod._take_batch_group(runnable)
-    assert [t.key for t in group] == ["A-BODIES", "B-SCAFFOLD"] and rest == [], (
-        f"_take_batch_group did not dispatch them as one group: "
-        f"group={[t.key for t in group]} rest={[t.key for t in rest]}"
-    )
-
-    specs = {s.task_key: s for s in validation.specs}
-    group_specs = [specs[t.key] for t in group]
-    assert {s.role for s in group_specs} == {Role.BODIES, Role.SCAFFOLD}, (
-        f"the group carries {sorted(s.role.value for s in group_specs)}, not "
-        "two distinct roles; row 17's input is not reachable from here"
-    )
-    assert sole_role(group_specs) is None, (
-        "the real dispatched group resolved to a single role, so the gate "
-        "would judge one unit's work under the other unit's rule"
-    )
+    with pytest.raises(plan_mod.ValidationError) as excinfo:
+        plan_mod.load_tasks(doc)
+    refusal = str(excinfo.value)
+    assert "BATCH-ROLE" in refusal
+    for named in ("'MIX'", "A-BODIES", "B-SCAFFOLD"):
+        assert named in refusal, (
+            f"the refusal must name the batch and every member: {refusal}"
+        )
 
 
 def test_zero_specs_is_not_one_role() -> None:
