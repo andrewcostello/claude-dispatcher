@@ -58,6 +58,13 @@ never as an expected red. In the direct-call rows the controls are plain
 asserts for the mirrored reason: an ``AssertionError`` there is not the
 tolerated ``NotImplementedError`` and also reports today.
 
+The panel row (added under the operator adjudication of 2026-08-14, which
+sanctioned this one extension) retires the same way but off its OWN probe:
+its condition is "``__post_init__`` still accepts a non-SHA", not "the seam
+is still the stub" — its defect is in the IMPLEMENTED record type, not the
+stub — so it xfails while the DF-1-1 panel's truthy-sha hole stands and runs
+plain (and must pass) the commit a guard lands, with no test edit.
+
 NON-VACUITY LEDGER (each row names its defect and its same-call control)
 ========================================================================
 Red rows, each red at HEAD by the specific defect it names:
@@ -81,6 +88,13 @@ Red rows, each red at HEAD by the specific defect it names:
   * the four not-an-answer rows — red at the stub raise, after each control
     ran the fake gh directly and confirmed the advertised failure shape
     (exit 0 with no field / null field / exit 1 / an oid that is not a SHA).
+  * the panel row — red because ``__post_init__`` judges ``not self.sha``
+    (truthiness) only — the DF-1-1 review panel's three-family finding — so
+    ``"not-a-sha"`` and whitespace wear the OBSERVED state and the stamp
+    emits them under ``merged_sha``. Controls in the same call: the legal
+    40-hex shape constructs and stamps exactly its answer, and while the
+    hole stands the red is verified to be by the named defect (the garbage
+    value really reaches the stamp), not a harness accident.
 
 Green rows (the P1-implemented record type and stamp fold), each
 mutation-verified in a ``/tmp`` lab under 60789ab — the mutations and which
@@ -415,6 +429,116 @@ def test_the_unavailable_stamp_has_no_merged_sha_key_for_truthiness_to_pass_on()
     assert "feature_branch_sha" not in stamp
     with pytest.raises(KeyError):
         stamp["merged_sha"]
+
+
+# --------------------------------------------------------------------------- #
+# The panel row — red at HEAD by the DF-1-1 review panel's finding
+# --------------------------------------------------------------------------- #
+
+def _observed_still_accepts_a_non_sha() -> bool:
+    """Does ``__post_init__`` still accept any truthy ``sha`` for OBSERVED?
+
+    The DF-1-1 panel's hole, probed directly: while it stands, constructing
+    OBSERVED around ``"not-a-sha"`` succeeds and this returns True. The
+    commit a guard lands, the same construction raises ``ValueError`` — the
+    type's one refusal exception — the probe flips to False on its own, and
+    the panel row below runs plain and must pass. Any OTHER exception is
+    treated as not-the-hole, so a guard with the wrong shape runs the row
+    plain and fails it loudly rather than xfailing forever.
+    """
+    try:
+        MergedShaWitness(
+            pr_number=0, target="feature/x", state=WitnessState.OBSERVED,
+            sha="not-a-sha", source=ShaSource.ORIGIN_PR_MERGE_COMMIT,
+        )
+    except ValueError:
+        return False
+    except Exception:
+        return False
+    return True
+
+
+_TRUTHY_HOLE = _observed_still_accepts_a_non_sha()
+
+_RED_HOLE = (
+    "DF-1-1 panel finding (one defect, three reviewer families): "
+    "__post_init__ accepts any truthy sha, so a non-SHA wears the OBSERVED "
+    "state; the guard that closes it turns this row green"
+)
+
+
+@pytest.mark.xfail(_TRUTHY_HOLE, reason=_RED_HOLE, raises=AssertionError,
+                   strict=True)
+def test_an_observed_witness_refuses_an_answer_that_is_not_a_sha() -> None:
+    """Question 2's missing structural half: OBSERVED must be unconstructible
+    around a value no auditor can re-ask origin about — ``"not-a-sha"`` and
+    whitespace must refuse to construct, exactly as OBSERVED-without-a-sha
+    already does.
+
+    Added under the operator adjudication of 2026-08-14, which sanctioned
+    this one extension: DF-1-1's review panel recorded this hole three times
+    independently (codex HIGH at merge_record.py:205, claude MEDIUM at :214
+    "verified by direct execution", grok LOW at :218) — ``__post_init__``
+    judges ``not self.sha`` (truthiness) only. The seam-level near-twin above
+    (the ``not-a-sha`` case) constrains only ``witness_merged_sha``'s answer;
+    once DF-1-3 validates inside the seam that row goes green while the TYPE
+    still accepts garbage from any other caller. This row pins the type — the
+    audit record for merge authority itself.
+
+    RED AT HEAD by that finding. Measured under: 0a6ae4a (this branch),
+    CPython 3.13.7, 2026-08-14: both values below constructed as well-formed
+    OBSERVED witnesses and ``stamp_fields()`` emitted each under
+    ``merged_sha``.
+
+    Controls (``pytest.fail``, never the tolerated ``AssertionError``),
+    judged in the same call: the legal 40-hex shape constructs and its stamp
+    carries exactly its answer — so the refusals below are refusals of the
+    illegal values, not a constructor that rejects everything; and while the
+    hole stands, the red is verified to be by the named defect — the non-SHA
+    really reaches the stamp under ``merged_sha`` — not a harness accident.
+
+    Not a twin of the condemned seal: the judgments are constructibility
+    refusals and same-call equality; nothing asserts truthiness of a recorded
+    value. Wider well-formedness (uppercase hex, abbreviated SHAs) is
+    deliberately not pinned — the panel named this hole and this row pins
+    exactly it; tightening further is the guard author's choice to propose.
+    """
+    sha = "ab" * 20
+    try:
+        legal = MergedShaWitness(
+            pr_number=7, target="feature/x", state=WitnessState.OBSERVED,
+            sha=sha, source=ShaSource.ORIGIN_PR_MERGE_COMMIT,
+        )
+    except ValueError:
+        pytest.fail("CONTROL: the legal 40-hex observed shape must construct")
+    if legal.stamp_fields().get("merged_sha") != sha:
+        pytest.fail("CONTROL: the legal stamp must carry exactly its answer")
+
+    if _TRUTHY_HOLE:
+        # While the hole stands the red below must be by the NAMED defect:
+        # the non-SHA constructs AND the stamp emits it under merged_sha.
+        smuggled = MergedShaWitness(
+            pr_number=7, target="feature/x", state=WitnessState.OBSERVED,
+            sha="not-a-sha", source=ShaSource.ORIGIN_PR_MERGE_COMMIT,
+        ).stamp_fields()
+        if smuggled.get("merged_sha") != "not-a-sha":
+            pytest.fail(
+                "CONTROL: red for the wrong reason — the truthy-sha hole "
+                f"did not reach the stamp (stamp: {smuggled!r})")
+
+    for bad in ("not-a-sha", "   "):
+        constructed = None
+        try:
+            constructed = MergedShaWitness(
+                pr_number=7, target="feature/x", state=WitnessState.OBSERVED,
+                sha=bad, source=ShaSource.ORIGIN_PR_MERGE_COMMIT,
+            )
+        except ValueError:
+            pass
+        assert constructed is None, (
+            f"OBSERVED accepted {bad!r} as its answer — __post_init__ judges "
+            "truthiness only, so a value no auditor can re-ask origin about "
+            "wears the success state and the stamp emits it under merged_sha")
 
 
 # --------------------------------------------------------------------------- #
