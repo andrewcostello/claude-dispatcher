@@ -250,6 +250,13 @@ def create(
     base = base_path or worktree_base(repo_root)
     wt_path = worktree_path(base, task_key)
     if wt_path.exists() and (wt_path / ".git").exists():
+        # Provision on REUSE too (D-61, corrected). A re-dispatched task —
+        # after an unblock, a resume, or a run stopped mid-flight — takes this
+        # path, and it is the common case, not the rare one. Measured: with the
+        # provisioning only on the create path, `worktree-DF-5-3` was reused
+        # after a quota stop carrying `main.cjs` alone, and would have paid the
+        # whole wasted fix-the-tests round D-61 exists to remove.
+        provision_untracked_deps(wt_path)
         return Worktree(path=wt_path, branch=_checked_out_branch(wt_path, branch))
     base.mkdir(parents=True, exist_ok=True)
     try:
@@ -266,6 +273,7 @@ def create(
         # is now a valid worktree, reuse it idempotently; otherwise surface a
         # typed error carrying git's stderr rather than a raw traceback.
         if wt_path.exists() and (wt_path / ".git").exists():
+            provision_untracked_deps(wt_path)
             return Worktree(path=wt_path, branch=_checked_out_branch(wt_path, branch))
         raise WorktreeError(
             f"git worktree add failed for {task_key} at {wt_path}",

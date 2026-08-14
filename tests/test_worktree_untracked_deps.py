@@ -123,6 +123,42 @@ def test_seal_D61_an_existing_file_is_never_overwritten(install, tmp_path):
     assert (wt / REL).read_text() == "// already here\n"
 
 
+def test_seal_D61_a_REUSED_worktree_is_provisioned_too(install, tmp_path, monkeypatch):
+    """The path the first D-61 fix missed, found live.
+
+    `create` is idempotent: an existing worktree returns early. That early
+    return sat BEFORE the provisioning call, so a REUSED worktree — the common
+    case for a re-dispatched task, after an unblock, a resume, or a run stopped
+    mid-flight — never got the parser. Measured on the live run:
+    `worktree-DF-5-3` was created at 10:38:43, the run died on a quota 429, and
+    the 12:52 re-dispatch reused it carrying `main.cjs` ALONE. It would have
+    paid the entire wasted fix-the-tests round D-61 exists to remove.
+    """
+    wt = tmp_path / "reused"
+    _git(install, "worktree", "add", "-q", "--detach", str(wt), "HEAD")
+    assert not (wt / REL).exists(), "fixture: the reused worktree must start bare"
+
+    monkeypatch.setattr(wt_mod, "worktree_base", lambda *a, **k: tmp_path)
+    monkeypatch.setattr(wt_mod, "worktree_path", lambda base, key: wt)
+    monkeypatch.setattr(
+        wt_mod, "_checked_out_branch", lambda path, branch: branch)
+    monkeypatch.setattr(
+        Path(__file__).__class__, "cwd", staticmethod(lambda: install),
+        raising=False)
+    # `create` resolves its source from the RUNNING install, so point it there.
+    monkeypatch.setattr(wt_mod, "_UNTRACKED_DEPS", (REL, LICENCE))
+    real = wt_mod.provision_untracked_deps
+    monkeypatch.setattr(
+        wt_mod, "provision_untracked_deps",
+        lambda path, source_root=None: real(path, source_root=install))
+
+    got = wt_mod.create(install, "T-1", "feat/t-1", base_branch="main")
+    assert got.path == wt
+    assert (wt / REL).is_file(), (
+        "a reused worktree was returned without the parser — the idempotent "
+        "early return skipped provisioning")
+
+
 def test_seal_D61_create_provisions_without_being_asked(install, tmp_path):
     """The call site, not just the function. Nothing else in the dispatcher
     provisions a worktree, so a `create` that does not call this leaves every
@@ -130,7 +166,11 @@ def test_seal_D61_create_provisions_without_being_asked(install, tmp_path):
     import inspect
 
     src = inspect.getsource(wt_mod.create)
-    assert "provision_untracked_deps" in src, (
+    assert src.count("provision_untracked_deps") >= 3, (
+        "create must provision on the fresh-add path AND on BOTH idempotent "
+        "reuse returns; a reused worktree is the common case for a "
+        "re-dispatched task. "
+    ) and (
         "worktree.create no longer provisions untracked deps; every task's "
         "first mechanical verdict goes back to being meaningless")
 
