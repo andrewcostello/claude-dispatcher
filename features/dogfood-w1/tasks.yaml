@@ -188,16 +188,58 @@ tasks:
       Report which rows would still pass under an implementation you consider
       wrong — three separate authors in this effort found rows that stayed green
       under a wrong implementation, and disclosed it against their own interest.
+
+      ## Unblock note (human)
+      (cleared from Blocked: role_diff_loop_violation: 2 forbidden path(s) and 2 changed scaffolded signature(s))
+      ADJUDICATION (operator). You did what your scaffold told you to do. The block
+      was structural and it has been resolved for you. Recorded as D-65.
+
+      WHAT HAPPENED. DF-1-1's scaffold added 21 lines to `merge_engine.py`, all
+      docstring, saying: "the merged-SHA contract lives in `merge_record.py`, and
+      DF-1-3 removes the audit stamp's dependence on this sync" and "DF-1-3 rewires
+      the call site and retires this function from the stamp path. Do NOT add new
+      callers."
+
+      So it ORDERED the two signature changes you made and named you as the task that
+      would make them — but it wrote the order in PROSE and never changed the
+      signatures or left stubs carrying the new shapes. The role gate compares
+      signatures across revisions. It cannot read prose. So it correctly reported a
+      bodies task changing an interface, and you were correctly following your brief.
+      Both were right. DF-1-4, which exists to rule exactly this, is blockedBy you —
+      so no role could have finished this unit.
+
+      WHAT WAS DONE, so you do not redo it:
+        * Your `merge_engine.py` change landed as OPERATOR commit 89b5936, attributed
+          to you — the whole file, because the scaffold named its rewiring as one act
+          and `_apply_merged` cannot take a witness until something passes one.
+        * Your test-infra work landed earlier as operator commit ae307e4.
+        * Your remaining commit 30325e1 is implementation only: `merge_record.py`,
+          `journal.py`, `docs/journal-format.md`.
+        * Your gate base is now 89b5936. Verified: the gate answers
+          checked_clean / proceed, 3 paths, no signature changes.
+
+      YOUR WORK IS COMPLETE AND ACCEPTED. Verify it still builds and the suite
+      reports, then STOP and report. Do not re-add `merge_engine.py` changes — they
+      are already on the base you are judged against, and re-adding them would put
+      you back in violation.
+
+      ONE THING WORTH YOUR ATTENTION, and report rather than fix it if you disagree:
+      DF-1-2's seals added a row pinning that `MergedShaWitness.__post_init__` must
+      REFUSE a non-SHA `sha` (three reviewer families independently found that
+      `"not-a-sha"` and whitespace construct a well-formed OBSERVED witness that
+      `stamp_fields()` then emits under `merged_sha`). That row is red until the
+      constructor validates. If your body already added that guard, say so. If not,
+      it is body work and it is in your writable set.
     type: Task
     estimate: 2h
     labels: [size:M, area:dispatcher]
     agent: claude
     role: bodies
-    status: Blocked
+    status: In Progress
     blockedBy: [DF-1-2]
-    started_at: '2026-08-14T08:23:20-07:00'
-    dispatcher_run_id: 2026-08-14T14-58-45Z-tasks
-    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-14T14-58-45Z-tasks/DF-1-3/summary.md
+    started_at: '2026-08-14T13:26:20-07:00'
+    dispatcher_run_id: 2026-08-14T19-52-18Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-14T19-52-18Z-tasks/DF-1-3/summary.md
 
     branch: feat/DF-1-3-bodies-make-the-merge-record
     cost_usd: 21.753404
@@ -207,10 +249,7 @@ tasks:
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
-    blocked_reason: 'role_diff_loop_violation: 2 forbidden path(s) and 2 changed scaffolded signature(s)'
-    role_diff_loop: checked_violation
-    role_diff_loop_detail: 2 forbidden path(s) and 2 changed scaffolded signature(s)
-    gate_base_sha: 47fccd2c55e4795a23740afc3f3740d580ccbeb4
+    gate_base_sha: 89b5936ab28525444540552129397f79cb45ccbc
     input_tokens: 67
     output_tokens: 42798
     cache_read_input_tokens: 3738318
@@ -220,6 +259,7 @@ tasks:
     model: claude-fable-5
     dispatcher_version: 0.1.0
     agent_version: 2.1.232 (Claude Code)
+    unblocked_at: '2026-08-14T20:18:23+00:00'
   - key: DF-1-4
     summary: adjudicate — rule the stale-stamp seal and any disputes DF-1-3 raises
     description: |
@@ -834,34 +874,74 @@ tasks:
           from that commit, so the tmpfs-inode and stale-sentinel failures you hit
           are gone. If the suite is red for a reason you cannot fix WITHOUT touching
           tests/, that is a finding to report, not to fix.
+
+      ## Unblock note (human)
+      (cleared from Blocked: )
+      ADJUDICATION (operator). You were not blocked. Your previous session ended
+      mid-work and your summary's `Status: Blocked` — written as a placeholder while
+      the suite was still running — was read as a verdict. That is the dispatcher's
+      defect (D-63, second occurrence), not yours.
+
+      STATE, measured, so you do not redo work:
+        * COMMITTED as 338eb6e: "fail closed on scan errors, dangling links, and
+          unstartable git" — your answers to the panel's findings 1/2/3/4.
+        * UNCOMMITTED, still on disk: further changes to
+          `src/claude_dispatcher/scratch_clone.py` (the `_refuse` race and the
+          `.GIT` case-variance work, by your own summary).
+        * `tests/test_scratch_clone.py`: 10 passed at the point you stopped.
+
+      WHAT TO DO:
+        1. Read the uncommitted diff first (`git diff`). It is YOUR work. Verify it,
+           finish it, COMMIT it. Do not start over.
+        2. Run the full suite to completion and REPORT THE RESULT. Do not leave it
+           "in progress" — a summary that says in-progress under a terminal status
+           is how this task stalled twice.
+        3. Set `Status: Done` only when the suite has actually finished and you have
+           its numbers. If you must stop early, write a REASON — "Blocked" with no
+           reason gives the human nothing to act on.
+
+      THE FOUR PANEL FINDINGS, unchanged, so you can check your own work against
+      them: (1) `assert_isolated` accepted the real repository — a symlink to it, or
+      the real main worktree passed directly, satisfied every check; (2) fail-open
+      scanning — `Path.rglob()` and `os.walk()` without `onerror` silently skip
+      unreadable subtrees, so a nested `.git` survives severing AND both survivor
+      checks; (3) `resolve(strict=False)` accepted a dangling symlink whose
+      unresolved destination is lexically inside the clone, contradicting the
+      docstring; (4) `_git_run` had no timeout and let `OSError` /
+      `UnicodeDecodeError` escape, skipping `_refuse` cleanup.
+
+      BOUNDARIES, unchanged: you hold `role: bodies`. You may NOT create or modify
+      anything under `tests/**`. If a fix cannot be demonstrated without new test
+      infrastructure, report it as a DISPUTE in your summary naming the file and what
+      it needs — do not write it.
     type: Task
     estimate: 1h
     labels: [size:S, area:dispatcher]
     agent: claude
     role: bodies
-    status: To Do
+    status: In Progress
     blockedBy: [DF-4-2]
-    started_at: '2026-08-14T10:38:43-07:00'
-    dispatcher_run_id: 2026-08-14T14-58-45Z-tasks
-    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-14T14-58-45Z-tasks/DF-4-3/summary.md
+    started_at: '2026-08-14T13:26:20-07:00'
+    dispatcher_run_id: 2026-08-14T19-52-18Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-14T19-52-18Z-tasks/DF-4-3/summary.md
 
     branch: feat/DF-4-3-bodies-implement-the-scratch-clone
-    cost_usd: 16.771794999999997
+    cost_usd: 22.254858
     iteration_count: 0
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
     gate_base_sha: c5ef25b9582d083c432642553d57990bf1f97f73
-    input_tokens: 43
-    output_tokens: 22697
-    cache_read_input_tokens: 1576843
-    cache_creation_input_tokens: 61668
-    duration_ms: 1186905
-    num_turns: 24
+    input_tokens: 55
+    output_tokens: 28434
+    cache_read_input_tokens: 2337313
+    cache_creation_input_tokens: 86175
+    duration_ms: 412709
+    num_turns: 30
     model: claude-fable-5
     dispatcher_version: 0.1.0
     agent_version: 2.1.232 (Claude Code)
-    unblocked_at: '2026-08-14T17:23:20+00:00'
+    unblocked_at: '2026-08-14T20:00:54+00:00'
     panel_consensus: block
     panel_summary: consensus=block | claude=APPROVE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=4 (0C/4H)
     panel_blocking_findings: 4
@@ -870,6 +950,7 @@ tasks:
     panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
     panel_verdict_codex: CHANGES_REQUESTED
     panel_verdict_grok: CHANGES_REQUESTED
+    completed_at: '2026-08-14T12:59:19-07:00'
   - key: DF-4-4
     summary: adjudicate — rule DF-4-3's disputes
     description: |
@@ -1057,15 +1138,32 @@ tasks:
     labels: [size:S, area:dispatcher]
     agent: claude
     role: bodies
-    status: To Do
+    status: Blocked
     blockedBy: [DF-5-2]
-    started_at: '2026-08-14T10:38:43-07:00'
-    dispatcher_run_id: 2026-08-14T14-58-45Z-tasks
-    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-14T14-58-45Z-tasks/DF-5-3/summary.md
+    started_at: '2026-08-14T12:52:18-07:00'
+    dispatcher_run_id: 2026-08-14T19-52-18Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-14T19-52-18Z-tasks/DF-5-3/summary.md
 
     branch: feat/DF-5-3-bodies-close-the-drift-the
     dispatcher_version: 0.1.0
     agent_version: 2.1.232 (Claude Code)
+    gate_base_sha: bf4e249ba207a25746a2569e7897f5186d083c6f
+    cost_usd: 9.724488000000001
+    completed_at: '2026-08-14T13:26:20-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    blocked_reason: 'role_diff_loop_violation: 3 forbidden path(s) and 13 changed scaffolded signature(s)'
+    role_diff_loop: checked_violation
+    role_diff_loop_detail: 3 forbidden path(s) and 13 changed scaffolded signature(s)
+    input_tokens: 104
+    output_tokens: 38963
+    cache_read_input_tokens: 5425598
+    cache_creation_input_tokens: 117485
+    duration_ms: 2038797
+    num_turns: 65
+    model: claude-fable-5
   - key: DF-5-4
     summary: adjudicate — rule DF-5-3's disputes
     description: |

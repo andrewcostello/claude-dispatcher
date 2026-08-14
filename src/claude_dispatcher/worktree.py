@@ -256,7 +256,7 @@ def create(
         # provisioning only on the create path, `worktree-DF-5-3` was reused
         # after a quota stop carrying `main.cjs` alone, and would have paid the
         # whole wasted fix-the-tests round D-61 exists to remove.
-        provision_untracked_deps(wt_path)
+        provision_untracked_deps(wt_path, repo_root=repo_root)
         return Worktree(path=wt_path, branch=_checked_out_branch(wt_path, branch))
     base.mkdir(parents=True, exist_ok=True)
     try:
@@ -273,13 +273,13 @@ def create(
         # is now a valid worktree, reuse it idempotently; otherwise surface a
         # typed error carrying git's stderr rather than a raw traceback.
         if wt_path.exists() and (wt_path / ".git").exists():
-            provision_untracked_deps(wt_path)
+            provision_untracked_deps(wt_path, repo_root=repo_root)
             return Worktree(path=wt_path, branch=_checked_out_branch(wt_path, branch))
         raise WorktreeError(
             f"git worktree add failed for {task_key} at {wt_path}",
             stderr=(exc.stderr or "").strip(),
         ) from exc
-    provision_untracked_deps(wt_path)
+    provision_untracked_deps(wt_path, repo_root=repo_root)
     return Worktree(path=wt_path, branch=branch)
 
 
@@ -292,7 +292,12 @@ _UNTRACKED_DEPS: tuple[str, ...] = (
 )
 
 
-def provision_untracked_deps(wt_path: Path, source_root: Path | None = None) -> list[str]:
+def provision_untracked_deps(
+    wt_path: Path,
+    source_root: Path | None = None,
+    *,
+    repo_root: Path | None = None,
+) -> list[str]:
     """Copy install-time, gitignored dependencies into a fresh worktree (D-61).
 
     Returns the relative paths actually copied, for logging.
@@ -339,6 +344,33 @@ def provision_untracked_deps(wt_path: Path, source_root: Path | None = None) -> 
     `git worktree add` would.
     """
     root = source_root or Path(__file__).resolve().parents[2]
+
+    # ONLY the dispatcher's OWN repository (D-61, corrected twice).
+    #
+    # Measured, before this guard: `create` provisioned EVERY worktree it made,
+    # including one for a repository that has nothing to do with the
+    # dispatcher. A bare probe repo containing one README came back carrying
+    # 9,112,572 bytes of `typescript.js` and `git status --porcelain` reporting
+    # `?? src/`. The committed-tree gate treats ANY uncommitted worktree file
+    # as a verification failure, so this would have failed EVERY task on every
+    # target repo that is not this one — evenplay-mono included — while
+    # dumping 9 MB of unrelated content into each worktree. Six rows of
+    # `tests/test_mechanical_verify.py` caught it.
+    #
+    # The guard is also the honest scope. `role_protocol.ts_parser_home`
+    # resolves the parser out of the RUNNING PACKAGE and out of nowhere else,
+    # so a target repo's worktree never needs a copy. The only reason a
+    # worktree needs one is DOGFOODING: when the repository under test IS the
+    # dispatcher, the task's `pytest` imports the package from its own
+    # worktree, and that worktree is a new install.
+    if repo_root is not None:
+        try:
+            same = repo_root.resolve() == root.resolve()
+        except OSError:
+            same = False
+        if not same:
+            return []
+
     copied: list[str] = []
     for rel in _UNTRACKED_DEPS:
         src = root / rel

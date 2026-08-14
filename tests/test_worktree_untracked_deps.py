@@ -150,7 +150,7 @@ def test_seal_D61_a_REUSED_worktree_is_provisioned_too(install, tmp_path, monkey
     real = wt_mod.provision_untracked_deps
     monkeypatch.setattr(
         wt_mod, "provision_untracked_deps",
-        lambda path, source_root=None: real(path, source_root=install))
+        lambda path, source_root=None, **kw: real(path, source_root=install))
 
     got = wt_mod.create(install, "T-1", "feat/t-1", base_branch="main")
     assert got.path == wt
@@ -180,3 +180,50 @@ def test_seal_D61_the_dep_list_names_the_parser_and_its_licence():
     tidiness one."""
     assert REL in wt_mod._UNTRACKED_DEPS
     assert LICENCE in wt_mod._UNTRACKED_DEPS
+
+
+def test_seal_D61_an_unrelated_target_repo_is_never_polluted(install, tmp_path):
+    """The defect this fix introduced, caught by `test_mechanical_verify.py`.
+
+    Before the guard, `create` provisioned EVERY worktree it made — including
+    one for a repository with nothing to do with the dispatcher. Measured: a
+    probe repo holding one README came back carrying 9,112,572 bytes of
+    `typescript.js`, with `git status --porcelain` reporting `?? src/`. The
+    committed-tree gate treats any uncommitted worktree file as a verification
+    failure, so this would have failed EVERY task on every target repo that is
+    not this one — evenplay-mono included.
+
+    The guard is also the honest scope: `role_protocol.ts_parser_home` resolves
+    the parser out of the RUNNING PACKAGE, so a target repo's worktree never
+    needs a copy. Only dogfooding does, because there the repository under test
+    IS the dispatcher.
+    """
+    target = tmp_path / "target"
+    target.mkdir()
+    _git(target, "init", "-q", "-b", "main")
+    _git(target, "config", "user.email", "s@e.invalid")
+    _git(target, "config", "user.name", "S")
+    (target / "README.md").write_text("unrelated to the dispatcher\n")
+    _git(target, "add", "-A")
+    _git(target, "commit", "-q", "-m", "base")
+
+    wt = tmp_path / "target-wt"
+    _git(target, "worktree", "add", "-q", "--detach", str(wt), "HEAD")
+    copied = wt_mod.provision_untracked_deps(
+        wt, source_root=install, repo_root=target)
+
+    assert copied == [], f"an unrelated repo was provisioned: {copied}"
+    assert not (wt / REL).exists()
+    assert _git(wt, "status", "--porcelain") == "", (
+        "the target worktree was dirtied — the committed-tree gate would fail "
+        "every task in this repository")
+
+
+def test_seal_D61_the_dispatchers_own_repo_still_gets_provisioned(install, tmp_path):
+    """Control for the row above: the guard must not turn provisioning off
+    everywhere, or D-61 is simply back."""
+    wt = tmp_path / "own-wt"
+    _git(install, "worktree", "add", "-q", "--detach", str(wt), "HEAD")
+    copied = wt_mod.provision_untracked_deps(
+        wt, source_root=install, repo_root=install)
+    assert set(copied) == {REL, LICENCE}
