@@ -62,6 +62,48 @@ roles are distinguished so an empty SEALS allow set cannot satisfy it), and
 `_DENY_TABLE_ROLES_WRITTEN_OUT` (`seals` leaves for the same reason ADJUDICATE
 was never in it). A fifth site was CONSIDERED AND REFUSED: SEALS does not join
 `_DELEGATED_ROLES_EXPECTED` — see the note there.
+
+P4 rulings, 2026-08-14 (DF-3-4) — the batch divergence window
+-------------------------------------------------------------
+DF-3-3 landed the batch-coherence refusal in unfloored `batch_coherence.py`
+(rules) + `plan.load_tasks` (wiring) and escalated two halves it could not
+touch. Ruled here; one new row lands below; everything outside this file's
+reach is handed to the operator with exact text in the DF-3-4 run summary.
+
+  * **R1 — DF-3-3's placement is CONFIRMED.** The durable home is one more
+    error family inside `role_protocol.validate` (its own invariant 1), and
+    that home is closed to this task system twice over: `role_protocol.py` is
+    on `FLOOR_GLOBS`, and it cannot even be NAMED in `disputed_paths:` — the
+    declaration itself is refused (sealed in `test_role_protocol_floor.py`,
+    measured 2026-08-11; re-measured while authoring DF-3-4). The divergence
+    window — a DIRECT `validate` caller sees no batch defects — is accepted,
+    named on both sides of the seam, and now sealed by
+    `test_the_batch_divergence_window_is_exactly_one_delegation_wide`.
+  * **R2 — the delegation is a MOVE, not a copy.** When the operator lands
+    the one-line delegation into `validate`, the `plan.load_tasks` merge of
+    `batch_coherence.batch_errors` must leave in the SAME commit, or every
+    batch defect is reported twice through the one raise site. The new row
+    pins "one defect, reported once" in both worlds, so a copy-shaped
+    operator commit reddens it. It also pins adoption without reshaping:
+    a closed-world `validate` must carry `BatchDefect.message` verbatim.
+  * **R3 — loop-gate row 18's redness is DESIGNED, and its amendment is the
+    operator's.** Seal dispute P2-3 (test_loop_gate.py) assigned the
+    amendment to DF-3-3's landing commit; BODIES is denied ``tests/**``, and
+    `tests/test_loop_gate.py` is not in DF-3-4's `disputed_paths:` either —
+    widening a writable set mid-task is exactly the self-grant this protocol
+    exists to refuse. The full replacement row is in the DF-3-4 run summary.
+  * **R4 — the misphrased refusal envelope is an artifact of the window.**
+    (Advisory finding, DF-3-3 panel.) `load_tasks` fronts batch defects with
+    "the build-protocol role check refused this worklist"; today that blames
+    the wrong gate. Ruling: not adopted as a standalone fix — the R2 operator
+    commit makes the existing phrase TRUE again, because the batch rules then
+    ARE the role check's. Fixing the string now would be amended right back.
+
+This file is the role-TABLE seal and the new row is not table work. It is
+homed here because this file is the ONE artifact DF-3-4's `disputed_paths:`
+grants (the planner's guess at where DF-3-3's dispute would land — recorded,
+not relitigated). A later P4 whose `disputed_paths:` includes
+`tests/test_batch_coherence.py` may move the row there verbatim.
 """
 
 from __future__ import annotations
@@ -70,6 +112,8 @@ from enum import Enum
 
 import pytest
 
+from claude_dispatcher import batch_coherence
+from claude_dispatcher import plan as plan_mod
 from claude_dispatcher import risk
 from claude_dispatcher.role_protocol import (
     AUTHORABLE_ROLES,
@@ -90,6 +134,7 @@ from claude_dispatcher.role_protocol import (
     effective_rule,
     evaluate_changed_paths,
     first_matching_glob,
+    validate,
     validate_rule,
 )
 from claude_dispatcher.seal_verify import _TEST_PATH
@@ -1039,3 +1084,127 @@ def test_the_glob_lens_is_risk_pys_and_not_a_second_translator() -> None:
         assert risk.matches_any_glob(path, (glob,)), f"fixture wrong: {path}"
         assert first_matching_glob(path, (glob,)) == glob
     assert first_matching_glob("src/app.py", ("**/tests/**",)) is None
+
+
+# --------------------------------------------------------------------------- #
+# P4 ruling row (DF-3-4, 2026-08-14) — see the module docstring's ruling list.
+# --------------------------------------------------------------------------- #
+
+
+def _mixed_batch_worklist() -> tuple[dict, list[plan_mod.Task]]:
+    """Loop-gate row 18's six-row fixture, in both shapes this row needs.
+
+    The RAW doc drives `plan.load_tasks` (which now refuses it — that refusal
+    is this row's control). The `Task` list is constructed DIRECTLY, because
+    `validate` is documented "pure function of the task list" and the loader
+    that used to produce this list for a mixed batch no longer returns one —
+    which is precisely the window under seal. Fields mirror `load_tasks`'s own
+    construction; `raw` carries the row so `parse_task_role_spec` reads it.
+    """
+    rows = [
+        {"key": "A-SCAFFOLD", "summary": "a scaffold", "description": "d",
+         "type": "task", "labels": ["size:S"], "role": "scaffold",
+         "status": "Done"},
+        {"key": "A-SEALS", "summary": "a seals", "description": "d",
+         "type": "task", "labels": ["size:S"], "role": "seals",
+         "blockedBy": ["A-SCAFFOLD"], "status": "Done"},
+        {"key": "A-BODIES", "summary": "a bodies", "description": "d",
+         "type": "task", "labels": ["size:S"], "role": "bodies",
+         "blockedBy": ["A-SEALS"], "status": "To Do", "batch_id": "MIX"},
+        {"key": "B-SCAFFOLD", "summary": "b scaffold", "description": "d",
+         "type": "task", "labels": ["size:S"], "role": "scaffold",
+         "status": "To Do", "batch_id": "MIX"},
+        {"key": "B-SEALS", "summary": "b seals", "description": "d",
+         "type": "task", "labels": ["size:S"], "role": "seals",
+         "blockedBy": ["B-SCAFFOLD"], "status": "To Do"},
+        {"key": "B-BODIES", "summary": "b bodies", "description": "d",
+         "type": "task", "labels": ["size:S"], "role": "bodies",
+         "blockedBy": ["B-SEALS"], "status": "To Do"},
+    ]
+    tasks = [
+        plan_mod.Task(
+            key=row["key"],
+            summary=row["summary"],
+            description=row["description"],
+            type=row["type"],
+            labels=list(row["labels"]),
+            blocked_by=list(row.get("blockedBy", [])),
+            status=row["status"],
+            raw=row,
+            batch_id=row.get("batch_id"),
+        )
+        for row in rows
+    ]
+    return {"tasks": rows}, tasks
+
+
+def test_the_batch_divergence_window_is_exactly_one_delegation_wide() -> None:
+    """P4 ruling R1/R2 (DF-3-4): the window is accepted, named, and this wide.
+
+    THE WINDOW (measured, DF-3-3): the batch-coherence rules live in
+    `batch_coherence.batch_errors` and are wired in `plan.load_tasks`, so a
+    caller invoking `role_protocol.validate` DIRECTLY sees no batch defects.
+    Its durable home is inside `validate` (invariant 1), which is closed to
+    this task system twice over — `role_protocol.py` is on `FLOOR_GLOBS`, and
+    naming it in `disputed_paths:` is itself refused (sealed in
+    `test_role_protocol_floor.py`). Closing the window is an operator commit,
+    handed over in the DF-3-4 run summary.
+
+    GREEN IN BOTH WORLDS, asserting in each that the window is EXACTLY one
+    delegation wide and no wider:
+
+      * open (today): `validate` reports no error for a mixed batch, yet
+        `batch_errors` over `validate`'s OWN specs finds it — so the only
+        thing missing is the delegation, not a rule;
+      * closed (operator delegation landed): `validate` must carry the
+        defect's `BatchDefect.message` VERBATIM — the adoption-without-
+        reshaping contract on `BatchDefect` — not a re-implementation;
+      * both: `plan.load_tasks` refuses the doc, names the batch and every
+        member, and reports the defect ONCE. The once-count is ruling R2's
+        teeth: an operator commit that ADDS the delegation without MOVING the
+        `load_tasks` merge reports every defect twice and reddens here.
+
+    FALSIFY (measured on this tree): drop `batch_id` from B-SCAFFOLD — the
+    defect list empties and the raises-control fails with the doc loading
+    clean. Change the once-count to 2 — the both-worlds clause fails today.
+    """
+    doc, tasks = _mixed_batch_worklist()
+
+    validation = validate(tasks)
+    assert validation.warnings == (), (
+        "the fixture is not a clean worklist and this row is measuring "
+        f"something other than the window: {validation.warnings}"
+    )
+
+    defects = batch_coherence.batch_errors(tasks, validation.specs)
+    assert [d.rule_id for d in defects] == [batch_coherence.RULE_BATCH_ROLE], (
+        f"the control failed: the rules must see this batch through "
+        f"validate's own specs for the window to be ONLY a missing "
+        f"delegation: {[(d.rule_id, d.task_key) for d in defects]}"
+    )
+
+    if validation.errors:
+        # Window CLOSED: the operator delegation has landed. Adoption must be
+        # verbatim — reshaped text means a second rule source, invariant 1
+        # broken rather than bent.
+        assert any(defects[0].message in err for err in validation.errors), (
+            "validate refuses the mixed batch but not with "
+            "batch_coherence's own message — the delegation re-implemented "
+            f"the rule instead of adopting it: {validation.errors}"
+        )
+
+    with pytest.raises(plan_mod.ValidationError) as excinfo:
+        plan_mod.load_tasks(doc)
+    refusal = str(excinfo.value)
+    for named in ("'MIX'", "A-BODIES", "B-SCAFFOLD"):
+        assert named in refusal, (
+            f"the refusal must name the batch and every member (no row is "
+            f"invisible — DF-3-3's contract) and does not name {named}: "
+            f"{refusal}"
+        )
+    assert refusal.count(batch_coherence.RULE_BATCH_ROLE) == 1, (
+        "one defect, reported once, in every world. Two occurrences is the "
+        "copy-shaped operator commit ruling R2 refuses: the delegation into "
+        "validate landed without the load_tasks merge leaving in the same "
+        f"commit: {refusal}"
+    )
