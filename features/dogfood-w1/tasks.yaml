@@ -46,8 +46,42 @@ tasks:
     labels: [size:S, area:dispatcher]
     agent: claude
     role: scaffold
-    status: To Do
+    status: Done
 
+    started_at: '2026-08-13T10:36:37-07:00'
+    dispatcher_run_id: 2026-08-13T17-36-36Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-13T17-36-36Z-tasks/DF-1-1/summary.md
+    branch: feat/DF-1-1-scaffold-name-what-a-merge
+    cost_usd: 6.293420000000001
+    completed_at: '2026-08-13T10:56:25-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    mechanical_verification: passed
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "2 changed path(s) checked against the deny_globs rule for 'scaffold' and against the 17-glob floor; signatures: not_applicable"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=2 (0C/2H)
+    panel_blocking_findings: 2
+    panel_verdict_claude: APPROVE
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: APPROVE
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: 60789abc
+    input_tokens: 39
+    output_tokens: 24965
+    cache_read_input_tokens: 1432558
+    cache_creation_input_tokens: 77648
+    duration_ms: 495115
+    num_turns: 25
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.231 (Claude Code)
   - key: DF-1-2
     summary: seals — a merge record that cannot be checked against origin is red
     description: |
@@ -70,7 +104,12 @@ tasks:
     role: seals
     status: To Do
     blockedBy: [DF-1-1]
+    started_at: '2026-08-13T10:56:25-07:00'
+    dispatcher_run_id: 2026-08-13T17-36-36Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-13T17-36-36Z-tasks/DF-1-2/summary.md
 
+    branch: feat/DF-1-2-seals-a-merge-record-that
+    cost_usd: 12.066457
   - key: DF-1-3
     summary: bodies — make the merge record name the SHA origin actually merged
     description: |
@@ -219,8 +258,42 @@ tasks:
     labels: [size:S, area:dispatcher]
     agent: claude
     role: scaffold
-    status: To Do
+    status: Done
 
+    started_at: '2026-08-13T10:36:37-07:00'
+    dispatcher_run_id: 2026-08-13T17-36-36Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-13T17-36-36Z-tasks/DF-3-1/summary.md
+    branch: feat/DF-3-1-scaffold-a-batch-that-mixes
+    cost_usd: 10.575122
+    completed_at: '2026-08-13T11:09:41-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    mechanical_verification: passed
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "2 changed path(s) checked against the deny_globs rule for 'scaffold' and against the 17-glob floor; signatures: not_applicable"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, gemini=UNAVAILABLE, codex=APPROVE, grok=APPROVE
+    panel_blocking_findings: 0
+    panel_verdict_claude: APPROVE
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: APPROVE
+    panel_verdict_grok: APPROVE
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: 5ca4af4a
+    input_tokens: 91
+    output_tokens: 37532
+    cache_read_input_tokens: 4284097
+    cache_creation_input_tokens: 107445
+    duration_ms: 1235564
+    num_turns: 52
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.231 (Claude Code)
   - key: DF-3-2
     summary: seals — plan time refuses a mixed-role batch and a mixed rulebook
     description: |
@@ -237,7 +310,12 @@ tasks:
     role: seals
     status: To Do
     blockedBy: [DF-3-1]
+    started_at: '2026-08-13T11:09:41-07:00'
+    dispatcher_run_id: 2026-08-13T17-36-36Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-13T17-36-36Z-tasks/DF-3-2/summary.md
 
+    branch: feat/DF-3-2-seals-plan-time-refuses-a
+    cost_usd: 7.6966470000000005
   - key: DF-3-3
     summary: bodies — validate refuses the mixed batch and the mixed rulebook
     description: |
@@ -388,9 +466,43 @@ tasks:
     labels: [size:S, area:dispatcher]
     agent: claude
     role: seals
-    status: To Do
+    status: Done
     blockedBy: [DF-4-1]
+    started_at: '2026-08-13T10:36:37-07:00'
+    dispatcher_run_id: 2026-08-13T17-36-36Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-13T17-36-36Z-tasks/DF-4-2/summary.md
 
+    branch: feat/DF-4-2-seals-the-helper-refuses-rather
+    cost_usd: 9.638736000000002
+    completed_at: '2026-08-13T11:09:16-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    mechanical_verification: passed
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "1 changed path(s) checked against the allow_only_globs rule for 'seals' and against the 17-glob floor; signatures: not_applicable"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=4 (0C/4H)
+    panel_blocking_findings: 4
+    panel_verdict_claude: APPROVE
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: APPROVE
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: c5ef25b9
+    input_tokens: 52
+    output_tokens: 68617
+    cache_read_input_tokens: 2720681
+    cache_creation_input_tokens: 127692
+    duration_ms: 1375788
+    num_turns: 34
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.231 (Claude Code)
   - key: DF-4-3
     summary: bodies — implement the scratch-clone helper
     description: |
@@ -404,7 +516,12 @@ tasks:
     role: bodies
     status: To Do
     blockedBy: [DF-4-2]
+    started_at: '2026-08-13T11:09:16-07:00'
+    dispatcher_run_id: 2026-08-13T17-36-36Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-13T17-36-36Z-tasks/DF-4-3/summary.md
 
+    branch: feat/DF-4-3-bodies-implement-the-scratch-clone
+    cost_usd: 5.3936910000000005
   - key: DF-4-4
     summary: adjudicate — rule DF-4-3's disputes
     description: |
