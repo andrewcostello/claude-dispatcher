@@ -44,6 +44,15 @@ from . import unblock as unblock_cmd
 # Override per project with `--financial-paths` / `$FINANCIAL_PATHS`; a
 # duplicated list is a drift hazard, so prefer pointing classify at the
 # project's own risk-paths.json.
+#
+# CONDEMNED [DF-5-1]: this constant is a second hand-list of the money table
+# and has drifted again — measured 2026-08-14 at 49 globs behind the tracked
+# table on PR #1387's branch. The contract that replaces it is
+# `money_net.py`: derive the net from the tracked table at the run's base
+# ref, or inject a fail-closed named absence. Wiring is OWED to DF-5-3 in
+# one commit with the body (swap the argparse default for
+# `derive_money_net`; retire this constant and its parity-test file
+# together). Do not re-sync this list — syncing it buys a day.
 DEFAULT_FINANCIAL_PATHS = ",".join([
     # wallet-service, paygate — the money core and external money movement
     "apps/finance-domain/wallet/**",
