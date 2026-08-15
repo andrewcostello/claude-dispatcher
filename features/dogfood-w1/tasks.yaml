@@ -318,6 +318,62 @@ tasks:
       Verify your branch still builds and the suite reports, then STOP and report. Do
       not re-add the docstring edits — they are on the base you are judged against,
       and re-adding them puts you back in violation.
+
+      ## Unblock note (human)
+      (cleared from Blocked: mechanical_verification_failed)
+      ADJUDICATION (operator). Not your defect. Recorded as D-70.
+
+      WHAT HAPPENED. Your branch was cut at 88d07a5, before DF-5-3's body merged.
+      `unblock` preserves branches (deliberately — it has saved real work four times
+      tonight) but nothing ADVANCES a preserved branch when its base moves. So your
+      worktree still held `money_net.py` with the NotImplementedError stub, and
+      `tests/test_money_net.py`'s three rows were red on YOUR tree while green on the
+      base. Your own diff is one file and never touched them.
+
+      FIXED FOR YOU: your branch has been merged forward to the current
+      feat/D1-role-protocol. Verified in your worktree: tests/test_money_net.py now
+      reports 17 passed.
+
+      FOR REFERENCE — DF-4-4 hit the same thing and diagnosed it itself, committing a
+      base-sync merge with zero content change and the note "syncing the base turns
+      them green with no change to any seal". That was the right call. If you see a
+      red row you did not cause, check whether your base is behind before assuming
+      the row is wrong.
+
+      YOUR WORK IS COMPLETE AND ACCEPTED — both rulings, and your ratification of
+      operator commit ae307e4. Verify your branch still builds and the suite reports,
+      then STOP and report. Do not re-open the rulings.
+
+      ## Unblock note (human)
+      (cleared from Blocked: role_diff_loop_violation: 11 forbidden path(s) and 0 changed scaffolded signature(s))
+      ADJUDICATION (operator). Third block, third time not your defect. Recorded as
+      D-71, and this one was caused by the operator's own repair of D-70.
+
+      WHAT HAPPENED. Your base was stale (D-70), so the operator merged
+      feat/D1-role-protocol forward into your branch. That sync brought eleven of the
+      base's files onto your branch AFTER your gate origin — so the gate read
+      money_net.py, orchestrator.py, role_protocol.py and eight others as YOUR work.
+      Your real diff was, and is, one file.
+
+      FIXED FOR YOU. Your branch was rebuilt so the sync comes BEFORE your work:
+
+          88d07a5  operator docstring lift (D-66)
+          0cebcad  merge feat/D1-role-protocol   <- your gate base is now here
+          7409410  adjudicate(DF-1) ...          <- your commit, re-applied unchanged
+
+      Verified: the gate answers checked_clean / proceed, 1 changed path
+      (tests/test_merge_engine.py — exactly your disputed_paths), and
+      tests/test_money_net.py + tests/test_merge_engine.py report 37 passed in your
+      worktree.
+
+      YOUR WORK IS UNCHANGED AND ACCEPTED. Both rulings stand: the condemned seal
+      AMENDED not struck (the location-is-load-bearing argument is correct), and
+      DF-1-3's Deviation accepted. Your ratification of operator commit ae307e4
+      matches the operator's own disposition.
+
+      Verify the branch builds and the suite reports, then STOP and report. Do not
+      re-open the rulings and do not re-add anything — every file you might reach for
+      is already on the base you are judged against.
     type: Task
     estimate: 1h
     labels: [size:S, area:dispatcher]
@@ -327,29 +383,30 @@ tasks:
       - tests/test_merge_engine.py
     status: To Do
     blockedBy: [DF-1-3]
-    started_at: '2026-08-14T14:15:56-07:00'
-    dispatcher_run_id: 2026-08-14T19-52-18Z-tasks
-    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-14T19-52-18Z-tasks/DF-1-4/summary.md
+    started_at: '2026-08-14T17:21:28-07:00'
+    dispatcher_run_id: 2026-08-14T23-52-16Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-14T23-52-16Z-tasks/DF-1-4/summary.md
 
   # ---- DF-2  merge authorization vs the ref the merge acts on -------------
     branch: feat/DF-1-4-adjudicate-rule-the-stale-stamp
-    gate_base_sha: 88d07a5486ee439862d3fe98cdfbc6542e6be39e
-    cost_usd: 9.006371999999999
+    gate_base_sha: 0cebcadefd1100861eff359457a2732e4a4e6c81
+    cost_usd: 13.327003999999999
     iteration_count: 0
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
-    input_tokens: 32
-    output_tokens: 8718
-    cache_read_input_tokens: 710246
-    cache_creation_input_tokens: 30121
-    duration_ms: 1226184
-    num_turns: 21
+    input_tokens: 22
+    output_tokens: 3442
+    cache_read_input_tokens: 420099
+    cache_creation_input_tokens: 26627
+    duration_ms: 542448
+    num_turns: 12
     model: claude-fable-5
     dispatcher_version: 0.1.0
-    agent_version: 2.1.232 (Claude Code)
-    unblocked_at: '2026-08-14T21:08:02+00:00'
+    agent_version: 2.1.233 (Claude Code)
+    unblocked_at: '2026-08-15T00:32:39+00:00'
     effort: high
+    completed_at: '2026-08-14T17:30:34-07:00'
   - key: DF-2-1
     summary: scaffold — authorization and action must name the same ref
     description: |
@@ -1089,18 +1146,45 @@ tasks:
     role: adjudicate
     disputed_paths:
       - roles/coder.md
-    status: To Do
+    status: Done
     blockedBy: [DF-4-3]
-    started_at: '2026-08-14T15:43:33-07:00'
-    dispatcher_run_id: 2026-08-14T19-52-18Z-tasks
-    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-14T19-52-18Z-tasks/DF-4-4/summary.md
+    started_at: '2026-08-14T16:52:17-07:00'
+    dispatcher_run_id: 2026-08-14T23-52-16Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-14T23-52-16Z-tasks/DF-4-4/summary.md
 
   # ---- DF-5  the financial-paths fallback is a hand-maintained copy -------
     branch: feat/DF-4-4-adjudicate-rule-df-4-3
-    gate_base_sha: c95fbf92aa3b120d458bd54de78716d19331e435
-    cost_usd: 0.48945700000000003
+    cost_usd: 7.405121
     dispatcher_version: 0.1.0
-    agent_version: 2.1.232 (Claude Code)
+    agent_version: 2.1.233 (Claude Code)
+    completed_at: '2026-08-14T17:21:28-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    mechanical_verification: passed
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "2 changed path(s) checked against the allow_only_globs rule for 'adjudicate' and against the 17-glob floor; signatures: not_applicable"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=UNAVAILABLE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=1 (0C/1H)
+    panel_blocking_findings: 1
+    panel_verdict_claude: UNAVAILABLE
+    panel_error_claude: cli timed out after 600s
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: APPROVE
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: 29f2e606
+    input_tokens: 46
+    output_tokens: 21134
+    cache_read_input_tokens: 1545399
+    cache_creation_input_tokens: 74958
+    duration_ms: 344514
+    num_turns: 31
+    model: claude-fable-5
   - key: DF-5-1
     summary: scaffold — the money-path fallback must not be a second hand-list
     description: |
@@ -1309,5 +1393,39 @@ tasks:
     role: adjudicate
     disputed_paths:
       - tests/test_default_financial_paths.py
-    status: To Do
+    status: Done
     blockedBy: [DF-5-3]
+    started_at: '2026-08-14T17:08:54-07:00'
+    dispatcher_run_id: 2026-08-14T23-52-16Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-14T23-52-16Z-tasks/DF-5-4/summary.md
+    branch: feat/DF-5-4-adjudicate-rule-df-5-3
+    cost_usd: 3.967609499999999
+    completed_at: '2026-08-14T17:31:30-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    mechanical_verification: passed
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "1 changed path(s) checked against the allow_only_globs rule for 'adjudicate' and against the 17-glob floor; signatures: not_applicable"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE
+    panel_blocking_findings: 0
+    panel_verdict_claude: APPROVE
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: APPROVE
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: 4ed22bd5
+    input_tokens: 56
+    output_tokens: 16438
+    cache_read_input_tokens: 1667071
+    cache_creation_input_tokens: 64800
+    duration_ms: 1070929
+    num_turns: 31
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.233 (Claude Code)
