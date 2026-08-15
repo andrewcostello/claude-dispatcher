@@ -35,7 +35,11 @@ from claude_dispatcher import merge_prs as merge_prs_cmd
 # distinct answers, so the merged-SHA witness path is exercised for real
 # rather than accidentally fed reviews JSON. Behavior is env-driven so each
 # test scripts approvals/conflicts per PR number:
-#   FAKE_GH_APPROVED        — comma list of PR numbers whose `pr view` reports APPROVED
+#   FAKE_GH_APPROVED        — comma list of PR numbers whose `pr view` reports
+#                             APPROVED (the review carries the per-PR
+#                             deterministic commit.oid — see _reviewed_oid —
+#                             the tree the reviewer saw, which DF-2 pins the
+#                             elevated merge to)
 #   FAKE_GH_CONFLICT        — comma list of PR numbers whose `pr merge` fails as a conflict
 #   FAKE_GH_ERROR           — comma list of PR numbers whose `pr merge` fails (non-conflict)
 #   FAKE_GH_NO_MERGE_COMMIT — if set, `pr view --json mergeCommit` answers null
@@ -55,8 +59,11 @@ if log:
         fh.write(" ".join(args) + "\\n")
 
 def _num():
+    # First all-digit token that cannot be a 40-hex SHA (DF-2: merge argv now
+    # carries `--match-head-commit <sha>`, and a digits-only fixture SHA must
+    # never be mistaken for the PR number — the scaffold-named hazard).
     for a in args:
-        if a.isdigit():
+        if a.isdigit() and len(a) != 40:
             return a
     return ""
 
@@ -67,7 +74,9 @@ if "view" in args:
     num = _num()
     if "reviews" in args:
         if num in _csv("FAKE_GH_APPROVED"):
-            reviews = [{"author": {"login": "reviewer-bot"}, "state": "APPROVED"}]
+            reviews = [{"author": {"login": "reviewer-bot"},
+                        "state": "APPROVED",
+                        "commit": {"oid": "f%039x" % int(num or 0)}}]
         else:
             reviews = []
         print(json.dumps({"reviews": reviews}))
@@ -99,6 +108,15 @@ def _origin_merge_sha(pr_number: int) -> str:
     EQUALITY (never truthiness; the condemned truthiness seal is the shape
     DF-1 exists to end)."""
     return "%040x" % pr_number
+
+
+def _reviewed_oid(pr_number: int) -> str:
+    """The commit.oid the fake gh attaches to an APPROVED review — per-PR
+    deterministic so the pin assertions compare by equality, and never
+    digits-only (leading ``f``) so `_num()`'s all-digit-token parse cannot
+    mistake it for a PR number when it appears in the merge argv (the
+    DF-2-1-scaffold-named hazard)."""
+    return "f%039x" % pr_number
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -196,13 +214,32 @@ def _rowof(repo: Path, key: str) -> dict:
 
 
 def _merge_order(gh_log: Path) -> list[str]:
-    """PR numbers in the order `pr merge <n>` was invoked."""
+    """PR numbers in the order `pr merge <n>` was invoked. 40-char tokens are
+    excluded for the `_num()` reason: the merge argv now carries the DF-2 pin
+    SHA, which must never be read as a PR number."""
     out = []
     for line in gh_log.read_text(encoding="utf-8").splitlines():
         parts = line.split()
         if "merge" in parts:
-            out += [p for p in parts if p.isdigit()]
+            out += [p for p in parts if p.isdigit() and len(p) != 40]
     return out
+
+
+def _merge_pins(gh_log: Path) -> dict[str, str | None]:
+    """PR number → the `--match-head-commit` value its merge argv carried
+    (None when the flag is absent) — the cheap argv assertion the logged
+    fake gh makes possible."""
+    pins: dict[str, str | None] = {}
+    for line in gh_log.read_text(encoding="utf-8").splitlines():
+        parts = line.split()
+        if parts[:2] != ["pr", "merge"]:
+            continue
+        pin = None
+        if "--match-head-commit" in parts:
+            i = parts.index("--match-head-commit")
+            pin = parts[i + 1] if i + 1 < len(parts) else None
+        pins[parts[2]] = pin
+    return pins
 
 
 # --------------------------------------------------------------------------- #
@@ -232,6 +269,12 @@ def test_low_risk_chain_merges_in_order(repo: Path, monkeypatch) -> None:
     # Self-approved low-risk records the dispatcher as approver + merger.
     assert _rowof(repo, "A")["pr_approved_by"] == me.DISPATCHER_APPROVER
     assert _rowof(repo, "A")["merged_by"] == me.DISPATCHER_APPROVER
+    # DF-2: each self-approved merge argv is pinned by equality to the local
+    # branch tip the classifier judged (same-call rev-parse expectation).
+    assert _merge_pins(gh_log) == {
+        "1": _git(repo, "rev-parse", "refs/heads/feat-a"),
+        "2": _git(repo, "rev-parse", "refs/heads/feat-b"),
+    }
 
 
 def test_dependent_never_merges_before_unmerged_dependency(repo: Path, monkeypatch) -> None:
@@ -315,6 +358,8 @@ def test_elevated_with_external_approval_merges(repo: Path, monkeypatch) -> None
         _row("A", pr_number=7, branch="feat-a", labels=["size:S", "security"]),
     ])
     monkeypatch.setenv("FAKE_GH_APPROVED", "7")
+    gh_log = repo / "gh.log"
+    monkeypatch.setenv("FAKE_GH_LOG", str(gh_log))
     jpath = repo / "journal.jsonl"
     journal = journal_mod.Journal.create(
         jpath, tasks_yaml_path=tasks, reviewer_prompts_dir=repo, run_id="run-1")
@@ -339,6 +384,13 @@ def test_elevated_with_external_approval_merges(repo: Path, monkeypatch) -> None
               if e.event_type == "pr_merged"]
     assert len(approved) == 1 and approved[0].payload["risk_level"] == "elevated"
     assert approved[0].payload["approver"] == "external:reviewer-bot"
+    # DF-2: the elevated merge argv is pinned by equality to the commit.oid
+    # of the approving review (the tree the reviewer saw — NOT the local
+    # tip), and pr_approved stamps that authorization with its provenance.
+    assert _merge_pins(gh_log) == {"7": _reviewed_oid(7)}
+    assert approved[0].payload["authorized_head_sha"] == _reviewed_oid(7)
+    assert approved[0].payload["authorized_head_source"] == \
+        "external_review_commit"
     assert len(merged) == 1
     assert merged[0].payload["merger"] == me.DISPATCHER_APPROVER
     assert merged[0].payload["target"] == "feature/x"
