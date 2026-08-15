@@ -94,8 +94,8 @@ argv change, not a git operation. Enforcement is origin-side and atomic with
 the merge itself: origin compares the PR's head to the pin and refuses the
 merge when they differ, so there is no window between check and act. The
 argv leg is declared on :func:`pr.merge_pr` (``match_head_commit``); its
-body lands with DF-2-3, and until then a caller passing a pin is refused
-loudly rather than merged unpinned (see the parameter's docstring).
+body landed with DF-2-3 — the pin travels in the same gh invocation as the
+merge, never accepted-and-dropped (see the parameter's docstring).
 
 **3. What happens when the pin does not match — and does the self-approval
 path take the same pinning?** Origin refuses, ``merge_pr`` reports the
@@ -124,7 +124,8 @@ edit to a name, not a silent change of meaning.
 Contract surface
 ================
 The record type and the pure fold are DATA and are implemented; the one
-git-touching function is the stub whose body lands with DF-2-3.
+git-touching function is :func:`authorize_self_approval`, whose body landed
+with DF-2-3.
 
   * :class:`AuthorizedShaSource` — named provenances, one per ladder
     branch. The two rejected sources are documented refusals, not members.
@@ -146,7 +147,8 @@ git-touching function is the stub whose body lands with DF-2-3.
     shape over its input (no subprocess), and it is what makes
     ``approved_commit_oid``'s declared meaning checkable now.
   * :func:`authorize_self_approval` — the one observation (a local
-    ``git rev-parse``). Body by DF-2-3; mechanics ruled in its docstring.
+    ``git rev-parse``). Body landed with DF-2-3, to the mechanics ruled in
+    its docstring.
 
 What this unit does NOT do — each a CHOICE, stated so a later reader does
 not infer omission. It does not wire ``merge_engine._consider_one`` — that
@@ -165,7 +167,9 @@ audit path, and its worktree-freshness job is not this unit's question.
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -322,11 +326,8 @@ def authorize_self_approval(
     branch: str,
 ) -> MergeAuthorization:
     """Resolve the local branch tip the classification will judge — the one
-    observation of this unit. **Body by DF-2-3; this scaffold declares the
-    mechanics and the stub refuses loudly.**
-
-    Body decisions, ruled here so the body writes them rather than choosing
-    them:
+    observation of this unit. Body landed with DF-2-3, to the mechanics the
+    DF-2-1 scaffold ruled:
 
       * The resolution is ``git rev-parse --verify refs/heads/<branch>^{commit}``
         run in ``cwd`` (the engine's ``repo_root``) — the SAME ref
@@ -348,9 +349,39 @@ def authorize_self_approval(
         to origin, and a divergence is answered by origin's refusal, not by
         a wrong stamp.
     """
-    raise NotImplementedError(
-        "authorize_self_approval is DF-2-1 contract, DF-2-3 body — "
-        "mechanics are ruled in the docstring; wiring lands with the body "
-        "in one commit (a wired stub breaks every run; an unwired body is "
-        "a silent no-op)"
+    cmd = ["git", "rev-parse", "--verify", f"refs/heads/{branch}^{{commit}}"]
+    try:
+        proc = subprocess.run(
+            cmd, cwd=str(cwd), capture_output=True, text=True, check=False,
+            timeout=60, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AuthorizationUnavailable(
+            f"git rev-parse timed out after 60s resolving refs/heads/{branch} "
+            f"in {cwd} (PR #{pr_number}); an unresolvable branch authorizes "
+            "nothing"
+        ) from exc
+    except OSError as exc:
+        raise AuthorizationUnavailable(
+            f"git rev-parse failed to launch in {cwd} for PR #{pr_number}: "
+            f"{exc}"
+        ) from exc
+    if proc.returncode != 0:
+        detail = (proc.stderr or "").strip() or f"exit {proc.returncode}"
+        raise AuthorizationUnavailable(
+            f"refs/heads/{branch} does not resolve to a commit in {cwd} "
+            f"(PR #{pr_number}: {detail}); a branch that names no commit "
+            "authorizes nothing"
+        )
+    sha = proc.stdout.strip()
+    if not _SHA40.fullmatch(sha):
+        raise AuthorizationUnavailable(
+            f"git rev-parse for refs/heads/{branch} in {cwd} returned "
+            f"{sha!r}, not a 40-char lower-hex SHA — not a tree anyone judged "
+            f"(PR #{pr_number})"
+        )
+    return MergeAuthorization(
+        pr_number=pr_number,
+        head_sha=sha,
+        source=AuthorizedShaSource.LOCAL_CLASSIFIED_TIP,
     )

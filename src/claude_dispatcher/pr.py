@@ -116,14 +116,12 @@ class ReviewState:
     ``approved`` True — the tree the approving reviewer actually saw, which is
     what a merge acting on that approval must be pinned to (unit DF-2,
     ``merge_authorization`` module docstring, question 1). DF-2 MEASURED: gh
-    already returns a per-review ``commit.oid`` (live against
-    EvenPlay/evenplay-mono PR 813), and the parse below drops it. The field is
-    declared by the DF-2-1 scaffold and defaults to None; the parse that fills
-    it is owed to DF-2-3 WITH the wiring, in one commit — a value read but
-    never consumed is a silent claim, and a consumer without the value cannot
-    run. None after DF-2-3 means GitHub returned no commit for the approving
-    review; ``merge_authorization.authorize_external_approval`` folds that to
-    a fail-closed refusal, never to an unpinned merge.
+    returns a per-review ``commit.oid`` (live against EvenPlay/evenplay-mono
+    PR 813); the field was declared by the DF-2-1 scaffold and the parse that
+    fills it landed with DF-2-3, in one commit with its consumer. None means
+    GitHub returned no commit for the approving review (deleted branch
+    histories); ``merge_authorization.authorize_external_approval`` folds
+    that to a fail-closed refusal, never to an unpinned merge.
     """
 
     approved: bool = False
@@ -169,14 +167,13 @@ def pr_review_state(
     except (json.JSONDecodeError, AttributeError) as e:
         return ReviewState(error=f"could not parse gh review JSON: {e}")
 
-    # DF-2 MEASURED: this fold keeps only ``state`` and ``author.login`` and
-    # DROPS each review's ``commit.oid`` — the tree the reviewer judged —
-    # which gh already returns in this very JSON (measured live against PR
-    # 813: the APPROVED review carries ``commit.oid``
-    # 4a2e73dfc8b52f6b73781ab7e869fad8f6ea7c86). The merge then acts on
-    # origin's CURRENT head, unpinned. ``approved_commit_oid`` above is the
-    # declared landing place; the parse extension lands with DF-2-3.
+    # DF-2: alongside each reviewer's latest state, keep that same review's
+    # ``commit.oid`` — the tree the reviewer judged (gh returns it in this
+    # very JSON; measured live against PR 813). The elevated merge pin
+    # (``merge_authorization.authorize_external_approval``) consumes it; a
+    # review without one folds to a fail-closed refusal there.
     latest: dict[str, str] = {}
+    latest_oid: dict[str, str | None] = {}
     for r in reviews:
         if not isinstance(r, dict):
             continue
@@ -187,15 +184,22 @@ def pr_review_state(
         state = str(r.get("state") or "").upper()
         if state:
             latest[login] = state  # later entries overwrite → latest wins
+            commit = r.get("commit")
+            oid = commit.get("oid") if isinstance(commit, dict) else None
+            latest_oid[login] = oid if isinstance(oid, str) else None
 
     states = set(latest.values())
     approved = "APPROVED" in states and "CHANGES_REQUESTED" not in states
     approver = None
+    approved_commit_oid = None
     if approved:
         approver = next(
             (login for login, st in latest.items() if st == "APPROVED"), None,
         )
-    return ReviewState(approved=approved, latest=latest, approver=approver)
+        if approver is not None:
+            approved_commit_oid = latest_oid.get(approver)
+    return ReviewState(approved=approved, latest=latest, approver=approver,
+                       approved_commit_oid=approved_commit_oid)
 
 
 @dataclass
@@ -247,31 +251,25 @@ def merge_pr(
 
     ``match_head_commit`` is unit DF-2's pin — the SHA the authorization was
     computed for (``merge_authorization.MergeAuthorization.head_sha``; see
-    that module's docstring for the measured defect). Contract: when set, the
-    argv gains ``--match-head-commit <sha>`` — DF-2 MEASURED as real in the
+    that module's docstring for the measured defect). When set, the argv
+    gains ``--match-head-commit <sha>`` — DF-2 MEASURED as real in the
     installed gh 2.46.0 ("Commit SHA that the pull request head must match to
-    allow merge") — so origin itself refuses the merge, atomically, when the
-    PR's head is no longer the judged tree. When None the argv is unchanged
-    (the pre-DF-2 shape; the wiring that makes every engine merge pass a pin
-    is DF-2-3's).
+    allow merge") — so origin itself refuses the merge, atomically with it,
+    when the PR's head is no longer the judged tree. When None the argv is
+    unchanged (the pre-DF-2 shape, kept for non-engine callers).
 
-    **The argv leg is declared here and lands with DF-2-3.** Until then a
-    caller passing a pin is refused as a failed MergeResult rather than
-    merged unpinned: accepting the parameter and dropping it would be the
-    DF-2 defect wearing the fixed signature, and refusal-as-data (not a
-    raise) keeps this function total under every input, which is its
-    documented contract.
+    The argv leg landed with DF-2-3: the pin travels in the SAME gh
+    invocation as the merge, never accepted-and-dropped, and there is no
+    retry or unpinned re-invocation on failure. A mismatch refusal folds to
+    a plain failed MergeResult with ``conflict=False`` — gh's refusal for a
+    moved head ("Head branch was modified", Predicted by the DF-2-1
+    scaffold, unmeasured live) matches no ``_CONFLICT_MARKERS`` entry, and
+    that is correct: a moved head is a tree nobody judged, and a rebase does
+    not re-judge a tree, so it must not wear the ``needs_rebase`` label.
     """
-    if match_head_commit is not None:
-        return MergeResult(
-            merged=False,
-            error=(
-                "match_head_commit is declared by DF-2-1 but not yet wired; "
-                "the --match-head-commit argv leg lands with DF-2-3 — "
-                "refusing loudly rather than merging unpinned"
-            ),
-        )
     cmd = [gh_bin, "pr", "merge", str(number), f"--{method}"]
+    if match_head_commit is not None:
+        cmd += ["--match-head-commit", match_head_commit]
     try:
         proc = subprocess.run(
             cmd, capture_output=True, text=True, cwd=str(cwd),
