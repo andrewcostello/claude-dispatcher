@@ -342,11 +342,13 @@ def test_elevated_with_external_approval_merges(repo: Path, monkeypatch) -> None
     assert len(merged) == 1
     assert merged[0].payload["merger"] == me.DISPATCHER_APPROVER
     assert merged[0].payload["target"] == "feature/x"
-    # DF-1-3, under panel order (see the Deviation in this task's summary and
-    # merge_record.py's condemned-seal section): the retired
+    # The condemned seal, RULED (DF-1-4): AMENDED, not struck. The retired
     # `feature_branch_sha` truthiness assert — a value measured wrong seven
-    # times — is replaced by equality over the witness keys. DF-1-4 still
-    # rules on amend-vs-strike with this amendment in evidence.
+    # times — was replaced under panel order by DF-1-3 (a recorded Deviation)
+    # with the equality rows below; DF-1-4 ratifies that amendment as written.
+    # Strike was rejected: it would leave no engine-level pin that the
+    # pr_merged payload names origin's answer and drops the retired key, and
+    # these rows judge by same-call equality, never truthiness.
     assert merged[0].payload["merged_sha"] == _origin_merge_sha(7)
     assert merged[0].payload["merged_sha_source"] == "origin_pr_merge_commit"
     assert merged[0].payload["merged_sha_state"] == "observed"

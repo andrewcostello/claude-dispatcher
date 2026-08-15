@@ -5,8 +5,9 @@ stamp fold. P2 (DF-1-2) wrote the seals — by a different author, per the
 DF-4 ruling that a scaffold may not write the seals it will be judged by.
 P3 (DF-1-3) wrote the body of :func:`witness_merged_sha`, rewired the one
 call site in ``merge_engine._consider_one``, and closed the panel-named
-truthy-sha hole in ``__post_init__``. P4 (DF-1-4) rules on the condemned
-seal (below) and any dispute the body raises.**
+truthy-sha hole in ``__post_init__``. P4 (DF-1-4) ruled on the condemned
+seal (below) — AMENDED, ratifying DF-1-3's panel-ordered edit — and
+accepted the body's one recorded Deviation (that same edit).**
 
 Every citation below is ``Measured under:`` ``24e72f0``
 (``feat/DF-1-1-scaffold-name-what-a-merge``), git 2.51.0, CPython 3.13.7,
@@ -102,12 +103,12 @@ refute it, and an uncheckable value under the ``merged_sha`` key is the
 old defect wearing a provenance label. Unavailable is itself checkable:
 the auditor re-asks origin, which still has the answer.
 
-The condemned seal — named here, ruled elsewhere
-===============================================
-``tests/test_merge_engine.py:313`` asserts
+The condemned seal — named here, ruled by DF-1-4: AMENDED
+=========================================================
+``tests/test_merge_engine.py:313`` (numbering at condemnation) asserted
 ``merged[0].payload["feature_branch_sha"]`` — truthiness of a value now
-known to be wrong: it passes on the frozen local tip, seven times over.
-It is the live instance of "a seal asserting truthiness of a value now
+known to be wrong: it passed on the frozen local tip, seven times over.
+It was the live instance of "a seal asserting truthiness of a value now
 known to be wrong" that DF-1-2's brief names. **Scope: NOT this
 scaffold's to amend or strike.** Two reasons, each sufficient: the DF-4
 ruling — a scaffold may not write (or rewrite) the seals it will be
@@ -120,6 +121,16 @@ blocked DF-1-3's first attempt ORDERED the seal amended (the retired key
 cannot stay asserted in a suite that must end green), so the body task
 amended it to the contract keys and disclosed the edit as a Deviation for
 DF-1-4 to review — amendment under panel order, not a bodies-role choice.]
+[DF-1-4 ruling: AMENDED, not struck — the amendment is ratified as
+written. Strike was rejected because the seal's location is load-bearing:
+the DF-1-2 rows in ``tests/test_merge_record.py`` pin the record type and
+the witness, but only this engine-level row pins that the live merge
+pass's ``pr_merged`` payload names origin's answer and drops the retired
+key. The amended rows judge by equality against a same-call
+origin-derived expectation — the anti-shape of the condemned truthiness —
+so the amendment does not twin the defect it replaces. The body's one
+recorded Deviation (this same edit) is accepted: the role breach was
+panel-ordered and disclosed, and its content is ratified here.]
 
 Contract surface
 ================

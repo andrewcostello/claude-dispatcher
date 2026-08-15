@@ -5,7 +5,8 @@ author who did not write the scaffold (DF-1-1) and will not write the bodies
 (DF-1-3). The condemned seal this file must not twin —
 ``tests/test_merge_engine.py:313``, ``assert merged[0].payload
 ["feature_branch_sha"]``, truthiness of a value measured wrong seven times —
-is DF-1-4's to amend or strike (its ``disputed_paths`` claims that file); no
+was DF-1-4's to amend or strike (its ``disputed_paths`` claims that file;
+DF-1-4 ruled it AMENDED, ratifying DF-1-3's panel-ordered edit); no
 row here touches it, and no row here repeats its shape: **no assertion in this
 file is a truthiness check over a recorded SHA.** Every observed value is
 judged by equality against an origin-derived expectation produced in the same
