@@ -52,6 +52,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import journal as journal_mod
+from . import merge_authorization as merge_auth
 from . import merge_record
 from . import notify as notify_mod
 from . import plan as plan_mod
@@ -222,7 +223,28 @@ def _consider_one(
         return "unactionable"
 
     # --- ladder step (a): approval ----------------------------------------
-    verdict = _classify(cfg, row, str(branch), risk_cfg)
+    # DF-2, pin-then-judge: the tree to judge is named FIRST — one rev-parse
+    # of the local ``refs/heads/<branch>`` — and that SHA (never the branch
+    # name) is what risk.classify diffs and what the merge below is pinned
+    # to, so the SHA authorized is the SHA acted on by construction. Fail
+    # closed: a branch that cannot name a commit authorizes nothing, and no
+    # merge runs (the row holds at Awaiting Review, reason journaled).
+    try:
+        authorization = merge_auth.authorize_self_approval(
+            cwd=cfg.repo_root, pr_number=number, branch=str(branch),
+        )
+    except merge_auth.AuthorizationUnavailable as e:
+        log(f"  merge: {task.key} cannot name the tree to judge ({e}) — "
+            f"held at Awaiting Review (PR #{number})")
+        _emit(journal, journal_mod.EventType.pr_merge_failed, {
+            "number": number,
+            "kind": "error",
+            "needs_rebase": False,
+            "detail": str(e)[:300],
+        }, task_key=task.key)
+        return "unactionable"
+
+    verdict = _classify(cfg, row, authorization.head_sha, risk_cfg)
     if verdict.is_low:
         approver = DISPATCHER_APPROVER
         log(f"  merge: {task.key} risk=low — dispatcher self-approves "
@@ -247,6 +269,26 @@ def _consider_one(
             log(f"  merge: {task.key} risk=elevated, no external approval — "
                 f"held at Awaiting Review (PR #{number})")
             return "awaiting-approval"
+        # The elevated pin names the tree the REVIEWER actually saw — the
+        # approving review's commit.oid — not the local tip the classifier
+        # diffed. An approval that cannot name its tree (no/invalid oid)
+        # authorizes nothing: fail closed and hold for a usable approval —
+        # an unpinned merge here would be the DF-2 defect itself.
+        try:
+            authorization = merge_auth.authorize_external_approval(
+                pr_number=number, review=review,
+            )
+        except merge_auth.AuthorizationUnavailable as e:
+            log(f"  merge: {task.key} risk=elevated — approval names no "
+                f"judgeable commit ({e}); held at Awaiting Review "
+                f"(PR #{number})")
+            _emit(journal, journal_mod.EventType.pr_merge_failed, {
+                "number": number,
+                "kind": "error",
+                "needs_rebase": False,
+                "detail": str(e)[:300],
+            }, task_key=task.key)
+            return "awaiting-approval"
         approver = f"external:{review.approver}" if review.approver else "external"
         log(f"  merge: {task.key} risk=elevated — external approval present "
             f"(approver={approver}, PR #{number})")
@@ -256,20 +298,20 @@ def _consider_one(
         "approver": approver,
         "risk_level": verdict.level,
         "reasons": list(verdict.reasons),
+        # DF-2: the audit stamp — which tree was authorized, and by which
+        # named source (the pin travels on pr_approved, not pr_merged).
+        **authorization.stamp_fields(),
     }, task_key=task.key)
 
     # --- merge -------------------------------------------------------------
-    # DF-2 MEASURED: this call carries no match_head_commit, so origin merges
-    # whatever its head IS by the time the request lands — the action half of
-    # the split-ref defect annotated on _classify above. Both ladder branches
-    # must pin (five of the seven recorded merges were low-risk self-approvals;
-    # PR #39's reviews array is [] — an elevated-only fix covers the minority
-    # path). The pin is merge_authorization.MergeAuthorization.head_sha —
-    # LOCAL_CLASSIFIED_TIP for the self-approval branch, the approving
-    # review's commit.oid for the external one; DF-2-3 wires both and stamps
-    # authorization.stamp_fields() into the pr_approved payload above.
+    # DF-2: the merge is pinned to the SHA the authorization was computed for
+    # (LOCAL_CLASSIFIED_TIP on the self-approval branch, the approving
+    # review's commit.oid on the external one). Origin compares the pin to
+    # the PR's head atomically with the merge and refuses when they differ,
+    # so a head moved after the judgement can never ship under it.
     merge = pr_mod.merge_pr(
         cwd=cfg.repo_root, number=number, gh_bin=cfg.gh_bin, method="merge",
+        match_head_commit=authorization.head_sha,
     )
     if merge.merged:
         # `gh pr merge` landed on origin; fast-forward the LOCAL feature-branch
@@ -357,26 +399,24 @@ def _apply_merged(
 
 
 def _classify(
-    cfg: MergeEngineConfig, row: Any, branch: str, risk_cfg: risk_mod.RiskConfig,
+    cfg: MergeEngineConfig, row: Any, head_sha: str, risk_cfg: risk_mod.RiskConfig,
 ) -> risk_mod.RiskVerdict:
     """Classify the task's PR branch from the repo root (no worktree needed).
 
-    Diffs ``feature_branch...branch`` so the standalone command works even when
-    the task's worktree is gone. Fails closed (elevated) inside risk.classify if
-    the diff can't be computed.
+    Diffs ``feature_branch...head_sha`` so the standalone command works even
+    when the task's worktree is gone. Fails closed (elevated) inside
+    risk.classify if the diff can't be computed.
 
-    DF-2 MEASURED: ``head_ref=branch`` hands ``risk.classify`` a NAME, and the
-    diff runs against the local ``refs/heads/<branch>`` in ``repo_root`` with
-    no fetch anywhere on this path — while the merge this verdict authorizes
-    acts on ORIGIN's head. Authorization and action name different refs; the
-    contract that ends this is ``merge_authorization`` (pin-then-judge: resolve
-    the tip once via ``authorize_self_approval``, pass the SHA — not the name —
-    as ``head_ref``, and pin the merge to it). Wiring is DF-2-3's, with the
-    body.
+    DF-2 (pin-then-judge): ``head_sha`` is the branch tip already resolved
+    ONCE by ``merge_authorization.authorize_self_approval`` — a commit SHA,
+    never the branch name — so the tree this verdict judges is, by
+    construction, the tree the merge is then pinned to. Handing a NAME to the
+    diff would re-open the judged-one-tree/merged-another window one
+    process-local layer down (the pre-DF-2-3 shape this replaces).
     """
     return risk_mod.classify(
         row, cfg.repo_root, cfg.feature_branch,
-        head_ref=branch, config=risk_cfg,
+        head_ref=head_sha, config=risk_cfg,
     )
 
 
