@@ -381,32 +381,46 @@ tasks:
     role: adjudicate
     disputed_paths:
       - tests/test_merge_engine.py
-    status: To Do
+    status: Done
     blockedBy: [DF-1-3]
-    started_at: '2026-08-14T17:21:28-07:00'
-    dispatcher_run_id: 2026-08-14T23-52-16Z-tasks
-    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-14T23-52-16Z-tasks/DF-1-4/summary.md
+    started_at: '2026-08-14T17:33:12-07:00'
+    dispatcher_run_id: 2026-08-15T00-33-12Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-15T00-33-12Z-tasks/DF-1-4/summary.md
 
   # ---- DF-2  merge authorization vs the ref the merge acts on -------------
     branch: feat/DF-1-4-adjudicate-rule-the-stale-stamp
-    gate_base_sha: 0cebcadefd1100861eff359457a2732e4a4e6c81
-    cost_usd: 13.327003999999999
+    cost_usd: 14.889562999999999
     iteration_count: 0
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
-    input_tokens: 22
-    output_tokens: 3442
-    cache_read_input_tokens: 420099
-    cache_creation_input_tokens: 26627
-    duration_ms: 542448
-    num_turns: 12
+    input_tokens: 16
+    output_tokens: 3211
+    cache_read_input_tokens: 300868
+    cache_creation_input_tokens: 26520
+    duration_ms: 531335
+    num_turns: 9
     model: claude-fable-5
     dispatcher_version: 0.1.0
     agent_version: 2.1.233 (Claude Code)
     unblocked_at: '2026-08-15T00:32:39+00:00'
     effort: high
-    completed_at: '2026-08-14T17:30:34-07:00'
+    completed_at: '2026-08-14T17:46:51-07:00'
+    mechanical_verification: passed
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "1 changed path(s) checked against the allow_only_globs rule for 'adjudicate' and against the 17-glob floor; signatures: not_applicable"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=1 (0C/1H)
+    panel_blocking_findings: 1
+    panel_verdict_claude: APPROVE
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: APPROVE
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: cb9841b8
   - key: DF-2-1
     summary: scaffold — authorization and action must name the same ref
     description: |
@@ -446,9 +460,43 @@ tasks:
     labels: [size:M, area:dispatcher]
     agent: claude
     role: scaffold
-    status: To Do
+    status: Done
     blockedBy: [DF-1-4]
+    started_at: '2026-08-14T17:46:51-07:00'
+    dispatcher_run_id: 2026-08-15T00-33-12Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-15T00-33-12Z-tasks/DF-2-1/summary.md
 
+    branch: feat/DF-2-1-scaffold-authorization-and-action-must
+    cost_usd: 7.851277
+    completed_at: '2026-08-14T18:13:16-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    mechanical_verification: passed
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "3 changed path(s) checked against the deny_globs rule for 'scaffold' and against the 17-glob floor; signatures: not_applicable"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=2 (0C/2H)
+    panel_blocking_findings: 2
+    panel_verdict_claude: APPROVE
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: APPROVE
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: 5d967d21
+    input_tokens: 74
+    output_tokens: 38502
+    cache_read_input_tokens: 3555861
+    cache_creation_input_tokens: 116334
+    duration_ms: 1192208
+    num_turns: 45
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.233 (Claude Code)
   - key: DF-2-2
     summary: seals — a merge authorised for one SHA must not act on another
     description: |
@@ -462,9 +510,43 @@ tasks:
     labels: [size:M, area:dispatcher]
     agent: claude
     role: seals
-    status: To Do
+    status: Done
     blockedBy: [DF-2-1]
+    started_at: '2026-08-14T18:13:16-07:00'
+    dispatcher_run_id: 2026-08-15T00-33-12Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-15T00-33-12Z-tasks/DF-2-2/summary.md
 
+    branch: feat/DF-2-2-seals-a-merge-authorised-for
+    cost_usd: 11.846718
+    completed_at: '2026-08-14T18:48:48-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    mechanical_verification: skipped
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "1 changed path(s) checked against the allow_only_globs rule for 'seals' and against the 17-glob floor; signatures: not_applicable"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=2 (0C/2H)
+    panel_blocking_findings: 2
+    panel_verdict_claude: APPROVE
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: CHANGES_REQUESTED
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: ba5cc723
+    input_tokens: 80
+    output_tokens: 71248
+    cache_read_input_tokens: 5155467
+    cache_creation_input_tokens: 153376
+    duration_ms: 1756163
+    num_turns: 43
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.233 (Claude Code)
   - key: DF-2-3
     summary: bodies — pin the merge to the SHA the authorization was computed for
     description: |
@@ -473,6 +555,40 @@ tasks:
       The fake `gh` in the test harness already logs argv, so an argv assertion
       is cheap — but note `_num()` at line 47 grabs the first all-digit token
       and would break on a digits-only fixture SHA.
+
+      ## Unblock note (human)
+      (cleared from Blocked: role_diff_loop_violation: 1 forbidden path(s) and 1 changed scaffolded signature(s))
+      ADJUDICATION (operator). Both violations were assigned to you by your own
+      brief, and neither was yours to commit. Recorded as D-72. Your work is
+      unchanged and accepted.
+
+      WHAT WAS SPLIT OUT, both attributed to you:
+
+        * bf2644a — `tests/test_merge_engine.py`, the fake-gh harness amendment your
+          brief explicitly assigns ("seals role deliberately left it"). BODIES may
+          not write `tests/**`. The plan anticipated this: DF-2-4 holds that file AND
+          `tests/test_pr.py` in its disputed_paths.
+        * c98bc44 — `merge_engine.py`'s `_classify(cfg, row, branch)` ->
+          `_classify(cfg, row, head_sha)`. That signature IS unit DF-2 and the unit
+          cannot be done without it, but a signature change is P1 work.
+
+      WHY THAT SECOND ONE IS NOT YOUR ERROR: DF-2-1's scaffold added 18 lines to
+      `merge_engine.py`, named `_classify` in prose, declared `head_sha: str` as a
+      field on the new record type — and left `_classify`'s parameter as `branch`.
+      P1 designed the interface and did not declare it in the one place the gate
+      reads. You had no way to implement the unit without changing it. Third
+      occurrence this wave (see also `_apply_merged` and `dispatch_plan.render`), and
+      it is recorded as a plan-authoring defect.
+
+      YOUR REMAINING COMMIT is `merge_authorization.py` + `pr.py` — body only.
+      Verified: the gate answers checked_clean / proceed, 2 changed paths, signatures
+      checked.
+
+      Verify the branch builds and report the suite. Your summary says the
+      merge-related files report 72 passed including the 12 formerly-xfailed DF-2-2
+      rows now plain green — confirm that still holds and give the number. Do NOT
+      re-add the harness or the signature; both are on the base you are judged
+      against, and re-adding either puts you back in violation.
     type: Task
     estimate: 2h
     labels: [size:M, area:dispatcher]
@@ -480,7 +596,28 @@ tasks:
     role: bodies
     status: To Do
     blockedBy: [DF-2-2]
+    started_at: '2026-08-14T18:48:48-07:00'
+    dispatcher_run_id: 2026-08-15T00-33-12Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-15T00-33-12Z-tasks/DF-2-3/summary.md
 
+    branch: feat/DF-2-3-bodies-pin-the-merge-to
+    gate_base_sha: c98bc449af4f5347938c6c451942b9876b4843d8
+    cost_usd: 9.545150499999998
+    completed_at: '2026-08-14T19:09:49-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    input_tokens: 90
+    output_tokens: 43823
+    cache_read_input_tokens: 5391273
+    cache_creation_input_tokens: 145716
+    duration_ms: 1256871
+    num_turns: 57
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.233 (Claude Code)
+    unblocked_at: '2026-08-15T02:12:14+00:00'
   - key: DF-2-4
     summary: adjudicate — rule DF-2-3's disputes and the self-approval boundary
     description: |
