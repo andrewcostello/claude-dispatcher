@@ -111,11 +111,25 @@ class ReviewState:
     ``approver`` is one approving reviewer's login (for the audit trail), or
     None. ``error`` is set when the state could not be read — the caller fails
     closed (treats it as not-approved) so a read failure never auto-merges.
+
+    ``approved_commit_oid`` is the ``commit.oid`` of the SAME review that made
+    ``approved`` True — the tree the approving reviewer actually saw, which is
+    what a merge acting on that approval must be pinned to (unit DF-2,
+    ``merge_authorization`` module docstring, question 1). DF-2 MEASURED: gh
+    already returns a per-review ``commit.oid`` (live against
+    EvenPlay/evenplay-mono PR 813), and the parse below drops it. The field is
+    declared by the DF-2-1 scaffold and defaults to None; the parse that fills
+    it is owed to DF-2-3 WITH the wiring, in one commit — a value read but
+    never consumed is a silent claim, and a consumer without the value cannot
+    run. None after DF-2-3 means GitHub returned no commit for the approving
+    review; ``merge_authorization.authorize_external_approval`` folds that to
+    a fail-closed refusal, never to an unpinned merge.
     """
 
     approved: bool = False
     latest: dict[str, str] = field(default_factory=dict)
     approver: str | None = None
+    approved_commit_oid: str | None = None
     error: str | None = None
 
 
@@ -155,6 +169,13 @@ def pr_review_state(
     except (json.JSONDecodeError, AttributeError) as e:
         return ReviewState(error=f"could not parse gh review JSON: {e}")
 
+    # DF-2 MEASURED: this fold keeps only ``state`` and ``author.login`` and
+    # DROPS each review's ``commit.oid`` — the tree the reviewer judged —
+    # which gh already returns in this very JSON (measured live against PR
+    # 813: the APPROVED review carries ``commit.oid``
+    # 4a2e73dfc8b52f6b73781ab7e869fad8f6ea7c86). The merge then acts on
+    # origin's CURRENT head, unpinned. ``approved_commit_oid`` above is the
+    # declared landing place; the parse extension lands with DF-2-3.
     latest: dict[str, str] = {}
     for r in reviews:
         if not isinstance(r, dict):
@@ -214,6 +235,7 @@ def merge_pr(
     number: int,
     gh_bin: str = "gh",
     method: str = "merge",
+    match_head_commit: str | None = None,
 ) -> MergeResult:
     """Merge PR ``number`` via ``gh pr merge <n> --<method>`` from ``cwd``.
 
@@ -222,7 +244,33 @@ def merge_pr(
     valid). A non-zero exit whose stderr matches a conflict marker returns
     ``conflict=True`` so the caller flags ``needs_rebase`` rather than retrying;
     any other failure returns ``conflict=False`` with the error.
+
+    ``match_head_commit`` is unit DF-2's pin — the SHA the authorization was
+    computed for (``merge_authorization.MergeAuthorization.head_sha``; see
+    that module's docstring for the measured defect). Contract: when set, the
+    argv gains ``--match-head-commit <sha>`` — DF-2 MEASURED as real in the
+    installed gh 2.46.0 ("Commit SHA that the pull request head must match to
+    allow merge") — so origin itself refuses the merge, atomically, when the
+    PR's head is no longer the judged tree. When None the argv is unchanged
+    (the pre-DF-2 shape; the wiring that makes every engine merge pass a pin
+    is DF-2-3's).
+
+    **The argv leg is declared here and lands with DF-2-3.** Until then a
+    caller passing a pin is refused as a failed MergeResult rather than
+    merged unpinned: accepting the parameter and dropping it would be the
+    DF-2 defect wearing the fixed signature, and refusal-as-data (not a
+    raise) keeps this function total under every input, which is its
+    documented contract.
     """
+    if match_head_commit is not None:
+        return MergeResult(
+            merged=False,
+            error=(
+                "match_head_commit is declared by DF-2-1 but not yet wired; "
+                "the --match-head-commit argv leg lands with DF-2-3 — "
+                "refusing loudly rather than merging unpinned"
+            ),
+        )
     cmd = [gh_bin, "pr", "merge", str(number), f"--{method}"]
     try:
         proc = subprocess.run(
