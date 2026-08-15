@@ -235,37 +235,89 @@ tasks:
     labels: [size:M, area:dispatcher]
     agent: claude
     role: bodies
-    status: In Progress
+    status: Done
     blockedBy: [DF-1-2]
     started_at: '2026-08-14T13:26:20-07:00'
     dispatcher_run_id: 2026-08-14T19-52-18Z-tasks
     summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-14T19-52-18Z-tasks/DF-1-3/summary.md
 
     branch: feat/DF-1-3-bodies-make-the-merge-record
-    cost_usd: 21.753404
+    cost_usd: 24.924347
     effort: high
-    completed_at: '2026-08-14T09:27:26-07:00'
+    completed_at: '2026-08-14T13:47:36-07:00'
     iteration_count: 0
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
-    gate_base_sha: 89b5936ab28525444540552129397f79cb45ccbc
-    input_tokens: 67
-    output_tokens: 42798
-    cache_read_input_tokens: 3738318
-    cache_creation_input_tokens: 120141
-    duration_ms: 1171024
-    num_turns: 49
+    input_tokens: 36
+    output_tokens: 9570
+    cache_read_input_tokens: 868112
+    cache_creation_input_tokens: 47566
+    duration_ms: 772801
+    num_turns: 20
     model: claude-fable-5
     dispatcher_version: 0.1.0
     agent_version: 2.1.232 (Claude Code)
     unblocked_at: '2026-08-14T20:18:23+00:00'
+    mechanical_verification: passed
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "3 changed path(s) checked against the deny_globs rule for 'bodies' and against the 17-glob floor; signatures: unchecked_unsupported_language; 1 of the 3 changed path(s) are in a language this gate has no comparator for, so their signatures were compared by nothing and are not covered by this pass — unread: docs/journal-format.md"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=1 (0C/1H)
+    panel_blocking_findings: 1
+    panel_verdict_claude: APPROVE
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: APPROVE
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: 70b98187
   - key: DF-1-4
     summary: adjudicate — rule the stale-stamp seal and any disputes DF-1-3 raises
     description: |
       Rule whether test_merge_engine.py:313 is amended or struck, and any
       dispute the body raises. Amend only what a ruling forces; name each row
       and its before/after.
+
+      ## Unblock note (human)
+      (cleared from Blocked: role_diff_loop_violation: 2 forbidden path(s) and 0 changed scaffolded signature(s))
+      ADJUDICATION (operator). Your rulings stand. The block was structural and has
+      been resolved for you. Recorded as D-66.
+
+      WHAT HAPPENED. You wrote two files outside your `disputed_paths`
+      (`tests/test_merge_engine.py` alone): `src/claude_dispatcher/merge_record.py`
+      and `tests/test_merge_record.py`. Both edits were DOCSTRINGS ONLY — verified by
+      parsing both revisions, stripping module/class/function docstrings, and
+      comparing the dumps: identical. You changed tense to record that you had ruled.
+
+      That was the right instinct and the role table has no channel for it.
+      `disputed_paths` names the file to RULE ON, not the files that POSE the
+      dispute — and a module saying "P4 will rule on this" is false the moment you
+      rule. The operator has ruled that a per-unit RULINGS file is the channel this
+      needs; it is being built now.
+
+      WHAT WAS DONE, so you do not redo it:
+        * Your two docstring updates landed as OPERATOR commit 88d07a5, attributed
+          to you.
+        * Your remaining commit e76f03c is `tests/test_merge_engine.py` alone —
+          exactly your disputed_paths.
+        * Your gate base is now 88d07a5. Verified: checked_clean / proceed, 1 path,
+          against the allow_only_globs rule for 'adjudicate'.
+
+      YOUR WORK IS COMPLETE AND ACCEPTED, including the substance:
+        * Ruling 1 (condemned seal AMENDED, not struck) — accepted. The argument
+          that the seal's LOCATION is load-bearing is correct: the DF-1-2 rows pin
+          the record type and the witness, but only the engine-level row pins that
+          the live merge pass's `pr_merged` payload names origin's answer and drops
+          the retired key.
+        * Ruling 2 (DF-1-3's Deviation ACCEPTED) — accepted, and your ratification of
+          operator commit ae307e4 matches the operator's own disposition of it.
+
+      Verify your branch still builds and the suite reports, then STOP and report. Do
+      not re-add the docstring edits — they are on the base you are judged against,
+      and re-adding them puts you back in violation.
     type: Task
     estimate: 1h
     labels: [size:S, area:dispatcher]
@@ -275,8 +327,29 @@ tasks:
       - tests/test_merge_engine.py
     status: To Do
     blockedBy: [DF-1-3]
+    started_at: '2026-08-14T14:15:56-07:00'
+    dispatcher_run_id: 2026-08-14T19-52-18Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-14T19-52-18Z-tasks/DF-1-4/summary.md
 
   # ---- DF-2  merge authorization vs the ref the merge acts on -------------
+    branch: feat/DF-1-4-adjudicate-rule-the-stale-stamp
+    gate_base_sha: 88d07a5486ee439862d3fe98cdfbc6542e6be39e
+    cost_usd: 9.006371999999999
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    input_tokens: 32
+    output_tokens: 8718
+    cache_read_input_tokens: 710246
+    cache_creation_input_tokens: 30121
+    duration_ms: 1226184
+    num_turns: 21
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.232 (Claude Code)
+    unblocked_at: '2026-08-14T21:08:02+00:00'
+    effort: high
   - key: DF-2-1
     summary: scaffold — authorization and action must name the same ref
     description: |
@@ -914,43 +987,96 @@ tasks:
       anything under `tests/**`. If a fix cannot be demonstrated without new test
       infrastructure, report it as a DISPUTE in your summary naming the file and what
       it needs — do not write it.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=UNAVAILABLE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=3 (0C/3H))
+      ADJUDICATION (operator). The block is CORRECT — fix these. Your round-1 work
+      was accepted: gate clean, mechanical passed, verifier VERIFIED, and the four
+      findings you answered are gone from the panel's output.
+
+      READ THIS FIRST — ONE OF THE THREE SAYS YOUR FIX WENT TOO FAR:
+
+        * grok, :765 — step 3b and `assert_isolated` now treat EVERY unresolvable
+          symlink (dangling target OR loop) as LINK_ESCAPES_CLONE / ISOLATION_
+          UNVERIFIED, and then DELETE the claimed destination. The helper copies the
+          on-disk worktree, not `git ls-files`, and real worktrees legitimately
+          contain dangling links. So a correct clone of a normal repository is now
+          refused and destroyed. Round 1 asked you to stop accepting a dangling link
+          whose unresolved target is lexically inside the clone; it did not ask you
+          to refuse every unresolvable link. Narrow it: judge where the link POINTS,
+          not whether it resolves.
+
+      THE OTHER TWO ARE THE SAME DEFECT CLASS AS ROUND 1 — a check that proves less
+      than it claims:
+
+        * codex, :713 — source validation treats the mere EXISTENCE of a `.git`
+          entry as proof that `source` is a worktree. An empty directory, a garbage
+          file, or a dangling symlink named `.git` passes, and `make_scratch_clone`
+          returns a successful receipt for an arbitrary directory.
+        * codex, :947 — `assert_isolated` does not establish the "fresh quarantine"
+          shape it claims. It permits arbitrary local configuration and metadata: an
+          index, pseudorefs, includes, aliases, `core.hooksPath`, `core.fsmonitor`.
+          An otherwise-empty real repository carrying those satisfies it.
+
+      STANDING BOUNDARIES, unchanged: you hold `role: bodies` and may NOT write
+      `tests/**`. If a fix cannot be demonstrated without new test infrastructure,
+      report it as a DISPUTE naming the file and what it needs — do not write it.
+
+      NEW, AND IT MAY HELP YOU: `docs/rulings/` is now writable by every role
+      (`role_protocol.RULINGS_GLOB`). If you decide something worth recording —
+      "I narrowed the symlink rule to X because Y" — put it in
+      `docs/rulings/DF-4.md`. That is a documentation record; no gate reads it.
+
+      ONE THING TO WEIGH AND REPORT ON RATHER THAN SILENTLY ABSORB: this is round 2,
+      and each round has found deeper defects in the same guarantee. If you judge
+      that the isolation contract as specified cannot be met by this implementation
+      shape — rather than by more patches — say so plainly in your summary. That is a
+      finding worth more than another round.
     type: Task
     estimate: 1h
     labels: [size:S, area:dispatcher]
     agent: claude
     role: bodies
-    status: In Progress
+    status: Done
     blockedBy: [DF-4-2]
-    started_at: '2026-08-14T13:26:20-07:00'
+    started_at: '2026-08-14T15:11:19-07:00'
     dispatcher_run_id: 2026-08-14T19-52-18Z-tasks
     summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-14T19-52-18Z-tasks/DF-4-3/summary.md
 
     branch: feat/DF-4-3-bodies-implement-the-scratch-clone
-    cost_usd: 22.254858
+    cost_usd: 43.061762
     iteration_count: 0
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
-    gate_base_sha: c5ef25b9582d083c432642553d57990bf1f97f73
-    input_tokens: 55
-    output_tokens: 28434
-    cache_read_input_tokens: 2337313
-    cache_creation_input_tokens: 86175
-    duration_ms: 412709
-    num_turns: 30
+    input_tokens: 61
+    output_tokens: 56753
+    cache_read_input_tokens: 3428882
+    cache_creation_input_tokens: 124261
+    duration_ms: 1167527
+    num_turns: 47
     model: claude-fable-5
     dispatcher_version: 0.1.0
     agent_version: 2.1.232 (Claude Code)
-    unblocked_at: '2026-08-14T20:00:54+00:00'
-    panel_consensus: block
-    panel_summary: consensus=block | claude=APPROVE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=4 (0C/4H)
-    panel_blocking_findings: 4
+    unblocked_at: '2026-08-14T21:32:01+00:00'
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=1 (0C/1H)
+    panel_blocking_findings: 1
     panel_verdict_claude: APPROVE
     panel_verdict_gemini: UNAVAILABLE
     panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
     panel_verdict_codex: CHANGES_REQUESTED
     panel_verdict_grok: CHANGES_REQUESTED
-    completed_at: '2026-08-14T12:59:19-07:00'
+    completed_at: '2026-08-14T15:43:33-07:00'
+    effort: high
+    panel_error_claude: cli timed out after 600s
+    mechanical_verification: passed
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "2 changed path(s) checked against the deny_globs rule for 'bodies' and against the 17-glob floor; signatures: unchecked_unsupported_language; 1 of the 2 changed path(s) are in a language this gate has no comparator for, so their signatures were compared by nothing and are not covered by this pass — unread: docs/rulings/DF-4.md"
+    verified: true
+    verification_iterations: 0
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: c95fbf92
   - key: DF-4-4
     summary: adjudicate — rule DF-4-3's disputes
     description: |
@@ -965,8 +1091,16 @@ tasks:
       - roles/coder.md
     status: To Do
     blockedBy: [DF-4-3]
+    started_at: '2026-08-14T15:43:33-07:00'
+    dispatcher_run_id: 2026-08-14T19-52-18Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-14T19-52-18Z-tasks/DF-4-4/summary.md
 
   # ---- DF-5  the financial-paths fallback is a hand-maintained copy -------
+    branch: feat/DF-4-4-adjudicate-rule-df-4-3
+    gate_base_sha: c95fbf92aa3b120d458bd54de78716d19331e435
+    cost_usd: 0.48945700000000003
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.232 (Claude Code)
   - key: DF-5-1
     summary: scaffold — the money-path fallback must not be a second hand-list
     description: |
@@ -1138,7 +1272,7 @@ tasks:
     labels: [size:S, area:dispatcher]
     agent: claude
     role: bodies
-    status: Blocked
+    status: Done
     blockedBy: [DF-5-2]
     started_at: '2026-08-14T12:52:18-07:00'
     dispatcher_run_id: 2026-08-14T19-52-18Z-tasks
@@ -1147,16 +1281,14 @@ tasks:
     branch: feat/DF-5-3-bodies-close-the-drift-the
     dispatcher_version: 0.1.0
     agent_version: 2.1.232 (Claude Code)
-    gate_base_sha: bf4e249ba207a25746a2569e7897f5186d083c6f
     cost_usd: 9.724488000000001
     completed_at: '2026-08-14T13:26:20-07:00'
     iteration_count: 0
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
-    blocked_reason: 'role_diff_loop_violation: 3 forbidden path(s) and 13 changed scaffolded signature(s)'
-    role_diff_loop: checked_violation
-    role_diff_loop_detail: 3 forbidden path(s) and 13 changed scaffolded signature(s)
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "3 changed path(s) checked against the deny_globs rule for 'bodies' and against the 17-glob floor; signatures: checked"
     input_tokens: 104
     output_tokens: 38963
     cache_read_input_tokens: 5425598
@@ -1164,6 +1296,7 @@ tasks:
     duration_ms: 2038797
     num_turns: 65
     model: claude-fable-5
+    mechanical_verification: passed
   - key: DF-5-4
     summary: adjudicate — rule DF-5-3's disputes
     description: |

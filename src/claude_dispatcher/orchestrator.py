@@ -40,6 +40,7 @@ from . import journal as journal_mod
 from . import loop_gate as loop_gate_mod
 from . import mechanical_verify as mv_mod
 from . import merge_engine as merge_mod
+from . import money_net as money_net_mod
 from . import notify as notify_mod
 from . import plan as plan_mod
 from . import pr as pr_mod
@@ -141,6 +142,10 @@ class RunConfig:
     # majority of reviews. Turn on if same-family agreement starts inflating
     # corroborated blocks again.
     exclude_author_family: bool = False
+    # The resolved money net behind `financial_paths` (DF-5): provenance for
+    # the run.log line and the genesis record. None on a resume — the genesis
+    # already carries the original run's resolved value and provenance.
+    money_net: money_net_mod.MoneyNet | None = None
     # Run-level default implementer family (claude/codex/grok/gemini). A per-task
     # `agent:` in the YAML wins; otherwise every task routes to this family's
     # headless CLI instead of `claude --print`. None -> claude (the default).
@@ -480,6 +485,23 @@ def execute(args: argparse.Namespace) -> int:
     # Pure read; needed by the preflight before any run artifact exists.
     repo_root = wt_mod.detect_repo_root(cfg.tasks_path.parent)
 
+    # Money net (DF-5): FINANCIAL_PATHS is an operator override when given,
+    # else derived from the tracked table at the run's base ref, else the
+    # fail-closed named absence ("**"). Never a shipped constant — see
+    # money_net.py. Resolved BEFORE _setup_integration repoints base_branch
+    # in pr mode, so the net's provenance names the operator's actual base.
+    override = getattr(args, "financial_paths", None)
+    if override is not None:
+        try:
+            net = money_net_mod.money_net_from_override(override)
+        except ValueError as e:
+            print(f"error: --financial-paths: {e}", file=sys.stderr)
+            return 2
+    else:
+        net = money_net_mod.derive_money_net(repo_root, cfg.base_branch)
+    cfg.money_net = net
+    cfg.financial_paths = net.env_value()
+
     # Run-start preflight (live modes only — dry-run returns in run.py and
     # never reaches this function). Failures exit 2 HERE, before the run
     # directory, journal, or any worktree exists, so a doomed run leaves no
@@ -531,6 +553,7 @@ def execute(args: argparse.Namespace) -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
     log_path = run_dir / "run.log"
     _log(log_path, f"start run {cfg.run_id} mode={cfg.mode} max_parallel={cfg.max_parallel}")
+    _log(log_path, f"money net: {net.plan_value()}")
     for warning in pf.warnings:
         _log(log_path, f"preflight warning: {warning}")
     for warning in role_warnings:
@@ -604,6 +627,16 @@ def resume_run(args: argparse.Namespace, journal: journal_mod.Journal) -> int:
     log_path = run_dir / "run.log"
     _log(log_path, f"resume run {cfg.run_id} mode={cfg.mode} max_parallel={cfg.max_parallel}")
     repo_root = wt_mod.detect_repo_root(cfg.tasks_path.parent)
+    # Money net (DF-5): the genesis normally carries the original run's
+    # RESOLVED financial_paths value, which is reused verbatim. A genesis
+    # without one (None) gets the same run-start derivation — tracked table
+    # at the base ref, else the fail-closed named absence. Never None into
+    # the spawn env, never a shipped constant.
+    if cfg.financial_paths is None:
+        net = money_net_mod.derive_money_net(repo_root, cfg.base_branch)
+        cfg.money_net = net
+        cfg.financial_paths = net.env_value()
+        _log(log_path, f"money net (re-derived on resume): {net.plan_value()}")
     return _run_loop(cfg, run_dir, log_path, repo_root)
 
 
@@ -5266,6 +5299,22 @@ def _genesis_config(args: argparse.Namespace, cfg: RunConfig) -> dict[str, Any]:
     # Budget baseline (BUDGET-1), resolved at run start — persisted so a resume
     # reuses it instead of recomputing from rows this run has since written.
     d["cost_baseline_usd"] = cfg.cost_baseline_usd
+    # Money net (DF-5): financial_paths is overridden with the RESOLVED env
+    # value (args carries None when the operator gave no override), so a
+    # resume reuses this run's net instead of re-deriving against a base ref
+    # that may have moved. The provenance record — including table_blob_sha,
+    # the freshness witness — lets a later reader check what was actually
+    # read.
+    d["financial_paths"] = cfg.financial_paths
+    if cfg.money_net is not None:
+        n = cfg.money_net
+        d["money_net"] = {
+            "state": n.state.value,
+            "source": n.source.value if n.source is not None else None,
+            "base_ref": n.base_ref,
+            "table_blob_sha": n.table_blob_sha,
+            "detail": n.detail,
+        }
     return d
 
 
