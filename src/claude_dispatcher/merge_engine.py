@@ -259,6 +259,15 @@ def _consider_one(
     }, task_key=task.key)
 
     # --- merge -------------------------------------------------------------
+    # DF-2 MEASURED: this call carries no match_head_commit, so origin merges
+    # whatever its head IS by the time the request lands — the action half of
+    # the split-ref defect annotated on _classify above. Both ladder branches
+    # must pin (five of the seven recorded merges were low-risk self-approvals;
+    # PR #39's reviews array is [] — an elevated-only fix covers the minority
+    # path). The pin is merge_authorization.MergeAuthorization.head_sha —
+    # LOCAL_CLASSIFIED_TIP for the self-approval branch, the approving
+    # review's commit.oid for the external one; DF-2-3 wires both and stamps
+    # authorization.stamp_fields() into the pr_approved payload above.
     merge = pr_mod.merge_pr(
         cwd=cfg.repo_root, number=number, gh_bin=cfg.gh_bin, method="merge",
     )
@@ -355,6 +364,15 @@ def _classify(
     Diffs ``feature_branch...branch`` so the standalone command works even when
     the task's worktree is gone. Fails closed (elevated) inside risk.classify if
     the diff can't be computed.
+
+    DF-2 MEASURED: ``head_ref=branch`` hands ``risk.classify`` a NAME, and the
+    diff runs against the local ``refs/heads/<branch>`` in ``repo_root`` with
+    no fetch anywhere on this path — while the merge this verdict authorizes
+    acts on ORIGIN's head. Authorization and action name different refs; the
+    contract that ends this is ``merge_authorization`` (pin-then-judge: resolve
+    the tip once via ``authorize_self_approval``, pass the SHA — not the name —
+    as ``head_ref``, and pin the merge to it). Wiring is DF-2-3's, with the
+    body.
     """
     return risk_mod.classify(
         row, cfg.repo_root, cfg.feature_branch,
