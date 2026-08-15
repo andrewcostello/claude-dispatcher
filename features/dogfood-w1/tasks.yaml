@@ -594,30 +594,44 @@ tasks:
     labels: [size:M, area:dispatcher]
     agent: claude
     role: bodies
-    status: To Do
+    status: Done
     blockedBy: [DF-2-2]
-    started_at: '2026-08-14T18:48:48-07:00'
-    dispatcher_run_id: 2026-08-15T00-33-12Z-tasks
-    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-15T00-33-12Z-tasks/DF-2-3/summary.md
+    started_at: '2026-08-14T19:13:08-07:00'
+    dispatcher_run_id: 2026-08-15T02-13-08Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-15T02-13-08Z-tasks/DF-2-3/summary.md
 
     branch: feat/DF-2-3-bodies-pin-the-merge-to
-    gate_base_sha: c98bc449af4f5347938c6c451942b9876b4843d8
-    cost_usd: 9.545150499999998
-    completed_at: '2026-08-14T19:09:49-07:00'
+    cost_usd: 13.063919999999998
+    completed_at: '2026-08-14T19:38:46-07:00'
     iteration_count: 0
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
-    input_tokens: 90
-    output_tokens: 43823
-    cache_read_input_tokens: 5391273
-    cache_creation_input_tokens: 145716
-    duration_ms: 1256871
-    num_turns: 57
+    input_tokens: 56
+    output_tokens: 14635
+    cache_read_input_tokens: 1279826
+    cache_creation_input_tokens: 40512
+    duration_ms: 1015409
+    num_turns: 29
     model: claude-fable-5
     dispatcher_version: 0.1.0
     agent_version: 2.1.233 (Claude Code)
     unblocked_at: '2026-08-15T02:12:14+00:00'
+    mechanical_verification: passed
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "2 changed path(s) checked against the deny_globs rule for 'bodies' and against the 17-glob floor; signatures: checked"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=1 (0C/1H)
+    panel_blocking_findings: 1
+    panel_verdict_claude: APPROVE
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: APPROVE
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: 2549a833
   - key: DF-2-4
     summary: adjudicate — rule DF-2-3's disputes and the self-approval boundary
     description: |
@@ -631,10 +645,44 @@ tasks:
     disputed_paths:
       - tests/test_merge_engine.py
       - tests/test_pr.py
-    status: To Do
+    status: Done
     blockedBy: [DF-2-3]
+    started_at: '2026-08-14T19:38:46-07:00'
+    dispatcher_run_id: 2026-08-15T02-13-08Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-15T02-13-08Z-tasks/DF-2-4/summary.md
 
   # ---- DF-3  mixed-role batches are legal at plan time --------------------
+    branch: feat/DF-2-4-adjudicate-rule-df-2-3
+    cost_usd: 3.9674995000000006
+    completed_at: '2026-08-14T19:48:17-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    mechanical_verification: passed
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "1 changed path(s) checked against the allow_only_globs rule for 'adjudicate' and against the 17-glob floor; signatures: not_applicable"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, gemini=UNAVAILABLE, codex=APPROVE, grok=APPROVE
+    panel_blocking_findings: 0
+    panel_verdict_claude: APPROVE
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: APPROVE
+    panel_verdict_grok: APPROVE
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: 9f2869cf
+    input_tokens: 48
+    output_tokens: 17808
+    cache_read_input_tokens: 1513826
+    cache_creation_input_tokens: 70612
+    duration_ms: 275515
+    num_turns: 31
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.233 (Claude Code)
   - key: DF-3-1
     summary: scaffold — a batch that mixes roles has no judgeable branch
     description: |
