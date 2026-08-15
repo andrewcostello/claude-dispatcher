@@ -26,68 +26,14 @@ from . import watch as watch_cmd
 from . import unblock as unblock_cmd
 
 
-# Fallback for the human PR gate's path-based check, used when no
-# classification is available. THE SOURCE OF TRUTH IS `.agent/risk-paths.json`
-# in the target repo — every rule carrying `"financial": true`. `cmd/classify`
-# computes `classification.financial_paths_touched` from that table; this list
-# only exists for runs where the binary is absent. Keep it in sync with the
-# `financial: true` rules (and with claude-workflow's `skills/pr-raise.md`
-# fallback block, which documents the same set).
-#
-# Corrected 2026-08-01 [GO-0]. The previous default named
-# `apps/finance-domain/{settlement,recovery,payout}/**` — none of which exist:
-# `apps/finance-domain/` holds only `paygate/` and `wallet/`. Settlement,
-# refunds and dispute reversal live under `apps/platform-domain/bay-session/`,
-# so the backstop was dead for every money path outside `wallet/`. Same bug was
-# fixed in pr-raise.md on 2026-07-31.
-#
-# Override per project with `--financial-paths` / `$FINANCIAL_PATHS`; a
-# duplicated list is a drift hazard, so prefer pointing classify at the
-# project's own risk-paths.json.
-#
-# CONDEMNED [DF-5-1]: this constant is a second hand-list of the money table
-# and has drifted again — measured 2026-08-14 at 49 globs behind the tracked
-# table on PR #1387's branch. The contract that replaces it is
-# `money_net.py`: derive the net from the tracked table at the run's base
-# ref, or inject a fail-closed named absence. Wiring is OWED to DF-5-3 in
-# one commit with the body (swap the argparse default for
-# `derive_money_net`; retire this constant and its parity-test file
-# together). Do not re-sync this list — syncing it buys a day.
-DEFAULT_FINANCIAL_PATHS = ",".join([
-    # wallet-service, paygate — the money core and external money movement
-    "apps/finance-domain/wallet/**",
-    "apps/finance-domain/paygate/**",
-    # shared-wallet-lib — used by every service
-    "libs/go/wallet/**",
-    # bet-placement — money in
-    "apps/platform-domain/bay-session/store/accept_bet*",
-    "apps/platform-domain/bay-session/store/wager*",
-    "apps/platform-domain/bay-session/store/arm_*",
-    "apps/platform-domain/bay-session/store/bet_amount_bounds*",
-    "apps/platform-domain/bay-session/store/bet_mutation_*",
-    "apps/platform-domain/bay-session/store/advantage_tier_caps*",
-    # bet-settlement — money out
-    "apps/platform-domain/bay-session/store/bet_settle*",
-    "apps/platform-domain/bay-session/store/*settlement*",
-    "apps/platform-domain/bay-session/store/sqlc/bet_settle*",
-    # bet-reversal-refund — operator-initiated money movement
-    "apps/platform-domain/bay-session/store/*refund*",
-    "apps/platform-domain/bay-session/store/admin_bet_dispute_reverse*",
-    "apps/platform-domain/bay-session/store/admin_bet_force_refund*",
-    "apps/platform-domain/bay-session/cmd/admin-bet/**",
-    # financial-recovery — replay/retry of financial operations. Both glob
-    # forms are in the rule table; the parity test enforces carrying both.
-    "apps/platform-domain/bay-session/cmd/*-recovery/**",
-    "apps/platform-domain/bay-session/cmd/*recovery*/**",
-    # payout tables — outcome-to-money mapping
-    "apps/platform-domain/core/dao/payout*",
-    "apps/platform-domain/core/model/payout*",
-    "apps/platform-domain/core/model/tournament_payout*",
-    "apps/platform-domain/core/service/tournament/*payout*",
-    "apps/game-domain/engine/dao/payout*",
-    "apps/game-domain/engine/model/payout*",
-    "apps/game-domain/station-state-computer/model/payout*",
-])
+# There is deliberately NO shipped default financial-paths list here.
+# DEFAULT_FINANCIAL_PATHS was a second hand-list of the money table and
+# drifted twice (GO-0, then 49 globs behind PR #1387's table — DF-5-1's
+# measurement); it was condemned and retired [DF-5-3]. The net is now derived
+# at run start from the target repo's tracked `.agent/risk-paths.json` at the
+# run's base ref, or taken from an explicit `--financial-paths` operator
+# override, or folded to the fail-closed universal glob `**` with a named
+# reason. See `money_net.py` for the contract and the derivation.
 
 
 def _positive_dollars(s: str) -> float:
@@ -278,8 +224,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument(
         "--financial-paths",
-        default=DEFAULT_FINANCIAL_PATHS,
-        help=f"Comma-separated globs (default: {DEFAULT_FINANCIAL_PATHS})",
+        default=None,
+        help=(
+            "Comma-separated globs (operator override). Default: derived at "
+            "run start from the target repo's tracked .agent/risk-paths.json "
+            "at the base ref; when the ref carries no readable table the net "
+            "folds fail-closed to '**' with a named reason (see money_net.py)."
+        ),
     )
     run.add_argument(
         "--runs-dir",

@@ -482,6 +482,48 @@ class RoleRule:
 #     concatenated into EVERY reviewer seat's prompt by
 #     `cross_family_reviewer._load_prompt`, which is why the directory glob is
 #     the right grain and a list of family names would have missed it.
+#: The one path every role may write regardless of its rule: the per-unit
+#: RULINGS record (D-66, operator ruling 2026-08-14).
+#:
+#: **A COMMONS, and the exact mirror of :data:`FLOOR_GLOBS`.** The floor is a
+#: deny set unioned into the DECISION rather than into any policy, because
+#: ADJUDICATE's rule is ALLOW_ONLY and a deny set cannot be expressed as a glob
+#: in an allow list. This is the same move from the other end: an allow that
+#: every role has, applied at the decision, so no role's RULE changes.
+#:
+#: That placement was not the first attempt and the seals are why. Adding this
+#: glob to ADJUDICATE's built rule broke
+#: ``test_effective_rule_for_allow_only_is_exactly_the_disputed_paths`` and
+#: ``test_effective_rule_never_builds_an_allow_only_rule_that_allows_nothing``
+#: — correctly. They pin a real property: **the writable set of the most
+#: privileged role is entirely visible in its task row.** A compiled-in glob
+#: silently added to that set is the ADJUDICATE self-widening hazard in
+#: miniature, with the operator holding the pen. The rule stays exactly the
+#: row; the commons is applied beside it.
+#:
+#: **Why it exists.** DF-1-4 (adjudicate) ruled on a condemned seal, then wrote
+#: two docstrings recording that it had ruled — and was blocked, because
+#: ``disputed_paths`` names the file to RULE ON and never the files that POSE
+#: the dispute. The instinct was right: a module saying "P4 will rule on this"
+#: is false the moment P4 rules. Every role has that need, and none could write
+#: the prose carrying it except into ``summary.md``, archived per run and read
+#: by nobody afterwards.
+#:
+#: **Why this shape and not a docstring carve-out.** The alternative was to let
+#: a role edit docstrings inside files it may not otherwise write, enforced by
+#: an AST-with-docstrings-stripped comparison. Enforceable, and it puts the
+#: record where the reader is — but it widens EVERY role to touch EVERY file.
+#: This is one directory that four of five roles could already write (measured;
+#: only ADJUDICATE refused it).
+#:
+#: **The line that must not be crossed.** These files are DOCUMENTATION. If a
+#: gate is ever built that READS them, a role writing its own rulings becomes a
+#: role influencing its own judgement — D-65's lesson (a prose contract no gate
+#: can enforce) running in reverse, and worse. Sealed by
+#: ``test_rulings_channel.py::test_seal_D66_no_verdict_machinery_reads_...``.
+RULINGS_GLOB: str = "**/docs/rulings/**"
+
+
 class SuiteExpectation(Enum):
     """What the repo's test command is EXPECTED to say at the end of a role's
     task. The mechanical gate reads this instead of assuming green.
@@ -8455,8 +8497,11 @@ def check_branch(
 
     # 4. The paths: the role's own rule, then the floor unioned over it.
     try:
-        violations = _union_with_floor(
-            evaluate_changed_paths(rule, changed), floor_violations, changed
+        violations = _drop_commons(
+            _union_with_floor(
+                evaluate_changed_paths(rule, changed), floor_violations, changed
+            ),
+            floor_violations,
         )
     except RoleProtocolError as exc:
         return _undetermined(
@@ -8726,6 +8771,31 @@ def check_branch(
 # Private helpers for the diff-time path (no decisions of their own — every
 # rule they serve is stated in the public function that calls them)
 # --------------------------------------------------------------------------- #
+
+def _drop_commons(
+    violations: Sequence[PathViolation],
+    floor_violations: Sequence[PathViolation],
+) -> tuple[PathViolation, ...]:
+    """Forgive a violation whose only offence is the rulings commons (D-66).
+
+    The mirror of :func:`_union_with_floor`: that one ADDS refusals no role may
+    override, this one REMOVES refusals every role may ignore. Applied to the
+    decision, never to a policy, for the same reason the floor is — ADJUDICATE's
+    rule is ALLOW_ONLY and its globs must stay exactly the row's
+    ``disputed_paths``.
+
+    **THE FLOOR OUTRANKS THE COMMONS.** A path that is on both is refused: the
+    forgiveness is keyed by path against ``floor_violations``, so no rulings
+    spelling can buy a floored file. Today the two sets are disjoint by
+    construction (``**/docs/rulings/**`` names no machinery), and this guard is
+    what keeps that true if either list grows.
+    """
+    floored = {v.path for v in floor_violations}
+    return tuple(
+        v for v in violations
+        if v.path in floored or not first_matching_glob(v.path, (RULINGS_GLOB,))
+    )
+
 
 def _floor_violations(changed_paths: Sequence[str]) -> tuple[PathViolation, ...]:
     """Every changed path on :data:`FLOOR_GLOBS`, with the floor's own reason.
