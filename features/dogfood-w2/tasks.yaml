@@ -34,7 +34,9 @@ epic: Dogfood wave 2 — the three Python defects wave 1 did not take
 # previous. The protocol refuses a 'bodies' task that names no 'seals' task in
 # blockedBy: "an absent edge is a refusal, never an empty unit that passes".
 #
-# FLOOR. `FLOOR_GLOBS` has 17 entries, counted at `6293f42`, and three of them
+# FLOOR. `FLOOR_GLOBS` has 19 entries, re-counted after the known-red register
+# merged (it added `known_red.py` and `config/known-red.yaml` as globs 11 and
+# 12, shifting everything below them down by two). Three of them
 # matter to this file: `**/src/claude_dispatcher/role_protocol.py`,
 # `**/src/claude_dispatcher/orchestrator.py`, `**/src/claude_dispatcher/loop_gate.py`.
 # Measured while writing this file, by driving `role_protocol.validate` over a
@@ -199,7 +201,7 @@ tasks:
       reason; a row that goes green for a reason you cannot name is a finding.
 
       EXPECT TO ESCALATE. If the ruling was a `FLOOR_GLOBS` entry or an
-      ADJUDICATE deny row, that is `role_protocol.py` — floored, glob 3 of 17.
+      ADJUDICATE deny row, that is `role_protocol.py` — floored, glob 3 of 19.
       Say so and stop; do not attempt it. Put whatever the ruling permits in
       the unfloored layer (`cross_family_reviewer.py`, `journal.py`) and report
       the split.
@@ -283,7 +285,7 @@ tasks:
 
       THE COST THAT DECIDES THE SHAPE, and it is why this is a scaffold and not
       a patch: `_compare_branch_signatures` lives in `role_protocol.py`, which
-      is FLOORED (glob 3 of 17). A whole-diff comparison is therefore a P4
+      is FLOORED (glob 3 of 19). A whole-diff comparison is therefore a P4
       commit, not a body edit, and the contract must be written so the
       unfloored half is worth landing on its own.
 
@@ -387,7 +389,7 @@ tasks:
       Turn W2-2-2's rows green.
 
       `_compare_branch_signatures` is in `role_protocol.py`, FLOORED, glob 3 of
-      17. If the whole-diff comparison must live there, that is a P4 amendment
+      19. If the whole-diff comparison must live there, that is a P4 amendment
       and NOT a body edit — say so rather than attempting it.
 
       What is likely unfloored and worth landing on its own: the symbol-set
@@ -581,8 +583,8 @@ tasks:
       clause in it, or delete it — deleting a forbidden file scores as touching
       it, so there is no way to undo such an edit either.
 
-      THE FLOOR (non-overridable, by any role, including this one). 17 globs.
-      The ledger is new, so the ledger's own path is not floored. But glob 11 is
+      THE FLOOR (non-overridable, by any role, including this one). 19 globs.
+      The ledger is new, so the ledger's own path is not floored. But glob 13 is
       `**/src/claude_dispatcher/call_site_reachability.py`: if re-deriving a
       clause requires editing that module to inject a mutation, that is not a
       body edit either. Re-derive by monkeypatching or by an out-of-tree copy,

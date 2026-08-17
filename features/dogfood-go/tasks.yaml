@@ -81,7 +81,8 @@ epic: Dogfood — the four Go defects, in claude-workflow
 # previous. The protocol refuses a 'bodies' task that names no 'seals' task in
 # blockedBy: "an absent edge is a refusal, never an empty unit that passes".
 #
-# FLOOR. `FLOOR_GLOBS` has 17 entries at `feat/D1-role-protocol @ 6293f42`.
+# FLOOR. `FLOOR_GLOBS` has 19 entries at `feat/D1-role-protocol` (re-counted
+# after the known-red register merged; it was 17 at `6293f42`).
 # Fifteen are `**/src/claude_dispatcher/**` paths that cannot match anything in
 # a Go repository; the two that can are `**/.dispatcher.yaml` and
 # `**/scripts/check_body_branch.sh`. No unit below touches either, so unlike
