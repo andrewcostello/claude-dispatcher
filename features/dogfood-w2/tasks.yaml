@@ -420,6 +420,23 @@ tasks:
       run, because a ledger nobody runs is the docstring again in a file with a
       different extension.
 
+      WHERE THE LEDGER MAY LIVE — a hard constraint on the contract you write,
+      not a preference. The ledger is BUILT by W2-3-3, whose role is BODIES, and
+      BODIES is denied `**/tests/**`, `**/test_*.py`, `**/*_test.py`,
+      `**/*.test.*`, `**/testdata/**` and `**/conftest.py`. So the path you
+      name for the ledger MUST NOT be under `tests/` or `testdata/`, MUST NOT
+      match `test_*.py` / `*_test.py`, and MUST NOT be a `conftest.py`. Site it
+      anywhere else you judge right, and state the path explicitly. A contract
+      that sites its deliverable where its own body role is forbidden to create
+      it ships a task that cannot be completed without a protocol breach.
+
+      Note also that the 41 clauses live in `tests/test_call_site_reachability.py`,
+      which W2-3-3 may not touch. Whatever you decide for them, the contract must
+      be satisfiable by a body that only READS that file — the relabelling or
+      striking of clauses is the seal author's obligation (W2-3-2) and the
+      adjudicator's ruling (W2-3-4), never the body's edit. If your answer
+      requires editing those clauses, say who does it and under which role.
+
       Say plainly whether the 41 clauses are migrated, relabelled in place, or
       struck. A clause whose evidence expired with a discarded reference
       implementation is not made true by being copied into a ledger.
@@ -470,14 +487,31 @@ tasks:
       outcome is a result, not a failure, and 31 of them are expected to take
       it.
 
-      Nothing here is floored — `tests/test_call_site_reachability.py` is a
-      test file and the ledger is new. But note
-      `**/src/claude_dispatcher/call_site_reachability.py` IS floored (glob 11
-      of 17): if re-deriving a clause requires editing the module to inject a
-      mutation, that is not a body edit. Re-derive by monkeypatching or by an
-      out-of-tree copy, and say which you used.
+      TWO DIFFERENT TABLES, and this brief answers each separately. Do not
+      read an answer about one as an answer about the other.
 
-      Report every clause whose re-derivation disagreed with its text.
+      WRITABILITY (per-role, and it binds YOU). Your role is BODIES, whose rule
+      is `deny_globs` — 14 globs, of which the first two are `**/tests/**` and
+      `**/test_*.py`. `tests/test_call_site_reachability.py` matches both, so it
+      is NOT writable by you. Being a test file is exactly what FORBIDS it to
+      you; it is not what licenses it. You may not edit that file, relabel a
+      clause in it, or delete it — deleting a forbidden file scores as touching
+      it, so there is no way to undo such an edit either.
+
+      THE FLOOR (non-overridable, by any role, including this one). 17 globs.
+      The ledger is new, so the ledger's own path is not floored. But glob 11 is
+      `**/src/claude_dispatcher/call_site_reachability.py`: if re-deriving a
+      clause requires editing that module to inject a mutation, that is not a
+      body edit either. Re-derive by monkeypatching or by an out-of-tree copy,
+      and say which you used.
+
+      So: build the ledger at the path W2-3-1's contract names (it is required
+      to site it outside `tests/`), and REPORT every clause whose re-derivation
+      disagreed with its text rather than correcting it. W2-3-2 owns the rows;
+      W2-3-4 rules the clauses' fate and carries
+      `tests/test_call_site_reachability.py` in its `disputed_paths` for exactly
+      that purpose. A well-evidenced report of a wrong clause is the deliverable
+      here. Editing the clause is a protocol breach that blocks the task.
     type: Task
     estimate: 3h
     labels: [size:L, area:dispatcher]
