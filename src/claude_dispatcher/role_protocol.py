@@ -1082,6 +1082,21 @@ FLOOR_GLOBS: tuple[str, ...] = (
     "**/src/claude_dispatcher/repo_config.py",
     "**/src/claude_dispatcher/yaml_io.py",
     "**/src/claude_dispatcher/mechanical_verify.py",
+    # Known-red register's decision module (D-68, 2026-08-17, operator).
+    # `mechanical_verify.py` above decides whether the suite passed; this decides
+    # which FAILING ROWS DO NOT COUNT — the same verdict one step earlier. Absent
+    # this entry, BODIES/SCAFFOLD (deny-list roles, `src/**` writable) could edit
+    # `rows_for_task` to hide any row and green their own gate.
+    # Hand-placed: `test_floor_closure.py` walks the ROLE gate out of
+    # `check_branch` and will not catch this module leaving the mechanical path.
+    "**/src/claude_dispatcher/known_red.py",
+    # The register FILE. BODIES/SCAFFOLD are deny-list roles and neither table
+    # names `config/`, so without this a body agent could append an entry naming
+    # its own red rows against ANOTHER task's `body_task` — `applies_to` only
+    # exempts the entry's own body, so the rows would be hidden from its own gate
+    # too. The floor binds task branches, not operator commits, so a human may
+    # still add entries; a role that needs one must report it.
+    "**/config/known-red.yaml",
     # The gate's FIFTH artifact (D5 P4 ruling, 2026-08-11). A FILE glob, and
     # PATH-QUALIFIED, for the reason points 1-3 give and re-measured under this
     # module's own lens on 2026-08-11 rather than inherited:

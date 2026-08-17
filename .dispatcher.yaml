@@ -18,7 +18,32 @@ test: |
   else
     PY=python3
   fi
-  PYTHONPATH=src "$PY" -m pytest tests/ -q --tb=line
+  # Known-red register (D-68). The dispatcher exports DISPATCHER_KNOWN_RED_ROWS
+  # as NEWLINE-separated pytest node ids — rows another unit's seals task
+  # committed RED by design, which this task has no way to green and must not be
+  # failed by. Empty or unset on almost every run.
+  #
+  # POSIX on purpose. This runs under `shell=True`, i.e. /bin/sh, which is dash
+  # here: no arrays, no `mapfile`, no `<<<` herestring. `IFS= read -r` preserves
+  # a row verbatim, which is what keeps a PARAMETRISED id intact — ids routinely
+  # contain spaces (`test_seal[a plain property]`) and any split on the default
+  # IFS would tear one row into several arguments that deselect nothing.
+  #
+  # An absent or empty file leaves "$@" empty and the command is byte-identical
+  # to what it was before the register existed.
+  set --
+  if [ -n "${DISPATCHER_KNOWN_RED_FILE:-}" ] && [ -f "${DISPATCHER_KNOWN_RED_FILE}" ]; then
+    while IFS= read -r row; do
+      [ -n "$row" ] && set -- "$@" --deselect "$row"
+    done < "${DISPATCHER_KNOWN_RED_FILE}"
+  fi
+  PYTHONPATH=src "$PY" -m pytest tests/ -q --tb=line "$@"
+
+# Declares that this repo KNOWS HOW to exclude a row, and how. Without this key
+# a non-empty active register is a named blocking fault
+# (known_red.RegisterFault.UNSUPPORTED_STYLE) rather than a gate that quietly
+# goes red on rows the task cannot fix.
+test_exclusion: pytest-deselect
 
 # Cross-family panel: probationary advisory seats (VG-5).
 panel:

@@ -856,6 +856,22 @@ _FLOOR_ROWS: tuple[tuple[str, str], ...] = (
         "**/src/claude_dispatcher/orchestrator.py",
         "sub/project/src/claude_dispatcher/orchestrator.py",
     ),
+    # Known-red register (D-68). Two rows per glob: real and vendored layout, the
+    # pair that pins path qualification (a basename-only glob would match a
+    # vendored copy).
+    (
+        "**/src/claude_dispatcher/known_red.py",
+        "src/claude_dispatcher/known_red.py",
+    ),
+    (
+        "**/src/claude_dispatcher/known_red.py",
+        "sub/project/src/claude_dispatcher/known_red.py",
+    ),
+    # The register file needs its own rows: nothing else protects it, and a body
+    # agent could otherwise register its own red rows against another task's
+    # `body_task` to hide them from its own gate.
+    ("**/config/known-red.yaml", "config/known-red.yaml"),
+    ("**/config/known-red.yaml", "sub/project/config/known-red.yaml"),
 )
 
 
@@ -1001,7 +1017,10 @@ def test_the_floor_is_exactly_the_written_out_set_of_globs() -> None:
     # while `test_every_floor_glob_the_ruling_wrote_out_is_in_the_constant`
     # fires naming both; delete the constant entries and these four rows
     # together and THIS bound is the only thing that fires.
-    assert len(_FLOOR_ROWS) >= 40, _FLOOR_ROWS
+    # 40 -> 44 (operator, 2026-08-17): the known-red register's four rows. Set
+    # difference + per-row match + this bound is the whole coverage — the closure
+    # test walks the ROLE gate and cannot reach the mechanical-gate path.
+    assert len(_FLOOR_ROWS) >= 44, _FLOOR_ROWS
 
 
 def test_every_floor_glob_the_ruling_wrote_out_is_in_the_constant() -> None:

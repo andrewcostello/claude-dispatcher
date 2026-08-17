@@ -37,6 +37,7 @@ from . import classification
 from . import cross_family_reviewer as cfr_mod
 from . import disposition as disposition_mod
 from . import journal as journal_mod
+from . import known_red as known_red_mod
 from . import loop_gate as loop_gate_mod
 from . import mechanical_verify as mv_mod
 from . import merge_engine as merge_mod
@@ -4638,8 +4639,28 @@ def _verify_mechanical_and_maybe_retry(
             cfg, snap, wt, repo_cfg, log_path, gate_base_sha=gate_base_sha,
         )
 
+    # --- D-68: another unit's deliberate red rows are not this task's fault --
+    # Resolved BEFORE the suite runs: a register that cannot be applied must
+    # block, not let the task be judged on rows it cannot fix. The rows' own body
+    # task is NOT excluded (known_red.KnownRedEntry.applies_to).
+    excl = _known_red_exclusions(cfg, snap, repo_cfg, log_path)
+    if excl.fault is not None:
+        # A CONFIG fault, not a test failure: no fix-the-tests re-spawn, since
+        # no code edit can fix a missing `test_exclusion:` declaration.
+        _log(log_path,
+             f"  {snap.key} mechanical-verify blocked: {excl.fault.value}")
+        _emit_event(cfg, journal_mod.EventType.verification_mechanical, {
+            "outcome": "failed",
+            "reason": excl.fault.value,
+            "known_red_rows": list(excl.rows),
+            "detail": excl.detail[:mv_mod.TAIL_CHARS],
+            "retried": False,
+        }, task_key=snap.key)
+        return "failed", excl.detail
+
     first = _run_mechanical_test(cfg, snap, wt, repo_cfg,
-                                 retried=False, log_path=log_path)
+                                 retried=False, log_path=log_path,
+                                 exclusions=excl)
     if first.passed:
         return "passed", None
 
@@ -4649,7 +4670,8 @@ def _verify_mechanical_and_maybe_retry(
     _retry_for_test_fix(cfg, snap, wt, summary_path, env, log_path,
                         command=repo_cfg.test, first=first)
     second = _run_mechanical_test(cfg, snap, wt, repo_cfg,
-                                  retried=True, log_path=log_path)
+                                  retried=True, log_path=log_path,
+                                  exclusions=excl)
     if second.passed:
         _log(log_path, f"  {snap.key} mechanical-verify recovered after retry")
         return "passed", None
@@ -4745,6 +4767,53 @@ def _verify_seal_redness(
     return "failed", res.detail
 
 
+def _known_red_exclusions(
+    cfg: RunConfig,
+    snap: TaskSnapshot,
+    repo_cfg: repo_config_mod.RepoConfig,
+    log_path: Path,
+) -> known_red_mod.Exclusions:
+    """Which registered known-red rows to hide from ``snap``'s gate (D-68).
+
+    Fails CLOSED: a malformed register becomes a fault, never an empty exclusion
+    set. The Done set is read from the tasks YAML, not this run's memory, so an
+    entry retires even when its body landed in an earlier run (D-70).
+    """
+    repo_root = wt_mod.detect_repo_root(cfg.tasks_path.parent)
+    try:
+        register = known_red_mod.load(repo_root)
+    except known_red_mod.RegisterError as exc:
+        return known_red_mod.Exclusions(
+            fault=known_red_mod.RegisterFault.UNSUPPORTED_STYLE,
+            detail=f"known-red register is unreadable, refusing to guess: {exc}",
+        )
+    if register.is_empty:
+        return known_red_mod.Exclusions()
+
+    done = {
+        t.key for t in _load_tasks_snapshot(cfg)
+        if str(getattr(t, "status", "")).strip() == plan_mod.DONE
+    }
+    style = None
+    if repo_cfg.test_exclusion:
+        style = known_red_mod.ExclusionStyle(repo_cfg.test_exclusion)
+    excl = known_red_mod.resolve(
+        register,
+        task_key=snap.key,
+        done_keys=done,
+        style=style,
+        test_command=repo_cfg.test,
+        # Beside the task's run artifacts: not in the worktree (the tree under
+        # judgement) and not /tmp (inode exhaustion, D-60).
+        rows_dir=cfg.runs_dir / cfg.run_id / snap.key,
+    )
+    if excl.applied:
+        _log(log_path,
+             f"  {snap.key} known-red register: {excl.detail} "
+             f"(body tasks not yet Done)")
+    return excl
+
+
 def _run_mechanical_test(
     cfg: RunConfig,
     snap: TaskSnapshot,
@@ -4753,6 +4822,7 @@ def _run_mechanical_test(
     *,
     retried: bool,
     log_path: Path,
+    exclusions: known_red_mod.Exclusions | None = None,
 ) -> mv_mod.MechanicalVerifyResult:
     """Execute the repo test command once and journal the execution.
 
@@ -4766,6 +4836,7 @@ def _run_mechanical_test(
         worktree=wt.path,
         timeout_seconds=cfg.verify_test_timeout_seconds,
         log=lambda m: _log(log_path, m),
+        extra_env=(exclusions.env if exclusions else None),
     )
     outcome = "passed" if res.passed else "failed"
     _log(log_path,
@@ -4782,6 +4853,10 @@ def _run_mechanical_test(
     }
     if repo_cfg.unknown_keys:
         payload["unknown_keys"] = list(repo_cfg.unknown_keys)
+    if exclusions is not None and exclusions.rows:
+        # On every execution, pass or fail: a suppressed row is the one thing a
+        # reader cannot infer from the exit code.
+        payload["known_red_excluded"] = list(exclusions.rows)
     _emit_event(cfg, journal_mod.EventType.verification_mechanical,
                 payload, task_key=snap.key)
     return res
