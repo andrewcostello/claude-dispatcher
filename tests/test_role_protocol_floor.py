@@ -856,6 +856,28 @@ _FLOOR_ROWS: tuple[tuple[str, str], ...] = (
         "**/src/claude_dispatcher/orchestrator.py",
         "sub/project/src/claude_dispatcher/orchestrator.py",
     ),
+    # The known-red register (D-68 fix, 2026-08-17, operator). FOUR rows, two
+    # per glob, both globs naming a FILE: the real layout and the vendored
+    # layout, which is what pins the PATH QUALIFICATION half of each entry. A
+    # basename-only `**/known_red.py` would also match a vendored copy, and the
+    # `sub/project/...` probes are the only rows that would catch that spelling.
+    (
+        "**/src/claude_dispatcher/known_red.py",
+        "src/claude_dispatcher/known_red.py",
+    ),
+    (
+        "**/src/claude_dispatcher/known_red.py",
+        "sub/project/src/claude_dispatcher/known_red.py",
+    ),
+    # The register FILE, and it is on the floor for a reason the decision module
+    # alone does not cover: BODIES and SCAFFOLD are DENY_GLOBS roles and neither
+    # table names `config/`, so without this entry a body agent could append an
+    # entry naming its own red rows against some OTHER task's `body_task` and
+    # suppress them from its own gate. `applies_to`'s self-exemption does not
+    # stop that — it exempts the entry's own body, and the attacker names
+    # someone else's. These two rows are what make that entry undeletable.
+    ("**/config/known-red.yaml", "config/known-red.yaml"),
+    ("**/config/known-red.yaml", "sub/project/config/known-red.yaml"),
 )
 
 
@@ -1001,7 +1023,17 @@ def test_the_floor_is_exactly_the_written_out_set_of_globs() -> None:
     # while `test_every_floor_glob_the_ruling_wrote_out_is_in_the_constant`
     # fires naming both; delete the constant entries and these four rows
     # together and THIS bound is the only thing that fires.
-    assert len(_FLOOR_ROWS) >= 40, _FLOOR_ROWS
+    # 40 -> 44 (operator, 2026-08-17): the four rows the known-red register
+    # brings — two for its decision module, two for the register file. The
+    # bound moves with the table for the reason it has moved five times before.
+    # It bites hardest on the FILE entry: nothing else in the repository
+    # protects `**/config/known-red.yaml`. `test_floor_closure.py` cannot name
+    # it (that closure walks delegations downward out of `check_branch`, the
+    # ROLE gate, and the register sits on the MECHANICAL gate's path), and
+    # `known_red.py`'s own seals test behaviour rather than the floor. So set
+    # difference plus per-row match plus this bound is the whole of the
+    # coverage, exactly as it is for the D8 pair above.
+    assert len(_FLOOR_ROWS) >= 44, _FLOOR_ROWS
 
 
 def test_every_floor_glob_the_ruling_wrote_out_is_in_the_constant() -> None:

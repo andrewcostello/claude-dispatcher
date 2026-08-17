@@ -78,6 +78,18 @@ class RepoConfig:
     # behavior that let an entire epic silently run on the most expensive
     # tier, which this key exists to prevent).
     model_routing: tuple[tuple[str, str], ...] = ()
+    # How this repo spells "run the suite but not these rows" — the mechanism
+    # the known-red register (D-68) needs to hide one unit's deliberate red
+    # seals from another unit's gate. One of `known_red.ExclusionStyle`'s
+    # values, or None when the key is absent.
+    #
+    # None is NOT "no exclusions happen". It is "this repo has not said how",
+    # and a repo with a non-empty ACTIVE register and no declared style is a
+    # named blocking fault (`known_red.RegisterFault.UNSUPPORTED_STYLE`) rather
+    # than a gate that quietly goes red on rows the task cannot fix. An empty
+    # active register needs no style and raises nothing — that is every repo's
+    # starting state and it must behave exactly as it did before.
+    test_exclusion: str | None = None
 
     def routed_model(self, risk: str | None) -> str | None:
         """The configured model for ``risk`` (case-insensitive), falling back
@@ -200,6 +212,24 @@ def load(repo_root: str | Path) -> RepoConfig:
             pairs.append((k.strip().lower(), v.strip()))
         model_routing = tuple(pairs)
 
+    test_exclusion: str | None = None
+    if "test_exclusion" in doc:
+        test_exclusion = doc.get("test_exclusion")
+        # Strict, and for this module's stated reason: an unrecognized style
+        # would otherwise land in `unknown_keys` and the register's exclusions
+        # would be dropped, so a repo that asked for the protection would get
+        # none. Imported inside the function — known_red imports yaml_io and is
+        # read by the orchestrator's gate path; keeping it lazy matches how
+        # `roles:` is handled just below and avoids a module-level cycle.
+        from claude_dispatcher import known_red
+
+        allowed = tuple(s.value for s in known_red.ExclusionStyle)
+        if test_exclusion not in allowed:
+            raise RepoConfigError(
+                f"'test_exclusion' in {path} must be one of "
+                f"{', '.join(allowed)}, got {test_exclusion!r}"
+            )
+
     # `roles:` — the D1 build-protocol immutable-path table. This loader
     # VALIDATES the section and deliberately does not keep the parsed policy:
     # `load` reads the working tree, and the gating path must take its policy
@@ -229,7 +259,10 @@ def load(repo_root: str | Path) -> RepoConfig:
                 f"'{roles_key}' in {path} is not a usable role policy: {exc}"
             ) from exc
 
-    known_top_level = ("test", "panel", "integration", "model_routing", roles_key)
+    known_top_level = (
+        "test", "panel", "integration", "model_routing", "test_exclusion",
+        roles_key,
+    )
     unknown = tuple(sorted(
         [str(key) for key in doc if key not in known_top_level]
         + panel_unknown
@@ -240,6 +273,7 @@ def load(repo_root: str | Path) -> RepoConfig:
         panel_advisory=panel_advisory,
         integration=integration,
         model_routing=model_routing,
+        test_exclusion=test_exclusion,
     )
 
 
