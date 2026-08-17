@@ -1,56 +1,31 @@
-# The known-red register (D-68). Rows a SEALS task committed RED BY DESIGN,
-# which no other task can green and none should be failed by.
+# Known-red register (D-68): rows a SEALS task committed RED by design, which no
+# other task can green and none should be failed by.
 #
-# WHY THIS FILE EXISTS
-# The mechanical gate runs the whole repo suite and judges on exit code. The
-# scaffold-first protocol deliberately leaves red rows between a seals task (P2)
-# and its body (P3). So every task dispatched inside that window inherits red
-# rows it cannot fix: measured in wave 1, DF-1-4 failed the gate twice, spawned a
-# fix-the-tests agent that could not help, and cascaded to a higher effort tier —
-# on three rows belonging to DF-5-2, a different unit.
+# Behaviour: rows are hidden from every task's gate EXCEPT `body_task`'s (greening
+# them is its deliverable), and the entry retires automatically once `body_task`
+# is Done. A row that no longer exists deselects nothing, so a stale entry leaves
+# the row running and cannot hide a regression.
 #
-# HOW AN ENTRY BEHAVES
-#   * the rows are hidden from every task's gate EXCEPT `body_task`'s. That one
-#     must still see them red — turning them green IS its deliverable;
-#   * the entry retires automatically once `body_task` reaches Done. Nothing
-#     needs deleting for correctness (though tidying retired entries is welcome);
-#   * a row that no longer exists deselects nothing and the suite stays red, so a
-#     stale or misspelled entry fails TOWARD red. It cannot hide a regression.
-#
-# HOW TO ADD ONE
-#   1. Confirm the row is genuinely red, by exit code and nothing else:
+# To add one:
+#   1. Prove it is red, by exit code only:
 #        PYTHONPATH=src pytest 'tests/test_x.py::test_y' -q     # must be non-zero
-#   2. Add the entry below. `rows` are pytest node ids exactly as pytest prints
-#      them — parametrised ids include their brackets and any spaces, and must
-#      NOT be quoted or escaped here.
-#   3. Commit it. The point of a tracked file is that the suppression is visible
-#      in a diff and has an author.
+#   2. Add the entry. `rows` are node ids exactly as pytest prints them —
+#      parametrised ids keep their brackets and spaces, unquoted and unescaped.
+#   3. Commit it: the point of a tracked file is a reviewable, attributed diff.
 #
-# WHO MAY WRITE IT
-# No dispatched role. `**/config/known-red.yaml` is in `role_protocol.FLOOR_GLOBS`
-# because BODIES and SCAFFOLD are deny-list roles and neither table names
-# `config/` — without the floor entry, a body agent could register its own red
-# rows against someone else's `body_task` and suppress them from its own gate.
-# Operator commits are not task branches, so a human may still add an entry. An
-# agent that believes it needs one must report it, like every other floored need.
+# No dispatched role may write this file — it is in `role_protocol.FLOOR_GLOBS`.
+# Operator commits are not task branches, so a human can. An agent that needs an
+# entry must report it.
 #
-# THE REPO MUST DECLARE HOW TO EXCLUDE
-# `.dispatcher.yaml` carries `test_exclusion: pytest-deselect` and its `test:`
-# command reads `$DISPATCHER_KNOWN_RED_FILE`. If entries are active and either is
-# missing, the gate BLOCKS with a named fault rather than quietly ignoring them.
+# `.dispatcher.yaml` must carry `test_exclusion:` and read
+# $DISPATCHER_KNOWN_RED_FILE, or active entries BLOCK with a named fault.
 
 entries: []
 
-# Example of the shape (keep commented — an active entry needs a real red row):
-#
 # entries:
 #   - rows:
-#       - tests/test_call_site_reachability.py::test_widening_is_caught_wherever_it_arrives
 #       - tests/test_ts_comparator.py::test_declaration_merging_is_a_change[a plain property]
 #     seals_task: W2-2-2
 #     body_task: W2-2-3
-#     reason: >-
-#       P2 seals for the whole-diff signature comparison; red until W2-2-3 lands
-#       the symbol-set algebra. Registered so W2-1-* and W2-3-* are not failed by
-#       another unit's window.
+#     reason: P2 seals for the whole-diff comparison; red until W2-2-3 lands.
 #     registered_at_sha: 0db7fb2

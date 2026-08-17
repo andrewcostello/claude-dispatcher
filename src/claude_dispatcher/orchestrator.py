@@ -4640,16 +4640,13 @@ def _verify_mechanical_and_maybe_retry(
         )
 
     # --- D-68: another unit's deliberate red rows are not this task's fault --
-    # Resolved BEFORE the suite runs, because a register that cannot be applied
-    # must block rather than let the task be judged against rows it has no way
-    # to fix. Note what is NOT excluded: the rows' own body task, which is the
-    # one gate that must still see them red (known_red.KnownRedEntry.applies_to).
+    # Resolved BEFORE the suite runs: a register that cannot be applied must
+    # block, not let the task be judged on rows it cannot fix. The rows' own body
+    # task is NOT excluded (known_red.KnownRedEntry.applies_to).
     excl = _known_red_exclusions(cfg, snap, repo_cfg, log_path)
     if excl.fault is not None:
-        # A CONFIGURATION fault, not a test failure — so no fix-the-tests
-        # re-spawn, for the same reason SEALS gets none above: the corrective
-        # prompt tells an agent to make the suite green, and no code edit can
-        # fix a missing `test_exclusion:` declaration. Named and journaled.
+        # A CONFIG fault, not a test failure: no fix-the-tests re-spawn, since
+        # no code edit can fix a missing `test_exclusion:` declaration.
         _log(log_path,
              f"  {snap.key} mechanical-verify blocked: {excl.fault.value}")
         _emit_event(cfg, journal_mod.EventType.verification_mechanical, {
@@ -4778,15 +4775,9 @@ def _known_red_exclusions(
 ) -> known_red_mod.Exclusions:
     """Which registered known-red rows to hide from ``snap``'s gate (D-68).
 
-    Fails CLOSED on a malformed register: a `RegisterError` is turned into the
-    UNSUPPORTED_STYLE fault rather than an empty exclusion set, because reading
-    a broken register as "nothing to exclude" would silently restore the tax the
-    register exists to remove while the file on disk claims otherwise.
-
-    The Done set comes from the tasks YAML rather than from this run's memory,
-    so an entry retires as soon as its body lands — including when the body
-    landed in an EARLIER run, which is the D-70 case where the rows are frozen
-    into a preserved branch and merging the body never reached them.
+    Fails CLOSED: a malformed register becomes a fault, never an empty exclusion
+    set. The Done set is read from the tasks YAML, not this run's memory, so an
+    entry retires even when its body landed in an earlier run (D-70).
     """
     repo_root = wt_mod.detect_repo_root(cfg.tasks_path.parent)
     try:
@@ -4812,11 +4803,8 @@ def _known_red_exclusions(
         done_keys=done,
         style=style,
         test_command=repo_cfg.test,
-        # The rows file lands beside the task's other run artifacts rather than
-        # in the worktree (which is the tree under judgement — a gate must not
-        # add a file to it) or in /tmp (which this project has already exhausted
-        # once, D-60). It is durable and readable after the fact, which the
-        # journal payload alone does not give once a run is cleaned up.
+        # Beside the task's run artifacts: not in the worktree (the tree under
+        # judgement) and not /tmp (inode exhaustion, D-60).
         rows_dir=cfg.runs_dir / cfg.run_id / snap.key,
     )
     if excl.applied:
@@ -4866,10 +4854,8 @@ def _run_mechanical_test(
     if repo_cfg.unknown_keys:
         payload["unknown_keys"] = list(repo_cfg.unknown_keys)
     if exclusions is not None and exclusions.rows:
-        # Recorded on EVERY execution, passing or failing. A suppressed row is
-        # the one thing about this verdict a reader cannot infer from the exit
-        # code, so a green gate that hid rows must say which — otherwise the
-        # register becomes an invisible reason things pass.
+        # On every execution, pass or fail: a suppressed row is the one thing a
+        # reader cannot infer from the exit code.
         payload["known_red_excluded"] = list(exclusions.rows)
     _emit_event(cfg, journal_mod.EventType.verification_mechanical,
                 payload, task_key=snap.key)

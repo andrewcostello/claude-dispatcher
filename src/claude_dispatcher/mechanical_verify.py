@@ -73,14 +73,9 @@ def run_test_command(
     """Run ``command`` through the shell in ``worktree``, bounded by
     ``timeout_seconds``.
 
-    ``extra_env`` is overlaid on the inherited environment. It exists for the
-    known-red register (D-68), which hands the repo's own test command a
-    rendered exclusion through ``known_red.EXCLUSION_ENV`` rather than by
-    appending arguments — the command is arbitrary shell (here a multi-line
-    script that resolves an interpreter first), so string surgery on it is not
-    generally valid. Overlaid, never replaced: the command already depends on
-    the inherited environment (``DISPATCHER_TEST_PYTHON``, ``PATH``), so a
-    fresh env would break the gate it is meant to inform.
+    ``extra_env`` is OVERLAID on the inherited environment, never replacing it —
+    the command depends on ``DISPATCHER_TEST_PYTHON`` and ``PATH``. Used by the
+    known-red register (D-68) to pass ``known_red.EXCLUSION_ENV``.
 
     stdout and stderr are merged (test runners interleave them and the tail
     must reflect what a human at the terminal would have seen last). Never

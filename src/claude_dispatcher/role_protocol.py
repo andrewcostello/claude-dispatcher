@@ -1082,59 +1082,20 @@ FLOOR_GLOBS: tuple[str, ...] = (
     "**/src/claude_dispatcher/repo_config.py",
     "**/src/claude_dispatcher/yaml_io.py",
     "**/src/claude_dispatcher/mechanical_verify.py",
-    # The known-red register's decision module (D-68 fix, 2026-08-17, operator).
-    # `mechanical_verify.py` is on the floor one line up because it decides
-    # whether the suite passed. `known_red.py` decides which FAILING ROWS DO NOT
-    # COUNT, which is the same verdict reached one step earlier, so the same
-    # argument puts it here — and with more force than most entries, because
-    # this is the only module in the gate path whose whole purpose is to make a
-    # red row stop failing a branch.
-    #
-    # Without this entry the register is a suppression hole with a one-line key:
-    # BODIES and SCAFFOLD both may write `src/**` (their deny tables name
-    # `tests/**`, `schema/**`, the config and the prompt trees — not this file),
-    # so either role could edit `rows_for_task` to return every row it wanted
-    # hidden and its own gate would go green. That is the vacuous seal at the
-    # gate tier, and it is exactly the "gate writable by the thing it gates"
-    # shape `tests/test_floor_closure.py` was written for.
-    #
-    # A FILE glob and PATH-QUALIFIED, for the reasons the D5 entry re-measured
-    # below: the basename-only spelling would also match a vendored
-    # `known_red.py`, and the package subtree would over-match.
-    #
-    # NOT in the delegation closure `test_floor_closure.py` derives. That test
-    # is rooted at `check_branch` and `_floor_glob_named_by` — the ROLE gate —
-    # and this module is on the MECHANICAL gate's path, which that closure does
-    # not walk. So this entry is a deliberate hand-placed one, and the closure
-    # test will not notice if a later refactor moves the decision out of it.
+    # Known-red register's decision module (D-68, 2026-08-17, operator).
+    # `mechanical_verify.py` above decides whether the suite passed; this decides
+    # which FAILING ROWS DO NOT COUNT — the same verdict one step earlier. Absent
+    # this entry, BODIES/SCAFFOLD (deny-list roles, `src/**` writable) could edit
+    # `rows_for_task` to hide any row and green their own gate.
+    # Hand-placed: `test_floor_closure.py` walks the ROLE gate out of
+    # `check_branch` and will not catch this module leaving the mechanical path.
     "**/src/claude_dispatcher/known_red.py",
-    # The register FILE, and it belongs here for a reason found by getting it
-    # wrong first. The first draft of this entry argued the file was "data, not
-    # machinery" and could stay writable because no role's writable set includes
-    # `config/**`. That is false: BODIES and SCAFFOLD are DENY_GLOBS roles, so
-    # they may write everything their table does not name, and neither names
-    # `config/`. Measured against `DEFAULT_ROLE_RULES` on this revision, BODIES
-    # denies `tests/**`, `test_*.py`, `*_test.py`, `*_test.go`, `*.test.*`,
-    # `*.spec.*`, `testdata/**`, `conftest.py`, `schema/**`, the two config
-    # files, `roles/*.md`, `reviewer_prompts/**`, `verifier_prompts/**` — and
-    # nothing under `config/`.
-    #
-    # The attack that opens, and note it survives `applies_to`'s self-exemption:
-    # a BODIES agent whose seals are red appends an entry naming its OWN red
-    # rows with `body_task` set to some OTHER still-To-Do task. `applies_to`
-    # only exempts the entry's own body, so the rows are hidden from every gate
-    # INCLUDING the author's, and the branch goes green with its seals
-    # suppressed. That is the vacuous seal reached through a data file instead
-    # of a test edit — the same defect the deny table exists to stop, one
-    # indirection out.
-    #
-    # Flooring the file closes it without costing the operator anything, and
-    # that asymmetry is the whole point: the floor is enforced by `check_branch`
-    # against a dispatched TASK BRANCH's diff, and an operator commit is not a
-    # task branch. So a human may still add an entry — reviewed, in a diff,
-    # which is the property this register was chosen for — while no role may.
-    # A role that believes it needs an entry must report it, exactly as every
-    # other floored need is reported.
+    # The register FILE. BODIES/SCAFFOLD are deny-list roles and neither table
+    # names `config/`, so without this a body agent could append an entry naming
+    # its own red rows against ANOTHER task's `body_task` — `applies_to` only
+    # exempts the entry's own body, so the rows would be hidden from its own gate
+    # too. The floor binds task branches, not operator commits, so a human may
+    # still add entries; a role that needs one must report it.
     "**/config/known-red.yaml",
     # The gate's FIFTH artifact (D5 P4 ruling, 2026-08-11). A FILE glob, and
     # PATH-QUALIFIED, for the reason points 1-3 give and re-measured under this
