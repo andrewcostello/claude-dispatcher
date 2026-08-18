@@ -4985,14 +4985,29 @@ def _record_panel_findings(
     if panel is None:
         return
     try:
+        # Walked off `reviewers`, not off a `findings` attribute: PanelVerdict has
+        # none, and the first version guessed one — `getattr(panel, "findings", [])`
+        # returned [] on every panel, so this recorded NOTHING for a whole round
+        # while its seal asserted only that the call site existed. `family` also
+        # lives on the reviewer rather than the finding, so the walk is the only
+        # place both facts are available together.
         items = []
-        for f in list(getattr(panel, "findings", []) or []):
-            items.append(findings_store_mod.Finding(
-                family=str(getattr(f, "family", "") or "?"),
-                severity=str(getattr(f, "severity", "") or "?"),
-                location=str(getattr(f, "location", "") or ""),
-                description=str(getattr(f, "description", "") or ""),
-            ))
+        seen: set[tuple[str, str]] = set()
+        for rv in list(getattr(panel, "reviewers", []) or []):
+            family = str(getattr(rv, "family", "") or "?")
+            for f in list(getattr(rv, "findings", []) or []):
+                sev = getattr(f, "severity", None)
+                sev = str(getattr(sev, "name", sev) or "?")
+                desc = str(getattr(f, "description", "") or "")
+                key = (family, desc[:120])
+                if not desc or key in seen:
+                    continue
+                seen.add(key)
+                items.append(findings_store_mod.Finding(
+                    family=family, severity=sev,
+                    location=str(getattr(f, "location", "") or ""),
+                    description=desc,
+                ))
         written = findings_store_mod.record(cfg.runs_dir, task_key, items)
         if written:
             _log(log_path,

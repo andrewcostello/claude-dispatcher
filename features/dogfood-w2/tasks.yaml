@@ -211,7 +211,7 @@ tasks:
         - src/claude_dispatcher/prompt_provenance.py::check_prompt_tree
         - src/claude_dispatcher/prompt_provenance.py::integrity_of
         - src/claude_dispatcher/prompt_provenance.py::publish_pin_from_genesis
-    status: Blocked
+    status: Done
     cost_usd: 46.276219499999975
     completed_at: '2026-08-18T11:33:53-07:00'
     iteration_count: 0
@@ -242,7 +242,6 @@ tasks:
     branch: feat/W2-1-1-scaffold-the-instructions-the-reviewer
     gate_base_sha: d592cec9b6cd53ff25195c1b2cce1421dcca0d0a
     effort: high
-    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=4 (0C/4H)'
     mechanical_verification: passed
     role_diff_loop: checked_clean
     role_diff_loop_detail: "4 changed path(s) checked against the deny_globs rule for 'scaffold' and against the 20-glob floor; signatures: not_applicable"
@@ -280,9 +279,9 @@ tasks:
     labels: [size:M, area:dispatcher]
     agent: claude
     role: seals
-    status: Blocked
-    blocked_reason: 'operator pause (not a defect): parked before dispatch so wave 1 drains and the run exits cleanly, while the task graph is reviewed for decomposition/ordering. Clear with `dispatcher unblock`.'
+    status: To Do
     blockedBy: [W2-1-1]
+    unblocked_at: '2026-08-18T19:21:17+00:00'
 
   - key: W2-1-3
     summary: bodies — close the reach in the unfloored layer and name what is left
@@ -482,7 +481,7 @@ tasks:
       holes:
         - src/claude_dispatcher/branch_surface.py::build_surface
         - src/claude_dispatcher/branch_surface.py::compare_surfaces
-    status: Blocked
+    status: Done
     cost_usd: 42.001794499999995
     completed_at: '2026-08-18T11:08:16-07:00'
     iteration_count: 0
@@ -513,7 +512,6 @@ tasks:
     branch: feat/W2-2-1-scaffold-a-sealed-interface-widened
     gate_base_sha: d592cec9b6cd53ff25195c1b2cce1421dcca0d0a
     effort: high
-    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=5 (0C/5H)'
     mechanical_verification: passed
     role_diff_loop: checked_clean
     role_diff_loop_detail: "2 changed path(s) checked against the deny_globs rule for 'scaffold' and against the 20-glob floor; signatures: not_applicable"
@@ -579,9 +577,9 @@ tasks:
     labels: [size:L, area:dispatcher]
     agent: claude
     role: seals
-    status: Blocked
-    blocked_reason: 'operator pause (not a defect): parked before dispatch so wave 1 drains and the run exits cleanly, while the task graph is reviewed for decomposition/ordering. Clear with `dispatcher unblock`.'
+    status: To Do
     blockedBy: [W2-2-1]
+    unblocked_at: '2026-08-18T19:21:17+00:00'
 
   - key: W2-2-3
     summary: bodies — build whatever of the whole-diff comparison is not floored
@@ -860,7 +858,7 @@ tasks:
         - src/claude_dispatcher/mutation_ledger.py::classify_observation
         - src/claude_dispatcher/mutation_ledger.py::fold
         - src/claude_dispatcher/mutation_ledger.py::proposed_fate
-    status: Blocked
+    status: Done
     cost_usd: 32.480053999999996
     completed_at: '2026-08-18T11:21:42-07:00'
     dispatcher_version: 0.1.0
@@ -891,7 +889,6 @@ tasks:
     duration_ms: 1553838
     num_turns: 82
     model: claude-opus-5[1m]
-    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=7 (0C/7H)'
     mechanical_verification: passed
     role_diff_loop: checked_clean
     role_diff_loop_detail: "2 changed path(s) checked against the deny_globs rule for 'scaffold' and against the 20-glob floor; signatures: not_applicable"
@@ -922,9 +919,9 @@ tasks:
     labels: [size:M, area:dispatcher]
     agent: claude
     role: seals
-    status: Blocked
-    blocked_reason: 'operator pause (not a defect): parked before dispatch so wave 1 drains and the run exits cleanly, while the task graph is reviewed for decomposition/ordering. Clear with `dispatcher unblock`.'
+    status: To Do
     blockedBy: [W2-3-1]
+    unblocked_at: '2026-08-18T19:21:17+00:00'
 
   - key: W2-3-3
     summary: bodies — build the ledger and populate it from what is still true

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from claude_dispatcher import findings_store as fs
 
@@ -119,10 +120,56 @@ def test_a_rerun_replaces_rather_than_appends(tmp_path: Path) -> None:
     assert got == ["round two"]
 
 
-def test_the_orchestrator_records_and_injects(tmp_path: Path) -> None:
-    """Both halves must be wired, and a mismatch is a silent no-op: recording
-    without injecting is what D-56 already measured.
+def test_the_recorder_actually_writes_from_a_real_PanelVerdict(tmp_path) -> None:
+    """EXECUTED against the real type, because asserting the call site exists is
+    not a seal — and that is not hypothetical here.
+
+    The first version read `getattr(panel, "findings", [])`. PanelVerdict has no
+    such attribute (it carries `reviewers` and `blocking_findings`), so the
+    recorder returned [] on every panel and wrote nothing for a whole round,
+    while the row below merely asserted the call was present in the source. The
+    stale backfill on disk hid it.
+
+    Measured under: read a `findings` attribute off the panel and this reddens.
     """
+    from claude_dispatcher import cross_family_reviewer as cfr, orchestrator
+
+    finding = cfr.Finding(severity=cfr.Severity.HIGH, location="src/x.py:12",
+                          description="a real defect the next author must know")
+    panel = cfr.PanelVerdict(
+        consensus="block",
+        reviewers=[cfr.ReviewerVerdict(family="codex", verdict="CHANGES_REQUESTED",
+                                       dimensions={}, findings=[finding])],
+        summary="", blocking_findings=[finding], advisory=[],
+    )
+    cfg = SimpleNamespace(runs_dir=tmp_path)
+    orchestrator._record_panel_findings(cfg, "U-1", panel, tmp_path / "log")
+
+    got = fs.load(tmp_path, "U-1")
+    assert len(got) == 1, got
+    assert got[0].family == "codex"          # family lives on the REVIEWER
+    assert got[0].severity == "HIGH"
+    assert "a real defect" in got[0].description
+
+    block = fs.render_for_prompt(tmp_path, ["U-1"])
+    assert "a real defect the next author must know" in block
+
+
+def test_the_recorder_never_raises_on_an_odd_panel(tmp_path) -> None:
+    """It records CONTEXT. A failure to record must not fail a task that has
+    already been reviewed.
+    """
+    from claude_dispatcher import orchestrator
+    cfg = SimpleNamespace(runs_dir=tmp_path)
+    orchestrator._record_panel_findings(cfg, "U-1", None, tmp_path / "log")
+    orchestrator._record_panel_findings(
+        cfg, "U-1", SimpleNamespace(reviewers="not a list"), tmp_path / "log")
+    assert fs.load(tmp_path, "U-1") == []
+
+
+def test_both_halves_are_wired(tmp_path: Path) -> None:
+    """Recording without injecting is what D-56 measured; injecting without
+    recording is the same no-op from the other end."""
     from claude_dispatcher import orchestrator
     src = Path(orchestrator.__file__).read_text()
     assert "_record_panel_findings(cfg, snap.key, panel_verdict, log_path)" in src
