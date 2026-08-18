@@ -97,6 +97,10 @@ def _ask_human(prompt_text: str, choices: list[str]) -> str:
 #: flapping provider burns the cost ceiling with nothing to show for it.
 INFRA_RETRY_LIMIT = 1
 
+#: Marks an `effort:` the CASCADE chose rather than the plan author. Only ever
+#: written beside an escalated effort, and removed with it.
+EFFORT_ESCALATED_STAMP = "effort_escalated"
+
 _log_lock = threading.Lock()
 
 
@@ -1330,6 +1334,9 @@ def _run_task(
     # `role_loop` for the same reason: a discarded rung's base must not be
     # written onto the terminal row.
     gate_base_used: str | None = None
+    # The effort the PLAN asked for, captured before any rung can overwrite
+    # `snap.effort`. Without it, "escalated" and "deliberate" are the same string.
+    snap_planned_effort = snap.effort
 
     for idx, (attempt_agent, attempt_effort) in enumerate(cascade):
         if idx > 0:
@@ -1537,10 +1544,21 @@ def _run_task(
         # provenance (YAML agent column / journal) is accurate.
         if (used_agent != (snap.agent or "claude")
                 or used_effort != snap.effort):
-            def _stamp_agent_effort(row, a=used_agent, e=used_effort):
+            def _stamp_agent_effort(row, a=used_agent, e=used_effort,
+                                    planned=snap_planned_effort):
                 row["agent"] = a
                 if e:
                     row["effort"] = e
+                    # D-64: an effort the CASCADE chose is a consequence, not a
+                    # choice, and it outlived its cause — a task escalated once by
+                    # a transient failure started every later dispatch at that
+                    # tier. Provenance is recorded HERE because it is only
+                    # knowable here: once written, an escalated effort and an
+                    # author's deliberate one are the same string. Cleared on Done
+                    # (`_forget_escalated_effort`); an author's own `effort:` is
+                    # never touched.
+                    if e != planned:
+                        row[EFFORT_ESCALATED_STAMP] = True
             _mutate_row(cfg, snap.batch_keys or snap.key, _stamp_agent_effort)
             snap = replace(snap, agent=used_agent, effort=used_effort)
 
@@ -2052,6 +2070,7 @@ def _run_task(
     def _apply(row):
         row["status"] = final_status
         row["completed_at"] = _now_iso()
+        _forget_escalated_effort(row, final_status)
         row["iteration_count"] = s.iterations
         row["linter_cycles"] = s.linter_cycles
         if s.final_quality_score is not None:
@@ -5050,6 +5069,22 @@ def _record_panel_findings(
                  f"dependents at {written}")
     except Exception as exc:  # noqa: BLE001 - context, never a gate
         _log(log_path, f"  {task_key} findings not recorded: {exc}")
+
+
+def _forget_escalated_effort(row: dict, final_status: str) -> None:
+    """Drop a cascade-chosen `effort:` once the task is Done (D-64).
+
+    On DONE only. A task that ended Blocked keeps the escalation, because the
+    next dispatch of a task that failed at a higher tier should start there — the
+    defect was an escalation surviving SUCCESS, not one surviving failure.
+
+    An author's deliberate `effort:` carries no stamp and is never touched, which
+    is the whole reason provenance is recorded at escalation time.
+    """
+    if final_status != plan_mod.DONE:
+        return
+    if row.pop(EFFORT_ESCALATED_STAMP, None):
+        row.pop("effort", None)
 
 
 def _known_red_exclusions(

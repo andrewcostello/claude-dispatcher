@@ -288,6 +288,7 @@ tasks:
     summary_path: /home/andrew/Project/dispatcher-runs/2026-08-18T19-25-56Z-tasks/W2-1-2/summary.md
     branch: feat/W2-1-2-seals-a-role-that-writes
     gate_base_sha: 0b275d48599808b2c46d7a015508d96d2b99fd14
+    cost_usd: 6.402994500000001
   - key: W2-1-3
     summary: bodies — close the reach in the unfloored layer and name what is left
     description: |
