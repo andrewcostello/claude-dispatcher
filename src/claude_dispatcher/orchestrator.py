@@ -92,6 +92,11 @@ def _ask_human(prompt_text: str, choices: list[str]) -> str:
             print(f"  invalid response — must be one of {choices}")
 
 
+#: Transient-provider retries per cascade rung. ONE: a second failure is
+#: evidence the condition is not passing, and an unbounded retry against a
+#: flapping provider burns the cost ceiling with nothing to show for it.
+INFRA_RETRY_LIMIT = 1
+
 _log_lock = threading.Lock()
 
 
@@ -1425,36 +1430,66 @@ def _run_task(
         attempt_model = _effective_model(
             attempt_agent, attempt_model, log_path=log_path, task_key=snap.key,
         )
-        try:
-            result = spawn_mod.spawn_agent(
-                agent=attempt_agent,
-                claude_bin=cfg.claude_bin,
-                cwd=wt.path,
-                env=env,
-                prompt=prompt,
-                model=attempt_model,
-                effort=attempt_effort,
-                extra_args=list(cfg.claude_extra_args),
-                timeout_seconds=cfg.task_timeout_seconds,
+        # D-64: ONE retry for a transient provider failure, on the SAME rung.
+        # Not a cascade — no fallback event, no worktree reset, no effort bump: a
+        # 529 is not weak work, and the next rung would begin by resetting the
+        # worktree and be spent against the same server condition. Bounded at one
+        # because an unbounded retry against a flapping provider is its own
+        # hazard, and a second failure is evidence the condition is not passing.
+        infra_retries = 0
+        while True:
+            try:
+                result = spawn_mod.spawn_agent(
+                    agent=attempt_agent,
+                    claude_bin=cfg.claude_bin,
+                    cwd=wt.path,
+                    env=env,
+                    prompt=prompt,
+                    model=attempt_model,
+                    effort=attempt_effort,
+                    extra_args=list(cfg.claude_extra_args),
+                    timeout_seconds=cfg.task_timeout_seconds,
+                )
+            except Exception as e:
+                _log(log_path, f"  {snap.key} spawn failed: {e}")
+                fail_reason = f"spawn_failed: {e}"
+                result = None
+                break
+            _log(log_path, f"  {snap.key} spawn exited code={result.exit_code}")
+            if result.exit_code != 0 and (result.stderr or result.stdout):
+                # A dead spawn's last words are the only diagnostic; PH-12's
+                # grok spawn failed opaquely (2026-07-12) with nothing logged.
+                tail = ((result.stderr or "") + "\n"
+                        + (result.stdout or "")).strip()[-600:]
+                _log(log_path, f"  {snap.key} spawn output tail: {tail}")
+            # Accounted for EVERY attempt, a retried one included — each real
+            # spawn has a real cost — and before any block branch, so a task that
+            # spawns and THEN blocks still counts toward the cost ceiling.
+            _account_spawn(cfg, snap.key, result, kind="implementer")
+            if cfg.haiku_summary:
+                _log_transcript_and_haiku(
+                    cfg, snap, result, summary_path.parent, log_path)
+            if result.exit_code == 0:
+                break
+            transient = spawn_failure_mod.classify(
+                result.exit_code, result.stdout or "", result.stderr or "",
             )
-        except Exception as e:
-            _log(log_path, f"  {snap.key} spawn failed: {e}")
-            fail_reason = f"spawn_failed: {e}"
-            result = None
+            if (transient.retry is not spawn_failure_mod.Retry.NOW
+                    or infra_retries >= INFRA_RETRY_LIMIT):
+                break
+            infra_retries += 1
+            _log(log_path,
+                 f"  {snap.key} transient provider failure, retrying once on the "
+                 f"same rung: {transient.reason[:160]}")
+            _emit_event(cfg, journal_mod.EventType.task_spawn_finished, {
+                "spawn_kind": "implementer",
+                "failure_kind": transient.kind.value,
+                "retry": transient.retry.value,
+                "infra_retry": infra_retries,
+                "api_error_status": transient.api_error_status,
+            }, task_key=snap.key)
+        if result is None:
             continue
-        _log(log_path, f"  {snap.key} spawn exited code={result.exit_code}")
-        if result.exit_code != 0 and (result.stderr or result.stdout):
-            # A dead spawn's last words are the only diagnostic; PH-12's
-            # grok spawn failed opaquely (2026-07-12) with nothing logged.
-            tail = ((result.stderr or "") + "\n" + (result.stdout or "")).strip()[-600:]
-            _log(log_path, f"  {snap.key} spawn output tail: {tail}")
-        # Spawn-completion event: carries the per-task usage/cost payload parsed
-        # from the CLI's JSON output. Accounted for EVERY attempt (each real
-        # spawn has a real cost), before any fallback/block branch, so a task
-        # that spawns and THEN blocks still counts toward the cost ceiling.
-        _account_spawn(cfg, snap.key, result, kind="implementer")
-        if cfg.haiku_summary:
-            _log_transcript_and_haiku(cfg, snap, result, summary_path.parent, log_path)
         if result.exit_code != 0:
             # D-64: one branch made every failure a quality failure. An
             # api_error is INFRASTRUCTURE — the cascade cannot fix a server

@@ -185,3 +185,64 @@ def test_the_quality_path_still_sets_a_cascade_reason() -> None:
     block = src[at:at + 1400]
     assert "fail_reason = failure.reason" in block
     assert "continue" in block
+
+
+# --------------------------------------------------- the bounded retry -------
+
+def test_the_retry_is_bounded_at_one() -> None:
+    """ONE retry, then park. An unbounded retry against a flapping provider burns
+    the cost ceiling with nothing to show, and a second failure is evidence the
+    condition is not passing rather than a blip.
+
+    Measured under: raise INFRA_RETRY_LIMIT and this reddens.
+    """
+    from claude_dispatcher import orchestrator
+    assert orchestrator.INFRA_RETRY_LIMIT == 1
+
+
+def test_only_retryable_NOW_is_retried() -> None:
+    """A 429 quota resets hours later, so an immediate retry is guaranteed to
+    fail and costs a spawn to learn nothing; a 401 never becomes retryable. Both
+    must park at once.
+
+    Measured under: retry on any infrastructure failure and this reddens.
+    """
+    from pathlib import Path
+    from claude_dispatcher import orchestrator
+    src = Path(orchestrator.__file__).read_text()
+    at = src.index("infra_retries = 0")
+    block = src[at:at + 2600]
+    assert "transient.retry is not spawn_failure_mod.Retry.NOW" in block
+    assert "infra_retries >= INFRA_RETRY_LIMIT" in block
+
+
+def test_the_retry_does_not_cascade(tmp_path: Path) -> None:
+    """The property that makes it a retry rather than an escalation: same rung,
+    same agent, same effort, no fallback event and NO WORKTREE RESET — the next
+    rung begins by resetting the worktree, which would destroy the diff a human
+    is being blocked to read, and it would be spent against the same server.
+
+    Measured under: move the retry into the cascade loop and this reddens.
+    """
+    from pathlib import Path as P
+    from claude_dispatcher import orchestrator
+    src = P(orchestrator.__file__).read_text()
+    at = src.index("infra_retries = 0")
+    block = src[at:src.index("if result is None:", at)]
+    assert "agent_fallback" not in block, "a retry must not emit a cascade event"
+    assert "_reset_worktree" not in block, "a retry must not reset the worktree"
+    assert "attempt_agent" in block and "attempt_effort" in block
+
+
+def test_every_attempt_including_a_retry_is_billed() -> None:
+    """A retried spawn costs real money and must count toward the ceiling, or a
+    flapping provider could spend past it invisibly.
+
+    Measured under: move `_account_spawn` outside the retry loop and this reddens.
+    """
+    from pathlib import Path as P
+    from claude_dispatcher import orchestrator
+    src = P(orchestrator.__file__).read_text()
+    at = src.index("infra_retries = 0")
+    block = src[at:src.index("if result is None:", at)]
+    assert "_account_spawn(cfg, snap.key, result, kind=\"implementer\")" in block

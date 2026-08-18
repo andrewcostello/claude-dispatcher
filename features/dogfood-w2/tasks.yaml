@@ -279,10 +279,15 @@ tasks:
     labels: [size:M, area:dispatcher]
     agent: claude
     role: seals
-    status: To Do
+    status: In Progress
     blockedBy: [W2-1-1]
     unblocked_at: '2026-08-18T19:21:17+00:00'
 
+    started_at: '2026-08-18T12:25:56-07:00'
+    dispatcher_run_id: 2026-08-18T19-25-56Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-18T19-25-56Z-tasks/W2-1-2/summary.md
+    branch: feat/W2-1-2-seals-a-role-that-writes
+    gate_base_sha: 0b275d48599808b2c46d7a015508d96d2b99fd14
   - key: W2-1-3
     summary: bodies — close the reach in the unfloored layer and name what is left
     description: |
@@ -577,10 +582,15 @@ tasks:
     labels: [size:L, area:dispatcher]
     agent: claude
     role: seals
-    status: To Do
+    status: In Progress
     blockedBy: [W2-2-1]
     unblocked_at: '2026-08-18T19:21:17+00:00'
 
+    started_at: '2026-08-18T12:25:56-07:00'
+    dispatcher_run_id: 2026-08-18T19-25-56Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-18T19-25-56Z-tasks/W2-2-2/summary.md
+    branch: feat/W2-2-2-seals-the-widening-is-caught
+    gate_base_sha: 0b275d48599808b2c46d7a015508d96d2b99fd14
   - key: W2-2-3
     summary: bodies — build whatever of the whole-diff comparison is not floored
     description: |
