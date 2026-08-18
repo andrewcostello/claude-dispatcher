@@ -168,6 +168,47 @@ def _enum_members(tree: ast.Module) -> dict[str, tuple[str, ...]]:
     return out
 
 
+def from_mapping(raw: object) -> tuple[Declaration | None, str]:
+    """Build a Declaration from a decoded mapping. Language-neutral: the canonical
+    format is JSON, and each language embeds it in whatever literal its AST can
+    read (a Python dict literal, a Go backtick const, a TS object literal).
+    """
+    if not isinstance(raw, dict):
+        return None, f"{DECLARATION_NAME} is {type(raw).__name__}, expected a mapping"
+    required = ("name", "state_enum", "event_enum", "initial", "terminal", "transitions")
+    missing = [k for k in required if k not in raw]
+    if missing:
+        return None, f"missing key(s): {', '.join(missing)}"
+    try:
+        transitions = tuple(
+            Transition(
+                source=str(t["from"]), event=str(t["event"]), target=str(t["to"]),
+                effects=tuple(str(e) for e in (t.get("effects") or [])),
+            )
+            for t in raw["transitions"]
+        )
+        rejections = tuple(
+            Rejection(source=str(r["from"]), event=str(r["event"]), error=str(r["error"]))
+            for r in raw.get("rejections") or []
+        )
+        dflt = raw.get("default_rejection")
+        return Declaration(
+            name=str(raw["name"]), state_enum=str(raw["state_enum"]),
+            event_enum=str(raw["event_enum"]), initial=str(raw["initial"]),
+            terminal=tuple(str(s) for s in raw["terminal"]),
+            transitions=transitions, rejections=rejections,
+            default_rejection=str(dflt) if dflt else None,
+            rejection_state=(str(raw["rejection_state"])
+                             if raw.get("rejection_state") else None),
+            groups=tuple(
+                (str(k), tuple(str(v) for v in vs))
+                for k, vs in (raw.get("groups") or {}).items()
+            ),
+        ), ""
+    except (KeyError, TypeError) as exc:
+        return None, f"malformed entry: {exc}"
+
+
 def parse(source: str) -> tuple[Declaration | None, str]:
     """Read the declaration literal. Returns (decl, why-not) — never raises."""
     try:
@@ -223,26 +264,30 @@ def parse(source: str) -> tuple[Declaration | None, str]:
     return decl, ""
 
 
-def check(source: str) -> Report:
-    """Verify the declaration against the module's real enums, and that every
-    (non-terminal state x event) pair is defined or explicitly rejected.
+def check_parsed(
+    decl: Declaration | None,
+    enums: dict[str, tuple[str, ...]],
+    why: str = "",
+) -> Report:
+    """The SHARED check: a declaration against the enums its module really has.
+
+    Language-neutral on purpose. Only the READER is per-language (Python AST, the
+    Go helper, TypeScript next); this function is the one place the rules live, so
+    Go cannot drift into a laxer answer than Python gives.
     """
-    decl, why = parse(source)
     if decl is None:
         fault = Fault.NO_DECLARATION if "no module-level" in why else Fault.MALFORMED
-        return Report(faults=((fault, why),))
+        return Report(faults=((fault, why or "no declaration"),))
 
     faults: list[tuple[Fault, str]] = []
-    enums = _enum_members(ast.parse(source))
-
     states = enums.get(decl.state_enum)
     if states is None:
         faults.append((Fault.STATE_NOT_ENUM,
-                       f"no Enum class {decl.state_enum!r} in this module"))
+                       f"no enum {decl.state_enum!r} in this module"))
     events = enums.get(decl.event_enum)
     if events is None:
         faults.append((Fault.EVENT_NOT_ENUM,
-                       f"no Enum class {decl.event_enum!r} in this module"))
+                       f"no enum {decl.event_enum!r} in this module"))
 
     if states is not None:
         unknown = sorted(set(decl.states) - set(states))
@@ -265,11 +310,11 @@ def check(source: str) -> Report:
         defined = {(t.source, t.event) for t in decl.transitions}
         defined |= {(r.source, r.event) for r in decl.rejections}
         gaps = sorted(
-            (s, e) for s in states if s not in decl.terminal for e in events
-            if (s, e) not in defined
+            (st, ev) for st in states if st not in decl.terminal for ev in events
+            if (st, ev) not in defined
         )
         if gaps and not decl.default_rejection:
-            shown = ", ".join(f"{s} x {e}" for s, e in gaps[:8])
+            shown = ", ".join(f"{st} x {ev}" for st, ev in gaps[:8])
             more = f" (+{len(gaps) - 8} more)" if len(gaps) > 8 else ""
             faults.append((
                 Fault.NON_EXHAUSTIVE,
@@ -282,9 +327,16 @@ def check(source: str) -> Report:
                   defaulted_pairs=len(gaps) if decl.default_rejection else 0)
 
 
+def check(source: str) -> Report:
+    """Python reader + the shared check."""
+    decl, why = parse(source)
+    enums = {} if decl is None else _enum_members(ast.parse(source))
+    return check_parsed(decl, enums, why)
+
+
 def _mermaid_id(label: str) -> str:
-    """A safe mermaid node id. `(`, `+` and spaces are not valid in one, and a
-    group label like "Turn gate (ROTATION + on_turn)" produced an unparseable
+    """A safe mermaid node id. `(`, `+` and spaces are not valid in one, and the
+    real group label "Turn gate (ROTATION + on_turn)" produced an unparseable
     diagram until this existed.
     """
     safe = "".join(c if c.isalnum() or c == "_" else "_" for c in label)

@@ -60,6 +60,12 @@ claude_dispatcher = [
     "go_signature_fingerprint/*",
     "ts_signature_fingerprint/*",
     "go_call_reachability/*",
+    # The state-machine reader (Go). Same argument as the two above: the
+    # gate judges branches in OTHER repositories, so the helper must travel
+    # with the dispatcher rather than be read out of the tree under
+    # judgement. An install that drops it is GoHelperUnavailable — named and
+    # blocking, never "no declaration here".
+    "go_state_machine/*",
 ]
 
 [tool.pytest.ini_options]

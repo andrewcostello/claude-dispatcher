@@ -51,3 +51,6 @@ worktrees-dogfood/
 # first and ignored nothing, which `git check-ignore -v` reported in one
 # command. Measured 2026-08-11 under go1.24.4.
 /src/claude_dispatcher/go_call_reachability/go-call-reachability
+
+# Built state-machine helper (rebuilt per process; never committed).
+src/claude_dispatcher/go_state_machine/.build/
