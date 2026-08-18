@@ -1,5 +1,17 @@
 # How to author a dispatcher task list
 
+> **Read [new-project-setup.md](new-project-setup.md) §3 and §4 first.** This
+> page predates the build protocol and does not cover `role:`,
+> `declares.holes`, `disputed_paths`, or the floor. A task list authored from
+> this page alone produces role-less `legacy` rows: they run, but you get no
+> seals-before-bodies ordering and no path enforcement.
+>
+> Concretely, when you write each row also decide:
+> `role:` (scaffold | seals | bodies | adjudicate), the `blockedBy` edge the
+> protocol REQUIRES (a `bodies` row naming no `seals` task is refused at plan
+> time), `declares.holes` on the scaffold row, and `disputed_paths` on the
+> adjudicate row (required, and it is that row's entire writable set).
+
 **Audience:** humans and planning agents that turn a feature idea into a
 runnable `tasks.yaml` (+ PRD) for `claude-dispatcher`.
 
