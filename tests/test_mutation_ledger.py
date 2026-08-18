@@ -27,9 +27,21 @@ result, against real claims rather than fixtures:
 harness it seals would be reporting that harness's opinion of itself. The
 measurement is this file's; every VERDICT below is the module's own fold.
 
-RED until W2-3-3 fills the four folds and the harness. The rows that are pure
-measurement or pure arithmetic over implemented seams are green today, and are
-marked as such — this file is not a set of stubs waiting for a body.
+RED until W2-3-3 fills the four folds and the harness. Which sensitivity
+vocabulary a row carries follows from that, and is not a stylistic choice:
+
+  * ``Measured under:`` — the two rows green today over implemented seams (the
+    prediction row and ``fold_row_results``). Each named mutation was applied
+    to :mod:`mutation_ledger` and the row observed to go PASSED->FAILED on
+    2026-08-18.
+  * ``Predicted (unmeasured) under:`` — the seven rows red against a declared
+    hole. They are red under control as well as mutant, so no transition is
+    derivable and ``Measured under:`` on them would assert a run nobody made.
+    W2-3-3 is owed the re-measurement when it greens them.
+
+The measurement in the flagship's BODY is a different thing and was taken: the
+mutant/control maps above are real runs of ``call_site_reachability``. What is
+unmeasured is only this file's own sensitivity to a wrong ``mutation_ledger``.
 """
 
 from __future__ import annotations
@@ -297,9 +309,10 @@ def test_a_claim_that_does_not_reproduce_is_red_and_its_control_holds(
     row; it does not, and never did — the row never hands ``discover_roots`` a
     raising analyzer.
 
-    Measured under: read the mutant map alone and the expired claim reads as
-    coverage; drop the control comparison and the surviving claim reads as
-    broken; give ``fold`` a default arm and the two verdicts collapse together.
+    Predicted (unmeasured) under: read the mutant map alone and the expired
+    claim reads as coverage; drop the control comparison and the surviving
+    claim reads as broken; give ``fold`` a default arm and the two verdicts
+    collapse together.
     """
     assert measured.control[CLAIMING_ROW] is RowResult.PASSED
     assert measured.control[REDDENED_ROW] is RowResult.PASSED
@@ -334,9 +347,10 @@ def test_rederive_is_the_oracle_and_must_reproduce_the_measurement(
     tree the entry names is the tree that is run, so a survival has no
     innocent explanation.
 
-    Measured under: return a canned ``Rederivation`` from ``rederive`` and the
-    two statuses stop disagreeing; trust ``entry.reddened`` instead of running
-    the mutant and the expired claim reads as HELD.
+    Predicted (unmeasured) under: return a canned ``Rederivation`` from
+    ``rederive`` and the two statuses stop disagreeing; trust
+    ``entry.reddened`` instead of running the mutant and the expired claim
+    reads as HELD.
     """
     root = str(_repo_root())
     expired = _entry(measured, claiming_row=CLAIMING_ROW,
@@ -375,9 +389,10 @@ def test_the_reddened_set_drops_a_row_that_was_red_before_the_mutation(
     the observed set equals the recorded one and the entry reads as HELD — so
     the two readings give opposite dispositions and this row separates them.
 
-    Measured under: define ``reddened_observed`` as the mutant's red rows and
-    every assertion below flips; compute ``missing_rows`` from the observed
-    set instead of the recorded one and the two set assertions cross over.
+    Predicted (unmeasured) under: define ``reddened_observed`` as the
+    mutant's red rows and every assertion below flips; compute
+    ``missing_rows`` from the observed set instead of the recorded one and the
+    two set assertions cross over.
     """
     repo, entry, rows = _tiny_repo(tmp_path, over_claim=True)
 
@@ -406,9 +421,9 @@ def test_rederive_returns_a_verdict_when_the_recorded_revision_is_gone(
     provisioned here — there is no truthful value, which is a contract defect
     reported rather than sealed to a guess.
 
-    Measured under: raise instead of returning and this row errors; report the
-    absence as ``HARNESS_FAULT`` and the clause parks on ``AWAIT_RERUN``
-    forever, which no re-run can clear.
+    Predicted (unmeasured) under: raise instead of returning and this row
+    errors; report the absence as ``HARNESS_FAULT`` and the clause parks on
+    ``AWAIT_RERUN`` forever, which no re-run can clear.
     """
     repo, entry, _ = _tiny_repo(tmp_path, revision="0" * 40)
 
@@ -481,10 +496,10 @@ def test_no_combination_leaves_a_clause_as_it_was_and_only_a_broken_run_waits(
     tree's content that reached it would strand that clause un-relabelled and
     un-struck forever — "kept as it was" under another name.
 
-    Measured under: route ``MUTANT_UNEVALUABLE`` or ``CONTROL_RED`` to
-    ``FAULTED`` and the preimage assertion reddens; give ``fold`` or
-    ``proposed_fate`` a default arm and the totality sweep reddens on the
-    member it silently swallowed.
+    Predicted (unmeasured) under: route ``MUTANT_UNEVALUABLE`` or
+    ``CONTROL_RED`` to ``FAULTED`` and the preimage assertion reddens; give
+    ``fold`` or ``proposed_fate`` a default arm and the totality sweep reddens
+    on the member it silently swallowed.
     """
     waits, seen = set(), set()
     for freshness in Freshness:
@@ -521,8 +536,9 @@ def test_a_deleted_row_is_disposed_of_rather_than_parked_forever() -> None:
     they fold to ``FAULTED`` and wait on a re-run that can never restore what
     the tree no longer has.
 
-    Measured under: check the absence arm before the "no comparison possible"
-    arm and every assertion in the first block flips to ``FAULTED``.
+    Predicted (unmeasured) under: check the absence arm before the "no
+    comparison possible" arm and every assertion in the first block flips to
+    ``FAULTED``.
     """
     for freshness in (Freshness.SUBJECT_GONE, Freshness.SITE_GONE,
                       Freshness.ROW_GONE):
@@ -545,8 +561,8 @@ def test_freshness_reports_the_strongest_fact_about_the_tree() -> None:
     the comparison, so a claim whose revision was rebased away is still
     refutable and is owed a fresh observation rather than a permanent wait.
 
-    Measured under: rank ``REVISION_ABSENT`` with the hard absences and a
-    rebased-away claim can never be re-observed; rank it below
+    Predicted (unmeasured) under: rank ``REVISION_ABSENT`` with the hard
+    absences and a rebased-away claim can never be re-observed; rank it below
     ``SUBJECT_BYTES`` and a moved body hides a missing provenance.
     """
     assert ml.freshness_of(()) is Freshness.ANCHORED
@@ -580,9 +596,9 @@ def test_one_red_parametrisation_reddens_the_row_and_a_missing_one_does_not(
     changing the ranking is a visible diff and not a silent one, and W2-3-4
     owns the ruling.
 
-    Measured under: rank FAILED below PASSED and the first block reddens; drop
-    the ``[param]`` split and every parametrised id becomes its own row, which
-    is the population digest reporting a file that grew.
+    Measured under: rank FAILED below PASSED and the first block reddens;
+    drop the ``[param]`` split and every block reddens — ``_NODE_ID`` refuses
+    the bracketed id, so nothing folds at all.
     """
     assert ml.fold_row_results({
         "t.py::r[a]": RowResult.PASSED, "t.py::r[b]": RowResult.FAILED,
