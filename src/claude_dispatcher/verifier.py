@@ -147,7 +147,14 @@ _PROMPTS_DIR = Path(__file__).parent / "verifier_prompts"
 
 
 def _load_prompt() -> str:
-    """Load the verifier prompt template (a packaging error if missing)."""
+    """Load the verifier prompt template (a packaging error if missing).
+
+    In the same class as the reviewer prompt (unit W2-1) and deliberately NOT
+    anchored: the genesis records a digest for ``reviewer_prompts`` only, and
+    giving this tree one is floored — it is entry 3 of
+    :data:`~claude_dispatcher.prompt_provenance.FLOORED_OBLIGATIONS`, which also
+    carries the write denial this tree is owed.
+    """
     path = _PROMPTS_DIR / "verifier.md"
     if not path.exists():
         raise FileNotFoundError(f"verifier prompt missing: {path}")
