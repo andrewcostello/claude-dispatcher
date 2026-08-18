@@ -368,19 +368,39 @@ class Observation(Enum):
     REDDENED_SCOPE_DIVERGED = "reddened_scope_diverged"
     #: Control green, claiming row NOT red — the claim is false here.
     SURVIVED = "survived"
-    #: The claiming row was already red without the mutation.
+    #: The claiming row FAILED in the control run: it was already red without
+    #: the mutation.
     CONTROL_RED = "control_red"
+    #: The mutation applied, and the claiming row could not be EVALUATED
+    #: under it — it ERRORED, or it was collected and then not reported. Kept
+    #: apart from :attr:`HARNESS_FAULT` because it is a deterministic
+    #: property of (site, operator, tree): a mutation that breaks the row's
+    #: setup reproduces on every re-run, so routing it to a state that waits
+    #: parks the clause forever. It is also NOT :attr:`SURVIVED` — an error
+    #: is not evidence that the mutation failed to bite, because the
+    #: assertion was never reached.
+    MUTANT_UNEVALUABLE = "mutant_unevaluable"
     #: No comparison was performed. A named state, so that "we did not look"
     #: is not expressible as "we looked and it was fine".
     NOT_ATTEMPTED = "not_attempted"
     #: The RUN failed, so it says nothing about the claim: a refused clone,
     #: an exceeded budget, an unusable pytest, a provisioned tree that is not
-    #: the one the observation names — or a claiming row that ERRORED, where
-    #: the assertion the claim is about was never reached. Every one of them
-    #: is RETRYABLE, which is what lets :func:`fold` send this member and
-    #: only this member to :attr:`ClauseFate.AWAIT_RERUN`. A tree that simply
-    #: lacks the subject, the anchor or the row is NOT a fault — that is
-    #: :data:`HARD_ABSENCE` drift with :attr:`NOT_ATTEMPTED`.
+    #: the one the observation names, one run that produced no rows while the
+    #: other did — or a claiming row that ERRORED or went unreported in the
+    #: CONTROL, where the tree cannot execute the row even unmutated.
+    #:
+    #: Every cause is a fact about the RUN or the tree's health, never about
+    #: the clause or the mutation, which is what lets :func:`fold` send this
+    #: member and only this member to :attr:`ClauseFate.AWAIT_RERUN`: the
+    #: repair is to the run, and until it is made the ledger proposes nothing
+    #: about the clause. It is the one fate that does not converge, so
+    #: nothing that is a fact about the CLAUSE, the MUTATION or the TREE'S
+    #: CONTENT may reach it — a mutation the row cannot be evaluated under is
+    #: :attr:`MUTANT_UNEVALUABLE`, and a tree that lacks the subject, the
+    #: anchor or the row is :data:`HARD_ABSENCE` drift with
+    #: :attr:`NOT_ATTEMPTED`. A control that cannot run the row IS such a
+    #: fault: the tree is broken, which is a repo-level condition someone
+    #: fixes, and not a disposition of the clause.
     HARNESS_FAULT = "harness_fault"
 
 
@@ -409,18 +429,20 @@ class Status(Enum):
     BROKEN = "broken"
     #: SURVIVED under moved bytes or a moved population.
     EXPIRED = "expired"
-    #: No refuting comparison was possible in this tree — NOT_ATTEMPTED or
-    #: CONTROL_RED, at any freshness. Not a pass, not a failure, and not
-    #: coverage. This is where a deleted row, a deleted subject, an
-    #: unresolvable anchor and a clause nothing can mutate all land, and it
+    #: No refuting comparison was possible in this tree — NOT_ATTEMPTED,
+    #: CONTROL_RED or MUTANT_UNEVALUABLE, at any freshness. Not a pass, not a
+    #: failure, and not coverage. This is where a deleted row, a deleted
+    #: subject, an unresolvable anchor, a mutation the row cannot be
+    #: evaluated under, and a clause nothing can mutate all land, and it
     #: CONVERGES: :attr:`ClauseFate.RELABEL_PREDICTED` disposes of the clause
     #: without pretending a re-run could restore what the tree no longer has.
     UNDERIVABLE = "underivable"
     #: The run broke (HARNESS_FAULT), or the record contradicts itself — a
     #: subject, anchor or row reported ABSENT together with a COMPLETED
-    #: comparison, which no honest harness can produce. Both are retryable,
-    #: which is why this and not UNDERIVABLE is the state that waits; keeping
-    #: them apart is what stops a broken clone from relabelling a file.
+    #: comparison, which no honest harness can produce. Both are faults in
+    #: the RUN rather than facts about the clause, which is why this and not
+    #: UNDERIVABLE is the state that waits; keeping them apart is what stops
+    #: a broken clone from relabelling a file.
     FAULTED = "faulted"
 
 
@@ -450,9 +472,13 @@ class ClauseFate(Enum):
     RELABEL_PREDICTED = "relabel_predicted"
     #: Strike the clause. Safe only because the observation outlives it.
     STRIKE = "strike"
-    #: Nothing yet — re-run first. Reachable only from
-    #: :attr:`Status.FAULTED`, whose two causes are both retryable, so no
-    #: clause can be parked here forever.
+    #: Nothing yet — repair the run, then re-derive. Reachable only from
+    #: :attr:`Status.FAULTED`, and it is the one fate that does not dispose
+    #: of the clause. That is why no fact about the CLAUSE, the MUTATION or
+    #: the tree's CONTENT may reach :attr:`Status.FAULTED`: a clause may wait
+    #: only while the repository itself cannot run it — a loud, visible
+    #: condition someone repairs — and never on a disposition that waiting
+    #: cannot change.
     AWAIT_RERUN = "await_rerun"
 
 
@@ -925,6 +951,13 @@ def refuse_unwritable_ledger_path(path: str) -> None:
     treating them as a deny list gives the right answer only while BODIES
     stays DENY_GLOBS: inverted to ALLOW_ONLY_GLOBS the same code silently
     inverts and passes every path outside the allow list.
+
+    It is the STATIC table rule, not :func:`role_protocol.effective_rule`,
+    because that one needs a ``TaskRoleSpec`` and this check has no task in
+    hand. The difference is one-directional and safe: for DENY_GLOBS a row's
+    ``added_immutable_globs`` only ever adds denials. So passing here is
+    NECESSARY and not sufficient — a task row may still deny the path, and
+    the branch gate is what says so.
     """
     _require_repo_path(path, name="ledger path", suffix=LEDGER_SUFFIX)
     if not path.startswith(f"{LEDGER_DIR}/") or "/" in path[len(LEDGER_DIR)+1:]:
@@ -1272,10 +1305,26 @@ def validate_ledger(records: Sequence[LedgerRecord]) -> None:
 
     One subject per ledger; unique ids of both kinds; a ``supersedes`` link
     that resolves, within the same claim, to an entry that appears EARLIER;
-    at most one entry superseding any given one; exactly one current
-    observation per claim; and no claiming row carrying both a live
-    observation and a prediction — a clause is measured or it is not, and a
-    row that says both leaves a reader to choose.
+    at most one entry superseding any given one; and exactly one current
+    observation per claim.
+
+    A CLAIMING ROW MAY CARRY BOTH KINDS, and that is not a contradiction to
+    be refused. The rows in the population this ledger is built for name
+    several clauses each — ``tests/test_call_site_reachability.py`` writes
+    them as semicolon lists, one sentence naming a whole alternative body
+    (which no operator can reach) beside one naming an edit to existing bytes
+    (which one can). Refusing the pair at ROW granularity makes such a row
+    unrecordable, and the way out of a hard refusal is to drop the
+    prediction and keep the observation — which leaves the unmeasurable
+    clause unrecorded, and an unrecorded clause reading as coverage is the
+    defect this unit exists to close.
+
+    Per-CLAUSE exclusivity is the check that would be right, and it is not
+    expressible with the fields here: :func:`claim_id` identifies a clause by
+    ``(row, site)`` and :func:`prediction_id` by ``(row, described)``, so the
+    two kinds share no clause key. Adding one is recorded as owed to
+    W2-3-2/3/5, not silently approximated by a rule that refuses true
+    records.
     """
     entries = observations(records)
     subjects = {e.site.subject for e in entries}
@@ -1312,14 +1361,9 @@ def validate_ledger(records: Sequence[LedgerRecord]) -> None:
                     f"{entry.observation_id}")
             superseders[entry.supersedes] = entry.observation_id
         by_observation[entry.observation_id] = entry
-    live = current_observations(records)
-    measured = {e.claiming_row for e in live.values()}
-    for prediction in predictions(records):
-        if prediction.claiming_row in measured:
-            raise MutationLedgerError(
-                f"{prediction.claiming_row} carries both a live observation "
-                f"and prediction {prediction.prediction_id}: a clause is "
-                "measured or it is not")
+    # Called for its refusal: two live observations for one claim is the
+    # reader's rule, and re-deriving it here would be a second answer.
+    current_observations(records)
 
 
 def counts_as_coverage(status: Status) -> bool:
@@ -1374,19 +1418,33 @@ def classify_observation(*, control: Mapping[str, RowResult],
     first. Total over :class:`Observation`; the members are reached in this
     order, and the order is the contract:
 
-      * either map empty — no run was performed —
+      * BOTH maps empty — neither run reported anything —
         :attr:`Observation.NOT_ATTEMPTED`.
-      * ``claiming_row`` ERRORED in either run, or ABSENT under the MUTANT —
-        :attr:`Observation.HARNESS_FAULT`. The assertion the claim is about
-        was never reached, so the run says nothing about the claim; reading
-        an error as a failure is how a broken import becomes coverage.
-      * ``control[claiming_row]`` not PASSED, including absent from the map —
-        :attr:`Observation.CONTROL_RED`. Checked before the mutant, so a row
-        that is red anyway can never read as reddened.
-      * ``mutant[claiming_row]`` not FAILED —
-        :attr:`Observation.SURVIVED`.
-      * otherwise, compare the REDDENED SET against ``recorded_reddened``:
-        equal is :attr:`Observation.REDDENED_AS_RECORDED`, different is
+      * exactly ONE map empty — :attr:`Observation.HARNESS_FAULT`. The other
+        run collected and reported rows, so the tree is runnable and this one
+        broke. "Empty" is not how a crashed pytest is reported to this
+        function; :func:`rederive` may not reach here on a run it could not
+        complete.
+      * ``claiming_row`` ERRORED or ABSENT in the CONTROL —
+        :attr:`Observation.HARNESS_FAULT`. ABSENT here is "collected and then
+        not reported": :func:`rederive` resolves the row against the tree
+        first and reports a genuinely uncollected row as
+        :attr:`Drift.ROW_ABSENT` with NOT_ATTEMPTED, so by this point a
+        control that cannot execute the row is a broken run and not a fact
+        about the claim. Reading either as CONTROL_RED would turn a broken
+        environment into a durable relabelling of the clause.
+      * ``control[claiming_row]`` FAILED — :attr:`Observation.CONTROL_RED`.
+        Checked before the mutant, so a row that is red anyway can never read
+        as reddened.
+      * ``claiming_row`` ERRORED or ABSENT under the MUTANT —
+        :attr:`Observation.MUTANT_UNEVALUABLE`. The assertion the claim is
+        about was never reached, so this is not SURVIVED; and it reproduces
+        on every re-run, so it is not HARNESS_FAULT. Reading an error as a
+        failure is how a broken import becomes coverage.
+      * ``mutant[claiming_row]`` PASSED — :attr:`Observation.SURVIVED`.
+      * otherwise (FAILED under the mutant), compare the REDDENED SET against
+        ``recorded_reddened``: equal is
+        :attr:`Observation.REDDENED_AS_RECORDED`, different is
         :attr:`Observation.REDDENED_SCOPE_DIVERGED`. As sets — order is not
         a fact about a run.
 
@@ -1405,21 +1463,24 @@ def fold(freshness: Freshness, observation: Observation) -> Status:
     """:class:`Freshness` and :class:`Observation` folded to one
     :class:`Status`.
 
-    TOTAL over all 7 x 6 combinations, and no combination may fold to "kept
+    TOTAL over all 7 x 7 combinations, and no combination may fold to "kept
     as it was". Precedence, in order:
 
       1. ``observation is HARNESS_FAULT`` — :attr:`Status.FAULTED`. A broken
          RUN says nothing about the claim, at any freshness.
-      2. ``observation`` in {NOT_ATTEMPTED, CONTROL_RED} —
-         :attr:`Status.UNDERIVABLE`, at any freshness. No refuting comparison
-         was possible. This arm comes BEFORE the absence arm on purpose: a
-         deleted row, a deleted subject and an unresolvable anchor are the
-         cases UNDERIVABLE names, and they arrive here as absence drift
-         carrying NOT_ATTEMPTED. Ranked the other way they fold to FAULTED,
-         whose fate is :attr:`ClauseFate.AWAIT_RERUN` — and no number of
-         re-runs restores a row that was deleted, so the clause is stranded
-         un-relabelled and un-struck forever, which is "kept as it was"
-         under another name.
+      2. ``observation`` in {NOT_ATTEMPTED, CONTROL_RED, MUTANT_UNEVALUABLE}
+         — :attr:`Status.UNDERIVABLE`, at any freshness. No refuting
+         comparison was possible: nothing to look at, a control that was
+         already red, or a mutation this site cannot be evaluated under.
+         This arm comes BEFORE the absence arm on purpose: a deleted row, a
+         deleted subject and an unresolvable anchor are the cases UNDERIVABLE
+         names, and they arrive here as absence drift carrying NOT_ATTEMPTED.
+         Ranked the other way they fold to FAULTED, whose fate is
+         :attr:`ClauseFate.AWAIT_RERUN` — and no number of re-runs restores a
+         row that was deleted, so the clause is stranded un-relabelled and
+         un-struck forever, which is "kept as it was" under another name.
+         MUTANT_UNEVALUABLE is in this arm for the same reason from the other
+         side: it reproduces identically on every re-run.
       3. ``freshness`` in {SUBJECT_GONE, SITE_GONE, ROW_GONE} —
          :attr:`Status.FAULTED`. Only reachable now with a COMPLETED
          comparison, which is a record contradicting itself: nothing can
@@ -1453,9 +1514,10 @@ def proposed_fate(status: Status) -> ClauseFate:
       RELABEL_PREDICTED; FAULTED to AWAIT_RERUN.
 
     Every fate but AWAIT_RERUN disposes of the clause, and AWAIT_RERUN is
-    reachable only from :attr:`Status.FAULTED`, whose causes are all
-    retryable — so a re-run always makes progress and no clause converges on
-    being left alone. :data:`PREDICTION_FATE` covers the other record kind.
+    reachable only from :attr:`Status.FAULTED`, whose causes are all faults
+    in the RUN — so a clause waits only while the repository cannot run it,
+    and every fact about the mutation or the tree reaches a fate that
+    disposes of it. :data:`PREDICTION_FATE` covers the other record kind.
     """
     raise NotImplementedError("W2-3-3 owes this table; W2-3-2 seals it")
 
@@ -1534,6 +1596,12 @@ def rederive(entry: LedgerEntry, *, repo_root: str,
         revision to provision — is DRIFT: the matching :class:`Drift` member
         on ``drift``, with :attr:`Observation.NOT_ATTEMPTED`. It is a fact
         about the tree, not a fault, and re-running cannot change it.
+
+    That split is what :func:`classify_observation` is entitled to assume:
+    the claiming row was COLLECTED in both runs before it is called, so an
+    ABSENT there means "collected and then not reported", which is a broken
+    run rather than a missing row. Do not call it on a run that did not
+    complete.
 
     Nothing here raises to mean "the claim failed" — that is a
     :class:`Status`.

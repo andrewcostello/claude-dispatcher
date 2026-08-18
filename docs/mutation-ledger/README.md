@@ -75,8 +75,15 @@ compares. Nothing reads the docstring, and the subject module is on
 The reddened set is the **`PASSED` → `FAILED` transition set**, not "rows
 failing under the mutant": crediting the mutation with the file's baseline
 failures is how a broken fixture becomes a blast radius. A claiming row that
-`ERRORED` in either run is a harness fault, never a failure — the assertion
-the claim is about was never reached.
+`ERRORED` is never read as a failure — the assertion the claim is about was
+never reached — but which side it errored on decides the disposition:
+
+* in the **control**, the tree cannot run the row even unmutated. That is a
+  `harness_fault`: fix the run and re-derive.
+* under the **mutant**, the mutation broke the row's setup or collection.
+  That is `mutant_unevaluable`, and it is a deterministic property of
+  (site, operator, tree) — it reproduces on every re-run, so it must not be
+  routed to a state that waits. It folds to `underivable`.
 
 Two modes ask different questions: `at_target` (the default) asks "is this
 still true HERE" and is the only mode in which byte and population drift are
@@ -93,20 +100,77 @@ It is a named `Status`, always — never a silently kept entry:
 | `scope_broken` | reddened, wrong set | amend the scope sentence |
 | `broken` | anchored and survived — never true | strike |
 | `expired` | survived under moved bytes, moved population or gone provenance | strike |
-| `underivable` | no refuting comparison was possible: the control was already red, or the tree has no such subject, anchor or row | relabel `Predicted (unmeasured) under:` |
-| `faulted` | the run broke, or the record contradicts itself | re-run |
+| `underivable` | no refuting comparison was possible: the control was already red, the tree has no such subject, anchor or row, or the row cannot be evaluated under the mutation | relabel `Predicted (unmeasured) under:` |
+| `faulted` | the run broke, or the record contradicts itself | repair the run, then re-derive |
 
 Only `held` counts as coverage. `reanchored` is *true* and still not coverage
 until a new observation is written — "still true under different bytes"
 reported as verified is how 41 unlabelled clauses accumulated.
 
-**`faulted` is the only fate that waits, and its causes are all retryable** —
-a refused clone, an exceeded budget, an unusable pytest, or a record claiming
-both that a row was absent and that it reddened. A deleted row, a deleted
-subject and an unresolvable anchor are `underivable` instead, and get
-relabelled. That precedence is the point: routed the other way, a clause whose
-row no longer exists waits on a re-run that can never restore it, and is left
+**`faulted` is the only fate that waits, and every one of its causes is a
+fault in the RUN** — a refused clone, an exceeded budget, an unusable pytest,
+one run that reported nothing while the other reported rows, a control that
+cannot execute the claiming row, or a record claiming both that a row was
+absent and that it reddened. A clause therefore waits only while the
+repository itself cannot run it, which is loud and visible.
+
+Nothing that is a fact about the *clause*, the *mutation* or the tree's
+*content* may reach it. A deleted row, a deleted subject, an unresolvable
+anchor and a mutation the row cannot be evaluated under are `underivable`
+instead, and get relabelled. That precedence is the point: routed the other
+way, a clause whose row no longer exists — or whose mutation deterministically
+errors — waits on a re-run that can never change the answer, and is left
 exactly as it was under a different name.
+
+## Can this ledger hold all 41 clauses? Yes, and none are struck by it
+
+The question this contract has to answer before anything is sealed against
+it. The clause spelling is `Reddens under a body on: …` — a *body*, not an
+edit — so most of the population names a whole alternative implementation
+that no `MutationOperator` reaches and no `rederive` call can ever run; the
+round-3 panel put it at 29 of the 41. If a ledger row required a re-runnable
+`MutationSite`, those would be unrecordable and the only honest option left
+would be to strike them.
+
+They are **recorded, not struck**. `Prediction` is a ledger row with no
+`MutationSite` and no re-run: it carries the clause verbatim, a closed
+`NonDerivable` reason, and the revision and subject digest it was judged
+against. A recorded non-derivable claim is a legitimate ledger row — it is
+the original point of writing a ledger rather than a test. `rederive` takes a
+`LedgerEntry` and predictions are not fed to it; their fate is fixed
+(`PREDICTION_FATE`) rather than folded, because there is no `Status` to fold.
+
+Nor is the choice per-ROW. A row may carry live observations *and*
+predictions: the seal file writes clauses as semicolon lists, and a single
+test function routinely names one alternative-body sentence (a prediction)
+beside one edit-to-existing-bytes sentence (an observation). Measured on this
+branch on 2026-08-18: **41 clause headers, 72 sentences, and 21 headers
+carrying more than one** — so a rule that let a row hold only one kind would
+be wrong for at least half of the population. `validate_ledger`
+refuses only a duplicate id or two live observations of one claim. Per-clause
+exclusivity — refusing an observation and a prediction *of the same sentence*
+— needs a clause key the two kinds do not yet share, and is recorded as owed
+below rather than approximated by a row-level rule that would refuse true
+records.
+
+## What it costs to run
+
+A ledger nobody runs is the docstring again with a different extension, so
+the cost is part of the contract:
+
+* one run of `tests/test_call_site_reachability.py` (110 rows): **0.80 s**,
+  measured on this branch on 2026-08-18.
+* one re-derivation is **two** such runs plus one `git worktree add --detach`
+  and one scratch clone — the dominant term for a seal file this size is the
+  provisioning, not the pytest.
+* `PER_ENTRY_BUDGET_SECONDS` is **60 s**, ~33× the two-run figure. An entry
+  that exceeds it folds to `faulted` and is reported. It is never skipped: a
+  skip that reads as coverage is the defect this unit exists to close.
+* the cost scales per *claim*, not per clause-word, and claims sharing one
+  seal file share nothing — each re-derivation provisions its own tree.
+  Whether W2-3-3 batches them is a body decision this contract does not fix,
+  but a batching that reuses a control run across mutations must still record
+  one control result per observation.
 
 ## The 41 clauses in `tests/test_call_site_reachability.py`
 
@@ -131,6 +195,12 @@ than a glob scan, because it is total over `RuleKind` and it applies
 `SEAL_VERIFY_TEST_PATHS`, which carries no wildcard and which a glob match
 misses. W2-3-3 builds the ledger under BODIES; a path that role cannot create
 ships a task that cannot be completed without a protocol breach.
+
+It reads the STATIC table rule, since `effective_rule` needs a `TaskRoleSpec`
+and this check has no task in hand. That difference runs one way only — a
+row's `added_immutable_globs` can only add denials to a `DENY_GLOBS` rule — so
+passing here is necessary, not sufficient, and the branch gate remains the
+thing that judges a diff.
 
 ## What is owed, and by whom
 
@@ -161,3 +231,26 @@ whole of what exists and what does not.
 fields, so no run can emit a triple that disagrees with itself — and no
 `Rederivation` can answer either question until `freshness_of` and `fold` are
 filled. That is the intended order.
+
+**Known gaps in this contract, carried to W2-3-2/3/5** — recorded here rather
+than left for a later reader to rediscover, and adjudicated as not owed by
+this scaffold:
+
+* **no shared clause key.** `claim_id` identifies a clause by `(row, site)`,
+  `prediction_id` by `(row, described)`, so "an observation and a prediction
+  of the same sentence" is not expressible and `validate_ledger` cannot
+  refuse it. Adding one (e.g. the verbatim sentence on both kinds) changes
+  both ids and so is a format-version bump.
+* **`Prediction` carries no structured reason data.** `ANCHOR_NOT_IN_SUBJECT`
+  has no anchor field, so re-examining one means re-reading `described`. And
+  nothing yet *checks* prediction freshness: `revision`/`subject_sha256` make
+  a stale judgement visible to a reader, but `check_citations` resolves an
+  `mlp-…` id without comparing either against the tree.
+* **`MutationSite` does not validate its `argument` by operator.** A
+  `RETURN_CONSTANT` whose argument is not a Python literal, or a
+  `RAISE_TO_CONTINUE` whose argument is not an exception name, is admitted at
+  construction and refused later by `apply_mutation`.
+* **no atomicity or cleanup contract** on `write_ledger` and
+  `provision_subject_tree`: temp-write-and-`os.replace`, and removing the
+  worktree and scratch clone on every non-success path, are specified nowhere
+  and are the body's to get right.
