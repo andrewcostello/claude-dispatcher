@@ -254,3 +254,49 @@ this scaffold:
   `provision_subject_tree`: temp-write-and-`os.replace`, and removing the
   worktree and scratch clone on every non-success path, are specified nowhere
   and are the body's to get right.
+
+## The measurement W2-3-2 seals
+
+`tests/test_mutation_ledger.py` is the seal file, and its flagship row runs a
+real mutation rather than asserting over a fixture. Re-derived 2026-08-18 at
+`4e66a01da37c5ea4d480cc2aa3bca84728a2a4da` (`feat/D5-seals2`), not carried
+from the P4 report:
+
+* subject `src/claude_dispatcher/call_site_reachability.py`, anchor
+  `discover_roots`, operator `raise_to_continue` on `AnalyzerError`.
+* control: 95 node ids, 53 rows after folding, **all green**.
+* mutant: exactly one row transitions —
+  `test_discover_roots_raises_on_a_fault_without_help_from_the_graph_builder`
+  (six parametrisations). Nothing else in the file moves.
+* the row whose own clause names that mutation,
+  `test_discover_roots_refuses_a_tree_it_cannot_sweep`, **passes under the
+  mutant**. The clause was never true, which is why it was struck.
+
+Both facts are recorded as `LedgerEntry`s over the same site and revision and
+judged from the same pair of runs, so the expired claim folds to `broken` /
+`strike` while the control folds to `held` / `cite_claim`. A fold that answers
+either one constantly fails the other.
+
+## What the seals could not fix
+
+Three defects the rows pin the *correct* side of, and which the seal author's
+role (tests and `docs/` only) cannot correct in `mutation_ledger.py`:
+
+* **`Rederivation.reddened_observed`'s field docstring says "Rows red under
+  the mutant in THIS run"**, which contradicts `LedgerEntry.reddened`,
+  `classify_observation` and this README — all of which say the
+  `PASSED` → `FAILED` transition set. The two readings coincide on any tree
+  with no baseline-red row, so
+  `test_the_reddened_set_drops_a_row_that_was_red_before_the_mutation` runs
+  against a provisioned tree that has one: under the transition reading the
+  entry over-claimed and the clause is amended; under the field docstring's
+  reading the same entry reads as `held`. The field docstring is the one that
+  is wrong.
+* **`Rederivation.revision_run` has no truthful value** when nothing was
+  provisioned, while `rederive` must still return a `Rederivation` for an
+  absent revision. The seal asserts the disposition (`underivable`) and
+  deliberately asserts nothing about `revision_run`.
+* **`fold_row_results` ranks `ABSENT` below `PASSED`**, so a row whose `[b]`
+  was collected and never reported folds to `PASSED`. The seal pins the
+  current ranking so that changing it is a visible diff, and names it as
+  unruled rather than answering it.
