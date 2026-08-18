@@ -18,7 +18,8 @@ The five constraints a later editor would otherwise break:
    :func:`digest_of_snapshot`. A second spelling makes every run read DRIFTED.
 3. "NO ANCHOR" IS THREE STATES AND THE DEFAULT REFUSES. An unusable anchor and
    no anchor both refuse; only a process that DECLARED itself journal-less
-   (:func:`declare_unanchored`) loads unanchored, and says so.
+   (:func:`declare_unanchored`) loads unanchored, and says so. An anchor and a
+   declaration never coexist, or dropping the anchor uncovers the declaration.
 4. THE ANCHOR IS PER-RUN and a process may hold several. Ambiguity is decided by
    DISAGREEMENT, not by count: where the live anchors attest one digest the
    answer does not depend on which run this load belongs to, and no run identity
@@ -254,11 +255,14 @@ class AnchorFailure:
     """A genesis that reached the publisher and could not be anchored.
 
     Narrow by construction: ``build_genesis_payload`` cannot produce one (always
-    a fresh ``hash_tree`` and ``token_hex`` nonce), but ``verify()`` checks only
-    that the provenance KEYS are PRESENT, so a resumed chain carrying a null or
-    malformed value reaches the publisher. Do not delete the state because the
-    happy path cannot reach it: a total publisher needs somewhere to put the
-    answer, and the alternative is a silent skip.
+    a fresh ``hash_tree`` and ``token_hex`` nonce), but the genesis check is
+    ``[k for k in GENESIS_PROVENANCE_KEYS if k not in event.payload]`` — key
+    PRESENCE, never shape. Measured 2026-08-18 by rewriting a created chain's
+    genesis to ``"reviewer_prompts_hash": None`` and re-covering its hash:
+    ``verify`` returns ``ok=True``, so ``Journal.resume`` hands that payload to
+    the publisher. The state is reachable by the input every resumed run takes.
+    Do not delete it because the happy path cannot reach it: a total publisher
+    needs somewhere to put the answer, and the alternative is a silent skip.
     """
 
     #: The genesis ``run_nonce``, or ``"unknown:<journal path>"`` when the nonce
@@ -397,6 +401,11 @@ def canonical_order(names: Sequence[str]) -> list[str]:
     return sorted(names, key=lambda n: n.split("/"))
 
 
+#: Width of the length prefix :func:`digest_of_snapshot` writes before every
+#: field. 8 bytes big-endian covers any file this process can read into memory.
+_LENGTH_PREFIX_BYTES = 8
+
+
 def digest_of_snapshot(members: Sequence[tuple[str, bytes]]) -> str:
     """The canonical instruction-tree digest, over bytes already in hand.
 
@@ -404,13 +413,22 @@ def digest_of_snapshot(members: Sequence[tuple[str, bytes]]) -> str:
     genesis records and the digest a load computes cannot drift apart.
     ``members`` must already be in :func:`canonical_order`: re-sorting here would
     silently repair a snapshot that lied about its order.
+
+    Every field is LENGTH-PREFIXED, never delimited. A delimiter must be a byte
+    that cannot occur inside a field, and no such byte exists here: file contents
+    are arbitrary bytes, so a NUL separator collides — measured,
+    ``[("a", b"b\\x00c\\x00")]`` and ``[("a", b"b"), ("c", b"")]`` hash equal
+    under it. On a tree of prompt files that is a preimage an editor controls: it
+    lets a rewritten tree present the anchored digest. A fixed-width prefix makes
+    the encoding injective, so distinct member lists have distinct digests.
     """
     digest = hashlib.sha256()
     for rel, data in members:
-        digest.update(rel.encode("utf-8"))
-        digest.update(b"\0")
+        name = rel.encode("utf-8")
+        digest.update(len(name).to_bytes(_LENGTH_PREFIX_BYTES, "big"))
+        digest.update(name)
+        digest.update(len(data).to_bytes(_LENGTH_PREFIX_BYTES, "big"))
         digest.update(data)
-        digest.update(b"\0")
     return digest.hexdigest()
 
 
@@ -582,12 +600,20 @@ def record_anchor(anchor: Anchor) -> None:
     define the anchor, which is the laundering this unit exists to stop.
     ``create`` then ``resume`` of one run adds two pins carrying one digest,
     which is agreement, not ambiguity.
+
+    Publishing REVOKES any declaration: a process that reached a genesis is not
+    journal-less, whatever it said earlier. Without this the two facts coexist
+    and :func:`release_anchor` re-exposes the stale declaration — an ANCHORED
+    process becoming UNANCHORED_DECLARED, which LOADS. See
+    :func:`declare_unanchored` for the other half of the invariant.
     """
+    global _declaration
     if not isinstance(anchor, (PromptPin, AnchorFailure)):
         raise TypeError(f"record_anchor takes an Anchor, got {type(anchor).__name__}")
     with _anchor_lock:
         if anchor not in _anchors:
             _anchors.append(anchor)
+        _declaration = None
 
 
 def live_anchors() -> tuple[Anchor, ...]:
@@ -601,8 +627,10 @@ def release_anchor(run_nonce: str) -> int:
 
     The PRODUCTION eviction seam: a run releases its own anchor and cannot blank
     another's. It cannot open the gate — releasing the last anchor leaves
-    UNANCHORED, which refuses — and it is the documented recovery from a sticky
-    ANCHOR_FAILED.
+    UNANCHORED, which refuses, and never UNANCHORED_DECLARED, because
+    :func:`record_anchor` and :func:`declare_unanchored` keep an anchor and a
+    declaration from ever coexisting for this function to uncover. It is the
+    documented recovery from a sticky ANCHOR_FAILED.
     """
     _require_text(run_nonce, "release_anchor run_nonce")
     with _anchor_lock:
@@ -633,10 +661,22 @@ def declare_unanchored(who: str, reason: str) -> UnanchoredDeclaration:
     when no anchor exists, carried into the load record, and owed by exactly the
     call sites in :data:`UNANCHORED_ENTRY_POINTS`. A second call replaces the
     first — a process is journal-less or it is not.
+
+    RAISES while any anchor is live, rather than being stored and outranked. A
+    stored one survives :func:`release_anchor` and turns the resulting no-anchor
+    state permissive; refusing here is the invariant's other half, and it is a
+    raise because a caller holding a genesis asking to be excused from it is a
+    wiring bug, not a state to record.
     """
     global _declaration
     declaration = UnanchoredDeclaration(who=who, reason=reason)
     with _anchor_lock:
+        if _anchors:
+            raise PromptProvenanceError(
+                f"{who} declared itself journal-less while this process holds "
+                f"{len(_anchors)} anchor(s); a declaration outlives the anchors "
+                "it is stored beside and would make releasing them permissive"
+            )
         _declaration = declaration
     return declaration
 
