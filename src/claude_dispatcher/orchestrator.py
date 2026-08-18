@@ -57,6 +57,7 @@ from . import routing as routing_mod
 from . import seal_verify as sv_mod
 from . import endpoint_agents as endpoint_agents_mod
 from . import spawn as spawn_mod
+from . import spawn_failure as spawn_failure_mod
 from . import summary as summary_mod
 from . import verifier as verifier_mod
 from . import worktree as wt_mod
@@ -1455,7 +1456,29 @@ def _run_task(
         if cfg.haiku_summary:
             _log_transcript_and_haiku(cfg, snap, result, summary_path.parent, log_path)
         if result.exit_code != 0:
-            fail_reason = f"session_exit_code_{result.exit_code}"
+            # D-64: one branch made every failure a quality failure. An
+            # api_error is INFRASTRUCTURE — the cascade cannot fix a server
+            # overload, the retry is spent against the same condition, and the
+            # effort bump it writes outlives the transient cause. So classify,
+            # and for infrastructure BREAK with the provider's own words instead
+            # of advancing a rung.
+            failure = spawn_failure_mod.classify(
+                result.exit_code, result.stdout or "", result.stderr or "",
+            )
+            if failure.is_infrastructure:
+                _log(log_path, f"  {snap.key} spawn failed (infrastructure): "
+                               f"{failure.reason[:200]}")
+                _emit_event(cfg, journal_mod.EventType.task_spawn_finished, {
+                    "spawn_kind": "implementer",
+                    "failure_kind": failure.kind.value,
+                    "retry": failure.retry.value,
+                    "api_error_status": failure.api_error_status,
+                    "provider_message": failure.provider_message[:400],
+                }, task_key=snap.key)
+                final_status = plan_mod.BLOCKED
+                final_blocked_reason = failure.reason
+                break
+            fail_reason = failure.reason
             continue
         if not result.summary_path.exists():
             # Chronic class: the session did the work (commits exist) but
