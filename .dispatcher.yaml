@@ -55,3 +55,8 @@ panel:
 # cascade.terminal is CLI-only today (--cascade-terminal / --no-claude)
 
 # Dogfood: dispatcher run … --no-claude
+
+# Run artifacts live OUTSIDE the repo. `docs/runs/` is gitignored (so it is not
+# in history) AND sits inside a disposable worktree, so the audit trail dies with
+# the worktree. Relative to the REPO ROOT, so every worktree shares one location.
+runs_dir: ../dispatcher-runs

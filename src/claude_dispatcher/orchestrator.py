@@ -5142,6 +5142,14 @@ def _agent_meta(
     return meta
 
 
+def _repo_root_for_tasks(tasks_yaml: str | Path) -> Path:
+    """Repo root containing the tasks file, or cwd when it is not in a repo."""
+    try:
+        return wt_mod.detect_repo_root(Path(tasks_yaml).resolve().parent)
+    except Exception:
+        return Path.cwd()
+
+
 def _build_config(args: argparse.Namespace) -> RunConfig:
     extra = getattr(args, "claude_extra_args", "") or ""
     # CLI base_branch wins if explicitly set; else fall back to "main" here
@@ -5185,7 +5193,13 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
         design_agent = "grok" if no_claude else "claude"
     return RunConfig(
         tasks_path=Path(args.tasks_yaml).resolve(),
-        runs_dir=Path(args.runs_dir).resolve(),
+        # Resolved HERE and not only in `cli.main`, so a programmatic caller that
+        # builds an args namespace without the flag gets the same answer as the CLI
+        # instead of `Path(None)`.
+        runs_dir=repo_config_mod.resolve_runs_dir(
+            getattr(args, "runs_dir", None),
+            repo_root=_repo_root_for_tasks(args.tasks_yaml),
+        ),
         run_id=args.run_id or _default_run_id(Path(args.tasks_yaml)),
         mode=args.mode,
         max_parallel=args.max_parallel,

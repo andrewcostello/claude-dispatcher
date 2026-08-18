@@ -40,6 +40,11 @@ from claude_dispatcher import yaml_io
 
 CONFIG_FILENAME = ".dispatcher.yaml"
 
+#: The built-in runs directory, and the ONLY place this literal lives. It used to
+#: be repeated as an argparse default in five subcommands, so moving run artifacts
+#: meant changing five things or silently breaking the readers.
+DEFAULT_RUNS_DIR = "docs/runs"
+
 
 class RepoConfigError(ValueError):
     """Raised when .dispatcher.yaml exists but is malformed or invalid.
@@ -90,6 +95,12 @@ class RepoConfig:
     # active register needs no style and raises nothing — that is every repo's
     # starting state and it must behave exactly as it did before.
     test_exclusion: str | None = None
+    # Where per-run artifacts (run.log, journal.jsonl, summaries) are written.
+    # None when the key is absent. A RELATIVE value resolves against the REPO
+    # ROOT, not cwd, so every worktree of a repo agrees on one location — which is
+    # the point: `docs/runs/` is gitignored AND inside a disposable worktree, so
+    # the audit trail dies with the worktree unless it is pointed outside.
+    runs_dir: str | None = None
 
     def routed_model(self, risk: str | None) -> str | None:
         """The configured model for ``risk`` (case-insensitive), falling back
@@ -230,6 +241,16 @@ def load(repo_root: str | Path) -> RepoConfig:
                 f"{', '.join(allowed)}, got {test_exclusion!r}"
             )
 
+    runs_dir: str | None = None
+    if "runs_dir" in doc:
+        runs_dir = doc.get("runs_dir")
+        if not isinstance(runs_dir, str) or not runs_dir.strip():
+            raise RepoConfigError(
+                f"'runs_dir' in {path} must be a non-empty path string, "
+                f"got {runs_dir!r}"
+            )
+        runs_dir = runs_dir.strip()
+
     # `roles:` — the D1 build-protocol immutable-path table. This loader
     # VALIDATES the section and deliberately does not keep the parsed policy:
     # `load` reads the working tree, and the gating path must take its policy
@@ -261,7 +282,7 @@ def load(repo_root: str | Path) -> RepoConfig:
 
     known_top_level = (
         "test", "panel", "integration", "model_routing", "test_exclusion",
-        roles_key,
+        "runs_dir", roles_key,
     )
     unknown = tuple(sorted(
         [str(key) for key in doc if key not in known_top_level]
@@ -274,6 +295,7 @@ def load(repo_root: str | Path) -> RepoConfig:
         integration=integration,
         model_routing=model_routing,
         test_exclusion=test_exclusion,
+        runs_dir=runs_dir,
     )
 
 
@@ -492,3 +514,35 @@ def blob_text_at(
             f"cannot read {path} at {ref} (git exit {rc}): {err.strip()}"
         )
     return _as_text(out, ref, path)
+
+
+def resolve_runs_dir(
+    explicit: str | Path | None,
+    *,
+    repo_root: str | Path | None = None,
+) -> Path:
+    """Where run artifacts go: CLI flag > `.dispatcher.yaml` `runs_dir:` > default.
+
+    Returns an ABSOLUTE path. ``explicit`` is the CLI value, or None when the flag
+    was omitted — the two must stay distinguishable, or a config value could never
+    win over an argparse default.
+
+    A relative CONFIGURED path resolves against the repo root, so every worktree
+    of a repo writes to one place. A relative EXPLICIT path resolves against cwd,
+    which is what someone typing a flag means. A config that cannot be read falls
+    back to the default rather than raising: this decides where a log is written,
+    and refusing to run because of it would be worse than writing it in the usual
+    place.
+    """
+    root = Path(repo_root) if repo_root is not None else Path.cwd()
+    if explicit is not None:
+        return Path(explicit).expanduser().resolve()
+    configured: str | None = None
+    try:
+        configured = load(root).runs_dir
+    except (RepoConfigError, OSError):
+        configured = None
+    if configured:
+        p = Path(configured).expanduser()
+        return p.resolve() if p.is_absolute() else (root / p).resolve()
+    return (root / DEFAULT_RUNS_DIR).resolve()

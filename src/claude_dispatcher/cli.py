@@ -24,6 +24,8 @@ from . import forecast_bridge
 from . import doctor as doctor_cmd
 from . import watch as watch_cmd
 from . import unblock as unblock_cmd
+from . import repo_config
+from . import worktree as wt_mod
 
 
 # There is deliberately NO shipped default financial-paths list here.
@@ -234,8 +236,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument(
         "--runs-dir",
-        default="docs/runs",
-        help="Where to write per-run artifacts (run.log, summaries). Default: docs/runs",
+        default=None,
+        help=(
+            "Where to write per-run artifacts (run.log, journal, summaries). "
+            "Overrides `runs_dir:` in .dispatcher.yaml; default "
+            f"{repo_config.DEFAULT_RUNS_DIR}"
+        ),
     )
     run.add_argument(
         "--worktree-base",
@@ -488,7 +494,7 @@ def build_parser() -> argparse.ArgumentParser:
               "machine-readable output."),
     )
     st.add_argument("run_id")
-    st.add_argument("--runs-dir", default="docs/runs")
+    st.add_argument("--runs-dir", default=None)
     st.add_argument(
         "--json",
         action="store_true",
@@ -533,7 +539,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     rs = sub.add_parser("resume", help="Resume an interrupted run from checkpoint")
     rs.add_argument("run_id")
-    rs.add_argument("--runs-dir", default="docs/runs")
+    rs.add_argument("--runs-dir", default=None)
     rs.add_argument(
         "--strategy",
         choices=["continue", "mark-blocked"],
@@ -581,7 +587,7 @@ def build_parser() -> argparse.ArgumentParser:
               "dispatch loop runs the same pass live."),
     )
     mp.add_argument("run_id")
-    mp.add_argument("--runs-dir", default="docs/runs")
+    mp.add_argument("--runs-dir", default=None)
     mp.add_argument(
         "--force",
         action="store_true",
@@ -616,7 +622,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="latest",
         help="Run ID to report on. Defaults to the latest run in --runs-dir.",
     )
-    rp.add_argument("--runs-dir", default="docs/runs")
+    rp.add_argument("--runs-dir", default=None)
     rp.add_argument(
         "--json",
         action="store_true",
@@ -642,7 +648,7 @@ def build_parser() -> argparse.ArgumentParser:
               "spawn, panel, blocked, done). Exit 1 if any task_blocked."),
     )
     wh.add_argument("run_id", help="Run ID under --runs-dir")
-    wh.add_argument("--runs-dir", default="docs/runs")
+    wh.add_argument("--runs-dir", default=None)
     wh.add_argument(
         "--no-follow",
         action="store_true",
@@ -770,6 +776,19 @@ def _watch_entry(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    # One resolution point for every subcommand. The literal used to be repeated
+    # as an argparse default in five places, so pointing runs somewhere else moved
+    # the writer and left the readers looking at the old path. Resolved to an
+    # ABSOLUTE path here, which leaves each consumer's `Path(...).resolve()` a
+    # no-op. `default=None` is what lets a config value beat the built-in default.
+    if hasattr(args, "runs_dir"):
+        try:
+            root = wt_mod.detect_repo_root()
+        except Exception:
+            root = Path.cwd()
+        args.runs_dir = str(
+            repo_config.resolve_runs_dir(args.runs_dir, repo_root=root)
+        )
     try:
         return args.func(args)
     except KeyboardInterrupt:
