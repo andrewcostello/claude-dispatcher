@@ -11,28 +11,32 @@ here. An operator deciding is an unreviewed design act.
 
 ## Preconditions — check all four before touching the file
 
-1. `branch_surface`'s two holes are filled (W2-2-3). The check is an exit code,
-   not a judgement:
+1. `branch_surface`'s **five** holes are filled (W2-2-3). The check is an exit
+   code, not a judgement:
 
    ```
    python -m claude_dispatcher.scaffold_shape holes --bodies \
      src/claude_dispatcher/branch_surface.py::build_surface \
-     src/claude_dispatcher/branch_surface.py::compare_surfaces
+     src/claude_dispatcher/branch_surface.py::compare_surfaces \
+     src/claude_dispatcher/branch_surface.py::closure_request \
+     src/claude_dispatcher/branch_surface.py::fold_branch_signatures \
+     src/claude_dispatcher/branch_surface.py::_fold
    ```
 
-   These two are W2-2-1's `declares.holes` in full, so the bodies gate checks
+   These five are W2-2-1's `declares.holes` in full, so the bodies gate checks
    them on its own and this command only makes it visible. **The module has no
-   other stub**: `_fold` is implemented, because a stub outside the declared
-   pair is a hole no gate checks — the bodies gate would pass with both
-   declared holes filled and the module still answering UNDETERMINED. What
-   `_fold` contains is the read order, the fault precedence and the error
-   contract; every judgement it routes through is inside one of the two holes,
-   so it decides nothing before the seals do.
+   other stub**, which the same tool states independently:
 
-   Transcribing this patch before W2-2-3 lands is still wrong, but it fails
-   CLOSED rather than aborting the gate: `fold_branch_signatures` converts the
-   holes' `NotImplementedError` into `RoleDiffError`, so every BODIES branch
-   with TypeScript in it reads UNDETERMINED.
+   ```
+   python -m claude_dispatcher.scaffold_shape measure \
+     src/claude_dispatcher/branch_surface.py    # the `stub` column must be 0
+   ```
+
+   **Transcribing this patch before W2-2-3 lands aborts the gate, not just
+   reddens it.** `fold_branch_signatures` is itself a hole now, so its
+   `NotImplementedError` reaches `check_branch` uncaught; the fail-closed
+   funnel is part of what W2-2-3 writes. This precondition is therefore hard,
+   not advisory.
 2. W2-2-2's rows are registered in `config/known-red.yaml` against
    `body_task: W2-2-5`, so they retire when this row is marked Done.
 3. The suite is green at the commit being amended.
@@ -51,6 +55,8 @@ unsupported_paths:` block**, insert:
     # `branch_surface`; nothing but `RoleDiffError` crosses back.
     from . import branch_surface as _branch_surface
 
+    if merge_base is None:
+        merge_base = _merge_base_of(repo_root, base_ref, branch_ref, run=run)
     fold = _branch_surface.fold_branch_signatures(
         repo_root, merge_base, branch_ref, changed_paths, run=run,
     )
@@ -73,17 +79,25 @@ Four things about the placement, each of which is a defect if changed:
 * **After the loop, not inside it.** The loop `continue`s on `if base_text is
   None`, which is exactly the new-file case this unit exists to catch; a block
   spliced beside the `compare_signatures` call is never reached by the attack.
-* **`merge_base`, not `base_ref`.** The path list is a three-dot diff measured
-  from the merge-base, so the baseline blobs are read there. Passing `base_ref`
-  reintroduces the D1-inputs I4 defect the function's own docstring names.
-  `merge_base` is `str | None` here and the fold takes both — but **`None` is
-  only a clean answer when the diff holds no merging-language path**. With one
-  present the fold raises `RoleDiffError` rather than clearing, because "there
-  was TypeScript and no baseline" is not a pass. Through this call site that
-  case is unreachable: TypeScript is enrolled in `COMPARATORS`, so a `.ts` path
-  is examined by the loop and the lazy merge-base is resolved before the fold
-  sees it. The refusal is the module's own fail-closed contract, not a case an
-  operator has to arrange.
+* **`merge_base`, not `base_ref`, and RESOLVED before the call.** The path
+  list is a three-dot diff measured from the merge-base, so the baseline blobs
+  are read there. Passing `base_ref` reintroduces the D1-inputs I4 defect the
+  function's own docstring names.
+
+  The fold **refuses on `merge_base is None`**, before it looks at
+  `changed_paths` at all: an unresolved base is unknown input and unknown input
+  denies (operator ruling, W2-2-1 round 3). The driver resolves its merge-base
+  LAZILY, on the first path a registry row claims, so a docs-only or
+  SQL-only diff reaches this point with `None` — which is why the two added
+  lines resolve it here rather than letting the fold answer without a baseline.
+  They are the driver's own expression, copied from the loop above verbatim;
+  `_merge_base_of` is already in scope and already on this function's exception
+  path. **Do not replace them with `if merge_base is not None:` around the
+  call** — that is the fail-open shape the ruling refuses, moved one frame out.
+
+  With the resolve in place `RoleDiffError` from clause 1 is unreachable
+  through this call site; it stays the module's fail-closed contract for any
+  other caller.
 * **The import is function-local.** `branch_surface` imports `role_protocol` at
   module scope; a module-scope import back would be a cycle.
 
@@ -97,8 +111,11 @@ new status needs a rank.
 
 ## What this costs, per branch
 
-Zero on any diff with no TypeScript path in it — `_merging_paths` filters
-before the first read, and this repository has no TypeScript in it today.
+One `git merge-base` on a diff whose paths no registry row claims, where the
+driver previously ran none — the price of clause 1 above, paid once per branch.
+Otherwise zero on any diff with no TypeScript path in it: the merge-base was
+already resolved by the loop, and `_merging_paths` filters before the first
+read. This repository has no TypeScript in it today.
 
 On a diff that does, the bound is stated in `_fold` and is
 **`2 × (changed TypeScript paths) + MAX_CLOSURE_READS`** blob reads, where

@@ -56,13 +56,18 @@ pass:
     positive.
 
 WHAT THIS SCAFFOLD LEAVES UNDONE, on purpose, and it is exactly this unit's
-two declared holes: :func:`build_surface` and :func:`compare_surfaces`. Every
-judgement the seals score — routing, module-ness, ambiguity, the unread policy,
-the three clauses — is inside one of the two. Everything else here, including
-:func:`_fold`, is a data type, a validation, a read order or an error contract:
-a stub outside the declared pair would be a hole no gate checks, which the
-BODIES phase would pass over with this module still answering UNDETERMINED to
-every branch.
+FIVE declared holes: :func:`build_surface`, :func:`compare_surfaces`,
+:func:`closure_request`, :func:`fold_branch_signatures` and :func:`_fold`.
+Every judgement W2-2-2's rows score — routing, module-ness, ambiguity, the
+unread policy, the three clauses, revision selection, closure construction,
+fault precedence and the error contract — is inside one of the five, and each
+one's docstring is the contract those rows are written from. What is left
+implemented is types, validation, enumeration and pure helpers.
+
+Four of those helpers — :func:`_merging_paths`, :func:`_surface_at`,
+:func:`_fault_fold` and :func:`_unenumerated` — have no caller until the holes
+are filled. That is the shape and not dead code: they are the plumbing
+W2-2-3 assembles, each specified by the hole that will call it.
 """
 
 from __future__ import annotations
@@ -790,21 +795,21 @@ class ClosureRequest:
 
 
 def closure_request(surfaces: Sequence[FileSurface]) -> ClosureRequest:
-    """Every candidate path the augmentations in ``surfaces`` could name."""
-    candidates: list[str] = []
-    seen: set[str] = set()
-    for surface in surfaces:
-        if not surface_rule_for(surface.language).merges_across_files:
-            continue
-        for specifier in augmentation_specifiers(surface):
-            for candidate in specifier_candidates(surface.path, specifier):
-                if candidate in seen:
-                    continue
-                if len(candidates) >= MAX_CLOSURE_READS:
-                    return ClosureRequest(tuple(candidates), truncated=True)
-                seen.add(candidate)
-                candidates.append(candidate)
-    return ClosureRequest(tuple(candidates))
+    """Every candidate path the augmentations in ``surfaces`` could name.
+
+    HOLE (W2-2-3). The contract W2-2-2's rows are written from:
+
+      1. only a surface whose language merges across files contributes;
+      2. for each, every :func:`augmentation_specifiers` entry expanded by
+         :func:`specifier_candidates`, in that order — the order is the
+         contract, because it is what the cap truncates;
+      3. candidates deduplicate, first spelling kept, so the result is a
+         stable list a caller may hand to git unchanged;
+      4. at :data:`MAX_CLOSURE_READS` the request STOPS and reports
+         ``truncated``. Enumerating past the cap and slicing would be the
+         silent truncation the cap exists to refuse.
+    """
+    raise NotImplementedError("W2-2-3 builds the closure enumeration")
 
 
 def fold_branch_signatures(
@@ -817,43 +822,37 @@ def fold_branch_signatures(
 ) -> BranchFold:
     """The branch-wide comparison, as the floored driver receives it.
 
+    HOLE (W2-2-3). The contract W2-2-2's rows are written from, in the order
+    the answers must be decided:
+
+      1. **``merge_base is None`` REFUSES**, decided BEFORE ``changed_paths``
+         is looked at. An unresolved base is unknown input and unknown input
+         denies; answering CLEAN because the diff happened to hold nothing
+         this module reads is a gate clearing a branch it never established a
+         baseline for. That cost is paid at the CALL SITE and not softened
+         here — ``docs/branch-surface-amendment.md`` edit 1 resolves the
+         driver's lazy merge-base before calling, so an honest docs-only
+         branch arrives with a base rather than with a refusal.
+      2. a ``changed_paths`` with no :func:`_merging_paths` entry is
+         :data:`CLEAN_FOLD`, and reads nothing.
+      3. otherwise :func:`_fold`, inside the error contract below.
+
     THE ERROR CONTRACT, which is why this wrapper exists rather than the driver
     calling :func:`_fold`: ``fingerprints`` raises ``SourceUnparseable`` and
     ``ComparatorUnavailable``, :func:`_fold` may raise
     :class:`BranchSurfaceError`, and ``check_branch`` catches none of them.
-    Everything is funnelled here into ``role_protocol.RoleDiffError``, the one
+    Every one must leave here as ``role_protocol.RoleDiffError``, the one
     exception it maps to UNDETERMINED. **No other exception this module can
-    raise reaches the floored driver** — including the holes' own
-    ``NotImplementedError``, so transcribing the amendment before W2-2-3 lands
-    fails CLOSED rather than aborting the gate.
+    raise may reach the floored driver** — including the other holes' own
+    ``NotImplementedError``. It is itself a hole, so the amendment may not be
+    transcribed before W2-2-3 lands; once it is, a half-filled module fails
+    CLOSED rather than aborting the gate.
 
     ``merge_base`` is the MERGE-BASE and never ``base_ref``'s tip: the diff was
     measured from it, and reading a baseline at another revision is the defect
-    ``_compare_branch_signatures`` documents. ``None`` is only clean when the
-    diff has no merging-language path in it. With one present it is a refusal:
-    "there was TypeScript and no baseline to compare it against" is not a pass,
-    and the driver reaching here with None and a TypeScript path would mean its
-    lazy merge-base was never resolved for a file it did examine.
+    ``_compare_branch_signatures`` documents.
     """
-    try:
-        paths = _merging_paths(changed_paths)
-        if not paths:
-            return CLEAN_FOLD
-        if merge_base is None:
-            raise RoleDiffError(
-                f"the branch-wide signature fold was given no merge-base for "
-                f"{len(paths)} path(s) in a language that merges declarations "
-                f"across files ({', '.join(paths[:3])}); there is no baseline "
-                "to compare a widening against and no honest clean answer"
-            )
-        return _fold(repo_root, merge_base, branch_ref, paths, run=run)
-    except RoleDiffError:
-        raise
-    except Exception as exc:  # incl. BranchSurfaceError and the holes
-        raise RoleDiffError(
-            f"the branch-wide signature fold could not complete: "
-            f"{type(exc).__name__}: {exc}"
-        ) from exc
+    raise NotImplementedError("W2-2-3 builds the fold entry point")
 
 
 @dataclass(frozen=True)
@@ -940,7 +939,8 @@ def _fold(
 ) -> BranchFold:
     """The procedure, inside :func:`fold_branch_signatures`' error contract.
 
-    ``paths`` is already :func:`_merging_paths`-filtered and non-empty.
+    HOLE (W2-2-3). Everything below is the contract W2-2-2's rows are written
+    from. ``paths`` is already :func:`_merging_paths`-filtered and non-empty.
 
     THE READS, and the bound is the whole reason the order is specified:
 
@@ -986,93 +986,9 @@ def _fold(
 
     ``detail`` names every widening in one clause each, for the line
     ``check_branch`` prints.
-
-    IMPLEMENTED, unlike the two holes above, because it is not one of them:
-    this unit's ``declares.holes`` are :func:`build_surface` and
-    :func:`compare_surfaces`, so a stub here is a hole no gate checks — the
-    BODIES phase would pass with both declared holes filled and this module
-    still answering UNDETERMINED to every branch. Every judgement it routes
-    through is inside a declared hole; what is written here is the read order,
-    the fault precedence and the error contract, none of which it decides.
     """
-    base_surfaces: list[FileSurface] = []
-    head_surfaces: list[FileSurface] = []
-    faults: list[ReadFault] = []
-    # What was TRIED, per revision, and never what came back: `build_surface`
-    # reads a space with no attempted path as UNREAD, and a surface list can
-    # only report what exists.
-    base_attempted: set[str] = set(paths)
-    head_attempted: set[str] = set(paths)
-
-    for path in paths:
-        for ref, surfaces in (
-            (merge_base, base_surfaces), (branch_ref, head_surfaces),
-        ):
-            surface, fault = _surface_at(repo_root, ref, path, run=run)
-            if fault is not None:
-                faults.append(fault)
-            elif surface is not None:
-                surfaces.append(surface)
-    # Before the closure, so a file that did not parse does not buy up to
-    # MAX_CLOSURE_READS more reads for an answer that is already refused.
-    if faults:
-        return _fault_fold(faults)
-
-    request = closure_request(head_surfaces)
-    if request.truncated:
-        unenumerated = _unenumerated(head_surfaces, request)
-        raise RoleDiffError(
-            f"the branch-wide signature fold stopped at "
-            f"MAX_CLOSURE_READS={MAX_CLOSURE_READS} baseline reads with "
-            f"{len(unenumerated)} augmentation target(s) still unenumerated "
-            f"({', '.join(unenumerated[:3])}); an over-budget closure is an "
-            f"unread space ({UnreadReason.BUDGET_EXCEEDED.value}), never a "
-            "short read"
-        )
-    for candidate in request.candidates:
-        if candidate in base_attempted:
-            continue
-        # Read at merge_base ONLY and used at both revisions: the candidate is
-        # not in `paths`, so the three-dot diff says its content is the same at
-        # both, and reading it at branch_ref would be the wrong-revision defect.
-        base_attempted.add(candidate)
-        head_attempted.add(candidate)
-        surface, fault = _surface_at(repo_root, merge_base, candidate, run=run)
-        if fault is not None:
-            faults.append(fault)
-        elif surface is not None:
-            base_surfaces.append(surface)
-            head_surfaces.append(surface)
-    if faults:
-        return _fault_fold(faults)
-
-    comparison = compare_surfaces(
-        build_surface(base_surfaces, attempted=base_attempted),
-        build_surface(head_surfaces, attempted=head_attempted),
-    )
-    if comparison.unread:
-        raise RoleDiffError(
-            "the branch-wide signature fold could not bound "
-            f"{len(comparison.unread)} declaration space(s), so it cannot say "
-            "the branch widened nothing: "
-            + "; ".join(
-                f"{space.namespace.label} ({space.reason.value})"
-                + (f": {space.detail}" if space.detail else "")
-                for space in comparison.unread
-            )
-        )
-    if not comparison.changes:
-        return CLEAN_FOLD
-    return BranchFold(
-        status=SignatureCheckStatus.CHECKED,
-        changes=tuple(
-            change.as_signature_change() for change in comparison.changes
-        ),
-        detail="; ".join(
-            f"{change.key.label} widened by "
-            f"{', '.join(change.introduced_by)}"
-            for change in comparison.changes
-        ),
+    raise NotImplementedError(
+        "W2-2-3 builds the read order, the closure pass and the emitted result"
     )
 
 
@@ -1412,9 +1328,11 @@ def _validate_rules(
     ``.mts`` would make every ``.mts`` module's namespace its full path minus
     ``.ts``, and no augmentation could meet it.
 
-    The suffix check drives :func:`_strip_ts_suffix` itself and demands the
-    exact stem back. An ``endswith`` test would pass ``.mts``, ``.cts`` and
-    ``.tsx`` on the ``.ts`` row alone — the decay this function exists to stop.
+    The suffix check is ANCHORED in two ways, and neither is an ``endswith``
+    against the suffix table: an enrolled extension must be a MEMBER of
+    :data:`TS_NAMESPACE_SUFFIXES`, which is what refuses ``.mts``; and
+    ``"m" + extension`` must strip back to exactly ``"m"``, which is what
+    catches a table reordered so ``.ts`` shadows ``.d.ts``.
     """
     seen: set[Language] = set()
     for rule in rules:
@@ -1430,11 +1348,17 @@ def _validate_rules(
             "'does not merge'"
         )
     for extension in extensions:
+        if extension not in TS_NAMESPACE_SUFFIXES:
+            raise BranchSurfaceError(
+                f"enrolled TypeScript extension {extension!r} has no row in "
+                "TS_NAMESPACE_SUFFIXES, so its module namespace would keep "
+                "part of the extension and no specifier could meet it"
+            )
         if _strip_ts_suffix("m" + extension) != "m":
             raise BranchSurfaceError(
-                f"enrolled TypeScript extension {extension!r} is not stripped "
-                "whole by TS_NAMESPACE_SUFFIXES, so its module namespace would "
-                "keep part of the extension and no specifier could meet it"
+                f"enrolled TypeScript extension {extension!r} is in "
+                "TS_NAMESPACE_SUFFIXES but a longer row strips first, so two "
+                "spellings of one module would land in different namespaces"
             )
 
 
