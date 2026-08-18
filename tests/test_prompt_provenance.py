@@ -43,8 +43,9 @@ NOT SEALED HERE, each with the reason it is out of reach rather than overlooked:
     so every pre-existing chain reads DRIFTED once the comparison is wired. No
     row says what an old-encoding chain SHOULD do: refuse-and-restart and
     carry-a-version are both defensible and choosing is W2-1-4's ruling. What is
-    sealed holds under either — the injectivity the change bought, and that a
-    drift refusal is diagnosable enough to tell an encoding change from an edit.
+    sealed holds under either — that the new encoding is unambiguous where the
+    delimited one was not, and that a drift refusal is diagnosable enough to
+    tell an encoding change from an edit.
   * Run identity in `PromptLoadRecord`, and `_reporter` being an unsynchronised
     process global. Both are contract shape, and every call site that could
     thread a run identity into this seam is in `orchestrator.py`, floor glob 17.
@@ -62,10 +63,13 @@ NOT SEALED HERE, each with the reason it is out of reach rather than overlooked:
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib.util
 import json
+import os
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -220,15 +224,27 @@ def test_no_spelling_of_the_instruction_trees_is_adjudicable(declared: str) -> N
     `**`, by `*.md`, by a trailing slash or from a nested checkout, which is
     the same hole one directory over.
 
+    ALL SIXTEEN CLOSE, including the two trailing-slash spellings. The prior
+    draft conceded those two as permanently red under a matcher that strips the
+    slash and then asks a `/**` tail to match a bare directory; a review family
+    was right that a seals file may not ship a row it says cannot go green.
+    They stay, and the concession is withdrawn: the entry is a DIRECTORY, and a
+    rule that recognises one closes them.
+
     Measured under: `0b275d4` — all sixteen validate with 0 errors and 0
     warnings. All sixteen are RED.
-    Measured under: `FLOOR_GLOBS + FLOOR_GLOBS_OWED` with the plan-time rule
-    written as `first_matching_glob(entry.strip().rstrip('/'), FLOOR_GLOBS)` —
-    fourteen rows go green and the two trailing-slash rows stay red, because
-    `src/claude_dispatcher/reviewer_prompts` does not match a `/**` tail. They
-    are kept: naming a directory with a trailing slash is the plainest way to
-    declare it, and closing it costs a retry with `"/**"` appended. Flagged for
-    W2-1-4 to rule on with the rest of the floored half.
+    Measured 2026-08-18 under a candidate rule installed over
+    `_floor_glob_named_by`: keep its basename answer, and add — on the
+    declaration stripped of surrounding space, a trailing `/` and a leading
+    `./` — a hit when it EQUALS a member of `INSTRUCTION_TREES`, ends with
+    `"/" + member` (a nested checkout of the directory itself), or contains
+    `"/" + member + "/"` (anything inside it, however spelled). All sixteen
+    refuse; all six rows of `test_a_declaration_that_names_no_instruction_tree_
+    still_plans` still plan, `vendor/thirdparty/reviewer_prompts/_shared.md`
+    and `src/claude_dispatcher/**` included; and the four-row control call
+    above reports exactly four errors and no warnings. The rule is written out
+    here because it is what makes these rows satisfiable, not because W2-1-4
+    owes this spelling of it.
     """
     validation = validate(_unit(P4_probe=declared))
     assert validation.ok is False, (
@@ -492,18 +508,20 @@ def test_the_render_is_not_an_earlier_read_than_the_one_that_was_digested(
     from the snapshot returns the changed preamble and one that renders from an
     earlier read does not.
 
-    ONE read, asserted as one, because the marker alone is not enough: under a
-    body that snapshots TWICE and renders from the first, the hook fires on both
-    and the tamper lands before either, so the marker assertion stays green
-    (measured). "One filesystem pass" is the contract either way.
+    Behavioural only. The prior draft also asserted exactly one call, which is
+    the separate structural clause the row below now carries alone: a review
+    family raised that the count rejects a body deriving both the digest and
+    the render from one snapshot after an unused extra pass, and splitting the
+    two means that argument reddens one labelled row instead of this property.
 
     Measured under: `0b275d4` — `read_tree_members` is never called from the
-    load path, so `reads` stays empty. RED on `reads`.
-    Measured under: `text = snapshot_tree(dir).render(...)` before a second
-    `snapshot_tree` that is checked, with `text` returned — this reddens on the
-    read count and no other Part B row moves.
-    Measured under: `fam_path.read_text()` before the snapshot, with `text`
-    returned — this reddens on the rendered bytes.
+    load path, so the tree never moves and the rendered preamble is the
+    unchanged one. RED on the rendered bytes.
+    Measured under: `fam_path.read_text()` before the snapshot, with that text
+    returned — RED. `test_the_load_makes_exactly_one_pass_over_the_tree` stays
+    GREEN under it, which is the half of the split that matters: the two rows
+    catch different bodies. (The early read also reddens the missing-member and
+    absent-tree rows, which meet `FileNotFoundError` before the check.)
     """
     changed = "THE BYTES THE SNAPSHOT WILL HOLD\n"
     after = [
@@ -513,23 +531,62 @@ def test_the_render_is_not_an_earlier_read_than_the_one_that_was_digested(
     _anchor(pp.digest_of_snapshot(after))
 
     real_read = pp.read_tree_members
-    reads: list[str] = []
 
     def _read_after_moving_the_tree(root):
-        reads.append(str(root))
         (prompt_tree / "claude.md").write_text(changed, encoding="utf-8")
         return real_read(root)
 
     monkeypatch.setattr(pp, "read_tree_members", _read_after_moving_the_tree)
     rendered = cfr._load_prompt("claude")
 
-    assert reads == [str(prompt_tree)], (
-        "the load did not make exactly one pass over the tree through this "
-        f"module, so the digest and the render may come from two reads: {reads}"
-    )
     assert changed in rendered, (
         "the rendered preamble is not the one the snapshot held, so the panel "
         "was handed bytes that were never digested"
+    )
+
+
+def test_the_load_makes_exactly_one_pass_over_the_tree(
+    prompt_tree: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A STRUCTURAL clause, labelled as one: one load, one walk of the tree.
+
+    It is separable from the property above and it is stricter. A body that
+    takes a second snapshot — a preflight it discards, a re-read it never
+    renders from — can still be safe, if both the accepted digest and the
+    rendered bytes come from one snapshot object. This row refuses it anyway,
+    and the reason is the same one that makes `check_prompt_tree` take bytes
+    rather than a path: every extra walk is another moment at which the tree an
+    attacker can edit is observed, and a seal cannot tell from outside which
+    walk a later edit will hand to the panel. The behavioural row above catches
+    the unsafe orderings a moving tree exposes; this one is the flat rule.
+
+    A body that needs a second pass should DEVIATE on this row, which is why it
+    is not folded into the assertion above: a deviation here should not have to
+    argue about check/use ordering, and reddening the ordering property would
+    look like the security clause failing.
+
+    Measured under: `0b275d4` — `read_tree_members` is never reached from the
+    load path, so `reads` is empty. RED.
+    Measured under: `text = snapshot_tree(dir).render(...)` before a second
+    `snapshot_tree` that is checked — RED here and GREEN on the ordering row
+    above, which is why this clause is not redundant. (The absent-tree row
+    reddens too: rendering in front of the check meets the missing member
+    first.)
+    """
+    _anchor(_digest_of(prompt_tree))
+    real_read = pp.read_tree_members
+    reads: list[str] = []
+
+    def _counting_read(root):
+        reads.append(str(root))
+        return real_read(root)
+
+    monkeypatch.setattr(pp, "read_tree_members", _counting_read)
+    assert cfr._load_prompt("claude")
+
+    assert reads == [str(prompt_tree)], (
+        "the load did not make exactly one pass over the tree through this "
+        f"module, so the digest and the render may come from two reads: {reads}"
     )
 
 
@@ -542,14 +599,29 @@ def test_a_declaration_cannot_be_stored_beside_an_anchor(prompt_tree: Path) -> N
     ANCHORED process becomes UNANCHORED_DECLARED, which LOADS. Refusing at the
     declaration is one of the two things holding that shut.
 
+    The raise is pinned to the GUARD, not to any provenance failure. A review
+    family raised that accepting a bare `PromptProvenanceError` also greens on
+    a mistyped pin or a rejected nonce — errors this arrangement can raise for
+    reasons that have nothing to do with the invariant — so the caught error
+    must name the declaring entry point and must not be a `PromptRefusal`,
+    which is what a body that reclassified this into the load path would raise.
+
     Measured under: `0b275d4` — passes, and reddens when
     `declare_unanchored`'s `if _anchors:` guard is deleted.
     """
+    who = pp.UNANCHORED_ENTRY_POINTS[0]
     _anchor(_digest_of(prompt_tree))
 
-    with pytest.raises(pp.PromptProvenanceError):
-        pp.declare_unanchored(pp.UNANCHORED_ENTRY_POINTS[0], "no journal: bakeoff")
+    with pytest.raises(pp.PromptProvenanceError) as caught:
+        pp.declare_unanchored(who, "no journal: bakeoff")
 
+    assert not isinstance(caught.value, pp.PromptRefusal), (
+        f"the declaration was refused as a load decision: {caught.value}"
+    )
+    assert who in str(caught.value), (
+        "the raise does not name the caller that asked to be excused, so it is "
+        f"not this guard's: {caught.value}"
+    )
     assert pp.live_declaration() is None, (
         "the declaration was stored anyway, so releasing the anchor uncovers it"
     )
@@ -614,54 +686,223 @@ def test_a_declared_journal_less_caller_loads_and_the_record_says_so(
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+def _called_name(func: ast.expr) -> str:
+    """The bare name a call node invokes: `x` for `x()`, `y` for `mod.y()`."""
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    if isinstance(func, ast.Name):
+        return func.id
+    return ""
+
+
+def _statements_that_must_have_run(module: ast.Module, target: ast.AST) -> list[ast.stmt]:
+    """The statements guaranteed to have executed whenever `target` executes.
+
+    Sound but deliberately incomplete: the preceding siblings at every level of
+    `target`'s own path, plus the module body (which runs at import, before any
+    caller outside the module can reach `target`). A statement inside a branch,
+    a loop or an `except` handler is NOT here even when it precedes the target
+    in the file, which is the whole point — "the declaration is somewhere in
+    this file" is what the substring check this replaced actually asserted.
+    """
+    parents = {c: p for p in ast.walk(module) for c in ast.iter_child_nodes(p)}
+    path: list[ast.AST] = [target]
+    while path[-1] is not module:
+        path.append(parents[path[-1]])
+    path.reverse()
+
+    before: list[ast.stmt] = []
+    for parent, child in zip(path, path[1:]):
+        for _field, value in ast.iter_fields(parent):
+            if not isinstance(value, list):
+                continue
+            index = next((i for i, item in enumerate(value) if item is child), None)
+            if index is not None:
+                before.extend(s for s in value[:index] if isinstance(s, ast.stmt))
+    before.extend(s for s in module.body if isinstance(s, ast.stmt))
+    return before
+
+
+def _unconditional_calls(statements: list[ast.stmt], name: str) -> list[ast.Call]:
+    """Calls to `name` made unconditionally by these statements.
+
+    Only bare-expression and assignment statements are searched, so a call
+    guarded by an `if`, buried in a nested `def`, or written inside a comment,
+    an import or an unused string is not one of these. One level of indirection
+    is followed: if such a statement calls a function defined in this module,
+    that function's own unconditional calls count too, because
+    `_declare_journal_less()` at the top of an entry point is the same wiring.
+    """
+    local_defs = {
+        s.name: s
+        for s in statements
+        if isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    found: list[ast.Call] = []
+    for stmt in statements:
+        if not isinstance(stmt, (ast.Expr, ast.Assign)):
+            continue
+        for node in ast.walk(stmt):
+            if not isinstance(node, ast.Call):
+                continue
+            called = _called_name(node.func)
+            if called == name:
+                found.append(node)
+            elif called in local_defs:
+                found.extend(
+                    _unconditional_calls(list(local_defs[called].body), name)
+                )
+    return found
+
+
 @pytest.mark.parametrize(
     "entry_point",
     pp.UNANCHORED_ENTRY_POINTS,
     ids=[e.split(":")[0].rsplit("/", 1)[-1] for e in pp.UNANCHORED_ENTRY_POINTS],
 )
-def test_each_journal_less_entry_point_declares(entry_point: str) -> None:
+def test_each_journal_less_entry_point_declares_before_it_reaches_the_panel(
+    entry_point: str,
+) -> None:
     """Every caller `UNANCHORED_ENTRY_POINTS` names owes the declaration, and a
     contract that lists them without checking them is a list.
 
-    Two of the three cannot be driven from a test — `bakeoff.py` needs a
-    worktree and live agents, `retroactive_sweep.py` needs a second repo and
-    merged tickets — so this is a WIRING check over the named file and says so.
-    The row below drives the third end to end, which is what pins that the
-    declaration is in the right place rather than merely present. The failure
-    this pair exists to catch is not subtle: unwired, `bakeoff.py` sends every
-    panel into its own `except Exception` branch and records a `cell.error`
-    nobody reads, and the two tools abort.
+    THE RULE THIS ASSERTS, stated because it is stricter than "the file
+    mentions it": on every path that reaches `run_panel` in this file, a CALL
+    to `declare_unanchored` — with both the `who` and the `reason` the contract
+    requires — must already have executed, either as an unconditional statement
+    of the function holding the panel call, as one of the module's own
+    top-level statements, or one helper call deep from either. A comment, an
+    import, an unused module-level `def`, a leftover string or a call placed
+    after the panel does not satisfy it. The prior draft of this row asserted
+    `"declare_unanchored" in source.read_text(...)`, and the satisfiability
+    probe that "measured" it wired `cross_family_panel.py` properly and left
+    the other two as an uncalled `_declare_journal_less()` appended below their
+    `if __name__` block: the substring check went green on all three, over
+    wiring that would have refused every panel `bakeoff.py` and
+    `retroactive_sweep.py` run. Two review families raised that and both were
+    right.
 
-    Measured under: `0b275d4` — none of the three names `declare_unanchored`.
+    It is still STRUCTURAL for two of the three. `bakeoff.py` needs a worktree
+    and live agents and `retroactive_sweep.py` needs a second repo with merged
+    tickets, so neither can be driven from here; the row below drives the third
+    end to end and observes the declaration at the moment the prompt loads,
+    which is the part structure cannot establish. A body that wants the
+    declaration somewhere this rule cannot see — an outer function, a
+    conditional — reddens here and should deviate rather than reshape.
+
+    Measured under: `0b275d4` — no file calls `declare_unanchored` at all.
     All three RED.
-    Measured under: the load-time half implemented and the declaration removed
-    from all three — these three redden and so does the row below.
+    Measured 2026-08-18 under the prior draft's own probe — the panel tool
+    declaring in `main`, the other two carrying the uncalled helper: this row
+    is green for `cross_family_panel.py` and RED for the other two, where the
+    substring check was green for all three.
+    Measured under: the same body with `_declare_journal_less()` invoked as the
+    first statement of each entry point's own function — all three green, and
+    removing that one call from `main` reddens this row for the panel tool and
+    the row below, and nothing else in this file.
     """
     path, _, where = entry_point.partition(":")
     source = _REPO_ROOT / path
     assert source.exists(), f"{entry_point} names a file that is not here: {source}"
-    assert "declare_unanchored" in source.read_text(encoding="utf-8"), (
-        f"{path} reaches the panel at {where} without declaring itself "
-        "journal-less, so once the gate is wired every load it makes refuses"
+
+    module = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+    panel_calls = [
+        node
+        for node in ast.walk(module)
+        if isinstance(node, ast.Call) and _called_name(node.func) == "run_panel"
+    ]
+    assert panel_calls, (
+        f"{entry_point} no longer calls run_panel, so this entry point's own "
+        "contract entry is stale — fix UNANCHORED_ENTRY_POINTS, not this row"
     )
 
+    for call in panel_calls:
+        declared = _unconditional_calls(
+            _statements_that_must_have_run(module, call), "declare_unanchored"
+        )
+        assert declared, (
+            f"{path} reaches the panel at {where} without having declared "
+            "itself journal-less, so once the gate is wired every load it "
+            "makes refuses"
+        )
+        assert any(len(d.args) + len(d.keywords) >= 2 for d in declared), (
+            f"{path} declares without saying who and why; the reason is what "
+            "the load record quotes when this abstention is audited"
+        )
 
-def test_the_standalone_panel_tool_still_runs_without_a_journal(
-    tmp_path: Path, prompt_tree: Path
+
+@pytest.fixture
+def two_commit_repo(tmp_path: Path) -> tuple[Path, str, str]:
+    """A throwaway git repo with a real diff between two refs.
+
+    The tool below used to be driven over THIS checkout with `--base HEAD
+    --branch HEAD`. That made the row depend on the workspace it runs in — a
+    detached or missing HEAD, or an empty diff, changes what is exercised — and
+    an empty diff is exactly the input for which nothing has to be reviewed.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env["GIT_CONFIG_GLOBAL"] = str(tmp_path / "no-such-gitconfig")
+    env["GIT_CONFIG_SYSTEM"] = str(tmp_path / "no-such-gitconfig")
+
+    def _git(*args: str) -> str:
+        done = subprocess.run(
+            ["git", "-c", "user.email=seal@invalid", "-c", "user.name=seal", *args],
+            cwd=repo, env=env, capture_output=True, text=True, check=True,
+        )
+        return done.stdout.strip()
+
+    _git("init", "-q", "-b", "main")
+    (repo / "a.txt").write_text("one\n", encoding="utf-8")
+    _git("add", "a.txt")
+    _git("commit", "-qm", "base")
+    base = _git("rev-parse", "HEAD")
+    (repo / "a.txt").write_text("one\ntwo\n", encoding="utf-8")
+    _git("commit", "-qam", "change")
+    head = _git("rev-parse", "HEAD")
+    return repo, base, head
+
+
+def test_the_standalone_panel_tool_declares_and_then_loads_the_prompt(
+    tmp_path: Path,
+    prompt_tree: Path,
+    two_commit_repo: tuple[Path, str, str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """`tools/cross_family_panel.py` end to end, in the process, with stub
     reviewers: the journal-less entry point that CAN be driven.
 
+    The tool holds no journal and never will — it is invoked against an
+    already-merged ticket — so the process is left UNANCHORED and the load it
+    makes must be the DECLARED one. The row observes that at the seam: it wraps
+    `_load_prompt` and records `live_declaration()` as the load happens, so it
+    fails if the tool never reaches a prompt (the stub short-circuiting the
+    panel), if the declaration is absent, if it names a different entry point,
+    or if it is made after the load rather than before.
+
     `run_panel` re-raises an authoritative worker's exception by design, so a
     gate wired without the declaration turns this tool from "prints a verdict"
-    into "raises `PromptRefusal`". It holds no journal and never will — it is
-    invoked against an already-merged ticket — so refusing it is the false
-    positive constraint 3's permissive seam exists to prevent.
+    into "raises `PromptRefusal`". The exit code is asserted EXACT — the stub
+    verdict is APPROVE, which is 0 — because the prior draft accepted 0, 1 or
+    2, and 1 and 2 are what a `main` that caught the refusal and returned a
+    conventional error code would produce. A review family raised that and was
+    right.
 
-    Measured under: `0b275d4` — passes, and it passes because nothing gates
-    anything. It is a CONTROL for after W2-1-3: green now, green then, and red
-    in between if the gate lands without the declaration.
+    Measured under: `0b275d4` — the tool runs, reaches three stub seats and
+    loads the prompt for each, and `live_declaration()` is None at every one of
+    them. RED on the declaration.
+    Measured under: the load-time half wired and the declaration wired into
+    `main` — green, exit 0, three loads, all declared.
+    Measured under: that same body with the one call deleted from `main` and an
+    uncalled `_declare_journal_less()` left in the file — RED here and on the
+    panel tool's row above, and nothing else in this file moves.
     """
+    repo, base, head = two_commit_repo
+    entry_point = next(
+        e for e in pp.UNANCHORED_ENTRY_POINTS if e.startswith("tools/cross_family_panel.py")
+    )
+
     spec = importlib.util.spec_from_file_location(
         "seal_panel_tool", _REPO_ROOT / "tools" / "cross_family_panel.py"
     )
@@ -673,20 +914,40 @@ def test_the_standalone_panel_tool_still_runs_without_a_journal(
     summary = tmp_path / "summary.md"
     summary.write_text("# seal\n**Status:** Done\n", encoding="utf-8")
 
+    real_load = cfr._load_prompt
+    at_load: list[pp.UnanchoredDeclaration | None] = []
+
+    def _watch(family: str) -> str:
+        at_load.append(pp.live_declaration())
+        return real_load(family)
+
+    monkeypatch.setattr(cfr, "_load_prompt", _watch)
     code = tool.main(
         [
-            "--repo", str(_REPO_ROOT),
-            "--base", "HEAD",
-            "--branch", "HEAD",
+            "--repo", str(repo),
+            "--base", base,
+            "--branch", head,
             "--ticket", "W2-1-2",
             "--summary-md", str(summary),
-            "--family", "claude",
             "--output", "json",
             "--dry-run-with-stub-output", str(stub),
         ]
     )
-    assert code in (0, 1, 2), (
-        "the standalone panel tool did not reach a verdict without a journal"
+
+    assert at_load, (
+        "the tool reached a verdict without loading a reviewer prompt, so this "
+        "row exercises nothing the gate is about to sit in front of"
+    )
+    assert all(d is not None for d in at_load), (
+        "the panel tool loaded the reviewer prompt with no declaration in "
+        f"force, so once the gate is wired every seat refuses: {at_load}"
+    )
+    assert {d.who for d in at_load} == {entry_point}, (
+        f"the declaration in force names another caller: {at_load}"
+    )
+    assert code == 0, (
+        "the standalone panel tool did not approve on a stub APPROVE verdict; "
+        "a refusal mapped to a conventional exit code looks exactly like this"
     )
 
 
@@ -1227,31 +1488,57 @@ def test_the_digest_a_genesis_records_is_the_digest_a_load_computes(
     assert cfr._load_prompt("claude")
 
 
-def test_the_digest_is_injective_where_the_delimited_encoding_collided() -> None:
-    """The property the length-prefixed encoding bought, on the pair that
-    demonstrates it.
+def _delimited(members) -> str:
+    """The encoding `digest_of_snapshot` replaced: NUL after each field."""
+    digest = hashlib.sha256()
+    for rel, data in members:
+        digest.update(rel.encode("utf-8") + b"\x00" + data + b"\x00")
+    return digest.hexdigest()
 
-    A delimiter must be a byte that cannot occur inside a field and no such
-    byte exists here — file contents are arbitrary. Under NUL delimiting these
-    two member lists hash equal, which on a tree of prompt files is a preimage
-    an editor controls: a rewritten tree can be made to present the anchored
-    digest.
 
-    Measured under: NUL-delimited encoding (`sha256` over
-    `name + b"\\0" + data + b"\\0"`) — the two digests are equal and this
-    reddens. Measured under `0b275d4` — passes.
-    Predicted (unmeasured) under: a fixed 4-byte prefix — still injective for
-    any file this process can read, so this row would not notice; the width is
-    not what it pins.
+#: Member-list pairs that the delimited encoding maps to ONE byte string. Each
+#: moves a member boundary into a file's contents, which is the only preimage an
+#: editor of a prompt tree controls.
+_COLLIDING_PAIRS = (
+    (
+        "a member boundary hidden in one file's bytes",
+        [("a", b"b\x00c\x00")],
+        [("a", b"b"), ("c", b"")],
+    ),
+    (
+        "two members folded into one",
+        [("a", b"x"), ("b", b"y")],
+        [("a", b"x\x00b\x00y")],
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    "left,right",
+    [(l, r) for _, l, r in _COLLIDING_PAIRS],
+    ids=[i for i, _, _ in _COLLIDING_PAIRS],
+)
+def test_the_encoding_separates_pairs_the_delimited_one_collided_on(
+    left, right
+) -> None:
+    """What the length-prefixed encoding bought, claimed no wider than measured.
+
+    The claim is about the SERIALIZATION, not about SHA-256: a delimiter must
+    be a byte that cannot occur inside a field and no such byte exists here,
+    because file contents are arbitrary, so under NUL delimiting these member
+    lists have one preimage and therefore one digest. Length-prefixing makes
+    the byte string uniquely decodable, and collision resistance carries that
+    to the digest for any input this process can produce. The prior draft
+    called the digest "injective", which SHA-256 is not over arbitrary inputs
+    and which one example could not establish; a review family raised it and
+    the name and the claim are now what the rows actually check.
+
+    Measured under: the delimited encoding — both pairs hash equal and both
+    redden. Measured under `0b275d4` — both pass.
+    Predicted (unmeasured) under: a fixed 4-byte prefix — still uniquely
+    decodable for any file this process can read, so these rows would not
+    notice; the WIDTH is not what they pin.
     """
-    def _delimited(members):
-        digest = hashlib.sha256()
-        for rel, data in members:
-            digest.update(rel.encode("utf-8") + b"\x00" + data + b"\x00")
-        return digest.hexdigest()
-
-    left = [("a", b"b\x00c\x00")]
-    right = [("a", b"b"), ("c", b"")]
     assert _delimited(left) == _delimited(right), (
         "the pair no longer demonstrates the collision, so this row would pass "
         "under either encoding"
@@ -1259,6 +1546,41 @@ def test_the_digest_is_injective_where_the_delimited_encoding_collided() -> None
     assert pp.digest_of_snapshot(left) != pp.digest_of_snapshot(right), (
         "distinct member lists share a digest, so a rewritten prompt tree can "
         "be made to present the anchor the run recorded"
+    )
+
+
+def test_every_way_of_splitting_one_byte_string_into_members_digests_apart() -> None:
+    """The pairs above are examples; this is the family they come from.
+
+    Every member list here serialises to the SAME bytes under any encoding that
+    concatenates fields without recording where they end — the delimited one
+    included, wherever the delimiter can occur inside a field. Distinctness
+    across the whole family, rather than on one hand-picked pair, is the
+    evidence for "the encoding is unambiguous" that a single example could not
+    give.
+
+    The contrast is asserted rather than stated: the family is only evidence if
+    the encoding it replaced actually collides on it, so a witness that stopped
+    witnessing reddens here instead of passing under both.
+
+    Measured under: `0b275d4` — 12 member lists, 12 distinct digests; the
+    delimited encoding gives 10.
+    """
+    blob = b"a\x00b\x00c"
+    splits = []
+    for cut in range(len(blob) + 1):
+        head, tail = blob[:cut], blob[cut:]
+        splits.append([(head.decode("utf-8", "surrogateescape"), tail)])
+        splits.append([("m", head), ("n", tail)])
+
+    assert len({_delimited(s) for s in splits}) < len(splits), (
+        "the delimited encoding no longer collides on this family, so it is "
+        "not a witness and these digests would differ under either encoding"
+    )
+    digests = {pp.digest_of_snapshot(s) for s in splits}
+    assert len(digests) == len(splits), (
+        f"{len(splits) - len(digests)} of {len(splits)} member lists that share "
+        "their concatenated bytes also share a digest"
     )
 
 
