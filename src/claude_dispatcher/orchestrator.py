@@ -2291,6 +2291,17 @@ def _run_cross_family_panel(
     else:
         _log(log_path, f"  {snap.key} panel: classification unavailable")
 
+    # D-62: the panel reviews a DIFF and carried nothing about who wrote it, so
+    # "this needs tests" was emitted identically whether the author may write
+    # tests or is forbidden from doing so. Four recorded times it pushed a role
+    # into a breach it was then blocked for. `snap.role_specs` is frozen at
+    # dispatch, so this is the same view the role gate judges by.
+    role_context = role_protocol_mod.review_role_context(list(snap.role_specs or []))
+    if role_context:
+        _log(log_path,
+             f"  {snap.key} panel: role context supplied "
+             f"({len(snap.role_specs or [])} spec(s))")
+
     # Seat selection.
     #
     # The author's family is SEATED by default (changed 2026-08-01). The old
@@ -2374,6 +2385,7 @@ def _run_cross_family_panel(
                 blast_radius=blast,
                 implementer_prior=cfr_mod.implementer_prior_for(snap.agent),
                 risk_context=risk_context,
+                role_context=role_context,
                 reviewers=codex_revs,
                 advisory_reviewers=[], # skip advisory for the first stage
                 log=lambda m: _log(log_path, m),
@@ -2397,6 +2409,7 @@ def _run_cross_family_panel(
                 blast_radius=blast,
                 implementer_prior=cfr_mod.implementer_prior_for(snap.agent),
                 risk_context=risk_context,
+                role_context=role_context,
                 reviewers=other_revs,
                 advisory_reviewers=advisory_reviewers,
                 log=lambda m: _log(log_path, m),
@@ -2414,6 +2427,7 @@ def _run_cross_family_panel(
         blast_radius=blast,
         implementer_prior=cfr_mod.implementer_prior_for(snap.agent),
         risk_context=risk_context,
+        role_context=role_context,
         reviewers=reviewers,
         advisory_reviewers=advisory_reviewers,
         log=lambda m: _log(log_path, m),

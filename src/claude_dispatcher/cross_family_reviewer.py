@@ -536,6 +536,26 @@ REVIEW_EXCLUSION_NOTICE = (
 )
 
 
+def _with_floor(role_context: str) -> str:
+    """Append the non-overridable floor to a role block.
+
+    Rendered from `role_protocol.FLOOR_GLOBS` rather than written out, because
+    that list changes (17 -> 19 when the known-red register landed) and a stale
+    copy would tell the panel a path is writable when no role may touch it. It is
+    appended HERE and not in `review_role_context` so that function does not name
+    the constant — see the note there.
+    """
+    if not role_context:
+        return ""
+    from . import role_protocol as _rp
+    floor = ", ".join(f"`{g}`" for g in _rp.FLOOR_GLOBS)
+    return (
+        role_context
+        + "\n- These paths are writable by NOBODY, in any role: "
+        + floor
+    )
+
+
 def build_review_prompt(
     *,
     family: str,
@@ -548,6 +568,7 @@ def build_review_prompt(
     blast_radius: str = "",
     implementer_prior: str = "",
     risk_context: str = "",
+    role_context: str = "",
 ) -> str:
     """Render the per-family prompt. The shared block has format slots; the
     preamble has none.
@@ -576,6 +597,9 @@ def build_review_prompt(
         blast_radius=blast_radius or "(none identified)",
         implementer_prior=implementer_prior or "(none)",
         risk_context=risk_context or "(classification unavailable — judge the diff on its contents)",
+        role_context=_with_floor(role_context) or (
+            "(no role protocol on this task — judge the diff on its contents)"
+        ),
     )
 
 
@@ -1262,6 +1286,7 @@ def run_panel(
     blast_radius: str = "",
     implementer_prior: str = "",
     risk_context: str = "",
+    role_context: str = "",
     reviewers: list[Reviewer] | None = None,
     advisory_reviewers: list[Reviewer] | None = None,
     log: Callable[[str], None] = lambda _m: None,
@@ -1322,6 +1347,7 @@ def run_panel(
             blast_radius=blast_radius,
             implementer_prior=implementer_prior,
             risk_context=risk_context,
+            role_context=role_context,
         )
         return r.review(prompt)
 

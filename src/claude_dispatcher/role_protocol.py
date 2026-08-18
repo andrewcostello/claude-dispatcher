@@ -9882,3 +9882,62 @@ if __name__ == "__main__":  # pragma: no cover - script face
     from claude_dispatcher.role_protocol import main as _packaged_main
 
     raise SystemExit(_packaged_main(sys.argv[1:]))
+
+
+def review_role_context(
+    specs: Sequence[TaskRoleSpec], policy: RolePolicy | None = None,
+) -> str:
+    """The reviewer-facing block naming the author's role and writable set.
+
+    The panel reviews a DIFF and, until this existed, carried nothing about who
+    wrote it — so "this needs tests" was emitted identically whether the author
+    may write tests or is forbidden from doing so. Measured cost: four occasions
+    where the panel ordered a role to breach its own rule (D-62), the fourth
+    being a scaffold told its module had no tests when SCAFFOLD denies
+    ``tests/**``.
+
+    Empty string for a role-less (LEGACY) task, so the caller renders its own
+    "no role protocol" fallback rather than this inventing one.
+    """
+    real = [s for s in specs if s.role is not Role.LEGACY]
+    if not real:
+        return ""
+    pol = policy or built_in_policy()
+    lines: list[str] = []
+    for spec in real:
+        rule = effective_rule(spec, pol)
+        lines.append(f"- Task `{spec.task_key}` has role **{spec.role.value}**.")
+        if rule.kind is RuleKind.DENY_GLOBS:
+            lines.append(
+                f"  It MAY NOT write these paths: {', '.join(f'`{g}`' for g in rule.globs)}"
+            )
+        elif rule.kind is RuleKind.ALLOW_ONLY_GLOBS:
+            allowed = ", ".join(f"`{g}`" for g in rule.globs) or "(nothing)"
+            lines.append(f"  It may write ONLY these paths: {allowed}")
+        else:
+            lines.append("  It has no path restriction.")
+    # The floor is deliberately NOT rendered here. `test_floor_closure` holds
+    # that every module-level function naming FLOOR_GLOBS is a floor DECISION and
+    # must be reachable from the gate's roots; this one only presents prose, so
+    # naming the constant would make that premise false. The reviewer module
+    # appends the floor paragraph instead.
+    lines.append("")
+    lines.append(
+        "**How this must change your findings.** The phases are deliberately "
+        "split: a SCAFFOLD writes the contract and stubs, a SEALS task writes the "
+        "tests, a BODIES task fills the stubs, an ADJUDICATE task rules one "
+        "disputed artifact. A finding that asks this author to write something "
+        "its role may not write is not actionable by them, and demanding it has "
+        "four recorded times pushed an agent into a protocol breach it was then "
+        "blocked for."
+    )
+    lines.append("")
+    lines.append(
+        "So: judge the diff against what THIS ROLE owed. Do NOT report missing "
+        "tests against a role that may not write tests — address that to the "
+        "owning task by key. Do NOT report unimplemented stubs as incomplete "
+        "work when leaving them is the scaffold's deliverable; report the "
+        "opposite if you see it — a scaffold that implemented the decision logic "
+        "its own seals will judge has destroyed the point of sealing first."
+    )
+    return "\n".join(lines)

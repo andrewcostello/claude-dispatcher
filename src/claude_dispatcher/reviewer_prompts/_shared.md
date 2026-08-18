@@ -162,6 +162,10 @@ against the base branch.
 {summary_md}
 ```
 
+### The author's ROLE, and what that role was allowed to write
+
+{role_context}
+
 ### Risk classification — what these paths mean (path-derived, not label-derived)
 
 {risk_context}
