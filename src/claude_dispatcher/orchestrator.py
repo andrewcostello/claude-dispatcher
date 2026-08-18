@@ -1395,6 +1395,14 @@ def _run_task(
         inherited = findings_store_mod.render_for_prompt(
             cfg.runs_dir, snap.blocked_by or [],
         )
+        # A RE-ROUND also gets its own prior findings. `blocked_by` never names
+        # the task itself, so without this the one thing it most needs — why it
+        # was blocked — is the one thing it cannot see.
+        own = findings_store_mod.render_own_for_prompt(cfg.runs_dir, snap.key)
+        if own:
+            desc = f"{desc}{own}"
+            _log(log_path,
+                 f"  {snap.key} carries its own findings from a previous round")
         if inherited:
             desc = f"{desc}{inherited}"
             _log(log_path,

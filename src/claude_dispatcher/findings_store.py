@@ -122,3 +122,41 @@ def render_for_prompt(
         "reproducing them. If one is wrong, say so.\n\n"
         + "\n\n".join(blocks)
     )
+
+
+#: Blocking first, so the bound never drops the reason a task was blocked.
+_SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+
+
+def render_own_for_prompt(runs_dir: str | Path, task_key: str) -> str:
+    """The block naming why THIS task's previous attempt was blocked, or "".
+
+    Separate from `render_for_prompt` because the framing is opposite: a
+    dependency's findings are "known defects in your inputs", these are against
+    the work in hand and are the reason it did not land. A re-round that cannot
+    see them repeats it.
+
+    Sorted blocking-first: with more findings than `MAX_PER_DEP`, truncation
+    must never be what hides the CRITICAL or HIGH that caused the block.
+    """
+    found = load(runs_dir, task_key)
+    if not found:
+        return ""
+    found = sorted(found, key=lambda f: _SEVERITY_ORDER.get(f.severity, 9))
+    lines = []
+    for f in found[:MAX_PER_DEP]:
+        where = f" ({f.location})" if f.location else ""
+        lines.append(
+            f"- **{f.severity}** [{f.family}]{where} — {f.description[:MAX_CHARS]}"
+        )
+    if len(found) > MAX_PER_DEP:
+        lines.append(f"- ...and {len(found) - MAX_PER_DEP} more.")
+    return (
+        "\n\n### Why your previous attempt on this task was BLOCKED\n\n"
+        "An independent multi-family panel raised these against YOUR OWN work on "
+        "this task. Two or more families corroborated a blocking finding, or one "
+        "raised a CRITICAL. Address them: fix what is right, and where you "
+        "disagree say so explicitly and give the reason — an unexplained repeat "
+        "of the same shape will block again.\n\n"
+        + "\n".join(lines)
+    )

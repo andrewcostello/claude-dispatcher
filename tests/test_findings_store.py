@@ -169,9 +169,45 @@ def test_the_recorder_never_raises_on_an_odd_panel(tmp_path) -> None:
 
 def test_both_halves_are_wired(tmp_path: Path) -> None:
     """Recording without injecting is what D-56 measured; injecting without
-    recording is the same no-op from the other end."""
+    recording is the same no-op from the other end.
+
+    Walks the AST rather than searching for substrings. The substring form this
+    replaced was satisfied by a comment, an import or an unused local — the
+    vacuity the 2026-08-18 panel raised against W2-1-2, in this repository's own
+    seals. Measured under: comment out either call and this reddens; the
+    substring version did not.
+    """
+    import ast
     from claude_dispatcher import orchestrator
-    src = Path(orchestrator.__file__).read_text()
-    assert "_record_panel_findings(cfg, snap.key, panel_verdict, log_path)" in src
-    assert "findings_store_mod.render_for_prompt(" in src
-    assert "snap.blocked_by or []," in src
+    tree = ast.parse(Path(orchestrator.__file__).read_text(encoding="utf-8"))
+
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)]
+
+    def _named(attr: str) -> list[ast.Call]:
+        return [c for c in calls
+                if isinstance(c.func, ast.Attribute) and c.func.attr == attr
+                or isinstance(c.func, ast.Name) and c.func.id == attr]
+
+    assert _named("_record_panel_findings"), "the recording half is not called"
+
+    injected = [c for c in _named("render_for_prompt")
+                if any(isinstance(a, ast.Attribute) and a.attr == "blocked_by"
+                       or isinstance(a, ast.BoolOp)
+                       for a in c.args)]
+    assert injected, (
+        "render_for_prompt is not called over the task's `blocked_by` keys"
+    )
+
+    bound = {t.id
+             for n in ast.walk(tree)
+             if isinstance(n, ast.Assign) and isinstance(n.value, ast.Call)
+             and isinstance(n.value.func, ast.Attribute)
+             and n.value.func.attr == "render_for_prompt"
+             for t in n.targets if isinstance(t, ast.Name)}
+    feeds = any(
+        isinstance(n, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "desc" for t in n.targets)
+        and {x.id for x in ast.walk(n.value) if isinstance(x, ast.Name)} & bound
+        for n in ast.walk(tree)
+    )
+    assert feeds, f"{bound} is computed but never folded into `desc`"
