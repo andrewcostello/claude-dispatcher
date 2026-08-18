@@ -1643,6 +1643,7 @@ def _run_task(
         # the role gate and before the suite: a scaffold that over-built has not
         # produced a sealable contract, so running the suite over it is spending
         # money on a branch that must be re-scoped anyway.
+        _measure_diff_shape(cfg, snap, wt, gate_base_used, log_path)
         holes_outcome = _check_declared_holes(cfg, snap, wt, log_path)
         if holes_outcome is not None:
             final_status = plan_mod.BLOCKED
@@ -4794,6 +4795,70 @@ def _verify_seal_redness(
     if res.outcome == "passed":
         return "passed", None
     return "failed", res.detail
+
+
+def _measure_diff_shape(
+    cfg: RunConfig,
+    snap: TaskSnapshot,
+    wt: wt_mod.Worktree,
+    base_sha: str,
+    log_path: Path,
+) -> None:
+    """Journal the prose-to-code ratio of the branch's changed Python files.
+
+    ADVISORY and never blocking: there is no defensible threshold, because a
+    contract-heavy scaffold legitimately runs high. What it removes is the
+    invisibility — the drift to 4.3:1 was only ever found by measuring by hand.
+
+    Never raises. A measurement that could fail a task would be a gate, and this
+    is deliberately not one.
+    """
+    import subprocess  # function-local, as elsewhere in this module
+
+    try:
+        proc = subprocess.run(
+            ["git", "diff", "--name-only", "--diff-filter=d",
+             f"{base_sha}...{wt.branch}"],
+            cwd=str(wt.path), capture_output=True, text=True, timeout=30,
+        )
+        if proc.returncode != 0:
+            return
+        files = [f for f in proc.stdout.split() if f.endswith(".py")]
+        rows = []
+        for rel in files:
+            target = wt.path / rel
+            if not target.exists():
+                continue
+            shape = scaffold_shape_mod.measure(rel, source=target.read_text())
+            if shape.executable <= 0:
+                continue
+            rows.append({
+                "path": rel,
+                "executable": shape.executable,
+                "prose": shape.docstring + shape.comment,
+                "prose_ratio": round(shape.prose_ratio, 2),
+                "functions": len(shape.functions),
+                "stubs": len(shape.stubs),
+            })
+        if not rows:
+            return
+        total_code = sum(r["executable"] for r in rows)
+        total_prose = sum(r["prose"] for r in rows)
+        overall = round(total_prose / max(total_code, 1), 2)
+        _emit_event(cfg, journal_mod.EventType.role_diff_loop_gate, {
+            "check": "diff_shape",
+            "decision": "advisory",
+            "prose_ratio": overall,
+            "executable_lines": total_code,
+            "files": rows[:20],
+        }, task_key=snap.key)
+        worst = max(rows, key=lambda r: r["prose_ratio"])
+        _log(log_path,
+             f"  {snap.key} diff shape: {overall}:1 prose:code over "
+             f"{total_code} executable line(s); worst {worst['path']} "
+             f"at {worst['prose_ratio']}:1")
+    except Exception as exc:  # noqa: BLE001 - advisory, must never fail a task
+        _log(log_path, f"  {snap.key} diff shape: unavailable ({exc})")
 
 
 def _check_declared_holes(

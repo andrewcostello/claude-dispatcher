@@ -48,3 +48,30 @@ Rules for agents working under this experiment:
    plan/skeleton establishes. The per-feature architecture lives in that
    feature's plan doc — read it before filling bodies, and don't reshape the
    established seams to fit a body you find easier to write.
+
+## Comments: purpose and constraints, not rationale
+
+Measured 2026-08-17 across this package: the established modules run about
+**0.5:1** prose-to-code (`orchestrator.py` 0.4, `plan.py` 0.5,
+`mechanical_verify.py` 0.7, by docstring+comment lines over executable lines).
+Three scaffolds written the same week ran 1.9:1, 2.2:1 and **4.3:1**, and
+`role_protocol.py` is 1.7:1 over 10,050 lines. Every later agent that reads
+those files pays for the excess in context, and long prose is also what goes
+stale — a docstring stating a world that does not exist yet has now caused
+three separate blocks (D-56, D-65, D-72).
+
+So:
+
+* Comments state **purpose, intent, and non-obvious constraints** — the facts
+  whose absence would let someone break the code.
+* **Rationale, measurements, rejected alternatives and rulings go in the commit
+  message** and `DECISIONS.md`, referenced by ID. Written there they are read
+  once by a reviewer; written inline they are re-read by every agent forever.
+* The test: *would a future agent break this code without this comment?* If it
+  is justification aimed at a reviewer, it belongs in the commit message.
+* Do not restate the commit log in a module docstring. If the two say the same
+  thing, delete the docstring copy.
+
+`python -m claude_dispatcher.scaffold_shape measure <file.py>` prints the
+ratio. It is advisory — a contract-heavy scaffold legitimately runs higher —
+but a file well above 1:1 should have a reason you can say out loud.

@@ -162,6 +162,22 @@ against the base branch.
 {summary_md}
 ```
 
+### Comments are judged on whether a future reader needs them
+
+Rationale, measurements and rejected alternatives belong in the commit message
+and `DECISIONS.md`, not inline: written inline, every later agent pays for them
+in context, and long prose is what goes stale (three blocks in this project came
+from a docstring describing a world that did not exist yet).
+
+So do NOT reward a diff for explaining itself in comments, and do not ask for
+more of them by default. Ask whether a comment states a purpose or a constraint
+whose absence would let someone break the code. A module whose docstring
+restates its own commit message is carrying dead weight — say so. Measured
+house style here is about 0.5:1 prose-to-code; well above 1:1 wants a reason.
+
+This does NOT mean fewer findings about unclear code. It means the fix for
+unclear code is usually clearer code, not more paragraphs above it.
+
 ### The author's ROLE, and what that role was allowed to write
 
 {role_context}
