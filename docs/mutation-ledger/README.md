@@ -277,6 +277,30 @@ judged from the same pair of runs, so the expired claim folds to `broken` /
 `strike` while the control folds to `held` / `cite_claim`. A fold that answers
 either one constantly fails the other.
 
+## Which rows say `Measured under:`, and which do not
+
+`Measured under:` is a claim about a run. In `tests/test_mutation_ledger.py`
+only two rows can make it — the prediction row and the `fold_row_results` row,
+the two that are green over implemented seams. Each named mutation was applied
+to `mutation_ledger.py` and the row observed to go `PASSED` → `FAILED`
+(2026-08-18):
+
+| row | mutation | observed |
+| --- | --- | --- |
+| `…_is_predicted_and_never_cited` | `PREDICTION_FATE = CITE_CLAIM` | `AssertionError` |
+| `…_is_predicted_and_never_cited` | drop `Prediction.subject_sha256` | `TypeError` — the staleness is unrepresentable |
+| `…_reddens_the_row_and_a_missing_one_does_not` | rank `FAILED` below `PASSED` | `AssertionError` |
+| `…_reddens_the_row_and_a_missing_one_does_not` | drop the `[param]` split | `MutationLedgerError` — `_NODE_ID` refuses the bracketed id |
+
+The other seven rows are red against `freshness_of`, `fold`, `proposed_fate`
+or `rederive` under the **control** as well as the mutant, so no
+`PASSED` → `FAILED` transition exists to observe. They carry
+`Predicted (unmeasured) under:`, which is what the ledger's own vocabulary
+requires of a claim with no comparison behind it — the same rule this unit
+applies to the 31 expired clauses. **W2-3-3 owes the re-measurement**: when it
+fills the holes, each of the seven becomes measurable and the clause should be
+promoted to `Measured under:` with the run that promoted it.
+
 ## What the seals could not fix
 
 Three defects the rows pin the *correct* side of, and which the seal author's
