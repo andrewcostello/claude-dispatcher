@@ -51,6 +51,7 @@ from . import design as design_mod
 from . import quality_levels as ql_mod
 from . import repo_config as repo_config_mod
 from . import role_protocol as role_protocol_mod
+from . import scaffold_shape as scaffold_shape_mod
 from . import routing as routing_mod
 from . import seal_verify as sv_mod
 from . import endpoint_agents as endpoint_agents_mod
@@ -1632,6 +1633,20 @@ def _run_task(
             final_blocked_reason = loop_gate_mod.blocked_reason(
                 role_loop.status, role_loop.detail,
             )
+            break
+
+        # --- Declared holes -------------------------------------------------
+        # A SCAFFOLD is contract and stubs; the decision logic its seals will
+        # judge is the body's. Nothing measured that, and all three wave-2
+        # scaffolds filled their own holes (32/32, 18/27, 8/9 functions), which
+        # would have left P2 sealing existing defective code. Checked HERE, after
+        # the role gate and before the suite: a scaffold that over-built has not
+        # produced a sealable contract, so running the suite over it is spending
+        # money on a branch that must be re-scoped anyway.
+        holes_outcome = _check_declared_holes(cfg, snap, wt, log_path)
+        if holes_outcome is not None:
+            final_status = plan_mod.BLOCKED
+            final_blocked_reason = holes_outcome
             break
 
         # --- Mechanical gate ------------------------------------------------
@@ -4779,6 +4794,62 @@ def _verify_seal_redness(
     if res.outcome == "passed":
         return "passed", None
     return "failed", res.detail
+
+
+def _check_declared_holes(
+    cfg: RunConfig,
+    snap: TaskSnapshot,
+    wt: wt_mod.Worktree,
+    log_path: Path,
+) -> str | None:
+    """None when the branch honours its unit's declared holes, else the blocked
+    reason.
+
+    Silent no-op for a unit that declared nothing, which is every unit written
+    before `declares:` existed — an absent declaration is "no check", never "no
+    holes allowed".
+
+    The expectation is resolved from the DISPATCHER's tasks file, not the
+    worktree's copy, so a branch cannot widen its own judgement by editing the
+    row it is judged by.
+    """
+    specs = list(snap.role_specs or [])
+    roles = {sp.role for sp in specs}
+    if len(roles) != 1:
+        return None
+    role = next(iter(roles))
+    phase = role_protocol_mod.HOLE_CHECKED_ROLES.get(role)
+    if phase is None:
+        return None
+
+    holes = role_protocol_mod.holes_expected_of(snap.key, _load_tasks_snapshot(cfg))
+    if not holes:
+        return None
+
+    shapes = []
+    for rel in sorted({h.split("::", 1)[0] for h in holes}):
+        target = wt.path / rel
+        if target.exists():
+            shapes.append(scaffold_shape_mod.measure(rel, source=target.read_text()))
+    report = scaffold_shape_mod.declared_holes_report(
+        holes, shapes=shapes, phase=phase,
+    )
+    _emit_event(cfg, journal_mod.EventType.role_diff_loop_gate, {
+        "check": "declared_holes",
+        "phase": phase,
+        "decision": "proceed" if report.passed else "block",
+        "holes": list(holes),
+        "ok": list(report.ok),
+        "wrong": list(report.wrong),
+        "missing": list(report.missing),
+        "detail": report.detail()[:1000],
+    }, task_key=snap.key)
+    _log(log_path,
+         f"  {snap.key} declared holes [{phase}]: "
+         f"{'proceed' if report.passed else 'BLOCK'} — {report.detail()[:300]}")
+    if report.passed:
+        return None
+    return f"declared_holes_{phase}: {report.detail()}"
 
 
 def _known_red_exclusions(

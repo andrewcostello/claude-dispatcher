@@ -872,6 +872,15 @@ _FLOOR_ROWS: tuple[tuple[str, str], ...] = (
     # `body_task` to hide them from its own gate.
     ("**/config/known-red.yaml", "config/known-red.yaml"),
     ("**/config/known-red.yaml", "sub/project/config/known-red.yaml"),
+    # The declared-holes checker: in the gate path, so on the floor.
+    (
+        "**/src/claude_dispatcher/scaffold_shape.py",
+        "src/claude_dispatcher/scaffold_shape.py",
+    ),
+    (
+        "**/src/claude_dispatcher/scaffold_shape.py",
+        "sub/project/src/claude_dispatcher/scaffold_shape.py",
+    ),
 )
 
 
@@ -1020,7 +1029,8 @@ def test_the_floor_is_exactly_the_written_out_set_of_globs() -> None:
     # 40 -> 44 (operator, 2026-08-17): the known-red register's four rows. Set
     # difference + per-row match + this bound is the whole coverage — the closure
     # test walks the ROLE gate and cannot reach the mechanical-gate path.
-    assert len(_FLOOR_ROWS) >= 44, _FLOOR_ROWS
+    # 44 -> 46: the declared-holes checker's two rows.
+    assert len(_FLOOR_ROWS) >= 46, _FLOOR_ROWS
 
 
 def test_every_floor_glob_the_ruling_wrote_out_is_in_the_constant() -> None:

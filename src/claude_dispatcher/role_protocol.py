@@ -314,6 +314,13 @@ IMMUTABLE_OVERRIDE_FIELD = "immutable_paths"
 #: :data:`Role.ADJUDICATE` and forbidden on every other role.
 DISPUTED_PATHS_FIELD = "disputed_paths"
 
+#: The row key declaring which functions a SCAFFOLD is leaving for its body.
+#: Declared by the PLAN AUTHOR, never by the scaffold: a role that could write
+#: its own check could declare zero holes and pass. Frozen onto the dispatch
+#: snapshot with the rest of the row's protocol facts.
+DECLARES_FIELD = "declares"
+HOLES_KEY = "holes"
+
 #: The ``.dispatcher.yaml`` section this module reads (base-pinned).
 CONFIG_SECTION = "roles"
 
@@ -1097,6 +1104,12 @@ FLOOR_GLOBS: tuple[str, ...] = (
     # too. The floor binds task branches, not operator commits, so a human may
     # still add entries; a role that needs one must report it.
     "**/config/known-red.yaml",
+    # The declared-holes checker (2026-08-17, operator). It decides whether a
+    # scaffold left the holes its seals will redden against, so a role able to
+    # edit it could declare victory over its own contract. Same argument as
+    # known_red.py two entries up. Hand-placed: `test_floor_closure` walks the
+    # ROLE gate out of `check_branch` and does not reach this check.
+    "**/src/claude_dispatcher/scaffold_shape.py",
     # The gate's FIFTH artifact (D5 P4 ruling, 2026-08-11). A FILE glob, and
     # PATH-QUALIFIED, for the reason points 1-3 give and re-measured under this
     # module's own lens on 2026-08-11 rather than inherited:
@@ -1515,6 +1528,11 @@ class TaskRoleSpec:
     added_immutable_globs: tuple[str, ...] = ()
     disputed_paths: tuple[str, ...] = ()
     declared_agent: str | None = None
+    #: ``declares.holes`` verbatim: ``path::qualname`` entries a scaffold must
+    #: leave raising NotImplementedError and its body must fill. Only ever
+    #: non-empty on a scaffold row; a bodies task resolves its unit's list at
+    #: dispatch (:func:`holes_expected_of`).
+    declared_holes: tuple[str, ...] = ()
 
 
 # --------------------------------------------------------------------------- #
@@ -1902,6 +1920,51 @@ def parse_task_role_spec(
             "is only meaningful where the rule is allow-only"
         )
 
+    declared_holes: tuple[str, ...] = ()
+    if DECLARES_FIELD in row:
+        block = row.get(DECLARES_FIELD)
+        if not isinstance(block, dict):
+            raise RoleProtocolError(
+                f"task {task_key} has {DECLARES_FIELD}: that is not a mapping; "
+                f"expected `{DECLARES_FIELD}: {{{HOLES_KEY}: [...]}}`"
+            )
+        unknown = sorted(k for k in block if k != HOLES_KEY)
+        if unknown:
+            raise RoleProtocolError(
+                f"task {task_key} has unknown {DECLARES_FIELD} key(s) "
+                f"{unknown}; only {HOLES_KEY!r} is understood. Refused rather "
+                "than ignored: a declaration silently dropped is a check that "
+                "silently does not run"
+            )
+        if HOLES_KEY in block:
+            if role is not Role.SCAFFOLD:
+                raise RoleProtocolError(
+                    f"task {task_key} is role {role.value!r} and declares "
+                    f"{HOLES_KEY}:, which belongs on the unit's SCAFFOLD row. "
+                    "The body's expectation is derived from the scaffold's "
+                    "declaration, so a second copy could disagree with it"
+                )
+            raw = block.get(HOLES_KEY)
+            if not isinstance(raw, list) or not raw:
+                raise RoleProtocolError(
+                    f"task {task_key} has {DECLARES_FIELD}.{HOLES_KEY} that is "
+                    "not a non-empty list of 'path::qualname' entries"
+                )
+            for entry in raw:
+                if not isinstance(entry, str) or entry.count("::") != 1:
+                    raise RoleProtocolError(
+                        f"task {task_key} has {DECLARES_FIELD}.{HOLES_KEY} "
+                        f"entry {entry!r}; each must be exactly "
+                        "'path/to/file.py::qualified.name'"
+                    )
+                path, qual = entry.split("::", 1)
+                if not path.strip() or not qual.strip():
+                    raise RoleProtocolError(
+                        f"task {task_key} has {DECLARES_FIELD}.{HOLES_KEY} "
+                        f"entry {entry!r} with a blank path or name"
+                    )
+            declared_holes = tuple(e.strip() for e in raw)
+
     agent_val = row.get("agent")
     declared_agent: str | None = None
     if isinstance(agent_val, str) and agent_val.strip():
@@ -1915,6 +1978,7 @@ def parse_task_role_spec(
         added_immutable_globs=added,
         disputed_paths=disputed,
         declared_agent=declared_agent,
+        declared_holes=declared_holes,
     )
 
 
@@ -9941,3 +10005,46 @@ def review_role_context(
         "its own seals will judge has destroyed the point of sealing first."
     )
     return "\n".join(lines)
+
+
+#: Roles whose branch is checked against a unit's declared holes, and what the
+#: check expects. SCAFFOLD must leave each hole unimplemented; BODIES must have
+#: filled every one. SEALS and ADJUDICATE are not checked — neither owns the
+#: implementation, and SEALS may not write it at all.
+HOLE_CHECKED_ROLES: Mapping[Role, str] = {
+    Role.SCAFFOLD: "scaffold",
+    Role.BODIES: "bodies",
+}
+
+
+def holes_expected_of(
+    task_key: str, tasks: Sequence[plan_mod.Task],
+) -> tuple[str, ...]:
+    """The declared holes ``task_key``'s branch is judged against.
+
+    A SCAFFOLD is judged against its own declaration. A BODIES task is judged
+    against ITS UNIT'S SCAFFOLD declaration, resolved through :func:`units_of`
+    rather than re-declared on the body row — two copies could disagree, and the
+    one that mattered would be whichever the gate happened to read.
+
+    Empty when the unit declared nothing (every unit before this existed), which
+    the caller must treat as "no check", never as "no holes are allowed".
+    """
+    by_key = {t.key: t for t in tasks}
+    task = by_key.get(task_key)
+    if task is None:
+        return ()
+    spec = parse_task_role_spec(task.raw, task_key=task_key)
+    if spec.role not in HOLE_CHECKED_ROLES:
+        return ()
+    if spec.role is Role.SCAFFOLD:
+        return spec.declared_holes
+    for unit in units_of(tasks):
+        if task_key in unit.bodies_keys:
+            scaffold = by_key.get(unit.scaffold_key)
+            if scaffold is None:
+                return ()
+            return parse_task_role_spec(
+                scaffold.raw, task_key=unit.scaffold_key,
+            ).declared_holes
+    return ()
