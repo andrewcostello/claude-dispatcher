@@ -5159,6 +5159,12 @@ def _check_state_machines(
             if name not in text:
                 continue
             report = run()
+            # A file may MENTION the name without declaring anything — this
+            # module does, in the lines above. That is "no declaration", not a
+            # wrong one, and this gate says nothing about it.
+            if any(f is state_machine_mod.Fault.NO_DECLARATION
+                   for f, _ in report.faults):
+                continue
         except Exception as exc:  # noqa: BLE001 - a toolchain fault, not a verdict
             _log(log_path,
                  f"  {snap.key} state machine in {rel} not checked: {exc}")

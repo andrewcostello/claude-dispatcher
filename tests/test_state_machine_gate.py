@@ -337,3 +337,40 @@ def test_a_valid_typescript_declaration_is_silent(tmp_path: Path, monkeypatch) -
     """Measured under: route .ts to the Python reader and this reddens."""
     assert TS_GOOD != TS_BAD
     assert _check(tmp_path, {"bay.ts": TS_GOOD}, monkeypatch) is None
+
+
+def test_a_file_that_only_MENTIONS_the_name_is_silent(tmp_path, monkeypatch) -> None:
+    """The prefilter is a substring search, so it also catches files that talk
+    ABOUT state machines without declaring one — this gate's own module does,
+    and so will any doc, test helper or comment in a judged repo.
+
+    Those parse to `Fault.NO_DECLARATION`, which is "nothing to check", not "the
+    declaration is wrong". Treating it as a fault would block every branch that
+    edited a file merely naming the constant.
+
+    Measured under: drop the NO_DECLARATION filter and this reddens.
+    """
+    mentions = (
+        "# The gate looks for a module-level STATE_MACHINE literal.\n"
+        "STATES = ['a', 'b']\n"
+        "def describe() -> str:\n"
+        "    return 'this module has no STATE_MACHINE of its own'\n"
+    )
+    assert "STATE_MACHINE" in mentions
+    assert _check(tmp_path, {"talks_about_it.py": mentions}, monkeypatch) is None
+
+
+@pytest.mark.skipif(shutil.which("go") is None, reason="no Go toolchain")
+def test_a_go_file_that_only_MENTIONS_the_name_is_silent(
+    tmp_path, monkeypatch
+) -> None:
+    """Same rule in Go, where the spelling differs and the mention is likelier —
+    `StateMachine` is an ordinary identifier a Go repo may use for a type or a
+    field without ever declaring the gate's literal.
+    """
+    mentions = (
+        "package baysession\n\n"
+        "// StateMachine drives the session; its declaration lives elsewhere.\n"
+        "type StateMachineRunner struct{ name string }\n"
+    )
+    assert _check(tmp_path, {"runner.go": mentions}, monkeypatch) is None
