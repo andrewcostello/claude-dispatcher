@@ -279,7 +279,7 @@ tasks:
     labels: [size:M, area:dispatcher]
     agent: claude
     role: seals
-    status: Blocked
+    status: To Do
     blockedBy: [W2-1-1]
     unblocked_at: '2026-08-18T19:21:17+00:00'
 
@@ -295,7 +295,6 @@ tasks:
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
-    blocked_reason: 'cross_family_panel: consensus=block | claude=UNAVAILABLE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=2 (0C/2H)'
     mechanical_verification: skipped
     role_diff_loop: checked_clean
     role_diff_loop_detail: "2 changed path(s) checked against the allow_only_globs rule for 'seals' and against the 20-glob floor; signatures: not_applicable"
@@ -613,7 +612,7 @@ tasks:
     labels: [size:L, area:dispatcher]
     agent: claude
     role: seals
-    status: Blocked
+    status: To Do
     blockedBy: [W2-2-1]
     unblocked_at: '2026-08-18T19:21:17+00:00'
 
@@ -629,7 +628,6 @@ tasks:
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
-    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=4 (0C/4H)'
     mechanical_verification: skipped
     role_diff_loop: checked_clean
     role_diff_loop_detail: "1 changed path(s) checked against the allow_only_globs rule for 'seals' and against the 20-glob floor; signatures: not_applicable"
@@ -990,7 +988,7 @@ tasks:
     labels: [size:M, area:dispatcher]
     agent: claude
     role: seals
-    status: In Progress
+    status: To Do
     blockedBy: [W2-3-1]
     unblocked_at: '2026-08-18T19:21:17+00:00'
 
