@@ -300,3 +300,25 @@ def test_doctor_actually_calls_the_account_report() -> None:
     called = {n.func.id for n in ast.walk(fn)
               if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
     assert "_print_accounts" in called
+
+
+def test_the_accounts_file_flag_reaches_the_pool(tmp_path: Path) -> None:
+    """`_build_account_pool` reads `args.claude_accounts_file`. Without a flag
+    setting it, that read is dead indirection that no run can exercise.
+
+    Measured under: remove the CLI flag and this reddens at parse time; remove
+    the getattr and it reddens on the pool contents.
+    """
+    from claude_dispatcher.cli import build_parser
+
+    d = tmp_path / "acct"
+    d.mkdir()
+    profile = tmp_path / "alt.yaml"
+    profile.write_text(
+        f"manual:\n  claude_accounts:\n    - name: alt\n      config_dir: {d}\n")
+    args = build_parser().parse_args(
+        ["run", str(tmp_path / "tasks.yaml"),
+         "--claude-accounts-file", str(profile)])
+    assert args.claude_accounts_file == str(profile)
+    pool = orch._build_account_pool(args)
+    assert pool.names == ["alt"]

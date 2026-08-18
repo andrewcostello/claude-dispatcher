@@ -245,6 +245,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument(
+        "--claude-accounts-file",
+        default=None,
+        help=(
+            "Machine profile holding the Claude subscription pool under "
+            "`manual.claude_accounts:`. Default "
+            "~/.config/claude-dispatcher/machine.yaml. No pool configured means "
+            "the ambient login, which is the default."
+        ),
+    )
+    run.add_argument(
         "--worktree-base",
         default=None,
         help=(
