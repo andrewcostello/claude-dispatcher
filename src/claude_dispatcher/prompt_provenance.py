@@ -28,7 +28,11 @@ The five constraints a later editor would otherwise break:
    a failure it records is constraint 3's refusal.
 
 What this does NOT close: an ADJUDICATE row may still declare ``_shared.md`` in
-``disputed_paths:`` and rewrite it. That remedy is floored and handed over.
+``disputed_paths:`` and rewrite it. That remedy is floored and handed over. Why
+this remedy and not the two unfloored alternatives — including reading the prompt
+from the BASE revision, which this unit could have built and did not — is
+:data:`REMEDY_DISPOSITIONS`. What is NOT in the class, and on what measurement,
+is :data:`OUT_OF_CLASS`.
 """
 
 from __future__ import annotations
@@ -49,6 +53,25 @@ from typing import Any, Callable, Mapping, Sequence
 INSTRUCTION_TREES: tuple[str, ...] = (
     "src/claude_dispatcher/reviewer_prompts",
     "src/claude_dispatcher/verifier_prompts",
+)
+
+#: Named and deliberately NOT in :data:`INSTRUCTION_TREES`. The class is "bytes a
+#: RUNNING dispatcher process opens and hands to the model that judges a diff";
+#: a reader who greps for the next most obvious prompt file must find the ruling
+#: rather than silence, which is why an exclusion is recorded as data.
+OUT_OF_CLASS: tuple[tuple[str, str], ...] = (
+    (
+        "docs/templates/planner-prompt.md",
+        "OUT. Measured 2026-08-17: `grep -rn planner-prompt src/ tools/ tests/ "
+        "scripts/` returns nothing — the file is linked from four markdown docs "
+        "and is pasted by a HUMAN into a planning agent. No dispatcher code "
+        "opens it, so there is no load event for check_prompt_tree to gate and "
+        "no run to anchor it to: it is read BEFORE a run exists, and what it "
+        "produces is a worklist the panel then judges normally. Out because "
+        "this mechanism has no purchase on it, NOT because editing it is "
+        "harmless — SEALS may already write it under role_protocol's "
+        "`**/docs/**` allowance, and that is a separate question from this one.",
+    ),
 )
 
 #: Genesis payload keys, read in one place so the two journal entry points cannot
@@ -92,6 +115,63 @@ FLOORED_OBLIGATIONS: tuple[str, ...] = (
     "orchestrator.py or journal.py: give verifier_prompts/ a genesis digest. A "
     "new REQUIRED GENESIS_PROVENANCE_KEYS entry rejects every older journal, so "
     "it is an optional key written where the genesis is built.",
+)
+
+#: The four remedies this unit was handed, and which one it is. Data rather than
+#: prose because "why not the other one" is asked long after the commit message
+#: has scrolled away, and an undispositioned alternative reads as an oversight.
+#: Each entry is (remedy, disposition).
+REMEDY_DISPOSITIONS: tuple[tuple[str, str], ...] = (
+    (
+        "prompt trees join role_protocol.FLOOR_GLOBS",
+        "OWED, floored. Spelled at FLOOR_GLOBS_OWED for W2-1-4. It is the only "
+        "remedy that denies the WRITE, and so the only one that survives a tree "
+        "drifted BEFORE a run starts — see the chosen remedy's limit below.",
+    ),
+    (
+        "ADJUDICATE gains a deny row for the two prompt trees",
+        "OWED, floored. FLOORED_OBLIGATIONS entry 1, together with the rule "
+        "over `disputed_paths:` without which the globs do not reach plan time.",
+    ),
+    (
+        "resolve the prompt from the BASE revision, as scripts/check_body_"
+        "branch.sh reads the gate's own code out of <base>'s object store",
+        "REJECTED, and NOT because it is floored — it is not; it is a "
+        "cross_family_reviewer.py edit this unit could have made. Three "
+        "measured reasons, in the order that decides it: (1) WRONG EXPOSURE. "
+        "That script's base-read is entered on exactly one condition — the "
+        "gate's code lies inside the tree under judgement. `_PROMPTS_DIR = "
+        "Path(__file__).parent / 'reviewer_prompts'` means the panel's prompt "
+        "comes from the RUNNING package, so that condition holds only in the "
+        "dogfooding window. The honest exposure is the other one: the edit "
+        "lands, is MERGED, and every later run is judged by it — after which "
+        "<base> carries the edit and a base-read returns exactly the rewritten "
+        "prompt. (2) NO NAMED STATE. Base-resolution substitutes bytes; it does "
+        "not compare, and check_body_branch.sh says why it must not — 'a "
+        "comparison is a decision, and differs is the ordinary state of an "
+        "honest branch'. It therefore cannot produce the disagreement state "
+        "this contract is required to name, because by construction it has "
+        "none. (3) NO BASE AT THIS SEAM. That script takes <base> as an "
+        "argument; `_load_prompt` is reached from run_panel by the three "
+        "journal-less callers in UNANCHORED_ENTRY_POINTS, none of which knows a "
+        "protected base, and an installed package has no object store to read. "
+        "It is a new mechanism, not a cheaper one.",
+    ),
+    (
+        "compare the loaded tree against the digest the genesis already records "
+        "as reviewer_prompts_hash — THIS CONTRACT",
+        "CHOSEN. It is unfloored, and the reason it is honest rather than "
+        "merely reachable is that it is the only one of the four that answers "
+        "the question actually asked: is the tree the panel is about to execute "
+        "the tree this run was started with, and if not, say so in a named "
+        "state. journal.py:578 already writes the digest and nothing reads it, "
+        "so this is a comparison of a recorded fact, not a new mechanism. Its "
+        "LIMIT, stated because it is what the floored half is still for: the "
+        "anchor attests UNCHANGED-SINCE-GENESIS, not CORRECT. A tree rewritten "
+        "before the genesis is hashed is attested by its own drift and refuses "
+        "nothing. Only the write denial closes that, and it is owed, not "
+        "replaced by remedy 3 — which closes it no better.",
+    ),
 )
 
 #: Call sites that reach ``cross_family_reviewer._load_prompt`` without ever
