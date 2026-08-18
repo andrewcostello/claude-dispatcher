@@ -55,11 +55,14 @@ pass:
     the ``sub.ts`` / ``sub/index.ts`` pair, whose aliasing was a measured false
     positive.
 
-WHAT THIS SCAFFOLD LEAVES UNDONE, on purpose: :func:`build_surface`,
-:func:`compare_surfaces` and :func:`_fold`. Every judgement the seals will
-score — routing, ambiguity, unread policy, revision selection, fault
-precedence, the emitted result — is inside one of those three. Everything else
-here is a data type, a validation, or a composition that decides nothing.
+WHAT THIS SCAFFOLD LEAVES UNDONE, on purpose, and it is exactly this unit's
+two declared holes: :func:`build_surface` and :func:`compare_surfaces`. Every
+judgement the seals score — routing, module-ness, ambiguity, the unread policy,
+the three clauses — is inside one of the two. Everything else here, including
+:func:`_fold`, is a data type, a validation, a read order or an error contract:
+a stub outside the declared pair would be a hole no gate checks, which the
+BODIES phase would pass over with this module still answering UNDETERMINED to
+every branch.
 """
 
 from __future__ import annotations
@@ -956,6 +959,11 @@ def _fold(
       diff that never reaches here. A truncated :class:`ClosureRequest` is an
       unread space (BUDGET_EXCEEDED), never a shorter read.
 
+      ONE PASS, not a fixed point: a closure file's own augmentations are not
+      enumerated again. An unresolved target is then UNREAD, which is a
+      refusal — the bound stays the one stated above, and the failure is
+      closed rather than a second unbounded read.
+
     ``attempted`` is what was TRIED at each revision — the paths, plus the
     closure candidates for the base — and not the surfaces that came back, so
     "absent from the tree" and "never opened" stay different facts.
@@ -978,10 +986,128 @@ def _fold(
 
     ``detail`` names every widening in one clause each, for the line
     ``check_branch`` prints.
+
+    IMPLEMENTED, unlike the two holes above, because it is not one of them:
+    this unit's ``declares.holes`` are :func:`build_surface` and
+    :func:`compare_surfaces`, so a stub here is a hole no gate checks — the
+    BODIES phase would pass with both declared holes filled and this module
+    still answering UNDETERMINED to every branch. Every judgement it routes
+    through is inside a declared hole; what is written here is the read order,
+    the fault precedence and the error contract, none of which it decides.
     """
-    raise NotImplementedError(
-        "W2-2-3 builds this; see docs/branch-surface-amendment.md precondition 1"
+    base_surfaces: list[FileSurface] = []
+    head_surfaces: list[FileSurface] = []
+    faults: list[ReadFault] = []
+    # What was TRIED, per revision, and never what came back: `build_surface`
+    # reads a space with no attempted path as UNREAD, and a surface list can
+    # only report what exists.
+    base_attempted: set[str] = set(paths)
+    head_attempted: set[str] = set(paths)
+
+    for path in paths:
+        for ref, surfaces in (
+            (merge_base, base_surfaces), (branch_ref, head_surfaces),
+        ):
+            surface, fault = _surface_at(repo_root, ref, path, run=run)
+            if fault is not None:
+                faults.append(fault)
+            elif surface is not None:
+                surfaces.append(surface)
+    # Before the closure, so a file that did not parse does not buy up to
+    # MAX_CLOSURE_READS more reads for an answer that is already refused.
+    if faults:
+        return _fault_fold(faults)
+
+    request = closure_request(head_surfaces)
+    if request.truncated:
+        unenumerated = _unenumerated(head_surfaces, request)
+        raise RoleDiffError(
+            f"the branch-wide signature fold stopped at "
+            f"MAX_CLOSURE_READS={MAX_CLOSURE_READS} baseline reads with "
+            f"{len(unenumerated)} augmentation target(s) still unenumerated "
+            f"({', '.join(unenumerated[:3])}); an over-budget closure is an "
+            f"unread space ({UnreadReason.BUDGET_EXCEEDED.value}), never a "
+            "short read"
+        )
+    for candidate in request.candidates:
+        if candidate in base_attempted:
+            continue
+        # Read at merge_base ONLY and used at both revisions: the candidate is
+        # not in `paths`, so the three-dot diff says its content is the same at
+        # both, and reading it at branch_ref would be the wrong-revision defect.
+        base_attempted.add(candidate)
+        head_attempted.add(candidate)
+        surface, fault = _surface_at(repo_root, merge_base, candidate, run=run)
+        if fault is not None:
+            faults.append(fault)
+        elif surface is not None:
+            base_surfaces.append(surface)
+            head_surfaces.append(surface)
+    if faults:
+        return _fault_fold(faults)
+
+    comparison = compare_surfaces(
+        build_surface(base_surfaces, attempted=base_attempted),
+        build_surface(head_surfaces, attempted=head_attempted),
     )
+    if comparison.unread:
+        raise RoleDiffError(
+            "the branch-wide signature fold could not bound "
+            f"{len(comparison.unread)} declaration space(s), so it cannot say "
+            "the branch widened nothing: "
+            + "; ".join(
+                f"{space.namespace.label} ({space.reason.value})"
+                + (f": {space.detail}" if space.detail else "")
+                for space in comparison.unread
+            )
+        )
+    if not comparison.changes:
+        return CLEAN_FOLD
+    return BranchFold(
+        status=SignatureCheckStatus.CHECKED,
+        changes=tuple(
+            change.as_signature_change() for change in comparison.changes
+        ),
+        detail="; ".join(
+            f"{change.key.label} widened by "
+            f"{', '.join(change.introduced_by)}"
+            for change in comparison.changes
+        ),
+    )
+
+
+def _fault_fold(faults: Sequence[ReadFault]) -> BranchFold:
+    """The refusal one or more read faults produce.
+
+    Seeded with CHECKED, which is the BEST rank, so the fold reports the worst
+    fault and never clears one. Every fault's detail is carried: a base that
+    did not parse and a head whose comparator was unavailable are two facts.
+    """
+    status = SignatureCheckStatus.CHECKED
+    for fault in faults:
+        status = _worst_signature_status(status, fault.status)
+    return BranchFold(
+        status=status, detail="; ".join(fault.detail for fault in faults)
+    )
+
+
+def _unenumerated(
+    surfaces: Sequence[FileSurface], request: ClosureRequest
+) -> tuple[str, ...]:
+    """The augmentation specifiers a truncated closure did not finish naming.
+
+    A PARTIALLY enumerated specifier counts: resolving against some of its
+    candidates would pick a file because the rest were never looked for.
+    """
+    covered = set(request.candidates)
+    out: list[str] = []
+    for surface in surfaces:
+        for specifier in augmentation_specifiers(surface):
+            candidates = specifier_candidates(surface.path, specifier)
+            if candidates and not covered.issuperset(candidates):
+                if specifier not in out:
+                    out.append(specifier)
+    return tuple(sorted(out))
 
 
 # --------------------------------------------------------------------------- #

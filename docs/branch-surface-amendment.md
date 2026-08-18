@@ -11,23 +11,23 @@ here. An operator deciding is an unreviewed design act.
 
 ## Preconditions — check all four before touching the file
 
-1. `branch_surface`'s three holes are filled (W2-2-3). The check is an exit
-   code, not a judgement:
+1. `branch_surface`'s two holes are filled (W2-2-3). The check is an exit code,
+   not a judgement:
 
    ```
    python -m claude_dispatcher.scaffold_shape holes --bodies \
      src/claude_dispatcher/branch_surface.py::build_surface \
-     src/claude_dispatcher/branch_surface.py::compare_surfaces \
-     src/claude_dispatcher/branch_surface.py::_fold
+     src/claude_dispatcher/branch_surface.py::compare_surfaces
    ```
 
-   `build_surface` and `compare_surfaces` are W2-2-1's `declares.holes`, which
-   the bodies gate checks on its own. **`_fold` is the third and is not yet in
-   that list** — W2-2-1 stubbed it after the panel found the scaffold had
-   implemented decision logic its own seals would judge (revision selection,
-   fault precedence, unread handling, the emitted result all live there). Add
-   it to the plan row or run the command above; either way it is checked, not
-   remembered.
+   These two are W2-2-1's `declares.holes` in full, so the bodies gate checks
+   them on its own and this command only makes it visible. **The module has no
+   other stub**: `_fold` is implemented, because a stub outside the declared
+   pair is a hole no gate checks — the bodies gate would pass with both
+   declared holes filled and the module still answering UNDETERMINED. What
+   `_fold` contains is the read order, the fault precedence and the error
+   contract; every judgement it routes through is inside one of the two holes,
+   so it decides nothing before the seals do.
 
    Transcribing this patch before W2-2-3 lands is still wrong, but it fails
    CLOSED rather than aborting the gate: `fold_branch_signatures` converts the
