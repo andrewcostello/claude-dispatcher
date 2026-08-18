@@ -273,6 +273,35 @@ def _print_table(profile: dict[str, Any]) -> None:
                 print(f"  {name:<10} ✗ not found")
 
 
+def _print_accounts(profile_path: Path) -> None:
+    """Report the Claude subscription pool, if the operator configured one.
+
+    Silent when none is configured — the ambient login needs no report, and a
+    "0 accounts" line on every machine would be noise.
+
+    Reads only the non-secret fields beside the token, so this costs nothing and
+    prints nothing sensitive. A stale login is otherwise invisible until a run
+    blocks on an auth failure that looks like any other.
+    """
+    from . import claude_accounts as ca_mod
+
+    try:
+        accounts = ca_mod.load_from_machine_profile(profile_path)
+    except ValueError as exc:
+        print(f"claude accounts:\n  ✗ {exc}")
+        return
+    if not accounts:
+        return
+    print("claude accounts:")
+    for health in (ca_mod.probe(a) for a in accounts):
+        if not health.logged_in:
+            print(f"  {health.name:<12} ✗ {health.detail}")
+            continue
+        note = " EXPIRED - run /login" if health.expired else ""
+        tier = health.tier or "tier unknown"
+        print(f"  {health.name:<12} ✓ {health.subscription or '?'} ({tier}){note}")
+
+
 def _missing_required(profile: dict[str, Any]) -> list[str]:
     return [
         name
@@ -295,6 +324,7 @@ def execute(args) -> int:
         return rc
 
     _print_table(profile)
+    _print_accounts(path)
     print(f"wrote {path}")
 
     if getattr(args, "check", False):

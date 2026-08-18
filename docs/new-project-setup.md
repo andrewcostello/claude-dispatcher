@@ -301,6 +301,59 @@ the gate stamps (`role_diff_loop`, `mechanical_verification`, `blocked_reason`).
 
 ---
 
+## 7a. Several Claude subscriptions (optional)
+
+Rate limits are per **account**, so one subscription caps how much of the task
+graph can run at once. If you hold more than one, the dispatcher can spread
+spawns across them.
+
+Log each one into its own config dir — `CLAUDE_CONFIG_DIR` re-homes the CLI's
+credentials, so these are independent identities:
+
+    CLAUDE_CONFIG_DIR=~/.claude-personal claude    # then /login
+    CLAUDE_CONFIG_DIR=~/.claude-work     claude    # then /login
+
+Then list them in the **machine** profile, under the user-owned `manual:` key
+(`~/.config/claude-dispatcher/machine.yaml`). It goes there rather than in
+`.dispatcher.yaml` because accounts are a property of the machine, not the
+repo — and `.dispatcher.yaml` is committed and on the floor:
+
+    manual:
+      claude_accounts:
+        - name: personal
+          config_dir: ~/.claude-personal
+        - name: work
+          config_dir: ~/.claude-work
+
+`dispatcher doctor` then reports each one's subscription, tier and whether the
+login is still good — no API call, nothing sensitive printed:
+
+    claude accounts:
+      personal     ✓ max (default_claude_max_20x)
+      work         ✗ no credentials at /home/u/.claude-work/.credentials.json
+
+What it changes:
+
+* Implementer spawns **and panel seats** rotate round-robin. Seats matter — every
+  task that reaches the panel pays for one, so rotating implementers alone
+  spreads half the load.
+* A quota **429 rotates to another subscription** instead of parking the task.
+  The exhausted account sits out for 15 minutes so the retry lands elsewhere.
+  With no pool, or once every account is exhausted, the old park-and-retry-later
+  behaviour is unchanged.
+* Each task row records `claude_account:` — without it, `cost_usd` is several
+  subscriptions' spend added together with no way to separate them.
+
+Configuring **no** accounts is the default and means "use the ambient login",
+exactly as before this existed. A malformed entry is fatal rather than ignored:
+it decides which subscription is billed, and a typo that quietly fell back would
+spend the wrong account's quota without saying so.
+
+Only then raise `--max-parallel`. The wave plan caps useful parallelism at the
+number of independent units in your graph (`--mode dry-run` prints it), and
+raising it while every spawn routes to one account just reaches that account's
+limit sooner.
+
 ## 8. When a task blocks
 
 **Measure the cause before clearing it.** In the first dogfood wave most blocks

@@ -206,12 +206,23 @@ def test_only_retryable_NOW_is_retried() -> None:
     must park at once.
 
     Measured under: retry on any infrastructure failure and this reddens.
+
+    Reads the WHOLE retry loop rather than a fixed-width window from its start.
+    The window form this replaced (2600 chars) went red the first time an
+    unrelated line was inserted above the condition — a seal whose verdict
+    depends on how much text precedes its subject reports edits as defects.
     """
+    import ast
     from pathlib import Path
     from claude_dispatcher import orchestrator
+
     src = Path(orchestrator.__file__).read_text()
-    at = src.index("infra_retries = 0")
-    block = src[at:at + 2600]
+    tree = ast.parse(src)
+    loops = [n for n in ast.walk(tree)
+             if isinstance(n, ast.While)
+             and any("infra_retries" in ast.dump(c) for c in ast.walk(n))]
+    assert loops, "the bounded infra-retry loop is gone"
+    block = "\n".join(ast.get_source_segment(src, n) or "" for n in loops)
     assert "transient.retry is not spawn_failure_mod.Retry.NOW" in block
     assert "infra_retries >= INFRA_RETRY_LIMIT" in block
 

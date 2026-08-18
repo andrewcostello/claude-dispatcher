@@ -32,6 +32,10 @@ from enum import Enum
 #: Statuses that mean "the provider could not serve this", by what to DO.
 _OVERLOADED = frozenset({500, 502, 503, 504, 529})
 _QUOTA = frozenset({429})
+
+#: Public alias: the orchestrator asks "is this the failure another
+#: subscription could answer?" and must not reach into a private name.
+QUOTA_STATUSES = _QUOTA
 _AUTH = frozenset({401, 403})
 
 

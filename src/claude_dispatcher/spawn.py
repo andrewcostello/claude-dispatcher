@@ -21,6 +21,7 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import claude_accounts
 from . import endpoint_agents as endpoint_agents_mod
 
 
@@ -446,6 +447,7 @@ def spawn_claude(
     extra_args: list[str] | None = None,
     timeout_seconds: int = 60 * 60 * 4,
     metered: bool = False,
+    config_dir: str | None = None,
 ) -> SpawnResult:
     """Invoke `claude` with the prompt piped on stdin. Block until exit.
 
@@ -481,6 +483,11 @@ def spawn_claude(
     if not metered:
         run_env.pop("ANTHROPIC_API_KEY", None)
         run_env.pop("ANTHROPIC_AUTH_TOKEN", None)
+    # Which SUBSCRIPTION pays. `CLAUDE_CONFIG_DIR` re-homes the CLI's
+    # credentials, so this selects an account; None leaves the ambient login,
+    # which is every run before the pool existed.
+    if config_dir:
+        run_env[claude_accounts.CONFIG_DIR_ENV] = str(config_dir)
     proc = subprocess.run(
         cmd,
         input=prompt,
@@ -743,8 +750,13 @@ def spawn_agent(
     extra_args: list[str] | None = None,
     claude_bin: str = "claude",
     timeout_seconds: int = 60 * 60 * 4,
+    config_dir: str | None = None,
 ) -> SpawnResult:
     """Spawn the chosen implementer agent for one task.
+
+    `config_dir` selects WHICH Claude subscription pays, and applies to the
+    claude family only — every other CLI authenticates its own way, and an
+    endpoint agent is billed by the provider key in its env.
 
     agent in (None, "claude") -> the default `claude --print` worker (with an
     optional --model). Otherwise dispatch to the cross-family CLI's headless
@@ -772,9 +784,16 @@ def spawn_agent(
         # failure — a blanket `git add -A` would mask exactly that signal
         # (and commit stray artifacts). Cross-family CLIs that cannot commit
         # get the auto-commit normalization below instead.
+        # Passed ONLY when an account was selected. With no pool the call is
+        # byte-for-byte the one made before this existed, which keeps every
+        # existing test double valid — and those doubles pin an exact signature
+        # on purpose. Widening them to `**kwargs` would make them accept any
+        # argument at all, which is how a double stops catching a bad call.
+        account_kwargs = {"config_dir": config_dir} if config_dir else {}
         return spawn_claude(
             claude_bin=claude_bin, cwd=cwd, env=env, prompt=prompt,
             extra_args=spawn_extra, timeout_seconds=timeout_seconds,
+            **account_kwargs,
         )
 
     if agent in endpoint_agents_mod.ENDPOINT_AGENTS:

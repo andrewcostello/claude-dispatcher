@@ -42,6 +42,8 @@ future explicit human decision based on the journaled scorecard events.
 from __future__ import annotations
 
 import os
+
+from . import claude_accounts
 import re
 import subprocess
 import threading
@@ -728,10 +730,17 @@ class Reviewer:
     family: str = ""
     cli_bin: str = ""
 
-    def __init__(self, *, cli_bin: str | None = None, timeout_seconds: int = DEFAULT_REVIEWER_TIMEOUT_SECONDS):
+    def __init__(self, *, cli_bin: str | None = None,
+                 timeout_seconds: int = DEFAULT_REVIEWER_TIMEOUT_SECONDS,
+                 config_dir: str | None = None):
         if cli_bin is not None:
             self.cli_bin = cli_bin
         self.timeout_seconds = timeout_seconds
+        # Which Claude subscription this SEAT bills. Only the claude seat reads
+        # it; the other families authenticate their own way. Seats are a large
+        # share of a run's spend, so a pool that rotated implementers alone
+        # would spread half the load.
+        self.config_dir = config_dir
 
     def review(self, prompt: str) -> ReviewerVerdict:
         """Invoke the CLI, parse the output, retry once on parse failure.
@@ -803,6 +812,16 @@ class Reviewer:
             rv2.error = "parse failed twice; second attempt also unparseable"
         return rv2
 
+    def _seat_env(self) -> dict[str, str]:
+        """The subscription environment for a claude-family seat: the ambient
+        env minus metered-API credentials, plus this seat's account when the
+        pool assigned one."""
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
+        if self.config_dir:
+            env[claude_accounts.CONFIG_DIR_ENV] = str(self.config_dir)
+        return env
+
     def _invoke_cli(self, prompt: str) -> str:  # pragma: no cover (subclass)
         raise NotImplementedError
 
@@ -834,8 +853,7 @@ class ClaudeReviewer(Reviewer):
             check=False,
             timeout=self.timeout_seconds,
             # claude reviewer rides the subscription, not the metered API
-            env={k: v for k, v in os.environ.items()
-                 if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")},
+            env=self._seat_env(),
         )
         if proc.returncode != 0:
             raise RuntimeError(

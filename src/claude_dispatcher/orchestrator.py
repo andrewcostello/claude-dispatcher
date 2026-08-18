@@ -100,6 +100,12 @@ def _ask_human(prompt_text: str, choices: list[str]) -> str:
 #: flapping provider burns the cost ceiling with nothing to show for it.
 INFRA_RETRY_LIMIT = 1
 
+#: A quota 429 rotates to another subscription rather than parking, bounded by
+#: the pool: each rotation tries an account that has NOT just reported
+#: exhaustion, so there is nothing left to try once every one has.
+def _quota_rotations_available(pool) -> int:
+    return max(len(pool) - 1, 0) if pool else 0
+
 #: Marks an `effort:` the CASCADE chose rather than the plan author. Only ever
 #: written beside an escalated effort, and removed with it.
 EFFORT_ESCALATED_STAMP = "effort_escalated"
@@ -225,6 +231,12 @@ class RunConfig:
     verify_test_timeout_seconds: int = 600
     # Set at run start from repo config; maps a risk tier to a default model.
     model_router: Any = None
+    # The Claude subscriptions this run may spend, one CLAUDE_CONFIG_DIR each
+    # (claude_accounts.AccountPool). An EMPTY pool is the default and means "use
+    # the ambient login" — every run before the pool existed. Rate limits are
+    # per account, so a pool is what lets parallelism rise above one
+    # subscription's ceiling.
+    account_pool: Any = None
     # LLM verification gate (VG-4). After the mechanical gate passes and
     # before the cross-family panel, an independent verifier (verifier.py) is
     # spawned over the task + summary + committed diff to answer "does this
@@ -1455,7 +1467,20 @@ def _run_task(
         # because an unbounded retry against a flapping provider is its own
         # hazard, and a second failure is evidence the condition is not passing.
         infra_retries = 0
+        quota_rotations = 0
+        pool = getattr(cfg, "account_pool", None)
+        # Only the claude family reads CLAUDE_CONFIG_DIR. Drawing for a codex or
+        # grok spawn would advance the rotation for a spawn that cannot use it.
+        pool_applies = attempt_agent in (None, "claude")
+        spawn_account_name: str | None = None
         while True:
+            # Chosen per ATTEMPT, not per task: a rotation after a quota 429 is
+            # only worth anything if the retry lands on a different account.
+            spawn_account = pool.next_account() if (pool and pool_applies) else None
+            if spawn_account is not None:
+                spawn_account_name = spawn_account.name
+                _log(log_path,
+                     f"  {snap.key} claude account = {spawn_account.name}")
             try:
                 result = spawn_mod.spawn_agent(
                     agent=attempt_agent,
@@ -1467,6 +1492,11 @@ def _run_task(
                     effort=attempt_effort,
                     extra_args=list(cfg.claude_extra_args),
                     timeout_seconds=cfg.task_timeout_seconds,
+                    # Only when an account was drawn: with no pool this call is
+                    # identical to the one made before the pool existed, so the
+                    # test doubles that pin this exact signature stay valid.
+                    **({"config_dir": str(spawn_account.config_dir)}
+                       if spawn_account else {}),
                 )
             except Exception as e:
                 _log(log_path, f"  {snap.key} spawn failed: {e}")
@@ -1492,6 +1522,27 @@ def _run_task(
             transient = spawn_failure_mod.classify(
                 result.exit_code, result.stdout or "", result.stderr or "",
             )
+            # A quota 429 is the one infrastructure failure another SUBSCRIPTION
+            # can answer. Sit the exhausted account out and retry on the next
+            # one; with no pool (or none left) this falls through to the
+            # existing park-and-retry-later, unchanged.
+            if (transient.api_error_status in spawn_failure_mod.QUOTA_STATUSES
+                    and spawn_account is not None
+                    and quota_rotations < _quota_rotations_available(pool)):
+                pool.penalize(spawn_account.name)
+                quota_rotations += 1
+                _log(log_path,
+                     f"  {snap.key} account {spawn_account.name!r} is out of "
+                     f"quota; rotating to another subscription "
+                     f"({quota_rotations}/{_quota_rotations_available(pool)})")
+                _emit_event(cfg, journal_mod.EventType.task_spawn_finished, {
+                    "spawn_kind": "implementer",
+                    "failure_kind": transient.kind.value,
+                    "claude_account": spawn_account.name,
+                    "quota_rotation": quota_rotations,
+                    "api_error_status": transient.api_error_status,
+                }, task_key=snap.key)
+                continue
             if (transient.retry is not spawn_failure_mod.Retry.NOW
                     or infra_retries >= INFRA_RETRY_LIMIT):
                 break
@@ -1551,6 +1602,14 @@ def _run_task(
 
         used_agent = attempt_agent
         used_effort = attempt_effort
+        # WHICH SUBSCRIPTION PAID. Recorded per row because `cost_usd` is
+        # otherwise the sum of several subscriptions' spend under one number,
+        # and no later reader can separate them. Only written when a pool
+        # assigned one — an ambient-login run's rows are unchanged.
+        if spawn_account_name:
+            _mutate_row(cfg, snap.batch_keys or snap.key,
+                        lambda row, n=spawn_account_name: row.__setitem__(
+                            "claude_account", n))
         # Stamp the agent/effort that actually produced this attempt so
         # provenance (YAML agent column / journal) is accurate.
         if (used_agent != (snap.agent or "claude")
@@ -3561,7 +3620,29 @@ def _panel_reviewer_factory(cfg: RunConfig) -> list[cfr_mod.Reviewer]:
     # --no-claude: drop Claude seat from the authoritative panel.
     if getattr(cfg, "no_claude", False):
         revs = [r for r in revs if getattr(r, "family", None) != "claude"]
+    _assign_accounts_to_seats(cfg, revs)
     return revs
+
+
+def _assign_accounts_to_seats(cfg: RunConfig, revs: list) -> None:
+    """Give each claude-family SEAT an account from the pool.
+
+    Seats are a large share of a run's spend — every task that reaches the panel
+    pays for one — so a pool that rotated implementers alone would spread half
+    the load. Other families authenticate their own way and are skipped.
+
+    No-op with an empty pool, which leaves the ambient login: the behaviour of
+    every run before the pool existed.
+    """
+    pool = getattr(cfg, "account_pool", None)
+    if not pool:
+        return
+    for r in revs:
+        if getattr(r, "family", None) != "claude":
+            continue
+        acct = pool.next_account()
+        if acct is not None:
+            r.config_dir = str(acct.config_dir)
 
 
 # Test hook for ADVISORY (probationary, non-blocking) reviewers, mirroring
@@ -5581,6 +5662,26 @@ def _repo_root_for_tasks(tasks_yaml: str | Path) -> Path:
         return Path.cwd()
 
 
+def _build_account_pool(args) -> Any:
+    """The Claude subscription pool for this run.
+
+    Accounts live in the MACHINE profile's user-owned `manual:` section, not in
+    `.dispatcher.yaml`: the same repo dispatched on another box has different
+    accounts, and `.dispatcher.yaml` is committed and on the floor.
+
+    A malformed entry is fatal by design — `load_accounts` raises. This decides
+    which subscription is billed, and a typo that fell back to the ambient login
+    would silently spend the wrong account's quota.
+    """
+    from . import claude_accounts as ca_mod, doctor as doctor_mod
+
+    override = getattr(args, "claude_accounts_file", None)
+    path = (Path(override) if override
+            else doctor_mod.default_config_dir() / "machine.yaml")
+    accounts = ca_mod.load_from_machine_profile(path)
+    return ca_mod.AccountPool(accounts)
+
+
 def _build_config(args: argparse.Namespace) -> RunConfig:
     extra = getattr(args, "claude_extra_args", "") or ""
     # CLI base_branch wins if explicitly set; else fall back to "main" here
@@ -5623,6 +5724,7 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
     if design_agent not in ("claude", "grok", "codex", "gemini"):
         design_agent = "grok" if no_claude else "claude"
     return RunConfig(
+        account_pool=_build_account_pool(args),
         tasks_path=Path(args.tasks_yaml).resolve(),
         # Resolved HERE and not only in `cli.main`, so a programmatic caller that
         # builds an args namespace without the flag gets the same answer as the CLI
