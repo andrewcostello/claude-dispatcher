@@ -1,94 +1,51 @@
 """W2-2-2 seals: the widening is caught wherever in the diff it arrives.
 
-THE SUBJECT is ``role_protocol.check_branch``'s verdict over a WHOLE DIFF, and
-the unfloored algebra it will reach through — ``branch_surface.build_surface``
-and ``branch_surface.compare_surfaces``. It is deliberately NOT
-``compare_signatures``: that function is per-file and it is CORRECT per-file, so
-a row pinning its answer pins the thing that is not wrong.
+THE SUBJECT is ``role_protocol.check_branch``'s verdict over a WHOLE DIFF and
+the algebra it will reach through — ``branch_surface``'s ``build_surface``,
+``compare_surfaces``, ``closure_request`` and ``fold_branch_signatures``. It is
+deliberately NOT ``compare_signatures``: that function is per-file and correct
+per-file, so a row pinning its answer pins the thing that is not wrong.
 
-MEASURED ON THIS TREE, 2026-08-18, through the real ``check_branch`` over real
-git repositories — this is the defect, in one table::
+The defect, measured on this tree through the real ``check_branch``: the same
+widening is VIOLATION when it is written into the file that seals the
+interface and CLEAN when it arrives from a second file. Rows 2 and 6 of the
+table in this file's commit message — a second Python module and a second Go
+file — are W2-2-1's RULINGS and not defects, so they are here as
+false-positive controls.
 
-    python      Wallet.debit widened in src/wallet.py        VIOLATION, 1 change
-    python      the same class re-declared in wallet_v2.py   CLEAN,     0 changes
-    typescript  Bet widened in web/src/bet.ts                VIOLATION, 1 change
-    typescript  `declare module './bet'` in web/src/aug.ts   CLEAN,     0 changes
-    go          Wallet.Debit widened in pkg/wallet/wallet.go VIOLATION, 1 change
-    go          a new method on Wallet in pkg/wallet/credit.go CLEAN,   0 changes
-
-Row 4 is the bypass. A branch that cannot widen a sealed interface in the file
-that declares it widens it from a second file and is told CLEAN.
-
-WHICH OF THOSE SIX ARE DEFECTS, AND WHICH ARE RULINGS. Only row 4. W2-2-1
-measured the other two languages and ruled them in ``SURFACE_RULES``: Python has
-no cross-file declaration space at all (a second module declaring ``Wallet``
-declares a DIFFERENT symbol, and the substitution that makes that a bypass is a
-call-site question, not a signature one), and Go shares a package but every
-cross-file contribution to it is an ADDED key — ``Wallet.Credit`` keys as
-``Wallet.Credit``, and re-declaring an existing key does not compile. So rows 2
-and 6 are CLEAN today and must still be CLEAN after the fix; they are the
-false-positive controls that stop row 4 being satisfied by an implementation
-that merges every same-named symbol in the diff. See the Deviation note in this
-task's summary: the commission asked for rows 2 and 6 in the same shape as row
-4, and that shape contradicts the contract they would be sealing.
-
-WHAT IS RED HERE, ON PURPOSE, AND UNTIL WHEN
---------------------------------------------
-Nothing in this file skips, xfails, or is conditioned on a hole being filled.
-Red is the answer; a seal that goes quiet when its subject is missing certifies
-by not asking.
-
-  * ``test_the_surface_algebra_answers_its_own_behaviour_table`` (15 rows) —
-    RED until **W2-2-3** fills ``build_surface`` and ``compare_surfaces``.
-  * ``test_the_widening_in_a_second_file_stops_being_zero_changes`` and
-    ``test_the_branch_surface_algebra_is_reached_from_production`` — RED until
-    **W2-2-5**, the operator row that transcribes
-    ``docs/branch-surface-amendment.md`` into ``_compare_branch_signatures``.
-    W2-2-3 alone does not green them: an algebra nothing calls decides nothing.
-
-None of the red rows is a row about a NAME being absent. Each one drives an
-input pair through the real surface and asserts the answer, so filling a hole
-badly leaves it red — which is the trap this codebase measured and D8 P2
-declined ("a row pinning a transient unimplementedness goes green when someone
-adds the name and proves nothing about behaviour").
-
-The exact node ids are in the summary, for ``config/known-red.yaml``.
-
-WHAT THE RED ROWS FORCE, WHICH THE INHERITED PANEL FINDINGS SAID THEY MUST
---------------------------------------------------------------------------
-Two HIGH findings against W2-2-1 say ``build_surface``'s specifier rule, read
-literally, resolves nothing: ``attempted`` holds every candidate TRIED, ``_fold``
-tries all six spellings per specifier, and "exactly one of
-``specifier_candidates`` present in ``attempted``" is then never one.
-``test_the_widening_in_a_second_file_stops_being_zero_changes`` is the row that
-decides it — the flagship case, with ``bet.ts`` unchanged and therefore reached
-only through the closure. It requires a widening to be REPORTED, so an
-implementation that reads "present" as "attempted" (six-way ambiguous ⇒ unread ⇒
-``RoleDiffError`` ⇒ UNDETERMINED) fails it. The ruling those findings ask for is
-that resolution is by PRESENCE IN THE TREE; this file does not make that ruling,
-it makes the wrong answer visible.
-
-``test_the_two_spellings_of_one_module_share_a_namespace`` discharges the third
-and fourth findings, on the ``.d.ts`` suffix order: ``_validate_rules``' second
-anchor probes ``TYPESCRIPT_SUPPORT.extensions``, which is ``(".ts", ".tsx")``, so
-it cannot see ``.d.ts`` move behind ``.ts``. That row probes the pair that
-matters and is red under exactly the reorder the panel measured.
+RED ROWS ARE THE ANSWER HERE, not an accident. Nothing skips, xfails, or is
+conditioned on a hole being filled: a seal that goes quiet when its subject is
+missing certifies by not asking. No red row asserts merely that a NAME exists
+— each drives an input pair through the real surface and asserts the answer,
+so filling a hole badly leaves it red. Which rows, and until which task, is in
+this task's summary, for ``config/known-red.yaml``.
 """
 
 from __future__ import annotations
 
 import ast
+import re
 import subprocess
+import tomllib
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 import pytest
 
 from claude_dispatcher.branch_surface import (
+    CLEAN_FOLD,
+    MAX_CLOSURE_READS,
     SURFACE_BEHAVIOUR_ROWS,
-    BehaviourRow,
+    BranchFold,
     BranchSurfaceError,
+    FileSurface,
+    UnreadReason,
+    _unenumerated,
     build_surface,
+    closure_request,
     compare_surfaces,
+    fold_branch_signatures,
+    specifier_candidates,
     surface_rule_for,
     ts_namespace_of,
 )
@@ -107,9 +64,13 @@ from claude_dispatcher.role_protocol import (
     DiffVerdict,
     Language,
     Role,
+    RoleDiffError,
+    SignatureCheckStatus,
     check_branch,
     ts_symbol_key,
 )
+
+_REPO = Path(__file__).resolve().parent.parent
 
 
 # --------------------------------------------------------------------------- #
@@ -118,11 +79,18 @@ from claude_dispatcher.role_protocol import (
 
 
 def _git(repo: Path, *args: str) -> str:
+    """git, with the two ambient faults that are not this gate ruled out.
+
+    ``commit.gpgsign=false`` because a developer or CI account with signing on
+    and no key fails every row here for a reason no reader would guess, and
+    ``timeout`` because a hung git must fail the row rather than the session.
+    """
     return subprocess.run(
-        ["git", "-C", str(repo), *args],
+        ["git", "-C", str(repo), "-c", "commit.gpgsign=false", *args],
         check=True,
         capture_output=True,
         text=True,
+        timeout=120,
     ).stdout
 
 
@@ -163,14 +131,39 @@ def _bodies(repo: Path):
     return check_branch(repo, "main", "feat/x", Role.BODIES)
 
 
+def _assert_read(result, language: str) -> None:
+    """The comparator RAN. Without it every CLEAN row below is satisfied by a
+    gate that read nothing.
+
+    Measured cost of not asserting it: ``ts_signature_fingerprint/typescript.js``
+    is gitignored and absent from every fresh worktree here, and the whole
+    TypeScript half of this file then passes as UNCHECKED_COMPARATOR_UNAVAILABLE
+    — a green suite over a gate that never looked at a TypeScript file.
+    """
+    assert result.signature is not None, f"{language}: no signature was computed"
+    assert result.signature.status is SignatureCheckStatus.CHECKED, (
+        f"{language}: the signature gate did not read this diff "
+        f"({result.signature.status}: {result.signature.detail}). Every "
+        "assertion about what it found is vacuous until it has"
+    )
+    assert not result.signature.unsupported_paths, (
+        f"{language}: paths nobody could read: "
+        f"{result.signature.unsupported_paths}"
+    )
+
+
 _PY_SEALED = "class Wallet:\n    def debit(self, amount):\n        return amount\n"
 _PY_WIDENED = (
     "class Wallet:\n"
     "    def debit(self, amount, currency=None):\n"
     "        return amount\n"
 )
+_PY_NEIGHBOUR = "class Ledger:\n    def note(self, entry):\n        return entry\n"
+
 _TS_SEALED = "export interface Bet {\n  id: string;\n}\n"
 _TS_WIDENED = "export interface Bet {\n  id: string;\n  wager: number;\n}\n"
+_TS_NEIGHBOUR = "export interface Ledger {\n  id: string;\n}\n"
+
 _GO_SEALED = (
     "package wallet\n\ntype Wallet struct{}\n\n"
     "func (w Wallet) Debit(a int) int { return a }\n"
@@ -178,6 +171,10 @@ _GO_SEALED = (
 _GO_WIDENED = (
     "package wallet\n\ntype Wallet struct{}\n\n"
     "func (w Wallet) Debit(a int, c string) int { return a }\n"
+)
+_GO_NEIGHBOUR = (
+    "package wallet\n\ntype Ledger struct{}\n\n"
+    "func (l Ledger) Note(a int) int { return a }\n"
 )
 
 #: `declare module './bet'` — the module's own text calls this one "augment
@@ -249,15 +246,13 @@ def test_the_in_place_widening_is_exactly_one_change(
     of ``compare_surfaces`` exists to prevent, and the one an implementation
     that merges first and diffs second produces silently.
 
-    The symbol and the path are asserted because "one change" alone is met by a
-    gate that found some other change in the same diff.
-
     Reddens under: the fold reporting the in-place edit a second time; the
     per-file loop losing this file; a merged fingerprint that no longer equals
     the single contribution it was built from (``merge_fingerprints``' own
     one-contribution property).
     """
     result = _bodies(_branch(tmp_path, f"inplace_{language}", base, head))
+    _assert_read(result, language)
 
     assert result.verdict is DiffVerdict.VIOLATION, (
         f"{language}: an in-place widening of a sealed signature was not "
@@ -293,9 +288,8 @@ def test_the_widening_in_a_second_file_stops_being_zero_changes(
     { wager: number } }``, which widens ``Bet`` for every importer in the
     program. Measured through the real ``check_branch`` on this tree:
     **CLEAN, 0 changes**. The same widening written into ``bet.ts`` is
-    VIOLATION with 1 change (the ``typescript`` row of
-    ``test_the_in_place_widening_is_exactly_one_change``), so the gate's answer
-    is decided by which file the author put the text in.
+    VIOLATION with 1 change, so the gate's answer is decided by which file the
+    author put the text in.
 
     WHY THE SEALED FILE IS UNCHANGED, and it is not incidental: an unchanged
     path is not in the three-dot diff, so ``changed_paths`` is
@@ -308,30 +302,26 @@ def test_the_widening_in_a_second_file_stops_being_zero_changes(
     by any unrelated refusal:
 
       1. exactly ONE change — not a per-file report re-emitted, not two;
-      2. its ``path`` is the AUGMENTING file, which is the file to edit. A
-         report naming ``bet.ts`` sends the author to the file that is correct;
-      3. its ``symbol`` is the SEALED file's namespace plus ``i:Bet``. A bare
-         qualname is ambiguous once spaces merge, and a symbol carrying
-         ``aug.ts``'s own namespace would mean the augmentation was routed to
-         its own space, which is the routing bug the module's
+      2. its ``path`` is the AUGMENTING file, which is the file to edit;
+      3. its ``symbol`` is the SEALED file's namespace plus ``i:Bet``. A symbol
+         carrying ``aug.ts``'s own namespace would mean the augmentation was
+         routed to its own space, which is the routing bug the module's
          ``s:<specifier>`` rule exists to prevent;
       4. ``before`` is EXACTLY the sealed file's own fingerprint for ``i:Bet``,
          derived here by calling the shipped fingerprinter rather than typed
          out, so the baseline came from the merge-base and not from the branch;
       5. ``after`` contains BOTH contributions. A widening reported as a
-         REPLACEMENT — ``after`` holding only the augmentation — would mean the
-         merge dropped the sealed declaration, and clause 3 would then fire on
-         a pure move as well.
+         REPLACEMENT would mean the merge dropped the sealed declaration, and
+         ``compare_surfaces`` clause 3 would then fire on a pure move as well.
 
-    Reddens (that is, stays red) under: resolving ``'./bet'`` against the
-    attempted set rather than the tree, which makes the specifier six-way
-    ambiguous and the answer UNDETERMINED (the two inherited HIGH findings);
-    reading only ``changed_paths``; raising ``RoleDiffError`` for the unread
-    ``aug.ts`` space instead of routing the augmentation out of it.
+    Stays red under: resolving ``'./bet'`` against the attempted set rather
+    than the tree, which makes the specifier six-way ambiguous and the answer
+    UNDETERMINED (two inherited HIGH findings against W2-2-1); reading only
+    ``changed_paths``; raising ``RoleDiffError`` for the unread ``aug.ts``
+    space instead of routing the augmentation out of it.
 
-    Greened by: W2-2-3 filling the five holes AND W2-2-5 transcribing
-    ``docs/branch-surface-amendment.md``. Either alone leaves it red, and the
-    reachability row below is what tells the two apart.
+    Greened by W2-2-3 filling the algebra AND W2-2-5 wiring it. Either alone
+    leaves it red, and the reachability row below is what tells the two apart.
     """
     repo = _branch(
         tmp_path,
@@ -350,6 +340,7 @@ def test_the_widening_in_a_second_file_stops_being_zero_changes(
     )
 
     result = _bodies(repo)
+    _assert_read(result, "typescript")
 
     assert result.verdict is DiffVerdict.VIOLATION, (
         "a branch widened a sealed interface from a second file and was told "
@@ -408,8 +399,16 @@ def test_the_widening_in_a_second_file_stops_being_zero_changes(
 
 
 # --------------------------------------------------------------------------- #
-# 3. THE RULED BOUNDARIES. Green today AND after. They are what stop row 2
-#    being satisfied by "every same-named symbol in the diff is one symbol".
+# 3. THE RULED BOUNDARIES. Green today AND after. They are what stop the row
+#    above being satisfied by "every same-named symbol in the diff is one
+#    symbol".
+#
+#    THE SECOND FILE EXISTS AT THE MERGE-BASE in all three, and that is not
+#    dressing: a file the branch ADDS has no base revision, so the per-file
+#    loop skips it and these rows would be green through the new-file skip
+#    rather than through SURFACE_RULES — green for the same reason the bypass
+#    above is green, which is no evidence at all. With the file present at
+#    both revisions a comparator runs on it, and `_assert_read` says so.
 # --------------------------------------------------------------------------- #
 
 
@@ -418,14 +417,11 @@ def test_a_second_python_module_redeclaring_a_class_is_not_a_widening(
 ) -> None:
     """W2-2-1's Python ruling, held through the whole gate. GREEN, both sides.
 
-    ``src/wallet_v2.py`` declares ``class Wallet`` with a widened ``debit``.
+    ``src/wallet_v2.py`` grows a ``class Wallet`` with a widened ``debit``.
     That is NOT a branch-level widening and must never become one: a Python
     module is a file, so the second ``Wallet`` is a DIFFERENT symbol, and
     whether anything substitutes it for the first is a call-site question this
-    gate does not answer. ``SURFACE_RULES`` is where that is ruled, and the row
-    is asserted here too — a table row flipped to ``merges_across_files=True``
-    would make this scenario a widening, and then the two halves of the seal
-    disagree loudly instead of the gate quietly growing a false positive.
+    gate does not answer.
 
     THE COMMISSION ASKED FOR THE OPPOSITE and it is wrong; see the Deviation in
     this task's summary.
@@ -443,10 +439,11 @@ def test_a_second_python_module_redeclaring_a_class_is_not_a_widening(
         _branch(
             tmp_path,
             "python_second",
-            {"src/wallet.py": _PY_SEALED},
-            {"src/wallet_v2.py": _PY_WIDENED},
+            {"src/wallet.py": _PY_SEALED, "src/wallet_v2.py": _PY_NEIGHBOUR},
+            {"src/wallet_v2.py": _PY_NEIGHBOUR + _PY_WIDENED},
         )
     )
+    _assert_read(result, "python")
     assert result.verdict is DiffVerdict.CLEAN, (
         "a second Python module declaring its own Wallet was refused as a "
         f"branch-level widening: {result.verdict} — {result.detail}"
@@ -461,13 +458,13 @@ def test_a_go_file_adding_a_method_is_an_added_key_not_a_widening(
 ) -> None:
     """W2-2-1's Go ruling, held through the whole gate. GREEN, both sides.
 
-    ``pkg/wallet/credit.go`` adds ``func (w Wallet) Credit`` to a type sealed in
-    ``wallet.go``. Go shares the package, so this is the closest thing Go has to
-    declaration merging — and it is still not one: the method keys as
-    ``Wallet.Credit``, which is an ADDED key, and clause 1 ("an added symbol is
-    not a change") is the ruled rule this unit may not reverse. Re-declaring an
-    EXISTING key in a second file does not compile, so there is no Go program
-    that expresses the bypass.
+    ``pkg/wallet/credit.go`` grows a ``func (w Wallet) Credit`` on a type
+    sealed in ``wallet.go``. Go shares the package, so this is the closest
+    thing Go has to declaration merging — and it is still not one: the method
+    keys as ``Wallet.Credit``, which is an ADDED key, and clause 1 ("an added
+    symbol is not a change") is the ruled rule this unit may not reverse.
+    Re-declaring an EXISTING key in a second file does not compile, so there is
+    no Go program that expresses the bypass.
 
     Reddens under: clause 1 reversed; Go's ``SURFACE_RULES`` row flipped, which
     is asserted here so the two say the same thing or neither passes.
@@ -480,15 +477,19 @@ def test_a_go_file_adding_a_method_is_an_added_key_not_a_widening(
         _branch(
             tmp_path,
             "go_second",
-            {"pkg/wallet/wallet.go": _GO_SEALED},
+            {
+                "pkg/wallet/wallet.go": _GO_SEALED,
+                "pkg/wallet/credit.go": _GO_NEIGHBOUR,
+            },
             {
                 "pkg/wallet/credit.go": (
-                    "package wallet\n\n"
-                    "func (w Wallet) Credit(a int) int { return a }\n"
+                    _GO_NEIGHBOUR
+                    + "\nfunc (w Wallet) Credit(a int) int { return a }\n"
                 )
             },
         )
     )
+    _assert_read(result, "go")
     assert result.verdict is DiffVerdict.CLEAN, (
         "a new Go method on an existing type was refused as a branch-level "
         f"widening: {result.verdict} — {result.detail}"
@@ -501,37 +502,39 @@ def test_a_go_file_adding_a_method_is_an_added_key_not_a_widening(
 def test_a_second_typescript_module_declaring_the_same_name_is_not_a_merge(
     tmp_path: Path,
 ) -> None:
-    """The false-positive control for the row above it. GREEN, both sides.
+    """The false-positive control for the bypass row. GREEN, both sides.
 
-    ``web/src/extra.ts`` declares its own ``export interface Bet`` and never
-    names ``bet.ts``. TypeScript merges declarations WITHIN one declaration
-    space, and two external modules are two spaces — this ``Bet`` is a different
-    type, and nothing about ``bet.ts``'s ``Bet`` changed.
+    ``web/src/extra.ts`` grows its own ``export interface Bet`` and never names
+    ``bet.ts``. TypeScript merges declarations WITHIN one declaration space,
+    and two external modules are two spaces — this ``Bet`` is a different type,
+    and nothing about ``bet.ts``'s ``Bet`` changed.
 
     This is the row that separates "the fold resolves the augmentation" from
-    "the fold treats every same-named symbol in the diff as one symbol". The
-    two files differ from
-    ``test_the_widening_in_a_second_file_stops_being_zero_changes`` in one
-    respect only — a ``declare module './bet'`` wrapper — so an implementation
-    that keys on the qualname alone passes that row and fails this one.
+    "the fold treats every same-named symbol in the diff as one symbol". It
+    differs from ``test_the_widening_in_a_second_file_stops_being_zero_changes``
+    in one respect only — a ``declare module './bet'`` wrapper — so an
+    implementation that keys on the qualname alone passes that row and fails
+    this one.
 
-    The commission named this shape ("`interface Bet { newField: string }` in an
-    importing file") as a second expression of the bypass. Measured: it is not
-    one. See the Deviation in this task's summary.
+    The commission named this shape ("`interface Bet { newField: string }` in
+    an importing file") as a second expression of the bypass. Measured: it is
+    not one. See the Deviation in this task's summary.
     """
     result = _bodies(
         _branch(
             tmp_path,
             "ts_shadow",
-            {_SEALED_TS_PATH: _TS_SEALED},
+            {_SEALED_TS_PATH: _TS_SEALED, "web/src/extra.ts": _TS_NEIGHBOUR},
             {
                 "web/src/extra.ts": (
-                    "export interface Bet {\n  wager: number;\n}\n"
-                    "export const use = (b: Bet) => b;\n"
+                    _TS_NEIGHBOUR
+                    + "export interface Bet {\n  wager: number;\n}\n"
+                    + "export const use = (b: Bet) => b;\n"
                 )
             },
         )
     )
+    _assert_read(result, "typescript")
     assert result.verdict is DiffVerdict.CLEAN, (
         "a second TypeScript module declaring its own Bet was reported as a "
         f"widening of another module's: {result.verdict} — {result.detail}"
@@ -552,8 +555,8 @@ def test_the_two_spellings_of_one_module_share_a_namespace() -> None:
     is the probe they are missing — it asserts the PROPERTY the anchor claims,
     over the pair that carries it.
 
-    The consequence of the reorder is not cosmetic: with ``.ts`` stripped first,
-    ``w.d.ts`` lands in namespace ``w.d`` and ``w.ts`` in ``w``, so a
+    The consequence of the reorder is not cosmetic: with ``.ts`` stripped
+    first, ``w.d.ts`` lands in namespace ``w.d`` and ``w.ts`` in ``w``, so a
     declaration sealed in one and widened in the other are in different spaces
     and the gate reports nothing.
 
@@ -571,119 +574,327 @@ def test_the_two_spellings_of_one_module_share_a_namespace() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 4. THE ALGEBRA. `build_surface` + `compare_surfaces`, driven from the
-#    scaffold's own input table. RED until W2-2-3.
+# 4. THE ALGEBRA. `build_surface` + `compare_surfaces`. RED until W2-2-3.
+#
+#    THE TABLE BELOW IS A TRANSCRIPTION, not a view of `SURFACE_BEHAVIOUR_ROWS`.
+#    Both the INPUTS and the EXPECTED VALUES are written out here, because the
+#    production table is W2-2-3's to edit: a table that supplies the fixtures
+#    AND the answers seals nothing — an implementation that gets the merge wrong
+#    can move `after` to match and every row stays green. The rows are driven
+#    from this literal, and `test_the_behaviour_table_matches_its_transcription`
+#    is the one place the two are compared.
+#
+#    Shape, per row:
+#      (name, is_control, refused,
+#       base files, base_attempted, head files, head_attempted,
+#       expected changes, expected unread)
+#    where a file is (path, language, is_module, ((key, fingerprint), ...)),
+#    a change is (key label, before, after, introduced_by) and an unread is
+#    (namespace label, reason value).
 # --------------------------------------------------------------------------- #
 
 
-#: The table's shape, TRANSCRIBED — `(name, is_control, changes, unread,
-#: refused)`. Neither side of the equality below is derived from the other, so a
-#: row deleted from `SURFACE_BEHAVIOUR_ROWS` shrinks the derived side alone and
-#: a row whose expectation is quietly emptied changes its counts. Without it the
-#: parametrised rows below are satisfied by a table someone gutted.
-_TABLE_SHAPE: tuple[tuple[str, bool, int, int, bool], ...] = (
-    ("in-place widening stays the per-file loop's, reported once", True, 0, 0, False),
-    ("a new file augmenting a sealed interface is one widening", False, 1, 0, False),
-    ("an augmentation added to a file that already existed", False, 1, 0, False),
-    ("an unchanged augmentation is not a widening a second time", True, 0, 0, False),
-    ("an added key is not a change (clause 1, held in isolation)", True, 0, 0, False),
-    ("declare global leaves a space nothing can enumerate", False, 0, 1, False),
-    ("a bare specifier is unread, and keyed by the specifier", False, 0, 1, False),
-    ("./sub with sub.ts and sub/index.ts both present is unread", False, 0, 1, False),
-    ("a second SCRIPT declaring the same interface is not two files", False, 0, 1, False),
-    (
-        "a file the caller KNOWS is a script declares into the global space",
-        False,
-        0,
-        1,
-        False,
-    ),
-    (
-        "an ordinary exported interface is NOT proof, and costs UNDETERMINED",
-        False,
-        0,
-        1,
-        False,
-    ),
-    ("an export surface is proof of module-ness with nothing reported", True, 0, 0, False),
-    ("a base file nobody attempted leaves its space unread", False, 0, 1, False),
-    ("python does not merge: a second module is refused, not compared", False, 0, 0, True),
-    ("go does not merge: a new file's method is an added key", False, 0, 0, True),
-)
+_File = tuple[str, str, bool | None, tuple[tuple[str, str], ...]]
+_Transcribed = tuple[
+    str,
+    bool,
+    bool,
+    tuple[_File, ...],
+    tuple[str, ...],
+    tuple[_File, ...],
+    tuple[str, ...],
+    tuple[tuple[str, str, str, tuple[str, ...]], ...],
+    tuple[tuple[str, str], ...],
+]
+
+_TABLE: tuple[_Transcribed, ...] = (("in-place widening stays the per-file loop's, reported once",
+      True,
+      False,
+      (('web/src/a.ts', 'typescript', True, (('i:Bet', 'A'),)),),
+      ('web/src/a.ts',),
+      (('web/src/a.ts', 'typescript', True, (('i:Bet', 'A2'),)),),
+      ('web/src/a.ts',),
+      (),
+      ()),
+     ('a new file augmenting a sealed interface is one widening',
+      False,
+      False,
+      (('web/src/a.ts', 'typescript', True, (('i:Bet', 'A'),)),),
+      ('web/src/a.ts',),
+      (('web/src/a.ts', 'typescript', True, (('i:Bet', 'A'),)),
+       ('web/src/b.ts',
+        'typescript',
+        True,
+        (('s:.\\/a/i:Bet', 'B'), ('s:.\\/a/i:Bet/i:x', 'F')))),
+      ('web/src/a.ts', 'web/src/b.ts'),
+      (('typescript:web/src/a::i:Bet', 'A', 'A + B', ('web/src/b.ts',)),),
+      ()),
+     ('an augmentation added to a file that already existed',
+      False,
+      False,
+      (('web/src/a.ts', 'typescript', True, (('i:Bet', 'A'),)),
+       ('web/src/b.ts', 'typescript', True, (('k:export/i:run', 'E'),))),
+      ('web/src/a.ts', 'web/src/b.ts'),
+      (('web/src/a.ts', 'typescript', True, (('i:Bet', 'A'),)),
+       ('web/src/b.ts',
+        'typescript',
+        True,
+        (('k:export/i:run', 'E'), ('s:.\\/a/i:Bet', 'B')))),
+      ('web/src/a.ts', 'web/src/b.ts'),
+      (('typescript:web/src/a::i:Bet', 'A', 'A + B', ('web/src/b.ts',)),),
+      ()),
+     ('an unchanged augmentation is not a widening a second time',
+      True,
+      False,
+      (('web/src/a.ts', 'typescript', True, (('i:Bet', 'A'),)),
+       ('web/src/b.ts', 'typescript', True, (('s:.\\/a/i:Bet', 'B'),))),
+      ('web/src/a.ts', 'web/src/b.ts'),
+      (('web/src/a.ts', 'typescript', True, (('i:Bet', 'A'),)),
+       ('web/src/b.ts', 'typescript', True, (('s:.\\/a/i:Bet', 'B'),))),
+      ('web/src/a.ts', 'web/src/b.ts'),
+      (),
+      ()),
+     ('an added key is not a change (clause 1, held in isolation)',
+      True,
+      False,
+      (('web/src/a.ts', 'typescript', True, (('i:Bet', 'A'),)),),
+      ('web/src/a.ts',),
+      (('web/src/a.ts',
+        'typescript',
+        True,
+        (('i:Bet', 'A'), ('i:Bet/i:x', 'F'))),),
+      ('web/src/a.ts',),
+      (),
+      ()),
+     ('declare global leaves a space nothing can enumerate',
+      False,
+      False,
+      (('web/src/a.ts', 'typescript', True, (('i:Bet', 'A'),)),),
+      ('web/src/a.ts',),
+      (('web/src/a.ts', 'typescript', True, (('i:Bet', 'A'),)),
+       ('web/src/b.ts', 'typescript', True, (('k:global/i:S', 'G'),))),
+      ('web/src/a.ts', 'web/src/b.ts'),
+      (),
+      (('typescript:<global>', 'not_enumerable'),)),
+     ('a bare specifier is unread, and keyed by the specifier',
+      False,
+      False,
+      (('web/src/a.ts', 'typescript', True, (('i:Bet', 'A'),)),),
+      ('web/src/a.ts',),
+      (('web/src/a.ts', 'typescript', True, (('i:Bet', 'A'),)),
+       ('web/src/b.ts', 'typescript', True, (('s:lodash/i:X', 'L'),))),
+      ('web/src/a.ts', 'web/src/b.ts'),
+      (),
+      (('typescript:<unresolved lodash>', 'unresolved_specifier'),)),
+     ('./sub with sub.ts and sub/index.ts both present is unread',
+      False,
+      False,
+      (('web/src/sub.ts', 'typescript', True, (('i:Bet', 'A'),)),
+       ('web/src/sub/index.ts', 'typescript', True, (('i:Bet', 'I'),))),
+      ('web/src/sub.ts', 'web/src/sub/index.ts'),
+      (('web/src/sub.ts', 'typescript', True, (('i:Bet', 'A'),)),
+       ('web/src/sub/index.ts', 'typescript', True, (('i:Bet', 'I'),)),
+       ('web/src/b.ts', 'typescript', True, (('s:.\\/sub/i:Bet', 'B'),))),
+      ('web/src/sub.ts', 'web/src/sub/index.ts', 'web/src/b.ts'),
+      (),
+      (('typescript:<unresolved ./sub>', 'unresolved_specifier'),)),
+     ('a second SCRIPT declaring the same interface is not two files',
+      False,
+      False,
+      (('web/src/a.ts', 'typescript', None, (('i:Bet', 'A'),)),),
+      ('web/src/a.ts',),
+      (('web/src/a.ts', 'typescript', None, (('i:Bet', 'A'),)),
+       ('web/src/b.ts', 'typescript', None, (('i:Bet/i:x', 'F'),))),
+      ('web/src/a.ts', 'web/src/b.ts'),
+      (),
+      (('typescript:<global>', 'module_ness_unreported'),)),
+     ('a file the caller KNOWS is a script declares into the global space',
+      False,
+      False,
+      (('web/src/a.ts', 'typescript', False, (('i:Bet', 'A'),)),),
+      ('web/src/a.ts',),
+      (('web/src/a.ts', 'typescript', False, (('i:Bet', 'A'),)),
+       ('web/src/b.ts', 'typescript', False, (('i:Bet', 'B'),))),
+      ('web/src/a.ts', 'web/src/b.ts'),
+      (),
+      (('typescript:<global>', 'not_enumerable'),)),
+     ('an ordinary exported interface is NOT proof, and costs '
+      'UNDETERMINED',
+      False,
+      False,
+      (('web/src/a.ts',
+        'typescript',
+        None,
+        (('i:Bet', '[export]interface'),)),),
+      ('web/src/a.ts',),
+      (('web/src/a.ts',
+        'typescript',
+        None,
+        (('i:Bet', '[export]interface2'),)),),
+      ('web/src/a.ts',),
+      (),
+      (('typescript:<global>', 'module_ness_unreported'),)),
+     ('an export surface is proof of module-ness with nothing reported',
+      True,
+      False,
+      (('web/src/a.ts',
+        'typescript',
+        None,
+        (('i:Bet', 'A'), ('k:export/i:run', 'E'))),),
+      ('web/src/a.ts',),
+      (('web/src/a.ts',
+        'typescript',
+        None,
+        (('i:Bet', 'A2'), ('k:export/i:run', 'E'))),),
+      ('web/src/a.ts',),
+      (),
+      ()),
+     ('a base file nobody attempted leaves its space unread',
+      False,
+      False,
+      (('web/src/a.ts', 'typescript', True, (('i:Bet', 'A'),)),),
+      ('web/src/a.ts',),
+      (('web/src/b.ts', 'typescript', True, (('s:.\\/a/i:Bet', 'B'),)),),
+      ('web/src/b.ts',),
+      (),
+      (('typescript:<unresolved ./a>', 'unresolved_specifier'),)),
+     ('python does not merge: a second module is refused, not compared',
+      False,
+      True,
+      (('src/pkg/wallet.py', 'python', None, (('Wallet', 'A'),)),),
+      ('src/pkg/wallet.py',),
+      (('src/pkg/wallet.py', 'python', None, (('Wallet', 'A'),)),
+       ('src/pkg/wallet_v2.py', 'python', None, (('Wallet', 'B'),))),
+      ('src/pkg/wallet.py', 'src/pkg/wallet_v2.py'),
+      (),
+      ()),
+     ("go does not merge: a new file's method is an added key",
+      False,
+      True,
+      (('pkg/wallet.go', 'go', None, (('Wallet', 'A'),)),),
+      ('pkg/wallet.go',),
+      (('pkg/wallet.go', 'go', None, (('Wallet', 'A'),)),
+       ('pkg/debit.go', 'go', None, (('Wallet.Debit', 'D'),))),
+      ('pkg/wallet.go', 'pkg/debit.go'),
+      (),
+      ()))
 
 
-def test_the_behaviour_table_has_not_been_gutted() -> None:
-    """The two-way pin on ``SURFACE_BEHAVIOUR_ROWS``. GREEN TODAY.
+def _surfaces(files: tuple[_File, ...]) -> tuple[FileSurface, ...]:
+    return tuple(
+        FileSurface(path, Language(language), keys, is_module=is_module)
+        for path, language, is_module, keys in files
+    )
 
-    The rows below are parametrised over a table that lives in the module they
-    judge, which is only sound while the table cannot shrink unnoticed. A row
-    deleted, renamed, or emptied of its expectation reddens here; a row ADDED
-    reddens here too, so a new behaviour arrives with a reviewer looking at it.
 
-    It also refuses the degenerate shapes the whole table could decay into: a
-    table where nothing expects a change is satisfied by an algebra that finds
-    nothing, and one where nothing expects a clean answer is satisfied by one
-    that refuses everything.
+def test_the_behaviour_table_matches_its_transcription() -> None:
+    """``SURFACE_BEHAVIOUR_ROWS`` == ``_TABLE``, field for field. GREEN TODAY.
+
+    The production table is the module's own statement of what it must do and
+    W2-2-3 owns the module. This row is what makes that safe: a row added,
+    removed, renamed, re-fixtured, or given a different answer reddens here and
+    arrives with a reviewer, and until someone updates ``_TABLE`` the two
+    disagree loudly rather than agreeing quietly on a weakened answer.
+
+    It also refuses the degenerate shapes the table could decay into: one where
+    nothing expects a change is satisfied by an algebra that finds nothing, and
+    one where nothing expects a clean answer is satisfied by one that refuses
+    everything.
     """
     derived = tuple(
-        (row.name, row.is_control, len(row.changes), len(row.unread), row.refused)
+        (
+            row.name,
+            row.is_control,
+            row.refused,
+            tuple(
+                (
+                    surface.path,
+                    surface.language.value,
+                    surface.is_module,
+                    tuple(surface.fingerprints),
+                )
+                for surface in row.base
+            ),
+            tuple(row.base_attempted),
+            tuple(
+                (
+                    surface.path,
+                    surface.language.value,
+                    surface.is_module,
+                    tuple(surface.fingerprints),
+                )
+                for surface in row.head
+            ),
+            tuple(row.head_attempted),
+            tuple(
+                (change.key, change.before, change.after, tuple(change.introduced_by))
+                for change in row.changes
+            ),
+            tuple((unread.namespace, unread.reason.value) for unread in row.unread),
+        )
         for row in SURFACE_BEHAVIOUR_ROWS
     )
-    assert derived == _TABLE_SHAPE, (
-        "SURFACE_BEHAVIOUR_ROWS no longer matches the transcribed shape. A row "
-        "added here needs a line in _TABLE_SHAPE and a reviewer; a row removed "
-        "took a sealed behaviour with it.\n"
-        f"derived : {derived}\nwritten : {_TABLE_SHAPE}"
+    by_name = {row[0]: row for row in derived}
+    transcribed = {row[0]: row for row in _TABLE}
+    assert sorted(by_name) == sorted(transcribed), (
+        "SURFACE_BEHAVIOUR_ROWS and this file's transcription name different "
+        f"rows.\nonly in the module : {sorted(set(by_name) - set(transcribed))}"
+        f"\nonly here          : {sorted(set(transcribed) - set(by_name))}"
     )
-    assert any(row.changes for row in SURFACE_BEHAVIOUR_ROWS), (
+    for name in sorted(by_name):
+        assert by_name[name] == transcribed[name], (
+            f"{name}: the module's row and this file's transcription disagree."
+            f"\nmodule : {by_name[name]}\nhere   : {transcribed[name]}"
+        )
+    assert derived == _TABLE, (
+        "the rows agree one by one but not in ORDER, and the report and the "
+        "seal must see one order"
+    )
+
+    assert any(row[7] for row in _TABLE), (
         "no row expects a change; an algebra that reports nothing passes them all"
     )
     assert any(
-        not row.changes and not row.unread and not row.refused
-        for row in SURFACE_BEHAVIOUR_ROWS
+        not row[7] and not row[8] and not row[2] for row in _TABLE
     ), "no row expects a clean answer; an algebra that refuses everything passes"
 
 
-@pytest.mark.parametrize(
-    "row", SURFACE_BEHAVIOUR_ROWS, ids=[row.name for row in SURFACE_BEHAVIOUR_ROWS]
-)
+@pytest.mark.parametrize("row", _TABLE, ids=[row[0] for row in _TABLE])
 def test_the_surface_algebra_answers_its_own_behaviour_table(
-    row: BehaviourRow,
+    row: _Transcribed,
 ) -> None:
-    """``build_surface`` and ``compare_surfaces``, in the shape the scaffold
-    specified. **RED at HEAD: both are holes.** Green at W2-2-3.
+    """``build_surface`` and ``compare_surfaces``. **RED at HEAD: both are
+    holes.** Green at W2-2-3.
 
-    The seal the scaffold wrote its table for, verbatim from
-    ``BehaviourRow``'s own contract::
+    The seal, verbatim from ``BehaviourRow``'s own contract::
 
         base = build_surface(row.base, attempted=set(row.base_attempted))
         head = build_surface(row.head, attempted=set(row.head_attempted))
         got  = compare_surfaces(base, head)
 
-    Asserted FIELD-FOR-FIELD, not by label: ``ExpectedChange`` carries the
-    merged fingerprints and the introducing paths because those are the part a
-    wrong implementation gets wrong while still naming the right key. A row
-    asserting labels alone passes an algebra that merged the wrong
-    contributions.
-
-    ``refused`` rows assert ``BranchSurfaceError`` out of ``build_surface``
-    itself — a language that does not merge must be refused at construction,
-    not compared and found equal, because a space that could never be proven
-    read is a gate that decides nothing while costing something.
+    Asserted FIELD-FOR-FIELD, not by label: the merged fingerprints and the
+    introducing paths are the part a wrong implementation gets wrong while
+    still naming the right key.
     """
-    if row.refused:
-        with pytest.raises(BranchSurfaceError):
-            head = build_surface(row.head, attempted=set(row.head_attempted))
-            # Reached only if `build_surface` accepted the non-merging file; the
-            # comparison is here so a refusal deferred to `compare_surfaces`
-            # still counts, and an implementation that refuses NOWHERE fails.
-            compare_surfaces(
-                build_surface(row.base, attempted=set(row.base_attempted)), head
-            )
+    (
+        name,
+        is_control,
+        refused,
+        base_files,
+        base_attempted,
+        head_files,
+        head_attempted,
+        expected_changes,
+        expected_unread,
+    ) = row
+
+    if refused:
+        _assert_refused_at_construction(name, base_files, base_attempted)
+        _assert_refused_at_construction(name, head_files, head_attempted)
         return
 
-    base = build_surface(row.base, attempted=set(row.base_attempted))
-    head = build_surface(row.head, attempted=set(row.head_attempted))
+    base = build_surface(_surfaces(base_files), attempted=set(base_attempted))
+    head = build_surface(_surfaces(head_files), attempted=set(head_attempted))
     got = compare_surfaces(base, head)
 
     assert tuple(
@@ -694,49 +905,387 @@ def test_the_surface_algebra_answers_its_own_behaviour_table(
             tuple(change.introduced_by),
         )
         for change in got.changes
-    ) == tuple(
-        (expected.key, expected.before, expected.after, expected.introduced_by)
-        for expected in row.changes
-    ), f"{row.name}: changes"
+    ) == expected_changes, f"{name}: changes"
 
     assert tuple(
-        (unread.namespace.label, unread.reason) for unread in got.unread
-    ) == tuple(
-        (expected.namespace, expected.reason) for expected in row.unread
-    ), f"{row.name}: unread"
+        (unread.namespace.label, unread.reason.value) for unread in got.unread
+    ) == expected_unread, f"{name}: unread"
 
-    if row.is_control:
+    if is_control:
         assert got.clean, (
-            f"{row.name}: a CONTROL row is not clean. A change that reddens a "
+            f"{name}: a CONTROL row is not clean. A change that reddens a "
             "control has broken the gate it was extending"
         )
 
 
+def _assert_refused_at_construction(
+    name: str, files: tuple[_File, ...], attempted: tuple[str, ...]
+) -> None:
+    """``build_surface`` itself refuses, and the message says what it refused.
+
+    Both halves are the finding: a ``pytest.raises`` spanning base
+    construction, head construction and the comparison is green when any one of
+    the three raises for any reason — including a stub that raises on every
+    input — so it cannot say a non-merging language was refused at all. The
+    call is isolated per revision, and ``match`` requires the message to name
+    the language or the file: ``BranchSurfaceError`` is also raised from
+    ``Namespace``, ``SymbolKey`` and ``SurfaceEntry`` construction and from
+    ``merge_fingerprints``, and a refusal that names none of its input is one
+    no author can act on.
+    """
+    surfaces = _surfaces(files)
+    wanted = "|".join(
+        sorted(
+            {re.escape(surface.language.value) for surface in surfaces}
+            | {re.escape(surface.path) for surface in surfaces}
+        )
+    )
+    with pytest.raises(BranchSurfaceError, match=wanted):
+        build_surface(surfaces, attempted=set(attempted))
+
+
 # --------------------------------------------------------------------------- #
-# 5. REACHABILITY. D-69's lesson: a correct module nothing calls is dark.
+# 5. THE CLOSURE AND ITS BOUND. `closure_request`. RED until W2-2-3.
+#
+#    The cap is a gate surface in its own right: "a bound that drops candidates
+#    quietly is a bypass anyone can buy with a large diff" is the module's own
+#    sentence, and an implementation that enumerates past the cap and slices,
+#    or that returns `truncated` and lets the caller ignore it, satisfies every
+#    row about the algebra.
+# --------------------------------------------------------------------------- #
+
+
+def _ts(path: str, keys: tuple[tuple[str, str], ...]) -> FileSurface:
+    """A TypeScript module surface with the key order the caller wrote.
+
+    Order is the contract here — it is what the cap truncates — so this does
+    not sort, and the rows below pass keys in the order they mean.
+    """
+    return FileSurface(path, Language.TYPESCRIPT, keys, is_module=True)
+
+
+def _aug(specifier: str, *segments: tuple[str, str]) -> str:
+    return ts_symbol_key((("s", specifier),) + segments)
+
+
+#: `./a` written in `web/src/b.ts`, spelled out rather than derived: this is
+#: the order `specifier_candidates` promises and the order the cap cuts.
+_A_CANDIDATES: tuple[str, ...] = (
+    "web/src/a.d.ts",
+    "web/src/a.tsx",
+    "web/src/a.ts",
+    "web/src/a/index.d.ts",
+    "web/src/a/index.tsx",
+    "web/src/a/index.ts",
+)
+_C_CANDIDATES: tuple[str, ...] = (
+    "web/src/c.d.ts",
+    "web/src/c.tsx",
+    "web/src/c.ts",
+    "web/src/c/index.d.ts",
+    "web/src/c/index.tsx",
+    "web/src/c/index.ts",
+)
+
+
+def test_the_closure_enumerates_every_candidate_of_every_augmentation() -> None:
+    """``closure_request``'s clauses 1 and 2. **RED at HEAD: it is a hole.**
+
+    Three facts in one call, because they are one contract:
+
+      1. a surface in a language that does not merge across files contributes
+         NOTHING — the Go file here declares a key spelled like an
+         augmentation, and Go has no ``declare module``;
+      2. a file that augments nothing contributes nothing, so the request is
+         not "every file in the diff";
+      3. every candidate of every specifier, in KEY order, and a BARE specifier
+         contributes none: ``lodash`` is resolved by ``tsconfig.json``, which
+         lives in the tree under judgement, so reading it would let a branch
+         decide how its own files are found.
+
+    The expected list is written out rather than derived from
+    ``specifier_candidates``, and the keys are supplied ``./c`` first so the
+    order asserted is the file's key order and not a sort.
+    """
+    surfaces = (
+        _ts("web/src/a.ts", (("i:Bet", "A"),)),
+        _ts(
+            "web/src/b.ts",
+            (
+                (_aug("./c", ("i", "X")), "C"),
+                (_aug("./a", ("i", "Bet")), "B"),
+                (_aug("lodash", ("i", "L")), "L"),
+            ),
+        ),
+        FileSurface(
+            "pkg/wallet/wallet.go", Language.GO, ((_aug("./a", ("i", "Bet")), "G"),)
+        ),
+    )
+
+    request = closure_request(surfaces)
+
+    assert request.candidates == _C_CANDIDATES + _A_CANDIDATES, (
+        "the closure did not ask for every candidate of every relative "
+        f"specifier in key order: {request.candidates}"
+    )
+    assert request.truncated is False, (
+        f"{len(request.candidates)} candidates is under MAX_CLOSURE_READS "
+        f"({MAX_CLOSURE_READS}) and must not report truncation"
+    )
+    assert _unenumerated(surfaces, request) == (), (
+        "an untruncated request left a specifier partly enumerated, so the "
+        "fold would report a space unread that it in fact bounded"
+    )
+
+
+def test_the_closure_deduplicates_and_keeps_the_first_spelling() -> None:
+    """``closure_request``'s clause 3. **RED at HEAD: it is a hole.**
+
+    Two files augment the SAME module under two spellings — ``./a`` from
+    ``web/src/b.ts`` and ``../a`` from ``web/src/sub/d.ts`` — and both
+    normalise to ``web/src/a``. The result is one list a caller may hand to
+    git unchanged: each candidate once, in the order it was first named. A
+    request that repeats them buys the same blob twice out of a bound whose
+    whole job is to be the gate's cost.
+    """
+    surfaces = (
+        _ts("web/src/b.ts", ((_aug("./a", ("i", "Bet")), "B"),)),
+        _ts("web/src/sub/d.ts", ((_aug("../a", ("i", "Bet")), "D"),)),
+    )
+
+    request = closure_request(surfaces)
+
+    assert request.candidates == _A_CANDIDATES, (
+        "two spellings of one module produced something other than that "
+        f"module's six candidates, once each: {request.candidates}"
+    )
+    assert request.truncated is False, request
+
+
+def test_the_closure_stops_at_the_cap_and_says_it_stopped() -> None:
+    """``closure_request``'s clause 4, and what makes it not a silent
+    truncation. **RED at HEAD: it is a hole.**
+
+    Forty-three relative specifiers at six candidates each is 258 reads against
+    a cap of 256, so the last specifier is cut mid-way. Asserted:
+
+      * ``truncated`` is True. A request that fills the cap and says nothing is
+        the bypass — a branch buys silence by being large;
+      * exactly ``MAX_CLOSURE_READS`` candidates, and they are the PREFIX of
+        the full enumeration. A request that returns fewer stopped early, one
+        that returns more ignored its own bound;
+      * ``_unenumerated`` names the specifier that was cut and no other. That
+        is the handoff: a partially enumerated specifier would otherwise
+        RESOLVE against the candidates that were reached, picking a file
+        because the rest were never looked for, and the fold's
+        ``UnreadReason.BUDGET_EXCEEDED`` space is built from this list.
+
+    This row does not pin the number 256. It pins that the request stops AT the
+    cap, whatever the cap is, and that the remainder is reported.
+    """
+    specifiers = tuple(f"./m{index}" for index in range(43))
+    surfaces = (
+        _ts(
+            "web/src/b.ts",
+            tuple((_aug(specifier, ("i", "Bet")), "B") for specifier in specifiers),
+        ),
+    )
+    full: tuple[str, ...] = ()
+    for specifier in specifiers:
+        full += specifier_candidates("web/src/b.ts", specifier)
+    assert len(full) > MAX_CLOSURE_READS, (
+        f"the fixture no longer exceeds the cap ({len(full)} candidates for a "
+        f"cap of {MAX_CLOSURE_READS}); this row would measure nothing"
+    )
+
+    request = closure_request(surfaces)
+
+    assert request.truncated is True, (
+        "the closure filled its budget and reported no truncation; a bound "
+        "that drops candidates quietly is a bypass anyone can buy with a "
+        "large diff"
+    )
+    assert len(request.candidates) == MAX_CLOSURE_READS, (
+        f"{len(request.candidates)} candidates against a cap of "
+        f"{MAX_CLOSURE_READS}"
+    )
+    assert request.candidates == full[:MAX_CLOSURE_READS], (
+        "the truncated request is not the prefix of the full enumeration, so "
+        "which candidates were dropped is not the ones past the cap"
+    )
+
+    cut = _unenumerated(surfaces, request)
+    covered = set(request.candidates)
+    expected_cut = tuple(
+        sorted(
+            specifier
+            for specifier in specifiers
+            if not covered.issuperset(
+                specifier_candidates("web/src/b.ts", specifier)
+            )
+        )
+    )
+    assert cut == expected_cut, (
+        f"the specifiers left partly enumerated are {expected_cut}, reported "
+        f"as {cut}; a specifier resolved against a partial candidate set picks "
+        "a file because the rest were never looked for"
+    )
+    assert cut, "the fixture truncated nothing, so this row measured nothing"
+
+
+# --------------------------------------------------------------------------- #
+# 6. THE ENTRY POINT'S FAIL-CLOSED ORDER. `fold_branch_signatures`.
+#    RED until W2-2-3.
+# --------------------------------------------------------------------------- #
+
+
+class _Touched(BaseException):
+    """Raised by a tripwire the fold must not trip.
+
+    Derived from ``BaseException`` and not ``Exception`` ON PURPOSE:
+    ``fold_branch_signatures`` is contracted to turn every ``Exception`` into
+    ``RoleDiffError``, so evidence raised as an ``Exception`` would be caught
+    by the very contract the row is measuring and reported as the refusal it
+    was trying to disprove.
+    """
+
+
+class _UnreadablePaths(Sequence):
+    """A ``changed_paths`` that cannot be read without saying so.
+
+    The fail-closed rule is an ORDER — ``merge_base is None`` decides before
+    ``changed_paths`` is looked at — and an order is only observable if
+    looking has a consequence.
+    """
+
+    def __len__(self) -> int:
+        raise _Touched("len(changed_paths)")
+
+    def __getitem__(self, index: object) -> str:
+        raise _Touched("changed_paths[...]")
+
+    def __iter__(self):
+        raise _Touched("iter(changed_paths)")
+
+
+def _forbidden_run(*args: object, **kwargs: object) -> object:
+    raise _Touched("the fold ran git")
+
+
+def test_an_unresolved_merge_base_refuses_before_the_diff_is_looked_at(
+    tmp_path: Path,
+) -> None:
+    """``fold_branch_signatures`` clause 1. **RED at HEAD: it is a hole.**
+
+    An unresolved merge-base is unknown input and unknown input denies. The
+    ORDER is the clause: answering CLEAN because the diff happened to hold
+    nothing this module reads is a gate clearing a branch it never established
+    a baseline for, and that reading is the one a fold that filters
+    ``changed_paths`` first falls into by accident on every docs-only branch.
+
+    Both halves are asserted. The first call's ``changed_paths`` raises on any
+    access, so a fold that looks at it before deciding fails with ``_Touched``
+    rather than passing; the second passes a real, ordinary path list, so the
+    row cannot be satisfied by a fold that refuses only inputs it cannot read.
+
+    Nothing here is a claim that the name exists: both calls assert the
+    RoleDiffError the driver maps to UNDETERMINED, which is a fold that lands
+    on the wrong branch of its own first decision fails.
+    """
+    with pytest.raises(RoleDiffError):
+        fold_branch_signatures(
+            tmp_path, None, "feat/x", _UnreadablePaths(), run=_forbidden_run
+        )
+
+    with pytest.raises(RoleDiffError):
+        fold_branch_signatures(
+            tmp_path, None, "feat/x", ("web/src/bet.ts",), run=_forbidden_run
+        )
+
+
+def test_a_diff_with_no_merging_language_is_clean_and_reads_nothing(
+    tmp_path: Path,
+) -> None:
+    """``fold_branch_signatures`` clause 2. **RED at HEAD: it is a hole.**
+
+    Every diff in THIS repository is this case, so it is the arm that runs
+    most: markdown has no comparator, and Python and Go are ruled not to merge
+    across files. The answer is ``CLEAN_FOLD`` and the cost is zero blob reads
+    — ``run`` raises if it is called at all, which is what makes "reads
+    nothing" a measurement rather than a promise.
+
+    ``merge_base`` here is a revision that does not exist. It is never
+    resolved, and a fold that reaches for it before filtering fails.
+    """
+    fold = fold_branch_signatures(
+        tmp_path,
+        "0000000000000000000000000000000000000000",
+        "feat/x",
+        ("docs/plan.md", "src/wallet.py", "pkg/wallet/wallet.go"),
+        run=_forbidden_run,
+    )
+
+    assert fold == CLEAN_FOLD, (
+        f"a diff with no merging language folded to {fold}, not CLEAN_FOLD"
+    )
+    assert fold.status is SignatureCheckStatus.CHECKED, fold.status
+    assert fold.changes == () and fold.detail == "", fold
+
+
+def test_no_exception_but_the_mapped_one_reaches_the_floored_driver(
+    tmp_path: Path,
+) -> None:
+    """``fold_branch_signatures``' error contract. **RED at HEAD.**
+
+    ``check_branch`` catches ``RoleDiffError`` and nothing else, so every other
+    exception this module can raise aborts the gate with a traceback instead of
+    answering UNDETERMINED — including the ``NotImplementedError`` its own
+    unfilled holes raise, which is exactly the state of this tree. A
+    half-filled module must fail CLOSED.
+
+    The call is a real repository at a real merge-base, so once the holes are
+    filled this row keeps measuring: the fold either returns a
+    ``BranchFold`` — with a RANKED status, never
+    ``UNCHECKED_NO_SUPPORTED_FILE``, which is the aggregate's own conclusion
+    and has no rank to fold through ``_worst_signature_status`` — or raises the
+    one exception the driver maps.
+    """
+    repo = _branch(
+        tmp_path,
+        "error_contract",
+        {_SEALED_TS_PATH: _TS_SEALED},
+        {_AUGMENTING_TS_PATH: _TS_AUGMENTATION},
+    )
+    merge_base = _git(repo, "merge-base", "main", "feat/x").strip()
+
+    try:
+        fold = fold_branch_signatures(
+            repo, merge_base, "feat/x", (_AUGMENTING_TS_PATH,), run=None
+        )
+    except RoleDiffError:
+        return
+    except Exception as exc:  # noqa: BLE001 - that is the finding
+        pytest.fail(
+            f"{type(exc).__name__} reached the floored driver: {exc}. "
+            "check_branch catches RoleDiffError alone, so anything else is a "
+            "traceback where the gate owed an UNDETERMINED"
+        )
+
+    assert isinstance(fold, BranchFold), fold
+    assert fold.status is not SignatureCheckStatus.UNCHECKED_NO_SUPPORTED_FILE, (
+        "UNCHECKED_NO_SUPPORTED_FILE is the aggregate's conclusion and carries "
+        "no rank; folding it through _worst_signature_status decides nothing"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# 7. REACHABILITY. D-69's lesson: a correct module nothing calls is dark.
 #    RED until W2-2-5.
 # --------------------------------------------------------------------------- #
 
 
-_PACKAGE = Path(__file__).resolve().parent.parent / "src" / "claude_dispatcher"
-
-#: The two production entrypoints that reach the diff-time gate, derived from
-#: the files that declare them: `pyproject.toml [project.scripts] dispatcher`,
-#: and the `if __name__ == "__main__":` guard `scripts/check_body_branch.sh`
-#: runs as `python -P -m claude_dispatcher.role_protocol`.
-_PRODUCTION_ENTRYPOINTS: tuple[tuple[str, EntrypointKind, str], ...] = (
-    (
-        "claude_dispatcher.cli.main",
-        EntrypointKind.PYTHON_CONSOLE_SCRIPT,
-        "pyproject.toml [project.scripts] dispatcher = claude_dispatcher.cli:main",
-    ),
-    (
-        "claude_dispatcher.role_protocol.main",
-        EntrypointKind.PYTHON_MODULE_MAIN,
-        "src/claude_dispatcher/role_protocol.py `if __name__ == \"__main__\"`, "
-        "run by scripts/check_body_branch.sh",
-    ),
-)
+_PACKAGE = _REPO / "src" / "claude_dispatcher"
+_GATE_SCRIPT = _REPO / "scripts" / "check_body_branch.sh"
 
 #: The already-wired D7 gate. The LENS CONTROL: it is reached through exactly
 #: the shape W2-2-5's patch adds — a function-local aliased `from . import x`
@@ -756,8 +1305,62 @@ _SUBJECTS: tuple[str, ...] = (
 )
 
 
-def _in_package_aliases(node: ast.AST, known: frozenset[str]) -> dict[str, str]:
-    """Local name -> in-package module, for every import under ``node``.
+def _decided(test: ast.expr) -> bool | None:
+    """Whether ``test`` is settled without running anything.
+
+    ``if TYPE_CHECKING`` is False at runtime, so the names it imports do not
+    exist and a call through one could not happen.
+    """
+    if isinstance(test, ast.Constant):
+        return bool(test.value)
+    if isinstance(test, ast.Name) and test.id == "TYPE_CHECKING":
+        return False
+    if isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING":
+        return False
+    return None
+
+
+def _live_nodes(body: Sequence[ast.stmt]) -> Iterator[ast.AST]:
+    """Everything under ``body`` that runs when ``body`` runs.
+
+    Two departures from ``ast.walk``, and both are the reason this exists:
+
+      * a nested ``def``, ``lambda`` or ``class`` body is NOT descended into.
+        Its calls happen if and only if something invokes it, and attributing
+        them to the enclosing function reports reach through a closure nobody
+        ever calls. The same cut keeps a function-local import from being
+        borrowed by an unrelated scope.
+      * the untaken half of an ``if`` on a settled test is dropped, so code
+        under ``if False:`` is not an edge.
+
+    Both cuts UNDER-approximate, which is the safe direction for a row that
+    asserts something IS reached: the cost of being wrong is a false red on a
+    call this cannot see, never a green on a call that does not happen.
+    """
+    stack: list[ast.AST] = list(body)
+    while stack:
+        node = stack.pop()
+        if isinstance(
+            node,
+            (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
+        ):
+            continue
+        yield node
+        if isinstance(node, ast.If):
+            decided = _decided(node.test)
+            stack.append(node.test)
+            if decided is not False:
+                stack.extend(node.body)
+            if decided is not True:
+                stack.extend(node.orelse)
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+
+
+def _in_package_aliases(
+    body: Sequence[ast.stmt], known: frozenset[str]
+) -> dict[str, str]:
+    """Local name -> in-package module, for the imports ``body`` itself runs.
 
     Keyed by the AS-NAME because that is what the call site spells;
     ``role_protocol`` imports its siblings function-locally and under aliases
@@ -765,19 +1368,19 @@ def _in_package_aliases(node: ast.AST, known: frozenset[str]) -> dict[str, str]:
     by the real name would miss every one of them.
     """
     found: dict[str, str] = {}
-    for child in ast.walk(node):
-        if isinstance(child, ast.ImportFrom):
+    for node in _live_nodes(body):
+        if isinstance(node, ast.ImportFrom):
             named = (
-                child.names
-                if (child.level == 1 and child.module is None)
-                or (child.level == 0 and child.module == "claude_dispatcher")
+                node.names
+                if (node.level == 1 and node.module is None)
+                or (node.level == 0 and node.module == "claude_dispatcher")
                 else ()
             )
             for alias in named:
                 if alias.name in known:
                     found[alias.asname or alias.name] = alias.name
-        elif isinstance(child, ast.Import):
-            for alias in child.names:
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
                 if not alias.name.startswith("claude_dispatcher."):
                     continue
                 module = alias.name.split(".")[1]
@@ -786,25 +1389,42 @@ def _in_package_aliases(node: ast.AST, known: frozenset[str]) -> dict[str, str]:
     return found
 
 
+def _rebound(function: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    """Names ``function`` binds itself, which therefore are not module aliases.
+
+    A parameter or a local assignment named ``branch_surface`` shadows a
+    module-level import of the same name, and resolving ``branch_surface.x()``
+    through the import would be an edge to a function this call cannot reach.
+    """
+    args = function.args
+    names = {
+        arg.arg
+        for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs)
+    }
+    for extra in (args.vararg, args.kwarg):
+        if extra is not None:
+            names.add(extra.arg)
+    for node in _live_nodes(function.body):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            names.add(node.id)
+    return names
+
+
 def _package_call_graph() -> CallGraph:
     """The package's module-level call graph, by AST, in the enrolled shape.
 
     Deliberately NARROW and deliberately not an analyzer enrolment: nodes are
     module-level functions, edges are same-module ``name(...)`` calls and
-    ``alias.name(...)`` calls through an in-package import. It under-approximates
-    — a call through a class, a partial or a registry is not an edge — which is
-    the safe direction for a row that asserts something IS reached, and the
-    reason ``_WIRED_CONTROL`` is judged in the same call.
-
-    ``unresolved_calls`` is populated because the contract names it "THE
-    non-vacuity field of the graph": a graph reporting zero of them is an
-    analyzer that is not counting.
+    ``alias.name(...)`` calls through an in-package import that is in scope AND
+    not shadowed, counted only over code that runs when the caller runs (see
+    :func:`_live_nodes`). A call through a class, a partial or a registry is
+    not an edge.
     """
     known = frozenset(
         path.stem for path in _PACKAGE.glob("*.py") if path.stem != "__init__"
     )
     trees: dict[str, ast.Module] = {}
-    functions: dict[str, dict[str, ast.stmt]] = {}
+    functions: dict[str, dict[str, ast.FunctionDef | ast.AsyncFunctionDef]] = {}
     symbols: dict[str, Symbol] = {}
     for module in sorted(known):
         tree = ast.parse(
@@ -824,11 +1444,13 @@ def _package_call_graph() -> CallGraph:
     edges: list[Edge] = []
     unresolved: list[tuple[Symbol, str, str]] = []
     for module in sorted(known):
-        module_aliases = _in_package_aliases(trees[module], known)
+        module_aliases = _in_package_aliases(trees[module].body, known)
         for name, node in functions[module].items():
             caller = symbols[f"claude_dispatcher.{module}.{name}"]
-            aliases = {**module_aliases, **_in_package_aliases(node, known)}
-            for call in ast.walk(node):
+            aliases = {**module_aliases, **_in_package_aliases(node.body, known)}
+            for shadowed in _rebound(node) & set(aliases):
+                del aliases[shadowed]
+            for call in _live_nodes(node.body):
                 if not isinstance(call, ast.Call):
                     continue
                 site = f"src/claude_dispatcher/{module}.py:{call.lineno}"
@@ -847,15 +1469,116 @@ def _package_call_graph() -> CallGraph:
                         (caller, site, "not an in-package module-level function")
                     )
                     continue
-                edges.append(
-                    Edge(caller, symbols[target], EdgeKind.DIRECT, site)
-                )
+                edges.append(Edge(caller, symbols[target], EdgeKind.DIRECT, site))
     return CallGraph(
         symbols=symbols,
         edges=tuple(edges),
         unresolved_calls=tuple(unresolved),
         unreadable_paths=(),
     )
+
+
+def _is_main_guard(test: ast.expr) -> bool:
+    return (
+        isinstance(test, ast.Compare)
+        and isinstance(test.left, ast.Name)
+        and test.left.id == "__name__"
+        and any(
+            isinstance(other, ast.Constant) and other.value == "__main__"
+            for other in test.comparators
+        )
+    )
+
+
+def _module_main_target(module: str) -> str:
+    """The function ``python -m <module>`` actually enters.
+
+    Read out of the module's own ``if __name__ == "__main__"`` guard rather
+    than assumed to be ``main``: ``role_protocol``'s guard deliberately
+    delegates to the PACKAGE's copy of itself under an alias, and a root named
+    by convention would be a root that is not the one CI runs.
+    """
+    path = _PACKAGE / f"{module.rsplit('.', 1)[-1]}.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=path.name)
+    guard = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, ast.If) and _is_main_guard(node.test)
+        ),
+        None,
+    )
+    assert guard is not None, (
+        f"{module} has no `if __name__ == \"__main__\"` guard, so "
+        f"{_GATE_SCRIPT.name}'s `python -m {module}` enters nothing"
+    )
+    imported: dict[str, str] = {}
+    for node in ast.walk(guard):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            for alias in node.names:
+                imported[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+    local = {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    for node in ast.walk(guard):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id in imported:
+                return imported[node.func.id]
+            if node.func.id in local:
+                return f"{module}.{node.func.id}"
+    raise AssertionError(f"{module}'s __main__ guard calls no function of it")
+
+
+def _production_roots() -> tuple[tuple[str, EntrypointKind, str], ...]:
+    """Every production entrypoint, DERIVED from what installs and runs them.
+
+    Two sources, and neither is a list in this file: ``pyproject.toml``'s
+    ``[project.scripts]``, which is what a ``pipx install`` puts on PATH, and
+    ``scripts/check_body_branch.sh``, which is what CI runs the diff-time gate
+    through. A hand-written root list is a list that stays right until someone
+    adds an entrypoint, and then reports every symbol only the new one reaches
+    as dark.
+    """
+    roots: list[tuple[str, EntrypointKind, str]] = []
+    scripts = tomllib.loads(
+        (_REPO / "pyproject.toml").read_text(encoding="utf-8")
+    )["project"]["scripts"]
+    for name, target in sorted(scripts.items()):
+        module, _, attribute = target.partition(":")
+        roots.append(
+            (
+                f"{module}.{attribute}",
+                EntrypointKind.PYTHON_CONSOLE_SCRIPT,
+                f"pyproject.toml [project.scripts] {name} = {target}",
+            )
+        )
+
+    modules = sorted(
+        {
+            found
+            for line in _GATE_SCRIPT.read_text(encoding="utf-8").splitlines()
+            if not line.lstrip().startswith("#")
+            for found in re.findall(
+                r"-m\s+(claude_dispatcher\.[A-Za-z_]\w*)", line
+            )
+        }
+    )
+    assert modules, (
+        f"{_GATE_SCRIPT.name} no longer runs `python -m claude_dispatcher.…`, "
+        "so the entrypoint CI checks branches through is not derivable and "
+        "this row's traversal would start in the wrong place"
+    )
+    for module in modules:
+        roots.append(
+            (
+                _module_main_target(module),
+                EntrypointKind.PYTHON_MODULE_MAIN,
+                f"scripts/{_GATE_SCRIPT.name} runs `python -P -m {module}`",
+            )
+        )
+    return tuple(roots)
 
 
 def test_the_branch_surface_algebra_is_reached_from_production() -> None:
@@ -868,41 +1591,46 @@ def test_the_branch_surface_algebra_is_reached_from_production() -> None:
     imported by nothing on the gate path today.
 
     Derived, not asserted: the call graph is read out of the package's own
-    source by AST and the reach is computed by the enrolled
-    ``call_site_reachability.reachable_from`` over the enrolled
-    ``CallGraph``/``Root``/``Symbol`` types, from the two PRODUCTION
-    entrypoints that reach the diff-time gate. No monkeypatch, nothing
-    hand-listed except the entrypoints and the subjects.
+    source, the roots out of ``pyproject.toml`` and
+    ``scripts/check_body_branch.sh``, and the reach computed by the enrolled
+    ``call_site_reachability.reachable_from``. Nothing is hand-listed but the
+    subjects and the lens control.
 
-    THE LENS CONTROL, in this same call and before the subjects are looked at:
-    ``branch_reachability.check_branch_reachability`` — the D7 gate wired at
-    ``check_branch`` step 6 — must come back reachable. It is reached through
-    exactly the shape W2-2-5 adds (a function-local aliased ``from . import``
-    and an attribute call), so a green control means the analyzer can see that
-    shape and a dark subject is a fact about the wiring rather than about this
-    row. Without it, deleting the analyzer's attribute-call arm would leave the
-    subjects dark and the row would read as a correct red.
+    THREE CONTROLS, all before the subjects are looked at, because a
+    reachability row that cannot fail is worse than none:
 
-    Greened by W2-2-3 AND W2-2-5, and the dark list is what tells them apart —
-    measured by applying the amendment's edit 1 to this tree with the holes
-    still unfilled: ``fold_branch_signatures`` leaves the dark list and the
-    other four stay in it, because a hole that raises calls nothing. So "the
-    module is not wired" and "the module is wired and its own procedure never
-    reaches the algebra" are two different failure messages from this one row,
-    which is the distinction D-69 did not have.
+      * with NO roots the reach is empty. A traversal that answers "everything"
+        regardless of where it starts would green every subject below;
+      * the reach is a PROPER SUBSET of the package's functions. An analyzer
+        that resolves every call site into one blob reports reach for code
+        nothing runs;
+      * ``branch_reachability.check_branch_reachability`` — the D7 gate wired at
+        ``check_branch`` step 6 — comes back reachable. It is reached through
+        exactly the shape W2-2-5 adds (a function-local aliased ``from .
+        import`` and an attribute call), so a green control means the analyzer
+        can see that shape and a dark subject is a fact about the WIRING.
 
-    Reddens under: the amendment's edit 1 reverted; the call moved behind a
-    condition that drops it; ``_fold`` filled so that it never calls
-    ``build_surface`` or ``compare_surfaces``.
+    Greened by W2-2-3 AND W2-2-5, and the dark list is what tells them apart:
+    with the amendment's edit 1 applied and the holes still unfilled,
+    ``fold_branch_signatures`` leaves the dark list and the other four stay in
+    it, because a hole that raises calls nothing. So "the module is not wired"
+    and "the module is wired and its own procedure never reaches the algebra"
+    are two different failure messages from this one row, which is the
+    distinction D-69 did not have.
+
+    Reddens under: the amendment's edit 1 reverted; the call moved into a
+    closure or behind a settled ``if`` that drops it; ``_fold`` filled so that
+    it never calls ``build_surface`` or ``compare_surfaces``.
     """
     graph = _package_call_graph()
-    assert graph.unresolved_calls, (
-        "the analyzer resolved every call site in the package, which means it "
-        "is not counting; an over-resolved graph can only over-report reach"
+
+    assert not reachable_from(graph, []), (
+        "the traversal reports reach from no roots at all, so it is not "
+        "following edges and every claim below is vacuous"
     )
 
     roots = []
-    for key, kind, evidence in _PRODUCTION_ENTRYPOINTS:
+    for key, kind, evidence in _production_roots():
         assert key in graph.symbols, (
             f"the production entrypoint {key!r} is not a module-level function "
             "of this package any more; the traversal below would start nowhere"
@@ -911,6 +1639,12 @@ def test_the_branch_surface_algebra_is_reached_from_production() -> None:
 
     reach = reachable_from(graph, roots)
 
+    assert len(reach) < len(graph.symbols), (
+        f"every one of the package's {len(graph.symbols)} module-level "
+        "functions came back reachable, which no tree with test-only and "
+        "dead code in it is; the analyzer is over-resolving and can only "
+        "over-report reach"
+    )
     assert _WIRED_CONTROL in reach, (
         f"the analyzer cannot reach {_WIRED_CONTROL!r}, which check_branch has "
         "called since the D7 wiring landed. It is blind to the call shape "
