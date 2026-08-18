@@ -66,6 +66,11 @@ claude_dispatcher = [
     # judgement. An install that drops it is GoHelperUnavailable — named and
     # blocking, never "no declaration here".
     "go_state_machine/*",
+    # The state-machine reader (TypeScript). FLAT and one file: it reuses the
+    # parser already vendored for ts_signature_fingerprint rather than shipping
+    # a second 9.1 MB copy, reached as an absolute __dirname-derived sibling
+    # path so it is still never a search.
+    "ts_state_machine/*",
 ]
 
 [tool.pytest.ini_options]
