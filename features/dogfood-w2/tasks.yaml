@@ -156,6 +156,51 @@ tasks:
       task and why a wired stub would break every panel. That is a correct
       declaration and the reason it is prose is sound — it is on the live panel
       path. It is exactly what `declares.holes` now records mechanically.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=4 (0C/4H))
+      OPERATOR ADJUDICATION, round 3. This is a NARROW round with a FINITE
+      acceptance list. Do not redesign and do not chase every panel comment.
+
+      Your contract is otherwise accepted: the role gate is clean, the suite passes,
+      the verifier is satisfied, your declared holes were left correctly in both
+      rounds, and prose:code is 0.75:1. Nothing about the shape is being questioned.
+
+      WHY THIS BLOCKS. Judged on the design calibration (BLOCKING = ships a
+      correctness/safety regression or makes the stated headline property false;
+      MAJOR = a real gap that is additive to fix), the panel found FOUR independent
+      ways to bypass the one property this unit exists to create. That is not
+      iteration fatigue, it is the mechanism not holding.
+
+      FIX THESE FIVE, and nothing else is required for acceptance:
+
+      1. `check_prompt_tree` hashes `loaded.tree_dir` AFTER the caller populated
+         `LoadedTree.members`. A modified prompt can be read into `members` and
+         restored before the hash runs: the digest matches while modified bytes were
+         rendered. Verify the bytes you loaded, not the directory you loaded them
+         from.
+      2. `UNRECORDED` -> `LOAD_UNRECORDED` makes ABSENCE of the security state
+         permissive, and journaling is optional, so suppressing publication bypasses
+         drift enforcement with a stderr warning. Absent evidence must deny.
+      3. `ANCHOR_FAILED` is unreachable: every genesis that is written sets
+         `reviewer_prompts_hash`. A state no input can reach is not a state; either
+         make it reachable or strike it and say what covers the case.
+      4. `record_anchor` overwrites an entry with the same `run_nonce`, so a second
+         pin with a different digest re-anchors the run and a changed tree reads as
+         ANCHORED. Your own contract says resume is idempotent and cannot re-anchor.
+      5. `digest_of_snapshot` uses NUL as a field delimiter and NUL is legal inside
+         file contents, so `[("a", b"b\x00c\x00")]` and `[("a", b"b"), ("c", b"")]`
+         collide. The panel states this is exploitable on the real prompt tree.
+         Length-prefix or otherwise unambiguously encode.
+
+      ALSO FIX (verified by execution, so not arguable): `release_anchor` drops pins
+      but leaves `_declaration`, moving a process ANCHORED -> UNANCHORED_DECLARED,
+      which loads.
+
+      EVERYTHING ELSE IS RECORDED, NOT OWED BY YOU. The remaining findings
+      (`PinSource` vs `PromptLoadRecord` fields, process-global additive anchors with
+      no release call site) are now carried automatically to W2-1-2 and W2-1-3, which
+      inherit this task's recorded findings on dispatch. Do not chase them here.
     type: Task
     estimate: 2h
     labels: [size:M, area:dispatcher]
@@ -166,7 +211,7 @@ tasks:
         - src/claude_dispatcher/prompt_provenance.py::check_prompt_tree
         - src/claude_dispatcher/prompt_provenance.py::integrity_of
         - src/claude_dispatcher/prompt_provenance.py::publish_pin_from_genesis
-    status: Blocked
+    status: To Do
     cost_usd: 41.950795499999984
     completed_at: '2026-08-18T00:02:05-07:00'
     iteration_count: 0
@@ -193,16 +238,10 @@ tasks:
     started_at: '2026-08-17T22:35:37-07:00'
     dispatcher_run_id: 2026-08-18T05-35-37Z-tasks
     summary_path: /home/andrew/Project/dispatcher-runs/2026-08-18T05-35-37Z-tasks/W2-1-1/summary.md
-    unblocked_at: '2026-08-18T05:35:29+00:00'
+    unblocked_at: '2026-08-18T17:38:33+00:00'
     branch: feat/W2-1-1-scaffold-the-instructions-the-reviewer
     gate_base_sha: d592cec9b6cd53ff25195c1b2cce1421dcca0d0a
     effort: high
-    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=4 (0C/4H)'
-    mechanical_verification: passed
-    role_diff_loop: checked_clean
-    role_diff_loop_detail: "4 changed path(s) checked against the deny_globs rule for 'scaffold' and against the 20-glob floor; signatures: not_applicable"
-    verified: true
-    verification_iterations: 1
   - key: W2-1-2
     summary: seals — a role that writes the reviewer's instructions is refused
     description: |
@@ -395,6 +434,39 @@ tasks:
       One measured bug to carry over: `_collapse_index` aliased `sub.ts` and
       `sub/index.ts` even when BOTH exist as distinct modules — a false positive
       in the widening detector.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=4 (0C/4H))
+      OPERATOR ADJUDICATION, round 3. NARROW round, FINITE acceptance list.
+
+      Your contract's shape is accepted and the re-cut held: you kept the unfloored
+      algebra separate and designed the floored amendment as a transcription, which
+      is what the unit needed.
+
+      TWO THINGS BLOCK, both fail-open:
+
+      1. `fold_branch_signatures` returns `CLEAN_FOLD` when `merge_base is None`,
+         BEFORE looking at `changed_paths` — and by this module's own words the
+         driver resolves the merge-base lazily and can leave it unset. A gate that
+         answers CLEAN when it could not determine the base is the fail-open shape
+         this project refuses everywhere else. Unknown input must deny.
+      2. `_validate_rules` treats an enrolled TypeScript extension as covered if
+         `("x" + extension).endswith(s)` for any suffix entry. The panel notes this
+         is THE SAME unanchored suffix test the stripper already had and that was
+         already ruled a defect. Anchor it.
+
+      AND THE OVER-BUILD IS BACK, in functions you did not declare as holes:
+      `resolve_specifier`, `closure_request`, `fold_branch_signatures` and `_fold`
+      carry revision selection, closure construction, ambiguity policy and fault
+      precedence. Those are decisions W2-2-2's rows exist to pin and W2-2-3 exists to
+      make. The declared-holes gate only constrains the functions the plan NAMED, so
+      it passed — that is a gap in the mechanism, not a licence. Reduce those four to
+      stubs and add them to `declares.holes` in your summary as a recorded deviation
+      so the plan can carry them.
+
+      RECORDED, NOT OWED: the two script files merging declarations through the
+      global scope. That is a known limitation of the per-file model and is carried to
+      W2-2-2 and W2-2-3 automatically. Say it is out of scope; do not solve it.
     type: Task
     estimate: 2h
     labels: [size:M, area:dispatcher]
@@ -404,7 +476,7 @@ tasks:
       holes:
         - src/claude_dispatcher/branch_surface.py::build_surface
         - src/claude_dispatcher/branch_surface.py::compare_surfaces
-    status: Blocked
+    status: To Do
     cost_usd: 38.251248
     completed_at: '2026-08-18T00:54:58-07:00'
     iteration_count: 0
@@ -431,16 +503,10 @@ tasks:
     started_at: '2026-08-17T22:35:37-07:00'
     dispatcher_run_id: 2026-08-18T05-35-37Z-tasks
     summary_path: /home/andrew/Project/dispatcher-runs/2026-08-18T05-35-37Z-tasks/W2-2-1/summary.md
-    unblocked_at: '2026-08-18T05:35:29+00:00'
+    unblocked_at: '2026-08-18T17:38:33+00:00'
     branch: feat/W2-2-1-scaffold-a-sealed-interface-widened
     gate_base_sha: d592cec9b6cd53ff25195c1b2cce1421dcca0d0a
     effort: high
-    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=4 (0C/4H)'
-    mechanical_verification: passed
-    role_diff_loop: checked_clean
-    role_diff_loop_detail: "2 changed path(s) checked against the deny_globs rule for 'scaffold' and against the 20-glob floor; signatures: not_applicable"
-    verified: true
-    verification_iterations: 1
   - key: W2-2-2
     summary: seals — the widening is caught wherever in the diff it arrives
     description: |
@@ -728,6 +794,49 @@ tasks:
       Also note the first attempt timed out at the 40-minute wall having written
       2,130 lines. The wall is now 2h, but the lesson stands: this task is a
       CONTRACT, not the ledger.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=7 (0C/7H))
+      OPERATOR ADJUDICATION, round 3. NARROW round, FINITE acceptance list.
+
+      ONE FINDING DECIDES WHETHER THIS UNIT EXISTS AS SPECIFIED, and it is the only
+      thing this round must settle first:
+
+        "The claimed workflow cannot represent 29 of the 41 clauses. The documentation
+         says those alternative-body clauses will become UNDERIVABLE, but every
+         LedgerEntry and rederive call requires a MutationSite."
+
+      If the ledger cannot express 29 of its 41 subjects, no amount of sealing fixes
+      it: W2-3-2 would pin a mechanism that cannot hold the evidence, and W2-3-3 and
+      W2-3-5 would populate a shape that refuses most of its input. Answer it
+      explicitly: either make an entry representable WITHOUT a re-runnable mutation
+      site (a recorded, non-derivable claim is a legitimate ledger row — that was the
+      original point), or state plainly that those 29 clauses are struck rather than
+      recorded, and let W2-3-4 rule the strike.
+
+      THEN THESE FOUR, and nothing else:
+
+      1. `fold`'s precedence makes `Status.UNDERIVABLE` almost unreachable for the
+         exact cases it names, permanently stranding them. A status that names a case
+         it cannot reach is a false promise.
+      2. `refuse_unwritable_ledger_path` reads `role_protocol.DEFAULT_ROLE_RULES` but
+         ignores `RoleRule.kind`, treating BODIES' globs unconditionally as a deny
+         list. SEALS and ADJUDICATE are ALLOW_ONLY, so the answer is inverted for
+         them. `RuleKind` is total for a reason — use `effective_rule`.
+      3. Path validators accept parent traversal (`../outside.py`,
+         `../outside.jsonl`) and `seal_file` does not reject backslashes, while the
+         contract claims paths are repository-relative and quarantined.
+      4. `classify_observation` treats a mutant `ERRORED` like `FAILED`, though
+         `RowResult.ERRORED` says the assertion was never reached. An error is not
+         evidence of a mutation biting — that is the direction that manufactures
+         coverage.
+
+      RECORDED, NOT OWED: `observation_id` identity, `Prediction`'s missing structured
+      fields, `validate_ledger`'s row-vs-population granularity, `MutationSite`
+      argument validation. All carried automatically to W2-3-2/3/5 on dispatch.
+
+      The 2h wall stands and your first attempt died at 40 minutes. This is a
+      contract, not the ledger.
     type: Task
     estimate: 2h
     labels: [size:M, area:dispatcher]
@@ -739,7 +848,7 @@ tasks:
         - src/claude_dispatcher/mutation_ledger.py::classify_observation
         - src/claude_dispatcher/mutation_ledger.py::fold
         - src/claude_dispatcher/mutation_ledger.py::proposed_fate
-    status: Blocked
+    status: To Do
     cost_usd: 24.7068935
     completed_at: '2026-08-18T01:11:08-07:00'
     dispatcher_version: 0.1.0
@@ -747,7 +856,7 @@ tasks:
     started_at: '2026-08-18T00:02:06-07:00'
     dispatcher_run_id: 2026-08-18T05-35-37Z-tasks
     summary_path: /home/andrew/Project/dispatcher-runs/2026-08-18T05-35-37Z-tasks/W2-3-1/summary.md
-    unblocked_at: '2026-08-18T05:35:29+00:00'
+    unblocked_at: '2026-08-18T17:38:33+00:00'
     branch: feat/W2-3-1-scaffold-a-mutation-coverage-claim
     gate_base_sha: d592cec9b6cd53ff25195c1b2cce1421dcca0d0a
     effort: high
@@ -755,12 +864,6 @@ tasks:
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
-    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=7 (0C/7H)'
-    mechanical_verification: passed
-    role_diff_loop: checked_clean
-    role_diff_loop_detail: "2 changed path(s) checked against the deny_globs rule for 'scaffold' and against the 20-glob floor; signatures: not_applicable"
-    verified: true
-    verification_iterations: 0
     panel_consensus: block
     panel_summary: consensus=block | claude=CHANGES_REQUESTED, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=7 (0C/7H)
     panel_blocking_findings: 7
