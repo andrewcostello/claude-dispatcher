@@ -370,3 +370,40 @@ def test_an_unknown_selected_account_stops_the_run(tmp_path: Path) -> None:
          "--claude-accounts", "personl"])
     with pytest.raises(ValueError, match="unknown claude account"):
         orch._build_account_pool(args)
+
+
+def test_the_suite_never_reads_the_developers_own_account_pool(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Hermeticity, as a seal rather than a convention.
+
+    `_build_account_pool` falls back to `$XDG_CONFIG_HOME/claude-dispatcher/
+    machine.yaml`, so a developer with real subscriptions configured would have
+    the suite spend-route against them. Measured 2026-08-18: writing four real
+    accounts into that file turned 125 tests red, because the run began handing
+    `config_dir` to doubles pinning the old spawn signature.
+
+    The autouse `_isolate_machine_profile` fixture redirects XDG_CONFIG_HOME.
+    This row proves the redirection is in force rather than assumed.
+
+    Measured under: remove the fixture and this reddens on any machine with a
+    configured pool — and passes vacuously on one without, which is exactly why
+    it plants a profile at the REAL location's relative path first.
+    """
+    from types import SimpleNamespace
+    from claude_dispatcher import doctor
+
+    # Whatever XDG points at now must be a scratch dir, not the real home.
+    resolved = doctor.default_config_dir()
+    assert str(Path.home() / ".config") not in str(resolved), (
+        f"the suite is reading the real machine profile at {resolved}")
+
+    # And with a pool planted there, a run that names no accounts file gets it —
+    # proving the fallback is live and it is the ISOLATION that keeps it empty.
+    resolved.mkdir(parents=True, exist_ok=True)
+    d = tmp_path / "acct"
+    d.mkdir()
+    (resolved / "machine.yaml").write_text(
+        f"manual:\n  claude_accounts:\n    - name: scratch\n      config_dir: {d}\n")
+    pool = orch._build_account_pool(SimpleNamespace())
+    assert pool.names == ["scratch"]

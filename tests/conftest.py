@@ -12,6 +12,24 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
 
 @pytest.fixture(autouse=True)
+def _isolate_machine_profile(tmp_path_factory, monkeypatch):
+    """Point the machine profile at a scratch dir for every test.
+
+    `_build_account_pool` reads `$XDG_CONFIG_HOME/claude-dispatcher/machine.yaml`
+    when no `--claude-accounts-file` is given, so without this the suite reads
+    the DEVELOPER'S OWN Claude subscription pool. That is not hypothetical: it
+    was invisible while the file held no accounts, and the moment four real ones
+    were configured, 125 tests began drawing an account and handing `config_dir`
+    to doubles that pin the old spawn signature.
+
+    A test that wants a pool passes `--claude-accounts-file` explicitly.
+    """
+    home = tmp_path_factory.mktemp("xdg")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home))
+    return home
+
+
+@pytest.fixture(autouse=True)
 def _default_verifier_verified():
     """Default the VG-4 LLM verification gate to an instant VERIFIED stub.
 
