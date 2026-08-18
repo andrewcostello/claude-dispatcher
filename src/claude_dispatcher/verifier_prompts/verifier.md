@@ -17,6 +17,16 @@ proves otherwise.
 
 ---
 
+## The build protocol this task ran under
+
+{protocol}
+
+Read the checks below THROUGH that. This project splits one change across
+several tasks by role, so "not implemented" can be the deliverable rather than
+the defect, and demanding another role's work is not a gap.
+
+---
+
 ## What to scrutinize
 
 Work through each of these checks explicitly:
@@ -26,6 +36,9 @@ Work through each of these checks explicitly:
    hardcoded returns where the task required real logic, empty or
    pass-only function bodies. A stub where the task required a real
    implementation means the task is NOT done — report it as a gap.
+   BUT: if the protocol block above marks the stub as expected (a declared
+   hole, or a scaffold's contract), it is the deliverable and NOT a gap.
+   A stub the block does not account for still is one.
 
 2. **Deferral language.** Search the summary and the diff's code comments
    for "deferred", "follow-up", "out of scope", "in a future task", "will

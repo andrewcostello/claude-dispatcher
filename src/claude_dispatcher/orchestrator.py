@@ -3234,6 +3234,21 @@ def _run_llm_verifier(
         "labels": list(snap.labels),
         "description": snap.description,
     }
+    # B4: check #1 of the verifier prompt reports a NotImplementedError body as a
+    # gap, which is INVERTED for a scaffold whose stubs are the deliverable. It
+    # has not misfired only because briefs describe contract work in prose;
+    # `declares.holes` makes the expected set a fact instead of an inference.
+    roles = {sp.role for sp in (snap.role_specs or [])}
+    role_name = None
+    if len(roles) == 1:
+        only = next(iter(roles))
+        if only is not role_protocol_mod.Role.LEGACY:
+            role_name = only.value
+    protocol_block = verifier_mod.protocol_context(
+        role_name,
+        role_protocol_mod.holes_expected_of(snap.key, _load_tasks_snapshot(cfg)),
+    )
+
     runner = _verifier_run_override or verifier_mod.run_verifier
     v_agent = getattr(cfg, "verifier_agent", "claude") or "claude"
     v_model = _verifier_model_for(
@@ -3243,6 +3258,7 @@ def _run_llm_verifier(
     result = runner(
         task=task_row,
         diff=diff,
+        protocol=protocol_block,
         summary_text=summary_text,
         claude_bin=cfg.claude_bin,
         model=v_model,
