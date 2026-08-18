@@ -1223,9 +1223,32 @@ def default_reviewers(timeout_seconds: int = DEFAULT_REVIEWER_TIMEOUT_SECONDS) -
     #
     # The corroboration gate (see aggregate()) is unchanged and still counts by
     # FAMILY, so adding a fourth family cannot let one seat solo-block a HIGH.
+    # GEMINI IS UNSEATED (2026-08-18, operator), and the class stays for when it
+    # can be restored. It has contributed ZERO findings across every run this
+    # project has recorded — claude 115, codex 127, grok 129, gemini 0 — while
+    # reporting UNAVAILABLE in 0.3-0.6s on every panel. D-56 noticed the symptom
+    # and D-67 recorded a panel deciding on two seats because of it; neither
+    # diagnosed it.
+    #
+    # Measured cause, by running the seat's own invocation:
+    #
+    #     $ agy --print "" --print-timeout 60s     (prompt on stdin)
+    #     Error: Error: empty prompt. Usage: agy --print "your prompt here"
+    #
+    # The empty positional is deliberate — see GeminiReviewer, it mirrors the old
+    # `gemini -p ""` and exists to keep a large diff off argv and away from
+    # E2BIG. agy has since dropped support for an empty prompt, so the seat has
+    # been dead since that change with nothing surfacing it.
+    #
+    # Restoring it means passing the prompt as `--print`'s argument, which
+    # reintroduces the ~128 KB single-argv cap the empty positional was avoiding
+    # (a real panel prompt measured 53 KB, so it fits today and will not on a big
+    # diff), or moving to `--input-format stream-json`, which forces stream-json
+    # OUTPUT and so changes the verdict parser. Neither is free, and a seat that
+    # silently contributes nothing is worse than an honestly absent one: the
+    # panel was configured as five and deciding as three.
     return [
         ClaudeReviewer(timeout_seconds=timeout_seconds),
-        GeminiReviewer(timeout_seconds=timeout_seconds),
         CodexReviewer(timeout_seconds=timeout_seconds),
         GrokReviewer(timeout_seconds=timeout_seconds),
     ]

@@ -1056,7 +1056,7 @@ def test_panel_verdict_to_dict_has_consensus_and_reviewers():
     assert d["blocking_findings"] == []
 
 
-def test_default_reviewers_returns_four_families():
+def test_default_reviewers_returns_the_seated_families():
     revs = cfr.default_reviewers()
     # Changed 2026-08-01: claude is SEATED. The panel was the three flat-rate
     # families (Gemini, Codex, Grok), which meant claude never reviewed
@@ -1065,15 +1065,25 @@ def test_default_reviewers_returns_four_families():
     # nearly every task is claude-authored, so the exclusion removed the only
     # reliable detector from effectively every review. Cost now lives behind
     # --no-claude rather than in the default.
-    assert [r.family for r in revs] == ["claude", "gemini", "codex", "grok"]
+    # 2026-08-18: GEMINI UNSEATED. It contributed zero findings across every
+    # recorded run (claude 115, codex 127, grok 129, gemini 0) while reporting
+    # UNAVAILABLE in 0.3-0.6s on every panel. Measured cause: the seat passes an
+    # empty positional with the prompt on stdin, deliberately, to keep a large
+    # diff off argv — and agy now refuses an empty prompt outright ("Error: empty
+    # prompt"). The class is kept and the restoration options are recorded on
+    # `default_reviewers`; see tests/test_panel_roster.py.
+    assert [r.family for r in revs] == ["claude", "codex", "grok"]
     assert all(isinstance(r, cfr.Reviewer) for r in revs)
-    # Each carries the per-class default cli_bin. The gemini-family
-    # reviewer uses agy (Antigravity, post-2026-05 rebrand of gemini); the
-    # family identifier remains "gemini" for record compatibility.
+    # Each carries the per-class default cli_bin.
     families_to_bins = {r.family: r.cli_bin for r in revs}
     assert families_to_bins == {
-        "claude": "claude", "gemini": "agy", "codex": "codex", "grok": "grok",
+        "claude": "claude", "codex": "codex", "grok": "grok",
     }
+    # The unseated gemini family still maps to agy (Antigravity, post-2026-05
+    # rebrand), and the identifier stays "gemini" so historical panel records and
+    # `panel_verdict_gemini` columns remain comparable.
+    assert cfr.GeminiReviewer.cli_bin == "agy"
+    assert cfr.GeminiReviewer.family == "gemini"
 
 
 def test_default_reviewers_propagates_timeout():
@@ -1580,7 +1590,11 @@ def test_no_claude_still_drops_the_seat():
 
     families = [r.family for r in orchestrator._panel_reviewer_factory(_Cfg())]
     assert "claude" not in families
-    assert families == ["gemini", "codex", "grok"]
+    # Two families after --no-claude, since gemini was unseated (see
+    # test_default_reviewers_returns_the_seated_families). Worth noting rather
+    # than only asserting: with claude dropped as well, the corroboration gate
+    # needs BOTH remaining seats to agree before anything blocks.
+    assert families == ["codex", "grok"]
 
 
 def test_a_lone_claude_high_still_needs_corroboration():
