@@ -1440,6 +1440,7 @@ def _run_task(
             skip_security_linter=cfg.skip_security_linter,
             reviewer_count=cfg.reviewer_count,
             agent=attempt_agent,
+            role_scope=_role_scope_for(snap, log_path),
         )
         if cascade_context:
             prompt = (
@@ -6052,6 +6053,30 @@ def _setup_integration(
     # assignment makes the whole run fork from the feature branch.
     cfg.base_branch = result.branch
     return None
+
+
+def _role_scope_for(snap: TaskSnapshot, log_path: Path) -> str | None:
+    """The write rule this task will be JUDGED by, rendered for its author.
+
+    Resolved from the same `effective_rule` the gate uses, so the prompt and the
+    verdict cannot drift into two different rules. Returns None — no section at
+    all — for a role-less task, whose prompt is then unchanged.
+
+    Never raises: a prompt is not the place to discover a malformed policy, and
+    a task that cannot be told its scope is better dispatched than not
+    dispatched. The gate still refuses it.
+    """
+    try:
+        spec = next((s for s in (snap.role_specs or [])
+                     if s.task_key == snap.key), None)
+        if spec is None or spec.role is role_protocol_mod.Role.LEGACY:
+            return None
+        rule = role_protocol_mod.effective_rule(
+            spec, role_protocol_mod.built_in_policy())
+        return role_protocol_mod.describe_scope(rule) or None
+    except Exception as exc:  # noqa: BLE001 - never block a spawn on this
+        _log(log_path, f"  {snap.key} role scope unavailable for the prompt: {exc}")
+        return None
 
 
 def _emit_event(

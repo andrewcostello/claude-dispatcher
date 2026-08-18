@@ -345,12 +345,21 @@ def build_prompt(
     skip_security_linter: bool,
     reviewer_count: int | None,
     agent: str | None = None,
+    role_scope: str | None = None,
 ) -> str:
     """Render the unified implementer prompt for one task.
 
     Single-orchestrator rule: every agent family (including Claude) gets the
     same implementer worker brief. No family is asked to adopt tasker.md
     under ``dispatcher run``.
+
+    ``role_scope`` states which paths this task's role may write. It is
+    appended verbatim, and omitted entirely when None so a role-less task's
+    prompt is unchanged. Measured 2026-08-18 on W2-3-2: the role gate blocked a
+    SEALS task for a COMMENT-ONLY edit to a production file (AST-identical),
+    and neither the prompt nor the 918-character brief mentioned the write rule
+    anywhere. A gate that judges by a rule the author was never given reports
+    the process as the author's error.
     """
     agent_name = (agent or "claude").strip().lower() or "claude"
     optional_lines = []
@@ -376,7 +385,7 @@ def build_prompt(
         task_labels=", ".join(task_labels),
         branch=branch,
         task_description=task_description,
-    )
+    ) + (role_scope or "")
 
 
 def build_env(

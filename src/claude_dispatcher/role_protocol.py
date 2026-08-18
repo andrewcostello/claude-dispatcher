@@ -2101,6 +2101,70 @@ def validate_override(
         )
 
 
+#: Bound on how many globs the author-facing scope names before summarising.
+#: A wall of patterns is not guidance; the gate's message names the exact one it
+#: matched when a violation actually happens.
+SCOPE_GLOBS_SHOWN = 8
+
+
+def describe_scope(rule: RoleRule | None) -> str:
+    """The write rule, in the words the AUTHOR is judged by, or "" for no rule.
+
+    WHY THIS EXISTS. Measured 2026-08-18 on W2-3-2: the gate blocked a SEALS
+    task for a COMMENT-ONLY edit to a production module (AST-identical before
+    and after), and neither the implementer prompt nor the task's 918-character
+    brief mentioned the write rule anywhere. The rules were compiled in, checked
+    after the fact, and never stated to the party bound by them — so the process
+    reported its own omission as the author's error. This is the second instance
+    of the shape; the first is recorded on `FLOOR_GLOBS` against the seal author
+    who had to write `src/` for a typed constant.
+
+    It also says what to do INSTEAD, because the wrong half of the lesson is
+    "touch nothing": a role that believes a file outside its scope is wrong is
+    the most valuable signal this protocol collects, and it has a channel —
+    the summary's Deviation heading.
+    """
+    if rule is None:
+        return ""
+    globs = list(rule.globs)
+    shown = ", ".join(f"`{g}`" for g in globs[:SCOPE_GLOBS_SHOWN])
+    if len(globs) > SCOPE_GLOBS_SHOWN:
+        shown += f", and {len(globs) - SCOPE_GLOBS_SHOWN} more"
+    role_name = getattr(rule.role, "value", str(rule.role)).upper()
+
+    if rule.kind is RuleKind.ALLOW_ONLY_GLOBS:
+        if not globs:
+            body = (
+                "This task declares no writable paths, so it may not commit a "
+                "change to any file. If that is wrong, say so under a "
+                "`## Deviation` heading rather than writing one."
+            )
+        else:
+            body = (
+                f"You may write ONLY these paths: {shown}.\n"
+                f"A change to any other path — INCLUDING a comment or docstring "
+                f"in a production file — is a gate violation that blocks this "
+                f"task. Comment-only edits are not exempt: the gate compares "
+                f"paths, not behaviour."
+            )
+    else:
+        body = (
+            f"You may write anywhere EXCEPT these paths: {shown}.\n"
+            f"A change to one of them — INCLUDING a comment or docstring — is a "
+            f"gate violation that blocks this task."
+        )
+
+    return (
+        f"\n\n---\n\n## Your role: {role_name} — which paths you may write\n\n"
+        f"{body}\n\n"
+        f"If you believe a file outside your scope is WRONG, that is a finding "
+        f"worth having: record it in your summary under a `## Deviation` heading "
+        f"(kind, original, changed, reason, blast_radius) and leave the file "
+        f"alone. A correct, well-reasoned deviation is more valuable than a "
+        f"silent edit, and it is the only channel that reaches the next phase.\n"
+    )
+
+
 def effective_rule(spec: TaskRoleSpec, policy: RolePolicy) -> RoleRule:
     """The rule actually applied to ``spec``'s branch: policy + row.
 
