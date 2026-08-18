@@ -24,6 +24,7 @@ from . import forecast_bridge
 from . import doctor as doctor_cmd
 from . import watch as watch_cmd
 from . import unblock as unblock_cmd
+from . import cross_family_reviewer as cfr_mod
 from . import repo_config
 from . import worktree as wt_mod
 
@@ -428,7 +429,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--cross-family-panel-timeout",
         type=int,
-        default=600,
+        default=cfr_mod.DEFAULT_REVIEWER_TIMEOUT_SECONDS,
         help=(
             "Per-reviewer wall-clock budget for the cross-family panel "
             "(seconds; default: 600). Reviewers run in parallel, so the "

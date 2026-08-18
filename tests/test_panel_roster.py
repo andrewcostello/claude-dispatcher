@@ -50,3 +50,41 @@ def test_three_families_still_satisfy_the_corroboration_gate() -> None:
     """
     families = {r.family for r in cfr.default_reviewers()}
     assert len(families) >= 3, families
+
+
+# ------------------------------------------------ the per-seat timeout -------
+
+def test_the_seat_timeout_is_set_from_the_measured_distribution() -> None:
+    """600s was killing the strongest seat one run in seven.
+
+    Measured over 172 recorded seat runs: claude 6 timeouts of 43 (14%), and the
+    longest seat that ever COMPLETED finished at 563s — 37 seconds of headroom on
+    a censored distribution, because anything slower was killed and never
+    recorded. D-67's "the strongest panel seat timed out, and two seats decided
+    alone" is that number showing up as a verdict.
+
+    Measured under: drop it back to 600 and this reddens.
+    """
+    assert cfr.DEFAULT_REVIEWER_TIMEOUT_SECONDS >= 1800
+
+
+def test_the_timeout_default_lives_in_exactly_one_place() -> None:
+    """The CLI used to carry its own literal 600. Two copies of a bound is how
+    one gets raised and the other does not — the same defect the runs_dir literal
+    had in five subcommands.
+
+    Measured under: re-add a literal default to the argparse flag and this
+    reddens.
+    """
+    from pathlib import Path
+    from claude_dispatcher import cli
+    src = Path(cli.__file__).read_text()
+    at = src.index('"--cross-family-panel-timeout"')
+    block = src[at:at + 300]
+    assert "cfr_mod.DEFAULT_REVIEWER_TIMEOUT_SECONDS" in block
+    assert "default=600" not in block
+
+
+def test_every_seat_gets_the_configured_timeout() -> None:
+    revs = cfr.default_reviewers(timeout_seconds=1234)
+    assert all(r.timeout_seconds == 1234 for r in revs)

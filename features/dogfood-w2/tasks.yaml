@@ -279,7 +279,7 @@ tasks:
     labels: [size:M, area:dispatcher]
     agent: claude
     role: seals
-    status: In Progress
+    status: Blocked
     blockedBy: [W2-1-1]
     unblocked_at: '2026-08-18T19:21:17+00:00'
 
@@ -288,7 +288,37 @@ tasks:
     summary_path: /home/andrew/Project/dispatcher-runs/2026-08-18T19-25-56Z-tasks/W2-1-2/summary.md
     branch: feat/W2-1-2-seals-a-role-that-writes
     gate_base_sha: 0b275d48599808b2c46d7a015508d96d2b99fd14
-    cost_usd: 7.761974500000001
+    cost_usd: 16.6768255
+    effort: high
+    completed_at: '2026-08-18T13:26:48-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    blocked_reason: 'cross_family_panel: consensus=block | claude=UNAVAILABLE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=2 (0C/2H)'
+    mechanical_verification: skipped
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "2 changed path(s) checked against the allow_only_globs rule for 'seals' and against the 20-glob floor; signatures: not_applicable"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: block
+    panel_summary: consensus=block | claude=UNAVAILABLE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=2 (0C/2H)
+    panel_blocking_findings: 2
+    panel_verdict_claude: UNAVAILABLE
+    panel_error_claude: cli timed out after 600s
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: APPROVE
+    input_tokens: 180
+    output_tokens: 64181
+    cache_read_input_tokens: 10236092
+    cache_creation_input_tokens: 156581
+    duration_ms: 1072306
+    num_turns: 90
+    model: claude-opus-5[1m]
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.234 (Claude Code)
   - key: W2-1-3
     summary: bodies — close the reach in the unfloored layer and name what is left
     description: |
@@ -583,7 +613,7 @@ tasks:
     labels: [size:L, area:dispatcher]
     agent: claude
     role: seals
-    status: In Progress
+    status: Blocked
     blockedBy: [W2-2-1]
     unblocked_at: '2026-08-18T19:21:17+00:00'
 
@@ -594,6 +624,34 @@ tasks:
     gate_base_sha: 0b275d48599808b2c46d7a015508d96d2b99fd14
     cost_usd: 9.277864000000001
     effort: high
+    completed_at: '2026-08-18T13:02:31-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=4 (0C/4H)'
+    mechanical_verification: skipped
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "1 changed path(s) checked against the allow_only_globs rule for 'seals' and against the 20-glob floor; signatures: not_applicable"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: block
+    panel_summary: consensus=block | claude=CHANGES_REQUESTED, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=4 (0C/4H)
+    panel_blocking_findings: 4
+    panel_verdict_claude: CHANGES_REQUESTED
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: APPROVE
+    input_tokens: 170
+    output_tokens: 61762
+    cache_read_input_tokens: 10330809
+    cache_creation_input_tokens: 169325
+    duration_ms: 1561209
+    num_turns: 89
+    model: claude-opus-5[1m]
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.234 (Claude Code)
   - key: W2-2-3
     summary: bodies — build whatever of the whole-diff comparison is not floored
     description: |
@@ -932,10 +990,15 @@ tasks:
     labels: [size:M, area:dispatcher]
     agent: claude
     role: seals
-    status: To Do
+    status: In Progress
     blockedBy: [W2-3-1]
     unblocked_at: '2026-08-18T19:21:17+00:00'
 
+    started_at: '2026-08-18T13:02:31-07:00'
+    dispatcher_run_id: 2026-08-18T19-25-56Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-18T19-25-56Z-tasks/W2-3-2/summary.md
+    branch: feat/W2-3-2-seals-a-ledger-entry-that
+    gate_base_sha: eb5d4bac1114a7daebedb0f09d3639557e9795ed
   - key: W2-3-3
     summary: bodies — build the ledger and populate it from what is still true
     description: |

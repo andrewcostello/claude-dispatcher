@@ -72,7 +72,25 @@ _PANEL_SKIP_TYPES = frozenset({"docs", "documentation", "test", "tests"})
 # diff + summary; for typical BSA-sized tickets this fits in <2 min, but we
 # leave headroom for the 90th percentile. The panel runs reviewers in
 # parallel, so the panel wall-clock is bounded by the slowest reviewer.
-DEFAULT_REVIEWER_TIMEOUT_SECONDS = 600
+#: Per-seat wall-clock budget. Raised 600 -> 1800 on 2026-08-18, from the
+#: distribution rather than by feel. Measured over 172 recorded seat runs:
+#:
+#:     family   runs  timeouts   median    p90     max completed
+#:     claude     43         6     266s   490s          554s
+#:     codex      43         0     178s   270s          329s
+#:     grok       86         0     285s   418s          563s
+#:
+#: SIX OF CLAUDE'S 43 RUNS — 14% — were killed at the 600s bound, and the
+#: longest seat that ever COMPLETED finished at 563s: 37 seconds of headroom on a
+#: censored distribution. The seat this project measured as the only reliable
+#: catcher of a Critical was the one being clipped, and D-67 recorded a
+#: security-property unit decided without it.
+#:
+#: 1800 is ~3.2x the longest completion. The cost of a longer bound is wall-clock
+#: on a genuinely hung seat (seats run concurrently, so the panel takes the max);
+#: the cost of a short one is losing the strongest reviewer from a verdict,
+#: silently, one time in seven.
+DEFAULT_REVIEWER_TIMEOUT_SECONDS = 1800
 
 # A reviewer's diff context is capped to keep prompts under model context
 # limits. Real BSA diffs land at ~300-2000 lines; 8000 lines is the safety
