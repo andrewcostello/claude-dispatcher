@@ -225,6 +225,7 @@ def run_preflight(
         checks["fleet_binaries"] = fleet_bins
 
     _check_dispatcher_staleness(repo_root, warnings, checks)
+    _check_running_source(repo_root, warnings, checks)
     _check_base_branch_sync(repo_root, base_branch, warnings, checks)
     _check_role_file(
         repo_root, base_branch, role_file, failures, warnings, checks,
@@ -526,6 +527,119 @@ def _check_base_branch_sync(
         # Ahead only: local commits not yet pushed. The normal state of an
         # integration branch, and nothing the verifier can misread.
         entry["state"] = "ahead"
+
+
+#: Named in the warning so an operator can see what was compared.
+_SOURCE_SAMPLE = 3
+
+
+def _package_digest(pkg_dir: Path) -> str | None:
+    """sha256 over every `*.py` under `pkg_dir`, path and content, sorted.
+
+    None when the directory is unreadable — an unreadable copy is a skip, not a
+    verdict.
+    """
+    import hashlib
+
+    try:
+        files = sorted(pkg_dir.rglob("*.py"))
+        h = hashlib.sha256()
+        for f in files:
+            h.update(str(f.relative_to(pkg_dir)).encode())
+            h.update(f.read_bytes())
+        return h.hexdigest() if files else None
+    except OSError:
+        return None
+
+
+def _differing_modules(a: Path, b: Path) -> list[str]:
+    """Module names whose bytes differ between two package copies (or that exist
+    in only one). Bounded by the caller; sorted for a stable message."""
+    def _index(root: Path) -> dict[str, bytes]:
+        out: dict[str, bytes] = {}
+        for f in root.rglob("*.py"):
+            try:
+                out[str(f.relative_to(root))] = f.read_bytes()
+            except OSError:
+                continue
+        return out
+
+    ia, ib = _index(a), _index(b)
+    return sorted(k for k in set(ia) | set(ib) if ia.get(k) != ib.get(k))
+
+
+def _check_running_source(
+    repo_root: Path,
+    warnings: list[str],
+    checks: dict[str, Any],
+) -> None:
+    """Warn (never fail) when the dispatcher EXECUTING this run is built from
+    different source than the repo it is dispatching.
+
+    WHY THIS EXISTS ALONGSIDE `_check_dispatcher_staleness`. That check compares
+    version strings, and this project's version has been "0.1.0" in every commit
+    of its history — measured 2026-08-18, one distinct value across the whole
+    log. Its logic is correct and sealed; it is simply inert here, because the
+    two strings it compares are always equal. Content can differ when a version
+    cannot, so this compares content.
+
+    The trap: `pipx install` takes a SNAPSHOT. Dispatching this repo with a
+    `dispatcher` built months ago runs gates, floors and role rules that the
+    tasks were never written against — measured on this machine, the installed
+    snapshot predates `role_protocol.py` entirely.
+
+    Silent in the normal case: a run launched as `python -m claude_dispatcher`
+    from the repo is running the repo's own source, which is the identity this
+    check wants and not a coincidence worth a warning.
+    """
+    entry: dict[str, Any] = {"applicable": False, "state": "unknown"}
+    checks["running_source"] = entry
+
+    text = _repo_pyproject_text(repo_root)
+    if text is None:
+        entry["detail"] = "no pyproject.toml readable at repo root"
+        return
+    name, _version = _parse_name_version(text)
+    if name != "claude-dispatcher":
+        entry["detail"] = f"repo is {name!r}, not claude-dispatcher"
+        return
+
+    running = Path(__file__).resolve().parent
+    repo_pkg = (repo_root / "src" / "claude_dispatcher").resolve()
+    entry["running"] = str(running)
+    entry["repo_package"] = str(repo_pkg)
+
+    if not repo_pkg.is_dir():
+        entry["detail"] = "repo has no src/claude_dispatcher to compare against"
+        return
+
+    entry["applicable"] = True
+    if running == repo_pkg:
+        entry["state"] = "running_from_repo"
+        return
+
+    a, b = _package_digest(running), _package_digest(repo_pkg)
+    if a is None or b is None:
+        entry["applicable"] = False
+        entry["detail"] = "a package copy was unreadable"
+        return
+    if a == b:
+        entry["state"] = "identical"
+        return
+
+    differing = _differing_modules(running, repo_pkg)
+    entry["state"] = "differs"
+    entry["differing_count"] = len(differing)
+    entry["differing_sample"] = differing[:_SOURCE_SAMPLE]
+    shown = ", ".join(differing[:_SOURCE_SAMPLE])
+    more = f" and {len(differing) - _SOURCE_SAMPLE} more" if len(differing) > _SOURCE_SAMPLE else ""
+    warnings.append(
+        f"the running dispatcher ({running}) is built from different source "
+        f"than the repo it is dispatching: {len(differing)} module(s) differ "
+        f"({shown}{more}). A pipx install is a snapshot — reinstall with "
+        f"`pipx install --force {repo_root}`, or run `python -m "
+        f"claude_dispatcher` from the repo."
+    )
 
 
 # --- check 3: permission flags --------------------------------------------------
