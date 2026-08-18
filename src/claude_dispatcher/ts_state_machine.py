@@ -25,6 +25,10 @@ from pathlib import Path
 from . import role_protocol as rp
 from . import state_machine as sm
 
+#: TypeScript uses Python's spelling. Named here so callers ask the reader
+#: rather than assuming the languages agree — Go does not.
+DECLARATION_NAME = sm.DECLARATION_NAME
+
 PACKAGE_DIR = "ts_state_machine"
 RUN_TIMEOUT_SECONDS = 120
 

@@ -1417,6 +1417,24 @@ FLOOR_GLOBS: tuple[str, ...] = (
     # rather than against one that does not.
     "**/src/claude_dispatcher/loop_gate.py",
     "**/src/claude_dispatcher/orchestrator.py",
+    # The state-machine gate's rulebook and its three readers (2026-08-18,
+    # operator). `orchestrator.py` above calls `_check_state_machines`, which
+    # blocks a branch whose declared machine is invalid; these decide that
+    # answer. `state_machine.py` holds `check_parsed` — the ONE rulebook all
+    # three languages delegate to, so a branch that edits it changes the verdict
+    # in every language at once.
+    #
+    # Subtrees for the helpers, matching `go_signature_fingerprint`'s recorded
+    # reason: `go.mod` fixes the language version the parse runs under, so it is
+    # a parser input as much as `main.go`. Path-qualified, not basename-only —
+    # `**/state_machine.py` is an ordinary name a judged repo may itself carry.
+    # (`ts_signature_fingerprint/**`, whose vendored parser the TS reader loads
+    # by absolute path, is already floored above.)
+    "**/src/claude_dispatcher/state_machine.py",
+    "**/src/claude_dispatcher/go_state_machine.py",
+    "**/src/claude_dispatcher/go_state_machine/**",
+    "**/src/claude_dispatcher/ts_state_machine.py",
+    "**/src/claude_dispatcher/ts_state_machine/**",
 )
 
 #: What a floor violation prints, and deliberately NOT the violated role's own

@@ -881,6 +881,63 @@ _FLOOR_ROWS: tuple[tuple[str, str], ...] = (
         "**/src/claude_dispatcher/scaffold_shape.py",
         "sub/project/src/claude_dispatcher/scaffold_shape.py",
     ),
+    # The state-machine gate: one rulebook and three readers. Two rows per file
+    # glob (real and vendored layout, the pair that pins path qualification),
+    # and FOUR for each helper subtree — the extra pair is what makes the
+    # subtree half falsifiable, since a glob naming `main.go` alone would leave
+    # `go.mod` and anything nested writable.
+    (
+        "**/src/claude_dispatcher/state_machine.py",
+        "src/claude_dispatcher/state_machine.py",
+    ),
+    (
+        "**/src/claude_dispatcher/state_machine.py",
+        "sub/project/src/claude_dispatcher/state_machine.py",
+    ),
+    (
+        "**/src/claude_dispatcher/go_state_machine.py",
+        "src/claude_dispatcher/go_state_machine.py",
+    ),
+    (
+        "**/src/claude_dispatcher/go_state_machine.py",
+        "sub/project/src/claude_dispatcher/go_state_machine.py",
+    ),
+    (
+        "**/src/claude_dispatcher/go_state_machine/**",
+        "src/claude_dispatcher/go_state_machine/main.go",
+    ),
+    (
+        "**/src/claude_dispatcher/go_state_machine/**",
+        "sub/project/src/claude_dispatcher/go_state_machine/main.go",
+    ),
+    (
+        "**/src/claude_dispatcher/go_state_machine/**",
+        "src/claude_dispatcher/go_state_machine/go.mod",
+    ),
+    (
+        "**/src/claude_dispatcher/go_state_machine/**",
+        "src/claude_dispatcher/go_state_machine/internal/parse/decl.go",
+    ),
+    (
+        "**/src/claude_dispatcher/ts_state_machine.py",
+        "src/claude_dispatcher/ts_state_machine.py",
+    ),
+    (
+        "**/src/claude_dispatcher/ts_state_machine.py",
+        "sub/project/src/claude_dispatcher/ts_state_machine.py",
+    ),
+    (
+        "**/src/claude_dispatcher/ts_state_machine/**",
+        "src/claude_dispatcher/ts_state_machine/main.cjs",
+    ),
+    (
+        "**/src/claude_dispatcher/ts_state_machine/**",
+        "sub/project/src/claude_dispatcher/ts_state_machine/main.cjs",
+    ),
+    (
+        "**/src/claude_dispatcher/ts_state_machine/**",
+        "src/claude_dispatcher/ts_state_machine/internal/read.cjs",
+    ),
 )
 
 

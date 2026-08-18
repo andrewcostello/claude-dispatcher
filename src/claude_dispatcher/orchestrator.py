@@ -57,7 +57,10 @@ from . import routing as routing_mod
 from . import seal_verify as sv_mod
 from . import endpoint_agents as endpoint_agents_mod
 from . import spawn as spawn_mod
+from . import go_state_machine as go_state_machine_mod
 from . import spawn_failure as spawn_failure_mod
+from . import state_machine as state_machine_mod
+from . import ts_state_machine as ts_state_machine_mod
 from . import summary as summary_mod
 from . import verifier as verifier_mod
 from . import worktree as wt_mod
@@ -1732,6 +1735,11 @@ def _run_task(
         # produced a sealable contract, so running the suite over it is spending
         # money on a branch that must be re-scoped anyway.
         _measure_diff_shape(cfg, snap, wt, gate_base_used, log_path)
+        sm_reason = _check_state_machines(cfg, snap, wt, gate_base_used, log_path)
+        if sm_reason is not None:
+            final_status = plan_mod.BLOCKED
+            final_blocked_reason = sm_reason
+            break
         holes_outcome = _check_declared_holes(cfg, snap, wt, log_path)
         if holes_outcome is not None:
             final_status = plan_mod.BLOCKED
@@ -5085,6 +5093,95 @@ def _forget_escalated_effort(row: dict, final_status: str) -> None:
         return
     if row.pop(EFFORT_ESCALATED_STAMP, None):
         row.pop("effort", None)
+
+
+def _check_state_machines(
+    cfg: RunConfig,
+    snap: TaskSnapshot,
+    wt: wt_mod.Worktree,
+    base_sha: str,
+    log_path: Path,
+) -> str | None:
+    """None when every declared state machine on this branch is valid, else the
+    blocked reason.
+
+    Scoped to files the BRANCH CHANGED that already carry a declaration. It does
+    not require a unit to have a state machine — most do not, and demanding a
+    declaration everywhere would be ceremony rather than a gate. What it refuses
+    is a declaration that is present and wrong: a machine that is not total, or
+    whose states are not enum members, or that names a state its enum lacks.
+
+    Applies to every role, not just scaffold. A declared machine has to stay
+    valid whoever edits it, and the phase that breaks one is not necessarily the
+    phase that wrote it.
+
+    Never raises. A reader that cannot run (no Go toolchain, no vendored TS
+    parser) is reported and skipped rather than blocking a task on a missing
+    toolchain — that is a machine fault, and `GoHelperUnavailable` /
+    `TsHelperUnavailable` already name it for the operator.
+    """
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            ["git", "diff", "--name-only", "--diff-filter=d",
+             f"{base_sha}...{wt.branch}"],
+            cwd=str(wt.path), capture_output=True, text=True, timeout=30,
+        )
+        if proc.returncode != 0:
+            return None
+        changed = [f for f in proc.stdout.split()
+                   if f.endswith((".py", ".go", ".ts", ".tsx"))]
+    except Exception as exc:  # noqa: BLE001
+        _log(log_path, f"  {snap.key} state-machine check unavailable: {exc}")
+        return None
+
+    faults: list[str] = []
+    checked = 0
+    for rel in changed:
+        target = wt.path / rel
+        if not target.exists():
+            continue
+        try:
+            text = target.read_text(encoding="utf-8", errors="replace")
+            # Ask the READER for the spelling. Go declares `StateMachine`, so a
+            # prefilter hard-coded to Python's `STATE_MACHINE` skips every Go
+            # file in silence — and Go is the target repo.
+            if rel.endswith(".py"):
+                name, run = state_machine_mod.DECLARATION_NAME, \
+                    lambda: state_machine_mod.check(text)
+            elif rel.endswith(".go"):
+                name, run = go_state_machine_mod.DECLARATION_NAME, \
+                    lambda: go_state_machine_mod.check(target)
+            else:
+                name, run = ts_state_machine_mod.DECLARATION_NAME, \
+                    lambda: ts_state_machine_mod.check(target)
+            if name not in text:
+                continue
+            report = run()
+        except Exception as exc:  # noqa: BLE001 - a toolchain fault, not a verdict
+            _log(log_path,
+                 f"  {snap.key} state machine in {rel} not checked: {exc}")
+            continue
+        checked += 1
+        if not report.ok:
+            faults.append(f"{rel}: {report.detail()}")
+
+    if not checked:
+        return None
+    _emit_event(cfg, journal_mod.EventType.role_diff_loop_gate, {
+        "check": "state_machine",
+        "decision": "block" if faults else "proceed",
+        "files_checked": checked,
+        "faults": faults[:6],
+    }, task_key=snap.key)
+    if not faults:
+        _log(log_path,
+             f"  {snap.key} state machine: {checked} declaration(s) total and "
+             "enum-backed")
+        return None
+    _log(log_path, f"  {snap.key} state machine: BLOCK — {faults[0][:200]}")
+    return "state_machine_invalid: " + "; ".join(faults)[:600]
 
 
 def _known_red_exclusions(

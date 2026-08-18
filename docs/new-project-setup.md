@@ -217,7 +217,7 @@ Measure any file's shape directly:
 
     python -c "from claude_dispatcher import role_protocol as r; print(len(r.FLOOR_GLOBS))"
 
-20 globs today. It holds the gates themselves plus the whole delegation closure
+25 globs today. It holds the gates themselves plus the whole delegation closure
 of their decisions, because a branch that edits the *matcher* defeats the gate
 while touching nothing the floor names — measured, twice.
 

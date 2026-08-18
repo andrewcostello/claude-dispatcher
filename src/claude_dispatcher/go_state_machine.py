@@ -21,6 +21,11 @@ from pathlib import Path
 
 from . import state_machine as sm
 
+#: Go spells the declaration idiomatically, NOT as Python's `STATE_MACHINE`.
+#: Must equal `declName` in go_state_machine/main.go — sealed, because a caller
+#: that prefilters on the wrong spelling skips every Go file in silence.
+DECLARATION_NAME = "StateMachine"
+
 PACKAGE_DIR = "go_state_machine"
 BUILD_TIMEOUT_SECONDS = 180
 RUN_TIMEOUT_SECONDS = 60
