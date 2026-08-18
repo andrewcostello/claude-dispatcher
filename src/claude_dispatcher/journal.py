@@ -78,6 +78,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from . import __version__ as _DISPATCHER_VERSION
+from . import prompt_provenance
 
 # The provenance keys every genesis (run_started, seq 0) payload must carry.
 # verify() enforces their presence so the audit chain's anchor is self-describing
@@ -235,16 +236,14 @@ def hash_tree(root: str | os.PathLike[str]) -> str:
     ``root``, in sorted-relative-path order, so the digest is deterministic and
     sensitive to renames as well as content edits. Used for the reviewer-prompts
     provenance field, which is a directory of ``.md`` files.
+
+    Delegates so that this — the digest a genesis RECORDS — and the digest the
+    prompt gate COMPARES are one implementation. A second spelling would drift
+    from this one and make every load read DRIFTED (unit W2-1, constraint 2).
     """
-    root_path = Path(root)
-    digest = hashlib.sha256()
-    for file_path in sorted(p for p in root_path.rglob("*") if p.is_file()):
-        rel = file_path.relative_to(root_path).as_posix()
-        digest.update(rel.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(file_path.read_bytes())
-        digest.update(b"\0")
-    return digest.hexdigest()
+    return prompt_provenance.digest_of_snapshot(
+        prompt_provenance.read_tree_members(root)
+    )
 
 
 def canonical_bytes(event_fields: dict[str, Any]) -> bytes:

@@ -513,7 +513,26 @@ _PROMPTS_DIR = Path(__file__).parent / "reviewer_prompts"
 
 
 def _load_prompt(family: str) -> str:
-    """Concatenate the family-specific preamble and the shared template."""
+    """Concatenate the family-specific preamble and the shared template.
+
+    **The prompt-tree drift seam (unit W2-1) is OWED HERE, and W2-1-3 wires it.**
+    ``_PROMPTS_DIR`` resolves inside the RUNNING package, so these bytes are
+    whatever the last install put there, and the run's genesis already records
+    ``hash_tree`` of this directory as ``reviewer_prompts_hash`` — which nothing
+    compares to anything today. The wiring is ``snap =
+    prompt_provenance.snapshot_tree(_PROMPTS_DIR, "reviewer prompts")``, then
+    ``check_prompt_tree(snap)``, then ``snap.render(f"{family}.md",
+    "_shared.md")``: read once, digest those bytes, render the same object. That
+    ORDER is the contract, so it is not "add one line before the reads", and the
+    two ``exists()`` checks become ``render``'s missing-member refusal. NOT added
+    by this scaffold on purpose — ``check_prompt_tree`` is a stub and a wired
+    stub breaks every panel; body and wiring land in one commit.
+
+    It does not close the headline hole. An ADJUDICATE row may still declare
+    ``_shared.md`` in ``disputed_paths:`` and rewrite it; that remedy is on
+    ``role_protocol.FLOOR_GLOBS`` — floored, handed over by W2-1-4. See
+    :data:`~claude_dispatcher.prompt_provenance.FLOOR_GLOBS_OWED`.
+    """
     fam_path = _PROMPTS_DIR / f"{family}.md"
     shared_path = _PROMPTS_DIR / "_shared.md"
     if not fam_path.exists():
