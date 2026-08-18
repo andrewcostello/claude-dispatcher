@@ -33,7 +33,7 @@ vocabulary a row carries follows from that, and is not a stylistic choice:
   * ``Measured under:`` — the five rows green today over implemented seams.
     Each named mutation was applied to :mod:`mutation_ledger` and the row
     observed to go PASSED->FAILED on 2026-08-18.
-  * ``Predicted (unmeasured) under:`` — the fifteen rows red against a
+  * ``Predicted (unmeasured) under:`` — the sixteen rows red against a
     declared hole (the four folds, the harness, the applier, the
     provisioner/collector/runner, the reader/writer, the citation check and
     the CLI). They are red under control as well as mutant, so no transition
@@ -45,17 +45,20 @@ mutant/control maps above are real runs of ``call_site_reachability``. What is
 unmeasured is only this file's own sensitivity to a wrong ``mutation_ledger``.
 
 :data:`REVISION` and :data:`SUBJECT_MOVED_AT` are object-database
-dependencies. The four rows that need them SKIP where they are absent (a
-shallow checkout, a fetch of this branch alone) rather than erroring: "not
-measured in this clone" and "the seal failed" are different signals and must
-not arrive as the same one. The skip is narrow in both directions — see
-:func:`_require_revisions`, and ``MLSEAL_REQUIRE_HISTORY=1`` to make the
-absence a failure instead.
+dependencies, and their absence FAILS. A clone without them cannot take the
+flagship measurement, and the outcome this file cannot detect from its own
+exit status is the one where it silently did not: a shallow checkout would
+otherwise drop the flagship, the rederive oracle, the applier row and the
+one green prediction-staleness row, and report a green seal suite having
+compared nothing. ``MLSEAL_ALLOW_MISSING_HISTORY=1`` turns the absence back
+into a skip for a clone that genuinely cannot fetch — see
+:func:`_require_revisions`.
 """
 
 from __future__ import annotations
 
 import ast
+import dataclasses
 import json
 import os
 import subprocess
@@ -171,32 +174,37 @@ def _object_present(root: Path, name: str) -> bool:
 
 
 def _require_revisions(root: Path, *revisions: str) -> None:
-    """Skip — never error, and never for any other reason — when a recorded
-    revision is not in this clone.
+    """FAIL when a recorded revision is not in this clone.
 
-    A shallow checkout or a single-branch fetch does not carry them, and
-    ``git archive``/``git show`` there raises, which is indistinguishable
-    from the seal reddening. What this file measures is a historical fact; a
-    clone without the history genuinely cannot take the measurement.
+    Absence is a failure by default and the skip is the opt-out, which is the
+    way round it has to be. The alternative fails open in every environment
+    that has not been told otherwise: no workflow in this repository sets an
+    opt-in variable, ``actions/checkout`` defaults to ``fetch-depth: 1``, and
+    a clone without these objects would drop the flagship, the rederive
+    oracle, the applier row and the prediction-staleness row TOGETHER — every
+    row that takes a measurement — and still exit 0. "A green suite that
+    compared nothing" is precisely the reading this unit exists to make
+    impossible, so this file must not produce one about itself.
+
+    ``MLSEAL_ALLOW_MISSING_HISTORY=1`` restores the skip, for a clone that
+    genuinely cannot fetch the history. It is a deliberate, named act:
+    whoever sets it is saying "this run does not measure", and the message
+    says so.
 
     Two things this must not do, both of which turn "we did not look" into
     "we looked and it was fine":
 
-      * skip on anything but the absence itself. The repository is proved
-        usable first (a check that raises), and :func:`_object_present`
+      * treat anything but the absence itself as absence. The repository is
+        proved usable first (a check that raises), and :func:`_object_present`
         classifies the rest.
-      * skip on ONE revision while another row needs a different one. Every
-        revision a row will reach is named here, so a clone carrying
-        :data:`REVISION` but not :data:`SUBJECT_MOVED_AT` skips rather than
-        raising ``CalledProcessError`` out of ``git show``.
-
-    Set ``MLSEAL_REQUIRE_HISTORY=1`` to make the absence itself a FAILURE. A
-    full-history clone has these objects; a CI run that quietly drops the
-    flagship measurement is the one outcome this file cannot detect from its
-    own exit status.
+      * answer for ONE revision while another row needs a different one.
+        Every revision a row will reach is named here, so a clone carrying
+        :data:`REVISION` but not :data:`SUBJECT_MOVED_AT` is caught here
+        rather than raising ``CalledProcessError`` out of ``git show``.
     """
-    # Raises rather than skipping: if this fails, git or the repository is
-    # broken, and no conclusion about the revisions is available at all.
+    # Raises rather than reporting absence: if this fails, git or the
+    # repository is broken, and no conclusion about the revisions is
+    # available at all.
     _git("rev-parse", "--verify", "HEAD^{commit}", cwd=root)
 
     absent = [r for r in revisions if not _object_present(root, r)]
@@ -206,14 +214,30 @@ def _require_revisions(root: Path, *revisions: str) -> None:
         f"{', '.join(absent)} not in this clone, so the recorded measurement "
         "cannot be re-derived here; fetch the full history "
         "(git fetch --unshallow) to run it")
-    if os.environ.get("MLSEAL_REQUIRE_HISTORY") == "1":
-        raise AssertionError(
-            f"MLSEAL_REQUIRE_HISTORY is set and {message}")
-    pytest.skip(message)
+    if os.environ.get("MLSEAL_ALLOW_MISSING_HISTORY") == "1":
+        pytest.skip(f"MLSEAL_ALLOW_MISSING_HISTORY is set and {message}; this "
+                    "run took no measurement")
+    raise AssertionError(message)
 
 
 def _at_revision(root: Path, revision: str, path: str) -> bytes:
     return _git("show", f"{revision}:{path}", cwd=root).stdout
+
+
+def _tree(source: bytes) -> str:
+    """``source`` as a parsed program, with formatting discarded.
+
+    What two mutants have to agree on is the PROGRAM. Comparing bytes would
+    make the harness answerable to :func:`_swallow`'s indentation.
+    """
+    return ast.dump(ast.parse(source))
+
+
+def _bodies(source: bytes) -> dict[str, str]:
+    """Top-level function name to its parsed body, for locating an edit."""
+    return {n.name: ast.dump(ast.Module(body=n.body, type_ignores=[]))
+            for n in ast.parse(source).body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
 
 
 def _swallow(source: bytes, site: MutationSite) -> bytes:
@@ -273,6 +297,35 @@ def _unusable(what: str, proc: subprocess.CompletedProcess) -> str:
             f"\nstderr:\n{proc.stderr}")
 
 
+def _junit_node_id(seal_file: str, case: ET.Element,
+                   proc: subprocess.CompletedProcess) -> str:
+    """The collected node id ``case`` reports on.
+
+    junit splits an id in two: ``name`` is the function, and ``classname``
+    carries the dotted module PLUS any enclosing classes. Reading ``name``
+    alone reconstructs ``file.py::test_m`` for a row that was collected as
+    ``file.py::TestC::test_m``, which is not in the collected set, so a
+    class-based row anywhere in the seal file would report as unreported.
+    The seal file this measurement runs has none today; it is not a file
+    this unit owns, and the flagship must not turn amber when it grows one.
+
+    A ``classname`` that is not the module or one of its classes is REPORTED,
+    not mapped: it means the run reached a file this measurement did not ask
+    for, and every result parsed out of it is about something else.
+    """
+    module = seal_file[:-len(".py")].replace("/", ".")
+    classname = case.get("classname") or ""
+    if classname == module:
+        enclosing: tuple[str, ...] = ()
+    elif classname.startswith(f"{module}."):
+        enclosing = tuple(classname[len(module) + 1:].split("."))
+    else:
+        raise AssertionError(_unusable(
+            f"reported classname {classname!r}, which is not {module!r} nor a "
+            f"class in it", proc))
+    return "::".join((seal_file, *enclosing, case.get("name") or ""))
+
+
 def _run_rows(tree: Path, seal_file: str, work: Path,
               tag: str) -> dict[str, RowResult]:
     """Node-id-level results for ``seal_file`` in ``tree``, over the COLLECTED
@@ -316,7 +369,7 @@ def _run_rows(tree: Path, seal_file: str, work: Path,
         raise AssertionError(_unusable("collected nothing", proc))
     outcome = {"failure": RowResult.FAILED, "error": RowResult.ERRORED}
     for case in ET.parse(junit).iter("testcase"):
-        node = f"{seal_file}::{case.get('name')}"
+        node = _junit_node_id(seal_file, case, proc)
         if node not in results:
             raise AssertionError(_unusable(
                 f"reported {node!r}, which it did not collect", proc))
@@ -535,6 +588,15 @@ def _tiny_repo(tmp_path: Path, *, over_claim: bool = False,
     # exactly the tree's population, which is what the collector rows compare
     # against.
     return repo, entry, (dict(rows, gone=gone) if deleted_row else rows), head
+
+
+def _recommit(repo: Path, path: str, source: str) -> str:
+    """Replace ``path`` in ``repo``, commit, and return the new revision."""
+    (repo / path).write_text(source)
+    _git("add", "-A", cwd=repo)
+    _git("-c", "user.name=seal", "-c", "user.email=seal@example.invalid",
+         "commit", "-qm", f"rewrite {path}", cwd=repo)
+    return _git("rev-parse", "HEAD", cwd=repo).stdout.decode().strip()
 
 
 #: A record with no measurement behind it, for the rows about IDENTITY and the
@@ -903,7 +965,8 @@ def test_a_clause_whose_evidence_expired_is_predicted_and_never_cited() -> None:
     staleness below is unrepresentable; put the judgement's ``reason`` into
     ``prediction_id`` and re-examining a clause forks the record instead of
     replacing it; drop ``described`` from it and two clauses on one row
-    collide.
+    collide; let ``observations`` return every record and a prediction reads
+    as evidence.
     """
     root = _repo_root()
     _require_revisions(root, REVISION, SUBJECT_MOVED_AT)
@@ -938,6 +1001,16 @@ def test_a_clause_whose_evidence_expired_is_predicted_and_never_cited() -> None:
         reason=NonDerivable.NO_APPLICABLE_OPERATOR, revision=REVISION,
         subject_sha256=ml.source_digest(at_revision), recorded_on=MEASURED_ON)
     assert other_clause.prediction_id != predicted.prediction_id
+
+    # NEVER CITED, which is the half of this row's name the ids do not carry:
+    # a prediction is not evidence, so it is not in the observation set the
+    # citation check resolves against and no `ml-` id resolves to it. A
+    # reader that returned it among the observations would let "we could not
+    # measure this" be cited as "we measured this".
+    ledger = (predicted, other_clause)
+    assert ml.observations(ledger) == ()
+    assert ml.current_observations(ledger) == {}
+    assert ml.predictions(ledger) == ledger
 
 
 # --------------------------------------------------------------------------- #
@@ -1402,17 +1475,30 @@ def test_a_claim_with_two_live_observations_has_no_answer_and_is_refused(
     assert both_kinds.reason is NonDerivable.NO_APPLICABLE_OPERATOR
     ml.validate_ledger((first, both_kinds))
 
-    # The hole, pinned as the MISSING KEY rather than as an acceptance: no
-    # field the two kinds share identifies the CLAUSE, so no rule available
-    # here can tell the pair above from one clause recorded twice. A W2-3-4
-    # ruling that adds the key makes this assertion redden — which is the
-    # point of writing it this way round: the refusal it would enable is not
-    # blocked by a row demanding that the pair stay accepted.
-    assert not hasattr(both_kinds, "claim_id")
-    assert ml.prediction_id(
-        seal_file=both_kinds.seal_file, claiming_row=both_kinds.claiming_row,
-        subject=both_kinds.subject, described=both_kinds.described,
-    ) != first.claim_id
+    # The hole, pinned as the MISSING KEY rather than as an acceptance: the
+    # two kinds share these five field names and NO OTHER, and not one of
+    # them is a clause identity. `seal_file`/`claiming_row` name the ROW, and
+    # the accepted pair above is the proof that a row carries several
+    # clauses; `revision`/`subject_sha256` are provenance, equal between an
+    # observation and a prediction taken at the same commit and therefore
+    # unable to tell one clause from two; `note` is prose no fold reads.
+    #
+    # Written as an exact set on purpose. Any W2-3-4 ruling that adds a
+    # shared clause key reddens this line WHATEVER IT IS NAMED — `clause_id`,
+    # `clause`, a reused `claim_id` — where a comparison of the two existing
+    # ids could not: `ml-`/`mlp-` prefixes make those unequal under every
+    # possible implementation, so such a comparison asserts nothing about
+    # this module at all. The refusal the key would enable is not blocked by
+    # a row demanding the pair stay accepted; it just has to arrive as a
+    # visible diff here.
+    shared = ({f.name for f in dataclasses.fields(LedgerEntry)}
+              & {f.name for f in dataclasses.fields(ml.Prediction)})
+    assert shared == {"seal_file", "claiming_row", "revision",
+                      "subject_sha256", "note"}
+    for name in sorted(shared):
+        assert getattr(both_kinds, name) == getattr(first, name), (
+            f"{name} is equal across the legitimate pair, so it cannot be "
+            f"the key that separates one clause from two")
 
 
 # --------------------------------------------------------------------------- #
@@ -1445,18 +1531,44 @@ def test_the_applier_reproduces_an_independent_mutation_and_refuses_a_miss(
     the anchor. A returned copy of the input reddens nothing and is recorded
     as a mutation that was survived — a false STRIKE against a true clause.
 
+    The comparison is over PARSED TREES, not bytes. The contract for
+    ``apply_mutation`` says "resolve the anchor with ``ast``, refuse rather
+    than no-op" and says nothing about the emitted text; ``mutant_sha256`` is
+    provenance on the observation id and no :class:`Drift` member compares
+    it, so a mutation that is the same program with different whitespace
+    breaks nothing in the ledger. Pinning bytes would lock the harness to the
+    formatting of a private helper in this file, which is not a contract
+    anyone agreed to.
+
+    What is pinned is stronger than "something changed": the mutated tree
+    equals the independently-derived one, and the ONE function whose body
+    moved is the recorded anchor. An applier that produced the right bytes at
+    the site while also rewriting something else would satisfy neither.
+
     Predicted (unmeasured) under: return ``source`` unchanged when the anchor
     does not resolve and the three refusals redden; resolve the anchor by
-    line number and the first assertion reddens against a moved body.
+    line number and the first assertion reddens against a moved body; mutate
+    a second handler of the same type elsewhere in the file and the
+    untouched-elsewhere assertion reddens.
     """
     root = _repo_root()
     _require_revisions(root, REVISION)
     source = _at_revision(root, REVISION, SUBJECT)
 
     mutated = ml.apply_mutation(source, SITE)
-    assert mutated == _swallow(source, SITE)
-    assert mutated != source
+    assert _tree(mutated) == _tree(_swallow(source, SITE)), (
+        "the harness applies a different mutation from the one this file "
+        "measured through, so the ledger would record bytes nothing produced")
+    assert _tree(mutated) != _tree(source)
     assert ml.source_digest(mutated) != ml.source_digest(source)
+
+    # The blast radius of the edit itself. `_bodies` is anchor -> dumped
+    # body, so a mutation that also touched another function, or that
+    # rewrote the whole module into something equivalent at the site, shows
+    # here rather than passing the equality above.
+    before, after = _bodies(source), _bodies(mutated)
+    assert set(before) == set(after)
+    assert {a for a in before if before[a] != after[a]} == {SITE.anchor}
 
     for label, site in (
             ("no such anchor",
@@ -1531,8 +1643,15 @@ def test_the_provisioner_stands_up_the_whole_population_and_runs_it(
     # re-derivation edits the repository it is measuring.
     assert (repo / "src" / "subject.py").read_text() == _SUBJECT_SRC
     assert _git("status", "--porcelain", cwd=repo).stdout == b""
+    # The entry recorded its population in the order the fixture built it and
+    # the collector returns it sorted. The two agree because
+    # `population_digest` sorts and de-duplicates before hashing — pinned
+    # here, because if it did not, every entry in this file would be
+    # comparing a digest against a different ordering of the same rows.
     assert entry.population_sha256 == ml.population_digest(
         ml.collect_rows(clone, _TINY_SEAL))
+    shuffled = tuple(reversed(sorted(collected))) + (rows["untouched"],)
+    assert ml.population_digest(shuffled) == entry.population_sha256
 
 
 def test_a_collection_that_broke_refuses_rather_than_reporting_a_short_file(
@@ -1550,19 +1669,78 @@ def test_a_collection_that_broke_refuses_rather_than_reporting_a_short_file(
     what was collected, and this row reddens on both branches.
     """
     repo, _, _, head = _tiny_repo(tmp_path)
-    (repo / "tests" / "test_seal.py").write_text(
-        "from subject import no_such_name  # noqa\n\n\ndef test_x():\n"
-        "    assert True\n")
-    _git("add", "-A", cwd=repo)
-    _git("-c", "user.name=seal", "-c", "user.email=seal@example.invalid",
-         "commit", "-qm", "the seal file stops importing", cwd=repo)
-    broken = _git("rev-parse", "HEAD", cwd=repo).stdout.decode().strip()
+    broken = _recommit(repo, _TINY_SEAL,
+                       "from subject import no_such_name  # noqa\n\n\n"
+                       "def test_x():\n    assert True\n")
     assert broken != head
 
     clone = ml.provision_subject_tree(str(repo), broken,
                                       str(tmp_path / "broken"))
     with pytest.raises(ml.MutationLedgerError):
         ml.collect_rows(clone, _TINY_SEAL)
+
+
+def test_a_run_that_did_not_complete_is_refused_and_not_reported_as_results(
+        tmp_path: Path) -> None:
+    """``run_rows`` on three runs that produce a well-formed result and no
+    measurement.
+
+    The contract states ``run_rows``'s fail-closed rule for one case — a row
+    collected and then not reported is ABSENT, never PASSED — and is silent
+    on the case that produces the SAME map for a different reason: the run
+    stopped. Its signature carries no channel for "there is no measurement
+    here", so refusing is the only way to say it, and these three are where
+    a body that trusts pytest's exit code says the opposite:
+
+      * the seal file no longer IMPORTS. Every recorded row comes back
+        ABSENT, which folds to ``MUTANT_UNEVALUABLE`` or ``HARNESS_FAULT``
+        and parks the clause on a re-run that will never collect anything.
+      * a row KILLS the interpreter mid-run. ``os._exit(0)`` is the shape
+        that defeats an exit-code check specifically: pytest never reaches
+        its reporting hook, so the run has no results and every row is
+        unreported, while the process exits 0 — "all tests passed". A body
+        checking only the code accepts an empty run as a green file.
+      * the file collects NOTHING. An empty map is a legal ``Mapping[str,
+        RowResult]`` and reads downstream as a population that vanished.
+
+    The healthy tree is run FIRST and in the same call, so a ``run_rows``
+    that raises on everything fails here rather than passing three refusals.
+
+    Predicted (unmeasured) under: return the partial map instead of raising
+    and all three blocks redden; gate on pytest's exit code alone and the
+    ``os._exit`` block reddens; treat "no rows" as an empty result and the
+    third block reddens; refuse every run and the control block reddens.
+    """
+    repo, _, rows, head = _tiny_repo(tmp_path)
+
+    healthy = ml.provision_subject_tree(str(repo), head,
+                                        str(tmp_path / "healthy"))
+    assert ml.run_rows(healthy, _TINY_SEAL)[rows["untouched"]] is (
+        RowResult.PASSED), "the control run is refused, so nothing below means"
+
+    for label, source in (
+            ("the seal file stops importing",
+             "from subject import no_such_name  # noqa\n\n\n"
+             "def test_x():\n    assert True\n"),
+            ("a row kills the interpreter mid-run",
+             "import os\n\nfrom subject import other\n\n\n"
+             "def test_a_reported():\n    assert other() == 7\n\n\n"
+             "def test_b_kills_the_run():\n    os._exit(0)\n\n\n"
+             "def test_c_never_runs():\n    assert other() == 7\n"),
+            ("the file collects nothing",
+             "from subject import other  # noqa\n\nNOT_A_TEST = other\n"),
+    ):
+        revision = _recommit(repo, _TINY_SEAL, source)
+        clone = ml.provision_subject_tree(
+            str(repo), revision, str(tmp_path / f"dest-{revision[:8]}"))
+        returned = None
+        try:
+            returned = ml.run_rows(clone, _TINY_SEAL)
+        except ml.MutationLedgerError:
+            pass
+        assert returned is None, (
+            f"{label}: run_rows returned {returned!r} for a run that took no "
+            f"measurement")
 
 
 def test_a_ledger_is_written_only_where_it_can_be_read_back_unchanged(
@@ -1581,11 +1759,20 @@ def test_a_ledger_is_written_only_where_it_can_be_read_back_unchanged(
     dataclasses is what a later re-derivation actually depends on, and both
     ids are re-derived by ``__post_init__`` on the way back in.
 
+    A refused write is asserted on the FILE, not only on the exception. "It
+    raised" is satisfied by a writer that truncates the ledger, streams the
+    rival records out, validates last and then raises — the file is
+    destroyed and the caller is told the write was refused, which is the
+    worse of the two failures and the one an exception check cannot see. So
+    each refusal below is followed by the bytes that were there before, and
+    the refused PATH is checked for not having been created at all.
+
     Predicted (unmeasured) under: drop the ``validate_ledger`` call from
-    ``write_ledger`` and the rival-entry block reddens; drop the
-    ``refuse_unwritable_ledger_path`` call and the misplaced-path block
-    reddens; skip an unparseable line instead of refusing the file and the
-    last block reddens.
+    ``write_ledger`` and the rival-entry block reddens; validate AFTER
+    writing and the surviving-bytes assertions redden while the ``raises``
+    blocks stay green; drop the ``refuse_unwritable_ledger_path`` call and
+    the misplaced-path block reddens; skip an unparseable line instead of
+    refusing the file and the last block reddens.
     """
     monkeypatch.chdir(tmp_path)
     (tmp_path / ml.LEDGER_DIR).mkdir(parents=True)
@@ -1597,11 +1784,20 @@ def test_a_ledger_is_written_only_where_it_can_be_read_back_unchanged(
     records = (first, second, _wire_prediction())
     ml.write_ledger(path, records)
     assert ml.load_ledger(path) == records
+    committed = Path(path).read_bytes()
 
     with pytest.raises(ml.MutationLedgerError):
         ml.write_ledger("docs/other.jsonl", records)
+    assert not Path("docs/other.jsonl").exists(), (
+        "a path the body role cannot create was refused and written anyway")
+
     with pytest.raises(ml.MutationLedgerError):
         ml.write_ledger(path, (first, _wire_entry(observed_on="2026-08-19")))
+    assert Path(path).read_bytes() == committed, (
+        "the invalid records were committed over a valid ledger before the "
+        "refusal; the exception says nothing was written and the file says "
+        "otherwise")
+    assert ml.load_ledger(path) == records
 
     # A blank line is not a record; a damaged one is not a missing one.
     Path(path).write_text(
@@ -1634,6 +1830,14 @@ def test_a_citation_to_evidence_that_is_gone_is_reported_and_exits_non_zero(
     :class:`Status`, so that predicate is not computable from a ledger file
     and W2-3-4 owns what replaces it. Sealing it to a guess would fix the
     wrong answer in place.
+
+    ``main(("citations",))`` reads the tree from the process CWD. The
+    contract names three verbs and says nothing about where the tree comes
+    from, so something has to fix it and this row does — in the direction
+    that invents no argument. An optional path argument defaulting to the CWD
+    keeps this green; only a MANDATORY one reddens it, and a verb whose
+    helper takes ``repo_root`` should not require the caller to say twice
+    where they already are.
 
     The LEDGER FILES are not citations to themselves. A record naming its
     own ids is the evidence; a check that grepped them as citations would
