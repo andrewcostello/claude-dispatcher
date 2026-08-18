@@ -415,3 +415,60 @@ def test_a_configured_weight_is_carried_through_the_profile(tmp_path: Path) -> N
                  f"      config_dir: {tmp_path}\n      weight: 3\n")
     [acct] = ca.load_from_machine_profile(p)
     assert acct.weight == 3
+
+
+# --------------------------------------------------------------------------
+# Choosing which accounts a project may spend
+# --------------------------------------------------------------------------
+
+def _three(tmp_path: Path) -> list[ca.ClaudeAccount]:
+    return [_acct(n, tmp_path / n) for n in ("personal", "work", "side")]
+
+
+def test_a_run_can_be_restricted_to_named_accounts(tmp_path: Path) -> None:
+    """A machine holds every account the operator has; a given project may only
+    be entitled to some. Measured under: ignore the selection and this reddens.
+    """
+    got = ca.select(_three(tmp_path), ["personal", "side"])
+    assert [a.name for a in got] == ["personal", "side"]
+
+
+def test_no_selection_means_every_account(tmp_path: Path) -> None:
+    """None is "no restriction" — the default, and not the same as an empty
+    request."""
+    assert len(ca.select(_three(tmp_path), None)) == 3
+
+
+def test_an_unknown_account_name_raises(tmp_path: Path) -> None:
+    """The whole point of choosing is that some accounts are deliberately
+    EXCLUDED. A typo that fell back to "all of them" would run a personal
+    project on a work seat — the exact outcome the option exists to prevent.
+
+    Measured under: skip unknown names and this reddens.
+    """
+    with pytest.raises(ValueError, match="unknown claude account"):
+        ca.select(_three(tmp_path), ["personal", "typo"])
+
+
+def test_the_error_names_what_is_configured(tmp_path: Path) -> None:
+    """An operator who mistyped needs the valid names, not just a refusal."""
+    with pytest.raises(ValueError, match="work"):
+        ca.select(_three(tmp_path), ["nope"])
+
+
+def test_an_empty_selection_raises_rather_than_meaning_all(tmp_path: Path) -> None:
+    """`--claude-accounts ""` is a request the pool cannot honour. Treating it as
+    "every account" would spend accounts the operator just tried to exclude.
+    """
+    with pytest.raises(ValueError, match="empty"):
+        ca.select(_three(tmp_path), [])
+    with pytest.raises(ValueError):
+        ca.select(_three(tmp_path), ["  "])
+
+
+def test_selection_keeps_the_order_given_and_drops_repeats(tmp_path: Path) -> None:
+    """Order is the operator's stated preference. A repeat must not double the
+    account's share of the rotation — weighting is how a share is expressed.
+    """
+    got = ca.select(_three(tmp_path), ["side", "personal", "side"])
+    assert [a.name for a in got] == ["side", "personal"]

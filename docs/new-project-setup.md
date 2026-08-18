@@ -340,6 +340,16 @@ send a third of the work to a quarter of the headroom, and a 429 does not merely
 cost a retry, it discards the spawn's work. Override the derived share with an
 explicit `weight:` on an entry when you know something the tier does not say.
 
+**Choosing which accounts a project may spend.** The profile is machine-wide, so
+it holds every account you have. Restrict a run to some of them by name:
+
+    dispatcher run features/<epic>/tasks.yaml --claude-accounts personal,side
+
+Omit the option to use them all. An unknown name is a hard error naming the
+configured accounts — never a silent fallback to "all of them", because a typo
+that fell back would run a personal project on a work seat, which is exactly
+what the option exists to prevent.
+
 Do not list the same subscription twice. A second config dir logged into the
 same account draws it twice and defeats the weighting; `claude auth status`
 against each dir shows which account it actually holds.

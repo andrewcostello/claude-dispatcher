@@ -5679,6 +5679,11 @@ def _build_account_pool(args) -> Any:
     path = (Path(override) if override
             else doctor_mod.default_config_dir() / "machine.yaml")
     accounts = ca_mod.load_from_machine_profile(path)
+    # Per-RUN selection: a machine holds every account the operator has, and a
+    # given project may only be entitled to some of them.
+    chosen = getattr(args, "claude_accounts", None)
+    if chosen:
+        accounts = ca_mod.select(accounts, chosen)
     return ca_mod.AccountPool(accounts)
 
 

@@ -322,3 +322,51 @@ def test_the_accounts_file_flag_reaches_the_pool(tmp_path: Path) -> None:
     assert args.claude_accounts_file == str(profile)
     pool = orch._build_account_pool(args)
     assert pool.names == ["alt"]
+
+
+def test_the_selection_flag_restricts_the_pool(tmp_path: Path) -> None:
+    """End to end: the flag parses, the profile loads, and the pool holds only
+    the named accounts.
+
+    Measured under: drop the `select` call from `_build_account_pool` and this
+    reddens — the run would spend every account on the machine.
+    """
+    from claude_dispatcher.cli import build_parser
+
+    for n in ("personal", "work"):
+        (tmp_path / n).mkdir()
+    profile = tmp_path / "machine.yaml"
+    profile.write_text(
+        "manual:\n  claude_accounts:\n"
+        f"    - name: personal\n      config_dir: {tmp_path}/personal\n"
+        f"    - name: work\n      config_dir: {tmp_path}/work\n")
+
+    args = build_parser().parse_args(
+        ["run", str(tmp_path / "tasks.yaml"),
+         "--claude-accounts-file", str(profile),
+         "--claude-accounts", "personal"])
+    assert orch._build_account_pool(args).names == ["personal"]
+
+    all_args = build_parser().parse_args(
+        ["run", str(tmp_path / "tasks.yaml"),
+         "--claude-accounts-file", str(profile)])
+    assert orch._build_account_pool(all_args).names == ["personal", "work"]
+
+
+def test_an_unknown_selected_account_stops_the_run(tmp_path: Path) -> None:
+    """Fatal at config time, before any spend. Measured under: swallow the
+    ValueError and the run proceeds on accounts the operator did not choose.
+    """
+    from claude_dispatcher.cli import build_parser
+
+    (tmp_path / "personal").mkdir()
+    profile = tmp_path / "machine.yaml"
+    profile.write_text(
+        "manual:\n  claude_accounts:\n"
+        f"    - name: personal\n      config_dir: {tmp_path}/personal\n")
+    args = build_parser().parse_args(
+        ["run", str(tmp_path / "tasks.yaml"),
+         "--claude-accounts-file", str(profile),
+         "--claude-accounts", "personl"])
+    with pytest.raises(ValueError, match="unknown claude account"):
+        orch._build_account_pool(args)

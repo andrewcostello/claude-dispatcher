@@ -121,6 +121,41 @@ def _with(h: AccountHealth, *, detail: str) -> AccountHealth:
                          detail=detail)
 
 
+def select(accounts: Sequence[ClaudeAccount], names: Iterable[str] | None
+           ) -> list[ClaudeAccount]:
+    """The subset named by `names`, in the ORDER GIVEN, or all of them for None.
+
+    A name that matches nothing raises. The whole point of choosing accounts per
+    project is that some are deliberately excluded — a typo that silently fell
+    back to "all of them" would run a personal project on a work seat, which is
+    the exact outcome the flag exists to prevent.
+
+    An EMPTY selection also raises, and is not the same as None: `--claude-accounts ""`
+    is a request the pool cannot honour, whereas passing nothing means "no
+    restriction".
+    """
+    if names is None:
+        return list(accounts)
+    wanted = [n.strip() for n in names if str(n).strip()]
+    if not wanted:
+        raise ValueError(
+            "claude account selection is empty; omit the option to use every "
+            "configured account")
+    by_name = {a.name: a for a in accounts}
+    missing = [n for n in wanted if n not in by_name]
+    if missing:
+        raise ValueError(
+            f"unknown claude account(s): {', '.join(missing)}. "
+            f"Configured: {', '.join(by_name) or '(none)'}")
+    seen: set[str] = set()
+    out: list[ClaudeAccount] = []
+    for n in wanted:
+        if n not in seen:
+            seen.add(n)
+            out.append(by_name[n])
+    return out
+
+
 def weight_for(account: ClaudeAccount, health: AccountHealth | None = None) -> int | None:
     """This account's share of the rotation, or None when it cannot be derived.
 

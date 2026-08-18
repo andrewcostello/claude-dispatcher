@@ -245,6 +245,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument(
+        "--claude-accounts",
+        default=None,
+        type=lambda v: [p for p in v.split(",")],
+        help=(
+            "Comma-separated names of the configured Claude accounts THIS run "
+            "may spend, e.g. `--claude-accounts personal,side-project`. Default: "
+            "every account in the profile. An unknown name is an error, never a "
+            "silent fallback to all of them."
+        ),
+    )
+    run.add_argument(
         "--claude-accounts-file",
         default=None,
         help=(
