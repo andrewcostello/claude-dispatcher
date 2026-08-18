@@ -37,6 +37,7 @@ from . import classification
 from . import cross_family_reviewer as cfr_mod
 from . import disposition as disposition_mod
 from . import journal as journal_mod
+from . import findings_store as findings_store_mod
 from . import known_red as known_red_mod
 from . import loop_gate as loop_gate_mod
 from . import mechanical_verify as mv_mod
@@ -1372,6 +1373,17 @@ def _run_task(
         final_blocked_reason = None
 
         desc = snap.description or ""
+        # D-56: a task inherits the recorded findings of the tasks it names in
+        # `blockedBy`. Narrow on purpose — injecting every finding in the run
+        # would bloat prompts on units where they are irrelevant.
+        inherited = findings_store_mod.render_for_prompt(
+            cfg.runs_dir, snap.blocked_by or [],
+        )
+        if inherited:
+            desc = f"{desc}{inherited}"
+            _log(log_path,
+                 f"  {snap.key} inherited panel findings from "
+                 f"{', '.join(snap.blocked_by or [])}")
         if snap.design_spec:
             desc = (
                 f"{desc}\n\n### Approved Design Spec\n\n"
@@ -1823,6 +1835,9 @@ def _run_task(
                             _panel_verdict_payload(panel_verdict),
                             task_key=snap.key)
                 _emit_advisory_finding_events(cfg, panel_verdict, snap.key)
+                # D-56: the journal already had these, and the next author could
+                # not read them. Persist per task so a dependent inherits them.
+                _record_panel_findings(cfg, snap.key, panel_verdict, log_path)
                 _emit_authoritative_finding_events(cfg, panel_verdict, snap.key)
                 if panel_verdict.is_approve or iterations_remaining <= 0:
                     break
@@ -4931,6 +4946,37 @@ def _check_declared_holes(
     if report.passed:
         return None
     return f"declared_holes_{phase}: {report.detail()}"
+
+
+def _record_panel_findings(
+    cfg: RunConfig,
+    task_key: str,
+    panel: cfr_mod.PanelVerdict | None,
+    log_path: Path,
+) -> None:
+    """Persist this task's panel findings for its dependents (D-56).
+
+    Never raises: a failure to record context must not fail a task that has
+    already been reviewed.
+    """
+    if panel is None:
+        return
+    try:
+        items = []
+        for f in list(getattr(panel, "findings", []) or []):
+            items.append(findings_store_mod.Finding(
+                family=str(getattr(f, "family", "") or "?"),
+                severity=str(getattr(f, "severity", "") or "?"),
+                location=str(getattr(f, "location", "") or ""),
+                description=str(getattr(f, "description", "") or ""),
+            ))
+        written = findings_store_mod.record(cfg.runs_dir, task_key, items)
+        if written:
+            _log(log_path,
+                 f"  {task_key} recorded {len(items)} panel finding(s) for "
+                 f"dependents at {written}")
+    except Exception as exc:  # noqa: BLE001 - context, never a gate
+        _log(log_path, f"  {task_key} findings not recorded: {exc}")
 
 
 def _known_red_exclusions(

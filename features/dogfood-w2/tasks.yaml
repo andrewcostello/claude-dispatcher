@@ -167,38 +167,42 @@ tasks:
         - src/claude_dispatcher/prompt_provenance.py::integrity_of
         - src/claude_dispatcher/prompt_provenance.py::publish_pin_from_genesis
     status: Blocked
-    cost_usd: 25.85720299999999
-    completed_at: '2026-08-17T22:27:08-07:00'
+    cost_usd: 41.950795499999984
+    completed_at: '2026-08-18T00:02:05-07:00'
     iteration_count: 0
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
-    mechanical_verification: passed
-    role_diff_loop: checked_clean
-    role_diff_loop_detail: "4 changed path(s) checked against the deny_globs rule for 'scaffold' and against the 17-glob floor; signatures: not_applicable"
-    verified: true
-    verification_iterations: 0
     panel_consensus: block
-    panel_summary: consensus=block | claude=CHANGES_REQUESTED, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=6 (0C/6H)
-    panel_blocking_findings: 6
+    panel_summary: consensus=block | claude=CHANGES_REQUESTED, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=4 (0C/4H)
+    panel_blocking_findings: 4
     panel_verdict_claude: CHANGES_REQUESTED
     panel_verdict_gemini: UNAVAILABLE
     panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
     panel_verdict_codex: CHANGES_REQUESTED
-    panel_verdict_grok: CHANGES_REQUESTED
-    input_tokens: 278
-    output_tokens: 99014
-    cache_read_input_tokens: 22260915
-    cache_creation_input_tokens: 216505
-    duration_ms: 1644337
-    num_turns: 139
+    panel_verdict_grok: APPROVE
+    input_tokens: 102
+    output_tokens: 73049
+    cache_read_input_tokens: 5973621
+    cache_creation_input_tokens: 154630
+    duration_ms: 1944214
+    num_turns: 60
     model: claude-opus-5[1m]
     dispatcher_version: 0.1.0
     agent_version: 2.1.234 (Claude Code)
-    started_at: '2026-08-17T22:27:08-07:00'
-    dispatcher_run_id: 2026-08-18T05-27-08Z-tasks
-    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-18T05-27-08Z-tasks/W2-1-1/summary.md
-    blocked_reason: 'worktree_create_failed: git worktree add failed for W2-1-1 at /home/andrew/Project/worktree-W2-1-1'
+    started_at: '2026-08-17T22:35:37-07:00'
+    dispatcher_run_id: 2026-08-18T05-35-37Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-18T05-35-37Z-tasks/W2-1-1/summary.md
+    unblocked_at: '2026-08-18T05:35:29+00:00'
+    branch: feat/W2-1-1-scaffold-the-instructions-the-reviewer
+    gate_base_sha: d592cec9b6cd53ff25195c1b2cce1421dcca0d0a
+    effort: high
+    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=4 (0C/4H)'
+    mechanical_verification: passed
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "4 changed path(s) checked against the deny_globs rule for 'scaffold' and against the 20-glob floor; signatures: not_applicable"
+    verified: true
+    verification_iterations: 1
   - key: W2-1-2
     summary: seals — a role that writes the reviewer's instructions is refused
     description: |
@@ -401,38 +405,42 @@ tasks:
         - src/claude_dispatcher/branch_surface.py::build_surface
         - src/claude_dispatcher/branch_surface.py::compare_surfaces
     status: Blocked
-    cost_usd: 12.536101499999997
-    completed_at: '2026-08-17T22:27:09-07:00'
+    cost_usd: 38.251248
+    completed_at: '2026-08-18T00:54:58-07:00'
     iteration_count: 0
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
-    mechanical_verification: passed
-    role_diff_loop: checked_clean
-    role_diff_loop_detail: "1 changed path(s) checked against the deny_globs rule for 'scaffold' and against the 17-glob floor; signatures: not_applicable"
-    verified: true
-    verification_iterations: 0
     panel_consensus: block
-    panel_summary: consensus=block | claude=CHANGES_REQUESTED, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=8 (0C/8H)
-    panel_blocking_findings: 8
+    panel_summary: consensus=block | claude=CHANGES_REQUESTED, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=4 (0C/4H)
+    panel_blocking_findings: 4
     panel_verdict_claude: CHANGES_REQUESTED
     panel_verdict_gemini: UNAVAILABLE
     panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
     panel_verdict_codex: CHANGES_REQUESTED
     panel_verdict_grok: CHANGES_REQUESTED
-    input_tokens: 86
-    output_tokens: 79790
-    cache_read_input_tokens: 4841444
-    cache_creation_input_tokens: 156495
-    duration_ms: 1501072
-    num_turns: 49
+    input_tokens: 116
+    output_tokens: 63487
+    cache_read_input_tokens: 6306607
+    cache_creation_input_tokens: 149974
+    duration_ms: 1746461
+    num_turns: 61
     model: claude-opus-5[1m]
     dispatcher_version: 0.1.0
     agent_version: 2.1.234 (Claude Code)
-    started_at: '2026-08-17T22:27:08-07:00'
-    dispatcher_run_id: 2026-08-18T05-27-08Z-tasks
-    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-18T05-27-08Z-tasks/W2-2-1/summary.md
-    blocked_reason: 'worktree_create_failed: git worktree add failed for W2-2-1 at /home/andrew/Project/worktree-W2-2-1'
+    started_at: '2026-08-17T22:35:37-07:00'
+    dispatcher_run_id: 2026-08-18T05-35-37Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-18T05-35-37Z-tasks/W2-2-1/summary.md
+    unblocked_at: '2026-08-18T05:35:29+00:00'
+    branch: feat/W2-2-1-scaffold-a-sealed-interface-widened
+    gate_base_sha: d592cec9b6cd53ff25195c1b2cce1421dcca0d0a
+    effort: high
+    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=4 (0C/4H)'
+    mechanical_verification: passed
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "2 changed path(s) checked against the deny_globs rule for 'scaffold' and against the 20-glob floor; signatures: not_applicable"
+    verified: true
+    verification_iterations: 1
   - key: W2-2-2
     summary: seals — the widening is caught wherever in the diff it arrives
     description: |
@@ -732,14 +740,42 @@ tasks:
         - src/claude_dispatcher/mutation_ledger.py::fold
         - src/claude_dispatcher/mutation_ledger.py::proposed_fate
     status: Blocked
-    cost_usd: 7.198542999999998
-    completed_at: '2026-08-17T22:27:08-07:00'
+    cost_usd: 24.7068935
+    completed_at: '2026-08-18T01:11:08-07:00'
     dispatcher_version: 0.1.0
     agent_version: 2.1.234 (Claude Code)
-    started_at: '2026-08-17T22:27:08-07:00'
-    dispatcher_run_id: 2026-08-18T05-27-08Z-tasks
-    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-18T05-27-08Z-tasks/W2-3-1/summary.md
-    blocked_reason: 'worktree_create_failed: git worktree add failed for W2-3-1 at /home/andrew/Project/worktree-W2-3-1'
+    started_at: '2026-08-18T00:02:06-07:00'
+    dispatcher_run_id: 2026-08-18T05-35-37Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-18T05-35-37Z-tasks/W2-3-1/summary.md
+    unblocked_at: '2026-08-18T05:35:29+00:00'
+    branch: feat/W2-3-1-scaffold-a-mutation-coverage-claim
+    gate_base_sha: d592cec9b6cd53ff25195c1b2cce1421dcca0d0a
+    effort: high
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=7 (0C/7H)'
+    mechanical_verification: passed
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "2 changed path(s) checked against the deny_globs rule for 'scaffold' and against the 20-glob floor; signatures: not_applicable"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: block
+    panel_summary: consensus=block | claude=CHANGES_REQUESTED, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=7 (0C/7H)
+    panel_blocking_findings: 7
+    panel_verdict_claude: CHANGES_REQUESTED
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: CHANGES_REQUESTED
+    input_tokens: 158
+    output_tokens: 65839
+    cache_read_input_tokens: 10026314
+    cache_creation_input_tokens: 171185
+    duration_ms: 1595032
+    num_turns: 80
+    model: claude-opus-5[1m]
   - key: W2-3-2
     summary: seals — a ledger entry that no longer reproduces is red
     description: |
