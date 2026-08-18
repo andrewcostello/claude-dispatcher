@@ -325,12 +325,24 @@ repo — and `.dispatcher.yaml` is committed and on the floor:
         - name: work
           config_dir: ~/.claude-work
 
-`dispatcher doctor` then reports each one's subscription, tier and whether the
-login is still good — no API call, nothing sensitive printed:
+`dispatcher doctor` then reports each one's subscription, tier, share of the
+run, and whether the login is still good — no API call, nothing sensitive
+printed:
 
     claude accounts:
-      personal     ✓ max (default_claude_max_20x)
-      work         ✗ no credentials at /home/u/.claude-work/.credentials.json
+      dev.ep.ac    ✓ max (default_claude_max_20x)   44% of spawns
+      aep-pers     ✓ max (default_claude_max_20x)   44% of spawns
+      aep-work     ✓ team (default_claude_max_5x)   11% of spawns
+
+**Accounts are not equal, and rotation is weighted by tier.** A `5x` seat beside
+two `20x` seats takes one spawn in nine, not one in three — even rotation would
+send a third of the work to a quarter of the headroom, and a 429 does not merely
+cost a retry, it discards the spawn's work. Override the derived share with an
+explicit `weight:` on an entry when you know something the tier does not say.
+
+Do not list the same subscription twice. A second config dir logged into the
+same account draws it twice and defeats the weighting; `claude auth status`
+against each dir shows which account it actually holds.
 
 What it changes:
 

@@ -292,14 +292,21 @@ def _print_accounts(profile_path: Path) -> None:
         return
     if not accounts:
         return
+    weights = ca_mod.resolve_weights(accounts)
+    total = sum(weights.values())
     print("claude accounts:")
-    for health in (ca_mod.probe(a) for a in accounts):
+    for account in accounts:
+        health = ca_mod.probe(account)
         if not health.logged_in:
             print(f"  {health.name:<12} ✗ {health.detail}")
             continue
         note = " EXPIRED - run /login" if health.expired else ""
         tier = health.tier or "tier unknown"
-        print(f"  {health.name:<12} ✓ {health.subscription or '?'} ({tier}){note}")
+        # The share is the operator-facing consequence of the tier: it says how
+        # much of the run this account will actually carry.
+        share = 100 * weights[account.name] / total if total else 0
+        print(f"  {health.name:<12} ✓ {health.subscription or '?'} ({tier})"
+              f"  {share:.0f}% of spawns{note}")
 
 
 def _missing_required(profile: dict[str, Any]) -> list[str]:

@@ -311,3 +311,107 @@ def test_probe_never_returns_a_token(tmp_path: Path) -> None:
     h = ca.probe(_acct("a", _creds(tmp_path / "a", accessToken="sk-SECRET-VALUE",
                                    refreshToken="rt-SECRET")))
     assert "SECRET" not in repr(h)
+
+
+# --------------------------------------------------------------------------
+# Weighting — accounts are not equal
+# --------------------------------------------------------------------------
+
+def test_draws_follow_the_rate_limit_tier(tmp_path: Path) -> None:
+    """Measured 2026-08-18 on the operator's machine: two Max seats at 20x and a
+    Team seat at 5x. Even rotation would send a third of all spawns to a quarter
+    of the headroom — and a 429 does not merely cost a retry, it discards the
+    spawn's work, which is $15-25.
+
+    Measured under: ignore weights and draw evenly, and this reddens.
+    """
+    big1 = _creds(tmp_path / "b1", rateLimitTier="default_claude_max_20x")
+    big2 = _creds(tmp_path / "b2", rateLimitTier="default_claude_max_20x")
+    small = _creds(tmp_path / "s", rateLimitTier="default_claude_max_5x")
+    pool = ca.AccountPool([_acct("b1", big1), _acct("b2", big2), _acct("s", small)])
+    drawn = [pool.next_account().name for _ in range(45)]
+    assert {n: drawn.count(n) for n in ("b1", "b2", "s")} == {"b1": 20, "b2": 20, "s": 5}
+
+
+def test_the_small_account_is_interleaved_not_blocked(tmp_path: Path) -> None:
+    """Smooth weighted round-robin, not a repeated ring. A ring gives
+    b1 b1 b1 b1 b2 b2 b2 b2 s — and a BLOCK of consecutive draws at one account
+    is exactly what a rate limit sees.
+
+    Measured under: build a ring by repeating each account `weight` times and
+    this reddens on the run-length assertion.
+    """
+    pool = ca.AccountPool([
+        _acct("b", _creds(tmp_path / "b", rateLimitTier="default_claude_max_20x")),
+        _acct("s", _creds(tmp_path / "s", rateLimitTier="default_claude_max_5x")),
+    ])
+    drawn = [pool.next_account().name for _ in range(25)]
+    longest = max(len(list(g)) for _, g in __import__("itertools").groupby(drawn))
+    assert longest <= 4, f"drawn in blocks of {longest}: {drawn}"
+    assert drawn.count("s") == 5
+
+
+def test_an_explicit_weight_overrides_the_tier(tmp_path: Path) -> None:
+    """An operator may know something the tier string does not — a seat shared
+    with other work, or one they want spared.
+    """
+    d = _creds(tmp_path / "a", rateLimitTier="default_claude_max_20x")
+    assert ca.weight_for(ca.ClaudeAccount("a", d, weight=1)) == 1
+    assert ca.weight_for(ca.ClaudeAccount("a", d)) == 20
+
+
+def test_an_unreadable_tier_takes_the_SMALLEST_known_weight(tmp_path: Path) -> None:
+    """Conservative on purpose: an account whose tier could not be read is never
+    sent more traffic than the most limited account the pool knows about.
+
+    Measured under: default an unknown to 1 and it is starved beside a 20x;
+    default it to the maximum and it is flooded. Both reden this row.
+    """
+    known = _creds(tmp_path / "k", rateLimitTier="default_claude_max_20x")
+    small = _creds(tmp_path / "s", rateLimitTier="default_claude_max_5x")
+    (tmp_path / "unknown").mkdir()
+    weights = ca.resolve_weights([
+        _acct("k", known), _acct("s", small), _acct("u", tmp_path / "unknown")])
+    assert weights == {"k": 20, "s": 5, "u": 5}
+
+
+def test_no_tiers_known_anywhere_is_plain_round_robin(tmp_path: Path) -> None:
+    """The behaviour before weighting existed, preserved for a pool the probe
+    cannot size at all.
+    """
+    for n in "ab":
+        (tmp_path / n).mkdir()
+    pool = ca.AccountPool([_acct("a", tmp_path / "a"), _acct("b", tmp_path / "b")])
+    assert [pool.next_account().name for _ in range(4)] == ["a", "b", "a", "b"]
+
+
+def test_weights_renormalize_when_an_account_is_cooling(tmp_path: Path) -> None:
+    """A quota rotation removes an account from the ratio, and the remaining
+    share must be split between the others — not left as a gap that hands draws
+    back to the exhausted one.
+    """
+    pool = ca.AccountPool([
+        _acct("b", _creds(tmp_path / "b", rateLimitTier="default_claude_max_20x")),
+        _acct("s", _creds(tmp_path / "s", rateLimitTier="default_claude_max_5x")),
+    ])
+    pool.penalize("b")
+    assert {pool.next_account().name for _ in range(6)} == {"s"}
+
+
+@pytest.mark.parametrize("bad", [0, -1, "many"])
+def test_an_unusable_weight_raises(tmp_path: Path, bad) -> None:
+    """A weight of 0 removes the account from the pool without saying so, and a
+    non-integer is a typo. Both are operator errors about which subscription
+    gets billed.
+    """
+    with pytest.raises(ValueError):
+        ca.load_accounts([{"name": "a", "config_dir": str(tmp_path),
+                           "weight": bad}])
+
+
+def test_a_configured_weight_is_carried_through_the_profile(tmp_path: Path) -> None:
+    p = tmp_path / "machine.yaml"
+    p.write_text(f"manual:\n  claude_accounts:\n    - name: a\n"
+                 f"      config_dir: {tmp_path}\n      weight: 3\n")
+    [acct] = ca.load_from_machine_profile(p)
+    assert acct.weight == 3

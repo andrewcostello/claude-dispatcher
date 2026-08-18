@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -40,12 +41,25 @@ DEFAULT_COOLDOWN_SECONDS = 15 * 60
 CONFIG_DIR_ENV = "CLAUDE_CONFIG_DIR"
 
 
+#: Parsed out of `rateLimitTier` (e.g. "default_claude_max_20x" -> 20). Accounts
+#: are not equal: measured 2026-08-18 on this machine, two Max seats at 20x
+#: alongside a Team seat at 5x. Even rotation would send a third of all spawns to
+#: a quarter of the headroom, and a 429 does not merely cost a retry — it
+#: discards the spawn's work.
+_TIER_MULTIPLIER = re.compile(r"(\d+)x\b")
+
+
 @dataclass(frozen=True)
 class ClaudeAccount:
-    """One subscription: a label for the ledger and the config dir that is it."""
+    """One subscription: a label for the ledger and the config dir that is it.
+
+    ``weight`` is how many draws this account takes relative to the others. None
+    means "derive it from the tier the credentials report".
+    """
 
     name: str
     config_dir: Path
+    weight: int | None = None
 
     @property
     def credentials_path(self) -> Path:
@@ -107,6 +121,37 @@ def _with(h: AccountHealth, *, detail: str) -> AccountHealth:
                          detail=detail)
 
 
+def weight_for(account: ClaudeAccount, health: AccountHealth | None = None) -> int | None:
+    """This account's share of the rotation, or None when it cannot be derived.
+
+    An explicit `weight:` always wins — an operator may know something the tier
+    string does not say. Otherwise it is the multiplier in `rateLimitTier`
+    ("default_claude_max_20x" -> 20).
+    """
+    if account.weight is not None:
+        return account.weight
+    h = health if health is not None else probe(account)
+    if not h.logged_in or not h.tier:
+        return None
+    m = _TIER_MULTIPLIER.search(h.tier)
+    return int(m.group(1)) if m else None
+
+
+def resolve_weights(accounts: Sequence[ClaudeAccount]) -> dict[str, int]:
+    """Every account's weight, with unknowns filled in conservatively.
+
+    An unknown weight takes the SMALLEST known one, so an account whose tier
+    could not be read is never sent more traffic than the most limited account
+    the pool knows about. Defaulting it to 1 beside a 20x would starve it; to a
+    20x would flood it. With nothing known anywhere, every account gets 1, which
+    is plain round-robin — the behaviour before weighting existed.
+    """
+    derived = {a.name: weight_for(a) for a in accounts}
+    known = [w for w in derived.values() if w]
+    floor = min(known) if known else 1
+    return {name: (w if w else floor) for name, w in derived.items()}
+
+
 class AccountPool:
     """Round-robin over the configured accounts, skipping any that are cooling.
 
@@ -128,8 +173,11 @@ class AccountPool:
         self._accounts = list(accounts)
         self._cooldown = cooldown_seconds
         self._cooling: dict[str, float] = {}
-        self._cursor = 0
         self._lock = threading.Lock()
+        # Resolved ONCE: deriving a weight reads the credentials file, and doing
+        # that per draw would put file I/O on every spawn.
+        self._weights = resolve_weights(self._accounts)
+        self._credit = {a.name: 0 for a in self._accounts}
 
     def __len__(self) -> int:
         return len(self._accounts)
@@ -147,18 +195,23 @@ class AccountPool:
         quota classifier already implements.
         """
         with self._lock:
-            if not self._accounts:
-                return None
             now = time.monotonic()
-            n = len(self._accounts)
-            for offset in range(n):
-                acct = self._accounts[(self._cursor + offset) % n]
-                until = self._cooling.get(acct.name)
-                if until is not None and until > now:
-                    continue
-                self._cursor = (self._cursor + offset + 1) % n
-                return acct
-            return None
+            available = [
+                a for a in self._accounts
+                if not ((u := self._cooling.get(a.name)) is not None and u > now)
+            ]
+            if not available:
+                return None
+            # Smooth weighted round-robin. Each draw credits every candidate its
+            # weight, takes the richest, and charges it the total. A 20x and a 5x
+            # come out 4:1 INTERLEAVED rather than in blocks, which matters
+            # because a block of draws at one account is what a rate limit sees.
+            total = sum(self._weights[a.name] for a in available)
+            for a in available:
+                self._credit[a.name] += self._weights[a.name]
+            best = max(available, key=lambda a: self._credit[a.name])
+            self._credit[best.name] -= total
+            return best
 
     def penalize(self, name: str, *, seconds: float | None = None) -> None:
         """Sit `name` out. Called when a spawn reports quota exhaustion, so the
@@ -206,9 +259,24 @@ def load_accounts(rows: Iterable[object] | None) -> list[ClaudeAccount]:
         if name in seen:
             raise ValueError(f"duplicate claude_accounts name {name!r}")
         seen.add(name)
+        raw_weight = row.get("weight")
+        if raw_weight is not None:
+            try:
+                weight = int(raw_weight)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"claude_accounts weight for {name!r} must be an integer, "
+                    f"got {raw_weight!r}") from None
+            if weight < 1:
+                raise ValueError(
+                    f"claude_accounts weight for {name!r} must be >= 1; a weight "
+                    f"of {weight} would silently remove the account from the pool")
+        else:
+            weight = None
         out.append(ClaudeAccount(
             name=name,
             config_dir=Path(os.path.expanduser(raw_dir)).resolve(),
+            weight=weight,
         ))
     return out
 
