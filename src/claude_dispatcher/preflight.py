@@ -225,6 +225,7 @@ def run_preflight(
         checks["fleet_binaries"] = fleet_bins
 
     _check_dispatcher_staleness(repo_root, warnings, checks)
+    _check_base_branch_sync(repo_root, base_branch, warnings, checks)
     _check_role_file(
         repo_root, base_branch, role_file, failures, warnings, checks,
         worktree_base=worktree_base,
@@ -407,6 +408,124 @@ def _check_dispatcher_staleness(
             f"may be a stale pipx snapshot; reinstall, e.g. "
             f"`pipx install --force .`"
         )
+
+
+#: The remote read is bounded harder than the local ones: it is the only check
+#: here that touches the network, and a hung `ls-remote` must not stall a run.
+LS_REMOTE_TIMEOUT_SECONDS = 15
+
+
+def _git(repo_root: Path, *args: str, timeout: int = GIT_TIMEOUT_SECONDS):
+    return subprocess.run(
+        ["git", "-C", str(repo_root), *args],
+        capture_output=True, text=True, check=False, timeout=timeout,
+    )
+
+
+def _check_base_branch_sync(
+    repo_root: Path,
+    base_branch: str,
+    warnings: list[str],
+    checks: dict[str, Any],
+) -> None:
+    """Warn (never fail) when the local base branch is not what the remote has.
+
+    THE TRAP THIS NAMES. Task worktrees fork from the LOCAL base ref, and the
+    verifier diffs against it. A local base behind its remote produces a diff
+    that is truncated rather than wrong — work the branch did not do appears as
+    work it undid — and the verifier returns INCOMPLETE for a task that was
+    complete. Measured 2026-08-16: a base 9 commits behind produced a 24k
+    truncated diff and a false INCOMPLETE.
+
+    Reads the remote directly with `ls-remote` rather than comparing against
+    `origin/<base>`, which is itself only as fresh as the last fetch — comparing
+    a stale local ref to a stale tracking ref reports "in sync" in exactly the
+    case this check exists for. It NEVER fetches: preflight must not mutate the
+    repository, and a network stall must not become a hung run.
+
+    A warning, not a failure, and deliberately: a branch with no remote is the
+    normal case for a local integration branch, and an offline run is allowed.
+    Every non-comparison degrades to a named, journaled skip.
+    """
+    entry: dict[str, Any] = {
+        "applicable": False, "base_branch": base_branch, "state": "unknown",
+    }
+    checks["base_branch_sync"] = entry
+
+    local = _git(repo_root, "rev-parse", "--verify", "--quiet", base_branch)
+    if local.returncode != 0:
+        entry["detail"] = f"{base_branch!r} does not resolve locally"
+        return
+    local_sha = local.stdout.strip()
+    entry["local_sha"] = local_sha
+
+    remote = _git(repo_root, "config", "--get", f"branch.{base_branch}.remote")
+    remote_name = remote.stdout.strip() or "origin"
+    if _git(repo_root, "remote", "get-url", remote_name).returncode != 0:
+        entry["detail"] = f"no remote {remote_name!r} configured"
+        return
+    entry["remote"] = remote_name
+
+    try:
+        ls = _git(repo_root, "ls-remote", "--heads", remote_name, base_branch,
+                  timeout=LS_REMOTE_TIMEOUT_SECONDS)
+    except Exception as exc:  # noqa: BLE001 - offline is a skip, not a verdict
+        entry["detail"] = f"could not read {remote_name}: {exc}"
+        return
+    if ls.returncode != 0:
+        entry["detail"] = f"ls-remote failed: {(ls.stderr or '').strip()[:200]}"
+        return
+    line = ls.stdout.strip().splitlines()
+    if not line:
+        entry["detail"] = f"{base_branch!r} does not exist on {remote_name}"
+        return
+    remote_sha = line[0].split()[0]
+    entry["remote_sha"] = remote_sha
+    entry["applicable"] = True
+
+    if remote_sha == local_sha:
+        entry["state"] = "in_sync"
+        return
+
+    # The remote commit may not be in this clone at all — that is the trap's own
+    # signature, and it is the one case an ancestry test cannot answer.
+    have = _git(repo_root, "cat-file", "-e", f"{remote_sha}^{{commit}}")
+    if have.returncode != 0:
+        entry["state"] = "behind_unfetched"
+        warnings.append(
+            f"base branch {base_branch!r} differs from {remote_name} and the "
+            f"remote commit ({remote_sha[:8]}) is not in this clone — every task "
+            f"will fork from a base the remote has moved past, and the verifier "
+            f"will diff against it. Run `git fetch {remote_name}` and fast-forward "
+            f"{base_branch!r} before dispatching."
+        )
+        return
+
+    behind = _git(repo_root, "rev-list", "--count", f"{local_sha}..{remote_sha}")
+    ahead = _git(repo_root, "rev-list", "--count", f"{remote_sha}..{local_sha}")
+    n_behind = int(behind.stdout.strip() or 0)
+    n_ahead = int(ahead.stdout.strip() or 0)
+    entry["behind"] = n_behind
+    entry["ahead"] = n_ahead
+
+    if n_behind and n_ahead:
+        entry["state"] = "diverged"
+        warnings.append(
+            f"base branch {base_branch!r} has diverged from {remote_name}: "
+            f"{n_ahead} ahead, {n_behind} behind. Tasks fork from the local ref."
+        )
+    elif n_behind:
+        entry["state"] = "behind"
+        warnings.append(
+            f"base branch {base_branch!r} is {n_behind} commit(s) behind "
+            f"{remote_name} — tasks fork from the local ref and the verifier "
+            f"diffs against it, so a stale base reads as work undone and can "
+            f"return a false INCOMPLETE. Fast-forward before dispatching."
+        )
+    else:
+        # Ahead only: local commits not yet pushed. The normal state of an
+        # integration branch, and nothing the verifier can misread.
+        entry["state"] = "ahead"
 
 
 # --- check 3: permission flags --------------------------------------------------
