@@ -24,6 +24,7 @@ this task's summary, for ``config/known-red.yaml``.
 from __future__ import annotations
 
 import ast
+import os
 import re
 import subprocess
 import tomllib
@@ -78,19 +79,39 @@ _REPO = Path(__file__).resolve().parent.parent
 # --------------------------------------------------------------------------- #
 
 
-def _git(repo: Path, *args: str) -> str:
-    """git, with the two ambient faults that are not this gate ruled out.
+#: The ambient git configuration these fixtures must not inherit. Both
+#: ``GIT_CONFIG_*`` variables pointed at the null device delete a developer's
+#: or a CI image's whole configuration from every ``_git`` call —
+#: ``core.hooksPath``, ``commit.template`` and ``commit.gpgsign`` alike — and an
+#: empty ``GIT_TEMPLATE_DIR`` stops ``git init`` copying a template's hooks in.
+#: Naming them one at a time left the rest in play, which is the same
+#: ambient-fault class over again.
+#:
+#: ``check_branch``'s own git calls still run under the caller's environment.
+#: They are reads — ``rev-parse``, ``diff``, ``show`` — which fire no hook and
+#: consult no commit template, so the fixture half is the whole exposure.
+_ISOLATED_GIT: dict[str, str] = {
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_SYSTEM": os.devnull,
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_TEMPLATE_DIR": "",
+    "GIT_TERMINAL_PROMPT": "0",
+}
 
-    ``commit.gpgsign=false`` because a developer or CI account with signing on
-    and no key fails every row here for a reason no reader would guess, and
-    ``timeout`` because a hung git must fail the row rather than the session.
+
+def _git(repo: Path, *args: str) -> str:
+    """git, with the ambient faults that are not this gate ruled out.
+
+    ``timeout`` because a hung git must fail the row rather than the session;
+    :data:`_ISOLATED_GIT` because a row here must fail for what it measures.
     """
     return subprocess.run(
-        ["git", "-C", str(repo), "-c", "commit.gpgsign=false", *args],
+        ["git", "-C", str(repo), *args],
         check=True,
         capture_output=True,
         text=True,
         timeout=120,
+        env={**os.environ, **_ISOLATED_GIT},
     ).stdout
 
 
@@ -576,13 +597,23 @@ def test_the_two_spellings_of_one_module_share_a_namespace() -> None:
 # --------------------------------------------------------------------------- #
 # 4. THE ALGEBRA. `build_surface` + `compare_surfaces`. RED until W2-2-3.
 #
-#    THE TABLE BELOW IS A TRANSCRIPTION, not a view of `SURFACE_BEHAVIOUR_ROWS`.
-#    Both the INPUTS and the EXPECTED VALUES are written out here, because the
-#    production table is W2-2-3's to edit: a table that supplies the fixtures
-#    AND the answers seals nothing — an implementation that gets the merge wrong
-#    can move `after` to match and every row stays green. The rows are driven
-#    from this literal, and `test_the_behaviour_table_matches_its_transcription`
-#    is the one place the two are compared.
+#    THE TABLE BELOW IS A FROZEN COPY of `SURFACE_BEHAVIOUR_ROWS`, and it was
+#    produced BY PRINTING that tuple rather than re-derived by hand. Saying so
+#    is the point: what a copy can and cannot seal follows from it.
+#
+#      * It CAN stop the answers moving. These rows, not the module's, are the
+#        input to every algebra row below, so W2-2-3 — who owns the module —
+#        cannot get the merge wrong and edit `after` to match. The two literals
+#        then disagree and `test_the_behaviour_table_matches_its_transcription`
+#        reddens with a reviewer instead of agreeing quietly on a weakened
+#        answer.
+#      * It CANNOT say those answers were right to begin with. A copy inherits
+#        an error in the scaffold's own expectations in silence.
+#
+#    So the copy is not the whole seal, and section 4b is the rest of it: four
+#    rows whose fixtures AND answers are derived here from the three clauses
+#    and from `merge_fingerprints`' stated properties, over shapes this table
+#    does not contain at all.
 #
 #    Shape, per row:
 #      (name, is_control, refused,
@@ -945,6 +976,206 @@ def _assert_refused_at_construction(
 
 
 # --------------------------------------------------------------------------- #
+# 4b. THE CLAUSES, DERIVED HERE. RED until W2-2-3.
+#
+#     Nothing below is drawn from the module: each fixture and each answer is
+#     written from `compare_surfaces`' three clauses and from
+#     `merge_fingerprints`' two stated properties, over a shape
+#     `SURFACE_BEHAVIOUR_ROWS` does not contain. An answer already wrong in the
+#     production table cannot green one of these, which is the one thing the
+#     frozen copy above cannot do for itself.
+# --------------------------------------------------------------------------- #
+
+
+def _module_surface(path: str, keys: dict[str, str]) -> FileSurface:
+    """A TypeScript file its caller KNOWS is a module, keys in writing order."""
+    return FileSurface(
+        path, Language.TYPESCRIPT, tuple(keys.items()), is_module=True
+    )
+
+
+#: The three files these rows move one contribution between, and the one key
+#: they all touch. `_AUG_KEY` is built by the real key builder because a
+#: specifier needs an escape no row should hand-spell; the FINGERPRINTS are
+#: single letters so the merged value can be read at a glance.
+_A_TS = "web/src/a.ts"
+_B_TS = "web/src/b.ts"
+_C_TS = "web/src/c.ts"
+_I_BET = ts_symbol_key((("i", "Bet"),))
+_AUG_A_BET = ts_symbol_key((("s", "./a"), ("i", "Bet")))
+_A_SPACE = f"{ts_namespace_of(_A_TS).label}::{_I_BET}"
+
+
+def test_a_second_files_contribution_merges_rather_than_replacing() -> None:
+    """All three clauses at once, and the MERGE asserted whole.
+    **RED at HEAD: both functions are holes.** Green at W2-2-3.
+
+    ``a.ts`` seals ``i:Bet`` and does not move; the branch adds ``b.ts``
+    augmenting ``./a``. Clause 1 holds (the key exists at base), clause 2 holds
+    (``b.ts`` contributed nothing to it at base), clause 3 holds (the merged
+    fingerprint differs).
+
+    ``after`` is derived, not copied: :func:`merge_fingerprints` orders
+    contributions by PATH and joins them with ``" + "``, so ``A + B`` and never
+    ``B + A``. It must not be ``B`` alone — a widening reported as a
+    REPLACEMENT means the merge dropped the sealed declaration, and a pure move
+    would then differ from its base too and clause 3 would fire on it (which is
+    the next row).
+    """
+    base = build_surface(
+        (_module_surface(_A_TS, {_I_BET: "A"}),), attempted={_A_TS}
+    )
+    head = build_surface(
+        (
+            _module_surface(_A_TS, {_I_BET: "A"}),
+            _module_surface(_B_TS, {_AUG_A_BET: "B"}),
+        ),
+        attempted={_A_TS, _B_TS},
+    )
+
+    got = compare_surfaces(base, head)
+
+    assert not got.unread, f"nothing here is unreadable: {got.unread}"
+    assert len(got.changes) == 1, [change.key.label for change in got.changes]
+    change = got.changes[0]
+    assert change.key.label == _A_SPACE, (
+        f"the widening is keyed {change.key.label!r}, not {_A_SPACE!r}; a key "
+        "in b.ts's own space means the augmentation was never routed to the "
+        "module it augments"
+    )
+    assert (change.before, change.after) == ("A", "A + B"), (
+        f"{(change.before, change.after)} is not the sealed contribution "
+        "followed by the merge of both, ordered by path"
+    )
+    assert change.introduced_by == (_B_TS,), change.introduced_by
+
+
+def test_a_contribution_that_only_moved_files_is_not_a_widening() -> None:
+    """CLAUSE 3 alone, and it is the clause a merge-then-diff loses.
+    **RED at HEAD.** Green at W2-2-3.
+
+    The same augmentation of ``./a``, byte-identical, moves from ``b.ts`` to
+    ``c.ts``. Clause 2 holds — ``c.ts`` is a new contributor — so an
+    implementation missing clause 3 reports a widening. There is none:
+    :func:`merge_fingerprints` keeps the path OUT of the merged text, so both
+    revisions merge to ``A + B`` and nothing about ``Bet`` changed. The
+    per-file loop still reports the removal from ``b.ts``, which is where a
+    move is answered and W2-2-4's to rule.
+    """
+    base = build_surface(
+        (
+            _module_surface(_A_TS, {_I_BET: "A"}),
+            _module_surface(_B_TS, {_AUG_A_BET: "B"}),
+        ),
+        attempted={_A_TS, _B_TS},
+    )
+    head = build_surface(
+        (
+            _module_surface(_A_TS, {_I_BET: "A"}),
+            _module_surface(_C_TS, {_AUG_A_BET: "B"}),
+        ),
+        attempted={_A_TS, _C_TS},
+    )
+
+    got = compare_surfaces(base, head)
+
+    assert got.changes == (), (
+        "a contribution that only changed files was reported as a widening: "
+        f"{[(c.key.label, c.before, c.after) for c in got.changes]}. The "
+        "merged fingerprint carries no path, so both revisions merge to the "
+        "same value"
+    )
+    assert got.clean, got.unread
+
+
+def test_a_contribution_that_was_only_removed_is_not_a_widening() -> None:
+    """CLAUSE 2 alone, in the direction that fails it.
+    **RED at HEAD.** Green at W2-2-3.
+
+    ``b.ts``'s augmentation is DELETED. The merged fingerprint changes
+    (``A + B`` to ``A``), so clause 3 holds and clause 1 holds — an
+    implementation that diffs merged fingerprints and calls the difference a
+    widening reports one here, against a branch that removed code.
+
+    ``b.ts`` stays in ``attempted`` at head and is absent from the tree, which
+    is the second half of the row: a path attempted and absent has nothing to
+    preserve and leaves NOTHING unread. Reading it as unread would make every
+    deletion UNDETERMINED.
+    """
+    base = build_surface(
+        (
+            _module_surface(_A_TS, {_I_BET: "A"}),
+            _module_surface(_B_TS, {_AUG_A_BET: "B"}),
+        ),
+        attempted={_A_TS, _B_TS},
+    )
+    head = build_surface(
+        (_module_surface(_A_TS, {_I_BET: "A"}),), attempted={_A_TS, _B_TS}
+    )
+
+    got = compare_surfaces(base, head)
+
+    assert got.changes == (), (
+        "a removed contribution was reported as a widening: "
+        f"{[(c.key.label, c.before, c.after) for c in got.changes]}. Clause 2 "
+        "asks for a NEW contributor and a deletion has none"
+    )
+    assert got.unread == (), (
+        f"a path attempted and absent left a space unread: {got.unread}"
+    )
+
+
+def test_a_specifier_resolves_when_its_other_candidates_were_never_there() -> None:
+    """The seam BOTH inherited HIGH findings name. **RED at HEAD.**
+
+    ``build_surface``'s routing rule says an ``s:<specifier>`` key resolves
+    when "exactly one of ``specifier_candidates`` present resolves", and the
+    only set it names is ``attempted``. But ``_fold`` puts EVERY closure
+    candidate into ``attempted`` — all six spellings of ``./a``, whether or not
+    the tree has them — so read as "present in ``attempted``" every real
+    closure is six-way ambiguous and the flagship case can never be anything
+    but UNDETERMINED.
+
+    This row is the behaviour, and the behaviour is what a seal pins: all six
+    candidates attempted, exactly ONE of them supplied as a file, and the
+    answer is the widening. The scaffold's sentence is what has to give —
+    "present" is a file that came back at that revision, not a path someone
+    reached for. That is a contract repair for W2-2-3, and it is flagged in
+    this task's summary rather than made here.
+    """
+    candidates = specifier_candidates(_B_TS, "./a")
+    assert _A_TS in candidates, (
+        f"{_A_TS} is no longer a candidate for './a' written in {_B_TS}: "
+        f"{candidates}; this row would measure nothing"
+    )
+    attempted = {*candidates, _A_TS, _B_TS}
+    assert len(attempted) > 2, "the six candidates collapsed to the one file"
+
+    base = build_surface(
+        (_module_surface(_A_TS, {_I_BET: "A"}),), attempted=attempted
+    )
+    head = build_surface(
+        (
+            _module_surface(_A_TS, {_I_BET: "A"}),
+            _module_surface(_B_TS, {_AUG_A_BET: "B"}),
+        ),
+        attempted=attempted,
+    )
+
+    got = compare_surfaces(base, head)
+
+    assert not got.unread, (
+        "the augmented module read as unresolved with five of its six "
+        f"candidates merely attempted and absent: {got.unread}. A closure that "
+        "tries every spelling would then make every resolution ambiguous"
+    )
+    assert [
+        (change.key.label, change.before, change.after, change.introduced_by)
+        for change in got.changes
+    ] == [(_A_SPACE, "A", "A + B", (_B_TS,))], got.changes
+
+
+# --------------------------------------------------------------------------- #
 # 5. THE CLOSURE AND ITS BOUND. `closure_request`. RED until W2-2-3.
 #
 #    The cap is a gate surface in its own right: "a bound that drops candidates
@@ -952,6 +1183,14 @@ def _assert_refused_at_construction(
 #    sentence, and an implementation that enumerates past the cap and slices,
 #    or that returns `truncated` and lets the caller ignore it, satisfies every
 #    row about the algebra.
+#
+#    ONLY THE FIRST HALF IS CLOSED HERE — `closure_request`'s own return value
+#    is all a row at this level can see. The second half is a fact about the
+#    CALLER, and it is closed in section 6 by
+#    `test_a_closure_too_large_to_finish_refuses_and_is_never_clean`, which
+#    drives a real over-cap diff through `fold_branch_signatures` and demands
+#    the refusal. Without that row an implementation could satisfy every
+#    assertion below, resolve against the partial prefix, and answer CLEAN.
 # --------------------------------------------------------------------------- #
 
 
@@ -1232,37 +1471,132 @@ def test_a_diff_with_no_merging_language_is_clean_and_reads_nothing(
     assert fold.changes == () and fold.detail == "", fold
 
 
-def test_no_exception_but_the_mapped_one_reaches_the_floored_driver(
+def _fold_at(repo: Path, changed: tuple[str, ...]) -> BranchFold:
+    """``fold_branch_signatures`` at the fixture's real merge-base.
+
+    The merge-base is resolved from the repository rather than passed as
+    ``main``: reading a baseline at ``base_ref``'s tip instead of at the
+    revision the diff was measured from is the defect the module's own contract
+    names, and a helper that hands it the wrong ref would hide it in every row
+    below.
+    """
+    merge_base = _git(repo, "merge-base", "main", "feat/x").strip()
+    return fold_branch_signatures(repo, merge_base, "feat/x", changed, run=None)
+
+
+def test_the_fold_answers_the_second_file_widening_and_does_not_refuse_it(
     tmp_path: Path,
 ) -> None:
-    """``fold_branch_signatures``' error contract. **RED at HEAD.**
+    """The bypass, at the fold rather than through the driver. **RED at HEAD.**
 
-    ``check_branch`` catches ``RoleDiffError`` and nothing else, so every other
-    exception this module can raise aborts the gate with a traceback instead of
-    answering UNDETERMINED — including the ``NotImplementedError`` its own
-    unfilled holes raise, which is exactly the state of this tree. A
-    half-filled module must fail CLOSED.
+    This row replaces one that asserted only that no exception BUT
+    ``RoleDiffError`` reached the driver, on this same fixture. That is an
+    absence, and ``RoleDiffError`` is the WRONG answer here: an implementation
+    that refuses the exact input the gate exists to catch satisfied it. The
+    error contract is worth sealing and it is sealed in the next row, on an
+    input where refusal is the contracted answer forever.
 
-    The call is a real repository at a real merge-base, so once the holes are
-    filled this row keeps measuring: the fold either returns a
-    ``BranchFold`` — with a RANKED status, never
-    ``UNCHECKED_NO_SUPPORTED_FILE``, which is the aggregate's own conclusion
-    and has no rank to fold through ``_worst_signature_status`` — or raises the
-    one exception the driver maps.
+    Here the answer is a CHECKED fold carrying exactly one widening, and every
+    field of it is asserted for the same reason as in the ``check_branch`` row:
+    a verdict alone is satisfied by any unrelated refusal.
     """
     repo = _branch(
         tmp_path,
-        "error_contract",
+        "fold_bypass",
         {_SEALED_TS_PATH: _TS_SEALED},
         {_AUGMENTING_TS_PATH: _TS_AUGMENTATION},
     )
-    merge_base = _git(repo, "merge-base", "main", "feat/x").strip()
 
     try:
-        fold = fold_branch_signatures(
-            repo, merge_base, "feat/x", (_AUGMENTING_TS_PATH,), run=None
+        fold = _fold_at(repo, (_AUGMENTING_TS_PATH,))
+    except Exception as exc:  # noqa: BLE001 - the failure IS the finding
+        pytest.fail(
+            f"{type(exc).__name__}: {exc}\nThis input has an ANSWER — one "
+            "widening of a sealed interface from a second file — so neither a "
+            "refusal nor a traceback is one. A RoleDiffError here is a gate "
+            "that declines to decide the case it was built for"
         )
-    except RoleDiffError:
+
+    assert isinstance(fold, BranchFold), fold
+    assert fold.status is SignatureCheckStatus.CHECKED, (
+        f"the fold read a diff it could read and reported {fold.status.value}: "
+        f"{fold.detail}"
+    )
+    assert len(fold.changes) == 1, [
+        (change.path, change.symbol) for change in fold.changes
+    ]
+    change = fold.changes[0]
+    expected_symbol = (
+        f"{ts_namespace_of(_SEALED_TS_PATH).label}::{ts_symbol_key((('i', 'Bet'),))}"
+    )
+    assert (change.path, change.symbol) == (
+        _AUGMENTING_TS_PATH,
+        expected_symbol,
+    ), (change.path, change.symbol)
+    sealed = TYPESCRIPT_SUPPORT.fingerprinter.fingerprints(
+        _SEALED_TS_PATH, _TS_SEALED
+    )
+    assert change.before == sealed["i:Bet"], (
+        f"`before` is {change.before!r} and the sealed file's own fingerprint "
+        f"at the merge-base is {sealed['i:Bet']!r}"
+    )
+    assert sealed["i:Bet"] in change.after and change.after != change.before, (
+        f"`after` ({change.after!r}) is not the sealed declaration merged with "
+        "the augmenting one"
+    )
+    assert _AUGMENTING_TS_PATH in fold.detail or expected_symbol in fold.detail, (
+        f"the detail check_branch prints names neither the file to edit nor "
+        f"the widened key: {fold.detail!r}"
+    )
+
+
+#: `declare global` — a declaration space no path list bounds, so no closure
+#: read can complete it and no answer but a refusal is available. This is the
+#: input on which `RoleDiffError` is CORRECT, today and after every task in
+#: this wave, which is what makes it the one that can seal the error contract.
+_TS_GLOBAL_AUGMENTATION = (
+    "export {};\n"
+    "declare global {\n"
+    "  interface Bet {\n"
+    "    wager: number;\n"
+    "  }\n"
+    "}\n"
+)
+_GLOBAL_TS_PATH = "web/src/glob.ts"
+
+
+def test_an_unbounded_space_refuses_with_the_one_exception_the_driver_maps(
+    tmp_path: Path,
+) -> None:
+    """The error contract, on an input whose answer IS a refusal. **RED at HEAD.**
+
+    ``check_branch`` catches ``RoleDiffError`` and nothing else, so every other
+    exception this module can raise aborts the gate with a traceback where it
+    owed an UNDETERMINED — including the ``NotImplementedError`` its own holes
+    raise now, which is why this row is red rather than passing by accident.
+
+    Two halves, and the second is what the row it replaces was missing. The
+    exception must be the mapped one, AND it must be raised for this input's
+    own reason: the message must name the space nobody could enumerate. A
+    ``RoleDiffError`` for any other reason — an unresolved specifier, a read
+    fault, an unfilled hole reported through the funnel — is a refusal that
+    happens to be spelled right, and this fixture would keep certifying it.
+    """
+    repo = _branch(
+        tmp_path,
+        "global_space",
+        {_SEALED_TS_PATH: _TS_SEALED},
+        {_GLOBAL_TS_PATH: _TS_GLOBAL_AUGMENTATION},
+    )
+
+    try:
+        fold = _fold_at(repo, (_GLOBAL_TS_PATH,))
+    except RoleDiffError as exc:
+        assert "global" in str(exc).lower(), (
+            f"the refusal does not name the space it could not bound: {exc}. "
+            "The contract is that every unread space and its reason are named, "
+            "and a refusal an author cannot act on is one nobody will act on"
+        )
         return
     except Exception as exc:  # noqa: BLE001 - that is the finding
         pytest.fail(
@@ -1271,10 +1605,197 @@ def test_no_exception_but_the_mapped_one_reaches_the_floored_driver(
             "traceback where the gate owed an UNDETERMINED"
         )
 
-    assert isinstance(fold, BranchFold), fold
-    assert fold.status is not SignatureCheckStatus.UNCHECKED_NO_SUPPORTED_FILE, (
-        "UNCHECKED_NO_SUPPORTED_FILE is the aggregate's conclusion and carries "
-        "no rank; folding it through _worst_signature_status decides nothing"
+    pytest.fail(
+        f"the fold answered {fold} over `declare global`, a space no path list "
+        "bounds. 'I could not look' is not a pass, and a fold that clears it "
+        "clears every global augmentation in every diff"
+    )
+
+
+#: A `bet.ts` that does not parse. It is the AUGMENTATION TARGET and it is
+#: UNCHANGED, so it is not in the diff at all: `compare_signatures` never opens
+#: it and only the fold's closure read at the merge-base meets the fault. That
+#: is what makes the row below a measurement of `_fold` rather than of the
+#: per-file loop, which reports an unparseable CHANGED file on its own.
+_TS_UNPARSEABLE = "export interface Bet {\n  id: string;\n"
+
+
+def test_a_baseline_that_does_not_parse_refuses_and_claims_no_widening(
+    tmp_path: Path,
+) -> None:
+    """``_fold``'s FAULTS SHORT-CIRCUIT clause. **RED at HEAD.**
+
+    The clause is "faults short-circuit, BEFORE the surfaces are built", and
+    without a row on it the fold that discards faults and builds surfaces out
+    of the ``None``s :func:`_surface_at` returns passes everything else in this
+    file: the faulted file contributes no base keys, every key of the
+    augmentation is then an ADDED key, clause 1 makes it not a change, and the
+    branch reads CLEAN. That is a bypass bought by making the baseline
+    unreadable.
+
+    So three assertions, and the second is the load-bearing one:
+
+      * the status is the fault's own, ranked worse than CHECKED, so the branch
+        is refused;
+      * ``changes`` is EMPTY. A fold that reports a widening it derived from a
+        file it could not read is stating a fact it does not have;
+      * the detail names the file, because ``UNCHECKED_UNPARSEABLE`` on its own
+        does not say which revision of what.
+
+    The end of the row is the consequence at the gate: ``UNCHECKED_UNPARSEABLE``
+    is a BODIES-blocking status, so the verdict is UNDETERMINED and never
+    CLEAN.
+    """
+    repo = _branch(
+        tmp_path,
+        "fault_baseline",
+        {_SEALED_TS_PATH: _TS_UNPARSEABLE},
+        {_AUGMENTING_TS_PATH: _TS_AUGMENTATION},
+    )
+    diff = _git(repo, "diff", "--name-only", "main...feat/x").split()
+    assert diff == [_AUGMENTING_TS_PATH], (
+        "the unparseable file is in the diff, so the per-file loop reports it "
+        f"and this row no longer measures the fold at all: {diff}"
+    )
+
+    fold = _fold_at(repo, (_AUGMENTING_TS_PATH,))
+
+    assert fold.status is SignatureCheckStatus.UNCHECKED_UNPARSEABLE, (
+        f"a baseline that does not parse folded to {fold.status.value}: "
+        f"{fold.detail}. A file this gate CAN read and could not finish "
+        "reading refuses on BODIES"
+    )
+    assert fold.changes == (), (
+        "the fold reported a widening derived from a file it could not read: "
+        f"{[(c.path, c.symbol) for c in fold.changes]}"
+    )
+    assert _SEALED_TS_PATH in fold.detail, (
+        f"the detail does not name the file that would not parse: "
+        f"{fold.detail!r}"
+    )
+
+    result = _bodies(repo)
+    assert result.verdict is DiffVerdict.UNDETERMINED, (
+        "a branch whose sealed baseline could not be read was told "
+        f"{result.verdict.value}: {result.detail}"
+    )
+
+
+#: Derived from the cap, never pinned to 256: one relative specifier costs
+#: `specifier_candidates` entries, so this many of them just fit and one more
+#: does not. A cap that moves moves these fixtures with it.
+_PER_SPECIFIER = len(specifier_candidates("web/src/many.ts", "./m0"))
+_UNDER_CAP = MAX_CLOSURE_READS // _PER_SPECIFIER
+_OVER_CAP = _UNDER_CAP + 1
+
+
+def _augmenting_tree(count: int) -> tuple[dict[str, str], dict[str, str]]:
+    """A base of ``count`` sealed modules, and one branch file augmenting them all.
+
+    Real TypeScript through the real fingerprinter, because the cap counts
+    candidates the fold enumerated from keys a comparator produced — a
+    hand-built ``FileSurface`` would prove the arithmetic and not the gate.
+    """
+    base = {
+        f"web/src/m{index}.ts": (
+            f"export interface Bet {{\n  id{index}: string;\n}}\n"
+        )
+        for index in range(count)
+    }
+    augmentation = "export {};\n" + "".join(
+        f"declare module './m{index}' {{\n"
+        f"  interface Bet {{\n    w{index}: number;\n  }}\n"
+        "}\n"
+        for index in range(count)
+    )
+    return base, {"web/src/many.ts": augmentation}
+
+
+def test_a_closure_that_just_fits_catches_every_widening_in_it(
+    tmp_path: Path,
+) -> None:
+    """THE CAP'S CONTROL. **RED at HEAD.** Green at W2-2-3.
+
+    ``_UNDER_CAP`` sealed modules, every one of them augmented from a single
+    new file, is the largest diff the closure can still close over. Every
+    widening must come back.
+
+    It is here so the refusal in the next row means "the closure ran out of
+    budget" and not "a large diff is refused". Without it, an implementation
+    that answers UNDETERMINED for anything over a handful of files passes the
+    cap row and fails nothing.
+    """
+    base, head = _augmenting_tree(_UNDER_CAP)
+    repo = _branch(tmp_path, "under_cap", base, head)
+
+    fold = _fold_at(repo, ("web/src/many.ts",))
+
+    assert fold.status is SignatureCheckStatus.CHECKED, (
+        f"a closure of {_UNDER_CAP * _PER_SPECIFIER} candidates against a cap "
+        f"of {MAX_CLOSURE_READS} was not completed: {fold.status.value} — "
+        f"{fold.detail}"
+    )
+    assert len(fold.changes) == _UNDER_CAP, (
+        f"{len(fold.changes)} widenings out of {_UNDER_CAP} augmented modules; "
+        "a closure that stops short reports the ones it reached and is silent "
+        "about the rest"
+    )
+    assert {change.symbol for change in fold.changes} == {
+        f"{ts_namespace_of(f'web/src/m{index}.ts').label}::"
+        f"{ts_symbol_key((('i', 'Bet'),))}"
+        for index in range(_UNDER_CAP)
+    }, sorted(change.symbol for change in fold.changes)
+
+
+def test_a_closure_too_large_to_finish_refuses_and_is_never_clean(
+    tmp_path: Path,
+) -> None:
+    """THE CAP'S CONSEQUENCE, which is the half no row about ``closure_request``
+    can reach. **RED at HEAD.** Green at W2-2-3.
+
+    One more augmented module than the previous row, so the enumeration stops
+    mid-specifier and ``ClosureRequest.truncated`` is True. The seal is what
+    the FOLD then does with it: ``BUDGET_EXCEEDED`` is an unread space, an
+    unread space is a refusal, and the branch is UNDETERMINED. An
+    implementation that receives ``truncated`` and resolves against the partial
+    prefix answers CLEAN here and satisfies every other row in this file —
+    that is the large-diff bypass, and it is bought by adding files.
+
+    Every target module EXISTS at the merge-base, so no specifier is unresolved
+    and the budget is the only thing that can be unread. The refusal must name
+    it: a message that says something else is a refusal for another reason and
+    would keep this row green after the cap stopped working.
+    """
+    base, head = _augmenting_tree(_OVER_CAP)
+    repo = _branch(tmp_path, "over_cap", base, head)
+    assert _OVER_CAP * _PER_SPECIFIER > MAX_CLOSURE_READS >= (
+        _UNDER_CAP * _PER_SPECIFIER
+    ), "the fixture no longer straddles the cap, so neither cap row measures it"
+
+    try:
+        fold = _fold_at(repo, ("web/src/many.ts",))
+    except RoleDiffError as exc:
+        assert "budget" in str(exc).lower(), (
+            f"the refusal does not name the budget as the reason: {exc}. "
+            f"The unread reason is spelled {UnreadReason.BUDGET_EXCEEDED.value!r} "
+            "and a refusal that names something else is one for another cause"
+        )
+    except Exception as exc:  # noqa: BLE001 - that is the finding
+        pytest.fail(
+            f"{type(exc).__name__} reached the floored driver: {exc}"
+        )
+    else:
+        pytest.fail(
+            f"a closure that ran out of budget folded to {fold}. The cap "
+            "exists so the gate's cost is bounded; a bound that drops "
+            "candidates and answers anyway is a bypass anyone can buy with a "
+            "large diff"
+        )
+
+    result = _bodies(repo)
+    assert result.verdict is DiffVerdict.UNDETERMINED, (
+        "a branch the gate could not finish reading was told "
+        f"{result.verdict.value}: {result.detail}. Not looking is not a pass"
     )
 
 
@@ -1320,41 +1841,123 @@ def _decided(test: ast.expr) -> bool | None:
     return None
 
 
-def _live_nodes(body: Sequence[ast.stmt]) -> Iterator[ast.AST]:
-    """Everything under ``body`` that runs when ``body`` runs.
+#: Scopes whose bodies run only if something invokes them, and statements after
+#: which nothing else in the same list runs.
+_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+_TERMINAL = (ast.Return, ast.Raise, ast.Break, ast.Continue)
 
-    Two departures from ``ast.walk``, and both are the reason this exists:
+
+def _live_nodes(
+    body: Sequence[ast.stmt], *, guarded: bool = False
+) -> Iterator[tuple[ast.AST, bool]]:
+    """Everything under ``body`` that can run, and whether it is CONDITIONAL.
+
+    Three departures from ``ast.walk``, and each of them was a way to report a
+    call that does not happen:
 
       * a nested ``def``, ``lambda`` or ``class`` body is NOT descended into.
         Its calls happen if and only if something invokes it, and attributing
         them to the enclosing function reports reach through a closure nobody
         ever calls. The same cut keeps a function-local import from being
         borrowed by an unrelated scope.
-      * the untaken half of an ``if`` on a settled test is dropped, so code
-        under ``if False:`` is not an edge.
+      * a statement list STOPS at ``return``, ``raise``, ``break`` or
+        ``continue``. Nothing after one runs, so a dead call below a ``return``
+        is not an edge — and a dead call is exactly the shape that greens a
+        wiring seal against production that never executes it.
+      * the untaken half of an ``if`` on a settled test is dropped, and so is a
+        ``while`` body whose test settles false.
 
     Both cuts UNDER-approximate, which is the safe direction for a row that
     asserts something IS reached: the cost of being wrong is a false red on a
     call this cannot see, never a green on a call that does not happen.
+
+    ``guarded`` is True for a node that runs only if a condition this cannot
+    settle holds — either half of an undecided ``if``, a loop body, an
+    ``except`` handler, a ``match`` case, the far side of an ``and``. It drops
+    nothing: a conditional call is still a call, and dropping it would be the
+    over-strict direction that makes a legitimate branch look dark. It exists
+    so ONE row can ask whether one specific call is behind a runtime flag.
     """
-    stack: list[ast.AST] = list(body)
-    while stack:
-        node = stack.pop()
-        if isinstance(
-            node,
-            (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
-        ):
+    for statement in body:
+        yield from _live_statement(statement, guarded)
+        if isinstance(statement, _TERMINAL):
+            return
+
+
+def _live_statement(
+    statement: ast.stmt, guarded: bool
+) -> Iterator[tuple[ast.AST, bool]]:
+    """One statement's live nodes. Loop and branch bodies are conditional."""
+    if isinstance(statement, _SCOPES):
+        return
+    yield statement, guarded
+    if isinstance(statement, ast.If):
+        decided = _decided(statement.test)
+        yield from _live_expression(statement.test, guarded)
+        branch = guarded or decided is None
+        if decided is not False:
+            yield from _live_nodes(statement.body, guarded=branch)
+        if decided is not True:
+            yield from _live_nodes(statement.orelse, guarded=branch)
+        return
+    if isinstance(statement, ast.While):
+        decided = _decided(statement.test)
+        yield from _live_expression(statement.test, guarded)
+        if decided is not False:
+            # `while True` runs its body; any other test may not, and a
+            # `while False` body is dead code the analyzer must not walk.
+            yield from _live_nodes(
+                statement.body, guarded=guarded or decided is not True
+            )
+        if decided is not True:
+            yield from _live_nodes(statement.orelse, guarded=True)
+        return
+    if isinstance(statement, (ast.For, ast.AsyncFor)):
+        yield from _live_expression(statement.iter, guarded)
+        yield from _live_expression(statement.target, guarded)
+        yield from _live_nodes(statement.body, guarded=True)
+        yield from _live_nodes(statement.orelse, guarded=True)
+        return
+    for field, value in ast.iter_fields(statement):
+        # `orelse` is the only statement list reached generically that may not
+        # run: `Try.body`, `Try.finalbody` and `With.body` all do.
+        conditional = guarded or field == "orelse"
+        items = value if isinstance(value, list) else [value]
+        if items and all(isinstance(item, ast.stmt) for item in items):
+            yield from _live_nodes(items, guarded=conditional)
             continue
-        yield node
-        if isinstance(node, ast.If):
-            decided = _decided(node.test)
-            stack.append(node.test)
-            if decided is not False:
-                stack.extend(node.body)
-            if decided is not True:
-                stack.extend(node.orelse)
-            continue
-        stack.extend(ast.iter_child_nodes(node))
+        for item in items:
+            if not isinstance(item, ast.AST):
+                continue
+            if isinstance(item, ast.excepthandler):
+                yield item, True
+                yield from _live_nodes(item.body, guarded=True)
+            elif isinstance(item, ast.match_case):
+                yield item, True
+                yield from _live_nodes(item.body, guarded=True)
+            else:
+                yield from _live_expression(item, conditional)
+
+
+def _live_expression(
+    node: ast.AST, guarded: bool
+) -> Iterator[tuple[ast.AST, bool]]:
+    """One expression's nodes, with the operands that may not be evaluated
+    marked conditional."""
+    if isinstance(node, _SCOPES):
+        return
+    yield node, guarded
+    if isinstance(node, ast.IfExp):
+        yield from _live_expression(node.test, guarded)
+        yield from _live_expression(node.body, True)
+        yield from _live_expression(node.orelse, True)
+        return
+    if isinstance(node, ast.BoolOp):
+        for index, value in enumerate(node.values):
+            yield from _live_expression(value, guarded or index > 0)
+        return
+    for child in ast.iter_child_nodes(node):
+        yield from _live_expression(child, guarded)
 
 
 def _in_package_aliases(
@@ -1368,7 +1971,7 @@ def _in_package_aliases(
     by the real name would miss every one of them.
     """
     found: dict[str, str] = {}
-    for node in _live_nodes(body):
+    for node, _ in _live_nodes(body):
         if isinstance(node, ast.ImportFrom):
             named = (
                 node.names
@@ -1390,11 +1993,15 @@ def _in_package_aliases(
 
 
 def _rebound(function: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
-    """Names ``function`` binds itself, which therefore are not module aliases.
+    """Names ``function`` binds itself, which are therefore not the package's.
 
-    A parameter or a local assignment named ``branch_surface`` shadows a
-    module-level import of the same name, and resolving ``branch_surface.x()``
-    through the import would be an edge to a function this call cannot reach.
+    Two shadowings, and BOTH are dropped where the graph is built. A parameter
+    or local named ``branch_surface`` shadows a module-level import of the same
+    name, so ``branch_surface.x()`` is not an edge to that module; a parameter
+    or local named ``build_surface`` shadows the module-level function of the
+    same name, so a bare ``build_surface(...)`` is not an edge to it either.
+    Resolving either through the module scope over-approximates, which is the
+    direction :func:`_live_nodes` says this analyzer must not err in.
     """
     args = function.args
     names = {
@@ -1404,13 +2011,13 @@ def _rebound(function: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
     for extra in (args.vararg, args.kwarg):
         if extra is not None:
             names.add(extra.arg)
-    for node in _live_nodes(function.body):
+    for node, _ in _live_nodes(function.body):
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
             names.add(node.id)
     return names
 
 
-def _package_call_graph() -> CallGraph:
+def _package_call_graph() -> tuple[CallGraph, frozenset[tuple[str, str]]]:
     """The package's module-level call graph, by AST, in the enrolled shape.
 
     Deliberately NARROW and deliberately not an analyzer enrolment: nodes are
@@ -1419,6 +2026,11 @@ def _package_call_graph() -> CallGraph:
     not shadowed, counted only over code that runs when the caller runs (see
     :func:`_live_nodes`). A call through a class, a partial or a registry is
     not an edge.
+
+    The second value is the ``(caller, callee)`` pairs with at least one
+    UNCONDITIONAL call site — no undecided ``if``, loop or handler between the
+    caller's body and the call. It is not used to build the graph; one row
+    asks it whether a particular wiring is behind a runtime condition.
     """
     known = frozenset(
         path.stem for path in _PACKAGE.glob("*.py") if path.stem != "__init__"
@@ -1442,21 +2054,27 @@ def _package_call_graph() -> CallGraph:
                 )
 
     edges: list[Edge] = []
+    unconditional: set[tuple[str, str]] = set()
     unresolved: list[tuple[Symbol, str, str]] = []
     for module in sorted(known):
         module_aliases = _in_package_aliases(trees[module].body, known)
         for name, node in functions[module].items():
             caller = symbols[f"claude_dispatcher.{module}.{name}"]
             aliases = {**module_aliases, **_in_package_aliases(node.body, known)}
-            for shadowed in _rebound(node) & set(aliases):
+            rebound = _rebound(node)
+            for shadowed in rebound & set(aliases):
                 del aliases[shadowed]
-            for call in _live_nodes(node.body):
+            for call, guarded in _live_nodes(node.body):
                 if not isinstance(call, ast.Call):
                     continue
                 site = f"src/claude_dispatcher/{module}.py:{call.lineno}"
                 func = call.func
                 target: str | None = None
-                if isinstance(func, ast.Name) and func.id in functions[module]:
+                if (
+                    isinstance(func, ast.Name)
+                    and func.id in functions[module]
+                    and func.id not in rebound
+                ):
                     target = f"claude_dispatcher.{module}.{func.id}"
                 elif isinstance(func, ast.Attribute) and isinstance(
                     func.value, ast.Name
@@ -1470,11 +2088,16 @@ def _package_call_graph() -> CallGraph:
                     )
                     continue
                 edges.append(Edge(caller, symbols[target], EdgeKind.DIRECT, site))
-    return CallGraph(
-        symbols=symbols,
-        edges=tuple(edges),
-        unresolved_calls=tuple(unresolved),
-        unreadable_paths=(),
+                if not guarded:
+                    unconditional.add((caller.key, target))
+    return (
+        CallGraph(
+            symbols=symbols,
+            edges=tuple(edges),
+            unresolved_calls=tuple(unresolved),
+            unreadable_paths=(),
+        ),
+        frozenset(unconditional),
     )
 
 
@@ -1618,11 +2241,22 @@ def test_the_branch_surface_algebra_is_reached_from_production() -> None:
     are two different failure messages from this one row, which is the
     distinction D-69 did not have.
 
+    THE WIRING CALL IS ALSO ASSERTED UNCONDITIONAL, and only that one. An
+    ``if os.environ.get("…")`` or a settings flag around the driver's call
+    would leave every subject reachable here while production runs with the
+    fold switched off — reach through a branch the analyzer cannot settle is a
+    fail-open reading of a gated wiring. The amendment prescribes a plain call
+    at statement level, so requiring it costs nothing and a flag arrives with a
+    reviewer. It is scoped to that ONE edge on purpose: the path to it runs
+    through ``if role is Role.BODIES``, which is a legitimate condition, and
+    inside ``branch_surface`` the algebra branches as any algebra does.
+
     Reddens under: the amendment's edit 1 reverted; the call moved into a
-    closure or behind a settled ``if`` that drops it; ``_fold`` filled so that
-    it never calls ``build_surface`` or ``compare_surfaces``.
+    closure, behind a settled ``if`` that drops it, or behind an unsettled one;
+    ``_fold`` filled so that it never calls ``build_surface`` or
+    ``compare_surfaces``.
     """
-    graph = _package_call_graph()
+    graph, unconditional = _package_call_graph()
 
     assert not reachable_from(graph, []), (
         "the traversal reports reach from no roots at all, so it is not "
@@ -1663,4 +2297,25 @@ def test_the_branch_surface_algebra_is_reached_from_production() -> None:
         "the signature gate does not run and the second-file widening is "
         f"CLEAN in production however correct the algebra is: {dark}. "
         "Wire it per docs/branch-surface-amendment.md (task W2-2-5)"
+    )
+
+    entry = "claude_dispatcher.branch_surface.fold_branch_signatures"
+    drivers = sorted(
+        {
+            edge.caller.key
+            for edge in graph.edges
+            if edge.callee.key == entry
+            and not edge.caller.key.startswith("claude_dispatcher.branch_surface.")
+        }
+    )
+    assert drivers, (
+        f"{entry} is reachable but nothing outside its own module calls it, so "
+        "whatever reaches it is not the gate"
+    )
+    assert any((driver, entry) in unconditional for driver in drivers), (
+        f"every call to {entry} — from {drivers} — sits behind a condition "
+        "this cannot settle. A feature flag or an environment check there "
+        "leaves the gate switched off in production while this row stays "
+        "green, which is the fail-open wiring the amendment's plain "
+        "statement-level call exists to avoid"
     )
