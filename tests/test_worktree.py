@@ -173,10 +173,26 @@ def test_create_failure_on_occupied_plain_dir_raises(repo: Path,
 def test_concurrent_same_key_branch_collision_raises(repo: Path,
                                                      tmp_path: Path) -> None:
     """If `git worktree add` fails and the path is NOT a valid worktree, the
-    caller gets a typed WorktreeError (not a CalledProcessError traceback)."""
+    caller gets a typed WorktreeError (not a CalledProcessError traceback).
+
+    AMENDED 2026-08-17. This test used to construct the race as "the branch
+    exists and the target path is absent" — but that state is INDISTINGUISHABLE
+    from a legitimate re-dispatch, because a branch survives `git worktree
+    remove` while the directory does not. Asserting an error there made every
+    Blocked task undispatchable once its preserved worktree was tidied; measured
+    the same day on all three wave-2 scaffolds.
+
+    The genuine race is the branch being CHECKED OUT by another worker, which
+    git refuses on its own, so the typed error still surfaces and this test
+    still guards what it was written to guard. Bare-branch-exists is now a
+    reuse, sealed in tests/test_worktree_existing_branch.py.
+    """
     base = tmp_path / "wtbase"
-    # Pre-create the branch so `-b` collides, but leave the target path absent.
+    # The real collision: another worker already holds this branch.
     subprocess.run(["git", "branch", "feat/DISP-2-x", "main"],
+                   cwd=repo, check=True, capture_output=True)
+    held = tmp_path / "held-by-another-worker"
+    subprocess.run(["git", "worktree", "add", str(held), "feat/DISP-2-x"],
                    cwd=repo, check=True, capture_output=True)
     with pytest.raises(wt.WorktreeError) as ei:
         wt.create(repo, "DISP-2", "feat/DISP-2-x", base_path=base)

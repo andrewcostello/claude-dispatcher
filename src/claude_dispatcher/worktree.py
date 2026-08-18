@@ -259,9 +259,30 @@ def create(
         provision_untracked_deps(wt_path, repo_root=repo_root)
         return Worktree(path=wt_path, branch=_checked_out_branch(wt_path, branch))
     base.mkdir(parents=True, exist_ok=True)
+    # `-b` CREATES the branch, so it fails when the branch already exists. That
+    # is the normal state for a re-dispatched task whose worktree is gone: the
+    # branch survives a `git worktree remove`, and the reuse path above only
+    # triggers when the DIRECTORY is still there. Measured 2026-08-17 — after
+    # tidying preserved worktrees, all three Blocked tasks became undispatchable
+    # with "git worktree add failed", and the branch that held their work was
+    # the thing making it fail.
+    #
+    # So: create the branch only when it is not already there, and otherwise
+    # check the existing one out. Checking out an existing branch deliberately
+    # does NOT reset it to `base_branch` — a re-dispatch must not silently
+    # discard commits an unblocked task already made, which is the property
+    # that has recovered real work four times (D-54, D-59, D-63, D-66).
+    exists = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+        cwd=repo_root, capture_output=True, text=True,
+    ).returncode == 0
+    add_args = (
+        ["git", "worktree", "add", str(wt_path), branch] if exists
+        else ["git", "worktree", "add", str(wt_path), "-b", branch, base_branch]
+    )
     try:
         subprocess.run(
-            ["git", "worktree", "add", str(wt_path), "-b", branch, base_branch],
+            add_args,
             cwd=repo_root,
             check=True,
             capture_output=True,
