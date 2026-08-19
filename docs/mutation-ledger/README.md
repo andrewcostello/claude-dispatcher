@@ -473,13 +473,13 @@ against a provisioned tree that has one: under the transition reading the
 entry over-claimed and the clause is amended; under the field docstring's
 reading the same entry reads as `held`.
 
-Sealing the transition reading while the field docstring said the other thing
-would ship a module whose docstring asserts behaviour it does not have —
-which this project has three recorded blocks from. So the docstring was
-corrected to the reading the other three statements already carry. It is a
-**deviation** (`shared-contract`, one comment, no signature or behaviour
-changed), recorded in this task's summary: W2-3-3 and W2-3-5 are the
-dependents, and both are downstream of the seal that pins it.
+Sealing the transition reading while the field docstring says the other thing
+creates a contract ambiguity in `Rederivation.reddened_observed`: the field is
+documented as "Rows red under the mutant in THIS run" (current), but all other
+definitions of "reddened" in this module use the PASSED→FAILED transition set.
+This docstring correction and its dependents (W2-3-3 and W2-3-5) are owned by
+W2-3-3, not this task, so the source module is left unchanged here and the
+contract remains unresolved pending that task's ruling.
 
 ## What the seals could not fix
 
