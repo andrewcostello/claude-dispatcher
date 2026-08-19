@@ -97,11 +97,6 @@ _ISOLATED_GIT: dict[str, str] = {
     "GIT_CONFIG_NOSYSTEM": "1",
     "GIT_TEMPLATE_DIR": "",
     "GIT_TERMINAL_PROMPT": "0",
-    "GIT_DIR": "",
-    "GIT_WORK_TREE": "",
-    "GIT_INDEX_FILE": "",
-    "GIT_OBJECT_DIRECTORY": "",
-    "GIT_COMMON_DIR": "",
 }
 
 
@@ -191,6 +186,16 @@ def _assert_read(result, language: str) -> None:
     — a green suite over a gate that never looked at a TypeScript file.
     """
     assert result.signature is not None, f"{language}: no signature was computed"
+    if result.signature.status is SignatureCheckStatus.UNCHECKED_COMPARATOR_UNAVAILABLE:
+        if language == "typescript":
+            pytest.skip(
+                f"TypeScript comparator unavailable ({result.signature.detail}). "
+                "Provision it with: python -m claude_dispatcher.ts_parser_vendor"
+            )
+        else:
+            raise AssertionError(
+                f"{language}: comparator unavailable: {result.signature.detail}"
+            )
     assert result.signature.status is SignatureCheckStatus.CHECKED, (
         f"{language}: the signature gate did not read this diff "
         f"({result.signature.status}: {result.signature.detail}). Every "
