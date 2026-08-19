@@ -680,12 +680,7 @@ class Rederivation:
     #: Every drift observed, in :class:`Drift` declaration order.
     drift: tuple[Drift, ...]
     observation: Observation
-    #: The rows this run's mutant REDDENED: PASSED in the control and FAILED
-    #: under the mutant, sorted, function-level. The same transition set
-    #: :attr:`LedgerEntry.reddened` records and :func:`classify_observation`
-    #: compares against — a row that was red before the mutation is not in
-    #: it, or the two sets ``unexpected_rows`` and ``missing_rows`` are
-    #: differences between sets built by different rules.
+    #: Rows red under the mutant in THIS run, sorted, function-level.
     reddened_observed: tuple[str, ...] = ()
     #: Observed and not recorded — the record understated the blast radius.
     unexpected_rows: tuple[str, ...] = ()
