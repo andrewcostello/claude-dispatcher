@@ -279,18 +279,17 @@ tasks:
     labels: [size:M, area:dispatcher]
     agent: claude
     role: seals
-    status: To Do
+    status: Done
     blockedBy: [W2-1-1]
     unblocked_at: '2026-08-18T19:21:17+00:00'
 
-    started_at: '2026-08-18T14:47:59-07:00'
-    dispatcher_run_id: 2026-08-18T21-47-59Z-tasks
-    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-18T21-47-59Z-tasks/W2-1-2/summary.md
+    started_at: '2026-08-18T16:27:13-07:00'
+    dispatcher_run_id: 2026-08-18T23-27-12Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-18T23-27-12Z-tasks/W2-1-2/summary.md
     branch: feat/W2-1-2-seals-a-role-that-writes
-    gate_base_sha: 0b275d48599808b2c46d7a015508d96d2b99fd14
-    cost_usd: 26.032404999999997
+    cost_usd: 38.323696
     effort: high
-    completed_at: '2026-08-18T15:22:08-07:00'
+    completed_at: '2026-08-18T17:00:16-07:00'
     iteration_count: 0
     linter_cycles: 0
     human_gate_fired: false
@@ -300,24 +299,27 @@ tasks:
     role_diff_loop_detail: "2 changed path(s) checked against the allow_only_globs rule for 'seals' and against the 25-glob floor; signatures: not_applicable"
     verified: true
     verification_iterations: 0
-    panel_consensus: block
-    panel_summary: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=4 (0C/4H)
-    panel_blocking_findings: 4
-    panel_verdict_claude: CHANGES_REQUESTED
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=1 (0C/1H)
+    panel_blocking_findings: 1
+    panel_verdict_claude: APPROVE
     panel_error_claude: cli timed out after 600s
     panel_verdict_gemini: UNAVAILABLE
     panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
     panel_verdict_codex: CHANGES_REQUESTED
-    panel_verdict_grok: CHANGES_REQUESTED
-    input_tokens: 158
-    output_tokens: 57845
-    cache_read_input_tokens: 8674070
-    cache_creation_input_tokens: 137751
-    duration_ms: 1079172
-    num_turns: 79
-    model: claude-opus-5[1m]
+    panel_verdict_grok: APPROVE
+    input_tokens: 208
+    output_tokens: 86708
+    cache_read_input_tokens: 14649454
+    cache_creation_input_tokens: 192661
+    duration_ms: 1311243
+    num_turns: 110
+    model: claude-haiku-4-5-20251001
     dispatcher_version: 0.1.0
     agent_version: 2.1.235 (Claude Code)
+    claude_account: aep-personal
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: 45c54342
   - key: W2-1-3
     summary: bodies — close the reach in the unfloored layer and name what is left
     description: |
@@ -335,6 +337,16 @@ tasks:
       stayed green under a wrong implementation and disclosed it against their
       own interest; the D8 body found three such implementations leaving a
       22-row file fully green.
+
+      ## Unblock note (human)
+      (cleared from Blocked: role_diff_loop_violation: 0 forbidden path(s) and 1 changed scaffolded signature(s))
+      ADJUDICATED 2026-08-18 (operator): the deviation is ACCEPTED. Keep `journal_path` on `publish_pin_from_genesis` and do NOT revert it.
+
+      The scaffold was internally inconsistent and you found it: its own docstring rules the failure key as `f"unknown:{journal_path}"` while the signature carried no such parameter. Parsing the path back out of `detail` would be reading a value out of prose, which is worse. The change is additive, both call sites land in your commit, and the blast radius you recorded is correct.
+
+      This block was the protocol working, not a fault: a changed shared signature is meant to stop and be reviewed. It has been, and the answer is yes.
+
+      Carry on with the rest of the task. Record nothing further about this deviation — it is settled.
     type: Task
     estimate: 2h
     labels: [size:M, area:dispatcher]
@@ -342,7 +354,29 @@ tasks:
     role: bodies
     status: To Do
     blockedBy: [W2-1-2]
+    started_at: '2026-08-18T17:00:16-07:00'
+    dispatcher_run_id: 2026-08-18T23-27-12Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-18T23-27-12Z-tasks/W2-1-3/summary.md
 
+    branch: feat/W2-1-3-bodies-close-the-reach-in
+    gate_base_sha: 45c543428c682536f05ab7e9816649f4dd6a3a34
+    cost_usd: 9.169117
+    claude_account: aep-personal
+    completed_at: '2026-08-18T17:21:00-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    input_tokens: 176
+    output_tokens: 66791
+    cache_read_input_tokens: 11196338
+    cache_creation_input_tokens: 189705
+    duration_ms: 1242875
+    num_turns: 97
+    model: claude-haiku-4-5-20251001
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.235 (Claude Code)
+    unblocked_at: '2026-08-19T00:22:56+00:00'
   - key: W2-1-4
     summary: adjudicate — rule W2-1-3's disputes and hand the floored half over
     description: |
@@ -607,6 +641,53 @@ tasks:
       pinning that the algebra is actually CALLED from the driver. Without it a
       correct-but-unwired module passes everything — D-69's "the money net is
       dark", which is the failure this unit would otherwise ship.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=4 (0C/4H))
+
+            ---
+
+            ## Round 4 direction (operator, 2026-08-18) — read this before writing a row
+
+            Three rounds have blocked. Every finding was REAL, and every one landed on
+            the same thing: `_live_nodes` and `_rebound`, a liveness-and-scope analysis
+            hand-rolled in this test file.
+
+                round 2  _live_nodes walks past `return`/`raise`, and into `while False`
+                round 3  ...and after an `if/else` where both branches return, a
+                         non-breaking `while True`, comprehensions, generator
+                         expressions; `_rebound` misses nested defs, import aliases,
+                         `except` targets and pattern bindings
+
+            You have been told the symptoms three times and never the class, which is
+            this: **a sound Python liveness analysis is not a seal, and cannot be made
+            one in a test helper.** Every round closes the cases named and the next
+            round finds the next tier, because approximating Python's control flow with
+            an AST walk always has another gap. A fourth round of patching is a fourth
+            block.
+
+            Do one of these instead, and say in your summary which you chose:
+
+            1. **Use the machinery that already exists.** `call_site_reachability.py`,
+               `branch_reachability.py` and `call_site_contract.py` are in this repo,
+               are on the floor, and are importable from a test. You may not WRITE them
+               — you are SEALS — but binding your rows to them is exactly what they are
+               for. This file references them 4 times; the reachability rows do not use
+               them at all.
+
+            2. **Narrow the claim to something falsifiable.** "This call site exists and
+               is imported at module level" is provable. "This code is reachable from a
+               production root" is not, at this cost. Seal the first and stop asserting
+               the second.
+
+            3. **Declare it a hole.** If neither is right, record the limitation under a
+               `## Deviation` heading — kind, original, changed, reason, blast_radius —
+               and leave the reachability claim unsealed for W2-2-3 to answer. A
+               declared hole is a result; an unsound analysis that reads as proof is not.
+
+            What must NOT happen again: another round that patches `_live_nodes` for the
+            specific cases the last panel named. If you find yourself adding a branch for
+            `while True`, you are on the path that has failed three times.
     type: Task
     estimate: 3h
     labels: [size:L, area:dispatcher]
@@ -614,42 +695,38 @@ tasks:
     role: seals
     status: To Do
     blockedBy: [W2-2-1]
-    unblocked_at: '2026-08-18T19:21:17+00:00'
+    unblocked_at: '2026-08-19T00:23:12+00:00'
 
-    started_at: '2026-08-18T14:47:59-07:00'
-    dispatcher_run_id: 2026-08-18T21-47-59Z-tasks
-    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-18T21-47-59Z-tasks/W2-2-2/summary.md
+    started_at: '2026-08-18T16:27:13-07:00'
+    dispatcher_run_id: 2026-08-18T23-27-12Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-18T23-27-12Z-tasks/W2-2-2/summary.md
     branch: feat/W2-2-2-seals-the-widening-is-caught
     gate_base_sha: 0b275d48599808b2c46d7a015508d96d2b99fd14
-    cost_usd: 17.634868
+    cost_usd: 25.973423500000003
     effort: high
-    completed_at: '2026-08-18T15:15:14-07:00'
+    completed_at: '2026-08-18T16:56:06-07:00'
     iteration_count: 0
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
-    mechanical_verification: skipped
-    role_diff_loop: checked_clean
-    role_diff_loop_detail: "1 changed path(s) checked against the allow_only_globs rule for 'seals' and against the 25-glob floor; signatures: not_applicable"
-    verified: true
-    verification_iterations: 0
     panel_consensus: block
-    panel_summary: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=3 (0C/3H)
-    panel_blocking_findings: 3
+    panel_summary: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=4 (0C/4H)
+    panel_blocking_findings: 4
     panel_verdict_claude: CHANGES_REQUESTED
     panel_verdict_gemini: UNAVAILABLE
     panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
     panel_verdict_codex: CHANGES_REQUESTED
-    panel_verdict_grok: APPROVE
-    input_tokens: 146
-    output_tokens: 74472
-    cache_read_input_tokens: 8581928
-    cache_creation_input_tokens: 152827
-    duration_ms: 985422
-    num_turns: 73
-    model: claude-opus-5[1m]
+    panel_verdict_grok: CHANGES_REQUESTED
+    input_tokens: 132
+    output_tokens: 74643
+    cache_read_input_tokens: 7447708
+    cache_creation_input_tokens: 155988
+    duration_ms: 1107937
+    num_turns: 70
+    model: claude-haiku-4-5-20251001
     dispatcher_version: 0.1.0
     agent_version: 2.1.235 (Claude Code)
+    claude_account: dev-ep-ac
   - key: W2-2-3
     summary: bodies — build whatever of the whole-diff comparison is not floored
     description: |
@@ -983,6 +1060,18 @@ tasks:
 
       Carry an in-test control judged in the same call, and use `Measured
       under:` / `Predicted (unmeasured) under:`.
+
+      ## Unblock note (human)
+      (cleared from Blocked: role_diff_loop_violation: 1 forbidden path(s) and 0 changed scaffolded signature(s))
+      ADJUDICATED 2026-08-18 (operator): the block was OUR defect, not yours.
+
+      You were blocked for writing `src/claude_dispatcher/mutation_ledger.py`. The edit was comment-only and the two revisions parse to identical ASTs, and your actual work — 320 lines in tests/test_mutation_ledger.py plus the docs — was exactly where it belonged. But SEALS is allow_only_globs (test files + docs/**), and the gate compares PATHS, not behaviour, so a comment in a production module is still a write to one.
+
+      You were never told that rule: the implementer prompt carried no role scope and the brief did not mention it. That is fixed — this spawn's prompt states your writable paths.
+
+      The operator has already reverted that one file on your branch, so it is compliant now. Do not re-apply the comment. Your clarification was correct and is preserved at dispatcher-runs/W2-3-2-comment-handoff.diff for W2-3-3, which owns that module's bodies.
+
+      Your round-3 seals were never panel-reviewed, because the gate stopped the task first. Address the round-2 findings you have not yet closed and let the panel see them.
     type: Task
     estimate: 2h
     labels: [size:M, area:dispatcher]
@@ -990,41 +1079,37 @@ tasks:
     role: seals
     status: To Do
     blockedBy: [W2-3-1]
-    unblocked_at: '2026-08-18T19:21:17+00:00'
+    unblocked_at: '2026-08-19T00:23:06+00:00'
 
-    started_at: '2026-08-18T15:15:14-07:00'
-    dispatcher_run_id: 2026-08-18T21-47-59Z-tasks
-    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-18T21-47-59Z-tasks/W2-3-2/summary.md
+    started_at: '2026-08-18T16:27:13-07:00'
+    dispatcher_run_id: 2026-08-18T23-27-12Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-18T23-27-12Z-tasks/W2-3-2/summary.md
     branch: feat/W2-3-2-seals-a-ledger-entry-that
     gate_base_sha: eb5d4bac1114a7daebedb0f09d3639557e9795ed
-    cost_usd: 22.594745500000002
+    cost_usd: 28.061118
     effort: high
     effort_escalated: true
-    completed_at: '2026-08-18T16:15:32-07:00'
+    completed_at: '2026-08-18T16:43:19-07:00'
     iteration_count: 0
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
-    mechanical_verification: skipped
-    role_diff_loop: checked_clean
-    role_diff_loop_detail: "2 changed path(s) checked against the allow_only_globs rule for 'seals' and against the 25-glob floor; signatures: not_applicable"
-    verified: true
-    verification_iterations: 0
     panel_consensus: block
     panel_summary: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=3 (0C/3H)
     panel_blocking_findings: 3
     panel_verdict_claude: CHANGES_REQUESTED
     panel_verdict_codex: CHANGES_REQUESTED
     panel_verdict_grok: CHANGES_REQUESTED
-    input_tokens: 202
-    output_tokens: 77301
-    cache_read_input_tokens: 13739940
-    cache_creation_input_tokens: 174678
-    duration_ms: 1196993
-    num_turns: 102
-    model: claude-opus-5[1m]
+    input_tokens: 132
+    output_tokens: 44750
+    cache_read_input_tokens: 6241801
+    cache_creation_input_tokens: 122118
+    duration_ms: 963921
+    num_turns: 69
+    model: claude-haiku-4-5-20251001
     dispatcher_version: 0.1.0
     agent_version: 2.1.235 (Claude Code)
+    claude_account: ac-personal
   - key: W2-3-3
     summary: bodies — build the ledger and populate it from what is still true
     description: |
