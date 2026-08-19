@@ -367,12 +367,30 @@ tasks:
       MEASURED, and it changes your approach: I applied ONLY the three floor entries and their probe rows, with your `_floor_glob_named_by` amendment excluded, and got 57 failures — MORE than your full patch. The two halves are coupled; the amendment is compensating for breakage the entries cause. So this is not a transcription, it is a behavioural change: a violation on those trees now reports the FLOOR glob instead of the role's own deny glob, and test_role_protocol_diff and test_prompt_provenance both encode the old answer.
 
       Deliver a patch that leaves the whole suite green, or state under a `## Deviation` heading why the seals that encode the old reporting must change. Report the suite number for the WHOLE suite.
+
+      ## Unblock note (human)
+      (cleared from Blocked: role_diff_loop_violation: 2 forbidden path(s) and 1 changed scaffolded signature(s))
+      ROUND 6 (operator, 2026-08-18) — STOP IMPLEMENTING THE FLOORED HALF. It is not yours, and my previous note was wrong to review your patch on its merits instead of saying this.
+
+      Read your own summary line: 'bodies — close the reach in the UNFLOORED layer and NAME what is left'. And W2-1-4's: 'adjudicate — rule W2-1-3's disputes and HAND THE FLOORED HALF OVER'.
+
+      The plan already routes FLOOR_GLOBS to W2-1-4. You have now tried to write src/claude_dispatcher/role_protocol.py and tests/test_role_protocol_floor.py in two consecutive rounds, and been blocked both times, for work that was never in your scope. Your own docstring said it: 'not yet in FLOOR_GLOBS (that is owed to W2-1-4)'. You wrote the right sentence and then did the opposite.
+
+      WHAT TO DELIVER:
+
+      1. Everything in the UNFLOORED layer. You said Parts B-D (load-time gates, journal coupling) are already implemented — good; make sure they are complete and their rows are green.
+
+      2. NAME what is left. That is a deliverable, not a note. State precisely which of W2-1-2's rows require the floored change, what the change is (the three globs are correctly spelled in your patch — keep that text in the summary as a PROPOSAL), and that it is owed to W2-1-4.
+
+      3. REGISTER the rows that stay red. The Part A plan-time and diff-time rows cannot go green until W2-1-4 lands the floor entries, so they are red BY DESIGN — that is exactly what config/known-red.yaml (D-68) exists for. You cannot write that file, it is on the floor. Report the entries: every row id, `body_task: W2-1-4`, and the reason. Verify the list by RUNNING the file, not by reading it — a round-4 finding on W2-2-2 was a register list that omitted 13 of 31 red rows.
+
+      Do not touch role_protocol.py or test_role_protocol_floor.py. Revert what you have committed to them. A red row you correctly registered and handed to W2-1-4 is a completed deliverable; a floored file you wrote is a blocked task.
     type: Task
     estimate: 2h
     labels: [size:M, area:dispatcher]
     agent: claude
     role: bodies
-    status: In Progress
+    status: To Do
     blockedBy: [W2-1-2]
     started_at: '2026-08-18T18:21:45-07:00'
     dispatcher_run_id: 2026-08-19T01-21-44Z-tasks
@@ -380,23 +398,23 @@ tasks:
 
     branch: feat/W2-1-3-bodies-close-the-reach-in
     gate_base_sha: 45c543428c682536f05ab7e9816649f4dd6a3a34
-    cost_usd: 10.7768843
-    claude_account: ac-personal
-    completed_at: '2026-08-18T17:38:04-07:00'
+    cost_usd: 12.2782838
+    claude_account: dev-ep-ac
+    completed_at: '2026-08-18T18:34:37-07:00'
     iteration_count: 0
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
-    input_tokens: 993
-    output_tokens: 42921
-    cache_read_input_tokens: 11374973
-    cache_creation_input_tokens: 125496
-    duration_ms: 863713
-    num_turns: 124
+    input_tokens: 961
+    output_tokens: 42163
+    cache_read_input_tokens: 10494405
+    cache_creation_input_tokens: 117949
+    duration_ms: 765828
+    num_turns: 120
     model: claude-haiku-4-5-20251001
     dispatcher_version: 0.1.0
     agent_version: 2.1.235 (Claude Code)
-    unblocked_at: '2026-08-19T01:21:26+00:00'
+    unblocked_at: '2026-08-19T01:35:23+00:00'
   - key: W2-1-4
     summary: adjudicate — rule W2-1-3's disputes and hand the floored half over
     description: |
@@ -738,7 +756,7 @@ tasks:
     summary_path: /home/andrew/Project/dispatcher-runs/2026-08-19T01-21-44Z-tasks/W2-2-2/summary.md
     branch: feat/W2-2-2-seals-the-widening-is-caught
     gate_base_sha: 0b275d48599808b2c46d7a015508d96d2b99fd14
-    cost_usd: 27.133467400000004
+    cost_usd: 27.637058200000002
     effort: high
     completed_at: '2026-08-18T17:40:53-07:00'
     iteration_count: 0
@@ -762,7 +780,7 @@ tasks:
     model: claude-haiku-4-5-20251001
     dispatcher_version: 0.1.0
     agent_version: 2.1.235 (Claude Code)
-    claude_account: dev-ep-ac
+    claude_account: aep-personal
   - key: W2-2-3
     summary: bodies — build whatever of the whole-diff comparison is not floored
     description: |
@@ -1108,18 +1126,34 @@ tasks:
       The operator has already reverted that one file on your branch, so it is compliant now. Do not re-apply the comment. Your clarification was correct and is preserved at dispatcher-runs/W2-3-2-comment-handoff.diff for W2-3-3, which owns that module's bodies.
 
       Your round-3 seals were never panel-reviewed, because the gate stopped the task first. Address the round-2 findings you have not yet closed and let the panel see them.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=4 (0C/4H))
+      ROUND 5 (operator, 2026-08-18). You cleared the role gate this time — your round-4 seals reached panel review for the first time. Four HIGH findings; one of them is MINE, not yours.
+
+      MINE, and fix it first because it is cheap: claude flags that docs/mutation-ledger/README.md still documents the `Rederivation.reddened_observed` docstring change as an accepted shared-contract deviation naming W2-3-3 and W2-3-5 as dependents. That change is no longer on your branch — the operator reverted it, because SEALS may not write src/ — and my unblock note told you not to re-apply it without telling you the doc still describes it. Delete or rewrite that section so the docs describe the branch that exists. The text itself is preserved at dispatcher-runs/W2-3-2-comment-handoff.diff and belongs to W2-3-3.
+
+      YOURS, three of them, and they are the same class you have been closing well — a row that cannot fail the thing it names:
+
+      1. codex: `test_the_provisioner_stands_up_the_whole_population_and_runs_it` does not prove the provisioner creates an ISOLATED tree or honours the requested revision. An implementation that returns `repo_root` passes, because the requested revision is already HEAD and everything after is read-only. Make it ask for a revision that is NOT HEAD.
+
+      2. codex: the applier seals do not positively exercise every declared MutationOperator. RAISE_TO_CONTINUE is tested directly and BODY_TO_NO_OP indirectly, but ADD_DEFAULT_BRANCH appears only as an expected REFUSAL at an inapplicable site — so an implementation that always rejects it passes.
+
+      3. grok: `test_a_run_that_did_not_complete_is_refused_and_not_reported_as_results` drives `ml.run_rows` IN-PROCESS against a tree whose second test calls `os._exit(0)`. That is the right pin for a runner that trusts pytest's exit code, but it is not isolated from the seal process itself.
+
+      Your known-red obligations are the same as W2-2-2's: you cannot write config/known-red.yaml, it is on the floor. Report every row your file commits red, each against the task that actually greens it, verified by RUNNING the file rather than reading it.
     type: Task
     estimate: 2h
     labels: [size:M, area:dispatcher]
     agent: claude
     role: seals
-    status: Blocked
+    status: In Progress
     blockedBy: [W2-3-1]
-    unblocked_at: '2026-08-19T00:23:06+00:00'
+    unblocked_at: '2026-08-19T01:23:43+00:00'
 
-    started_at: '2026-08-18T17:23:37-07:00'
-    dispatcher_run_id: 2026-08-19T00-23-36Z-tasks
-    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-19T00-23-36Z-tasks/W2-3-2/summary.md
+    started_at: '2026-08-18T18:34:37-07:00'
+    dispatcher_run_id: 2026-08-19T01-21-44Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-19T01-21-44Z-tasks/W2-3-2/summary.md
     branch: feat/W2-3-2-seals-a-ledger-entry-that
     gate_base_sha: eb5d4bac1114a7daebedb0f09d3639557e9795ed
     cost_usd: 28.9082106
@@ -1146,12 +1180,6 @@ tasks:
     dispatcher_version: 0.1.0
     agent_version: 2.1.235 (Claude Code)
     claude_account: aep-personal
-    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=4 (0C/4H)'
-    mechanical_verification: skipped
-    role_diff_loop: checked_clean
-    role_diff_loop_detail: "2 changed path(s) checked against the allow_only_globs rule for 'seals' and against the 25-glob floor; signatures: not_applicable"
-    verified: true
-    verification_iterations: 0
   - key: W2-3-3
     summary: bodies — build the ledger and populate it from what is still true
     description: |
