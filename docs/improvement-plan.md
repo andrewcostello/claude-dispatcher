@@ -744,6 +744,36 @@ was measured before acting; the causes did NOT turn out to be one kind.
   agent cannot derive. Handing it over cost nothing; a round rediscovering it
   would have cost ~$28.
 
+- **Rounds are NOT monotonic, and a bad round must be discarded rather than
+  built on.** Measured 2026-08-18 across one round: W2-3-2 answered 4 blocking
+  findings with 10, and the six new ones were broken code rather than weak
+  seals — `Path()` on a frozen dataclass with no `__fspath__`,
+  `apply_mutation(str)` against a `bytes` contract, a `_recommit` that
+  invalidated two assertions below it. W2-2-2 went 4 -> 7 in the same round.
+  Both were reset or corrected rather than sent forward, and the standing rule
+  is now: if a round makes the branch worse, reset to the last clean state
+  (preserve it under a tag) instead of asking the next round to fix damage the
+  last one caused.
+
+- **The operator can cause a regression, and did.** W2-2-2's round-6 note said
+  a missing TypeScript comparator could either be required "or skip cleanly".
+  The agent took the second half, made `_assert_read` turn
+  `UNCHECKED_COMPARATOR_UNAVAILABLE` into a `pytest.skip`, and all three
+  families independently flagged that a comparator-dependent CONTROL which
+  skips when the comparator is absent passes without checking anything —
+  fail-open, the exact class the unit exists to catch. An adjudication that
+  offers a fail-open option as if it were acceptable is an adjudication that
+  will be taken. Corrected to: provision and REQUIRE; a control that cannot run
+  must fail, never skip.
+
+- **An abstract deliverable gets implemented instead of reported.** W2-1-3 was
+  asked to "close the UNFLOORED layer and NAME what is left"; it wrote the
+  floored half in three consecutive rounds, each time after being blocked, once
+  after an explicit "do not touch these files". The instruction was not wrong,
+  it was not CONCRETE. Replacing it with a measured list — the exact 71 rows
+  that go red without the floor entries, published to a file with a self-check
+  count — is the same move that unstuck W2-2-2, and cost one operator suite run.
+
 - **Parallelism is capped by the graph, not the flag.** Three independent unit
   chains means `--max-parallel 3`; a fourth slot sits empty. Run at 2, the
   third task idled 27 minutes. Rate limits are per ACCOUNT, so the ceiling
