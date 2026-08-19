@@ -385,6 +385,31 @@ tasks:
       3. REGISTER the rows that stay red. The Part A plan-time and diff-time rows cannot go green until W2-1-4 lands the floor entries, so they are red BY DESIGN — that is exactly what config/known-red.yaml (D-68) exists for. You cannot write that file, it is on the floor. Report the entries: every row id, `body_task: W2-1-4`, and the reason. Verify the list by RUNNING the file, not by reading it — a round-4 finding on W2-2-2 was a register list that omitted 13 of 31 red rows.
 
       Do not touch role_protocol.py or test_role_protocol_floor.py. Revert what you have committed to them. A red row you correctly registered and handed to W2-1-4 is a completed deliverable; a floored file you wrote is a blocked task.
+
+      ## Unblock note (human)
+      (cleared from Blocked: role_diff_loop_violation: 2 forbidden path(s) and 1 changed scaffolded signature(s))
+      ROUND 7 (operator, 2026-08-18). Your branch is COMPLIANT now — the operator reverted src/claude_dispatcher/role_protocol.py and tests/test_role_protocol_floor.py for the third time. Do not touch them. Every other file you changed is intact.
+
+      Rounds 4, 5 and 6 all failed the same way, and I think the instruction was at fault: 'name what is left' was abstract, so you implemented it instead. Here it is as a concrete deliverable, MEASURED rather than described.
+
+      With the floor entries absent — which is the state of your branch and the state W2-1-4 will change — the suite has exactly 71 red rows:
+
+          68  tests/test_prompt_provenance.py     (W2-1-2's seals)
+           1  tests/test_cross_family_reviewer.py
+           1  tests/test_docs_examples.py         (the floor COUNT, 25 vs 28)
+           1  tests/test_role_protocol_provenance.py
+
+      The full list of node ids is at /home/andrew/Project/dispatcher-runs/W2-1-3-red-rows.txt — read it. Reproduce it yourself with a plain run of the suite and confirm you get 71; if your list and that file disagree, yours is wrong.
+
+      YOUR DELIVERABLE, in three parts:
+
+      1. The unfloored work, complete and correct. That is what you already have.
+
+      2. NAME the floored change in your summary as a PROPOSAL for W2-1-4: the three globs (**/src/claude_dispatcher/reviewer_prompts/**, **/src/claude_dispatcher/verifier_prompts/**, **/src/claude_dispatcher/prompt_provenance.py). They are correctly spelled — I measured them against 8 probes, 0 surprises. Note also that adding them CHANGES REPORTED BEHAVIOUR: a violation on those trees then names the floor glob instead of the role's own deny glob, which is why test_role_protocol_diff rows move. W2-1-4 needs to know that.
+
+      3. REGISTER all 71 rows for config/known-red.yaml with body_task: W2-1-4 and a reason naming the floor entries. You cannot write that file — it is on the floor — so reporting it precisely IS the deliverable. A row you leave out fails every other task's mechanical gate.
+
+      A red row correctly registered and handed to W2-1-4 is a COMPLETED deliverable. A floored file you wrote is a blocked task. You have now proved the second three times.
     type: Task
     estimate: 2h
     labels: [size:M, area:dispatcher]
@@ -392,29 +417,29 @@ tasks:
     role: bodies
     status: In Progress
     blockedBy: [W2-1-2]
-    started_at: '2026-08-18T18:39:01-07:00'
-    dispatcher_run_id: 2026-08-19T01-21-44Z-tasks
-    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-19T01-21-44Z-tasks/W2-1-3/summary.md
+    started_at: '2026-08-18T19:39:28-07:00'
+    dispatcher_run_id: 2026-08-19T02-39-28Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-19T02-39-28Z-tasks/W2-1-3/summary.md
 
     branch: feat/W2-1-3-bodies-close-the-reach-in
     gate_base_sha: 45c543428c682536f05ab7e9816649f4dd6a3a34
-    cost_usd: 12.2782838
+    cost_usd: 13.0673176
     claude_account: dev-ep-ac
-    completed_at: '2026-08-18T18:34:37-07:00'
+    completed_at: '2026-08-18T18:47:04-07:00'
     iteration_count: 0
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
-    input_tokens: 961
-    output_tokens: 42163
-    cache_read_input_tokens: 10494405
-    cache_creation_input_tokens: 117949
-    duration_ms: 765828
-    num_turns: 120
+    input_tokens: 617
+    output_tokens: 25327
+    cache_read_input_tokens: 4962838
+    cache_creation_input_tokens: 80302
+    duration_ms: 481138
+    num_turns: 77
     model: claude-haiku-4-5-20251001
     dispatcher_version: 0.1.0
     agent_version: 2.1.235 (Claude Code)
-    unblocked_at: '2026-08-19T01:35:23+00:00'
+    unblocked_at: '2026-08-19T02:38:10+00:00'
   - key: W2-1-4
     summary: adjudicate — rule W2-1-3's disputes and hand the floored half over
     description: |
@@ -760,45 +785,69 @@ tasks:
       4. THE is_module CONFLICT. claude: your four end-to-end rows demand an answer the scaffold's routing forbids — `_surface_at` leaves `is_module` unreported ('no fingerprinter carries it today'). That is a genuine contract conflict, and the channel for it is a `## Deviation` heading: kind, original, changed, reason, blast_radius. Do NOT quietly make the rows agree with an implementation that cannot exist.
 
       Still settled and not to be reopened: the `_live_nodes` removal. If codex's env-gated-reachability finding returns, declare it a hole owed to W2-2-3.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=7 (0C/7H))
+      ROUND 7 (operator, 2026-08-18). MY ROUND-6 INSTRUCTION WAS WRONG AND YOU FOLLOWED IT. Correcting it first.
+
+      I wrote: 'either your green controls require it and you say so in the register entry, OR they must skip cleanly when it is missing.' The second half is not an acceptable option and I should not have offered it. You made `_assert_read` turn `UNCHECKED_COMPARATOR_UNAVAILABLE` into a `pytest.skip`, and claude, codex and grok all flagged it independently: a comparator-dependent CONTROL that skips when the comparator is absent passes without checking anything. That is fail-open, which is the defect class this entire unit exists to catch.
+
+      THE CORRECTION: provision the parser and REQUIRE it.
+
+          python -m claude_dispatcher.ts_parser_vendor
+
+      A control row that cannot run must FAIL, or the file must refuse to run at all — never skip. Reverse the skip you added. If you believe a hard requirement is wrong, that is a `## Deviation`, not a skip.
+
+      Three more, all yours:
+
+      1. claude: the headline fix for the round-6 blocker is INERT, and the deviation recording it states a measurement that is false on this tree. Do not record a measurement you have not run. Run it, paste the number, and if the fix is inert say so and remove it.
+
+      2. claude and grok, the same thing from both ends: the `export {};` fixture change lets `module_evidence` see a `k:export` key, but `_TS_NEIGHBOUR` is still a bare `export interface` with no module-ness proof at all. The audit was not systematic — do every fixture or state which ones you deliberately left.
+
+      3. codex: you moved the whole baseline-parse and over-cap group to `body_task: W2-2-5`, but each of those tests FIRST seals behaviour owned by W2-2-3 and only then checks W2-2-5's wiring. A test that seals two owners greens at the LATER one — that is right — but say so in the entry, because the reason matters to whoever reads the register.
+
+      Still settled: the `_live_nodes` removal. Do not reopen it.
+
+      Your round-5 state is your last clean one. If round 7 goes backwards again the operator will reset you to it, as W2-3-2 was reset today.
     type: Task
     estimate: 3h
     labels: [size:L, area:dispatcher]
     agent: claude
     role: seals
-    status: To Do
+    status: In Progress
     blockedBy: [W2-2-1]
-    unblocked_at: '2026-08-19T01:40:24+00:00'
+    unblocked_at: '2026-08-19T02:39:28+00:00'
 
-    started_at: '2026-08-18T18:21:45-07:00'
-    dispatcher_run_id: 2026-08-19T01-21-44Z-tasks
-    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-19T01-21-44Z-tasks/W2-2-2/summary.md
+    started_at: '2026-08-18T19:39:29-07:00'
+    dispatcher_run_id: 2026-08-19T02-39-28Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-19T02-39-28Z-tasks/W2-2-2/summary.md
     branch: feat/W2-2-2-seals-the-widening-is-caught
     gate_base_sha: 0b275d48599808b2c46d7a015508d96d2b99fd14
-    cost_usd: 27.637058200000002
+    cost_usd: 28.9681345
     effort: high
-    completed_at: '2026-08-18T18:39:01-07:00'
+    completed_at: '2026-08-18T19:04:40-07:00'
     iteration_count: 0
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
     panel_consensus: block
-    panel_summary: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=4 (0C/4H)
-    panel_blocking_findings: 4
+    panel_summary: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=7 (0C/7H)
+    panel_blocking_findings: 7
     panel_verdict_claude: CHANGES_REQUESTED
     panel_verdict_gemini: UNAVAILABLE
     panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
     panel_verdict_codex: CHANGES_REQUESTED
     panel_verdict_grok: CHANGES_REQUESTED
-    input_tokens: 233
-    output_tokens: 18106
-    cache_read_input_tokens: 1602234
-    cache_creation_input_tokens: 59306
-    duration_ms: 259891
-    num_turns: 29
+    input_tokens: 433
+    output_tokens: 26698
+    cache_read_input_tokens: 3620162
+    cache_creation_input_tokens: 77626
+    duration_ms: 350749
+    num_turns: 54
     model: claude-haiku-4-5-20251001
     dispatcher_version: 0.1.0
     agent_version: 2.1.235 (Claude Code)
-    claude_account: aep-personal
+    claude_account: ac-personal
   - key: W2-2-3
     summary: bodies — build whatever of the whole-diff comparison is not floored
     description: |
@@ -1160,6 +1209,34 @@ tasks:
       3. grok: `test_a_run_that_did_not_complete_is_refused_and_not_reported_as_results` drives `ml.run_rows` IN-PROCESS against a tree whose second test calls `os._exit(0)`. That is the right pin for a runner that trusts pytest's exit code, but it is not isolated from the seal process itself.
 
       Your known-red obligations are the same as W2-2-2's: you cannot write config/known-red.yaml, it is on the floor. Report every row your file commits red, each against the task that actually greens it, verified by RUNNING the file rather than reading it.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=10 (0C/10H))
+      ROUND 6 (operator, 2026-08-18). YOUR BRANCH HAS BEEN RESET to the round-4 state (743f628). Round 5 is discarded — it is preserved at tag w2-3-2-round5-discarded if you want to look, but do not restore it.
+
+      WHY. Round 4 had 4 blocking findings. Round 5 turned that into 10, and the new six were not seal-quality issues, they were broken code:
+
+        * `Path(clone)` on the return of `provision_subject_tree`, which is a frozen
+          `ScratchClone` dataclass with no `__fspath__` — a TypeError, not a weak pin.
+        * `ml.apply_mutation(source_with_branch, site)` passing `str` where the
+          contract is `bytes`.
+        * a `_recommit` inserted at line 1672 that invalidated two assertions below it.
+        * a change whose own summary said it requested a non-HEAD revision while
+          `_recommit` made the tree HEAD anyway.
+
+      Fixing four findings by introducing six worse ones is a round that should not be built on. Take the four originals again, slowly:
+
+      1. MINE, and cheapest: docs/mutation-ledger/README.md still documents the `Rederivation.reddened_observed` docstring change as an accepted shared-contract deviation. That change is not on your branch — the operator reverted it because SEALS may not write src/ — so delete or rewrite that section. The text lives at dispatcher-runs/W2-3-2-comment-handoff.diff and belongs to W2-3-3.
+
+      2. `test_the_provisioner_stands_up_the_whole_population_and_runs_it` does not prove isolation or that a requested revision is honoured: an implementation returning `repo_root` passes, because the requested revision is already HEAD. Ask for a revision that is NOT HEAD — and note that round 5's attempt failed by COMMITTING to make one, which defeats the point. Provision from an existing older commit instead.
+
+      3. The applier seals never positively exercise ADD_DEFAULT_BRANCH; it appears only as an expected refusal at an inapplicable site, so an implementation that always rejects it passes.
+
+      4. `test_a_run_that_did_not_complete_is_refused_and_not_reported_as_results` drives `ml.run_rows` IN-PROCESS against a tree whose second test calls `os._exit(0)`, so it is not isolated from the seal process itself.
+
+      AND THE ANSWER YOU CANNOT DERIVE: your red/green counts depend on `ts_signature_fingerprint/typescript.js`, a GITIGNORED 9.1 MB file absent from every fresh worktree. Provision it with `python -m claude_dispatcher.ts_parser_vendor`. Then decide deliberately whether your green controls require it (say so in the register entry) or must skip cleanly without it. A row whose colour depends on an untracked file is not a seal.
+
+      Report every row you commit red for config/known-red.yaml — you cannot write it, it is floored — each against the task that actually greens it, verified by RUNNING the file.
     type: Task
     estimate: 2h
     labels: [size:M, area:dispatcher]
@@ -1167,33 +1244,33 @@ tasks:
     role: seals
     status: In Progress
     blockedBy: [W2-3-1]
-    unblocked_at: '2026-08-19T01:23:43+00:00'
+    unblocked_at: '2026-08-19T02:38:48+00:00'
 
-    started_at: '2026-08-18T18:34:37-07:00'
-    dispatcher_run_id: 2026-08-19T01-21-44Z-tasks
-    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-19T01-21-44Z-tasks/W2-3-2/summary.md
+    started_at: '2026-08-18T19:39:29-07:00'
+    dispatcher_run_id: 2026-08-19T02-39-28Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-19T02-39-28Z-tasks/W2-3-2/summary.md
     branch: feat/W2-3-2-seals-a-ledger-entry-that
     gate_base_sha: eb5d4bac1114a7daebedb0f09d3639557e9795ed
-    cost_usd: 29.4881384
+    cost_usd: 29.8996144
     effort: high
     effort_escalated: true
-    completed_at: '2026-08-18T17:37:22-07:00'
+    completed_at: '2026-08-18T18:47:56-07:00'
     iteration_count: 0
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
     panel_consensus: block
-    panel_summary: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=4 (0C/4H)
-    panel_blocking_findings: 4
+    panel_summary: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=10 (0C/10H)
+    panel_blocking_findings: 10
     panel_verdict_claude: CHANGES_REQUESTED
     panel_verdict_codex: CHANGES_REQUESTED
     panel_verdict_grok: CHANGES_REQUESTED
-    input_tokens: 481
-    output_tokens: 22831
-    cache_read_input_tokens: 4379852
-    cache_creation_input_tokens: 86081
-    duration_ms: 361345
-    num_turns: 64
+    input_tokens: 465
+    output_tokens: 22205
+    cache_read_input_tokens: 3338818
+    cache_creation_input_tokens: 64352
+    duration_ms: 250817
+    num_turns: 58
     model: claude-haiku-4-5-20251001
     dispatcher_version: 0.1.0
     agent_version: 2.1.235 (Claude Code)
