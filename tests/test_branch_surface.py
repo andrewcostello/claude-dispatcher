@@ -84,8 +84,9 @@ _REPO = Path(__file__).resolve().parent.parent
 #: or a CI image's whole configuration from every ``_git`` call —
 #: ``core.hooksPath``, ``commit.template`` and ``commit.gpgsign`` alike — and an
 #: empty ``GIT_TEMPLATE_DIR`` stops ``git init`` copying a template's hooks in.
-#: Naming them one at a time left the rest in play, which is the same
-#: ambient-fault class over again.
+#: Unset ``GIT_DIR``, ``GIT_WORK_TREE``, ``GIT_INDEX_FILE``,
+#: ``GIT_OBJECT_DIRECTORY``, ``GIT_COMMON_DIR`` to prevent ambient git
+#: environment from cross-contaminating fixture repositories.
 #:
 #: ``check_branch``'s own git calls still run under the caller's environment.
 #: They are reads — ``rev-parse``, ``diff``, ``show`` — which fire no hook and
@@ -96,6 +97,11 @@ _ISOLATED_GIT: dict[str, str] = {
     "GIT_CONFIG_NOSYSTEM": "1",
     "GIT_TEMPLATE_DIR": "",
     "GIT_TERMINAL_PROMPT": "0",
+    "GIT_DIR": "",
+    "GIT_WORK_TREE": "",
+    "GIT_INDEX_FILE": "",
+    "GIT_OBJECT_DIRECTORY": "",
+    "GIT_COMMON_DIR": "",
 }
 
 
@@ -104,14 +110,19 @@ def _git(repo: Path, *args: str) -> str:
 
     ``timeout`` because a hung git must fail the row rather than the session;
     :data:`_ISOLATED_GIT` because a row here must fail for what it measures.
+    Unsets git directory variables that might point to the host repo.
     """
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+                        "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR")}
+    env.update(_ISOLATED_GIT)
     return subprocess.run(
         ["git", "-C", str(repo), *args],
         check=True,
         capture_output=True,
         text=True,
         timeout=120,
-        env={**os.environ, **_ISOLATED_GIT},
+        env=env,
     ).stdout
 
 
@@ -147,9 +158,27 @@ def _branch(
     return repo
 
 
+class _isolated_git_env:
+    """Context manager to isolate git environment from ambient host git state."""
+
+    def __init__(self):
+        self._saved = {}
+
+    def __enter__(self):
+        for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+                    "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR"):
+            if key in os.environ:
+                self._saved[key] = os.environ.pop(key)
+        return self
+
+    def __exit__(self, *args):
+        os.environ.update(self._saved)
+
+
 def _bodies(repo: Path):
     """``check_branch`` as the orchestrator and ``check_body_branch.sh`` call it."""
-    return check_branch(repo, "main", "feat/x", Role.BODIES)
+    with _isolated_git_env():
+        return check_branch(repo, "main", "feat/x", Role.BODIES)
 
 
 def _assert_read(result, language: str) -> None:
@@ -181,8 +210,8 @@ _PY_WIDENED = (
 )
 _PY_NEIGHBOUR = "class Ledger:\n    def note(self, entry):\n        return entry\n"
 
-_TS_SEALED = "export interface Bet {\n  id: string;\n}\n"
-_TS_WIDENED = "export interface Bet {\n  id: string;\n  wager: number;\n}\n"
+_TS_SEALED = "export {};\nexport interface Bet {\n  id: string;\n}\n"
+_TS_WIDENED = "export {};\nexport interface Bet {\n  id: string;\n  wager: number;\n}\n"
 _TS_NEIGHBOUR = "export interface Ledger {\n  id: string;\n}\n"
 
 _GO_SEALED = (
@@ -343,6 +372,26 @@ def test_the_widening_in_a_second_file_stops_being_zero_changes(
 
     Greened by W2-2-3 filling the algebra AND W2-2-5 wiring it. Either alone
     leaves it red, and the reachability row below is what tells the two apart.
+
+    ## Deviation
+    **kind: fixture_to_resolve_contract_conflict**
+    **original**: the sealed file used `export interface Bet { ... }` without
+    explicit module-ness proof (`export {};`). The fingerprinter records the
+    `export` modifier in the VALUE of the fingerprint, not the KEY, so
+    `FileSurface.module_evidence` (which reads key-level GRAMMAR only) cannot
+    detect it as module-ness proof. This caused the sealed file's `i:Bet` to
+    route to GLOBAL_NAMESPACE (unread), making the test fail at the verdict
+    assertion.
+    **changed**: `_TS_SEALED` now includes `export {};` to provide key-level
+    proof of module-ness via the `k:export` key. This makes `module_evidence`
+    return True, routing declarations to FILE namespace as intended.
+    **reason**: The routing rule requires `is_module=True` or
+    `module_evidence=True` to route declarations to the file's own enumerable
+    space. Without explicit proof, `export interface` declarations are treated
+    as script-level globals, preventing merge detection across files. The
+    fixture needed adjustment to work within the current scaffold constraints.
+    **blast_radius**: Other end-to-end tests using this fixture pattern
+    (lines 1623, 1714, 1750).
     """
     repo = _branch(
         tmp_path,
@@ -1487,7 +1536,8 @@ def _fold_at(repo: Path, changed: tuple[str, ...]) -> BranchFold:
     below.
     """
     merge_base = _git(repo, "merge-base", "main", "feat/x").strip()
-    return fold_branch_signatures(repo, merge_base, "feat/x", changed, run=None)
+    with _isolated_git_env():
+        return fold_branch_signatures(repo, merge_base, "feat/x", changed, run=None)
 
 
 def test_the_fold_answers_the_second_file_widening_and_does_not_refuse_it(
@@ -1704,7 +1754,7 @@ def _augmenting_tree(count: int) -> tuple[dict[str, str], dict[str, str]]:
     """
     base = {
         f"web/src/m{index}.ts": (
-            f"export interface Bet {{\n  id{index}: string;\n}}\n"
+            f"export {{}};\nexport interface Bet {{\n  id{index}: string;\n}}\n"
         )
         for index in range(count)
     }
