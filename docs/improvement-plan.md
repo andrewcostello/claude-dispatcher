@@ -685,6 +685,70 @@ First run protected by the Phase 4 verification gate.**
 - **Phase 3 + 4 are the last manually-integrated phases**: the merge engine
   shipped tonight does this job from the next pr-mode run onward.
 
+**Wave 2, contract-first protocol (2026-08-18, in progress): 5 of 14 Done,
+$228, six dispatcher defects found and fixed the same day.** First wave run
+under the role protocol (scaffold → seals → bodies → adjudicate). Every block
+was measured before acting; the causes did NOT turn out to be one kind.
+
+- **Three distinct block causes, and only one was an agent error.**
+  *Dispatcher defect*: W2-3-2 was blocked for a COMMENT-ONLY edit
+  (AST-identical) to a production file, under a rule stated in neither the
+  prompt nor the 918-character brief — `build_prompt` took no role argument at
+  all. *Protocol working*: W2-1-3 changed a scaffolded signature and DECLARED
+  the deviation, correctly, because the scaffold's own docstring demanded a
+  value its signature did not carry; that block is the intended escalation.
+  *Agent error*: W2-1-3 then wrote the floored half twice, which its own
+  summary line ("close the reach in the UNFLOORED layer") and its own docstring
+  ("owed to W2-1-4") both told it not to.
+
+- **Stating a rule fixes ignorance, not misunderstanding — measured both ways
+  in one run.** After the prompt carried the write rule (`b0ba91c`), W2-3-2
+  stopped writing `src/` immediately and reached panel review for the first
+  time. W2-1-3, given the identical fix, repeated its violation — because it
+  believed the forbidden file WAS its deliverable. A rule cannot help there;
+  that needs scope.
+
+- **The panel reports symptoms, never the class, and that is expensive.**
+  W2-2-2 blocked four rounds on the same hand-rolled liveness analysis: r2
+  named `return`/`raise` and `while False`, r3 named `if/else` where both
+  branches return, `while True`, comprehensions, generator expressions. Each
+  round closed the cases named and the next found the next tier. It stopped in
+  ONE round once the operator named the class ("a sound Python liveness
+  analysis is not a seal") and offered three outs. Roughly $60 went into the
+  gap between accurate feedback and useful feedback.
+
+- **Corroboration earns its keep in both directions.** W2-1-2 shipped on
+  claude=APPROVE, grok=APPROVE, codex=CHANGES_REQUESTED — one uncorroborated
+  dissenter does not park good work. And the panel caught an OPERATOR-facing
+  error before it was acted on: W2-2-2's known-red list registered rows against
+  `body_task: W2-2-5` when most green at W2-2-3, which `applies_to` would have
+  hidden from the one task obliged to green them.
+
+- **A panel needs its seats.** Round 1 decided W2-1-2 on two of four seats
+  (claude timed out at 600s, gemini's `agy --print ""` returned "empty
+  prompt"). Timeout raised to 1800s from the observed distribution, gemini
+  unseated. The next round had claude voting and grok escalating — the panel
+  got stronger, so it found more, which is not a regression.
+
+- **Findings must reach the author who is judged by them.** D-56 injected a
+  task's `blockedBy` predecessors' findings; a task never names itself, so a
+  re-round arrived without the reason it was blocked. Caught live, mid-run:
+  three re-queued tasks were dispatched carrying only their scaffold's
+  findings. Fixed with a separate section — the framings are opposite ("known
+  defects in your inputs" vs "why YOUR work did not land").
+
+- **Operator knowledge short-circuits rounds.** codex flagged that W2-2-2's
+  red/green counts depend on local state; the cause is the gitignored 9.1 MB
+  `ts_signature_fingerprint/typescript.js`, absent from every fresh worktree,
+  with a one-line remedy (`python -m claude_dispatcher.ts_parser_vendor`) the
+  agent cannot derive. Handing it over cost nothing; a round rediscovering it
+  would have cost ~$28.
+
+- **Parallelism is capped by the graph, not the flag.** Three independent unit
+  chains means `--max-parallel 3`; a fourth slot sits empty. Run at 2, the
+  third task idled 27 minutes. Rate limits are per ACCOUNT, so the ceiling
+  above that is subscriptions, not slots — hence the account pool.
+
 ## Open questions — resolutions (2026-06-10)
 
 1. **Per-repo e2e provisioning** — RESOLVED: per repo. Each repo owns its
