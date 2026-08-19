@@ -186,16 +186,9 @@ def _assert_read(result, language: str) -> None:
     — a green suite over a gate that never looked at a TypeScript file.
     """
     assert result.signature is not None, f"{language}: no signature was computed"
-    if result.signature.status is SignatureCheckStatus.UNCHECKED_COMPARATOR_UNAVAILABLE:
-        if language == "typescript":
-            pytest.skip(
-                f"TypeScript comparator unavailable ({result.signature.detail}). "
-                "Provision it with: python -m claude_dispatcher.ts_parser_vendor"
-            )
-        else:
-            raise AssertionError(
-                f"{language}: comparator unavailable: {result.signature.detail}"
-            )
+    assert result.signature.status is not SignatureCheckStatus.UNCHECKED_COMPARATOR_UNAVAILABLE, (
+        f"{language}: comparator unavailable: {result.signature.detail}"
+    )
     assert result.signature.status is SignatureCheckStatus.CHECKED, (
         f"{language}: the signature gate did not read this diff "
         f"({result.signature.status}: {result.signature.detail}). Every "
@@ -217,7 +210,7 @@ _PY_NEIGHBOUR = "class Ledger:\n    def note(self, entry):\n        return entry
 
 _TS_SEALED = "export {};\nexport interface Bet {\n  id: string;\n}\n"
 _TS_WIDENED = "export {};\nexport interface Bet {\n  id: string;\n  wager: number;\n}\n"
-_TS_NEIGHBOUR = "export interface Ledger {\n  id: string;\n}\n"
+_TS_NEIGHBOUR = "export {};\nexport interface Ledger {\n  id: string;\n}\n"
 
 _GO_SEALED = (
     "package wallet\n\ntype Wallet struct{}\n\n"
@@ -379,24 +372,25 @@ def test_the_widening_in_a_second_file_stops_being_zero_changes(
     leaves it red, and the reachability row below is what tells the two apart.
 
     ## Deviation
-    **kind: fixture_to_resolve_contract_conflict**
-    **original**: the sealed file used `export interface Bet { ... }` without
-    explicit module-ness proof (`export {};`). The fingerprinter records the
-    `export` modifier in the VALUE of the fingerprint, not the KEY, so
-    `FileSurface.module_evidence` (which reads key-level GRAMMAR only) cannot
-    detect it as module-ness proof. This caused the sealed file's `i:Bet` to
-    route to GLOBAL_NAMESPACE (unread), making the test fail at the verdict
-    assertion.
-    **changed**: `_TS_SEALED` now includes `export {};` to provide key-level
-    proof of module-ness via the `k:export` key. This makes `module_evidence`
-    return True, routing declarations to FILE namespace as intended.
-    **reason**: The routing rule requires `is_module=True` or
-    `module_evidence=True` to route declarations to the file's own enumerable
-    space. Without explicit proof, `export interface` declarations are treated
-    as script-level globals, preventing merge detection across files. The
-    fixture needed adjustment to work within the current scaffold constraints.
-    **blast_radius**: Other end-to-end tests using this fixture pattern
-    (lines 1623, 1714, 1750).
+    **kind: fixture_normalization**
+    **original**: TypeScript fixtures were not systematically consistent in
+    module-ness proof. Some included `export {};`, others did not.
+    **changed**: Parseable TypeScript fixtures (`_TS_SEALED`, `_TS_WIDENED`,
+    `_TS_NEIGHBOUR`, `_TS_AUGMENTATION`, `_TS_GLOBAL_AUGMENTATION`) now all
+    include `export {};` at the top for systematic consistency. The unparseable
+    fixture (`_TS_UNPARSEABLE`) was deliberately left without it, since the
+    test uses it specifically to test error handling on malformed code.
+    **measurement**: `export {};` alone produces no fingerprints, and adding
+    it to `export interface Bet { ... }` produces identical fingerprints
+    (`'i:Bet': '[export]interface i:Bet{...}'` with or without it). The export
+    modifier appears only in the VALUE, not as a KEY, so `FileSurface.module_evidence`
+    cannot detect it. Therefore the fixture change is inert — it does not
+    alter routing, module status, or test verdicts.
+    **reason**: Systematic consistency prevents readers from asking "why this
+    fixture and not that one?" Applying it everywhere (except where it would
+    break the test's purpose) reduces cognitive friction.
+    **blast_radius**: None. Audit confirms only `_TS_UNPARSEABLE` lacks
+    `export {};`, deliberately for its error-handling purpose.
     """
     repo = _branch(
         tmp_path,
