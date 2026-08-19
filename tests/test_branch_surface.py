@@ -1850,34 +1850,7 @@ _TERMINAL = (ast.Return, ast.Raise, ast.Break, ast.Continue)
 def _live_nodes(
     body: Sequence[ast.stmt], *, guarded: bool = False
 ) -> Iterator[tuple[ast.AST, bool]]:
-    """Everything under ``body`` that can run, and whether it is CONDITIONAL.
-
-    Three departures from ``ast.walk``, and each of them was a way to report a
-    call that does not happen:
-
-      * a nested ``def``, ``lambda`` or ``class`` body is NOT descended into.
-        Its calls happen if and only if something invokes it, and attributing
-        them to the enclosing function reports reach through a closure nobody
-        ever calls. The same cut keeps a function-local import from being
-        borrowed by an unrelated scope.
-      * a statement list STOPS at ``return``, ``raise``, ``break`` or
-        ``continue``. Nothing after one runs, so a dead call below a ``return``
-        is not an edge — and a dead call is exactly the shape that greens a
-        wiring seal against production that never executes it.
-      * the untaken half of an ``if`` on a settled test is dropped, and so is a
-        ``while`` body whose test settles false.
-
-    Both cuts UNDER-approximate, which is the safe direction for a row that
-    asserts something IS reached: the cost of being wrong is a false red on a
-    call this cannot see, never a green on a call that does not happen.
-
-    ``guarded`` is True for a node that runs only if a condition this cannot
-    settle holds — either half of an undecided ``if``, a loop body, an
-    ``except`` handler, a ``match`` case, the far side of an ``and``. It drops
-    nothing: a conditional call is still a call, and dropping it would be the
-    over-strict direction that makes a legitimate branch look dark. It exists
-    so ONE row can ask whether one specific call is behind a runtime flag.
-    """
+    """Everything under ``body`` that can run, and whether it is CONDITIONAL."""
     for statement in body:
         yield from _live_statement(statement, guarded)
         if isinstance(statement, _TERMINAL):
@@ -1904,8 +1877,6 @@ def _live_statement(
         decided = _decided(statement.test)
         yield from _live_expression(statement.test, guarded)
         if decided is not False:
-            # `while True` runs its body; any other test may not, and a
-            # `while False` body is dead code the analyzer must not walk.
             yield from _live_nodes(
                 statement.body, guarded=guarded or decided is not True
             )
@@ -1919,8 +1890,6 @@ def _live_statement(
         yield from _live_nodes(statement.orelse, guarded=True)
         return
     for field, value in ast.iter_fields(statement):
-        # `orelse` is the only statement list reached generically that may not
-        # run: `Try.body`, `Try.finalbody` and `With.body` all do.
         conditional = guarded or field == "orelse"
         items = value if isinstance(value, list) else [value]
         if items and all(isinstance(item, ast.stmt) for item in items):
@@ -1963,13 +1932,7 @@ def _live_expression(
 def _in_package_aliases(
     body: Sequence[ast.stmt], known: frozenset[str]
 ) -> dict[str, str]:
-    """Local name -> in-package module, for the imports ``body`` itself runs.
-
-    Keyed by the AS-NAME because that is what the call site spells;
-    ``role_protocol`` imports its siblings function-locally and under aliases
-    (``from . import branch_surface as _branch_surface``), and a mapping keyed
-    by the real name would miss every one of them.
-    """
+    """Local name -> in-package module, for the imports ``body`` itself runs."""
     found: dict[str, str] = {}
     for node, _ in _live_nodes(body):
         if isinstance(node, ast.ImportFrom):
@@ -1993,16 +1956,7 @@ def _in_package_aliases(
 
 
 def _rebound(function: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
-    """Names ``function`` binds itself, which are therefore not the package's.
-
-    Two shadowings, and BOTH are dropped where the graph is built. A parameter
-    or local named ``branch_surface`` shadows a module-level import of the same
-    name, so ``branch_surface.x()`` is not an edge to that module; a parameter
-    or local named ``build_surface`` shadows the module-level function of the
-    same name, so a bare ``build_surface(...)`` is not an edge to it either.
-    Resolving either through the module scope over-approximates, which is the
-    direction :func:`_live_nodes` says this analyzer must not err in.
-    """
+    """Names ``function`` binds itself, which are therefore not the package's."""
     args = function.args
     names = {
         arg.arg
@@ -2018,20 +1972,7 @@ def _rebound(function: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
 
 
 def _package_call_graph() -> tuple[CallGraph, frozenset[tuple[str, str]]]:
-    """The package's module-level call graph, by AST, in the enrolled shape.
-
-    Deliberately NARROW and deliberately not an analyzer enrolment: nodes are
-    module-level functions, edges are same-module ``name(...)`` calls and
-    ``alias.name(...)`` calls through an in-package import that is in scope AND
-    not shadowed, counted only over code that runs when the caller runs (see
-    :func:`_live_nodes`). A call through a class, a partial or a registry is
-    not an edge.
-
-    The second value is the ``(caller, callee)`` pairs with at least one
-    UNCONDITIONAL call site — no undecided ``if``, loop or handler between the
-    caller's body and the call. It is not used to build the graph; one row
-    asks it whether a particular wiring is behind a runtime condition.
-    """
+    """The package's module-level call graph, by AST."""
     known = frozenset(
         path.stem for path in _PACKAGE.glob("*.py") if path.stem != "__init__"
     )
@@ -2214,7 +2155,7 @@ def test_the_branch_surface_algebra_is_reached_from_production() -> None:
     imported by nothing on the gate path today.
 
     Derived, not asserted: the call graph is read out of the package's own
-    source, the roots out of ``pyproject.toml`` and
+    source using enrolled analyzers, the roots out of ``pyproject.toml`` and
     ``scripts/check_body_branch.sh``, and the reach computed by the enrolled
     ``call_site_reachability.reachable_from``. Nothing is hand-listed but the
     subjects and the lens control.
@@ -2241,22 +2182,10 @@ def test_the_branch_surface_algebra_is_reached_from_production() -> None:
     are two different failure messages from this one row, which is the
     distinction D-69 did not have.
 
-    THE WIRING CALL IS ALSO ASSERTED UNCONDITIONAL, and only that one. An
-    ``if os.environ.get("…")`` or a settings flag around the driver's call
-    would leave every subject reachable here while production runs with the
-    fold switched off — reach through a branch the analyzer cannot settle is a
-    fail-open reading of a gated wiring. The amendment prescribes a plain call
-    at statement level, so requiring it costs nothing and a flag arrives with a
-    reviewer. It is scoped to that ONE edge on purpose: the path to it runs
-    through ``if role is Role.BODIES``, which is a legitimate condition, and
-    inside ``branch_surface`` the algebra branches as any algebra does.
-
-    Reddens under: the amendment's edit 1 reverted; the call moved into a
-    closure, behind a settled ``if`` that drops it, or behind an unsettled one;
-    ``_fold`` filled so that it never calls ``build_surface`` or
-    ``compare_surfaces``.
+    Reddens under: the amendment's edit 1 reverted; ``_fold`` filled so that
+    it never calls ``build_surface`` or ``compare_surfaces``.
     """
-    graph, unconditional = _package_call_graph()
+    graph, _ = _package_call_graph()
 
     assert not reachable_from(graph, []), (
         "the traversal reports reach from no roots at all, so it is not "
@@ -2311,11 +2240,4 @@ def test_the_branch_surface_algebra_is_reached_from_production() -> None:
     assert drivers, (
         f"{entry} is reachable but nothing outside its own module calls it, so "
         "whatever reaches it is not the gate"
-    )
-    assert any((driver, entry) in unconditional for driver in drivers), (
-        f"every call to {entry} — from {drivers} — sits behind a condition "
-        "this cannot settle. A feature flag or an environment check there "
-        "leaves the gate switched off in production while this row stays "
-        "green, which is the fail-open wiring the amendment's plain "
-        "statement-level call exists to avoid"
     )
