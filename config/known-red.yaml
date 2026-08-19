@@ -9,8 +9,12 @@
 # To add one:
 #   1. Prove it is red, by exit code only:
 #        PYTHONPATH=src pytest 'tests/test_x.py::test_y' -q     # must be non-zero
-#   2. Add the entry. `rows` are node ids exactly as pytest prints them —
-#      parametrised ids keep their brackets and spaces, unquoted and unescaped.
+#   2. Add the entry. `rows` are node ids exactly as pytest prints them,
+#      parametrised ids keeping their brackets and spaces — but QUOTE every row.
+#      A parametrised id may contain ": ", which YAML reads as a mapping: 50 of
+#      the 106 rows registered on 2026-08-18 parsed as CommentedMap and the
+#      loader refused the whole entry ("holds a non-string or blank row").
+#      Double quotes are safest — ids also contain apostrophes.
 #   3. Commit it: the point of a tracked file is a reviewable, attributed diff.
 #
 # No dispatched role may write this file — it is in `role_protocol.FLOOR_GLOBS`.
@@ -20,7 +24,124 @@
 # `.dispatcher.yaml` must carry `test_exclusion:` and read
 # $DISPATCHER_KNOWN_RED_FILE, or active entries BLOCK with a named fault.
 
-entries: []
+entries:
+  - rows:
+      - "tests/test_prompt_provenance.py::test_a_chain_digested_under_the_old_encoding_is_a_named_state"
+      - "tests/test_prompt_provenance.py::test_a_declared_journal_less_caller_loads_and_the_record_says_so"
+      - "tests/test_prompt_provenance.py::test_a_drift_refusal_names_both_digests_and_the_anchor_it_compared_against"
+      - "tests/test_prompt_provenance.py::test_a_genesis_whose_anchor_is_unusable_publishes_a_failure_not_a_pin[a list]"
+      - "tests/test_prompt_provenance.py::test_a_genesis_whose_anchor_is_unusable_publishes_a_failure_not_a_pin[a number]"
+      - "tests/test_prompt_provenance.py::test_a_genesis_whose_anchor_is_unusable_publishes_a_failure_not_a_pin[blank]"
+      - "tests/test_prompt_provenance.py::test_a_genesis_whose_anchor_is_unusable_publishes_a_failure_not_a_pin[not hex]"
+      - "tests/test_prompt_provenance.py::test_a_genesis_whose_anchor_is_unusable_publishes_a_failure_not_a_pin[null]"
+      - "tests/test_prompt_provenance.py::test_a_genesis_whose_anchor_is_unusable_publishes_a_failure_not_a_pin[too short]"
+      - "tests/test_prompt_provenance.py::test_a_genesis_whose_anchor_is_unusable_publishes_a_failure_not_a_pin[whitespace]"
+      - "tests/test_prompt_provenance.py::test_a_genesis_whose_NONCE_is_unusable_is_keyed_by_its_journal"
+      - "tests/test_prompt_provenance.py::test_a_missing_prompt_member_refuses_through_this_module"
+      - "tests/test_prompt_provenance.py::test_an_anchor_revokes_a_declaration_so_releasing_it_cannot_uncover_one"
+      - "tests/test_prompt_provenance.py::test_anchors_that_disagree_refuse_rather_than_pick_one"
+      - "tests/test_prompt_provenance.py::test_an_unanchored_process_refuses_to_load_the_panel_prompt"
+      - "tests/test_prompt_provenance.py::test_a_prompt_file_ADDED_after_the_run_started_is_refused"
+      - "tests/test_prompt_provenance.py::test_a_published_anchor_failure_outranks_a_matching_pin"
+      - "tests/test_prompt_provenance.py::test_a_resumed_run_is_anchored_from_the_genesis_it_verified"
+      - "tests/test_prompt_provenance.py::test_a_second_declaration_replaces_the_first_and_nothing_withdraws_one"
+      - "tests/test_prompt_provenance.py::test_a_shared_prompt_edited_after_the_run_started_is_refused"
+      - "tests/test_prompt_provenance.py::test_a_subtree_declaration_that_still_plans_is_stopped_at_the_diff"
+      - "tests/test_prompt_provenance.py::test_a_tree_that_is_absent_is_drift_and_not_an_exemption"
+      - "tests/test_prompt_provenance.py::test_a_tree_that_moved_across_a_resume_is_refused_end_to_end"
+      - "tests/test_prompt_provenance.py::test_each_journal_less_entry_point_declares_before_it_reaches_the_panel[bakeoff.py]"
+      - "tests/test_prompt_provenance.py::test_each_journal_less_entry_point_declares_before_it_reaches_the_panel[cross_family_panel.py]"
+      - "tests/test_prompt_provenance.py::test_each_journal_less_entry_point_declares_before_it_reaches_the_panel[retroactive_sweep.py]"
+      - "tests/test_prompt_provenance.py::test_every_decision_reaches_the_reporter_including_the_clean_one[LOAD_ANCHORED]"
+      - "tests/test_prompt_provenance.py::test_every_decision_reaches_the_reporter_including_the_clean_one[LOAD_UNANCHORED_DECLARED]"
+      - "tests/test_prompt_provenance.py::test_every_decision_reaches_the_reporter_including_the_clean_one[REFUSE_ANCHOR_AMBIGUOUS]"
+      - "tests/test_prompt_provenance.py::test_every_decision_reaches_the_reporter_including_the_clean_one[REFUSE_ANCHOR_FAILED]"
+      - "tests/test_prompt_provenance.py::test_every_decision_reaches_the_reporter_including_the_clean_one[REFUSE_DRIFTED]"
+      - "tests/test_prompt_provenance.py::test_every_decision_reaches_the_reporter_including_the_clean_one[REFUSE_UNANCHORED]"
+      - "tests/test_prompt_provenance.py::test_no_role_may_write_the_instructions_the_panel_executes[adjudicate: the module that decides the load]"
+      - "tests/test_prompt_provenance.py::test_no_role_may_write_the_instructions_the_panel_executes[adjudicate: the reviewer tree in a nested checkout]"
+      - "tests/test_prompt_provenance.py::test_no_role_may_write_the_instructions_the_panel_executes[adjudicate: the shared preamble]"
+      - "tests/test_prompt_provenance.py::test_no_role_may_write_the_instructions_the_panel_executes[adjudicate: the verifier's instructions]"
+      - "tests/test_prompt_provenance.py::test_no_role_may_write_the_instructions_the_panel_executes[adjudicate: the verifier tree in a nested checkout]"
+      - "tests/test_prompt_provenance.py::test_no_role_may_write_the_instructions_the_panel_executes[bodies: the module that decides the load]"
+      - "tests/test_prompt_provenance.py::test_no_role_may_write_the_instructions_the_panel_executes[bodies: the reviewer tree in a nested checkout]"
+      - "tests/test_prompt_provenance.py::test_no_role_may_write_the_instructions_the_panel_executes[bodies: the shared preamble]"
+      - "tests/test_prompt_provenance.py::test_no_role_may_write_the_instructions_the_panel_executes[bodies: the verifier's instructions]"
+      - "tests/test_prompt_provenance.py::test_no_role_may_write_the_instructions_the_panel_executes[bodies: the verifier tree in a nested checkout]"
+      - "tests/test_prompt_provenance.py::test_no_role_may_write_the_instructions_the_panel_executes[legacy: the module that decides the load]"
+      - "tests/test_prompt_provenance.py::test_no_role_may_write_the_instructions_the_panel_executes[legacy: the reviewer tree in a nested checkout]"
+      - "tests/test_prompt_provenance.py::test_no_role_may_write_the_instructions_the_panel_executes[legacy: the shared preamble]"
+      - "tests/test_prompt_provenance.py::test_no_role_may_write_the_instructions_the_panel_executes[legacy: the verifier's instructions]"
+      - "tests/test_prompt_provenance.py::test_no_role_may_write_the_instructions_the_panel_executes[legacy: the verifier tree in a nested checkout]"
+      - "tests/test_prompt_provenance.py::test_no_role_may_write_the_instructions_the_panel_executes[scaffold: the module that decides the load]"
+      - "tests/test_prompt_provenance.py::test_no_role_may_write_the_instructions_the_panel_executes[scaffold: the reviewer tree in a nested checkout]"
+      - "tests/test_prompt_provenance.py::test_no_role_may_write_the_instructions_the_panel_executes[scaffold: the shared preamble]"
+      - "tests/test_prompt_provenance.py::test_no_role_may_write_the_instructions_the_panel_executes[scaffold: the verifier's instructions]"
+      - "tests/test_prompt_provenance.py::test_no_role_may_write_the_instructions_the_panel_executes[scaffold: the verifier tree in a nested checkout]"
+      - "tests/test_prompt_provenance.py::test_no_role_may_write_the_instructions_the_panel_executes[seals: the module that decides the load]"
+      - "tests/test_prompt_provenance.py::test_no_role_may_write_the_instructions_the_panel_executes[seals: the reviewer tree in a nested checkout]"
+      - "tests/test_prompt_provenance.py::test_no_role_may_write_the_instructions_the_panel_executes[seals: the shared preamble]"
+      - "tests/test_prompt_provenance.py::test_no_role_may_write_the_instructions_the_panel_executes[seals: the verifier's instructions]"
+      - "tests/test_prompt_provenance.py::test_no_role_may_write_the_instructions_the_panel_executes[seals: the verifier tree in a nested checkout]"
+      - "tests/test_prompt_provenance.py::test_no_spelling_of_the_instruction_trees_is_adjudicable[a family preamble]"
+      - "tests/test_prompt_provenance.py::test_no_spelling_of_the_instruction_trees_is_adjudicable[a fourth family preamble]"
+      - "tests/test_prompt_provenance.py::test_no_spelling_of_the_instruction_trees_is_adjudicable[a nested checkout]"
+      - "tests/test_prompt_provenance.py::test_no_spelling_of_the_instruction_trees_is_adjudicable[another family preamble]"
+      - "tests/test_prompt_provenance.py::test_no_spelling_of_the_instruction_trees_is_adjudicable[a third family preamble]"
+      - "tests/test_prompt_provenance.py::test_no_spelling_of_the_instruction_trees_is_adjudicable[dot-prefixed]"
+      - "tests/test_prompt_provenance.py::test_no_spelling_of_the_instruction_trees_is_adjudicable[the class of files]"
+      - "tests/test_prompt_provenance.py::test_no_spelling_of_the_instruction_trees_is_adjudicable[the module that decides the load]"
+      - "tests/test_prompt_provenance.py::test_no_spelling_of_the_instruction_trees_is_adjudicable[the shared preamble, every seat reads it]"
+      - "tests/test_prompt_provenance.py::test_no_spelling_of_the_instruction_trees_is_adjudicable[the tree, trailing slash]"
+      - "tests/test_prompt_provenance.py::test_no_spelling_of_the_instruction_trees_is_adjudicable[the tree, wildcard tail]"
+      - "tests/test_prompt_provenance.py::test_no_spelling_of_the_instruction_trees_is_adjudicable[the verifier's class of files]"
+      - "tests/test_prompt_provenance.py::test_no_spelling_of_the_instruction_trees_is_adjudicable[the verifier's instructions]"
+      - "tests/test_prompt_provenance.py::test_no_spelling_of_the_instruction_trees_is_adjudicable[the verifier tree, nested checkout]"
+      - "tests/test_prompt_provenance.py::test_no_spelling_of_the_instruction_trees_is_adjudicable[the verifier tree, trailing slash]"
+      - "tests/test_prompt_provenance.py::test_no_spelling_of_the_instruction_trees_is_adjudicable[the verifier tree, wildcard tail]"
+      - "tests/test_prompt_provenance.py::test_no_supplied_policy_can_lower_the_instruction_trees[adjudicate: the module that decides the load]"
+      - "tests/test_prompt_provenance.py::test_no_supplied_policy_can_lower_the_instruction_trees[adjudicate: the reviewer tree in a nested checkout]"
+      - "tests/test_prompt_provenance.py::test_no_supplied_policy_can_lower_the_instruction_trees[adjudicate: the shared preamble]"
+      - "tests/test_prompt_provenance.py::test_no_supplied_policy_can_lower_the_instruction_trees[adjudicate: the verifier's instructions]"
+      - "tests/test_prompt_provenance.py::test_no_supplied_policy_can_lower_the_instruction_trees[adjudicate: the verifier tree in a nested checkout]"
+      - "tests/test_prompt_provenance.py::test_no_supplied_policy_can_lower_the_instruction_trees[bodies: the module that decides the load]"
+      - "tests/test_prompt_provenance.py::test_no_supplied_policy_can_lower_the_instruction_trees[bodies: the reviewer tree in a nested checkout]"
+      - "tests/test_prompt_provenance.py::test_no_supplied_policy_can_lower_the_instruction_trees[bodies: the shared preamble]"
+      - "tests/test_prompt_provenance.py::test_no_supplied_policy_can_lower_the_instruction_trees[bodies: the verifier's instructions]"
+      - "tests/test_prompt_provenance.py::test_no_supplied_policy_can_lower_the_instruction_trees[bodies: the verifier tree in a nested checkout]"
+      - "tests/test_prompt_provenance.py::test_no_supplied_policy_can_lower_the_instruction_trees[legacy: the module that decides the load]"
+      - "tests/test_prompt_provenance.py::test_no_supplied_policy_can_lower_the_instruction_trees[legacy: the reviewer tree in a nested checkout]"
+      - "tests/test_prompt_provenance.py::test_no_supplied_policy_can_lower_the_instruction_trees[legacy: the shared preamble]"
+      - "tests/test_prompt_provenance.py::test_no_supplied_policy_can_lower_the_instruction_trees[legacy: the verifier's instructions]"
+      - "tests/test_prompt_provenance.py::test_no_supplied_policy_can_lower_the_instruction_trees[legacy: the verifier tree in a nested checkout]"
+      - "tests/test_prompt_provenance.py::test_no_supplied_policy_can_lower_the_instruction_trees[scaffold: the module that decides the load]"
+      - "tests/test_prompt_provenance.py::test_no_supplied_policy_can_lower_the_instruction_trees[scaffold: the reviewer tree in a nested checkout]"
+      - "tests/test_prompt_provenance.py::test_no_supplied_policy_can_lower_the_instruction_trees[scaffold: the shared preamble]"
+      - "tests/test_prompt_provenance.py::test_no_supplied_policy_can_lower_the_instruction_trees[scaffold: the verifier's instructions]"
+      - "tests/test_prompt_provenance.py::test_no_supplied_policy_can_lower_the_instruction_trees[scaffold: the verifier tree in a nested checkout]"
+      - "tests/test_prompt_provenance.py::test_no_supplied_policy_can_lower_the_instruction_trees[seals: the module that decides the load]"
+      - "tests/test_prompt_provenance.py::test_no_supplied_policy_can_lower_the_instruction_trees[seals: the reviewer tree in a nested checkout]"
+      - "tests/test_prompt_provenance.py::test_no_supplied_policy_can_lower_the_instruction_trees[seals: the shared preamble]"
+      - "tests/test_prompt_provenance.py::test_no_supplied_policy_can_lower_the_instruction_trees[seals: the verifier's instructions]"
+      - "tests/test_prompt_provenance.py::test_no_supplied_policy_can_lower_the_instruction_trees[seals: the verifier tree in a nested checkout]"
+      - "tests/test_prompt_provenance.py::test_one_call_refuses_the_prompt_and_keeps_refusing_the_floor"
+      - "tests/test_prompt_provenance.py::test_releasing_the_failed_anchor_is_the_documented_recovery"
+      - "tests/test_prompt_provenance.py::test_starting_a_run_anchors_the_tree_its_genesis_recorded"
+      - "tests/test_prompt_provenance.py::test_the_bytes_rendered_are_the_bytes_that_were_digested"
+      - "tests/test_prompt_provenance.py::test_the_bytes_rendered_come_from_the_walk_whose_digest_was_CHECKED"
+      - "tests/test_prompt_provenance.py::test_the_digest_a_genesis_records_is_the_digest_a_load_computes"
+      - "tests/test_prompt_provenance.py::test_the_render_is_not_an_earlier_read_than_the_one_that_was_digested"
+      - "tests/test_prompt_provenance.py::test_the_standalone_panel_tool_declares_and_then_loads_the_prompt"
+    seals_task: W2-1-2
+    body_task: W2-1-3
+    reason: >-
+      W2-1-2's seals for the prompt-provenance load gates, committed RED by
+      design and green only once W2-1-3's bodies land. Measured on the base at
+      936c81c: 106 failed / 2970 passed, every failure in this one file. Without
+      this entry they fail EVERY other task's mechanical gate, which expects a
+      green suite for BODIES and ADJUDICATE.
+    registered_at_sha: 936c81c
+
 
 # entries:
 #   - rows:
