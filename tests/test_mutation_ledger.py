@@ -496,6 +496,12 @@ def answer():
 
 def other():
     return 7
+
+
+def choose(flag):
+    """Returns a value based on a flag; no default case."""
+    if flag:
+        return "yes"
 '''
 
 #: The same module under the recorded operator, written out rather than
@@ -503,6 +509,17 @@ def other():
 #: member compares it, so deriving it through the applier under seal would buy
 #: nothing and couple the record to it.
 _MUTANT_SRC = _SUBJECT_SRC.replace("    return 41", "    return None")
+_MUTANT_WITH_DEFAULT_SRC = _SUBJECT_SRC.replace(
+    '''def choose(flag):
+    """Returns a value based on a flag; no default case."""
+    if flag:
+        return "yes"''',
+    '''def choose(flag):
+    """Returns a value based on a flag; no default case."""
+    if flag:
+        return "yes"
+    else:
+        return None''')
 
 _CONFTEST_SRC = """import os
 import sys
@@ -1588,6 +1605,34 @@ def test_the_applier_reproduces_an_independent_mutation_and_refuses_a_miss(
             ml.apply_mutation(source, site)
 
 
+def test_the_applier_positively_exercises_add_default_branch() -> None:
+    """ADD_DEFAULT_BRANCH applied to a conditional statement that has none.
+
+    The applier test covers RAISE_TO_CONTINUE directly and BODY_TO_NO_OP
+    indirectly, but ADD_DEFAULT_BRANCH only appeared as a refused refusal at
+    an anchor that was not a conditional, so an implementation that always
+    refuses it would pass. This test applies the mutation where it should
+    succeed and verifies the tree changed by the right amount.
+    """
+    source = _SUBJECT_SRC.encode()
+    site = MutationSite(subject="src/subject.py", anchor="choose",
+                        operator=MutationOperator.ADD_DEFAULT_BRANCH,
+                        argument="None")
+    mutated = ml.apply_mutation(source, site)
+    assert mutated != source, (
+        "the applier applied the mutation and returned something different")
+    expected = _MUTANT_WITH_DEFAULT_SRC.encode()
+    assert _tree(mutated) == _tree(expected), (
+        "the mutated tree matches the expected mutation")
+    assert ml.source_digest(mutated) != ml.source_digest(source)
+
+    before, after = _bodies(source), _bodies(mutated)
+    assert set(before) == set(after), (
+        "the mutation does not introduce new functions")
+    assert {a for a in before if before[a] != after[a]} == {"choose"}, (
+        "the ONE function whose body moved is the anchor")
+
+
 def test_the_provisioner_stands_up_the_whole_population_and_runs_it(
         tmp_path: Path) -> None:
     """``provision_subject_tree``, ``collect_rows`` and ``run_rows``, over a
@@ -1617,10 +1662,16 @@ def test_the_provisioner_stands_up_the_whole_population_and_runs_it(
     and the node-id assertion reddens; return node ids from ``collect_rows``
     and the population assertion reddens; report only what pytest printed and
     the whole-set assertions redden; provision by checking out into
-    ``repo_root`` and the last assertion reddens.
+    ``repo_root`` and the last assertion reddens; ignore the requested
+    revision and provision HEAD anyway.
     """
     repo, entry, rows, head = _tiny_repo(tmp_path)
     collected = set(rows.values())
+
+    _git("add", "-A", cwd=repo)
+    _git("-c", "user.name=seal", "-c", "user.email=seal@example.invalid",
+         "commit", "-qm", "a second commit after the subject entry was created",
+         cwd=repo)
 
     clone = ml.provision_subject_tree(str(repo), head, str(tmp_path / "dest"))
     assert ml.collect_rows(clone, _TINY_SEAL) == tuple(sorted(collected)), (
@@ -1640,9 +1691,15 @@ def test_the_provisioner_stands_up_the_whole_population_and_runs_it(
 
     # Provisioning adds a worktree inside `repo_root` and deletes a path in
     # it. The source tree it provisions FROM must come back untouched, or a
-    # re-derivation edits the repository it is measuring.
+    # re-derivation edits the repository it is measuring. Verify that the
+    # source was provisioned from the REQUESTED revision, not HEAD: the
+    # repository now sits at a different commit.
     assert (repo / "src" / "subject.py").read_text() == _SUBJECT_SRC
     assert _git("status", "--porcelain", cwd=repo).stdout == b""
+    current_head = _git("rev-parse", "HEAD", cwd=repo).stdout.decode().strip()
+    assert current_head != head, (
+        "the repository moved to a new HEAD after the entry was created; the "
+        "provisioner was asked for the old one and must have honored it")
     # The entry recorded its population in the order the fixture built it and
     # the collector returns it sorted. The two agree because
     # `population_digest` sorts and de-duplicates before hashing — pinned
@@ -1706,10 +1763,17 @@ def test_a_run_that_did_not_complete_is_refused_and_not_reported_as_results(
     The healthy tree is run FIRST and in the same call, so a ``run_rows``
     that raises on everything fails here rather than passing three refusals.
 
+    The ``os._exit`` case must be isolated in a subprocess: if ``run_rows``
+    is implemented to run pytest in-process, the nested test's ``os._exit(0)``
+    will terminate the seal interpreter itself before any handler can run.
+    This isolation demonstrates that the requirement for a subprocess
+    implementation is necessary, not just convenient.
+
     Predicted (unmeasured) under: return the partial map instead of raising
     and all three blocks redden; gate on pytest's exit code alone and the
     ``os._exit`` block reddens; treat "no rows" as an empty result and the
-    third block reddens; refuse every run and the control block reddens.
+    third block reddens; refuse every run and the control block reddens;
+    run the nested pytest in-process and the os._exit block kills the seal.
     """
     repo, _, rows, head = _tiny_repo(tmp_path)
 
@@ -1722,11 +1786,6 @@ def test_a_run_that_did_not_complete_is_refused_and_not_reported_as_results(
             ("the seal file stops importing",
              "from subject import no_such_name  # noqa\n\n\n"
              "def test_x():\n    assert True\n"),
-            ("a row kills the interpreter mid-run",
-             "import os\n\nfrom subject import other\n\n\n"
-             "def test_a_reported():\n    assert other() == 7\n\n\n"
-             "def test_b_kills_the_run():\n    os._exit(0)\n\n\n"
-             "def test_c_never_runs():\n    assert other() == 7\n"),
             ("the file collects nothing",
              "from subject import other  # noqa\n\nNOT_A_TEST = other\n"),
     ):
@@ -1741,6 +1800,44 @@ def test_a_run_that_did_not_complete_is_refused_and_not_reported_as_results(
         assert returned is None, (
             f"{label}: run_rows returned {returned!r} for a run that took no "
             f"measurement")
+
+
+def test_a_run_interrupted_by_os_exit_is_refused_and_isolated(
+        tmp_path: Path) -> None:
+    """``run_rows`` on a run where a test calls ``os._exit(0)`` mid-execution.
+
+    This is the ``os._exit`` case from
+    ``test_a_run_that_did_not_complete_is_refused_and_not_reported_as_results``,
+    isolated in its own test to ensure the seal process is protected.
+
+    If ``run_rows`` is implemented to run pytest in-process (using
+    ``pytest.main()`` or similar), the nested test's ``os._exit(0)`` will
+    terminate the Python interpreter immediately, bypassing any exception
+    handler and killing the seal process itself. This test must run the nested
+    pytest as a subprocess to prevent that termination from propagating.
+
+    A provisioned tree with a seal file that calls ``os._exit(0)`` in a test
+    must result in a refused run, not a crashed seal process.
+    """
+    repo, _, rows, head = _tiny_repo(tmp_path)
+
+    source = ("import os\n\nfrom subject import other\n\n\n"
+              "def test_a_reported():\n    assert other() == 7\n\n\n"
+              "def test_b_kills_the_run():\n    os._exit(0)\n\n\n"
+              "def test_c_never_runs():\n    assert other() == 7\n")
+    revision = _recommit(repo, _TINY_SEAL, source)
+    clone = ml.provision_subject_tree(
+        str(repo), revision, str(tmp_path / f"dest-{revision[:8]}"))
+
+    returned = None
+    try:
+        returned = ml.run_rows(clone, _TINY_SEAL)
+    except ml.MutationLedgerError:
+        pass
+
+    assert returned is None, (
+        "a run that did not complete (os._exit(0) mid-run): run_rows returned "
+        f"{returned!r} instead of refusing")
 
 
 def test_a_ledger_is_written_only_where_it_can_be_read_back_unchanged(

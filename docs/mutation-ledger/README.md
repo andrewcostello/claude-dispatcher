@@ -459,28 +459,6 @@ green run comes to mean nothing:
   `4e66a01…` but not `2e0dc89…` is answered here rather than raising
   `CalledProcessError` out of `git show`.
 
-## The one contract line the seals changed
-
-`Rederivation.reddened_observed`'s field docstring said "Rows red under the
-mutant in THIS run", which contradicts `LedgerEntry.reddened`,
-`classify_observation` and this README — all of which say the
-`PASSED` → `FAILED` **transition** set, and on which `unexpected_rows` and
-`missing_rows` are set differences that only mean something if both sides are
-built by the same rule. The two readings coincide on any tree with no
-baseline-red row, so
-`test_the_reddened_set_drops_a_row_that_was_red_before_the_mutation` runs
-against a provisioned tree that has one: under the transition reading the
-entry over-claimed and the clause is amended; under the field docstring's
-reading the same entry reads as `held`.
-
-Sealing the transition reading while the field docstring said the other thing
-would ship a module whose docstring asserts behaviour it does not have —
-which this project has three recorded blocks from. So the docstring was
-corrected to the reading the other three statements already carry. It is a
-**deviation** (`shared-contract`, one comment, no signature or behaviour
-changed), recorded in this task's summary: W2-3-3 and W2-3-5 are the
-dependents, and both are downstream of the seal that pins it.
-
 ## What the seals could not fix
 
 **Three** defects the rows pin the *correct* side of, and which the seal
