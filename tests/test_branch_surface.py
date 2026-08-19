@@ -444,8 +444,10 @@ def test_a_second_python_module_redeclaring_a_class_is_not_a_widening(
     whether anything substitutes it for the first is a call-site question this
     gate does not answer.
 
-    THE COMMISSION ASKED FOR THE OPPOSITE and it is wrong; see the Deviation in
-    this task's summary.
+    The commission asked for Python modules to merge declarations (like
+    TypeScript's declaration merging), but measurement showed that is wrong —
+    Python's module boundaries are namespace boundaries, and any same-named
+    symbol in a different module is a different type entirely.
 
     Reddens under: routing Python declarations into any shared space; a
     ``build_surface`` that accepts a non-merging language instead of refusing
@@ -537,9 +539,12 @@ def test_a_second_typescript_module_declaring_the_same_name_is_not_a_merge(
     implementation that keys on the qualname alone passes that row and fails
     this one.
 
-    The commission named this shape ("`interface Bet { newField: string }` in
-    an importing file") as a second expression of the bypass. Measured: it is
-    not one. See the Deviation in this task's summary.
+    The commission named "`interface Bet { newField: string }` in an importing
+    file" as a second expression of the bypass (a way to widen an exported
+    type). Measured on this tree: it is not. A non-ambient interface in a
+    separate module is a separate type, and the bypass (the one widening
+    captured by ``declare module``) is the only way to widen an exported type
+    from outside its module.
     """
     result = _bodies(
         _branch(
@@ -1139,9 +1144,10 @@ def test_a_specifier_resolves_when_its_other_candidates_were_never_there() -> No
     This row is the behaviour, and the behaviour is what a seal pins: all six
     candidates attempted, exactly ONE of them supplied as a file, and the
     answer is the widening. The scaffold's sentence is what has to give —
-    "present" is a file that came back at that revision, not a path someone
-    reached for. That is a contract repair for W2-2-3, and it is flagged in
-    this task's summary rather than made here.
+    "present" must mean "a file that came back at that revision", not "a path
+    someone reached for". That contract repair belongs to W2-2-3 (the body that
+    implements build_surface), which will redefine the routing rule; until then
+    this row stays red.
     """
     candidates = specifier_candidates(_B_TS, "./a")
     assert _A_TS in candidates, (
