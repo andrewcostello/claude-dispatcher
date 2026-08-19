@@ -459,27 +459,23 @@ green run comes to mean nothing:
   `4e66a01…` but not `2e0dc89…` is answered here rather than raising
   `CalledProcessError` out of `git show`.
 
-## The one contract line the seals changed
+## A known contract ambiguity: the reddened set definition
 
-`Rederivation.reddened_observed`'s field docstring said "Rows red under the
-mutant in THIS run", which contradicts `LedgerEntry.reddened`,
-`classify_observation` and this README — all of which say the
-`PASSED` → `FAILED` **transition** set, and on which `unexpected_rows` and
-`missing_rows` are set differences that only mean something if both sides are
-built by the same rule. The two readings coincide on any tree with no
-baseline-red row, so
-`test_the_reddened_set_drops_a_row_that_was_red_before_the_mutation` runs
-against a provisioned tree that has one: under the transition reading the
+`Rederivation.reddened_observed` in the source module has a field docstring
+saying "Rows red under the mutant in THIS run". This contradicts
+`LedgerEntry.reddened`, `classify_observation`, and this README — all of which
+define the **reddened set** as the `PASSED` → `FAILED` **transition** set, not
+all rows failing under the mutant. The two readings coincide on any tree with
+no baseline-red rows, so `test_the_reddened_set_drops_a_row_that_was_red_before_the_mutation`
+runs against a provisioned tree that has one: under the transition reading the
 entry over-claimed and the clause is amended; under the field docstring's
 reading the same entry reads as `held`.
 
-Sealing the transition reading while the field docstring says the other thing
-creates a contract ambiguity in `Rederivation.reddened_observed`: the field is
-documented as "Rows red under the mutant in THIS run" (current), but all other
-definitions of "reddened" in this module use the PASSED→FAILED transition set.
-This docstring correction and its dependents (W2-3-3 and W2-3-5) are owned by
-W2-3-3, not this task, so the source module is left unchanged here and the
-contract remains unresolved pending that task's ruling.
+This task's seals pin the **transition reading** as correct by exercise, and
+that reading is what `classify_observation` and `fold` downstream presume. The
+source module's docstring remains unambiguous only in the context of W2-3-3's
+ruling on which reading is authoritative. Correcting the `Rederivation.reddened_observed`
+docstring to match the transition definition is owned by W2-3-3, not this task.
 
 ## What the seals could not fix
 
