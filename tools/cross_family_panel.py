@@ -65,8 +65,19 @@ def main(argv: list[str] | None = None) -> int:
                    choices=("all", "claude", "gemini", "codex"),
                    default="all",
                    help="Restrict to one family (for debugging / prompt iteration).")
-    p.add_argument("--timeout", type=int, default=600,
-                   help="Per-reviewer timeout in seconds (default: 600).")
+    # 1800s, not 600s. A HANG GUARD, not a budget.
+    #
+    # Measured 2026-08-21: codex at the configured xhigh reasoning effort takes
+    # ~4-5 minutes on a 37KB prompt, of which only ~50s is repo exploration and
+    # ~6s is CLI latency — the rest is thinking. The old 600s default was
+    # therefore cutting off HEALTHY reviewers on any diff of substance, and a
+    # fired timeout pays the full invocation cost for zero findings while
+    # reporting UNAVAILABLE, which is indistinguishable from a broken CLI.
+    p.add_argument("--timeout", type=int, default=1800,
+                   help="Per-reviewer timeout in seconds (default: 1800). This "
+                        "is a hang guard: set it well above expected completion, "
+                        "because a fired timeout costs a full invocation and "
+                        "returns nothing.")
     p.add_argument("--max-diff-lines", type=int, default=None,
                    help="Cap the diff at this many lines (default: module default).")
     p.add_argument("--output",

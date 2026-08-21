@@ -1047,7 +1047,10 @@ def test_reviewer_unavailable_on_timeout():
 
     rv = _Slow().review("p")
     assert rv.verdict == cfr.Verdict.UNAVAILABLE
-    assert "timed out" in (rv.error or "")
+    # Must say TIMEOUT explicitly: a cut-off reviewer and a broken CLI both
+    # return UNAVAILABLE, and conflating them cost eight panel rounds.
+    assert "TIMEOUT" in (rv.error or "")
+    assert "cut off" in (rv.error or "")
 
 
 # --- serialization + factory -----------------------------------------------
@@ -1266,7 +1269,7 @@ def test_grok_reviewer_nonzero_exit_is_unavailable(monkeypatch):
 
 def test_grok_reviewer_timeout_is_unavailable(monkeypatch):
     """Edge 7c: a subprocess timeout becomes UNAVAILABLE with the standard
-    'cli timed out after Ns' reason. Tempfile still unlinked (finally).
+    a TIMEOUT reason naming the limit. Tempfile still unlinked (finally).
     """
     paths = []
 
@@ -1277,7 +1280,8 @@ def test_grok_reviewer_timeout_is_unavailable(monkeypatch):
     monkeypatch.setattr(subprocess, "run", fake_run)
     rv = cfr.GrokReviewer(timeout_seconds=7).review("p")
     assert rv.verdict == cfr.Verdict.UNAVAILABLE
-    assert rv.error == "cli timed out after 7s"
+    assert rv.error.startswith("TIMEOUT after 7s")
+    assert "cut off, not unavailable" in rv.error
     assert all(not p.exists() for p in paths)
 
 

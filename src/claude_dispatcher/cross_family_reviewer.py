@@ -705,9 +705,19 @@ class Reviewer:
                 duration_seconds=time.monotonic() - start,
             )
         except subprocess.TimeoutExpired:
+            # A fired timeout is the worst outcome available: the full cost of
+            # the invocation is paid and ZERO findings come back. It is not a
+            # cheap safety valve, so the limit belongs well ABOVE expected
+            # completion — a hang guard, not a budget. At xhigh reasoning effort
+            # a legitimate review of a 37KB prompt takes ~4-5 minutes, so a 600s
+            # default was cutting off healthy reviewers.
             return ReviewerVerdict(
                 family=self.family, verdict=Verdict.UNAVAILABLE,
-                error=f"cli timed out after {self.timeout_seconds}s",
+                error=(
+                    f"TIMEOUT after {self.timeout_seconds}s — the reviewer was "
+                    f"cut off, not unavailable. Raise --timeout or reduce scope; "
+                    f"the invocation cost was paid and produced nothing."
+                ),
                 duration_seconds=time.monotonic() - start,
             )
         except Exception as e:
@@ -1384,12 +1394,21 @@ def run_panel(
 
     def _log_verdict(r: Reviewer, rv: ReviewerVerdict, *, advisory: bool) -> None:
         tag = f"{r.family} (advisory)" if advisory else r.family
+        # The REASON is printed, not just the verdict.
+        #
+        # A timeout and a broken CLI both return UNAVAILABLE, and the progress
+        # line showed only the verdict — so round 8 read as "two families
+        # unavailable" when it was one CLI with a changed contract and one
+        # healthy reviewer cut off mid-thought at exactly 600.1s. Those need
+        # completely different responses (fix the adapter vs. raise the limit),
+        # and the line gave no way to tell them apart.
+        why = f" reason={rv.error}" if rv.error else ""
         _safe_log(
             f"  panel[{ticket_key}] {tag}: verdict={rv.verdict.value} "
             f"findings={len(rv.findings)} "
             f"blocking={len(rv.blocking_findings())} "
-            f"dur={rv.duration_seconds:.1f}s" if rv.duration_seconds is not None
-            else f"  panel[{ticket_key}] {tag}: verdict={rv.verdict.value}"
+            f"dur={rv.duration_seconds:.1f}s{why}" if rv.duration_seconds is not None
+            else f"  panel[{ticket_key}] {tag}: verdict={rv.verdict.value}{why}"
         )
 
     def _run_one(idx: int, r: Reviewer) -> None:
