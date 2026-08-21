@@ -8,6 +8,7 @@ spend tokens on real LLM calls during pytest runs).
 
 from __future__ import annotations
 
+import json
 import subprocess
 import textwrap
 from pathlib import Path
@@ -761,10 +762,14 @@ def test_claude_reviewer_uses_correct_cli_flags(monkeypatch, tmp_path: Path):
     assert "hello prompt" not in cmd
 
 
-def test_gemini_reviewer_invokes_agy_with_stdin(monkeypatch):
-    """Gemini family CLI is `agy` (Antigravity, post-2026-05 rebrand). The
-    family identifier stays "gemini" for column compatibility, but the
-    binary and flags moved. Prompt must arrive via stdin.
+def test_gemini_reviewer_sends_prompt_as_stream_json_on_stdin(monkeypatch):
+    """The prompt goes over stdin as a stream-json envelope.
+
+    Measured under: revert to `--print ""` with a raw stdin prompt and agy 1.1.17
+    answers "empty prompt" and exits 0, which the empty-stdout guard reports as
+    UNAVAILABLE — the failure that hid gemini from EIGHT consecutive panel rounds
+    while they reported three families. Passing the prompt as argv fixes that but
+    caps it at MAX_ARG_STRLEN, which real diffs exceed.
     """
     captured = {}
 
@@ -773,23 +778,57 @@ def test_gemini_reviewer_invokes_agy_with_stdin(monkeypatch):
         captured["input"] = kwargs.get("input")
         return subprocess.CompletedProcess(
             args=cmd, returncode=0,
-            stdout="## Verdict\nAPPROVE\n## Dimension scores\n- Correctness: 5\n## Findings\n",
+            stdout=json.dumps({"event": "result", "result": {
+                "status": "SUCCESS",
+                "response": "## Verdict\nAPPROVE\n## Dimension scores\n- Correctness: 5\n## Findings\n",
+            }}) + "\n",
             stderr="",
         )
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     r = cfr.GeminiReviewer()
-    out = r._invoke_cli("hello gemini" + "x" * 200000)  # big prompt
+    out = r._invoke_cli("hello gemini" + "x" * 100000)
     assert "## Verdict" in out
+
     cmd = captured["cmd"]
     assert cmd[0] == "agy"
-    assert "--print" in cmd
-    assert "--print-timeout" in cmd
-    # Family identifier stays "gemini" for record compatibility.
+    assert "--input-format" in cmd and "stream-json" in cmd
+    assert "--output-format" in cmd
+    # The prompt is NOT in argv — that is the whole point.
+    assert not any("hello gemini" in str(a) for a in cmd)
+    sent = json.loads(captured["input"])
+    assert sent["event"] == "user"
+    assert sent["message"]["content"].startswith("hello gemini")
     assert r.family == "gemini"
-    # Prompt MUST be on stdin, NOT in argv — argv limit is ~128KB.
-    assert captured["input"].startswith("hello gemini")
-    assert not any(len(a) > 1024 for a in cmd), "no argv element should carry the prompt"
+
+
+def test_gemini_reviewer_refuses_a_prompt_above_the_measured_ceiling():
+    """agy returns status=ERROR with an EMPTY error string above ~190KB, which
+    the panel would record as UNAVAILABLE — indistinguishable from a backend
+    outage, which is exactly how the previous breakage stayed invisible.
+
+    Measured 2026-08-21: 200KB succeeded, 361KB errored, both reporting ~67 280
+    input tokens. Refuse loudly instead.
+    """
+    r = cfr.GeminiReviewer()
+    with pytest.raises(cfr.ReviewerUnavailable, match="chunk the diff"):
+        r._invoke_cli("x" * (250 * 1024))
+
+
+def test_gemini_reviewer_reports_a_non_success_status_as_unavailable(monkeypatch):
+    """A backend error must not reach the finding parser as a bogus verdict."""
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0,
+            stdout=json.dumps({"event": "result", "result": {
+                "status": "ERROR", "response": "", "error": "backend exploded",
+            }}) + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(cfr.ReviewerUnavailable, match="backend exploded"):
+        cfr.GeminiReviewer()._invoke_cli("hi")
 
 
 @pytest.mark.parametrize("empty_stdout", ["", "   \n\t  \n"])

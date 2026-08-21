@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import os
 import re
+import json
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -812,13 +813,54 @@ class GeminiReviewer(Reviewer):
     family = "gemini"
     cli_bin = "agy"
 
+    #: Measured ceiling — see _invoke_cli. 200KB succeeded, 361KB errored.
+    _MAX_PROMPT = 190 * 1024
+
     def _invoke_cli(self, prompt: str) -> str:
+        # Prompt goes over STDIN as stream-json, which has no size limit.
+        #
+        # Two dead ends preceded this, both worth recording. agy once accepted a
+        # plain prompt on stdin with `--print ""`; as of 1.1.17 that returns
+        # "empty prompt" and exits 0, which the empty-stdout guard below reported
+        # as UNAVAILABLE — so the panel ran "three families" with gemini silently
+        # absent for EIGHT consecutive rounds, a 2.4s failure that looked like a
+        # flaky backend and was a changed CLI contract. Passing the prompt as an
+        # argv entry fixes that but caps it at MAX_ARG_STRLEN (128KB), which a
+        # real review diff exceeds routinely.
+        #
+        # stream-json takes it on stdin instead. Envelope determined empirically
+        # 2026-08-21 (the CLI's own error messages name each missing field):
+        #     {"event":"user","message":{"role":"user","content":"..."}}
+        # and it requires --output-format stream-json, so the response is pulled
+        # out of the terminal `result` event rather than read off stdout raw.
+        # MEASURED CEILING, 2026-08-21. agy accepts ~200KB / ~67K input tokens
+        # and succeeds; at 361KB it returns status=ERROR with an EMPTY error
+        # string and an empty response — no diagnostic at all. Both sizes report
+        # ~67 280 input tokens, so it is truncating around there and failing
+        # rather than truncating cleanly past it.
+        #
+        # Refusing loudly beats a silent ERROR the panel would record as
+        # UNAVAILABLE, which is precisely how gemini stayed invisible for eight
+        # rounds. The caller should review a smaller delta or chunk the diff.
+        size = len(prompt.encode())
+        if size > self._MAX_PROMPT:
+            raise ReviewerUnavailable(
+                f"prompt is {size // 1024}KB; agy fails above ~"
+                f"{self._MAX_PROMPT // 1024}KB (~67K tokens) with an empty error. "
+                f"Review a smaller delta, or chunk the diff."
+            )
+        msg = json.dumps({
+            "event": "user",
+            "message": {"role": "user", "content": prompt},
+        })
         proc = subprocess.run(
             [
                 self.cli_bin, "--print", "",
+                "--input-format", "stream-json",
+                "--output-format", "stream-json",
                 "--print-timeout", f"{int(self.timeout_seconds)}s",
             ],
-            input=prompt,
+            input=msg + "\n",
             capture_output=True,
             text=True,
             check=False,
@@ -828,6 +870,21 @@ class GeminiReviewer(Reviewer):
             raise RuntimeError(
                 f"agy exit={proc.returncode}: {proc.stderr.strip()[-400:]}"
             )
+        # Pull the response out of the terminal result event. A non-SUCCESS
+        # status is reported as UNAVAILABLE rather than parsed, so a backend
+        # error never reaches the finding parser as a bogus verdict.
+        response, status, err = "", None, ""
+        for line in proc.stdout.splitlines():
+            try:
+                evt = json.loads(line)
+            except ValueError:
+                continue
+            if evt.get("event") == "result":
+                r = evt.get("result", {})
+                status, response, err = r.get("status"), r.get("response", ""), r.get("error", "")
+        if status and status != "SUCCESS":
+            raise ReviewerUnavailable(f"agy status={status}: {err[:200]}")
+        proc = subprocess.CompletedProcess(proc.args, 0, response, proc.stderr)
         # antigravity-cli#76: agy can exit 0 yet emit nothing on stdout when
         # stdout is a non-TTY pipe — which is exactly how the panel consumes
         # it (subprocess.run with capture_output). An empty string must NOT
