@@ -668,10 +668,14 @@ class Reviewer:
     family: str = ""
     cli_bin: str = ""
 
-    def __init__(self, *, cli_bin: str | None = None, timeout_seconds: int = DEFAULT_REVIEWER_TIMEOUT_SECONDS):
+    def __init__(self, *, cli_bin: str | None = None,
+                 timeout_seconds: int = DEFAULT_REVIEWER_TIMEOUT_SECONDS,
+                 effort: str | None = None):
         if cli_bin is not None:
             self.cli_bin = cli_bin
         self.timeout_seconds = timeout_seconds
+        if effort is not None:
+            self.effort = effort
 
     def review(self, prompt: str) -> ReviewerVerdict:
         """Invoke the CLI, parse the output, retry once on parse failure.
@@ -752,6 +756,20 @@ class Reviewer:
         if rv2.verdict == Verdict.PARSE_FAILED:
             rv2.error = "parse failed twice; second attempt also unparseable"
         return rv2
+
+    #: Reasoning effort, PINNED rather than inherited from the operator's config.
+    #
+    # Without this, review depth silently tracks whatever ~/.codex/config.toml
+    # happens to say. Someone setting `medium` for interactive work would make
+    # every panel review shallower with nothing reporting the change — the same
+    # class of invisible coupling that let a broken gemini adapter pass as
+    # "three families" for eight rounds. Measured 2026-08-21: at xhigh a 37KB
+    # prompt costs ~4-5 min per reviewer, of which ~231s is thinking.
+    #
+    # xhigh is the default because the panel's job is adversarial depth and the
+    # findings at that level have repeatedly been correct about subtle things.
+    # Lower it per-run with --effort when turnaround matters more than depth.
+    effort: str = "xhigh"
 
     def _invoke_cli(self, prompt: str) -> str:  # pragma: no cover (subclass)
         raise NotImplementedError
@@ -866,6 +884,9 @@ class GeminiReviewer(Reviewer):
         proc = subprocess.run(
             [
                 self.cli_bin, "--print", "",
+                # agy accepts low|medium|high only — xhigh has no equivalent, so
+                # it maps to high rather than being passed through and rejected.
+                "--effort", ("high" if self.effort == "xhigh" else self.effort),
                 "--input-format", "stream-json",
                 "--output-format", "stream-json",
                 "--print-timeout", f"{int(self.timeout_seconds)}s",
@@ -957,6 +978,8 @@ class CodexReviewer(Reviewer):
             proc = subprocess.run(
                 [
                     self.cli_bin, "exec",
+                    # Pinned, not inherited from ~/.codex/config.toml.
+                    "-c", f"model_reasoning_effort={self.effort}",
                     "--sandbox", "workspace-write",
                     "--color", "never",
                     "--skip-git-repo-check",

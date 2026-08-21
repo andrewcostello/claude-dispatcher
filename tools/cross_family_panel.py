@@ -115,7 +115,8 @@ def main(argv: list[str] | None = None) -> int:
 
     summary_md = args.summary_md.read_text(encoding="utf-8")
 
-    reviewers = _build_reviewers(args.family, args.timeout, args.dry_run_with_stub_output)
+    reviewers = _build_reviewers(args.family, args.timeout,
+                                 args.dry_run_with_stub_output, args.effort)
     print(f"[panel] reviewers: {[r.family for r in reviewers]}", file=sys.stderr)
 
     panel = cfr.run_panel(
@@ -138,7 +139,8 @@ def main(argv: list[str] | None = None) -> int:
     return {"approve": 0, "block": 1, "incomplete": 2}.get(panel.consensus, 1)
 
 
-def _build_reviewers(family: str, timeout: int, stub_path: str | None) -> list:
+def _build_reviewers(family: str, timeout: int, stub_path: str | None,
+                     effort: str = "xhigh") -> list:
     from claude_dispatcher import cross_family_reviewer as cfr
 
     if stub_path:
@@ -151,7 +153,7 @@ def _build_reviewers(family: str, timeout: int, stub_path: str | None) -> list:
         "gemini": cfr.GeminiReviewer,
         "codex": cfr.CodexReviewer,
     }
-    return [table[f](timeout_seconds=timeout) for f in families]
+    return [table[f](timeout_seconds=timeout, effort=effort) for f in families]
 
 
 class _StubReviewer:

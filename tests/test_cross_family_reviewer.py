@@ -9,6 +9,7 @@ spend tokens on real LLM calls during pytest runs).
 from __future__ import annotations
 
 import json
+import pathlib
 import subprocess
 import textwrap
 from pathlib import Path
@@ -1662,3 +1663,53 @@ def test_a_claude_critical_blocks_alone():
         _approve_verdict("grok"),
     ])
     assert verdict.consensus == "block"
+
+
+def test_reviewer_effort_is_pinned_not_inherited(monkeypatch):
+    """Panel depth must not silently track the operator's personal CLI config.
+
+    Measured under: drop the `-c model_reasoning_effort=` argument and codex
+    inherits whatever ~/.codex/config.toml says. Someone setting `medium` for
+    interactive work would make every panel review shallower with nothing
+    reporting the change — the same invisible coupling that let a broken gemini
+    adapter pass as "three families" for eight consecutive rounds.
+    """
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        out = kwargs.get("args")  # unused; codex writes to --output-last-message
+        for i, a in enumerate(cmd):
+            if a == "--output-last-message":
+                pathlib.Path(cmd[i + 1]).write_text(
+                    "## Verdict\nAPPROVE\n## Dimension scores\n- Correctness: 5\n## Findings\n"
+                )
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    cfr.CodexReviewer(timeout_seconds=60, effort="medium")._invoke_cli("hi")
+    assert "-c" in captured["cmd"]
+    assert "model_reasoning_effort=medium" in captured["cmd"]
+
+
+def test_gemini_maps_xhigh_to_high(monkeypatch):
+    """agy accepts low|medium|high only. Passing xhigh through would be rejected
+    by the CLI, so the default maps down rather than failing at run time.
+    """
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0,
+            stdout=json.dumps({"event": "result", "result": {
+                "status": "SUCCESS", "response": "## Verdict\nAPPROVE\n"
+                "## Dimension scores\n- Correctness: 5\n## Findings\n"}}) + "\n",
+            stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    cfr.GeminiReviewer(timeout_seconds=60)._invoke_cli("hi")   # default xhigh
+    cmd = captured["cmd"]
+    assert "--effort" in cmd
+    assert cmd[cmd.index("--effort") + 1] == "high"
+    assert "xhigh" not in cmd
