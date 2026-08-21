@@ -61,6 +61,15 @@ def main(argv: list[str] | None = None) -> int:
                    help="Optional one-line ticket summary (rendered in the prompt).")
     p.add_argument("--summary-md", required=True, type=Path,
                    help="Path to the Tasker's summary.md.")
+    p.add_argument("--effort", default="xhigh",
+                   choices=("low", "medium", "high", "xhigh"),
+                   help="Reasoning effort, PINNED for the panel rather than "
+                        "inherited from the operator's CLI config (default: "
+                        "xhigh). Measured 2026-08-21: xhigh costs ~4-5 min per "
+                        "reviewer on a 37KB prompt (~6s CLI, ~50s repo "
+                        "exploration, ~231s thinking), so the diff size barely "
+                        "matters and the effort level dominates. agy has no "
+                        "xhigh and maps it to high.")
     p.add_argument("--family",
                    choices=("all", "claude", "gemini", "codex"),
                    default="all",
