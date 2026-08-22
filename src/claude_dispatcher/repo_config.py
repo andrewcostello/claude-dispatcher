@@ -8,6 +8,11 @@ at its root. Current schema:
     `advisory:`, a list of advisory (probationary, non-blocking) reviewer
     family names — e.g. ``panel: {advisory: [grok]}`` — consumed by the
     orchestrator's cross-family panel.
+  * `roles:` — the build-protocol immutable-path additions (see
+    `role_protocol`). Validated here, but NOT returned: the gating path reads
+    this section from the protected base, never from a working tree. Load-time
+    validation exists so an invalid or self-weakening policy is a refusal
+    rather than a line silently dropped into `unknown_keys`.
 
 Future sections (`e2e:`, `risk:`) will arrive in later phases, so this
 loader tolerates unknown top-level keys rather than rejecting them: a repo
@@ -24,14 +29,21 @@ skipped; notes flow through return values, never logging.
 
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from ruamel.yaml.error import YAMLError
 
 from claude_dispatcher import yaml_io
 
 CONFIG_FILENAME = ".dispatcher.yaml"
+
+#: The built-in runs directory, and the ONLY place this literal lives. It used to
+#: be repeated as an argparse default in five subcommands, so moving run artifacts
+#: meant changing five things or silently breaking the readers.
+DEFAULT_RUNS_DIR = "docs/runs"
 
 
 class RepoConfigError(ValueError):
@@ -71,6 +83,24 @@ class RepoConfig:
     # behavior that let an entire epic silently run on the most expensive
     # tier, which this key exists to prevent).
     model_routing: tuple[tuple[str, str], ...] = ()
+    # How this repo spells "run the suite but not these rows" — the mechanism
+    # the known-red register (D-68) needs to hide one unit's deliberate red
+    # seals from another unit's gate. One of `known_red.ExclusionStyle`'s
+    # values, or None when the key is absent.
+    #
+    # None is NOT "no exclusions happen". It is "this repo has not said how",
+    # and a repo with a non-empty ACTIVE register and no declared style is a
+    # named blocking fault (`known_red.RegisterFault.UNSUPPORTED_STYLE`) rather
+    # than a gate that quietly goes red on rows the task cannot fix. An empty
+    # active register needs no style and raises nothing — that is every repo's
+    # starting state and it must behave exactly as it did before.
+    test_exclusion: str | None = None
+    # Where per-run artifacts (run.log, journal.jsonl, summaries) are written.
+    # None when the key is absent. A RELATIVE value resolves against the REPO
+    # ROOT, not cwd, so every worktree of a repo agrees on one location — which is
+    # the point: `docs/runs/` is gitignored AND inside a disposable worktree, so
+    # the audit trail dies with the worktree unless it is pointed outside.
+    runs_dir: str | None = None
 
     def routed_model(self, risk: str | None) -> str | None:
         """The configured model for ``risk`` (case-insensitive), falling back
@@ -91,6 +121,12 @@ def load(repo_root: str | Path) -> RepoConfig:
     YAML, a `test:` value that is not a non-blank string, a `panel:` value
     that is not a mapping, a `panel.advisory` that is not a list of
     non-empty strings — raises RepoConfigError.
+
+    A `roles:` section is validated through
+    `role_protocol.role_policy_from_mapping` and its failure is re-raised as a
+    RepoConfigError; the parsed policy is discarded (see the comment at the
+    call). An invalid or narrowing section is therefore a load failure, not a
+    dropped line.
     """
     path = Path(repo_root) / CONFIG_FILENAME
     if not path.exists():
@@ -187,7 +223,67 @@ def load(repo_root: str | Path) -> RepoConfig:
             pairs.append((k.strip().lower(), v.strip()))
         model_routing = tuple(pairs)
 
-    known_top_level = ("test", "panel", "integration", "model_routing")
+    test_exclusion: str | None = None
+    if "test_exclusion" in doc:
+        test_exclusion = doc.get("test_exclusion")
+        # Strict, and for this module's stated reason: an unrecognized style
+        # would otherwise land in `unknown_keys` and the register's exclusions
+        # would be dropped, so a repo that asked for the protection would get
+        # none. Imported inside the function — known_red imports yaml_io and is
+        # read by the orchestrator's gate path; keeping it lazy matches how
+        # `roles:` is handled just below and avoids a module-level cycle.
+        from claude_dispatcher import known_red
+
+        allowed = tuple(s.value for s in known_red.ExclusionStyle)
+        if test_exclusion not in allowed:
+            raise RepoConfigError(
+                f"'test_exclusion' in {path} must be one of "
+                f"{', '.join(allowed)}, got {test_exclusion!r}"
+            )
+
+    runs_dir: str | None = None
+    if "runs_dir" in doc:
+        runs_dir = doc.get("runs_dir")
+        if not isinstance(runs_dir, str) or not runs_dir.strip():
+            raise RepoConfigError(
+                f"'runs_dir' in {path} must be a non-empty path string, "
+                f"got {runs_dir!r}"
+            )
+        runs_dir = runs_dir.strip()
+
+    # `roles:` — the D1 build-protocol immutable-path table. This loader
+    # VALIDATES the section and deliberately does not keep the parsed policy:
+    # `load` reads the working tree, and the gating path must take its policy
+    # from the protected base (role_protocol.load_role_policy_from_base,
+    # invariant 6), or a branch could supply the policy that judges it.
+    #
+    # Validating it here anyway is the point. Before this wiring the section
+    # landed in `unknown_keys` and its additions were IGNORED — so a repo that
+    # asked for extra protection got none, silently, and a repo that wrote a
+    # *narrowing* entry (`immutable_paths: ['!**/tests/**']`) got a
+    # self-weakening policy that no one refused. A silently dropped protection
+    # is the failure this module's strictness exists to avoid, and the only
+    # place a human sees this file before it is used is a load.
+    #
+    # Imported inside the function: role_protocol reads this module for the
+    # one base-pinned reader, so a module-level import here would be a cycle.
+    # The section NAME comes from role_protocol too — one fact, one place, so
+    # a rename cannot leave the loader watching the old key.
+    from claude_dispatcher import role_protocol
+
+    roles_key = role_protocol.CONFIG_SECTION
+    if roles_key in doc:
+        try:
+            role_protocol.role_policy_from_mapping(doc.get(roles_key))
+        except role_protocol.RoleProtocolError as exc:
+            raise RepoConfigError(
+                f"'{roles_key}' in {path} is not a usable role policy: {exc}"
+            ) from exc
+
+    known_top_level = (
+        "test", "panel", "integration", "model_routing", "test_exclusion",
+        "runs_dir", roles_key,
+    )
     unknown = tuple(sorted(
         [str(key) for key in doc if key not in known_top_level]
         + panel_unknown
@@ -198,4 +294,255 @@ def load(repo_root: str | Path) -> RepoConfig:
         panel_advisory=panel_advisory,
         integration=integration,
         model_routing=model_routing,
+        test_exclusion=test_exclusion,
+        runs_dir=runs_dir,
     )
+
+
+class BaseConfigError(RepoConfigError):
+    """Raised when `.dispatcher.yaml` cannot be read out of a base ref's tree.
+
+    Distinct from a malformed-config error so a caller can tell "the policy is
+    invalid" from "the policy could not be fetched" — both fail closed, but
+    they have different operator actions.
+    """
+
+
+def load_text_at_base(repo_root: str | Path, base_ref: str) -> str | None:
+    """SCAFFOLD (D1/P1) — the ONE base-pinned reader of `.dispatcher.yaml`.
+
+    Returns the file's UTF-8 text as it exists in ``base_ref``'s **object
+    store**, or None when ``base_ref`` resolves to a tree that simply does not
+    contain the file. Never reads the working copy: on the in-worktree gating
+    path the working copy is the checkout of the very branch being judged, so
+    a branch could otherwise supply its own gate policy (design §8,
+    implementation-plan invariant 6).
+
+    Contract, exhaustively:
+
+      * ``base_ref`` resolves and the tree has no ``.dispatcher.yaml`` → None.
+        Absence is one state with one meaning; the caller applies its
+        compiled-in defaults, which are its strictest setting.
+      * ``base_ref`` resolves and the entry is a regular-file blob (mode
+        100644/100755) that decodes as UTF-8 → its text.
+      * anything else raises :class:`BaseConfigError`: the ref does not
+        resolve, the entry is a symlink (a redirect to somewhere the base does
+        not govern) or a submodule, git fails or times out, or the bytes are
+        not UTF-8. There is deliberately no fallback to the working copy and
+        none to "absent" — "I could not read the policy" must never be
+        reported as "there is no policy".
+
+    Implementation note for P3 (invariant 5 — one fact, one place): the
+    identical git read exists as steps 1–3 of
+    ``risk.load_risk_config_from_base`` on the unmerged
+    ``fix/authority-doc-carveout`` branch. Implement this as that read,
+    extracted, and make ``risk.py`` delegate to it in the same commit once
+    that branch has merged. Do not create a second reader — the two would
+    diverge on precisely the interesting cases (symlink, submodule, non-UTF-8),
+    and the file whose read they disagree about is the gate's own policy.
+
+    Consumers: :func:`role_protocol.load_role_policy_from_base` today; the
+    ``risk:`` loader after the carveout merge.
+    """
+    try:
+        return blob_text_at(repo_root, base_ref, CONFIG_FILENAME)
+    except BaseConfigError:
+        raise
+    except Exception as exc:  # pragma: no cover - defensive; blob_text_at maps
+        raise BaseConfigError(
+            f"cannot read {CONFIG_FILENAME} at {base_ref}: {exc}"
+        ) from exc
+
+
+# --------------------------------------------------------------------------- #
+# The one git blob reader (invariant 5)
+# --------------------------------------------------------------------------- #
+#
+# `load_text_at_base` above is the one reader of THIS file's policy;
+# `blob_text_at` is the one reader of ANY path out of a ref's object store, and
+# both go through it so the interesting cases — symlink, submodule, non-UTF-8,
+# unresolvable ref — cannot be answered two different ways.
+# `role_protocol.file_text_at` (the signature gate's reader) delegates here too.
+#
+# Two git reads, in this order:
+#
+#   1. `git ls-tree -z <ref>: -- <path>` — the AUTHORITATIVE answer. rc 0 with
+#      no output means the tree genuinely does not contain the path (None); an
+#      entry gives the mode, and any mode other than a regular-file blob
+#      (symlink 120000, gitlink 160000, tree) is refused rather than read as
+#      text. The tree-ish is spelled `<ref>:` rather than `<ref>` so the argv
+#      carries the same `<ref>:<path>`-shaped token the blob read does, which
+#      keeps injectable `run` seams that model only object-store reads able to
+#      answer it.
+#   2. `git cat-file blob <ref>:<path>` — the content. Reached when step 1
+#      itself could not be answered (an unresolvable ref, or an injected seam
+#      that models only blob reads). A failure here is classified by git's own
+#      message: "does not exist in" is the absent-from-tree state (None);
+#      anything else — invalid object name, bad file (a gitlink), a broken
+#      repository — raises. Absence is never inferred from a failure whose
+#      cause is unknown.
+#
+# Bytes are decoded STRICTLY: a non-UTF-8 blob raises rather than returning
+# mojibake or None, because both of those read as "the policy says nothing".
+
+_GIT_TIMEOUT_SECONDS = 30
+
+#: git's message when a path is not in the named tree. The one failure that
+#: means "absent" rather than "unreadable".
+_GIT_ABSENT_MARKERS = ("does not exist in", "does not exist in the")
+
+
+def _run_git(
+    cmd: list[str],
+    cwd: str,
+    run: Callable[..., object] | None,
+) -> tuple[int, bytes | str, str]:
+    """`(returncode, stdout, stderr)` for one git command.
+
+    ``run`` is the injectable subprocess seam (``push_verify``'s convention).
+    Its result may be a ``CompletedProcess`` or a ``(rc, out, err)`` triple —
+    both are accepted, because the seam's shape is the caller's choice and
+    neither reading is more correct. Raises whatever the seam raises; callers
+    map that to their own error type.
+    """
+    if run is None:
+        proc = subprocess.run(
+            cmd, cwd=cwd, capture_output=True, timeout=_GIT_TIMEOUT_SECONDS
+        )
+        stderr = proc.stderr or b""
+        return (
+            proc.returncode,
+            proc.stdout or b"",
+            stderr.decode("utf-8", "replace"),
+        )
+    result = run(
+        cmd,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=_GIT_TIMEOUT_SECONDS,
+    )
+    if hasattr(result, "returncode"):
+        rc = int(getattr(result, "returncode"))
+        out = getattr(result, "stdout", "") or ""
+        err = getattr(result, "stderr", "") or ""
+        return rc, out, str(err)
+    if isinstance(result, tuple) and len(result) >= 2:
+        rc = int(result[0])
+        out = result[1] or ""
+        err = str(result[2]) if len(result) > 2 and result[2] else ""
+        return rc, out, err
+    raise BaseConfigError(
+        f"injected git seam returned an unusable result: {type(result).__name__}"
+    )
+
+
+def _as_text(stdout: bytes | str, ref: str, path: str) -> str:
+    if isinstance(stdout, str):
+        return stdout
+    try:
+        return stdout.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise BaseConfigError(
+            f"{path} at {ref} is not valid UTF-8: {exc}"
+        ) from exc
+
+
+def blob_text_at(
+    repo_root: str | Path,
+    ref: str,
+    path: str,
+    *,
+    run: Callable[..., object] | None = None,
+) -> str | None:
+    """One path's UTF-8 text out of ``ref``'s object store, or None when
+    ``ref``'s tree does not contain it.
+
+    Never touches the working copy. Raises :class:`BaseConfigError` when the
+    ref does not resolve, the entry is not a regular-file blob (symlink,
+    submodule, directory), git fails or times out, or the bytes are not UTF-8 —
+    "I could not read it" is never reported as "it is not there".
+    """
+    root = str(repo_root)
+    try:
+        rc, out, err = _run_git(
+            ["git", "ls-tree", "-z", f"{ref}:", "--", path], root, run
+        )
+    except BaseConfigError:
+        raise
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise BaseConfigError(f"cannot list {path} at {ref}: {exc}") from exc
+    if rc == 0:
+        entries = [
+            entry
+            for entry in _as_text(out, ref, path).split("\0")
+            if entry.strip()
+        ]
+        if not entries:
+            return None
+        if len(entries) > 1:
+            raise BaseConfigError(
+                f"{path} at {ref} resolves to {len(entries)} tree entries"
+            )
+        meta, _tab, _name = entries[0].partition("\t")
+        fields = meta.split()
+        if len(fields) < 3:
+            raise BaseConfigError(
+                f"unparseable tree entry for {path} at {ref}: {entries[0]!r}"
+            )
+        mode, obj_type = fields[0], fields[1]
+        if obj_type != "blob" or mode not in ("100644", "100755"):
+            raise BaseConfigError(
+                f"{path} at {ref} is a {obj_type} with mode {mode}, not a "
+                "regular file — a symlink or submodule is a redirect to "
+                "somewhere this ref does not govern"
+            )
+
+    try:
+        rc, out, err = _run_git(
+            ["git", "cat-file", "blob", f"{ref}:{path}"], root, run
+        )
+    except BaseConfigError:
+        raise
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise BaseConfigError(f"cannot read {path} at {ref}: {exc}") from exc
+    if rc != 0:
+        lowered = err.lower()
+        if any(marker in lowered for marker in _GIT_ABSENT_MARKERS):
+            return None
+        raise BaseConfigError(
+            f"cannot read {path} at {ref} (git exit {rc}): {err.strip()}"
+        )
+    return _as_text(out, ref, path)
+
+
+def resolve_runs_dir(
+    explicit: str | Path | None,
+    *,
+    repo_root: str | Path | None = None,
+) -> Path:
+    """Where run artifacts go: CLI flag > `.dispatcher.yaml` `runs_dir:` > default.
+
+    Returns an ABSOLUTE path. ``explicit`` is the CLI value, or None when the flag
+    was omitted — the two must stay distinguishable, or a config value could never
+    win over an argparse default.
+
+    A relative CONFIGURED path resolves against the repo root, so every worktree
+    of a repo writes to one place. A relative EXPLICIT path resolves against cwd,
+    which is what someone typing a flag means. A config that cannot be read falls
+    back to the default rather than raising: this decides where a log is written,
+    and refusing to run because of it would be worse than writing it in the usual
+    place.
+    """
+    root = Path(repo_root) if repo_root is not None else Path.cwd()
+    if explicit is not None:
+        return Path(explicit).expanduser().resolve()
+    configured: str | None = None
+    try:
+        configured = load(root).runs_dir
+    except (RepoConfigError, OSError):
+        configured = None
+    if configured:
+        p = Path(configured).expanduser()
+        return p.resolve() if p.is_absolute() else (root / p).resolve()
+    return (root / DEFAULT_RUNS_DIR).resolve()

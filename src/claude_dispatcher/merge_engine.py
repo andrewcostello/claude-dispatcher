@@ -18,7 +18,9 @@ post-run / next-morning catch-up, a *merge pass* runs:
           a PR always merges on top of merged dependency code.
 
     Merge is ``gh pr merge --merge``. Success → the row moves to ``Merged`` and
-    a ``pr_merged`` event is journaled (merger identity + feature-branch sha).
+    a ``pr_merged`` event is journaled (merger identity + the merged-SHA
+    witness: origin's record of the merge commit, or a named unavailable
+    state — see ``merge_record``).
     A conflict / unmergeable PR leaves the row Awaiting Review with
     ``needs_rebase: true`` + a ``pr_merge_failed`` event + a one-shot
     notification; the engine does NOT auto-rebase (a deliberate non-goal — the
@@ -50,6 +52,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import journal as journal_mod
+from . import merge_authorization as merge_auth
+from . import merge_record
 from . import notify as notify_mod
 from . import plan as plan_mod
 from . import pr as pr_mod
@@ -219,7 +223,28 @@ def _consider_one(
         return "unactionable"
 
     # --- ladder step (a): approval ----------------------------------------
-    verdict = _classify(cfg, row, str(branch), risk_cfg)
+    # DF-2, pin-then-judge: the tree to judge is named FIRST — one rev-parse
+    # of the local ``refs/heads/<branch>`` — and that SHA (never the branch
+    # name) is what risk.classify diffs and what the merge below is pinned
+    # to, so the SHA authorized is the SHA acted on by construction. Fail
+    # closed: a branch that cannot name a commit authorizes nothing, and no
+    # merge runs (the row holds at Awaiting Review, reason journaled).
+    try:
+        authorization = merge_auth.authorize_self_approval(
+            cwd=cfg.repo_root, pr_number=number, branch=str(branch),
+        )
+    except merge_auth.AuthorizationUnavailable as e:
+        log(f"  merge: {task.key} cannot name the tree to judge ({e}) — "
+            f"held at Awaiting Review (PR #{number})")
+        _emit(journal, journal_mod.EventType.pr_merge_failed, {
+            "number": number,
+            "kind": "error",
+            "needs_rebase": False,
+            "detail": str(e)[:300],
+        }, task_key=task.key)
+        return "unactionable"
+
+    verdict = _classify(cfg, row, authorization.head_sha, risk_cfg)
     if verdict.is_low:
         approver = DISPATCHER_APPROVER
         log(f"  merge: {task.key} risk=low — dispatcher self-approves "
@@ -244,6 +269,26 @@ def _consider_one(
             log(f"  merge: {task.key} risk=elevated, no external approval — "
                 f"held at Awaiting Review (PR #{number})")
             return "awaiting-approval"
+        # The elevated pin names the tree the REVIEWER actually saw — the
+        # approving review's commit.oid — not the local tip the classifier
+        # diffed. An approval that cannot name its tree (no/invalid oid)
+        # authorizes nothing: fail closed and hold for a usable approval —
+        # an unpinned merge here would be the DF-2 defect itself.
+        try:
+            authorization = merge_auth.authorize_external_approval(
+                pr_number=number, review=review,
+            )
+        except merge_auth.AuthorizationUnavailable as e:
+            log(f"  merge: {task.key} risk=elevated — approval names no "
+                f"judgeable commit ({e}); held at Awaiting Review "
+                f"(PR #{number})")
+            _emit(journal, journal_mod.EventType.pr_merge_failed, {
+                "number": number,
+                "kind": "error",
+                "needs_rebase": False,
+                "detail": str(e)[:300],
+            }, task_key=task.key)
+            return "awaiting-approval"
         approver = f"external:{review.approver}" if review.approver else "external"
         log(f"  merge: {task.key} risk=elevated — external approval present "
             f"(approver={approver}, PR #{number})")
@@ -253,20 +298,38 @@ def _consider_one(
         "approver": approver,
         "risk_level": verdict.level,
         "reasons": list(verdict.reasons),
+        # DF-2: the audit stamp — which tree was authorized, and by which
+        # named source (the pin travels on pr_approved, not pr_merged).
+        **authorization.stamp_fields(),
     }, task_key=task.key)
 
     # --- merge -------------------------------------------------------------
+    # DF-2: the merge is pinned to the SHA the authorization was computed for
+    # (LOCAL_CLASSIFIED_TIP on the self-approval branch, the approving
+    # review's commit.oid on the external one). Origin compares the pin to
+    # the PR's head atomically with the merge and refuses when they differ,
+    # so a head moved after the judgement can never ship under it.
     merge = pr_mod.merge_pr(
         cwd=cfg.repo_root, number=number, gh_bin=cfg.gh_bin, method="merge",
+        match_head_commit=authorization.head_sha,
     )
     if merge.merged:
         # `gh pr merge` landed on origin; fast-forward the LOCAL feature-branch
         # ref to match before the next task forks its worktree from it (PRF-4 /
         # sequential-merge fix). Without this, a FIX/task dispatched right after
         # this merge would fork from the pre-merge tip and its PR would conflict.
+        # Worktree freshness ONLY — the audit stamp below no longer depends on
+        # this sync (DF-1).
         _sync_local_feature_branch(cfg, log)
-        sha = _feature_branch_sha(cfg)
-        _mutate_row(cfg, task.key, lambda r: _apply_merged(r, approver, sha))
+        # The audit record: origin's own answer for THIS merge, or a named
+        # absence — never a local ref (DF-1, merge_record module docstring).
+        # witness_merged_sha is total, so a lookup failure after the
+        # irreversible merge still stamps the row and journals the event.
+        witness = merge_record.witness_merged_sha(
+            cwd=cfg.repo_root, pr_number=number, target=cfg.feature_branch,
+            gh_bin=cfg.gh_bin,
+        )
+        _mutate_row(cfg, task.key, lambda r: _apply_merged(r, approver, witness))
         log(f"  merge: {task.key} MERGED PR #{number} into "
             f"{cfg.feature_branch} (approver={approver})")
         _emit(journal, journal_mod.EventType.pr_merged, {
@@ -274,7 +337,7 @@ def _consider_one(
             "merger": DISPATCHER_APPROVER,
             "approver": approver,
             "target": cfg.feature_branch,
-            "feature_branch_sha": sha,
+            **witness.stamp_fields(),
         }, task_key=task.key)
         return "merged"
 
@@ -307,16 +370,27 @@ def _consider_one(
     return "needs-rebase"
 
 
-def _apply_merged(row: Any, approver: str, sha: str | None) -> None:
+def _apply_merged(
+    row: Any, approver: str, witness: merge_record.MergedShaWitness,
+) -> None:
     """Stamp a row Merged: terminal status + the audit fields. Clears any stale
     ``needs_rebase`` / ``merge_error`` from an earlier failed attempt that has
-    since been resolved and re-merged."""
+    since been resolved and re-merged.
+
+    The merged-SHA keys come from ``witness.stamp_fields()`` — origin's record
+    of the merge (``merged_sha`` + ``merged_sha_source`` +
+    ``merged_sha_state: observed``) or a named absence
+    (``merged_sha_state: unavailable`` + ``merged_sha_detail``, and NO
+    ``merged_sha`` key). All four contract keys are popped first so a re-merge
+    can never leave one state's keys under the other state's stamp."""
     row["status"] = plan_mod.MERGED
     row["merged_at"] = _now_iso()
     row["pr_approved_by"] = approver
     row["merged_by"] = DISPATCHER_APPROVER
-    if sha:
-        row["merged_sha"] = sha
+    for key in ("merged_sha", "merged_sha_source", "merged_sha_state",
+                "merged_sha_detail"):
+        row.pop(key, None)
+    row.update(witness.stamp_fields())
     row.pop("needs_rebase", None)
     row.pop("merge_error", None)
 
@@ -325,17 +399,24 @@ def _apply_merged(row: Any, approver: str, sha: str | None) -> None:
 
 
 def _classify(
-    cfg: MergeEngineConfig, row: Any, branch: str, risk_cfg: risk_mod.RiskConfig,
+    cfg: MergeEngineConfig, row: Any, head_sha: str, risk_cfg: risk_mod.RiskConfig,
 ) -> risk_mod.RiskVerdict:
     """Classify the task's PR branch from the repo root (no worktree needed).
 
-    Diffs ``feature_branch...branch`` so the standalone command works even when
-    the task's worktree is gone. Fails closed (elevated) inside risk.classify if
-    the diff can't be computed.
+    Diffs ``feature_branch...head_sha`` so the standalone command works even
+    when the task's worktree is gone. Fails closed (elevated) inside
+    risk.classify if the diff can't be computed.
+
+    DF-2 (pin-then-judge): ``head_sha`` is the branch tip already resolved
+    ONCE by ``merge_authorization.authorize_self_approval`` — a commit SHA,
+    never the branch name — so the tree this verdict judges is, by
+    construction, the tree the merge is then pinned to. Handing a NAME to the
+    diff would re-open the judged-one-tree/merged-another window one
+    process-local layer down (the pre-DF-2-3 shape this replaces).
     """
     return risk_mod.classify(
         row, cfg.repo_root, cfg.feature_branch,
-        head_ref=branch, config=risk_cfg,
+        head_ref=head_sha, config=risk_cfg,
     )
 
 
@@ -350,6 +431,14 @@ def _sync_local_feature_branch(cfg: MergeEngineConfig, log) -> None:
     out), so ``git fetch origin <fb>:<fb>`` is a safe fast-forward of the local
     branch. Best-effort: a fetch failure (offline, non-ff, or the branch somehow
     checked out) leaves the local ref as-is — the prior behavior, no regression.
+
+    DF-1 MEASURED: in pr-mode runs the feature branch IS checked out at
+    ``repo_root``, so this fetch exits 128 (``refusing to fetch into branch``)
+    every time and the local ref never moves. The "best-effort" framing made
+    that silent. This function may keep its worktree-freshness job (DF-2/DF-3
+    own the ref-vs-action questions), but it is NO LONGER part of the audit
+    path: the merged-SHA contract lives in ``merge_record.py``, and DF-1-3
+    removes the audit stamp's dependence on this sync.
     """
     import subprocess
     fb = cfg.feature_branch
@@ -367,26 +456,16 @@ def _sync_local_feature_branch(cfg: MergeEngineConfig, log) -> None:
             f"rc={proc.returncode}): {(proc.stderr or '').strip()[:200]}")
 
 
-def _feature_branch_sha(cfg: MergeEngineConfig) -> str | None:
-    """The local feature-branch tip SHA, recorded in the pr_merged event.
-
-    By the time this runs after a successful merge, ``_sync_local_feature_branch``
-    has fast-forwarded the local ref to origin, so this tip matches the merged
-    remote. (On the standalone merge-prs path with no reachable origin the sync
-    is a no-op and this falls back to the best-available local tip.)
-    """
-    import subprocess
-    try:
-        proc = subprocess.run(
-            ["git", "rev-parse", cfg.feature_branch],
-            cwd=str(cfg.repo_root), capture_output=True, text=True,
-            check=False, timeout=30,
-        )
-    except OSError:
-        return None
-    if proc.returncode != 0:
-        return None
-    return (proc.stdout or "").strip() or None
+# DF-1: `_feature_branch_sha` (the local feature-branch tip read) was DELETED
+# here by DF-1-3, not merely orphaned. It was WRONG as an audit source — the
+# sync above it never succeeds when the feature branch is checked out at
+# ``repo_root`` (the pr-mode configuration), so it read a frozen local tip;
+# two different PRs merged in the same run recorded IDENTICAL post-merge SHAs,
+# across all 7 recorded pr_merged events. The replacement is
+# ``merge_record.witness_merged_sha`` (origin's record of the merge, or a
+# named unavailable state — never a local-ref fallback). Deletion over
+# dead-code-with-a-warning: a function that cannot be called cannot drift
+# back into the stamp path.
 
 
 def _load_tasks(cfg: MergeEngineConfig) -> list[plan_mod.Task]:

@@ -73,7 +73,25 @@ _PANEL_SKIP_TYPES = frozenset({"docs", "documentation", "test", "tests"})
 # diff + summary; for typical BSA-sized tickets this fits in <2 min, but we
 # leave headroom for the 90th percentile. The panel runs reviewers in
 # parallel, so the panel wall-clock is bounded by the slowest reviewer.
-DEFAULT_REVIEWER_TIMEOUT_SECONDS = 600
+#: Per-seat wall-clock budget. Raised 600 -> 1800 on 2026-08-18, from the
+#: distribution rather than by feel. Measured over 172 recorded seat runs:
+#:
+#:     family   runs  timeouts   median    p90     max completed
+#:     claude     43         6     266s   490s          554s
+#:     codex      43         0     178s   270s          329s
+#:     grok       86         0     285s   418s          563s
+#:
+#: SIX OF CLAUDE'S 43 RUNS — 14% — were killed at the 600s bound, and the
+#: longest seat that ever COMPLETED finished at 563s: 37 seconds of headroom on a
+#: censored distribution. The seat this project measured as the only reliable
+#: catcher of a Critical was the one being clipped, and D-67 recorded a
+#: security-property unit decided without it.
+#:
+#: 1800 is ~3.2x the longest completion. The cost of a longer bound is wall-clock
+#: on a genuinely hung seat (seats run concurrently, so the panel takes the max);
+#: the cost of a short one is losing the strongest reviewer from a verdict,
+#: silently, one time in seven.
+DEFAULT_REVIEWER_TIMEOUT_SECONDS = 1800
 
 # A reviewer's diff context is capped to keep prompts under model context
 # limits. Real BSA diffs land at ~300-2000 lines; 8000 lines is the safety
@@ -527,6 +545,30 @@ def _load_prompt(family: str, domain: str | None = None) -> str:
     `domain` names a file under `reviewer_prompts/domains/`. Unset falls back to
     `_default.md`, which tells the reviewer to infer the domain from the repo and
     to report uncertainty rather than assume.
+
+    **The prompt-tree drift seam (unit W2-1) is OWED HERE, and W2-1-3 wires it.**
+    ``_PROMPTS_DIR`` resolves inside the RUNNING package, so these bytes are
+    whatever the last install put there, and the run's genesis already records
+    ``hash_tree`` of this directory as ``reviewer_prompts_hash`` — which nothing
+    compares to anything today. The wiring is ``snap =
+    prompt_provenance.snapshot_tree(_PROMPTS_DIR, "reviewer prompts")``, then
+    ``check_prompt_tree(snap)``, then ``snap.render(f"{family}.md",
+    "_shared.md")``: read once, digest those bytes, render the same object. That
+    ORDER is the contract, so it is not "add one line before the reads", and the
+    two ``exists()`` checks become ``render``'s missing-member refusal. NOT added
+    by this scaffold on purpose — ``check_prompt_tree`` is a stub and a wired
+    stub breaks every panel; body and wiring land in one commit.
+
+    NOTE for that wiring: the domain block is a THIRD member of the render, and
+    it is selected at call time rather than fixed, so the digest must cover the
+    whole ``domains/`` directory rather than the one file this call happened to
+    pick. A digest over only the selected file would let an unselected domain be
+    rewritten silently.
+
+    It does not close the headline hole. An ADJUDICATE row may still declare
+    ``_shared.md`` in ``disputed_paths:`` and rewrite it; that remedy is on
+    ``role_protocol.FLOOR_GLOBS`` — floored, handed over by W2-1-4. See
+    :data:`~claude_dispatcher.prompt_provenance.FLOOR_GLOBS_OWED`.
     """
     fam_path = _PROMPTS_DIR / f"{family}.md"
     shared_path = _PROMPTS_DIR / "_shared.md"
@@ -574,6 +616,26 @@ REVIEW_EXCLUSION_NOTICE = (
 )
 
 
+def _with_floor(role_context: str) -> str:
+    """Append the non-overridable floor to a role block.
+
+    Rendered from `role_protocol.FLOOR_GLOBS` rather than written out, because
+    that list changes (17 -> 19 when the known-red register landed) and a stale
+    copy would tell the panel a path is writable when no role may touch it. It is
+    appended HERE and not in `review_role_context` so that function does not name
+    the constant — see the note there.
+    """
+    if not role_context:
+        return ""
+    from . import role_protocol as _rp
+    floor = ", ".join(f"`{g}`" for g in _rp.FLOOR_GLOBS)
+    return (
+        role_context
+        + "\n- These paths are writable by NOBODY, in any role: "
+        + floor
+    )
+
+
 def build_review_prompt(
     *,
     family: str,
@@ -587,6 +649,7 @@ def build_review_prompt(
     blast_radius: str = "",
     implementer_prior: str = "",
     risk_context: str = "",
+    role_context: str = "",
 ) -> str:
     """Render the per-family prompt. The shared block has format slots; the
     preamble has none.
@@ -620,6 +683,9 @@ def build_review_prompt(
         blast_radius=blast_radius or "(not computed for this run — do NOT read this as 'no sibling surfaces affected')",
         implementer_prior=implementer_prior or "(not available for this run)",
         risk_context=risk_context or "(classification unavailable — judge the diff on its contents)",
+        role_context=_with_floor(role_context) or (
+            "(no role protocol on this task — judge the diff on its contents)"
+        ),
     )
 
 
@@ -1313,9 +1379,32 @@ def default_reviewers(timeout_seconds: int = DEFAULT_REVIEWER_TIMEOUT_SECONDS) -
     #
     # The corroboration gate (see aggregate()) is unchanged and still counts by
     # FAMILY, so adding a fourth family cannot let one seat solo-block a HIGH.
+    # GEMINI IS UNSEATED (2026-08-18, operator), and the class stays for when it
+    # can be restored. It has contributed ZERO findings across every run this
+    # project has recorded — claude 115, codex 127, grok 129, gemini 0 — while
+    # reporting UNAVAILABLE in 0.3-0.6s on every panel. D-56 noticed the symptom
+    # and D-67 recorded a panel deciding on two seats because of it; neither
+    # diagnosed it.
+    #
+    # Measured cause, by running the seat's own invocation:
+    #
+    #     $ agy --print "" --print-timeout 60s     (prompt on stdin)
+    #     Error: Error: empty prompt. Usage: agy --print "your prompt here"
+    #
+    # The empty positional is deliberate — see GeminiReviewer, it mirrors the old
+    # `gemini -p ""` and exists to keep a large diff off argv and away from
+    # E2BIG. agy has since dropped support for an empty prompt, so the seat has
+    # been dead since that change with nothing surfacing it.
+    #
+    # Restoring it means passing the prompt as `--print`'s argument, which
+    # reintroduces the ~128 KB single-argv cap the empty positional was avoiding
+    # (a real panel prompt measured 53 KB, so it fits today and will not on a big
+    # diff), or moving to `--input-format stream-json`, which forces stream-json
+    # OUTPUT and so changes the verdict parser. Neither is free, and a seat that
+    # silently contributes nothing is worse than an honestly absent one: the
+    # panel was configured as five and deciding as three.
     return [
         ClaudeReviewer(timeout_seconds=timeout_seconds),
-        GeminiReviewer(timeout_seconds=timeout_seconds),
         CodexReviewer(timeout_seconds=timeout_seconds),
         GrokReviewer(timeout_seconds=timeout_seconds),
     ]
@@ -1396,6 +1485,7 @@ def run_panel(
     implementer_prior: str = "",
     risk_context: str = "",
     domain: str | None = None,
+    role_context: str = "",
     reviewers: list[Reviewer] | None = None,
     advisory_reviewers: list[Reviewer] | None = None,
     log: Callable[[str], None] = lambda _m: None,
@@ -1457,6 +1547,7 @@ def run_panel(
             blast_radius=blast_radius,
             implementer_prior=implementer_prior,
             risk_context=risk_context,
+            role_context=role_context,
         )
         return r.review(prompt)
 

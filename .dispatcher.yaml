@@ -16,6 +16,17 @@
 test: |
   exec bash "$(git rev-parse --show-toplevel)/scripts/test.sh"
 
+# Declares that this repo KNOWS HOW to exclude a row, and how. Without this key
+# a non-empty active register is a named blocking fault
+# (known_red.RegisterFault.UNSUPPORTED_STYLE) rather than a gate that quietly
+# goes red on rows the task cannot fix.
+#
+# The register is consumed inside scripts/test.sh rather than inline here, so
+# `make test` and the dispatcher gate cannot drift — which is the whole reason
+# the command was extracted. Extracting it had silently dropped D-68's support;
+# restored there as part of this merge.
+test_exclusion: pytest-deselect
+
 # Cross-family panel: probationary advisory seats (VG-5).
 panel:
   advisory: [grok]
@@ -26,3 +37,8 @@ panel:
 # cascade.terminal is CLI-only today (--cascade-terminal / --no-claude)
 
 # Dogfood: dispatcher run … --no-claude
+
+# Run artifacts live OUTSIDE the repo. `docs/runs/` is gitignored (so it is not
+# in history) AND sits inside a disposable worktree, so the audit trail dies with
+# the worktree. Relative to the REPO ROOT, so every worktree shares one location.
+runs_dir: ../dispatcher-runs

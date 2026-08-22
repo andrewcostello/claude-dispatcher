@@ -20,6 +20,7 @@ Branch naming follows the .claude/workflow/skills/git-worktree-setup.md conventi
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass, field
 from enum import Enum
@@ -249,11 +250,39 @@ def create(
     base = base_path or worktree_base(repo_root)
     wt_path = worktree_path(base, task_key)
     if wt_path.exists() and (wt_path / ".git").exists():
+        # Provision on REUSE too (D-61, corrected). A re-dispatched task —
+        # after an unblock, a resume, or a run stopped mid-flight — takes this
+        # path, and it is the common case, not the rare one. Measured: with the
+        # provisioning only on the create path, `worktree-DF-5-3` was reused
+        # after a quota stop carrying `main.cjs` alone, and would have paid the
+        # whole wasted fix-the-tests round D-61 exists to remove.
+        provision_untracked_deps(wt_path, repo_root=repo_root)
         return Worktree(path=wt_path, branch=_checked_out_branch(wt_path, branch))
     base.mkdir(parents=True, exist_ok=True)
+    # `-b` CREATES the branch, so it fails when the branch already exists. That
+    # is the normal state for a re-dispatched task whose worktree is gone: the
+    # branch survives a `git worktree remove`, and the reuse path above only
+    # triggers when the DIRECTORY is still there. Measured 2026-08-17 — after
+    # tidying preserved worktrees, all three Blocked tasks became undispatchable
+    # with "git worktree add failed", and the branch that held their work was
+    # the thing making it fail.
+    #
+    # So: create the branch only when it is not already there, and otherwise
+    # check the existing one out. Checking out an existing branch deliberately
+    # does NOT reset it to `base_branch` — a re-dispatch must not silently
+    # discard commits an unblocked task already made, which is the property
+    # that has recovered real work four times (D-54, D-59, D-63, D-66).
+    exists = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+        cwd=repo_root, capture_output=True, text=True,
+    ).returncode == 0
+    add_args = (
+        ["git", "worktree", "add", str(wt_path), branch] if exists
+        else ["git", "worktree", "add", str(wt_path), "-b", branch, base_branch]
+    )
     try:
         subprocess.run(
-            ["git", "worktree", "add", str(wt_path), "-b", branch, base_branch],
+            add_args,
             cwd=repo_root,
             check=True,
             capture_output=True,
@@ -265,12 +294,121 @@ def create(
         # is now a valid worktree, reuse it idempotently; otherwise surface a
         # typed error carrying git's stderr rather than a raw traceback.
         if wt_path.exists() and (wt_path / ".git").exists():
+            provision_untracked_deps(wt_path, repo_root=repo_root)
             return Worktree(path=wt_path, branch=_checked_out_branch(wt_path, branch))
         raise WorktreeError(
             f"git worktree add failed for {task_key} at {wt_path}",
             stderr=(exc.stderr or "").strip(),
         ) from exc
+    provision_untracked_deps(wt_path, repo_root=repo_root)
     return Worktree(path=wt_path, branch=branch)
+
+
+#: Files a task worktree needs that git will never bring: deliberately
+#: untracked, install-time artifacts. Paths are relative to the repository root
+#: and are copied from the RUNNING INSTALL's tree, never fetched.
+_UNTRACKED_DEPS: tuple[str, ...] = (
+    "src/claude_dispatcher/ts_signature_fingerprint/typescript.js",
+    "src/claude_dispatcher/ts_signature_fingerprint/LICENSE.typescript.txt",
+)
+
+
+def provision_untracked_deps(
+    wt_path: Path,
+    source_root: Path | None = None,
+    *,
+    repo_root: Path | None = None,
+) -> list[str]:
+    """Copy install-time, gitignored dependencies into a fresh worktree (D-61).
+
+    Returns the relative paths actually copied, for logging.
+
+    **Why this exists.** `ts_parser_vendor`'s docstring is explicit that
+    fetching the TypeScript parser is "an INSTALL-TIME step, and never a
+    judgement-time one. Run it once per install." That is right for a checkout
+    and false for this dispatcher, because **every task runs in a fresh
+    worktree and a fresh worktree is a new install**. `typescript.js` (8.7 MB)
+    and its licence are gitignored by the operator ruling of 2026-08-10 — a
+    9.1 MB blob does not belong in git history — so `git worktree add` never
+    brings them.
+
+    Measured on a fresh worktree of this repository before this function
+    existed::
+
+        ls src/claude_dispatcher/ts_signature_fingerprint/
+          main.cjs                    <- and nothing else
+        pytest tests/test_ts_comparator.py
+          87 failed, 100 passed, 3 errors
+
+    so the mechanical gate went red on the FIRST run of EVERY TASK, the
+    dispatcher spawned a fix-the-tests agent whose real job was a file copy,
+    that agent committed NOTHING (the file is ignored), and the second suite
+    run passed. One wasted agent spawn plus a second full suite run per task,
+    on every wave.
+
+    **COPIED, not re-fetched.** Re-running the network vendor step per worktree
+    would mean one 8.7 MB download per task and a judgement-time network
+    dependency that `ts_parser_vendor`'s own design forbids. **And not
+    symlinked**: a worktree is meant to be self-contained, and a link pointing
+    out of the tree is precisely the escape channel `scratch_clone`'s isolation
+    contract (DF-4) exists to refuse.
+
+    **A bad copy cannot pass silently.** `role_protocol._ts_prepared_parser`
+    re-checks `TS_VENDORED_PARSER_SHA256` in every process that renders a
+    TypeScript signature, so a truncated or wrong file is refused at use rather
+    than trusted here.
+
+    **Absence is not an error.** An install that never ran the vendor step has
+    nothing to copy, and this must not turn that into a worktree-creation
+    failure — the TypeScript comparator is one enrolled language among several,
+    and the suite's own rows report its absence far better than a crash during
+    `git worktree add` would.
+    """
+    root = source_root or Path(__file__).resolve().parents[2]
+
+    # ONLY the dispatcher's OWN repository (D-61, corrected twice).
+    #
+    # Measured, before this guard: `create` provisioned EVERY worktree it made,
+    # including one for a repository that has nothing to do with the
+    # dispatcher. A bare probe repo containing one README came back carrying
+    # 9,112,572 bytes of `typescript.js` and `git status --porcelain` reporting
+    # `?? src/`. The committed-tree gate treats ANY uncommitted worktree file
+    # as a verification failure, so this would have failed EVERY task on every
+    # target repo that is not this one — evenplay-mono included — while
+    # dumping 9 MB of unrelated content into each worktree. Six rows of
+    # `tests/test_mechanical_verify.py` caught it.
+    #
+    # The guard is also the honest scope. `role_protocol.ts_parser_home`
+    # resolves the parser out of the RUNNING PACKAGE and out of nowhere else,
+    # so a target repo's worktree never needs a copy. The only reason a
+    # worktree needs one is DOGFOODING: when the repository under test IS the
+    # dispatcher, the task's `pytest` imports the package from its own
+    # worktree, and that worktree is a new install.
+    if repo_root is not None:
+        try:
+            same = repo_root.resolve() == root.resolve()
+        except OSError:
+            same = False
+        if not same:
+            return []
+
+    copied: list[str] = []
+    for rel in _UNTRACKED_DEPS:
+        src = root / rel
+        dst = wt_path / rel
+        if not src.is_file() or dst.exists():
+            continue
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dst)
+            shutil.copymode(src, dst)
+            copied.append(rel)
+        except OSError:
+            # Best effort by design: see "Absence is not an error" above. The
+            # same reasoning covers a copy that fails — the parser's digest
+            # check refuses it at use, and the suite reports it.
+            continue
+    return copied
 
 
 def remove(repo_root: Path, wt: Worktree, force: bool = False) -> None:

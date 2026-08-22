@@ -61,8 +61,55 @@ def test_partition_splits_test_and_non_test(repo: Path) -> None:
     assert [p for _s, p in non_tests] == ["code.txt"]
 
 
-def test_partition_fails_open_on_bad_base(repo: Path) -> None:
-    assert sv.partition_changed(repo, "no-such-ref") == ([], [])
+def test_partition_does_not_fail_open_on_bad_base(repo: Path) -> None:
+    """RED — AMENDED BY P4, 2026-08-09 (was `test_partition_fails_open_on_
+    bad_base`, which asserted `== ([], [])`).
+
+    This row was the live seal that pinned the git-failure fail-open as
+    intended, and closing that fail-open therefore required amending it. The
+    ruling and its reasoning are in
+    `tests/test_seal_verify_failopen.py`, RULINGS 1: an undecodable path
+    blocks because "we learned that the change contains a file we cannot
+    classify", while a git failure fails open because it "means we learned
+    nothing" — and learned nothing is the weaker position, so the asymmetry
+    runs the wrong way.
+
+    `([], [])` is indistinguishable from a real, empty answer, and the caller
+    reads it as one: `run_seal_inversion` turns it into "no test files
+    changed — nothing claims to seal". A function that cannot say "git would
+    not tell me" must not return a partition it does not have.
+
+    The row does not name an exception class — the mechanism is the body
+    author's — only that a bad base is signalled rather than answered, and
+    that the signal names the ref, so an incidental `AttributeError` cannot
+    satisfy it. The end-to-end consequence is sealed separately by
+    `test_a_git_failure_is_not_a_change_with_no_tests_in_it`.
+
+    Green when: a git failure is signalled. SEPARATE body change.
+    Falsify: the good-base control below is a real partition in the same row.
+    """
+    try:
+        answered = sv.partition_changed(repo, "no-such-ref")
+    except Exception as exc:      # noqa: BLE001 — the class is not the policy
+        assert "no-such-ref" in str(exc), (
+            "a bad base was signalled by something that does not name it, so "
+            f"this row cannot tell a refusal from a bug: {exc!r}"
+        )
+    else:
+        pytest.fail(
+            "git refused to say what the change contains and `partition_"
+            f"changed` returned {answered!r} — the same value a change with "
+            "no test files in it produces, which the caller reports as "
+            "'nothing claims to seal'"
+        )
+
+    _commit_fix(repo, seal="grep -q fixed code.txt\n")
+    tests, non_tests = sv.partition_changed(repo, "main")
+    assert ([p for _s, p in tests], [p for _s, p in non_tests]) == (
+        ["tests/run.sh"], ["code.txt"]), (
+        "control: a base that exists must still be partitioned, or the "
+        "assertion above would pass by the function refusing everything"
+    )
 
 
 # --- inversion -------------------------------------------------------------

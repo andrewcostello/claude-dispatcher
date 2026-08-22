@@ -37,8 +37,12 @@ from . import classification
 from . import cross_family_reviewer as cfr_mod
 from . import disposition as disposition_mod
 from . import journal as journal_mod
+from . import findings_store as findings_store_mod
+from . import known_red as known_red_mod
+from . import loop_gate as loop_gate_mod
 from . import mechanical_verify as mv_mod
 from . import merge_engine as merge_mod
+from . import money_net as money_net_mod
 from . import notify as notify_mod
 from . import plan as plan_mod
 from . import pr as pr_mod
@@ -47,10 +51,13 @@ from . import push_verify as pv_mod
 from . import design as design_mod
 from . import quality_levels as ql_mod
 from . import repo_config as repo_config_mod
+from . import role_protocol as role_protocol_mod
+from . import scaffold_shape as scaffold_shape_mod
 from . import routing as routing_mod
 from . import seal_verify as sv_mod
 from . import endpoint_agents as endpoint_agents_mod
 from . import spawn as spawn_mod
+from . import spawn_failure as spawn_failure_mod
 from . import summary as summary_mod
 from . import verifier as verifier_mod
 from . import worktree as wt_mod
@@ -85,7 +92,34 @@ def _ask_human(prompt_text: str, choices: list[str]) -> str:
             print(f"  invalid response — must be one of {choices}")
 
 
+#: Transient-provider retries per cascade rung. ONE: a second failure is
+#: evidence the condition is not passing, and an unbounded retry against a
+#: flapping provider burns the cost ceiling with nothing to show for it.
+INFRA_RETRY_LIMIT = 1
+
+#: Marks an `effort:` the CASCADE chose rather than the plan author. Only ever
+#: written beside an escalated effort, and removed with it.
+EFFORT_ESCALATED_STAMP = "effort_escalated"
+
 _log_lock = threading.Lock()
+
+
+# The two row keys the loop role gate (unit D8) writes, UNPACKED from the one
+# constant that names them rather than re-spelled here. `unblock._STALE_STAMPS`
+# clears the same tuple and `unblock._DETAIL_FIELDS` prints the second entry,
+# so a rename lands in one place: two spellings of one key is the shape where a
+# rename clears one key and writes the other, and every test stays green
+# because each half is internally consistent. The stamp is deliberately not the
+# PR-time verdict's name — PR time judges the diff that will land and reads its
+# policy out of the protected base; the loop has neither property, and a stamp
+# that reads like the verdict is a stamp somebody will treat as one.
+_ROLE_LOOP_STAMP, _ROLE_LOOP_DETAIL_STAMP = loop_gate_mod.ROW_STAMPS
+
+# The retry anchor (D-54). Read from the same constant the row is written from,
+# for the reason `_STALE_STAMPS` gives: two spellings of one key is the failure
+# where a rename clears one and writes the other, both halves internally
+# consistent. See `loop_gate.RETRY_ANCHOR_STAMP` for why it exists.
+_RETRY_ANCHOR_STAMP = loop_gate_mod.RETRY_ANCHOR_STAMP
 
 
 # How often the dispatch loop appends a `heartbeat` event to the journal while
@@ -121,6 +155,10 @@ class RunConfig:
     # majority of reviews. Turn on if same-family agreement starts inflating
     # corroborated blocks again.
     exclude_author_family: bool = False
+    # The resolved money net behind `financial_paths` (DF-5): provenance for
+    # the run.log line and the genesis record. None on a resume — the genesis
+    # already carries the original run's resolved value and provenance.
+    money_net: money_net_mod.MoneyNet | None = None
     # Run-level default implementer family (claude/codex/grok/gemini). A per-task
     # `agent:` in the YAML wins; otherwise every task routes to this family's
     # headless CLI instead of `claude --print`. None -> claude (the default).
@@ -139,6 +177,17 @@ class RunConfig:
     # When True, run design stage for tasks matching design_required().
     # Opt-in (default False) so hermetic tests never spawn a design worker.
     enable_design_stage: bool = False
+    # Role-protocol loop gate (unit D8). When True, `check_branch` runs inside
+    # the cascade loop right after the implementer returns — the same callable
+    # `scripts/check_body_branch.sh` runs at PR time, over this rung's diff
+    # only, so a body agent that wrote to tests/** is caught before four more
+    # spawns commit to the branch. Opt-in and OFF by default, deliberately:
+    # on a tree where check_branch's reachability arm engages, that arm costs
+    # minutes per branch and answers UNDETERMINED — which this gate BLOCKS on —
+    # so a run that cannot afford it does not turn it on. Off is a NAMED state
+    # (loop_gate.LoopGateStatus.NOT_ENABLED), logged, journaled and stamped on
+    # every task, never a silence.
+    enable_role_loop_gate: bool = False
     # When True, unpinned tasks use routing.cheap_first (grok leaves, claude hard).
     cheap_first: bool = False
     claude_extra_args: list[str] = field(default_factory=list)
@@ -298,6 +347,22 @@ class TaskSnapshot:
     # merge each dependency's branch into this task's fresh worktree branch
     # when the dependency's commits are not yet on base (INT-4).
     blocked_by: list[str] = field(default_factory=list)
+    # The protocol role facts of EVERY row dispatched onto this branch — the
+    # whole batch group, not the primary only, because a batch shares one
+    # worktree, one branch and one implementer session while `check_branch`
+    # takes exactly one role. Read at dispatch time and frozen here (unit D8,
+    # §4): an ADJUDICATE row's `disputed_paths:` IS its writable set, so a
+    # snapshot taken before the implementer runs is what stops a branch from
+    # widening its own gate by editing the worklist. Empty only when the rows
+    # could not be parsed, which the gate reports as ROLE_UNRESOLVED — never
+    # as "no role, therefore no check".
+    role_specs: list[role_protocol_mod.TaskRoleSpec] = field(default_factory=list)
+    # The retry anchor read off the row at dispatch (D-54, `loop_gate.
+    # RETRY_ANCHOR_STAMP`): the gate base of the attempt that first blocked
+    # this task, or None on a first attempt. Frozen here with `role_specs` and
+    # for the same reason — it is read BEFORE the implementer spawns, so a
+    # branch cannot move the ref it is judged from by editing its own row.
+    gate_base_sha: str | None = None
 
 
 CAPSTONE_KEY = "CAPSTONE-INTEGRATION"
@@ -433,6 +498,23 @@ def execute(args: argparse.Namespace) -> int:
     # Pure read; needed by the preflight before any run artifact exists.
     repo_root = wt_mod.detect_repo_root(cfg.tasks_path.parent)
 
+    # Money net (DF-5): FINANCIAL_PATHS is an operator override when given,
+    # else derived from the tracked table at the run's base ref, else the
+    # fail-closed named absence ("**"). Never a shipped constant — see
+    # money_net.py. Resolved BEFORE _setup_integration repoints base_branch
+    # in pr mode, so the net's provenance names the operator's actual base.
+    override = getattr(args, "financial_paths", None)
+    if override is not None:
+        try:
+            net = money_net_mod.money_net_from_override(override)
+        except ValueError as e:
+            print(f"error: --financial-paths: {e}", file=sys.stderr)
+            return 2
+    else:
+        net = money_net_mod.derive_money_net(repo_root, cfg.base_branch)
+    cfg.money_net = net
+    cfg.financial_paths = net.env_value()
+
     # Run-start preflight (live modes only — dry-run returns in run.py and
     # never reaches this function). Failures exit 2 HERE, before the run
     # directory, journal, or any worktree exists, so a doomed run leaves no
@@ -465,12 +547,30 @@ def execute(args: argparse.Namespace) -> int:
         for warning in pf.warnings:
             print(f"warning: preflight: {warning}", file=sys.stderr)
 
+    # Build-protocol correlation warnings (D1). Never a refusal, and never
+    # gated on --skip-preflight: everything the protocol REFUSES was already
+    # refused by `plan.load_tasks` above (which raises), so what is left here
+    # is the one fact `validate` cannot decide on its own — whether a unit's
+    # seals and bodies tasks share a model family. That needs the run-level
+    # implementer, which is a property of the run and not of the file, so it
+    # is resolved here and passed in. Same lifecycle as the preflight
+    # warnings: printed now (no run.log yet) and replayed into run.log below.
+    role_warnings = role_protocol_mod.agent_correlation_warnings(
+        role_protocol_mod.validate(plan_mod.load_tasks(doc)),
+        default_agent=_effective_implementer(cfg),
+    )
+    for warning in role_warnings:
+        print(f"warning: role protocol: {warning}", file=sys.stderr)
+
     run_dir = cfg.runs_dir / cfg.run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     log_path = run_dir / "run.log"
     _log(log_path, f"start run {cfg.run_id} mode={cfg.mode} max_parallel={cfg.max_parallel}")
+    _log(log_path, f"money net: {net.plan_value()}")
     for warning in pf.warnings:
         _log(log_path, f"preflight warning: {warning}")
+    for warning in role_warnings:
+        _log(log_path, f"role protocol warning: {warning}")
 
     # Resolve the integration mode and, in pr mode, create the run-level
     # feature branch and repoint base_branch to it (PRF-1). Done AFTER
@@ -540,6 +640,16 @@ def resume_run(args: argparse.Namespace, journal: journal_mod.Journal) -> int:
     log_path = run_dir / "run.log"
     _log(log_path, f"resume run {cfg.run_id} mode={cfg.mode} max_parallel={cfg.max_parallel}")
     repo_root = wt_mod.detect_repo_root(cfg.tasks_path.parent)
+    # Money net (DF-5): the genesis normally carries the original run's
+    # RESOLVED financial_paths value, which is reused verbatim. A genesis
+    # without one (None) gets the same run-start derivation — tracked table
+    # at the base ref, else the fail-closed named absence. Never None into
+    # the spawn env, never a shipped constant.
+    if cfg.financial_paths is None:
+        net = money_net_mod.derive_money_net(repo_root, cfg.base_branch)
+        cfg.money_net = net
+        cfg.financial_paths = net.env_value()
+        _log(log_path, f"money net (re-derived on resume): {net.plan_value()}")
     return _run_loop(cfg, run_dir, log_path, repo_root)
 
 
@@ -796,6 +906,20 @@ def _maybe_merge_pass(
 
 # Agents that expose an effort / reasoning-level CLI flag. gemini/agy does not.
 _EFFORT_CAPABLE_AGENTS = frozenset({"claude", "codex", "grok"})
+
+
+def _effective_implementer(cfg: RunConfig) -> str:
+    """The agent family a row with no ``agent:`` will actually be run by.
+
+    Never a guess and never blank: `role_protocol.agent_correlation_warnings`
+    compares each row's EFFECTIVE family, so an absent `agent:` has to resolve
+    to the same name the dispatcher will really spawn — which under
+    ``--no-claude`` is grok, not claude. Mirrors the fallback ladder
+    :func:`_capture_run_agent_version` already applies to the version probe.
+    """
+    if cfg.implementer and cfg.implementer.strip():
+        return cfg.implementer.strip().lower()
+    return "grok" if cfg.no_claude else "claude"
 
 
 def _capture_run_agent_version(cfg: RunConfig) -> str | None:
@@ -1160,6 +1284,30 @@ def _run_task(
     )
     original_primary = snap.agent or "claude"
     pre_spawn_sha = _branch_sha(repo_root, wt.branch, log_path, snap.key)
+    # Record the gate ORIGIN at the task's first spawn (D-54, corrected by
+    # D-59). `setdefault`, so a re-dispatch keeps the ref its FIRST spawn
+    # started from.
+    #
+    # This used to be written only when a task BLOCKED, and that was half the
+    # fix. `pre_spawn_sha` assumes the branch starts empty of the task's own
+    # output, and a re-dispatch breaks that assumption in BOTH directions:
+    #
+    #   * D-54 — the retained work is a VIOLATION, so deleting the forbidden
+    #     file (the only compliant act available) reads as touching it.
+    #   * D-59 — the retained work is the DELIVERABLE, so a re-dispatched task
+    #     that correctly changes nothing reads as "a role task that changed
+    #     nothing has not done its phase". Measured on DF-3-2: it had committed
+    #     `tests/test_batch_coherence.py` in an earlier run, the run was stopped
+    #     for an unrelated reason, and the restart blocked it as idle.
+    #
+    # Recording at first spawn answers both: every later attempt is judged from
+    # where the task actually began, so retained work is neither an accusation
+    # nor invisible. Cleared on Done by `_record_retry_anchor`, whose BLOCKED
+    # branch is now a defensive no-op (this write always precedes it).
+    if pre_spawn_sha:
+        _mutate_row(cfg, snap.batch_keys,
+                    lambda row: row.setdefault(_RETRY_ANCHOR_STAMP,
+                                               pre_spawn_sha))
     cascade_context = ""
     result: spawn_mod.SpawnResult | None = None
     used_agent: str | None = None
@@ -1179,6 +1327,16 @@ def _run_task(
     verifier_cost_total = 0.0
     panel_verdict: cfr_mod.PanelVerdict | None = None
     panel_iterations_used = 0
+    role_loop: loop_gate_mod.LoopGateOutcome | None = None
+    # The ref the gate actually diffed from on the rung that produced
+    # `role_loop`. Recorded as the retry anchor if this attempt blocks, so the
+    # NEXT attempt is judged from the same place (D-54). Reset per rung with
+    # `role_loop` for the same reason: a discarded rung's base must not be
+    # written onto the terminal row.
+    gate_base_used: str | None = None
+    # The effort the PLAN asked for, captured before any rung can overwrite
+    # `snap.effort`. Without it, "escalated" and "deliberate" are the same string.
+    snap_planned_effort = snap.effort
 
     for idx, (attempt_agent, attempt_effort) in enumerate(cascade):
         if idx > 0:
@@ -1214,6 +1372,11 @@ def _run_task(
         verifier_cost_total = 0.0
         panel_verdict = None
         panel_iterations_used = 0
+        # A discarded rung's role verdict must not survive onto the terminal
+        # row either: the diff it judged was reset away, so the stamp would
+        # describe a diff that no longer exists.
+        role_loop = None
+        gate_base_used = None
         result = None
         s = None
         used_agent = None
@@ -1223,6 +1386,17 @@ def _run_task(
         final_blocked_reason = None
 
         desc = snap.description or ""
+        # D-56: a task inherits the recorded findings of the tasks it names in
+        # `blockedBy`. Narrow on purpose — injecting every finding in the run
+        # would bloat prompts on units where they are irrelevant.
+        inherited = findings_store_mod.render_for_prompt(
+            cfg.runs_dir, snap.blocked_by or [],
+        )
+        if inherited:
+            desc = f"{desc}{inherited}"
+            _log(log_path,
+                 f"  {snap.key} inherited panel findings from "
+                 f"{', '.join(snap.blocked_by or [])}")
         if snap.design_spec:
             desc = (
                 f"{desc}\n\n### Approved Design Spec\n\n"
@@ -1263,38 +1437,90 @@ def _run_task(
         attempt_model = _effective_model(
             attempt_agent, attempt_model, log_path=log_path, task_key=snap.key,
         )
-        try:
-            result = spawn_mod.spawn_agent(
-                agent=attempt_agent,
-                claude_bin=cfg.claude_bin,
-                cwd=wt.path,
-                env=env,
-                prompt=prompt,
-                model=attempt_model,
-                effort=attempt_effort,
-                extra_args=list(cfg.claude_extra_args),
-                timeout_seconds=cfg.task_timeout_seconds,
+        # D-64: ONE retry for a transient provider failure, on the SAME rung.
+        # Not a cascade — no fallback event, no worktree reset, no effort bump: a
+        # 529 is not weak work, and the next rung would begin by resetting the
+        # worktree and be spent against the same server condition. Bounded at one
+        # because an unbounded retry against a flapping provider is its own
+        # hazard, and a second failure is evidence the condition is not passing.
+        infra_retries = 0
+        while True:
+            try:
+                result = spawn_mod.spawn_agent(
+                    agent=attempt_agent,
+                    claude_bin=cfg.claude_bin,
+                    cwd=wt.path,
+                    env=env,
+                    prompt=prompt,
+                    model=attempt_model,
+                    effort=attempt_effort,
+                    extra_args=list(cfg.claude_extra_args),
+                    timeout_seconds=cfg.task_timeout_seconds,
+                )
+            except Exception as e:
+                _log(log_path, f"  {snap.key} spawn failed: {e}")
+                fail_reason = f"spawn_failed: {e}"
+                result = None
+                break
+            _log(log_path, f"  {snap.key} spawn exited code={result.exit_code}")
+            if result.exit_code != 0 and (result.stderr or result.stdout):
+                # A dead spawn's last words are the only diagnostic; PH-12's
+                # grok spawn failed opaquely (2026-07-12) with nothing logged.
+                tail = ((result.stderr or "") + "\n"
+                        + (result.stdout or "")).strip()[-600:]
+                _log(log_path, f"  {snap.key} spawn output tail: {tail}")
+            # Accounted for EVERY attempt, a retried one included — each real
+            # spawn has a real cost — and before any block branch, so a task that
+            # spawns and THEN blocks still counts toward the cost ceiling.
+            _account_spawn(cfg, snap.key, result, kind="implementer")
+            if cfg.haiku_summary:
+                _log_transcript_and_haiku(
+                    cfg, snap, result, summary_path.parent, log_path)
+            if result.exit_code == 0:
+                break
+            transient = spawn_failure_mod.classify(
+                result.exit_code, result.stdout or "", result.stderr or "",
             )
-        except Exception as e:
-            _log(log_path, f"  {snap.key} spawn failed: {e}")
-            fail_reason = f"spawn_failed: {e}"
-            result = None
+            if (transient.retry is not spawn_failure_mod.Retry.NOW
+                    or infra_retries >= INFRA_RETRY_LIMIT):
+                break
+            infra_retries += 1
+            _log(log_path,
+                 f"  {snap.key} transient provider failure, retrying once on the "
+                 f"same rung: {transient.reason[:160]}")
+            _emit_event(cfg, journal_mod.EventType.task_spawn_finished, {
+                "spawn_kind": "implementer",
+                "failure_kind": transient.kind.value,
+                "retry": transient.retry.value,
+                "infra_retry": infra_retries,
+                "api_error_status": transient.api_error_status,
+            }, task_key=snap.key)
+        if result is None:
             continue
-        _log(log_path, f"  {snap.key} spawn exited code={result.exit_code}")
-        if result.exit_code != 0 and (result.stderr or result.stdout):
-            # A dead spawn's last words are the only diagnostic; PH-12's
-            # grok spawn failed opaquely (2026-07-12) with nothing logged.
-            tail = ((result.stderr or "") + "\n" + (result.stdout or "")).strip()[-600:]
-            _log(log_path, f"  {snap.key} spawn output tail: {tail}")
-        # Spawn-completion event: carries the per-task usage/cost payload parsed
-        # from the CLI's JSON output. Accounted for EVERY attempt (each real
-        # spawn has a real cost), before any fallback/block branch, so a task
-        # that spawns and THEN blocks still counts toward the cost ceiling.
-        _account_spawn(cfg, snap.key, result, kind="implementer")
-        if cfg.haiku_summary:
-            _log_transcript_and_haiku(cfg, snap, result, summary_path.parent, log_path)
         if result.exit_code != 0:
-            fail_reason = f"session_exit_code_{result.exit_code}"
+            # D-64: one branch made every failure a quality failure. An
+            # api_error is INFRASTRUCTURE — the cascade cannot fix a server
+            # overload, the retry is spent against the same condition, and the
+            # effort bump it writes outlives the transient cause. So classify,
+            # and for infrastructure BREAK with the provider's own words instead
+            # of advancing a rung.
+            failure = spawn_failure_mod.classify(
+                result.exit_code, result.stdout or "", result.stderr or "",
+            )
+            if failure.is_infrastructure:
+                _log(log_path, f"  {snap.key} spawn failed (infrastructure): "
+                               f"{failure.reason[:200]}")
+                _emit_event(cfg, journal_mod.EventType.task_spawn_finished, {
+                    "spawn_kind": "implementer",
+                    "failure_kind": failure.kind.value,
+                    "retry": failure.retry.value,
+                    "api_error_status": failure.api_error_status,
+                    "provider_message": failure.provider_message[:400],
+                }, task_key=snap.key)
+                final_status = plan_mod.BLOCKED
+                final_blocked_reason = failure.reason
+                break
+            fail_reason = failure.reason
             continue
         if not result.summary_path.exists():
             # Chronic class: the session did the work (commits exist) but
@@ -1318,10 +1544,21 @@ def _run_task(
         # provenance (YAML agent column / journal) is accurate.
         if (used_agent != (snap.agent or "claude")
                 or used_effort != snap.effort):
-            def _stamp_agent_effort(row, a=used_agent, e=used_effort):
+            def _stamp_agent_effort(row, a=used_agent, e=used_effort,
+                                    planned=snap_planned_effort):
                 row["agent"] = a
                 if e:
                     row["effort"] = e
+                    # D-64: an effort the CASCADE chose is a consequence, not a
+                    # choice, and it outlived its cause — a task escalated once by
+                    # a transient failure started every later dispatch at that
+                    # tier. Provenance is recorded HERE because it is only
+                    # knowable here: once written, an escalated effort and an
+                    # author's deliberate one are the same string. Cleared on Done
+                    # (`_forget_escalated_effort`); an author's own `effort:` is
+                    # never touched.
+                    if e != planned:
+                        row[EFFORT_ESCALATED_STAMP] = True
             _mutate_row(cfg, snap.batch_keys or snap.key, _stamp_agent_effort)
             snap = replace(snap, agent=used_agent, effort=used_effort)
 
@@ -1379,9 +1616,136 @@ def _run_task(
         if final_status != plan_mod.DONE:
             break
 
+        # --- Role-protocol loop gate (unit D8) ------------------------------
+        # The same `check_branch` the PR gate and CI reach, one build cycle
+        # earlier: HERE, before the mechanical gate, because
+        # `_retry_for_test_fix` (inside it), the verifier iterate and the panel
+        # iterate all COMMIT to this same branch — a gate placed after them
+        # judges a diff several agents wrote while reporting one agent's key.
+        # And INSIDE the cascade loop, because the next rung opens with
+        # _reset_worktree, which discards this rung's diff: a gate outside the
+        # loop would see only the surviving rung, so a rung that committed to
+        # tests/** and was then discarded for an unrelated quality failure
+        # would never be reported at all. The breach is a fact about the agent,
+        # not about the surviving diff.
+        #
+        # The base is `pre_spawn_sha` and NEVER cfg.base_branch: dependency
+        # merges land on this branch before the implementer spawns, and by PO-2
+        # a BODIES task's dependency IS its unit's SEALS task — so a
+        # base-branch diff reports the seal author's tests/** as this branch's
+        # violation on every well-formed unit. The policy comes from
+        # cfg.base_branch instead, through check_branch's own seam, so a branch
+        # that merged an edit to `.dispatcher.yaml` cannot supply the rule that
+        # judges it. Both refs go in through loop_gate.resolve_inputs; neither
+        # is spelled at this call site.
+        # ...with ONE exception, D-54: an adjudicated retry is judged from the
+        # anchor — the base of the attempt that first blocked. Without it the
+        # only compliant act available to the role (deleting the file it must
+        # not have written) is itself a changed path under the same deny glob,
+        # so an unblocked task can never clear the gate. The anchor only ever
+        # moves the base BACKWARDS to a prior pre_spawn_sha, so §4's reasoning
+        # is untouched: it is still never cfg.base_branch, and a dependency's
+        # SEALS commits are still on the far side of it.
+        gate_base_sha, gate_base_reason = _resolve_gate_base(
+            repo_root, snap, wt.branch, pre_spawn_sha, log_path,
+        )
+        if gate_base_sha != pre_spawn_sha:
+            _log(log_path, f"  {snap.key} role loop gate base: {gate_base_reason}")
+        role_loop = loop_gate_mod.check_after_implementer(
+            enabled=bool(getattr(cfg, "enable_role_loop_gate", False)),
+            repo_root=repo_root,
+            base_branch=cfg.base_branch,
+            branch_ref=wt.branch,
+            pre_spawn_sha=gate_base_sha,
+            specs=list(snap.role_specs or []),
+        )
+        gate_base_used = gate_base_sha
+        _log(log_path,
+             f"  {snap.key} role loop gate: {role_loop.status.value} "
+             f"({role_loop.decision.value})"
+             + (f" — {role_loop.detail[:400]}" if role_loop.detail else ""))
+        # UNCONDITIONAL, including when the run had the gate switched off.
+        #
+        # **Dispute P3-2, ruled by P4 2026-08-12, FOR the emit.** P3 emitted
+        # only when the gate had RUN and escalated the shortfall rather than
+        # hiding it, offering the YAML row stamp plus the run.log line as the
+        # whole of §3's "logged and journaled per task". The argument that
+        # settles it is not the precedent P3 cited — though that runs the same
+        # way, `verification_mechanical` and `verification_skipped` both
+        # journal their own skips and both already sit in the pinned sequences
+        # this amendment touches — it is that the two substitutes offered are
+        # the two records this very unit makes erasable. `unblock._STALE_STAMPS`
+        # POPS both loop-gate stamps (§7(c), measured: unblock.py:148-149), by
+        # design, because unblocking grants a retry and not a waiver. So after
+        # one unblock the row no longer says the gate was off on the attempt
+        # that produced the block, and run.log is an unchained text file. The
+        # journal is hash-chained and append-only and is the only per-task
+        # record that survives the clearing this unit itself performs. A named
+        # state whose only witnesses can be erased by the next command a human
+        # runs is not a named state; it is a silence with a delay on it.
+        #
+        # The amendment this forces is three lines in `tests/**` — one
+        # `"role_diff_loop_gate",` after `"summary_parsed"` in each of
+        # `tests/test_orchestrator_journal.py::
+        # test_full_run_journal_chain_and_sequence`, `::
+        # test_single_task_exact_sequence` and `tests/test_mechanical_verify.py
+        # ::test_no_config_skips_and_preserves_done_flow` — and it lands in the
+        # SAME commit as this edit, because either half alone is red. P3 was
+        # right that it could not make it; it is a seal amendment forced by a
+        # ruling, which is the one thing P4 may write into a seal file.
+        _emit_event(cfg, journal_mod.EventType.role_diff_loop_gate, {
+            "status": role_loop.status.value,
+            "decision": role_loop.decision.value,
+            "verdict": (
+                role_loop.verdict.value
+                if role_loop.verdict is not None else None
+            ),
+            "base_ref": pre_spawn_sha,
+            "branch_ref": wt.branch,
+            "violations": [
+                v.path for v in (
+                    role_loop.result.violations if role_loop.result else ()
+                )
+            ],
+            "detail": role_loop.detail[:1000],
+        }, task_key=snap.key)
+        if role_loop.decision is loop_gate_mod.LoopGateDecision.BLOCK:
+            # Blocked, and deliberately NOT a cascade escalation. The next rung
+            # would begin by resetting the worktree, destroying the very diff a
+            # human is being blocked to read — and a role violation is
+            # out-of-scope work rather than weak work, so the same description
+            # handed to a stronger model has the same scope. `dispatcher
+            # unblock` clears the stamps below and re-runs every gate, which is
+            # the retry this state grants.
+            final_status = plan_mod.BLOCKED
+            final_blocked_reason = loop_gate_mod.blocked_reason(
+                role_loop.status, role_loop.detail,
+            )
+            break
+
+        # --- Declared holes -------------------------------------------------
+        # A SCAFFOLD is contract and stubs; the decision logic its seals will
+        # judge is the body's. Nothing measured that, and all three wave-2
+        # scaffolds filled their own holes (32/32, 18/27, 8/9 functions), which
+        # would have left P2 sealing existing defective code. Checked HERE, after
+        # the role gate and before the suite: a scaffold that over-built has not
+        # produced a sealable contract, so running the suite over it is spending
+        # money on a branch that must be re-scoped anyway.
+        _measure_diff_shape(cfg, snap, wt, gate_base_used, log_path)
+        holes_outcome = _check_declared_holes(cfg, snap, wt, log_path)
+        if holes_outcome is not None:
+            final_status = plan_mod.BLOCKED
+            final_blocked_reason = holes_outcome
+            break
+
         # --- Mechanical gate ------------------------------------------------
+        # `gate_base_sha` is the D-54-resolved base, threaded in because a
+        # SEALS task's expectation (D-58) is judged by reverting its OWN test
+        # files to that base — the same ref the role gate diffed from, so the
+        # two gates cannot disagree about what "this branch's rows" means.
         mech_outcome, mech_detail = _verify_mechanical_and_maybe_retry(
             cfg, snap, wt, summary_path, env, log_path,
+            gate_base_sha=gate_base_sha,
         )
         if mech_outcome == "failed":
             final_status = plan_mod.BLOCKED
@@ -1463,6 +1827,7 @@ def _run_task(
                 cfg=cfg, snap=snap, wt=wt, repo_root=repo_root,
                 summary_path=summary_path, env=env, log_path=log_path,
                 base_sha_before=base_sha_before,
+                gate_base_sha=gate_base_sha,
                 max_verify_iterations=max_v_iters,
             )
             verified = vout.verified
@@ -1546,6 +1911,9 @@ def _run_task(
                             _panel_verdict_payload(panel_verdict),
                             task_key=snap.key)
                 _emit_advisory_finding_events(cfg, panel_verdict, snap.key)
+                # D-56: the journal already had these, and the next author could
+                # not read them. Persist per task so a dependent inherits them.
+                _record_panel_findings(cfg, snap.key, panel_verdict, log_path)
                 _emit_authoritative_finding_events(cfg, panel_verdict, snap.key)
                 if panel_verdict.is_approve or iterations_remaining <= 0:
                     break
@@ -1702,6 +2070,7 @@ def _run_task(
     def _apply(row):
         row["status"] = final_status
         row["completed_at"] = _now_iso()
+        _forget_escalated_effort(row, final_status)
         row["iteration_count"] = s.iterations
         row["linter_cycles"] = s.linter_cycles
         if s.final_quality_score is not None:
@@ -1729,6 +2098,38 @@ def _run_task(
             row["mechanical_verification"] = mech_outcome
             if mech_outcome == "failed" and mech_detail:
                 row["mechanical_verification_detail"] = mech_detail
+        # Role-protocol loop gate (unit D8). Stamped whenever the hook was
+        # reached — INCLUDING when the run had the gate switched off, which is
+        # a named status and not an absence: a row that says `not_enabled` is
+        # how a run with the gate off is told apart from a run whose every
+        # branch was clean. Absent entirely only when the hook was never
+        # reached (a non-Done rung, or a rung discarded by the cascade). The
+        # detail carries the gate's own reason line and lands in the second
+        # stamp so `dispatcher blocked` can excerpt it; blocked_reason stays
+        # the short label, exactly as the mechanical gate does it.
+        if role_loop is not None:
+            row[_ROLE_LOOP_STAMP] = role_loop.status.value
+            if role_loop.detail:
+                row[_ROLE_LOOP_DETAIL_STAMP] = role_loop.detail[:mv_mod.TAIL_CHARS]
+        # The retry anchor (D-54), written and cleared HERE and nowhere else.
+        #
+        # Recorded when the task ends Blocked and the gate had a base: the next
+        # attempt is then judged from this same ref, so the act that clears the
+        # violation is measured against the state BEFORE the violation. Written
+        # only when absent, because the anchor must name the FIRST blocked
+        # attempt's base — re-stamping it each retry would walk it forward one
+        # attempt at a time and reproduce the defect a block at a time.
+        #
+        # Cleared on Done: the task's next dispatch is new work, and a stale
+        # anchor would silently widen its gate window to a base it never ran
+        # from. Absence is the first-attempt state, so clearing is a return to
+        # the default, not a special case.
+        #
+        # Not cleared by `unblock` — deliberately, and the reason `ROW_STAMPS`
+        # does not contain it: `unblock._STALE_STAMPS` drops the PREVIOUS
+        # attempt's verdicts, and this is not a verdict. It is the coordinate
+        # the next verdict must be taken from.
+        _record_retry_anchor(row, final_status, gate_base_used)
         # Seal-inversion outcome (VG-3). Absent when the gate never ran
         # (not fix-shaped, non-Done, or the mechanical gate wasn't green).
         if seal_outcome is not None:
@@ -1998,6 +2399,17 @@ def _run_cross_family_panel(
     else:
         _log(log_path, f"  {snap.key} panel: classification unavailable")
 
+    # D-62: the panel reviews a DIFF and carried nothing about who wrote it, so
+    # "this needs tests" was emitted identically whether the author may write
+    # tests or is forbidden from doing so. Four recorded times it pushed a role
+    # into a breach it was then blocked for. `snap.role_specs` is frozen at
+    # dispatch, so this is the same view the role gate judges by.
+    role_context = role_protocol_mod.review_role_context(list(snap.role_specs or []))
+    if role_context:
+        _log(log_path,
+             f"  {snap.key} panel: role context supplied "
+             f"({len(snap.role_specs or [])} spec(s))")
+
     # Seat selection.
     #
     # The author's family is SEATED by default (changed 2026-08-01). The old
@@ -2081,6 +2493,7 @@ def _run_cross_family_panel(
                 blast_radius=blast,
                 implementer_prior=cfr_mod.implementer_prior_for(snap.agent),
                 risk_context=risk_context,
+                role_context=role_context,
                 reviewers=codex_revs,
                 advisory_reviewers=[], # skip advisory for the first stage
                 log=lambda m: _log(log_path, m),
@@ -2104,6 +2517,7 @@ def _run_cross_family_panel(
                 blast_radius=blast,
                 implementer_prior=cfr_mod.implementer_prior_for(snap.agent),
                 risk_context=risk_context,
+                role_context=role_context,
                 reviewers=other_revs,
                 advisory_reviewers=advisory_reviewers,
                 log=lambda m: _log(log_path, m),
@@ -2121,6 +2535,7 @@ def _run_cross_family_panel(
         blast_radius=blast,
         implementer_prior=cfr_mod.implementer_prior_for(snap.agent),
         risk_context=risk_context,
+        role_context=role_context,
         reviewers=reviewers,
         advisory_reviewers=advisory_reviewers,
         log=lambda m: _log(log_path, m),
@@ -2369,6 +2784,30 @@ def _dispatch_drain(
                     cfg.model_router(str(primary.raw.get("risk") or "") or None)
                     if cfg.model_router and agent in (None, "claude") else None
                 )
+                # Freeze every dispatched row's protocol role facts (unit D8,
+                # §4/§7(a)). Read here, off `raw`, for the same reason the
+                # risk tier two lines above is: `plan.Task` deliberately models
+                # no `role` field, and the row is the authority. Read BEFORE
+                # the implementer spawns so the branch cannot widen its own
+                # gate by editing the worklist it is being judged against.
+                #
+                # A row that will not parse leaves the list SHORT rather than
+                # substituting a default: the gate reads "these rows did not
+                # yield one role" and blocks, which is the honest answer.
+                # `plan.load_tasks` already refused everything the protocol
+                # refuses, so this is a guard against the impossible, not a
+                # tolerated path — and it is logged when it fires.
+                group_specs: list[role_protocol_mod.TaskRoleSpec] = []
+                for t in group:
+                    try:
+                        group_specs.append(role_protocol_mod.parse_task_role_spec(
+                            t.raw, task_key=t.key,
+                        ))
+                    except Exception as exc:  # noqa: BLE001
+                        _log(log_path,
+                             f"  {t.key} role spec unreadable at dispatch: "
+                             f"{exc} — the role loop gate will not resolve a "
+                             f"role for this branch")
                 snap = TaskSnapshot(
                     key=primary.key,
                     summary=summary,
@@ -2392,6 +2831,17 @@ def _dispatch_drain(
                             k for t in group for k in (t.blocked_by or [])
                         ) if k not in {g.key for g in group}
                     ],
+                    role_specs=group_specs,
+                    # Read off `raw` for the same reason `role` and `risk` are:
+                    # `plan.Task` models no such field and the row is the
+                    # authority. A non-string or blank value is read as absent
+                    # (no anchor -> first-attempt semantics), never coerced:
+                    # a malformed anchor must not become a base ref.
+                    gate_base_sha=(
+                        str(primary.raw.get(_RETRY_ANCHOR_STAMP)).strip() or None
+                        if isinstance(primary.raw.get(_RETRY_ANCHOR_STAMP), str)
+                        else None
+                    ),
                 )
                 _mark_in_progress(cfg, snap, run_dir)
                 fut = exe.submit(_run_task, snap, cfg, run_dir, log_path, repo_root)
@@ -2704,6 +3154,7 @@ def _verify_llm_and_maybe_iterate(
     env: dict,
     log_path: Path,
     base_sha_before: str | None,
+    gate_base_sha: str | None = None,
     max_verify_iterations: int | None = None,
 ) -> _LlmVerifyOutcome:
     """Run the LLM verifier; iterate on INCOMPLETE up to the budget.
@@ -2794,6 +3245,7 @@ def _verify_llm_and_maybe_iterate(
         # verifier never burns tokens on a suite the iterate may have reddened.
         mech_outcome, mech_detail = _verify_mechanical_and_maybe_retry(
             cfg, snap, wt, summary_path, env, log_path,
+            gate_base_sha=gate_base_sha,
         )
         if mech_outcome == "failed":
             _log(log_path,
@@ -2874,6 +3326,21 @@ def _run_llm_verifier(
         "labels": list(snap.labels),
         "description": snap.description,
     }
+    # B4: check #1 of the verifier prompt reports a NotImplementedError body as a
+    # gap, which is INVERTED for a scaffold whose stubs are the deliverable. It
+    # has not misfired only because briefs describe contract work in prose;
+    # `declares.holes` makes the expected set a fact instead of an inference.
+    roles = {sp.role for sp in (snap.role_specs or [])}
+    role_name = None
+    if len(roles) == 1:
+        only = next(iter(roles))
+        if only is not role_protocol_mod.Role.LEGACY:
+            role_name = only.value
+    protocol_block = verifier_mod.protocol_context(
+        role_name,
+        role_protocol_mod.holes_expected_of(snap.key, _load_tasks_snapshot(cfg)),
+    )
+
     runner = _verifier_run_override or verifier_mod.run_verifier
     v_agent = getattr(cfg, "verifier_agent", "claude") or "claude"
     v_model = _verifier_model_for(
@@ -2883,6 +3350,7 @@ def _run_llm_verifier(
     result = runner(
         task=task_row,
         diff=diff,
+        protocol=protocol_block,
         summary_text=summary_text,
         claude_bin=cfg.claude_bin,
         model=v_model,
@@ -3198,6 +3666,117 @@ def _append_panel_findings_to_summary(
         summary_path.write_text(existing + sep + block, encoding="utf-8")
     except OSError as e:
         _log(log_path, f"  {task_key} append-panel-to-summary failed: {e}")
+
+
+def _record_retry_anchor(row: dict, final_status: str,
+                         gate_base_used: str | None) -> None:
+    """Write or clear the retry anchor on a finished task's row (D-54).
+
+    A module-level function rather than four lines inside `_apply` so it can be
+    sealed directly: measured, a mutant swapping the `setdefault` below for a
+    plain assignment reddened NO row while the logic lived in the closure, and
+    that mutant is the defect coming back one block at a time.
+
+    * **Blocked, and the gate had a base** — record it, but only if the row
+      does not already carry one. The anchor must name the FIRST blocked
+      attempt's base. Re-stamping each retry walks it forward one attempt at a
+      time: attempt 2 would be judged from attempt 1's tip, attempt 3 from
+      attempt 2's, and every one of them from a tip that already contains the
+      violation. That is D-54 with extra steps.
+    * **Done** — clear it. The next dispatch of this row is new work, and a
+      stale anchor would widen its gate window to a base it never ran from.
+      Absence IS the first-attempt state, so clearing returns to the default
+      rather than encoding a special case.
+    * **Anything else** (Blocked with no base — the gate never resolved one,
+      or `pre_spawn_sha` was unreadable) — leave the row alone. An anchor is a
+      ref the next diff will be taken from; there is nothing honest to write
+      when this attempt could not name one, and a guess would be a base ref
+      invented by the failure path.
+
+    Not cleared by `unblock`, deliberately: `_STALE_STAMPS` drops the previous
+    attempt's VERDICTS, and this is not a verdict. It is the coordinate the
+    next verdict must be taken from.
+    """
+    if final_status == plan_mod.DONE:
+        row.pop(_RETRY_ANCHOR_STAMP, None)
+        return
+    if final_status == plan_mod.BLOCKED and gate_base_used:
+        row.setdefault(_RETRY_ANCHOR_STAMP, gate_base_used)
+
+
+def _is_ancestor(repo_root: Path, sha: str, ref: str,
+                 log_path: Path, task_key: str) -> bool:
+    """True iff `sha` is an ancestor of `ref` — i.e. usable as a diff base.
+
+    `git merge-base --is-ancestor` exits 0 for yes, 1 for no, and something
+    else for an error (bad object, not a repo). Only exit 0 is a yes: an
+    UNKNOWN sha exits 128, and reading that as "no" would be right by accident
+    while reading it as "yes" would hand the gate a base ref git cannot
+    resolve. Any non-zero answer is logged with its code so the two are told
+    apart in the run log.
+
+    This is the check the recorded false-divergence trap asks for (project
+    memory: three alarms raised by reading "not an ancestor" as "diverged").
+    Here the consequence of a wrong yes is narrow and stated: the gate would
+    fail to resolve its base and answer UNDETERMINED, which blocks — never a
+    silent pass.
+    """
+    import subprocess
+    try:
+        proc = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", sha, ref],
+            cwd=str(repo_root), capture_output=True, text=True,
+            check=False, timeout=30,
+        )
+    except Exception as e:  # noqa: BLE001
+        _log(log_path, f"  {task_key} ancestry check {sha}..{ref} failed: {e}")
+        return False
+    if proc.returncode == 0:
+        return True
+    if proc.returncode != 1:
+        _log(log_path,
+             f"  {task_key} `git merge-base --is-ancestor {sha} {ref}` "
+             f"exit={proc.returncode}: {proc.stderr.strip() or '(no stderr)'} "
+             f"— treated as NOT an ancestor")
+    return False
+
+
+def _resolve_gate_base(repo_root: Path, snap: "TaskSnapshot", branch: str,
+                       pre_spawn_sha: str | None,
+                       log_path: Path) -> tuple[str | None, str]:
+    """The ref the role loop gate diffs from, and a one-line reason (D-54).
+
+    Returns `pre_spawn_sha` — this rung's own base, the pre-D-54 behaviour —
+    unless the row carries a RETRY ANCHOR that is still an ancestor of the
+    branch, in which case the anchor wins and the gate judges everything the
+    task has done ACROSS attempts rather than only since the last unblock.
+
+    Three ways the anchor is declined, each logged rather than silent:
+
+    * no anchor: a first attempt, or a task that has never been unblocked;
+    * the anchor is not an ancestor of the branch — the branch was reset,
+      rebased or recreated, so the anchor names a base this diff cannot be
+      taken from. Falling back is the safe direction: `pre_spawn_sha` is a
+      NARROWER window, so the gate over-reports rather than under-reports;
+    * `pre_spawn_sha` itself is None (git failed). The anchor is not used to
+      paper over that — the caller's existing None handling stands, because a
+      run that could not read its own branch tip should not then be handed a
+      base ref from the YAML.
+    """
+    anchor = (snap.gate_base_sha or "").strip()
+    if not anchor:
+        return pre_spawn_sha, "pre_spawn_sha (no retry anchor)"
+    if pre_spawn_sha is None:
+        return None, "pre_spawn_sha unreadable; retry anchor NOT substituted"
+    if anchor == pre_spawn_sha:
+        return pre_spawn_sha, "retry anchor equals pre_spawn_sha"
+    if not _is_ancestor(repo_root, anchor, branch, log_path, snap.key):
+        _log(log_path,
+             f"  {snap.key} retry anchor {anchor[:12]} is not an ancestor of "
+             f"{branch} — falling back to pre_spawn_sha; the gate window is "
+             f"narrower than the anchor asked for, never wider")
+        return pre_spawn_sha, "retry anchor not an ancestor; fell back"
+    return anchor, f"retry anchor {anchor[:12]} (adjudicated retry)"
 
 
 def _branch_sha(repo_root: Path, branch: str,
@@ -4042,12 +4621,31 @@ def _verify_seal(
     "passed"/"skipped" proceed, "failed"/"error" block. No retry spawn — a
     false-passing seal needs a rethink of the test, not a mechanical nudge,
     and the panel's evidence lens gets the detail either way.
+
+    A config the loader REFUSES is disposed of here rather than merged into
+    the skip below: it returns ``("error", err)`` with the loader's message
+    journaled. The handler used to set ``repo_cfg = None`` and fall through,
+    which made "the file could not be read" indistinguishable from "the repo
+    declares no test command" — so a repo whose ``.dispatcher.yaml`` says
+    ``test: sh tests/run.sh`` had the seal gate switched off for the whole
+    repository and the journal kept a positive claim about the repo that was
+    false. ``_verify_mechanical_and_maybe_retry`` performs the identical read
+    and has always disposed of the failure itself (as ``failed``); this is
+    that shape, with the outcome that says the gate never judged. No retry,
+    for its reason: a fix-the-tests prompt cannot fix a config the dispatcher
+    cannot parse.
     """
     try:
         repo_cfg = repo_config_mod.load(wt.path)
-    except repo_config_mod.RepoConfigError:
-        repo_cfg = None
-    if repo_cfg is None or repo_cfg.test is None:
+    except repo_config_mod.RepoConfigError as exc:
+        err = str(exc)[:500]
+        _log(log_path,
+             f"  {snap.key} seal-verify: invalid .dispatcher.yaml: {err}")
+        _emit_event(cfg, journal_mod.EventType.verification_seal, {
+            "outcome": "error", "error": err,
+        }, task_key=snap.key)
+        return "error", err
+    if repo_cfg.test is None:
         _emit_event(cfg, journal_mod.EventType.verification_seal, {
             "outcome": "skipped", "reason": "no test command",
         }, task_key=snap.key)
@@ -4076,6 +4674,7 @@ def _verify_mechanical_and_maybe_retry(
     summary_path: Path,
     env: dict,
     log_path: Path,
+    gate_base_sha: str | None = None,
 ) -> tuple[str, str | None]:
     """Run the worktree's `.dispatcher.yaml` `test:` command; retry once on red.
 
@@ -4150,8 +4749,56 @@ def _verify_mechanical_and_maybe_retry(
         }, task_key=snap.key)
         return "failed", detail
 
+    # --- D-58: what does THIS ROLE's suite state mean? ---------------------
+    # Everything above is role-independent (config, committed-tree). From here
+    # the answer depends on what the task was FOR, and only SEALS differs.
+    expectation = _suite_expectation_for(snap, log_path)
+    if expectation is role_protocol_mod.SuiteExpectation.UNJUDGED:
+        # A named abstention, journaled — never a silent pass. Returning HERE,
+        # before the suite is ever run, is also what makes the fix-the-tests
+        # re-spawn unreachable for this role: the corrective prompt tells an
+        # agent the suite is red and to make it green, and for a SEALS task the
+        # only route to green is weakening its own seals.
+        reason = (
+            f"role {expectation.value}: the gate does not judge this role's "
+            "suite state yet (two defensible P2 shapes, one of which exits "
+            "zero — see role_protocol.SuiteExpectation.UNJUDGED). No "
+            "fix-the-tests re-spawn fires for this role."
+        )
+        _log(log_path, f"  {snap.key} mechanical-verify skipped: {reason}")
+        _emit_event(cfg, journal_mod.EventType.verification_mechanical, {
+            "outcome": "skipped",
+            "reason": "role_suite_state_unjudged",
+            "expectation": expectation.value,
+        }, task_key=snap.key)
+        return "skipped", None
+    if expectation is role_protocol_mod.SuiteExpectation.RED_FROM_OWN_ROWS:
+        return _verify_seal_redness(
+            cfg, snap, wt, repo_cfg, log_path, gate_base_sha=gate_base_sha,
+        )
+
+    # --- D-68: another unit's deliberate red rows are not this task's fault --
+    # Resolved BEFORE the suite runs: a register that cannot be applied must
+    # block, not let the task be judged on rows it cannot fix. The rows' own body
+    # task is NOT excluded (known_red.KnownRedEntry.applies_to).
+    excl = _known_red_exclusions(cfg, snap, repo_cfg, log_path)
+    if excl.fault is not None:
+        # A CONFIG fault, not a test failure: no fix-the-tests re-spawn, since
+        # no code edit can fix a missing `test_exclusion:` declaration.
+        _log(log_path,
+             f"  {snap.key} mechanical-verify blocked: {excl.fault.value}")
+        _emit_event(cfg, journal_mod.EventType.verification_mechanical, {
+            "outcome": "failed",
+            "reason": excl.fault.value,
+            "known_red_rows": list(excl.rows),
+            "detail": excl.detail[:mv_mod.TAIL_CHARS],
+            "retried": False,
+        }, task_key=snap.key)
+        return "failed", excl.detail
+
     first = _run_mechanical_test(cfg, snap, wt, repo_cfg,
-                                 retried=False, log_path=log_path)
+                                 retried=False, log_path=log_path,
+                                 exclusions=excl)
     if first.passed:
         return "passed", None
 
@@ -4161,11 +4808,330 @@ def _verify_mechanical_and_maybe_retry(
     _retry_for_test_fix(cfg, snap, wt, summary_path, env, log_path,
                         command=repo_cfg.test, first=first)
     second = _run_mechanical_test(cfg, snap, wt, repo_cfg,
-                                  retried=True, log_path=log_path)
+                                  retried=True, log_path=log_path,
+                                  exclusions=excl)
     if second.passed:
         _log(log_path, f"  {snap.key} mechanical-verify recovered after retry")
         return "passed", None
     return "failed", second.output_tail
+
+
+def _suite_expectation_for(
+    snap: TaskSnapshot, log_path: Path,
+) -> role_protocol_mod.SuiteExpectation:
+    """The suite state this task's role is expected to leave behind (D-58).
+
+    The role comes from `snap.role_specs`, frozen at dispatch — the same
+    snapshot the role loop gate reads, so a branch cannot change what it is
+    judged as by editing its own row mid-session.
+
+    Falls back to GREEN — today's behaviour — when the batch does not yield
+    exactly one role. That is the permissive answer and it is chosen anyway,
+    for a bounded reason: a batch with zero or mixed roles is ALREADY blocked
+    by the role loop gate (`ROLE_UNRESOLVED` / a mixed-role batch is refused at
+    plan time), so this path cannot ship anything the protocol has not already
+    stopped. Inventing a stricter answer here would add a second, differently
+    worded refusal for a state one gate already owns.
+    """
+    roles = {spec.role for spec in (snap.role_specs or [])}
+    if len(roles) != 1:
+        _log(log_path,
+             f"  {snap.key} suite expectation: {len(roles)} role(s) on this "
+             f"branch, not 1 — using GREEN; the role loop gate owns this state")
+        return role_protocol_mod.SuiteExpectation.GREEN
+    return role_protocol_mod.suite_expectation(next(iter(roles)))
+
+
+def _verify_seal_redness(
+    cfg: RunConfig,
+    snap: TaskSnapshot,
+    wt: wt_mod.Worktree,
+    repo_cfg: repo_config_mod.RepoConfig,
+    log_path: Path,
+    *,
+    gate_base_sha: str | None,
+) -> tuple[str, str | None]:
+    """The SEALS branch of the mechanical gate (D-58).
+
+    **NO fix-the-tests retry, and that is the point.** Both ways this gate
+    fails are things a human adjudicates, never things an agent should be told
+    to fix: "your seals are green" and "you reddened someone else's rows". The
+    corrective prompt says the suite is red and to make it green, and for a
+    SEALS task the only route to green is WEAKENING THE SEALS — which
+    manufactures the false-passing seal this gate exists to catch. Measured on
+    DF-1-2: the retry fired, then the cascade escalated effort and reset the
+    seals away, on a task that had done its job correctly.
+
+    Returns the same ``(outcome, detail)`` vocabulary as its green sibling, so
+    the caller's Blocked path is unchanged. ``seal_verify``'s fourth outcome
+    ("error" — no judgement was made) maps to "failed" here because the caller
+    has only two terminal words; the detail carries which it was.
+    """
+    if not gate_base_sha:
+        detail = (
+            "a SEALS task's suite expectation is judged by reverting its own "
+            "test files to the base its role gate diffed from, and that base "
+            "is unavailable on this run — so no verdict about the seals was "
+            "made. This blocks rather than falling back to a green check, "
+            "because a green check is the accusation D-58 exists to remove")
+        _log(log_path, f"  {snap.key} seal-redness: {detail}")
+        _emit_event(cfg, journal_mod.EventType.verification_mechanical, {
+            "outcome": "failed",
+            "reason": "no_gate_base",
+            "expectation": "red_from_own_rows",
+            "retried": False,
+        }, task_key=snap.key)
+        return "failed", detail
+
+    res = sv_mod.run_seal_redness(
+        worktree=wt.path,
+        base=gate_base_sha,
+        test_command=repo_cfg.test,
+        timeout_seconds=cfg.verify_test_timeout_seconds,
+        log=lambda m: _log(log_path, m),
+    )
+    _log(log_path,
+         f"  {snap.key} seal-redness {res.outcome}: {res.detail[:200]}")
+    _emit_event(cfg, journal_mod.EventType.verification_mechanical, {
+        "outcome": "passed" if res.outcome == "passed" else "failed",
+        "seal_redness_outcome": res.outcome,
+        "expectation": "red_from_own_rows",
+        "base": gate_base_sha,
+        "detail": res.detail[:mv_mod.TAIL_CHARS],
+        "retried": False,
+    }, task_key=snap.key)
+    if res.outcome == "passed":
+        return "passed", None
+    return "failed", res.detail
+
+
+def _measure_diff_shape(
+    cfg: RunConfig,
+    snap: TaskSnapshot,
+    wt: wt_mod.Worktree,
+    base_sha: str,
+    log_path: Path,
+) -> None:
+    """Journal the prose-to-code ratio of the branch's changed Python files.
+
+    ADVISORY and never blocking: there is no defensible threshold, because a
+    contract-heavy scaffold legitimately runs high. What it removes is the
+    invisibility — the drift to 4.3:1 was only ever found by measuring by hand.
+
+    Never raises. A measurement that could fail a task would be a gate, and this
+    is deliberately not one.
+    """
+    import subprocess  # function-local, as elsewhere in this module
+
+    try:
+        proc = subprocess.run(
+            ["git", "diff", "--name-only", "--diff-filter=d",
+             f"{base_sha}...{wt.branch}"],
+            cwd=str(wt.path), capture_output=True, text=True, timeout=30,
+        )
+        if proc.returncode != 0:
+            return
+        files = [f for f in proc.stdout.split() if f.endswith(".py")]
+        rows = []
+        for rel in files:
+            target = wt.path / rel
+            if not target.exists():
+                continue
+            shape = scaffold_shape_mod.measure(rel, source=target.read_text())
+            if shape.executable <= 0:
+                continue
+            rows.append({
+                "path": rel,
+                "executable": shape.executable,
+                "prose": shape.docstring + shape.comment,
+                "prose_ratio": round(shape.prose_ratio, 2),
+                "functions": len(shape.functions),
+                "stubs": len(shape.stubs),
+            })
+        if not rows:
+            return
+        total_code = sum(r["executable"] for r in rows)
+        total_prose = sum(r["prose"] for r in rows)
+        overall = round(total_prose / max(total_code, 1), 2)
+        _emit_event(cfg, journal_mod.EventType.role_diff_loop_gate, {
+            "check": "diff_shape",
+            "decision": "advisory",
+            "prose_ratio": overall,
+            "executable_lines": total_code,
+            "files": rows[:20],
+        }, task_key=snap.key)
+        worst = max(rows, key=lambda r: r["prose_ratio"])
+        _log(log_path,
+             f"  {snap.key} diff shape: {overall}:1 prose:code over "
+             f"{total_code} executable line(s); worst {worst['path']} "
+             f"at {worst['prose_ratio']}:1")
+    except Exception as exc:  # noqa: BLE001 - advisory, must never fail a task
+        _log(log_path, f"  {snap.key} diff shape: unavailable ({exc})")
+
+
+def _check_declared_holes(
+    cfg: RunConfig,
+    snap: TaskSnapshot,
+    wt: wt_mod.Worktree,
+    log_path: Path,
+) -> str | None:
+    """None when the branch honours its unit's declared holes, else the blocked
+    reason.
+
+    Silent no-op for a unit that declared nothing, which is every unit written
+    before `declares:` existed — an absent declaration is "no check", never "no
+    holes allowed".
+
+    The expectation is resolved from the DISPATCHER's tasks file, not the
+    worktree's copy, so a branch cannot widen its own judgement by editing the
+    row it is judged by.
+    """
+    specs = list(snap.role_specs or [])
+    roles = {sp.role for sp in specs}
+    if len(roles) != 1:
+        return None
+    role = next(iter(roles))
+    phase = role_protocol_mod.HOLE_CHECKED_ROLES.get(role)
+    if phase is None:
+        return None
+
+    holes = role_protocol_mod.holes_expected_of(snap.key, _load_tasks_snapshot(cfg))
+    if not holes:
+        return None
+
+    shapes = []
+    for rel in sorted({h.split("::", 1)[0] for h in holes}):
+        target = wt.path / rel
+        if target.exists():
+            shapes.append(scaffold_shape_mod.measure(rel, source=target.read_text()))
+    report = scaffold_shape_mod.declared_holes_report(
+        holes, shapes=shapes, phase=phase,
+    )
+    _emit_event(cfg, journal_mod.EventType.role_diff_loop_gate, {
+        "check": "declared_holes",
+        "phase": phase,
+        "decision": "proceed" if report.passed else "block",
+        "holes": list(holes),
+        "ok": list(report.ok),
+        "wrong": list(report.wrong),
+        "missing": list(report.missing),
+        "detail": report.detail()[:1000],
+    }, task_key=snap.key)
+    _log(log_path,
+         f"  {snap.key} declared holes [{phase}]: "
+         f"{'proceed' if report.passed else 'BLOCK'} — {report.detail()[:300]}")
+    if report.passed:
+        return None
+    return f"declared_holes_{phase}: {report.detail()}"
+
+
+def _record_panel_findings(
+    cfg: RunConfig,
+    task_key: str,
+    panel: cfr_mod.PanelVerdict | None,
+    log_path: Path,
+) -> None:
+    """Persist this task's panel findings for its dependents (D-56).
+
+    Never raises: a failure to record context must not fail a task that has
+    already been reviewed.
+    """
+    if panel is None:
+        return
+    try:
+        # Walked off `reviewers`, not off a `findings` attribute: PanelVerdict has
+        # none, and the first version guessed one — `getattr(panel, "findings", [])`
+        # returned [] on every panel, so this recorded NOTHING for a whole round
+        # while its seal asserted only that the call site existed. `family` also
+        # lives on the reviewer rather than the finding, so the walk is the only
+        # place both facts are available together.
+        items = []
+        seen: set[tuple[str, str]] = set()
+        for rv in list(getattr(panel, "reviewers", []) or []):
+            family = str(getattr(rv, "family", "") or "?")
+            for f in list(getattr(rv, "findings", []) or []):
+                sev = getattr(f, "severity", None)
+                sev = str(getattr(sev, "name", sev) or "?")
+                desc = str(getattr(f, "description", "") or "")
+                key = (family, desc[:120])
+                if not desc or key in seen:
+                    continue
+                seen.add(key)
+                items.append(findings_store_mod.Finding(
+                    family=family, severity=sev,
+                    location=str(getattr(f, "location", "") or ""),
+                    description=desc,
+                ))
+        written = findings_store_mod.record(cfg.runs_dir, task_key, items)
+        if written:
+            _log(log_path,
+                 f"  {task_key} recorded {len(items)} panel finding(s) for "
+                 f"dependents at {written}")
+    except Exception as exc:  # noqa: BLE001 - context, never a gate
+        _log(log_path, f"  {task_key} findings not recorded: {exc}")
+
+
+def _forget_escalated_effort(row: dict, final_status: str) -> None:
+    """Drop a cascade-chosen `effort:` once the task is Done (D-64).
+
+    On DONE only. A task that ended Blocked keeps the escalation, because the
+    next dispatch of a task that failed at a higher tier should start there — the
+    defect was an escalation surviving SUCCESS, not one surviving failure.
+
+    An author's deliberate `effort:` carries no stamp and is never touched, which
+    is the whole reason provenance is recorded at escalation time.
+    """
+    if final_status != plan_mod.DONE:
+        return
+    if row.pop(EFFORT_ESCALATED_STAMP, None):
+        row.pop("effort", None)
+
+
+def _known_red_exclusions(
+    cfg: RunConfig,
+    snap: TaskSnapshot,
+    repo_cfg: repo_config_mod.RepoConfig,
+    log_path: Path,
+) -> known_red_mod.Exclusions:
+    """Which registered known-red rows to hide from ``snap``'s gate (D-68).
+
+    Fails CLOSED: a malformed register becomes a fault, never an empty exclusion
+    set. The Done set is read from the tasks YAML, not this run's memory, so an
+    entry retires even when its body landed in an earlier run (D-70).
+    """
+    repo_root = wt_mod.detect_repo_root(cfg.tasks_path.parent)
+    try:
+        register = known_red_mod.load(repo_root)
+    except known_red_mod.RegisterError as exc:
+        return known_red_mod.Exclusions(
+            fault=known_red_mod.RegisterFault.UNSUPPORTED_STYLE,
+            detail=f"known-red register is unreadable, refusing to guess: {exc}",
+        )
+    if register.is_empty:
+        return known_red_mod.Exclusions()
+
+    done = {
+        t.key for t in _load_tasks_snapshot(cfg)
+        if str(getattr(t, "status", "")).strip() == plan_mod.DONE
+    }
+    style = None
+    if repo_cfg.test_exclusion:
+        style = known_red_mod.ExclusionStyle(repo_cfg.test_exclusion)
+    excl = known_red_mod.resolve(
+        register,
+        task_key=snap.key,
+        done_keys=done,
+        style=style,
+        test_command=repo_cfg.test,
+        # Beside the task's run artifacts: not in the worktree (the tree under
+        # judgement) and not /tmp (inode exhaustion, D-60).
+        rows_dir=cfg.runs_dir / cfg.run_id / snap.key,
+    )
+    if excl.applied:
+        _log(log_path,
+             f"  {snap.key} known-red register: {excl.detail} "
+             f"(body tasks not yet Done)")
+    return excl
 
 
 def _run_mechanical_test(
@@ -4176,6 +5142,7 @@ def _run_mechanical_test(
     *,
     retried: bool,
     log_path: Path,
+    exclusions: known_red_mod.Exclusions | None = None,
 ) -> mv_mod.MechanicalVerifyResult:
     """Execute the repo test command once and journal the execution.
 
@@ -4189,6 +5156,7 @@ def _run_mechanical_test(
         worktree=wt.path,
         timeout_seconds=cfg.verify_test_timeout_seconds,
         log=lambda m: _log(log_path, m),
+        extra_env=(exclusions.env if exclusions else None),
     )
     outcome = "passed" if res.passed else "failed"
     _log(log_path,
@@ -4205,6 +5173,10 @@ def _run_mechanical_test(
     }
     if repo_cfg.unknown_keys:
         payload["unknown_keys"] = list(repo_cfg.unknown_keys)
+    if exclusions is not None and exclusions.rows:
+        # On every execution, pass or fail: a suppressed row is the one thing a
+        # reader cannot infer from the exit code.
+        payload["known_red_excluded"] = list(exclusions.rows)
     _emit_event(cfg, journal_mod.EventType.verification_mechanical,
                 payload, task_key=snap.key)
     return res
@@ -4490,6 +5462,14 @@ def _agent_meta(
     return meta
 
 
+def _repo_root_for_tasks(tasks_yaml: str | Path) -> Path:
+    """Repo root containing the tasks file, or cwd when it is not in a repo."""
+    try:
+        return wt_mod.detect_repo_root(Path(tasks_yaml).resolve().parent)
+    except Exception:
+        return Path.cwd()
+
+
 def _build_config(args: argparse.Namespace) -> RunConfig:
     extra = getattr(args, "claude_extra_args", "") or ""
     # CLI base_branch wins if explicitly set; else fall back to "main" here
@@ -4533,7 +5513,13 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
         design_agent = "grok" if no_claude else "claude"
     return RunConfig(
         tasks_path=Path(args.tasks_yaml).resolve(),
-        runs_dir=Path(args.runs_dir).resolve(),
+        # Resolved HERE and not only in `cli.main`, so a programmatic caller that
+        # builds an args namespace without the flag gets the same answer as the CLI
+        # instead of `Path(None)`.
+        runs_dir=repo_config_mod.resolve_runs_dir(
+            getattr(args, "runs_dir", None),
+            repo_root=_repo_root_for_tasks(args.tasks_yaml),
+        ),
         run_id=args.run_id or _default_run_id(Path(args.tasks_yaml)),
         mode=args.mode,
         max_parallel=args.max_parallel,
@@ -4554,6 +5540,9 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
         verifier_agent=verifier_agent,
         design_agent=design_agent,
         enable_design_stage=bool(enable_design),
+        enable_role_loop_gate=bool(
+            getattr(args, "enable_role_loop_gate", False)
+        ),
         cheap_first=cheap_first or no_claude,
         claude_extra_args=extra.split() if extra else [],
         base_branch=cli_base if cli_base else "main",
@@ -4719,6 +5708,22 @@ def _genesis_config(args: argparse.Namespace, cfg: RunConfig) -> dict[str, Any]:
     # Budget baseline (BUDGET-1), resolved at run start — persisted so a resume
     # reuses it instead of recomputing from rows this run has since written.
     d["cost_baseline_usd"] = cfg.cost_baseline_usd
+    # Money net (DF-5): financial_paths is overridden with the RESOLVED env
+    # value (args carries None when the operator gave no override), so a
+    # resume reuses this run's net instead of re-deriving against a base ref
+    # that may have moved. The provenance record — including table_blob_sha,
+    # the freshness witness — lets a later reader check what was actually
+    # read.
+    d["financial_paths"] = cfg.financial_paths
+    if cfg.money_net is not None:
+        n = cfg.money_net
+        d["money_net"] = {
+            "state": n.state.value,
+            "source": n.source.value if n.source is not None else None,
+            "base_ref": n.base_ref,
+            "table_blob_sha": n.table_blob_sha,
+            "detail": n.detail,
+        }
     return d
 
 

@@ -37,6 +37,18 @@ def load(path: str | Path) -> Any:
         return _yaml().load(fh)
 
 
+def loads(text: str) -> Any:
+    """Parse YAML from a string, preserving comments and ordering.
+
+    The string counterpart of :func:`load`, for content that never touches the
+    filesystem — notably a `.dispatcher.yaml` read out of a git object rather
+    than the working tree (`role_protocol.load_role_policy_from_base`, and
+    `risk.load_risk_config_from_base` once `fix/authority-doc-carveout`
+    merges; that branch adds this same function, deliberately identically).
+    """
+    return _yaml().load(io.StringIO(text))
+
+
 def dump(data: Any, path: str | Path) -> None:
     """Atomically write YAML to disk, preserving comments and ordering.
 

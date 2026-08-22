@@ -39,7 +39,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Sequence
 
 from .spawn import SpawnUsage, parse_usage_from_json
 
@@ -147,7 +147,14 @@ _PROMPTS_DIR = Path(__file__).parent / "verifier_prompts"
 
 
 def _load_prompt() -> str:
-    """Load the verifier prompt template (a packaging error if missing)."""
+    """Load the verifier prompt template (a packaging error if missing).
+
+    In the same class as the reviewer prompt (unit W2-1) and deliberately NOT
+    anchored: the genesis records a digest for ``reviewer_prompts`` only, and
+    giving this tree one is floored — it is entry 3 of
+    :data:`~claude_dispatcher.prompt_provenance.FLOORED_OBLIGATIONS`, which also
+    carries the write denial this tree is owed.
+    """
     path = _PROMPTS_DIR / "verifier.md"
     if not path.exists():
         raise FileNotFoundError(f"verifier prompt missing: {path}")
@@ -168,12 +175,75 @@ GENERATED_EXCLUSION_NOTICE = (
     "task against them. Judge only hand-written code.\n\n"
 )
 
+def protocol_context(
+    role: str | None,
+    declared_holes: Sequence[str] = (),
+) -> str:
+    """The block telling the verifier which stubs are EXPECTED.
+
+    Check #1 of this prompt reports a `NotImplementedError` body as a gap. For a
+    SCAFFOLD that body is the deliverable, so the check is inverted unless the
+    verifier knows the role. It has not misfired yet only because task briefs
+    happen to describe contract work in prose — convention, not guarantee.
+
+    `declared_holes` makes it a fact instead of an inference: a stub naming a
+    declared hole is expected, any other stub is a gap, and for a bodies task a
+    declared hole still stubbed IS the gap.
+
+    Empty string when the task carries no role, so the caller renders its own
+    fallback and pre-protocol rows behave exactly as before.
+    """
+    if not role:
+        return ""
+    lines = [f"The author's role is **{role}**."]
+    if role == "scaffold":
+        lines.append(
+            "A SCAFFOLD delivers the contract and STUBS; the decision logic its "
+            "seals will judge belongs to a later task. An unimplemented body is "
+            "therefore its deliverable, NOT a gap — and a scaffold that "
+            "implemented that logic instead has destroyed the point of sealing "
+            "first, which IS worth reporting."
+        )
+    elif role == "bodies":
+        lines.append(
+            "A BODIES task fills the stubs a scaffold left. Any declared hole "
+            "still unimplemented is a gap."
+        )
+    elif role == "seals":
+        lines.append(
+            "A SEALS task delivers TESTS ONLY, committed deliberately RED "
+            "against stubs that do not work yet. Red rows are its deliverable; "
+            "it may not write the implementation at all, so do not report a "
+            "missing implementation against it."
+        )
+    elif role == "adjudicate":
+        lines.append(
+            "An ADJUDICATE task rules on ONE disputed artifact and touches "
+            "nothing else. A narrow diff is correct here."
+        )
+    if declared_holes:
+        listed = "\n".join(f"  - {h}" for h in declared_holes)
+        lines.append(
+            "The plan DECLARED these functions as the body's to fill, so a stub "
+            f"at any of them is expected rather than a gap:\n{listed}\n"
+            "A stub ANYWHERE ELSE is still a gap, and so is a declared hole the "
+            "diff never created."
+        )
+    else:
+        lines.append(
+            "The plan declared no holes for this unit, so judge stubs on the "
+            "task description alone."
+        )
+    return "\n\n".join(lines)
+
+
 def build_verifier_prompt(
     task: Mapping,
     diff: str,
     summary_text: str,
     *,
     max_diff_lines: int = MAX_DIFF_LINES,
+    protocol: str = "",
 ) -> str:
     """Render the verifier prompt for one task.
 
@@ -202,6 +272,10 @@ def build_verifier_prompt(
         task_description=str(task.get("description") or ""),
         summary_md=summary_text,
         diff=diff,
+        protocol=protocol or (
+            "(no role protocol on this task — judge stubs on the task "
+            "description alone)"
+        ),
     )
 
 
@@ -502,6 +576,7 @@ def run_verifier(
     timeout_seconds: int = DEFAULT_VERIFIER_TIMEOUT_SECONDS,
     agent: str = "claude",
     grok_bin: str = "grok",
+    protocol: str = "",
 ) -> VerifierResult:
     """Spawn an independent verifier over one task's diff + summary.
 
@@ -529,7 +604,8 @@ def run_verifier(
         )
 
     try:
-        prompt = build_verifier_prompt(task, diff, summary_text)
+        prompt = build_verifier_prompt(task, diff, summary_text,
+                                       protocol=protocol)
         if agent == "grok":
             return _run_grok_verifier(
                 prompt=prompt,

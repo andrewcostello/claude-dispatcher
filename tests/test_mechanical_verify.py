@@ -335,6 +335,13 @@ def test_no_config_skips_and_preserves_done_flow(repo: Path, monkeypatch) -> Non
         "task_started",
         "task_spawn_finished",
         "summary_parsed",
+        # D8 + P4 ruling on dispute P3-2, 2026-08-12. The role loop gate
+        # journals per task even when the run has it off, and it sits BEFORE
+        # the mechanical gate because that is where the hook is — this file's
+        # subject is the event immediately after it. Nothing about the
+        # mechanical gate's own behaviour changes; the row is widened by one
+        # entry, not weakened.
+        "role_diff_loop_gate",
         "verification_mechanical",
         "verification_started",
         "task_spawn_finished",  # verifier spawn

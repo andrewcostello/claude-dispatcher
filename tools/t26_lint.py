@@ -455,9 +455,20 @@ def check_plan_tmap(doc: Doc, errors: list[str]) -> None:
             continue
         non_retired.update(nums)
     plan_text = PLAN.read_text(encoding="utf-8")
-    m = re.search(r"^## 3\..*?$(.*?)^## 4\.", plan_text, re.M | re.S)
+    # Located by HEADING, not by number. The first version hardcoded `## 3.` and
+    # went stale the moment the plan was restructured v2.1 -> v3 and the T-map
+    # moved to §6 — the lint then reported every obligation in it as missing,
+    # which reads as a real gap and is not one. The heading text is the stable
+    # identifier; the number is not.
+    m = re.search(
+        r"^## \d+[a-z]?\..*?[Tt]est-obligation map.*?$(.*?)(?=^## |\Z)",
+        plan_text, re.M | re.S,
+    )
     if not m:
-        errors.append("plan T-map: cannot locate plan §3")
+        errors.append(
+            "plan T-map: cannot locate the plan's test-obligation map section "
+            "(expected a '## N. ... Test-obligation map ...' heading)"
+        )
         return
     mapped = {int(n) for n in re.findall(r"\bT(\d+)\b", m.group(1))}
     missing = sorted(non_retired - mapped)
@@ -626,7 +637,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"t26_lint: {len(errors)} violation(s)", file=sys.stderr)
         return 1
     checks = ("T-index, §-refs, retired names, mutation-once, supersession, "
-              "field-list-once, CI posture, plan §3 T-map"
+              "field-list-once, CI posture, plan T-map"
               + ("" if args.no_citations else ", citations @ pins"))
     print(f"t26_lint: all checks green ({checks})")
     return 0

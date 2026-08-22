@@ -41,6 +41,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -4740,8 +4741,18 @@ def test_t26_lint_supersession_and_plan_tmap_falsified(tmp_path, monkeypatch):
     errors: list[str] = []
     lint.check_supersession(doc, errors)
     assert errors, "supersession check is vacuous"
-    # plan T-map: drop T19 from a copy of the plan's §3
-    plan_text = lint.PLAN.read_text(encoding="utf-8").replace("T19/", "")
+    # plan T-map: drop T19 from a copy of the plan's T-map section.
+    #
+    # Removing the TOKEN, not the string "T19/". The plant used to be a literal
+    # `.replace("T19/", "")`, which silently stopped planting anything when the
+    # plan was restructured v2.1 -> v3 and the row became `T19-transitions/...`.
+    # The test then passed no violation to the check and reported the CHECK as
+    # vacuous — a mutation test that had itself gone vacuous, which is the exact
+    # failure mode it exists to detect elsewhere. A token-level substitution
+    # cannot rot the same way.
+    plan_text = re.sub(
+        r"\bT19\b", "", lint.PLAN.read_text(encoding="utf-8"))
+    assert "T19" not in plan_text, "the T19 plant did not remove every mention"
     planted_plan = tmp_path / "plan.md"
     planted_plan.write_text(plan_text, encoding="utf-8")
     monkeypatch.setattr(lint, "PLAN", planted_plan)

@@ -24,61 +24,19 @@ from . import forecast_bridge
 from . import doctor as doctor_cmd
 from . import watch as watch_cmd
 from . import unblock as unblock_cmd
+from . import cross_family_reviewer as cfr_mod
+from . import repo_config
+from . import worktree as wt_mod
 
 
-# Fallback for the human PR gate's path-based check, used when no
-# classification is available. THE SOURCE OF TRUTH IS `.agent/risk-paths.json`
-# in the target repo — every rule carrying `"financial": true`. `cmd/classify`
-# computes `classification.financial_paths_touched` from that table; this list
-# only exists for runs where the binary is absent. Keep it in sync with the
-# `financial: true` rules (and with claude-workflow's `skills/pr-raise.md`
-# fallback block, which documents the same set).
-#
-# Corrected 2026-08-01 [GO-0]. The previous default named
-# `apps/finance-domain/{settlement,recovery,payout}/**` — none of which exist:
-# `apps/finance-domain/` holds only `paygate/` and `wallet/`. Settlement,
-# refunds and dispute reversal live under `apps/platform-domain/bay-session/`,
-# so the backstop was dead for every money path outside `wallet/`. Same bug was
-# fixed in pr-raise.md on 2026-07-31.
-#
-# Override per project with `--financial-paths` / `$FINANCIAL_PATHS`; a
-# duplicated list is a drift hazard, so prefer pointing classify at the
-# project's own risk-paths.json.
-DEFAULT_FINANCIAL_PATHS = ",".join([
-    # wallet-service, paygate — the money core and external money movement
-    "apps/finance-domain/wallet/**",
-    "apps/finance-domain/paygate/**",
-    # shared-wallet-lib — used by every service
-    "libs/go/wallet/**",
-    # bet-placement — money in
-    "apps/platform-domain/bay-session/store/accept_bet*",
-    "apps/platform-domain/bay-session/store/wager*",
-    "apps/platform-domain/bay-session/store/arm_*",
-    "apps/platform-domain/bay-session/store/bet_amount_bounds*",
-    "apps/platform-domain/bay-session/store/bet_mutation_*",
-    "apps/platform-domain/bay-session/store/advantage_tier_caps*",
-    # bet-settlement — money out
-    "apps/platform-domain/bay-session/store/bet_settle*",
-    "apps/platform-domain/bay-session/store/*settlement*",
-    "apps/platform-domain/bay-session/store/sqlc/bet_settle*",
-    # bet-reversal-refund — operator-initiated money movement
-    "apps/platform-domain/bay-session/store/*refund*",
-    "apps/platform-domain/bay-session/store/admin_bet_dispute_reverse*",
-    "apps/platform-domain/bay-session/store/admin_bet_force_refund*",
-    "apps/platform-domain/bay-session/cmd/admin-bet/**",
-    # financial-recovery — replay/retry of financial operations. Both glob
-    # forms are in the rule table; the parity test enforces carrying both.
-    "apps/platform-domain/bay-session/cmd/*-recovery/**",
-    "apps/platform-domain/bay-session/cmd/*recovery*/**",
-    # payout tables — outcome-to-money mapping
-    "apps/platform-domain/core/dao/payout*",
-    "apps/platform-domain/core/model/payout*",
-    "apps/platform-domain/core/model/tournament_payout*",
-    "apps/platform-domain/core/service/tournament/*payout*",
-    "apps/game-domain/engine/dao/payout*",
-    "apps/game-domain/engine/model/payout*",
-    "apps/game-domain/station-state-computer/model/payout*",
-])
+# There is deliberately NO shipped default financial-paths list here.
+# DEFAULT_FINANCIAL_PATHS was a second hand-list of the money table and
+# drifted twice (GO-0, then 49 globs behind PR #1387's table — DF-5-1's
+# measurement); it was condemned and retired [DF-5-3]. The net is now derived
+# at run start from the target repo's tracked `.agent/risk-paths.json` at the
+# run's base ref, or taken from an explicit `--financial-paths` operator
+# override, or folded to the fail-closed universal glob `**` with a named
+# reason. See `money_net.py` for the contract and the derivation.
 
 
 def _positive_dollars(s: str) -> float:
@@ -269,13 +227,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument(
         "--financial-paths",
-        default=DEFAULT_FINANCIAL_PATHS,
-        help=f"Comma-separated globs (default: {DEFAULT_FINANCIAL_PATHS})",
+        default=None,
+        help=(
+            "Comma-separated globs (operator override). Default: derived at "
+            "run start from the target repo's tracked .agent/risk-paths.json "
+            "at the base ref; when the ref carries no readable table the net "
+            "folds fail-closed to '**' with a named reason (see money_net.py)."
+        ),
     )
     run.add_argument(
         "--runs-dir",
-        default="docs/runs",
-        help="Where to write per-run artifacts (run.log, summaries). Default: docs/runs",
+        default=None,
+        help=(
+            "Where to write per-run artifacts (run.log, journal, summaries). "
+            "Overrides `runs_dir:` in .dispatcher.yaml; default "
+            f"{repo_config.DEFAULT_RUNS_DIR}"
+        ),
     )
     run.add_argument(
         "--worktree-base",
@@ -345,6 +312,19 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Run the pre-implement design stage when design_required() matches "
             "(Critical/High/sometimes Medium). Off by default."
+        ),
+    )
+    run.add_argument(
+        "--enable-role-loop-gate",
+        action="store_true",
+        default=False,
+        help=(
+            "Run the role-protocol diff check (the same one the PR gate runs) "
+            "inside the task loop, right after each implementer returns — a "
+            "body agent that wrote to tests/** is Blocked before four more "
+            "spawns commit to its branch. Off by default: on trees where the "
+            "check's reachability sweep engages it costs minutes per branch "
+            "and answers 'could not check', which this gate blocks on."
         ),
     )
     run.add_argument(
@@ -449,7 +429,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--cross-family-panel-timeout",
         type=int,
-        default=600,
+        default=cfr_mod.DEFAULT_REVIEWER_TIMEOUT_SECONDS,
         help=(
             "Per-reviewer wall-clock budget for the cross-family panel "
             "(seconds; default: 600). Reviewers run in parallel, so the "
@@ -515,7 +495,7 @@ def build_parser() -> argparse.ArgumentParser:
               "machine-readable output."),
     )
     st.add_argument("run_id")
-    st.add_argument("--runs-dir", default="docs/runs")
+    st.add_argument("--runs-dir", default=None)
     st.add_argument(
         "--json",
         action="store_true",
@@ -560,7 +540,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     rs = sub.add_parser("resume", help="Resume an interrupted run from checkpoint")
     rs.add_argument("run_id")
-    rs.add_argument("--runs-dir", default="docs/runs")
+    rs.add_argument("--runs-dir", default=None)
     rs.add_argument(
         "--strategy",
         choices=["continue", "mark-blocked"],
@@ -608,7 +588,7 @@ def build_parser() -> argparse.ArgumentParser:
               "dispatch loop runs the same pass live."),
     )
     mp.add_argument("run_id")
-    mp.add_argument("--runs-dir", default="docs/runs")
+    mp.add_argument("--runs-dir", default=None)
     mp.add_argument(
         "--force",
         action="store_true",
@@ -643,7 +623,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="latest",
         help="Run ID to report on. Defaults to the latest run in --runs-dir.",
     )
-    rp.add_argument("--runs-dir", default="docs/runs")
+    rp.add_argument("--runs-dir", default=None)
     rp.add_argument(
         "--json",
         action="store_true",
@@ -669,7 +649,7 @@ def build_parser() -> argparse.ArgumentParser:
               "spawn, panel, blocked, done). Exit 1 if any task_blocked."),
     )
     wh.add_argument("run_id", help="Run ID under --runs-dir")
-    wh.add_argument("--runs-dir", default="docs/runs")
+    wh.add_argument("--runs-dir", default=None)
     wh.add_argument(
         "--no-follow",
         action="store_true",
@@ -797,6 +777,19 @@ def _watch_entry(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    # One resolution point for every subcommand. The literal used to be repeated
+    # as an argparse default in five places, so pointing runs somewhere else moved
+    # the writer and left the readers looking at the old path. Resolved to an
+    # ABSOLUTE path here, which leaves each consumer's `Path(...).resolve()` a
+    # no-op. `default=None` is what lets a config value beat the built-in default.
+    if hasattr(args, "runs_dir"):
+        try:
+            root = wt_mod.detect_repo_root()
+        except Exception:
+            root = Path.cwd()
+        args.runs_dir = str(
+            repo_config.resolve_runs_dir(args.runs_dir, repo_root=root)
+        )
     try:
         return args.func(args)
     except KeyboardInterrupt:

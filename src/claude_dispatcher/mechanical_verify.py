@@ -22,6 +22,7 @@ YAML detail field) must stay bounded regardless of how chatty the suite is.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 from dataclasses import dataclass
@@ -67,9 +68,14 @@ def run_test_command(
     worktree: Path,
     timeout_seconds: int,
     log: Callable[[str], None] = lambda _m: None,
+    extra_env: dict[str, str] | None = None,
 ) -> MechanicalVerifyResult:
     """Run ``command`` through the shell in ``worktree``, bounded by
     ``timeout_seconds``.
+
+    ``extra_env`` is OVERLAID on the inherited environment, never replacing it —
+    the command depends on ``DISPATCHER_TEST_PYTHON`` and ``PATH``. Used by the
+    known-red register (D-68) to pass ``known_red.EXCLUSION_ENV``.
 
     stdout and stderr are merged (test runners interleave them and the tail
     must reflect what a human at the terminal would have seen last). Never
@@ -78,6 +84,9 @@ def run_test_command(
     genuinely unexpected exceptions propagate.
     """
     start = time.monotonic()
+    env = None
+    if extra_env:
+        env = {**os.environ, **extra_env}
     try:
         proc = subprocess.run(
             command,
@@ -87,6 +96,7 @@ def run_test_command(
             stderr=subprocess.STDOUT,
             text=True,
             timeout=timeout_seconds,
+            env=env,
         )
     except subprocess.TimeoutExpired as exc:
         duration = time.monotonic() - start

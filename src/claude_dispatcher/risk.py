@@ -198,7 +198,29 @@ def _glob_to_regex(pattern: str) -> str:
 
 @lru_cache(maxsize=512)
 def _compiled(pattern: str) -> re.Pattern[str]:
-    return re.compile(_glob_to_regex(pattern) + r"\Z")
+    """The anchored regex for one glob. A path is one string, not a document.
+
+    ``re.DOTALL`` is load-bearing, not a tidy-up. Without it ``.`` — which is
+    what ``*``, ``**`` and ``?`` all translate to above — excludes exactly one
+    character, ``\\n``, so a path containing a line feed matched NO glob and
+    walked past every deny table, every allowlist and the non-overridable floor
+    (``role_protocol.FLOOR_GLOBS``), all of which are built on this function.
+    ``\\r``, ``\\f``, ``\\v``, ``\\t``, NUL, ESC, NEL and U+2028 were always
+    matched; the line feed was the whole hole, and it is a hole in the matcher,
+    not in any one caller.
+
+    Two things this must NOT become, each sealed in
+    ``tests/test_glob_newline.py``:
+
+      * ``re.MULTILINE`` — the opposite fix. It makes every line break an
+        anchor point rather than making the pattern indifferent to one.
+      * ``$`` in place of ``\\Z`` — the "handle line endings" reflex. ``$``
+        also matches immediately BEFORE a string-final newline, so an
+        ALLOW_ONLY declaration of ``sub/x.py`` would start granting the
+        different file ``sub/x.py\\n``. ``\\Z`` matches only the true end of
+        the string, which is why a trailing ``\\r`` was never a bypass.
+    """
+    return re.compile(_glob_to_regex(pattern) + r"\Z", re.DOTALL)
 
 
 def matches_any_glob(path: str, patterns: Sequence[str]) -> bool:
@@ -333,7 +355,7 @@ def evaluate(
 def collect_diff(
     worktree: str | Path, base_ref: str, head_ref: str = "HEAD"
 ) -> list[FileDiff]:
-    """Per-file line churn of ``base_ref...head_ref`` run from ``worktree``.
+    r"""Per-file line churn of ``base_ref...head_ref`` run from ``worktree``.
 
     Uses ``git diff --numstat --no-renames``: ``--no-renames`` keeps each line a
     clean ``ins<TAB>del<TAB>path`` (a rename is reported as a delete plus an add
@@ -346,7 +368,76 @@ def collect_diff(
     PRF-3 in-worktree path). The PRF-4 merge engine passes an explicit branch
     ref so it can classify a task's PR branch from the repo root, where no
     worktree is checked out on it.
+
+    **Every path is DECODED, because a rendering is not a path.** Git prints a
+    path verbatim unless it must quote it; when it must, it wraps the whole
+    thing in ``"`` and C-escapes the contents. Nine character classes were
+    measured against this very argv over a real repository, and seven of them
+    are quoted::
+
+        real filename                    what git printed here
+        .github/workflows/cix.yml        .github/workflows/cix.yml
+        .github/workflows/ci x.yml       .github/workflows/ci x.yml
+        .github/workflows/ci"x.yml       ".github/workflows/ci\"x.yml"
+        .github/workflows/ci\x.yml       ".github/workflows/ci\\x.yml"
+        .github/workflows/ci<TAB>x.yml   ".github/workflows/ci\tx.yml"
+        .github/workflows/ci<LF>x.yml    ".github/workflows/ci\nx.yml"
+        .github/workflows/ci<CR>x.yml    ".github/workflows/ci\rx.yml"
+        .github/workflows/ci<ESC>x.yml   ".github/workflows/ci\033x.yml"
+        .github/workflows/ciéx.yml       ".github/workflows/ci\303\251x.yml"
+
+    A rendering handed to :func:`evaluate` is a string the glob engine cannot
+    match, because :func:`_compiled` anchors both ends and the wrapping quotes
+    push the leading and trailing literals off them. Four of the nine default
+    ``forbidden_paths`` — ``.github/**``, ``**/*.proto``, ``Dockerfile*`` and
+    ``compose*.y*ml`` — then denied nothing at all, and a PR editing a CI
+    workflow whose filename carried an accent classified ``low``, which is what
+    ``merge_engine`` self-approves and merges. ``**/migrations/**`` and
+    ``**/auth/**`` survived by luck (``(?:.*/)?`` swallowed the opening quote
+    and the trailing ``.*`` the closing one) and reported the *rendering* in the
+    escalation reason — a filename no human could open. The same blindness ran
+    the other way too: ``test_globs`` stopped excluding an accented test file
+    from the effective diff, and the docs-only carve-out
+    (``.lower().endswith('.md')``) was refused to ``docs/rëadme.md``, whose
+    rendering ends in ``"``.
+
+    So each line's path field goes through
+    :func:`role_protocol._unquote_git_path`, the repo's ONE reverse of git's
+    ``quote_c_style`` — the same decoder ``changed_paths_between`` and
+    ``blast_radius.changed_files`` use. Three collectors reading one repository
+    must name the same files; a second decoder here would be free to drift, and
+    this defect is what drift looks like. It is imported inside the function,
+    as ``blast_radius`` does, so ``risk`` keeps its module-level import graph.
+
+    Two things this must NOT become:
+
+      * ``-c core.quotePath=false``, which ``role_protocol`` carries and this
+        argv does not. Measured, it changes exactly ONE row of the table above,
+        the last: it governs whether HIGH bytes are octal-escaped, and quote,
+        backslash, TAB, LF, CR and ESC are ASCII and quoted whatever it says.
+        It is one ninth of a fix and the decoder makes it redundant.
+      * a ``strip('"')``. A quote is a legal character in a filename, so a
+        directory really can be called ``"tests"``; git renders that as
+        ``"\"tests\"/x.py"`` and stripping turns it into ``tests/x.py`` — a
+        different file, and one the seal gate would then call a test.
+
+    A line that will not decode RAISES :class:`RiskDiffError` rather than being
+    passed on half-rendered, which :func:`classify` turns into ``elevated``. A
+    filename that is not valid UTF-8 is legal on this filesystem and git tracks
+    it happily; before the decode it produced ``('low', ())`` — the gate
+    reporting that it checked a ``.github/`` change and found nothing wrong.
+    ``changed_paths_between`` already refuses such a diff for the same reason:
+    a path the gate cannot render is a path it cannot match, and an unmatchable
+    path reports as a pass.
+
+    ``splitlines`` is safe against the raw newline this decode now produces,
+    because it runs BEFORE the decode and git never emits a raw control
+    character in the quoted form. (``re.DOTALL`` in :func:`_compiled` is what
+    keeps the decoded line feed matchable afterwards, and it is load-bearing on
+    this route for the first time.)
     """
+    from .role_protocol import _unquote_git_path
+
     worktree = Path(worktree)
 
     def _run(spec: str) -> subprocess.CompletedProcess[str]:
@@ -376,11 +467,23 @@ def collect_diff(
     for line in proc.stdout.splitlines():
         if not line.strip():
             continue
-        parts = line.split("\t")
+        # `ins TAB del TAB path`. The path field is taken with maxsplit rather
+        # than rejoined from a tail slice: git escapes a TAB to `\t` inside the
+        # quoted form, so the old `"\t".join(parts[2:])` could never fire — it
+        # was the tell that the author believed raw paths were arriving here.
+        parts = line.split("\t", 2)
         if len(parts) < 3:
             continue
-        ins_s, del_s = parts[0], parts[1]
-        path = "\t".join(parts[2:])  # paths with tabs are rare but possible
+        ins_s, del_s, rendered = parts
+        try:
+            path = _unquote_git_path(rendered)
+        except ValueError as exc:
+            raise RiskDiffError(
+                f"git diff {base_ref!r}...{head_ref!r} in {worktree} named "
+                f"{rendered!r}, which is not a decodable C-quoted path: {exc}; "
+                "a path the gate cannot render is a path it cannot match, and "
+                "an unmatchable path reports as a pass"
+            ) from exc
         ins = 0 if ins_s == "-" else int(ins_s)
         dels = 0 if del_s == "-" else int(del_s)
         files.append(FileDiff(path=path, insertions=ins, deletions=dels))

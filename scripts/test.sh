@@ -17,7 +17,25 @@ cd "$ROOT"
 PY="$(bash scripts/python.sh)"
 echo "test.sh: interpreter $PY ($("$PY" --version 2>&1))"
 
-PYTHONPATH=src "$PY" -m pytest tests/ -q --tb=line
+# Known-red register (D-68). The dispatcher exports DISPATCHER_KNOWN_RED_FILE
+# pointing at NEWLINE-separated pytest node ids — rows another unit's seals task
+# committed RED by design, which this task has no way to green and must not be
+# failed by. Empty or unset on almost every run, and then the pytest command
+# below is byte-identical to what it was before the register existed.
+#
+# `IFS= read -r` preserves a row verbatim, which is what keeps a PARAMETRISED id
+# intact: ids routinely contain spaces (`test_seal[a plain property]`) and any
+# split on the default IFS would tear one row into several arguments that
+# deselect nothing.
+set --
+if [ -n "${DISPATCHER_KNOWN_RED_FILE:-}" ] && [ -f "${DISPATCHER_KNOWN_RED_FILE}" ]; then
+  while IFS= read -r row; do
+    [ -n "$row" ] && set -- "$@" --deselect "$row"
+  done < "${DISPATCHER_KNOWN_RED_FILE}"
+  echo "test.sh: known-red register active ($(( $# / 2 )) row(s) deselected)" >&2
+fi
+
+PYTHONPATH=src "$PY" -m pytest tests/ -q --tb=line "$@"
 
 probe_out="$("$PY" tools/t26_lint.py --probe-peer 2>&1)" && probe_rc=0 || probe_rc=$?
 if [ "$probe_rc" = 0 ]; then

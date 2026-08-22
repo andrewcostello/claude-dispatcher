@@ -20,6 +20,17 @@ Requires Python 3.11+ and `ruamel.yaml`. The dispatcher invokes `claude` (for ta
 
 ---
 
+## Start here for a new project
+
+**[docs/new-project-setup.md](docs/new-project-setup.md)** — the shortest path from
+an empty repo to a run you can trust: `.dispatcher.yaml`, a `tasks.yaml` with role
+chains, the floor, declared holes, the known-red register, and which gate answers
+which question. This README is the CLI reference; that page is the setup guide.
+
+Note that the sections below predate the build protocol (`role:`), so a task list
+written from the README alone gets role-less `legacy` rows — which run, but with
+none of the scaffold/seals/bodies/adjudicate enforcement.
+
 ## Quick start
 
 ```bash

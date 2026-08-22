@@ -29,12 +29,25 @@ from claude_dispatcher import yaml_io
 from claude_dispatcher import merge_prs as merge_prs_cmd
 
 
-# A `gh` stub covering the three calls the engine makes. `pr create` is unused
-# here (rows arrive pre-raised). Behavior is env-driven so each test scripts
-# approvals/conflicts per PR number:
-#   FAKE_GH_APPROVED — comma list of PR numbers whose `pr view` reports APPROVED
-#   FAKE_GH_CONFLICT — comma list of PR numbers whose `pr merge` fails as a conflict
-#   FAKE_GH_ERROR    — comma list of PR numbers whose `pr merge` fails (non-conflict)
+# A `gh` stub covering the calls the engine makes. `pr create` is unused
+# here (rows arrive pre-raised). `pr view` is QUERY-SPECIFIC (DF-1-3, panel
+# order): the `--json reviews` and `--json mergeCommit` questions get
+# distinct answers, so the merged-SHA witness path is exercised for real
+# rather than accidentally fed reviews JSON. Behavior is env-driven so each
+# test scripts approvals/conflicts per PR number:
+#   FAKE_GH_APPROVED        — comma list of PR numbers whose `pr view` reports
+#                             APPROVED (the review carries the per-PR
+#                             deterministic commit.oid — see _reviewed_oid —
+#                             the tree the reviewer saw, which DF-2 pins the
+#                             elevated merge to)
+#   FAKE_GH_CONFLICT        — comma list of PR numbers whose `pr merge` fails as a conflict
+#   FAKE_GH_ERROR           — comma list of PR numbers whose `pr merge` fails (non-conflict)
+#   FAKE_GH_NO_MERGE_COMMIT — if set, `pr view --json mergeCommit` answers null
+#                             (gh's shape for a PR origin does not record as
+#                             merged) — the witness's UNAVAILABLE leg
+# `pr view <n> --json mergeCommit` otherwise answers a per-PR deterministic
+# 40-hex oid (see _origin_merge_sha below), so distinct PRs get DISTINCT
+# origin answers and equality — not truthiness — is assertable.
 # Every invocation is appended to $FAKE_GH_LOG so tests assert merge ORDER.
 _FAKE_GH = '''\
 #!/usr/bin/env python3
@@ -46,8 +59,11 @@ if log:
         fh.write(" ".join(args) + "\\n")
 
 def _num():
+    # First all-digit token that cannot be a 40-hex SHA (DF-2: merge argv now
+    # carries `--match-head-commit <sha>`, and a digits-only fixture SHA must
+    # never be mistaken for the PR number — the scaffold-named hazard).
     for a in args:
-        if a.isdigit():
+        if a.isdigit() and len(a) != 40:
             return a
     return ""
 
@@ -56,11 +72,22 @@ def _csv(name):
 
 if "view" in args:
     num = _num()
-    if num in _csv("FAKE_GH_APPROVED"):
-        reviews = [{"author": {"login": "reviewer-bot"}, "state": "APPROVED"}]
-    else:
-        reviews = []
-    print(json.dumps({"reviews": reviews}))
+    if "reviews" in args:
+        if num in _csv("FAKE_GH_APPROVED"):
+            reviews = [{"author": {"login": "reviewer-bot"},
+                        "state": "APPROVED",
+                        "commit": {"oid": "f%039x" % int(num or 0)}}]
+        else:
+            reviews = []
+        print(json.dumps({"reviews": reviews}))
+        sys.exit(0)
+    if "mergeCommit" in args:
+        if os.environ.get("FAKE_GH_NO_MERGE_COMMIT"):
+            print(json.dumps({"mergeCommit": None}))
+        else:
+            print(json.dumps({"mergeCommit": {"oid": "%040x" % int(num or 0)}}))
+        sys.exit(0)
+    print("{}")
     sys.exit(0)
 if "merge" in args:
     num = _num()
@@ -73,6 +100,23 @@ if "merge" in args:
     sys.exit(0)
 sys.exit(0)
 '''
+
+
+def _origin_merge_sha(pr_number: int) -> str:
+    """The oid the fake gh reports as origin's merge commit for a PR — the
+    same-call expectation the merged-SHA assertions compare against by
+    EQUALITY (never truthiness; the condemned truthiness seal is the shape
+    DF-1 exists to end)."""
+    return "%040x" % pr_number
+
+
+def _reviewed_oid(pr_number: int) -> str:
+    """The commit.oid the fake gh attaches to an APPROVED review — per-PR
+    deterministic so the pin assertions compare by equality, and never
+    digits-only (leading ``f``) so `_num()`'s all-digit-token parse cannot
+    mistake it for a PR number when it appears in the merge argv (the
+    DF-2-1-scaffold-named hazard)."""
+    return "f%039x" % pr_number
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -170,13 +214,32 @@ def _rowof(repo: Path, key: str) -> dict:
 
 
 def _merge_order(gh_log: Path) -> list[str]:
-    """PR numbers in the order `pr merge <n>` was invoked."""
+    """PR numbers in the order `pr merge <n>` was invoked. 40-char tokens are
+    excluded for the `_num()` reason: the merge argv now carries the DF-2 pin
+    SHA, which must never be read as a PR number."""
     out = []
     for line in gh_log.read_text(encoding="utf-8").splitlines():
         parts = line.split()
         if "merge" in parts:
-            out += [p for p in parts if p.isdigit()]
+            out += [p for p in parts if p.isdigit() and len(p) != 40]
     return out
+
+
+def _merge_pins(gh_log: Path) -> dict[str, str | None]:
+    """PR number → the `--match-head-commit` value its merge argv carried
+    (None when the flag is absent) — the cheap argv assertion the logged
+    fake gh makes possible."""
+    pins: dict[str, str | None] = {}
+    for line in gh_log.read_text(encoding="utf-8").splitlines():
+        parts = line.split()
+        if parts[:2] != ["pr", "merge"]:
+            continue
+        pin = None
+        if "--match-head-commit" in parts:
+            i = parts.index("--match-head-commit")
+            pin = parts[i + 1] if i + 1 < len(parts) else None
+        pins[parts[2]] = pin
+    return pins
 
 
 # --------------------------------------------------------------------------- #
@@ -206,6 +269,12 @@ def test_low_risk_chain_merges_in_order(repo: Path, monkeypatch) -> None:
     # Self-approved low-risk records the dispatcher as approver + merger.
     assert _rowof(repo, "A")["pr_approved_by"] == me.DISPATCHER_APPROVER
     assert _rowof(repo, "A")["merged_by"] == me.DISPATCHER_APPROVER
+    # DF-2: each self-approved merge argv is pinned by equality to the local
+    # branch tip the classifier judged (same-call rev-parse expectation).
+    assert _merge_pins(gh_log) == {
+        "1": _git(repo, "rev-parse", "refs/heads/feat-a"),
+        "2": _git(repo, "rev-parse", "refs/heads/feat-b"),
+    }
 
 
 def test_dependent_never_merges_before_unmerged_dependency(repo: Path, monkeypatch) -> None:
@@ -289,6 +358,8 @@ def test_elevated_with_external_approval_merges(repo: Path, monkeypatch) -> None
         _row("A", pr_number=7, branch="feat-a", labels=["size:S", "security"]),
     ])
     monkeypatch.setenv("FAKE_GH_APPROVED", "7")
+    gh_log = repo / "gh.log"
+    monkeypatch.setenv("FAKE_GH_LOG", str(gh_log))
     jpath = repo / "journal.jsonl"
     journal = journal_mod.Journal.create(
         jpath, tasks_yaml_path=tasks, reviewer_prompts_dir=repo, run_id="run-1")
@@ -300,6 +371,12 @@ def test_elevated_with_external_approval_merges(repo: Path, monkeypatch) -> None
     assert row["status"] == "Merged"
     assert row["pr_approved_by"] == "external:reviewer-bot"
     assert row["merged_by"] == me.DISPATCHER_APPROVER
+    # DF-1 witness keys on the YAML row: origin's answer for THIS PR, judged
+    # by equality against the fake origin's same-call expectation.
+    assert row["merged_sha"] == _origin_merge_sha(7)
+    assert row["merged_sha_source"] == "origin_pr_merge_commit"
+    assert row["merged_sha_state"] == "observed"
+    assert "feature_branch_sha" not in row
 
     approved = [e for e in journal_mod.read_events(jpath)
                 if e.event_type == "pr_approved"]
@@ -307,10 +384,85 @@ def test_elevated_with_external_approval_merges(repo: Path, monkeypatch) -> None
               if e.event_type == "pr_merged"]
     assert len(approved) == 1 and approved[0].payload["risk_level"] == "elevated"
     assert approved[0].payload["approver"] == "external:reviewer-bot"
+    # DF-2: the elevated merge argv is pinned by equality to the commit.oid
+    # of the approving review (the tree the reviewer saw — NOT the local
+    # tip), and pr_approved stamps that authorization with its provenance.
+    assert _merge_pins(gh_log) == {"7": _reviewed_oid(7)}
+    assert approved[0].payload["authorized_head_sha"] == _reviewed_oid(7)
+    assert approved[0].payload["authorized_head_source"] == \
+        "external_review_commit"
     assert len(merged) == 1
     assert merged[0].payload["merger"] == me.DISPATCHER_APPROVER
     assert merged[0].payload["target"] == "feature/x"
-    assert merged[0].payload["feature_branch_sha"]
+    # The condemned seal, RULED (DF-1-4): AMENDED, not struck. The retired
+    # `feature_branch_sha` truthiness assert — a value measured wrong seven
+    # times — was replaced under panel order by DF-1-3 (a recorded Deviation)
+    # with the equality rows below; DF-1-4 ratifies that amendment as written.
+    # Strike was rejected: it would leave no engine-level pin that the
+    # pr_merged payload names origin's answer and drops the retired key, and
+    # these rows judge by same-call equality, never truthiness.
+    assert merged[0].payload["merged_sha"] == _origin_merge_sha(7)
+    assert merged[0].payload["merged_sha_source"] == "origin_pr_merge_commit"
+    assert merged[0].payload["merged_sha_state"] == "observed"
+    assert "feature_branch_sha" not in merged[0].payload
+    assert journal_mod.verify(jpath).ok
+
+
+# --------------------------------------------------------------------------- #
+# DF-1: an unavailable origin witness never falls back to the local tip
+# --------------------------------------------------------------------------- #
+
+def test_unavailable_origin_witness_is_recorded_and_never_falls_back_to_the_local_tip(
+    repo: Path, monkeypatch,
+) -> None:
+    """The central DF-1 safety rule, pinned at ENGINE level (panel order —
+    an implementation that fell back to the local feature tip when origin
+    could not answer passed every prior seal, because no engine test drove
+    the merged-but-unwitnessable path): the merge lands, origin does NOT
+    answer the mergeCommit question, and the local feature tip IS readable —
+    the row and the journal must both record the NAMED absence, and the
+    local tip must appear nowhere in either record.
+
+    Controls, judged in the same call: the local tip really is readable from
+    repo_root (the temptation exists), and the merge really succeeded (the
+    row is Merged) — so the absence below is the witness's answer, not a
+    merge that never happened.
+    """
+    _make_branch(repo, "feat-a", "a.py")
+    tasks = _write_tasks(repo, [
+        _row("A", pr_number=1, branch="feat-a", labels=["size:S", "area:x"]),
+    ])
+    monkeypatch.setenv("FAKE_GH_NO_MERGE_COMMIT", "1")
+    jpath = repo / "journal.jsonl"
+    journal = journal_mod.Journal.create(
+        jpath, tasks_yaml_path=tasks, reviewer_prompts_dir=repo, run_id="run-1")
+
+    local_tip = _git(repo, "rev-parse", "feature/x")
+    assert local_tip  # control: the temptation is readable
+
+    result = me.merge_pass(_cfg(repo, tasks), journal=journal,
+                           notifier=notify_mod.NullNotifier())
+
+    assert result.merged == ["A"]  # control: the merge itself landed
+    row = _rowof(repo, "A")
+    assert row["status"] == "Merged"
+    assert row["merged_sha_state"] == "unavailable"
+    assert row["merged_sha_detail"]
+    assert "merged_sha" not in row
+    assert "merged_sha_source" not in row
+    assert "feature_branch_sha" not in row
+    assert local_tip not in row.values()
+
+    merged = [e for e in journal_mod.read_events(jpath)
+              if e.event_type == "pr_merged"]
+    assert len(merged) == 1
+    pay = merged[0].payload
+    assert pay["merged_sha_state"] == "unavailable"
+    assert pay["merged_sha_detail"]
+    assert "merged_sha" not in pay
+    assert "merged_sha_source" not in pay
+    assert "feature_branch_sha" not in pay
+    assert local_tip not in pay.values()
     assert journal_mod.verify(jpath).ok
 
 

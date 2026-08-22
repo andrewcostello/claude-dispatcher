@@ -1,0 +1,1616 @@
+project: claude-dispatcher
+epic: Dogfood wave 1 — the dispatcher builds its own remaining defects
+
+# Every unit below is a defect MEASURED during the 2026-08-07..12 effort, with
+# the measurement quoted in its description. None is speculative.
+#
+# WHY THESE FOUR. They are all Python in this repository, which is where the
+# loop gate runs in 0.004s and the reachability arm takes the cheap exit. The Go
+# work (#18, #25, #26, #28 in the operator's list) is deliberately held back:
+# the reachability sweep costs 445s x2 on a Go tree and is ruled off until the
+# host toolchain is fixed.
+#
+# ORDER. DF-1 (merged_sha) comes before DF-2 (merge authorization) because DF-2
+# must not pin to a SHA source DF-1 proves is wrong.
+#
+# ROLE CHAIN. scaffold -> seals -> bodies -> adjudicate, each blockedBy the
+# previous. The protocol refuses a 'bodies' task that names no 'seals' task in
+# blockedBy: "an absent edge is a refusal, never an empty unit that passes".
+
+tasks:
+
+  # ---- DF-1  merged_sha is stale in 7/7 recorded merges -------------------
+  - key: DF-1-1
+    summary: scaffold — name what a merge record must prove about the SHA it names
+    description: |
+      MEASURED: every recorded merge stamps a merged_sha that does not track
+      origin. Two DIFFERENT PRs merged in the same run record IDENTICAL
+      post-merge SHAs, which is impossible if the ref followed origin.
+      `_sync_local_feature_branch`'s `git fetch origin fb:fb` appears never to
+      have succeeded. All 7 recorded pr_merged events are affected.
+
+      Consequence: the audit trail cannot say what was merged.
+
+      Contract must answer: where the authoritative SHA comes from (origin, not
+      a local ref); what a merge record must carry to be checkable afterwards;
+      and what happens when the fetch fails — that is a named state, never a
+      silently stale stamp.
+
+      DO NOT reuse `_feature_branch_sha` as the source. That is the value this
+      unit proves wrong.
+
+      Note test_merge_engine.py:313 is a truthiness check on that stamp — a seal
+      passing on a value now known to be wrong. Say whether it is in scope.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+    role: scaffold
+    status: Done
+
+    started_at: '2026-08-13T10:36:37-07:00'
+    dispatcher_run_id: 2026-08-13T17-36-36Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-13T17-36-36Z-tasks/DF-1-1/summary.md
+    branch: feat/DF-1-1-scaffold-name-what-a-merge
+    cost_usd: 6.293420000000001
+    completed_at: '2026-08-13T10:56:25-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    mechanical_verification: passed
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "2 changed path(s) checked against the deny_globs rule for 'scaffold' and against the 17-glob floor; signatures: not_applicable"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=2 (0C/2H)
+    panel_blocking_findings: 2
+    panel_verdict_claude: APPROVE
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: APPROVE
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: 60789abc
+    input_tokens: 39
+    output_tokens: 24965
+    cache_read_input_tokens: 1432558
+    cache_creation_input_tokens: 77648
+    duration_ms: 495115
+    num_turns: 25
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.231 (Claude Code)
+  - key: DF-1-2
+    summary: seals — a merge record that cannot be checked against origin is red
+    description: |
+      Seal the contract DF-1-1 writes. The row that matters is the one that
+      fails today: two PRs merged in one run must not be able to record the
+      same post-merge SHA.
+
+      Non-vacuity bar: this codebase has measured twelve shapes of vacuous seal.
+      The live one here is "a seal asserting truthiness of a value now known to
+      be wrong" — test_merge_engine.py:313 is exactly that. Do not write its
+      twin.
+
+      Prove each row red by the specific defect it names, carry an in-test
+      control judged in the same call, and use `Measured under:` /
+      `Predicted (unmeasured) under:`.
+
+      ## Unblock note (human)
+      (cleared from Blocked: role_diff_loop_undetermined: git reported no changed paths for 0a6ae4a58e32a0351915e95eda3dff777a6398eb...feat/DF-1-2-seals-a-merge-record-that; a role task that changed nothing has not done its 'seals' phase, and 'did nothing' must not look like 'succeeded')
+      ADJUDICATION (operator). This block is the DISPATCHER's defect, not yours.
+      Recorded as D-59 and fixed in dc415c6; the fix is not in the process now
+      running, so this is the manual equivalent.
+
+      What happened: you completed this task and committed 0a6ae4a
+      (tests/test_merge_record.py). The run was then stopped by the operator for an
+      unrelated reason (D-58 — the mechanical gate was accusing SEALS tasks of
+      failing for committing red seals, which is your deliverable). Your row was
+      reset but your BRANCH kept your work. On re-dispatch the gate's base became
+      your own completed tip, so the diff was empty and the gate read "a role task
+      that changed nothing has not done its phase". You had already done it.
+
+      The gate base is now the merge-base your work sits on (60789ab), where your
+      seals ARE the change. Verified: `git diff --name-status 60789ab...HEAD` reports
+      exactly `A tests/test_merge_record.py`.
+
+      YOUR SEALS ARE COMPLETE AND ACCEPTED. Verify the file is present and still red
+      for the right reason, then stop and report. Do not rewrite or extend them.
+
+      TWO THINGS THAT ARE NOW TRUE AND WERE NOT WHEN YOU RAN:
+
+      1. The mechanical gate no longer judges a SEALS task's suite state at all. It
+         abstains by a named state. A red suite is expected and is NOT something to
+         fix. You will not be asked to make it green — that request was the defect.
+
+      2. DF-1-1's panel recorded nine findings on the scaffold you are sealing, and
+         three independent reviewer families each named ONE defect:
+         `MergedShaWitness.__post_init__` accepts any truthy `sha`, so "not-a-sha" or
+         whitespace becomes a well-formed OBSERVED witness and `stamp_fields()` emits
+         it under `merged_sha`. codex rated it HIGH at merge_record.py:205, claude
+         MEDIUM at :214 ("verified by direct execution"), grok LOW at :218. It did
+         not block, because only one family called it blocking.
+
+         If your rows already pin that, say so and stop. If they do not, that gap is
+         worth a row — it is the audit record for merge authority, and three
+         reviewers found the same hole in it. Report which, either way.
+    type: Task
+    estimate: 2h
+    labels: [size:M, area:dispatcher]
+    agent: claude
+    role: seals
+    status: Done
+    blockedBy: [DF-1-1]
+    started_at: '2026-08-14T08:10:51-07:00'
+    dispatcher_run_id: 2026-08-14T14-58-45Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-14T14-58-45Z-tasks/DF-1-2/summary.md
+
+    branch: feat/DF-1-2-seals-a-merge-record-that
+    cost_usd: 18.653157999999998
+    completed_at: '2026-08-14T08:23:20-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    input_tokens: 51
+    output_tokens: 23580
+    cache_read_input_tokens: 1915172
+    cache_creation_input_tokens: 66579
+    duration_ms: 443312
+    num_turns: 30
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.232 (Claude Code)
+    unblocked_at: '2026-08-14T15:08:48+00:00'
+    mechanical_verification: skipped
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "1 changed path(s) checked against the allow_only_globs rule for 'seals' and against the 17-glob floor; signatures: not_applicable"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=3 (0C/3H)
+    panel_blocking_findings: 3
+    panel_verdict_claude: APPROVE
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: APPROVE
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: 47fccd2c
+  - key: DF-1-3
+    summary: bodies — make the merge record name the SHA origin actually merged
+    description: |
+      Turn DF-1-2's rows green. Every row must close for a stated mechanical
+      reason; a row that goes green for a reason you cannot name is a finding.
+
+      Report which rows would still pass under an implementation you consider
+      wrong — three separate authors in this effort found rows that stayed green
+      under a wrong implementation, and disclosed it against their own interest.
+
+      ## Unblock note (human)
+      (cleared from Blocked: role_diff_loop_violation: 2 forbidden path(s) and 2 changed scaffolded signature(s))
+      ADJUDICATION (operator). You did what your scaffold told you to do. The block
+      was structural and it has been resolved for you. Recorded as D-65.
+
+      WHAT HAPPENED. DF-1-1's scaffold added 21 lines to `merge_engine.py`, all
+      docstring, saying: "the merged-SHA contract lives in `merge_record.py`, and
+      DF-1-3 removes the audit stamp's dependence on this sync" and "DF-1-3 rewires
+      the call site and retires this function from the stamp path. Do NOT add new
+      callers."
+
+      So it ORDERED the two signature changes you made and named you as the task that
+      would make them — but it wrote the order in PROSE and never changed the
+      signatures or left stubs carrying the new shapes. The role gate compares
+      signatures across revisions. It cannot read prose. So it correctly reported a
+      bodies task changing an interface, and you were correctly following your brief.
+      Both were right. DF-1-4, which exists to rule exactly this, is blockedBy you —
+      so no role could have finished this unit.
+
+      WHAT WAS DONE, so you do not redo it:
+        * Your `merge_engine.py` change landed as OPERATOR commit 89b5936, attributed
+          to you — the whole file, because the scaffold named its rewiring as one act
+          and `_apply_merged` cannot take a witness until something passes one.
+        * Your test-infra work landed earlier as operator commit ae307e4.
+        * Your remaining commit 30325e1 is implementation only: `merge_record.py`,
+          `journal.py`, `docs/journal-format.md`.
+        * Your gate base is now 89b5936. Verified: the gate answers
+          checked_clean / proceed, 3 paths, no signature changes.
+
+      YOUR WORK IS COMPLETE AND ACCEPTED. Verify it still builds and the suite
+      reports, then STOP and report. Do not re-add `merge_engine.py` changes — they
+      are already on the base you are judged against, and re-adding them would put
+      you back in violation.
+
+      ONE THING WORTH YOUR ATTENTION, and report rather than fix it if you disagree:
+      DF-1-2's seals added a row pinning that `MergedShaWitness.__post_init__` must
+      REFUSE a non-SHA `sha` (three reviewer families independently found that
+      `"not-a-sha"` and whitespace construct a well-formed OBSERVED witness that
+      `stamp_fields()` then emits under `merged_sha`). That row is red until the
+      constructor validates. If your body already added that guard, say so. If not,
+      it is body work and it is in your writable set.
+    type: Task
+    estimate: 2h
+    labels: [size:M, area:dispatcher]
+    agent: claude
+    role: bodies
+    status: Done
+    blockedBy: [DF-1-2]
+    started_at: '2026-08-14T13:26:20-07:00'
+    dispatcher_run_id: 2026-08-14T19-52-18Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-14T19-52-18Z-tasks/DF-1-3/summary.md
+
+    branch: feat/DF-1-3-bodies-make-the-merge-record
+    cost_usd: 24.924347
+    effort: high
+    completed_at: '2026-08-14T13:47:36-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    input_tokens: 36
+    output_tokens: 9570
+    cache_read_input_tokens: 868112
+    cache_creation_input_tokens: 47566
+    duration_ms: 772801
+    num_turns: 20
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.232 (Claude Code)
+    unblocked_at: '2026-08-14T20:18:23+00:00'
+    mechanical_verification: passed
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "3 changed path(s) checked against the deny_globs rule for 'bodies' and against the 17-glob floor; signatures: unchecked_unsupported_language; 1 of the 3 changed path(s) are in a language this gate has no comparator for, so their signatures were compared by nothing and are not covered by this pass — unread: docs/journal-format.md"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=1 (0C/1H)
+    panel_blocking_findings: 1
+    panel_verdict_claude: APPROVE
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: APPROVE
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: 70b98187
+  - key: DF-1-4
+    summary: adjudicate — rule the stale-stamp seal and any disputes DF-1-3 raises
+    description: |
+      Rule whether test_merge_engine.py:313 is amended or struck, and any
+      dispute the body raises. Amend only what a ruling forces; name each row
+      and its before/after.
+
+      ## Unblock note (human)
+      (cleared from Blocked: role_diff_loop_violation: 2 forbidden path(s) and 0 changed scaffolded signature(s))
+      ADJUDICATION (operator). Your rulings stand. The block was structural and has
+      been resolved for you. Recorded as D-66.
+
+      WHAT HAPPENED. You wrote two files outside your `disputed_paths`
+      (`tests/test_merge_engine.py` alone): `src/claude_dispatcher/merge_record.py`
+      and `tests/test_merge_record.py`. Both edits were DOCSTRINGS ONLY — verified by
+      parsing both revisions, stripping module/class/function docstrings, and
+      comparing the dumps: identical. You changed tense to record that you had ruled.
+
+      That was the right instinct and the role table has no channel for it.
+      `disputed_paths` names the file to RULE ON, not the files that POSE the
+      dispute — and a module saying "P4 will rule on this" is false the moment you
+      rule. The operator has ruled that a per-unit RULINGS file is the channel this
+      needs; it is being built now.
+
+      WHAT WAS DONE, so you do not redo it:
+        * Your two docstring updates landed as OPERATOR commit 88d07a5, attributed
+          to you.
+        * Your remaining commit e76f03c is `tests/test_merge_engine.py` alone —
+          exactly your disputed_paths.
+        * Your gate base is now 88d07a5. Verified: checked_clean / proceed, 1 path,
+          against the allow_only_globs rule for 'adjudicate'.
+
+      YOUR WORK IS COMPLETE AND ACCEPTED, including the substance:
+        * Ruling 1 (condemned seal AMENDED, not struck) — accepted. The argument
+          that the seal's LOCATION is load-bearing is correct: the DF-1-2 rows pin
+          the record type and the witness, but only the engine-level row pins that
+          the live merge pass's `pr_merged` payload names origin's answer and drops
+          the retired key.
+        * Ruling 2 (DF-1-3's Deviation ACCEPTED) — accepted, and your ratification of
+          operator commit ae307e4 matches the operator's own disposition of it.
+
+      Verify your branch still builds and the suite reports, then STOP and report. Do
+      not re-add the docstring edits — they are on the base you are judged against,
+      and re-adding them puts you back in violation.
+
+      ## Unblock note (human)
+      (cleared from Blocked: mechanical_verification_failed)
+      ADJUDICATION (operator). Not your defect. Recorded as D-70.
+
+      WHAT HAPPENED. Your branch was cut at 88d07a5, before DF-5-3's body merged.
+      `unblock` preserves branches (deliberately — it has saved real work four times
+      tonight) but nothing ADVANCES a preserved branch when its base moves. So your
+      worktree still held `money_net.py` with the NotImplementedError stub, and
+      `tests/test_money_net.py`'s three rows were red on YOUR tree while green on the
+      base. Your own diff is one file and never touched them.
+
+      FIXED FOR YOU: your branch has been merged forward to the current
+      feat/D1-role-protocol. Verified in your worktree: tests/test_money_net.py now
+      reports 17 passed.
+
+      FOR REFERENCE — DF-4-4 hit the same thing and diagnosed it itself, committing a
+      base-sync merge with zero content change and the note "syncing the base turns
+      them green with no change to any seal". That was the right call. If you see a
+      red row you did not cause, check whether your base is behind before assuming
+      the row is wrong.
+
+      YOUR WORK IS COMPLETE AND ACCEPTED — both rulings, and your ratification of
+      operator commit ae307e4. Verify your branch still builds and the suite reports,
+      then STOP and report. Do not re-open the rulings.
+
+      ## Unblock note (human)
+      (cleared from Blocked: role_diff_loop_violation: 11 forbidden path(s) and 0 changed scaffolded signature(s))
+      ADJUDICATION (operator). Third block, third time not your defect. Recorded as
+      D-71, and this one was caused by the operator's own repair of D-70.
+
+      WHAT HAPPENED. Your base was stale (D-70), so the operator merged
+      feat/D1-role-protocol forward into your branch. That sync brought eleven of the
+      base's files onto your branch AFTER your gate origin — so the gate read
+      money_net.py, orchestrator.py, role_protocol.py and eight others as YOUR work.
+      Your real diff was, and is, one file.
+
+      FIXED FOR YOU. Your branch was rebuilt so the sync comes BEFORE your work:
+
+          88d07a5  operator docstring lift (D-66)
+          0cebcad  merge feat/D1-role-protocol   <- your gate base is now here
+          7409410  adjudicate(DF-1) ...          <- your commit, re-applied unchanged
+
+      Verified: the gate answers checked_clean / proceed, 1 changed path
+      (tests/test_merge_engine.py — exactly your disputed_paths), and
+      tests/test_money_net.py + tests/test_merge_engine.py report 37 passed in your
+      worktree.
+
+      YOUR WORK IS UNCHANGED AND ACCEPTED. Both rulings stand: the condemned seal
+      AMENDED not struck (the location-is-load-bearing argument is correct), and
+      DF-1-3's Deviation accepted. Your ratification of operator commit ae307e4
+      matches the operator's own disposition.
+
+      Verify the branch builds and the suite reports, then STOP and report. Do not
+      re-open the rulings and do not re-add anything — every file you might reach for
+      is already on the base you are judged against.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+    role: adjudicate
+    disputed_paths:
+      - tests/test_merge_engine.py
+    status: Done
+    blockedBy: [DF-1-3]
+    started_at: '2026-08-14T17:33:12-07:00'
+    dispatcher_run_id: 2026-08-15T00-33-12Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-15T00-33-12Z-tasks/DF-1-4/summary.md
+
+  # ---- DF-2  merge authorization vs the ref the merge acts on -------------
+    branch: feat/DF-1-4-adjudicate-rule-the-stale-stamp
+    cost_usd: 14.889562999999999
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    input_tokens: 16
+    output_tokens: 3211
+    cache_read_input_tokens: 300868
+    cache_creation_input_tokens: 26520
+    duration_ms: 531335
+    num_turns: 9
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.233 (Claude Code)
+    unblocked_at: '2026-08-15T00:32:39+00:00'
+    effort: high
+    completed_at: '2026-08-14T17:46:51-07:00'
+    mechanical_verification: passed
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "1 changed path(s) checked against the allow_only_globs rule for 'adjudicate' and against the 17-glob floor; signatures: not_applicable"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=1 (0C/1H)
+    panel_blocking_findings: 1
+    panel_verdict_claude: APPROVE
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: APPROVE
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: cb9841b8
+  - key: DF-2-1
+    summary: scaffold — authorization and action must name the same ref
+    description: |
+      MEASURED, and the recorded description of this defect DID NOT SURVIVE
+      MEASUREMENT. It was filed as "a verdict is produced and the merge does not
+      prove the tree it merges is the tree judged". Wrong: the merge consumes NO
+      verdict — grep for panel_consensus|panel_verdict_ across merge_engine.py,
+      merge_prs.py, pr.py, plan.py, risk.py returns zero hits and the only
+      readers are display code.
+
+      ACCURATE STATEMENT: `risk.classify` diffs the LOCAL refs/heads/<branch> in
+      repo_root with no fetch, while `gh pr merge` acts on ORIGIN's head.
+      Authorization and action are computed against different refs.
+
+      pr.py:226 builds [gh, pr, merge, N, --merge] with no --match-head-commit;
+      that flag is real in the installed gh 2.46.0, so the fix is a dispatcher
+      argv change, not a git operation.
+
+      NOT hypothetical: 7 real pr_merged events across 25 runs against
+      EvenPlay/evenplay-mono (#809/811/813/815) and andrewcostello/
+      claude-dispatcher (#35/36/39). Loss is potential, not historical — both
+      externally-approved merges had approval-commit == merged head (~21 and ~10
+      minute windows).
+
+      THE CONSTRAINT THAT SHAPES THE FIX: five of seven merges were low-risk
+      SELF-APPROVALS. A fix that only hardens the `elevated` branch misses the
+      majority path.
+
+      CHEAPER THAN IT LOOKS: `gh pr view --json reviews` ALREADY returns a
+      per-review commit.oid, and pr.py:158-177 iterates those objects keeping
+      only state and author.login. Measured live against PR 813.
+
+      The Go reviewer half is already fixed (reviewed_sha, cmd/reviewer/
+      main.go:843) and claude-workflow contains no `gh pr merge`.
+    type: Task
+    estimate: 2h
+    labels: [size:M, area:dispatcher]
+    agent: claude
+    role: scaffold
+    status: Done
+    blockedBy: [DF-1-4]
+    started_at: '2026-08-14T17:46:51-07:00'
+    dispatcher_run_id: 2026-08-15T00-33-12Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-15T00-33-12Z-tasks/DF-2-1/summary.md
+
+    branch: feat/DF-2-1-scaffold-authorization-and-action-must
+    cost_usd: 7.851277
+    completed_at: '2026-08-14T18:13:16-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    mechanical_verification: passed
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "3 changed path(s) checked against the deny_globs rule for 'scaffold' and against the 17-glob floor; signatures: not_applicable"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=2 (0C/2H)
+    panel_blocking_findings: 2
+    panel_verdict_claude: APPROVE
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: APPROVE
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: 5d967d21
+    input_tokens: 74
+    output_tokens: 38502
+    cache_read_input_tokens: 3555861
+    cache_creation_input_tokens: 116334
+    duration_ms: 1192208
+    num_turns: 45
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.233 (Claude Code)
+  - key: DF-2-2
+    summary: seals — a merge authorised for one SHA must not act on another
+    description: |
+      Seal DF-2-1's contract. Cover the SELF-APPROVAL path, not only the
+      elevated one — five of seven recorded merges took it.
+
+      No seal covers any of this today. The one SHA assertion in the merge suite
+      (test_merge_engine.py:313) is the stale stamp DF-1 repairs.
+    type: Task
+    estimate: 2h
+    labels: [size:M, area:dispatcher]
+    agent: claude
+    role: seals
+    status: Done
+    blockedBy: [DF-2-1]
+    started_at: '2026-08-14T18:13:16-07:00'
+    dispatcher_run_id: 2026-08-15T00-33-12Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-15T00-33-12Z-tasks/DF-2-2/summary.md
+
+    branch: feat/DF-2-2-seals-a-merge-authorised-for
+    cost_usd: 11.846718
+    completed_at: '2026-08-14T18:48:48-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    mechanical_verification: skipped
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "1 changed path(s) checked against the allow_only_globs rule for 'seals' and against the 17-glob floor; signatures: not_applicable"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=2 (0C/2H)
+    panel_blocking_findings: 2
+    panel_verdict_claude: APPROVE
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: CHANGES_REQUESTED
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: ba5cc723
+    input_tokens: 80
+    output_tokens: 71248
+    cache_read_input_tokens: 5155467
+    cache_creation_input_tokens: 153376
+    duration_ms: 1756163
+    num_turns: 43
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.233 (Claude Code)
+  - key: DF-2-3
+    summary: bodies — pin the merge to the SHA the authorization was computed for
+    description: |
+      Turn DF-2-2's rows green. Do not use a SHA source DF-1 proved stale.
+
+      The fake `gh` in the test harness already logs argv, so an argv assertion
+      is cheap — but note `_num()` at line 47 grabs the first all-digit token
+      and would break on a digits-only fixture SHA.
+
+      ## Unblock note (human)
+      (cleared from Blocked: role_diff_loop_violation: 1 forbidden path(s) and 1 changed scaffolded signature(s))
+      ADJUDICATION (operator). Both violations were assigned to you by your own
+      brief, and neither was yours to commit. Recorded as D-72. Your work is
+      unchanged and accepted.
+
+      WHAT WAS SPLIT OUT, both attributed to you:
+
+        * bf2644a — `tests/test_merge_engine.py`, the fake-gh harness amendment your
+          brief explicitly assigns ("seals role deliberately left it"). BODIES may
+          not write `tests/**`. The plan anticipated this: DF-2-4 holds that file AND
+          `tests/test_pr.py` in its disputed_paths.
+        * c98bc44 — `merge_engine.py`'s `_classify(cfg, row, branch)` ->
+          `_classify(cfg, row, head_sha)`. That signature IS unit DF-2 and the unit
+          cannot be done without it, but a signature change is P1 work.
+
+      WHY THAT SECOND ONE IS NOT YOUR ERROR: DF-2-1's scaffold added 18 lines to
+      `merge_engine.py`, named `_classify` in prose, declared `head_sha: str` as a
+      field on the new record type — and left `_classify`'s parameter as `branch`.
+      P1 designed the interface and did not declare it in the one place the gate
+      reads. You had no way to implement the unit without changing it. Third
+      occurrence this wave (see also `_apply_merged` and `dispatch_plan.render`), and
+      it is recorded as a plan-authoring defect.
+
+      YOUR REMAINING COMMIT is `merge_authorization.py` + `pr.py` — body only.
+      Verified: the gate answers checked_clean / proceed, 2 changed paths, signatures
+      checked.
+
+      Verify the branch builds and report the suite. Your summary says the
+      merge-related files report 72 passed including the 12 formerly-xfailed DF-2-2
+      rows now plain green — confirm that still holds and give the number. Do NOT
+      re-add the harness or the signature; both are on the base you are judged
+      against, and re-adding either puts you back in violation.
+    type: Task
+    estimate: 2h
+    labels: [size:M, area:dispatcher]
+    agent: claude
+    role: bodies
+    status: Done
+    blockedBy: [DF-2-2]
+    started_at: '2026-08-14T19:13:08-07:00'
+    dispatcher_run_id: 2026-08-15T02-13-08Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-15T02-13-08Z-tasks/DF-2-3/summary.md
+
+    branch: feat/DF-2-3-bodies-pin-the-merge-to
+    cost_usd: 13.063919999999998
+    completed_at: '2026-08-14T19:38:46-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    input_tokens: 56
+    output_tokens: 14635
+    cache_read_input_tokens: 1279826
+    cache_creation_input_tokens: 40512
+    duration_ms: 1015409
+    num_turns: 29
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.233 (Claude Code)
+    unblocked_at: '2026-08-15T02:12:14+00:00'
+    mechanical_verification: passed
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "2 changed path(s) checked against the deny_globs rule for 'bodies' and against the 17-glob floor; signatures: checked"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=1 (0C/1H)
+    panel_blocking_findings: 1
+    panel_verdict_claude: APPROVE
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: APPROVE
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: 2549a833
+  - key: DF-2-4
+    summary: adjudicate — rule DF-2-3's disputes and the self-approval boundary
+    description: |
+      Rule any dispute the body raises, and in particular whether the
+      self-approval path takes the same pinning as the externally-approved one.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+    role: adjudicate
+    disputed_paths:
+      - tests/test_merge_engine.py
+      - tests/test_pr.py
+    status: Done
+    blockedBy: [DF-2-3]
+    started_at: '2026-08-14T19:38:46-07:00'
+    dispatcher_run_id: 2026-08-15T02-13-08Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-15T02-13-08Z-tasks/DF-2-4/summary.md
+
+  # ---- DF-3  mixed-role batches are legal at plan time --------------------
+    branch: feat/DF-2-4-adjudicate-rule-df-2-3
+    cost_usd: 3.9674995000000006
+    completed_at: '2026-08-14T19:48:17-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    mechanical_verification: passed
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "1 changed path(s) checked against the allow_only_globs rule for 'adjudicate' and against the 17-glob floor; signatures: not_applicable"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, gemini=UNAVAILABLE, codex=APPROVE, grok=APPROVE
+    panel_blocking_findings: 0
+    panel_verdict_claude: APPROVE
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: APPROVE
+    panel_verdict_grok: APPROVE
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: 9f2869cf
+    input_tokens: 48
+    output_tokens: 17808
+    cache_read_input_tokens: 1513826
+    cache_creation_input_tokens: 70612
+    duration_ms: 275515
+    num_turns: 31
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.233 (Claude Code)
+  - key: DF-3-1
+    summary: scaffold — a batch that mixes roles has no judgeable branch
+    description: |
+      MEASURED during D8: unit A's BODIES row and unit B's SCAFFOLD row sharing
+      a batch_id load with 0 errors / 0 warnings, are both runnable, and
+      `_take_batch_group` dispatches them as ONE BRANCH, TWO ROLES.
+
+      `loop_gate.sole_role` returns None and BLOCKs rather than picking — but
+      that is the loop gate catching it at dispatch time. Until `validate`
+      refuses it at PLAN time, the loop is the only thing between a mixed batch
+      and a branch nothing can judge.
+
+      Related and in scope to rule on: rows sharing one role may still carry
+      DIFFERENT immutable_paths:/disputed_paths:. `resolve_inputs` refuses them
+      through ROLE_UNRESOLVED, whose docstring says "did not yield exactly one
+      Role" — which that case technically DOES. D8's P4 ruled a ninth status
+      (RULE_UNRESOLVED) rather than a wording change, because
+      _BLOCKED_REASON_PREFIXES is keyed by status and is what the queue prints.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+    role: scaffold
+    status: Done
+
+    started_at: '2026-08-13T10:36:37-07:00'
+    dispatcher_run_id: 2026-08-13T17-36-36Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-13T17-36-36Z-tasks/DF-3-1/summary.md
+    branch: feat/DF-3-1-scaffold-a-batch-that-mixes
+    cost_usd: 10.575122
+    completed_at: '2026-08-13T11:09:41-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    mechanical_verification: passed
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "2 changed path(s) checked against the deny_globs rule for 'scaffold' and against the 17-glob floor; signatures: not_applicable"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, gemini=UNAVAILABLE, codex=APPROVE, grok=APPROVE
+    panel_blocking_findings: 0
+    panel_verdict_claude: APPROVE
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: APPROVE
+    panel_verdict_grok: APPROVE
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: 5ca4af4a
+    input_tokens: 91
+    output_tokens: 37532
+    cache_read_input_tokens: 4284097
+    cache_creation_input_tokens: 107445
+    duration_ms: 1235564
+    num_turns: 52
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.231 (Claude Code)
+  - key: DF-3-2
+    summary: seals — plan time refuses a mixed-role batch and a mixed rulebook
+    description: |
+      Seal both refusals. The row that matters fails today: the two-task fixture
+      above must load with 0 errors, and must not after the fix.
+
+      Watch the shape D8's P2 corrected in its own draft: driven over a
+      nonexistent repo_root, every world collapsed to one error and the control
+      passed while proving nothing. Build on a real worklist.
+
+      ## Unblock note (human)
+      (cleared from Blocked: role_diff_loop_undetermined: git reported no changed paths for cb9da9b45b00a08ff4f65889e51d2c69a1e8b4e4...feat/DF-3-2-seals-plan-time-refuses-a; a role task that changed nothing has not done its 'seals' phase, and 'did nothing' must not look like 'succeeded')
+      ADJUDICATION (operator). This block is the DISPATCHER's defect, not yours, and
+      it is the mirror image of D-54.
+
+      What happened: you completed this task in an earlier run and committed
+      cb9da9b (tests/test_batch_coherence.py). That run was stopped by the operator
+      for an unrelated reason and your row was reset to To Do, but your BRANCH kept
+      your work. On re-dispatch the gate's base became your own previous tip, so the
+      diff was empty and the gate read "a role task that changed nothing has not done
+      its phase". You had already done it.
+
+      D-54 was the same root cause pointing the other way: there, retained work was a
+      VIOLATION and the remedy looked like a breach. Here, retained work is the
+      DELIVERABLE and completion looks like idleness. Both come from assuming a
+      branch starts empty of the task's own output.
+
+      The gate base is now the merge-base your work actually sits on (5ca4af4), where
+      your seals ARE the change. Verified: `git diff --name-status 5ca4af4...HEAD`
+      reports exactly `A tests/test_batch_coherence.py`.
+
+      YOUR SEALS ARE COMPLETE AND ACCEPTED. Do NOT rewrite, extend, or "improve"
+      them. Verify the file is still present and still red for the right reason, then
+      stop and report. If you believe a row is wrong, report it in the summary rather
+      than changing it — this unit's bodies task (DF-3-3) has not run, so a change
+      here has no green to check it against.
+
+      Standing rules unchanged: SEALS may write test files and docs/** only. The
+      mechanical gate does not judge your suite state (it abstains for this role),
+      so a red suite is expected and is not something to fix.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+    role: seals
+    status: Done
+    blockedBy: [DF-3-1]
+    started_at: '2026-08-14T08:07:54-07:00'
+    dispatcher_run_id: 2026-08-14T14-58-45Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-14T14-58-45Z-tasks/DF-3-2/summary.md
+
+    branch: feat/DF-3-2-seals-plan-time-refuses-a
+    cost_usd: 10.488061
+    completed_at: '2026-08-14T08:19:16-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    input_tokens: 13
+    output_tokens: 2721
+    cache_read_input_tokens: 290766
+    cache_creation_input_tokens: 32617
+    duration_ms: 195533
+    num_turns: 8
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.232 (Claude Code)
+    unblocked_at: '2026-08-14T15:03:34+00:00'
+    mechanical_verification: skipped
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "1 changed path(s) checked against the allow_only_globs rule for 'seals' and against the 17-glob floor; signatures: not_applicable"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=1 (0C/1H)
+    panel_blocking_findings: 1
+    panel_verdict_claude: APPROVE
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: APPROVE
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: da732acc
+  - key: DF-3-3
+    summary: bodies — validate refuses the mixed batch and the mixed rulebook
+    description: |
+      Turn DF-3-2's rows green in plan.py / role_protocol.validate.
+
+      NOTE role_protocol.py is FLOORED (glob 3 of 17). If the refusal must live
+      there, that is a P4 amendment, not a body edit — say so rather than
+      attempting it, and put whatever you can in the unfloored layer.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+    role: bodies
+    status: Done
+    blockedBy: [DF-3-2]
+    started_at: '2026-08-14T08:19:16-07:00'
+    dispatcher_run_id: 2026-08-14T14-58-45Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-14T14-58-45Z-tasks/DF-3-3/summary.md
+
+    branch: feat/DF-3-3-bodies-validate-refuses-the-mixed
+    cost_usd: 9.585528
+    completed_at: '2026-08-14T08:47:07-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    mechanical_verification: passed
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "2 changed path(s) checked against the deny_globs rule for 'bodies' and against the 17-glob floor; signatures: checked"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=1 (0C/1H)
+    panel_blocking_findings: 1
+    panel_verdict_claude: APPROVE
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: APPROVE
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: 06fc4ad8
+    input_tokens: 52
+    output_tokens: 24884
+    cache_read_input_tokens: 2077908
+    cache_creation_input_tokens: 82845
+    duration_ms: 728251
+    num_turns: 34
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.232 (Claude Code)
+  - key: DF-3-4
+    summary: adjudicate — land any floored half of DF-3-3 and rule its disputes
+    description: |
+      DF-3-3 is expected to escalate: the refusal may need to live in
+      role_protocol.py, which no body may edit.
+
+      MEASURED WHILE WRITING THIS WORKLIST: role_protocol.py cannot be named in
+      disputed_paths at all. The gate refuses it — "the file that configures
+      every role's permissions is not an adjudicable artifact: declaring it is
+      how the most privileged role would grant itself the policy". So the
+      floored half is NOT reachable from this task system by any role. Adjudicate
+      what it can here (the seal file), and hand the role_protocol.py half to the
+      operator as a separate commit, exactly as every floored edit in the
+      2026-08 effort was handed over.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+    role: adjudicate
+    disputed_paths:
+      - tests/test_role_protocol_table.py
+    status: Done
+    blockedBy: [DF-3-3]
+    started_at: '2026-08-14T08:47:07-07:00'
+    dispatcher_run_id: 2026-08-14T14-58-45Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-14T14-58-45Z-tasks/DF-3-4/summary.md
+
+  # ---- DF-4  the cp -a clone hazard --------------------------------------
+    branch: feat/DF-3-4-adjudicate-land-any-floored-half
+    cost_usd: 11.667558
+    completed_at: '2026-08-14T09:25:31-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    mechanical_verification: passed
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "1 changed path(s) checked against the allow_only_globs rule for 'adjudicate' and against the 17-glob floor; signatures: not_applicable"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=UNAVAILABLE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=1 (0C/1H)
+    panel_blocking_findings: 1
+    panel_verdict_claude: UNAVAILABLE
+    panel_error_claude: cli timed out after 600s
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: APPROVE
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: c6c3b702
+    input_tokens: 67
+    output_tokens: 37230
+    cache_read_input_tokens: 2810198
+    cache_creation_input_tokens: 96743
+    duration_ms: 657126
+    num_turns: 48
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.232 (Claude Code)
+  - key: DF-4-1
+    summary: scaffold — a scratch clone of a worktree must not reach the real repo
+    description: |
+      MEASURED, three separate agents this session, most recently a
+      `git revert --no-commit` probe that MOVED THE REAL INDEX.
+
+      Cause: `cp -a` of a LINKED WORKTREE copies `.git` as a FILE containing a
+      gitdir pointer, so any git command inside the copy operates on the real
+      repository.
+
+      Every brief in this effort already says "remove the .git FILE first" and it
+      kept happening. The durable fix is a helper, not another sentence.
+
+      Contract must answer: what a scratch clone guarantees; how it fails when it
+      cannot make that guarantee (a named state, never a silent copy); and
+      whether it also handles the two adjacent hazards measured this session —
+      `git checkout <tree> -- .` with --work-tree pointed elsewhere writing to
+      the wrong index, and CPython keying bytecode on (mtime_seconds, size) so a
+      same-size mutation restored within one second reports as covered when it is
+      not.
+
+      ## Unblock note (human)
+      (cleared from Blocked: role_diff_loop_violation: 1 forbidden path(s) and 0 changed scaffolded signature(s))
+      The role gate refused your branch: you wrote tests/test_scratch_clone.py. SCAFFOLD may not create or edit anything under tests/ — that is P2's file, and a scaffold author who writes the seals it will be judged by re-creates the circular oracle that produced 24 vacuous seals in this project. Write the contract and the stubs in src/ only; every function raises NotImplementedError with a message naming what is missing. Mark every silence in the design with a CHOICE comment giving the alternative you rejected and why. The seals are DF-4-2's job and a different author writes them. Note also: your first round PASSED the gate and the panel's CHANGES_REQUESTED is what led the second round to add tests — if the panel asks for tests again, that is a request you must refuse and record, not satisfy.
+
+      ## Unblock note (human)
+      (cleared from Blocked: role_diff_loop_violation: 1 forbidden path(s) and 0 changed scaffolded signature(s))
+      ADJUDICATION 2 (operator). The previous block was the DISPATCHER's defect, not
+      yours. Recorded as D-54 and now fixed in 417d4ac.
+
+      What happened: the gate's base was the tip of your FIRST attempt, which
+      contained tests/test_scratch_clone.py. So when you did exactly what the last
+      note asked — removed it — the deletion counted as touching a forbidden path.
+      There was no branch state you could have reached that the gate would call
+      clean. You were right; the tool was wrong.
+
+      The gate now judges an adjudicated retry from the base your first attempt
+      started at (6293f42). Verified against your actual branch: same tree, same
+      role spec, checked_clean / proceed.
+
+      YOUR SCAFFOLD IS COMPLETE AND ACCEPTED. src/claude_dispatcher/scratch_clone.py
+      holds the contract, 11 named Refusal states, the implemented tables and
+      scrubbed_git_env, five NotImplementedError stubs, and 11 CHOICE markers.
+
+      This retry exists only to let the gate record what is already true. Do NOT
+      redesign, extend, or "improve" the scaffold. Verify it still imports and that
+      the five stubs still raise, then stop and report. If you find a genuine defect,
+      report it in the summary rather than fixing it — a change here re-opens a
+      review round on work that has already passed.
+
+      The standing bar remains: SCAFFOLD may not create or modify anything under
+      tests/. Those seals are DF-4-2's deliverable, by a different author. If a panel
+      asks you for tests, that is a request to refuse and record, not satisfy.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+    role: scaffold
+    status: Done
+
+    started_at: '2026-08-13T09:56:10-07:00'
+    dispatcher_run_id: 2026-08-13T16-56-09Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-13T16-56-09Z-tasks/DF-4-1/summary.md
+    branch: feat/DF-4-1-scaffold-a-scratch-clone-of
+    cost_usd: 19.005717999999998
+    effort: high
+    completed_at: '2026-08-13T10:05:17-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    input_tokens: 11
+    output_tokens: 3346
+    cache_read_input_tokens: 203099
+    cache_creation_input_tokens: 24050
+    duration_ms: 51232
+    num_turns: 8
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.231 (Claude Code)
+    unblocked_at: '2026-08-13T16:55:58+00:00'
+    mechanical_verification: passed
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "1 changed path(s) checked against the deny_globs rule for 'scaffold' and against the 17-glob floor; signatures: not_applicable"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=1 (0C/1H)
+    panel_blocking_findings: 1
+    panel_verdict_claude: APPROVE
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: APPROVE
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: 0648534f
+  - key: DF-4-2
+    summary: seals — the helper refuses rather than producing a dangerous clone
+    description: |
+      Seal that a clone of a linked worktree cannot reach the source repository.
+
+      The row that matters must FAIL against a naive `cp -a`. Build the case
+      where a git command inside the copy would mutate the original, and prove
+      the helper prevents it — not that the helper was called.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+    role: seals
+    status: Done
+    blockedBy: [DF-4-1]
+    started_at: '2026-08-13T10:36:37-07:00'
+    dispatcher_run_id: 2026-08-13T17-36-36Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-13T17-36-36Z-tasks/DF-4-2/summary.md
+
+    branch: feat/DF-4-2-seals-the-helper-refuses-rather
+    cost_usd: 9.638736000000002
+    completed_at: '2026-08-13T11:09:16-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    mechanical_verification: passed
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "1 changed path(s) checked against the allow_only_globs rule for 'seals' and against the 17-glob floor; signatures: not_applicable"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=4 (0C/4H)
+    panel_blocking_findings: 4
+    panel_verdict_claude: APPROVE
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: APPROVE
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: c5ef25b9
+    input_tokens: 52
+    output_tokens: 68617
+    cache_read_input_tokens: 2720681
+    cache_creation_input_tokens: 127692
+    duration_ms: 1375788
+    num_turns: 34
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.231 (Claude Code)
+  - key: DF-4-3
+    summary: bodies — implement the scratch-clone helper
+    description: |
+      Turn DF-4-2's rows green. Keep it small: this is a tool the protocol's own
+      agents use, so its failure mode must be loud and its success must be
+      checkable without reading it.
+
+      ## Unblock note (human)
+      (cleared from Blocked: role_diff_loop_undetermined: git reported no changed paths for 8fe9375ff868ee7fc92b1944a65e8535138f7600...feat/DF-4-3-bodies-implement-the-scratch-clone; a role task that changed nothing has not done its 'bodies' phase, and 'did nothing' must not look like 'succeeded')
+      ADJUDICATION (operator). Two separate things happened. Read both.
+
+      1. THE BLOCK WAS THE DISPATCHER'S DEFECT (D-59). You completed this task and
+         committed beb9608. The run was stopped for an unrelated reason, your row was
+         reset, your branch kept your work, and on re-dispatch the gate's base became
+         your own completed tip — so the diff was empty and it read "a role task that
+         changed nothing has not done its phase". The base is now the merge-base your
+         work sits on (c5ef25b9). Verified: `git diff --name-status c5ef25b9...HEAD`
+         reports exactly `M src/claude_dispatcher/scratch_clone.py`.
+
+      2. YOUR SECOND COMMIT WAS REMOVED FROM THIS BRANCH, AND THE WORK WAS KEPT.
+         After your body landed, the mechanical gate went red and the dispatcher
+         spawned a fix-the-tests retry, which committed 8fe9375 touching
+         `tests/fixtures/fake_claude.py` and `pyproject.toml`. BODIES may not write
+         `tests/**`. That retry runs AFTER the role gate and is judged by nothing, so
+         nothing stopped it — a known hole (D-57), which your run is the first
+         measurement of.
+
+         THE DIAGNOSIS IN THAT COMMIT WAS CORRECT AND VALUABLE, so it was NOT
+         reverted. It is landed as operator commit fe9511b, attributed to that agent:
+           * sentinels keyed by cwd hash alone resurrect across a wiped temp root —
+             now keyed by cwd + inode. Measured: old fixture fails reproducibly after
+             `rm -rf /tmp/pytest-of-andrew`, new fixture passes 3/3.
+           * tmp_path_retention_count = 1, because ~50k files/run exhausts tmpfs
+             inodes — the `OSError: could not create numbered dir` you hit.
+         That work root-caused two problems this project had only characterised.
+
+         Your branch is now beb9608 exactly: one commit, one file, body-only. Prior
+         tip 8fe9375 is recoverable from the reflog if anything was missed.
+
+      YOUR BODY IS COMPLETE AND ACCEPTED. Verify the eight sealed rows still
+      self-retire against your implementation, then stop and report. Do not re-add
+      the fixture changes — they are already on the base you will be judged against.
+      If the suite is red for a reason you cannot fix WITHOUT touching tests/, that
+      is a finding to report, not to fix.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=APPROVE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=4 (0C/4H))
+      ADJUDICATION (operator). This block is CORRECT and the findings are real. Fix
+      them. This is not a defect in the dispatcher and there is nothing to refuse.
+
+      The panel blocked on CORROBORATION: codex and grok independently raised HIGH
+      findings (claude approved; gemini is dead for an account-tier reason and seats
+      nothing). Two families agreeing is the bar, and it was met.
+
+      THE FOUR THAT MATTER MOST, in the order I would fix them:
+
+      1. `assert_isolated` (:800) ACCEPTS THE REAL REPOSITORY. It resolves
+         `clone_path` and treats the resolved target as its trust boundary without
+         ever proving the path IS a scratch clone. A symlink to the real repo — and
+         the real main worktree passed directly — satisfies the `.git`, `commondir`,
+         alternates, symlink and `rev-parse` checks. The function reports success and
+         subsequent writes reach the real repository. This is the precise hazard the
+         whole unit exists to refuse, so treat it as the unit's core defect, not one
+         finding among four.
+
+      2. FAIL-OPEN SCANNING (:645). `Path.rglob()` suppresses filesystem-scan errors,
+         and `os.walk()` at :542 and :765 has no `onerror` handler, so both silently
+         skip inaccessible subtrees. Severing can miss an inherited nested `.git`,
+         both survivor checks can miss it again, and `assert_isolated()` still
+         returns success. A scan that cannot see is not a scan that found nothing —
+         name the unreadable subtree and refuse.
+
+      3. `resolve(strict=False)` (:663). The docstring claims every unresolvable
+         symlink is rejected. It is not: a dangling symlink whose UNRESOLVED
+         destination is lexically inside the clone is accepted, and a symlink loop
+         can present as an unresolved path rather than raising. Either make the claim
+         true or change the claim — a false safety-direction claim is worse than a
+         missing one.
+
+      4. `_git_run` (:550, :682) escapes the guarantee. No timeout, so it can hang
+         indefinitely; `OSError` when git cannot start, and `UnicodeDecodeError` from
+         `text=True` when git writes non-UTF8 (a localized git, a sabotaged PATH, a
+         timeout mid-garbage) both escape as raw exceptions. `make_scratch_clone`
+         catches only `ScratchCloneError`, so these skip `_refuse`, leave the
+         destination behind, and contradict both the cleanup guarantee and the CLI's
+         stated contract.
+
+      ALSO RAISED, fix or answer explicitly: the `_refuse` race (:672) — two callers
+      can both see an absent destination and the second can recursively delete the
+      first's; and `.GIT` case-variance (:687) — git honours it on case-insensitive
+      filesystems and the sever/verify walk does not.
+
+      BOUNDARIES — read these before you start:
+
+        * You hold `role: bodies`. You may NOT create or modify anything under
+          `tests/**`. Your seals are DF-4-2's and they are already committed.
+        * If a fix cannot be demonstrated without new or changed test infrastructure,
+          REPORT THAT IN YOUR SUMMARY AS A DISPUTE, naming the file and what it needs.
+          Do not write it. Your previous session's fix-the-tests retry edited
+          `tests/fixtures/fake_claude.py`; that diagnosis was correct and valuable and
+          it has been landed separately as operator commit fe9511b — but it was a role
+          violation reached through an ungated path, and it must not recur.
+        * Your branch was reset to beb9608 for that reason. It is one commit, one
+          file, body-only. Prior tip 8fe9375 is in the reflog if you need to consult it.
+        * The suite already carries the fixture fix and `tmp_path_retention_count`
+          from that commit, so the tmpfs-inode and stale-sentinel failures you hit
+          are gone. If the suite is red for a reason you cannot fix WITHOUT touching
+          tests/, that is a finding to report, not to fix.
+
+      ## Unblock note (human)
+      (cleared from Blocked: )
+      ADJUDICATION (operator). You were not blocked. Your previous session ended
+      mid-work and your summary's `Status: Blocked` — written as a placeholder while
+      the suite was still running — was read as a verdict. That is the dispatcher's
+      defect (D-63, second occurrence), not yours.
+
+      STATE, measured, so you do not redo work:
+        * COMMITTED as 338eb6e: "fail closed on scan errors, dangling links, and
+          unstartable git" — your answers to the panel's findings 1/2/3/4.
+        * UNCOMMITTED, still on disk: further changes to
+          `src/claude_dispatcher/scratch_clone.py` (the `_refuse` race and the
+          `.GIT` case-variance work, by your own summary).
+        * `tests/test_scratch_clone.py`: 10 passed at the point you stopped.
+
+      WHAT TO DO:
+        1. Read the uncommitted diff first (`git diff`). It is YOUR work. Verify it,
+           finish it, COMMIT it. Do not start over.
+        2. Run the full suite to completion and REPORT THE RESULT. Do not leave it
+           "in progress" — a summary that says in-progress under a terminal status
+           is how this task stalled twice.
+        3. Set `Status: Done` only when the suite has actually finished and you have
+           its numbers. If you must stop early, write a REASON — "Blocked" with no
+           reason gives the human nothing to act on.
+
+      THE FOUR PANEL FINDINGS, unchanged, so you can check your own work against
+      them: (1) `assert_isolated` accepted the real repository — a symlink to it, or
+      the real main worktree passed directly, satisfied every check; (2) fail-open
+      scanning — `Path.rglob()` and `os.walk()` without `onerror` silently skip
+      unreadable subtrees, so a nested `.git` survives severing AND both survivor
+      checks; (3) `resolve(strict=False)` accepted a dangling symlink whose
+      unresolved destination is lexically inside the clone, contradicting the
+      docstring; (4) `_git_run` had no timeout and let `OSError` /
+      `UnicodeDecodeError` escape, skipping `_refuse` cleanup.
+
+      BOUNDARIES, unchanged: you hold `role: bodies`. You may NOT create or modify
+      anything under `tests/**`. If a fix cannot be demonstrated without new test
+      infrastructure, report it as a DISPUTE in your summary naming the file and what
+      it needs — do not write it.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=UNAVAILABLE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=3 (0C/3H))
+      ADJUDICATION (operator). The block is CORRECT — fix these. Your round-1 work
+      was accepted: gate clean, mechanical passed, verifier VERIFIED, and the four
+      findings you answered are gone from the panel's output.
+
+      READ THIS FIRST — ONE OF THE THREE SAYS YOUR FIX WENT TOO FAR:
+
+        * grok, :765 — step 3b and `assert_isolated` now treat EVERY unresolvable
+          symlink (dangling target OR loop) as LINK_ESCAPES_CLONE / ISOLATION_
+          UNVERIFIED, and then DELETE the claimed destination. The helper copies the
+          on-disk worktree, not `git ls-files`, and real worktrees legitimately
+          contain dangling links. So a correct clone of a normal repository is now
+          refused and destroyed. Round 1 asked you to stop accepting a dangling link
+          whose unresolved target is lexically inside the clone; it did not ask you
+          to refuse every unresolvable link. Narrow it: judge where the link POINTS,
+          not whether it resolves.
+
+      THE OTHER TWO ARE THE SAME DEFECT CLASS AS ROUND 1 — a check that proves less
+      than it claims:
+
+        * codex, :713 — source validation treats the mere EXISTENCE of a `.git`
+          entry as proof that `source` is a worktree. An empty directory, a garbage
+          file, or a dangling symlink named `.git` passes, and `make_scratch_clone`
+          returns a successful receipt for an arbitrary directory.
+        * codex, :947 — `assert_isolated` does not establish the "fresh quarantine"
+          shape it claims. It permits arbitrary local configuration and metadata: an
+          index, pseudorefs, includes, aliases, `core.hooksPath`, `core.fsmonitor`.
+          An otherwise-empty real repository carrying those satisfies it.
+
+      STANDING BOUNDARIES, unchanged: you hold `role: bodies` and may NOT write
+      `tests/**`. If a fix cannot be demonstrated without new test infrastructure,
+      report it as a DISPUTE naming the file and what it needs — do not write it.
+
+      NEW, AND IT MAY HELP YOU: `docs/rulings/` is now writable by every role
+      (`role_protocol.RULINGS_GLOB`). If you decide something worth recording —
+      "I narrowed the symlink rule to X because Y" — put it in
+      `docs/rulings/DF-4.md`. That is a documentation record; no gate reads it.
+
+      ONE THING TO WEIGH AND REPORT ON RATHER THAN SILENTLY ABSORB: this is round 2,
+      and each round has found deeper defects in the same guarantee. If you judge
+      that the isolation contract as specified cannot be met by this implementation
+      shape — rather than by more patches — say so plainly in your summary. That is a
+      finding worth more than another round.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+    role: bodies
+    status: Done
+    blockedBy: [DF-4-2]
+    started_at: '2026-08-14T15:11:19-07:00'
+    dispatcher_run_id: 2026-08-14T19-52-18Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-14T19-52-18Z-tasks/DF-4-3/summary.md
+
+    branch: feat/DF-4-3-bodies-implement-the-scratch-clone
+    cost_usd: 43.061762
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    input_tokens: 61
+    output_tokens: 56753
+    cache_read_input_tokens: 3428882
+    cache_creation_input_tokens: 124261
+    duration_ms: 1167527
+    num_turns: 47
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.232 (Claude Code)
+    unblocked_at: '2026-08-14T21:32:01+00:00'
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=1 (0C/1H)
+    panel_blocking_findings: 1
+    panel_verdict_claude: APPROVE
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: CHANGES_REQUESTED
+    completed_at: '2026-08-14T15:43:33-07:00'
+    effort: high
+    panel_error_claude: cli timed out after 600s
+    mechanical_verification: passed
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "2 changed path(s) checked against the deny_globs rule for 'bodies' and against the 17-glob floor; signatures: unchecked_unsupported_language; 1 of the 2 changed path(s) are in a language this gate has no comparator for, so their signatures were compared by nothing and are not covered by this pass — unread: docs/rulings/DF-4.md"
+    verified: true
+    verification_iterations: 0
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: c95fbf92
+  - key: DF-4-4
+    summary: adjudicate — rule DF-4-3's disputes
+    description: |
+      Rule any dispute, and decide whether the helper becomes mandatory in role
+      briefs or stays advisory.
+    type: Task
+    estimate: 30m
+    labels: [size:XS, area:dispatcher]
+    agent: claude
+    role: adjudicate
+    disputed_paths:
+      - roles/coder.md
+    status: Done
+    blockedBy: [DF-4-3]
+    started_at: '2026-08-14T16:52:17-07:00'
+    dispatcher_run_id: 2026-08-14T23-52-16Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-14T23-52-16Z-tasks/DF-4-4/summary.md
+
+  # ---- DF-5  the financial-paths fallback is a hand-maintained copy -------
+    branch: feat/DF-4-4-adjudicate-rule-df-4-3
+    cost_usd: 7.405121
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.233 (Claude Code)
+    completed_at: '2026-08-14T17:21:28-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    mechanical_verification: passed
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "2 changed path(s) checked against the allow_only_globs rule for 'adjudicate' and against the 17-glob floor; signatures: not_applicable"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=UNAVAILABLE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=1 (0C/1H)
+    panel_blocking_findings: 1
+    panel_verdict_claude: UNAVAILABLE
+    panel_error_claude: cli timed out after 600s
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: APPROVE
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: 29f2e606
+    input_tokens: 46
+    output_tokens: 21134
+    cache_read_input_tokens: 1545399
+    cache_creation_input_tokens: 74958
+    duration_ms: 344514
+    num_turns: 31
+    model: claude-fable-5
+  - key: DF-5-1
+    summary: scaffold — the money-path fallback must not be a second hand-list
+    description: |
+      FOUND BY THE DRY RUN OF THIS VERY WORKLIST, before any task ran.
+
+      `cli.py`'s FINANCIAL_PATHS default is a hand-maintained copy of
+      evenplay-mono's money table. Measured: six patterns that PR #1387 added to
+      close the wallet-calling-layer gap are ABSENT from it —
+      bet_service, grpc_xwallet, adapter/wallet, playerfunds, liability,
+      process_shot.
+
+      This has happened before. Commit 0a457ff is titled "fix(pr-raise): sync
+      the financial-paths fallback; it drifted within a day". Syncing it again
+      buys another day.
+
+      The class is already named in this repository: an earlier hand-list
+      omitted `recheck_min_severity`, the safety floor, and an emitter built
+      from it would have silently skipped every MEDIUM finding. The standing
+      answer there was to DERIVE the list from the consumers' ASTs and fail hard
+      when a consumer cannot be read — "a generator that degrades when it cannot
+      see a consumer is the hand-list bug with an AST in front of it".
+
+      Contract must answer: where the authoritative money table lives when the
+      target repo is not checked out; what the fallback is FOR, given that
+      `.agent/risk-paths.json` is now tracked in evenplay-mono by PR #1387; and
+      whether the honest answer is a derived list, a fail-closed refusal, or a
+      drift detector — a hand-list with a test that catches drift is a third
+      option and may be the right one.
+
+      Say plainly whether the fallback should exist at all.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+    role: scaffold
+    status: Done
+
+    started_at: '2026-08-14T09:27:26-07:00'
+    dispatcher_run_id: 2026-08-14T14-58-45Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-14T14-58-45Z-tasks/DF-5-1/summary.md
+    branch: feat/DF-5-1-scaffold-the-money-path-fallback
+    cost_usd: 7.792773999999998
+    completed_at: '2026-08-14T10:08:06-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    mechanical_verification: passed
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "2 changed path(s) checked against the deny_globs rule for 'scaffold' and against the 17-glob floor; signatures: not_applicable"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=3 (0C/3H)
+    panel_blocking_findings: 3
+    panel_verdict_claude: APPROVE
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: APPROVE
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: fc71b0e0
+    input_tokens: 84
+    output_tokens: 41178
+    cache_read_input_tokens: 3301112
+    cache_creation_input_tokens: 90639
+    duration_ms: 2016032
+    num_turns: 60
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.232 (Claude Code)
+  - key: DF-5-2
+    summary: seals — a fallback that has drifted from the table is red
+    description: |
+      Seal DF-5-1's contract. The row that matters fails today: the shipped
+      fallback is missing six patterns the tracked table carries.
+
+      Non-vacuity: do NOT seal "the list contains N entries" or "the list equals
+      this literal" — both are transcriptions that go green the moment someone
+      pastes a new literal, which is exactly how the previous sync lasted a day.
+      Seal the RELATIONSHIP between the fallback and the table.
+
+      ## Unblock note (human)
+      (cleared from Blocked: )
+      ADJUDICATION (operator). Your previous session ended mid-work. Nothing you did
+      was lost, and nothing you did was wrong.
+
+      STATE, measured — read this before you start:
+        * `tests/test_money_net.py` EXISTS in your worktree with 13 test functions,
+          but it is UNTRACKED. Nothing was ever committed, so `git log` on your
+          branch shows no work at all.
+        * Your summary said `Status: Blocked` with `## Tests: (suite run in
+          progress)` and no reason. That is what stopped the task — the dispatcher
+          carries a self-declared status through verbatim, and every gate is
+          short-circuited by it. Recorded as D-63; the missing reason is the
+          dispatcher's defect, not yours.
+
+      WHAT TO DO:
+        1. Read `tests/test_money_net.py` as it stands. It is YOUR work from the
+           previous session — verify it, do not restart from scratch.
+        2. Finish it if incomplete, then COMMIT it. An uncommitted file is invisible
+           to every gate and to the merge; the committed-tree gate treats any
+           uncommitted worktree file as a verification failure.
+        3. Report the suite result in your summary rather than leaving it "in
+           progress". If you must stop early, say WHY in the summary — a Blocked with
+           no reason gives the human nothing to adjudicate.
+
+      STANDING RULES, unchanged:
+        * SEALS may write test files and `docs/**` only.
+        * The mechanical gate does NOT judge your suite state — it abstains for this
+          role. A red suite is expected and is not something to fix. You will not be
+          asked to make it green.
+        * The strict-xfail convention your summary cites (conditioned on the defect
+          it outlives, self-retiring when DF-5-3 lands) is the right shape and two
+          other seals authors in this wave used it. Keep it.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+    role: seals
+    status: Done
+    blockedBy: [DF-5-1]
+    started_at: '2026-08-14T10:22:25-07:00'
+    dispatcher_run_id: 2026-08-14T14-58-45Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-14T14-58-45Z-tasks/DF-5-2/summary.md
+
+    branch: feat/DF-5-2-seals-a-fallback-that-has
+    cost_usd: 10.690046
+    completed_at: '2026-08-14T10:38:43-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    input_tokens: 28
+    output_tokens: 27758
+    cache_read_input_tokens: 891223
+    cache_creation_input_tokens: 64518
+    duration_ms: 377867
+    num_turns: 18
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.232 (Claude Code)
+    unblocked_at: '2026-08-14T17:18:32+00:00'
+    effort: high
+    mechanical_verification: skipped
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "1 changed path(s) checked against the allow_only_globs rule for 'seals' and against the 17-glob floor; signatures: not_applicable"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=UNAVAILABLE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=1 (0C/1H)
+    panel_blocking_findings: 1
+    panel_verdict_claude: UNAVAILABLE
+    panel_error_claude: 'cli invocation raised: claude exit=1: '
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: APPROVE
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: bf4e249b
+  - key: DF-5-3
+    summary: bodies — close the drift the way DF-5-1 ruled
+    description: |
+      Turn DF-5-2's rows green. If the ruling was "derive", derive it; if it was
+      "refuse", refuse; if it was "detect", make the detector fail loudly and
+      name what drifted.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:dispatcher]
+    agent: claude
+    role: bodies
+    status: Done
+    blockedBy: [DF-5-2]
+    started_at: '2026-08-14T12:52:18-07:00'
+    dispatcher_run_id: 2026-08-14T19-52-18Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-14T19-52-18Z-tasks/DF-5-3/summary.md
+
+    branch: feat/DF-5-3-bodies-close-the-drift-the
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.232 (Claude Code)
+    cost_usd: 9.724488000000001
+    completed_at: '2026-08-14T13:26:20-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "3 changed path(s) checked against the deny_globs rule for 'bodies' and against the 17-glob floor; signatures: checked"
+    input_tokens: 104
+    output_tokens: 38963
+    cache_read_input_tokens: 5425598
+    cache_creation_input_tokens: 117485
+    duration_ms: 2038797
+    num_turns: 65
+    model: claude-fable-5
+    mechanical_verification: passed
+  - key: DF-5-4
+    summary: adjudicate — rule DF-5-3's disputes
+    description: |
+      Rule any dispute, and in particular whether a fallback that cannot see the
+      target repository should ship a list at all or should refuse.
+    type: Task
+    estimate: 30m
+    labels: [size:XS, area:dispatcher]
+    agent: claude
+    role: adjudicate
+    disputed_paths:
+      - tests/test_default_financial_paths.py
+    status: Done
+    blockedBy: [DF-5-3]
+    started_at: '2026-08-14T17:08:54-07:00'
+    dispatcher_run_id: 2026-08-14T23-52-16Z-tasks
+    summary_path: /home/andrew/Project/wt-d1/docs/runs/2026-08-14T23-52-16Z-tasks/DF-5-4/summary.md
+    branch: feat/DF-5-4-adjudicate-rule-df-5-3
+    cost_usd: 3.967609499999999
+    completed_at: '2026-08-14T17:31:30-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    mechanical_verification: passed
+    role_diff_loop: checked_clean
+    role_diff_loop_detail: "1 changed path(s) checked against the allow_only_globs rule for 'adjudicate' and against the 17-glob floor; signatures: not_applicable"
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE
+    panel_blocking_findings: 0
+    panel_verdict_claude: APPROVE
+    panel_verdict_gemini: UNAVAILABLE
+    panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: APPROVE
+    auto_integrate_status: integrated
+    auto_integrate_merge_sha: 4ed22bd5
+    input_tokens: 56
+    output_tokens: 16438
+    cache_read_input_tokens: 1667071
+    cache_creation_input_tokens: 64800
+    duration_ms: 1070929
+    num_turns: 31
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.233 (Claude Code)

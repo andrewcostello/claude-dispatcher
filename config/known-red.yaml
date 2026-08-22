@@ -1,0 +1,31 @@
+# Known-red register (D-68): rows a SEALS task committed RED by design, which no
+# other task can green and none should be failed by.
+#
+# Behaviour: rows are hidden from every task's gate EXCEPT `body_task`'s (greening
+# them is its deliverable), and the entry retires automatically once `body_task`
+# is Done. A row that no longer exists deselects nothing, so a stale entry leaves
+# the row running and cannot hide a regression.
+#
+# To add one:
+#   1. Prove it is red, by exit code only:
+#        PYTHONPATH=src pytest 'tests/test_x.py::test_y' -q     # must be non-zero
+#   2. Add the entry. `rows` are node ids exactly as pytest prints them —
+#      parametrised ids keep their brackets and spaces, unquoted and unescaped.
+#   3. Commit it: the point of a tracked file is a reviewable, attributed diff.
+#
+# No dispatched role may write this file — it is in `role_protocol.FLOOR_GLOBS`.
+# Operator commits are not task branches, so a human can. An agent that needs an
+# entry must report it.
+#
+# `.dispatcher.yaml` must carry `test_exclusion:` and read
+# $DISPATCHER_KNOWN_RED_FILE, or active entries BLOCK with a named fault.
+
+entries: []
+
+# entries:
+#   - rows:
+#       - tests/test_ts_comparator.py::test_declaration_merging_is_a_change[a plain property]
+#     seals_task: W2-2-2
+#     body_task: W2-2-3
+#     reason: P2 seals for the whole-diff comparison; red until W2-2-3 lands.
+#     registered_at_sha: 0db7fb2

@@ -1,7 +1,9 @@
 """`dispatcher run` — load a tasks YAML, plan, and dispatch.
 
 Modes:
-  dry-run    Print the dispatch plan and exit. No worktrees, no subprocesses.
+  dry-run    Print the dispatch plan and exit. No worktrees, no task spawns;
+             the only subprocess is the git object read that derives the
+             money net (money_net.derive_money_net).
   supervised Run tasks; pause for the human on each gate trip. (Step 6.)
   unattended Run tasks; on any gate trip, mark Blocked and move on. (Step 6.)
 
@@ -15,6 +17,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -22,7 +25,9 @@ from typing import Any
 from . import plan as plan_mod
 from . import yaml_io
 from . import dispatch_plan
+from . import money_net as money_net_mod
 from . import orchestrator
+from . import worktree as wt_mod
 
 
 def execute(args: argparse.Namespace) -> int:
@@ -83,6 +88,12 @@ def _dry_run(
     selected_keys = {t.key for t in selected}
     runnable_keys = {t.key for t in runnable_first}
 
+    try:
+        net = resolve_money_net(args, tasks_path, base_branch)
+    except ValueError as e:
+        print(f"error: --financial-paths: {e}", file=sys.stderr)
+        return 2
+
     print(dispatch_plan.render(
         tasks_path=tasks_path,
         run_id=args.run_id or _default_run_id(tasks_path),
@@ -92,7 +103,8 @@ def _dry_run(
         reviewer_count=args.reviewer_count,
         skip_design=args.skip_design,
         skip_security_linter=args.skip_security_linter,
-        financial_paths=args.financial_paths,
+        financial_paths=net.env_value(),
+        financial_paths_plan=net.plan_value(),
         filter_spec=args.filter_spec,
         only_keys=only_or_none(args.only_keys),
         all_tasks=all_tasks,
@@ -103,6 +115,31 @@ def _dry_run(
         base_branch=base_branch,
     ))
     return 0
+
+
+def resolve_money_net(
+    args: argparse.Namespace, tasks_path: Path, base_branch: str
+) -> money_net_mod.MoneyNet:
+    """Resolve the run's money net: operator override when given, else derive
+    from the tracked table at the base ref, else a fail-closed named absence.
+
+    Raises :class:`ValueError` on a malformed ``--financial-paths`` override
+    (refused loudly at the CLI boundary, never folded away).
+    """
+    override = getattr(args, "financial_paths", None)
+    if override is not None:
+        return money_net_mod.money_net_from_override(override)
+    try:
+        repo_root = wt_mod.detect_repo_root(tasks_path.parent)
+    except (subprocess.CalledProcessError, OSError):
+        return money_net_mod.MoneyNet(
+            state=money_net_mod.MoneyNetState.ABSENT,
+            detail=(
+                f"{tasks_path.parent} is not inside a git repository — no "
+                f"tracked {money_net_mod.TABLE_RELPATH} to derive from"
+            ),
+        )
+    return money_net_mod.derive_money_net(repo_root, base_branch)
 
 
 def only_or_none(only_arg: str | None) -> list[str] | None:

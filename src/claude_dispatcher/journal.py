@@ -78,6 +78,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from . import __version__ as _DISPATCHER_VERSION
+from . import prompt_provenance
 
 # The provenance keys every genesis (run_started, seq 0) payload must carry.
 # verify() enforces their presence so the audit chain's anchor is self-describing
@@ -129,6 +130,14 @@ class EventType(str, Enum):
     # skip / malformed-config outcomes. See orchestrator's
     # _verify_mechanical_and_maybe_retry.
     verification_mechanical = "verification_mechanical"
+    # Role-protocol loop gate (unit D8): one event per task, emitted at the
+    # hook inside the cascade loop right after the implementer returns and
+    # before the mechanical gate. Payload: status, decision, the underlying
+    # check_branch verdict (null when no check was made), the two refs, the
+    # violating paths and the detail. Emitted on EVERY outcome including
+    # not_enabled — a run with the gate off says so per task rather than
+    # looking like a run whose every branch was clean. See loop_gate.py.
+    role_diff_loop_gate = "role_diff_loop_gate"
     # Seal-inversion gate (VG-3): for fix-shaped tasks, the new tests must
     # FAIL with the non-test half of the change reverted to base. One event
     # per evaluation (outcome: passed / failed / skipped / error). See
@@ -180,8 +189,14 @@ class EventType(str, Enum):
     #     external:<login>/external for a GitHub approval), risk_level, and the
     #     classifier reasons.
     #   pr_merged — the PR landed via `gh pr merge --merge`. Payload: number,
-    #     merger (dispatcher-agent), approver, target (the feature branch), and
-    #     feature_branch_sha (the feature-branch tip after the merge).
+    #     merger (dispatcher-agent), approver, target (the feature branch),
+    #     and the merged-SHA witness keys (DF-1, merge_record.py): observed →
+    #     merged_sha (origin's merge commit for THIS PR), merged_sha_source
+    #     ("origin_pr_merge_commit"), merged_sha_state ("observed");
+    #     unavailable → merged_sha_state ("unavailable") + merged_sha_detail,
+    #     and NO merged_sha key. The old feature_branch_sha key is RETIRED —
+    #     it recorded a frozen local tip (identical across different PRs
+    #     merged in one run), never the documented post-merge tip.
     #   pr_merge_failed — the merge did not land. Payload: number, kind
     #     ("conflict" for an unmergeable/conflicting PR, else "error"),
     #     needs_rebase (True only for a conflict), and detail. The row stays
@@ -221,16 +236,14 @@ def hash_tree(root: str | os.PathLike[str]) -> str:
     ``root``, in sorted-relative-path order, so the digest is deterministic and
     sensitive to renames as well as content edits. Used for the reviewer-prompts
     provenance field, which is a directory of ``.md`` files.
+
+    Delegates so that this — the digest a genesis RECORDS — and the digest the
+    prompt gate COMPARES are one implementation. A second spelling would drift
+    from this one and make every load read DRIFTED (unit W2-1, constraint 2).
     """
-    root_path = Path(root)
-    digest = hashlib.sha256()
-    for file_path in sorted(p for p in root_path.rglob("*") if p.is_file()):
-        rel = file_path.relative_to(root_path).as_posix()
-        digest.update(rel.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(file_path.read_bytes())
-        digest.update(b"\0")
-    return digest.hexdigest()
+    return prompt_provenance.digest_of_snapshot(
+        prompt_provenance.read_tree_members(root)
+    )
 
 
 def canonical_bytes(event_fields: dict[str, Any]) -> bytes:
