@@ -13,3 +13,14 @@ invent financial-ledger, double-entry, or gambling-compliance requirements
 (money ledgers, mandatory soft-deletes for audit, wagering controls) that do not
 apply to a dog-health app — flag those concerns only where real money or
 auth actually flows.
+
+<!-- COMPLIANCE -->
+Health-data privacy: access household-scoped with no cross-household leakage?
+Health events carry attribution (created_by)? Clinical copy structure/function,
+not diagnostic? FDA disclaimer on supplement surfaces? (Money-ledger/audit
+concerns apply ONLY to billing & auth paths.)
+
+<!-- CRITICAL -->
+health/PII data leaked across households, auth/OTP bypass, billing/subscription
+money error, data corrupted, a diagnostic/medical claim, or other regulatory
+violation

@@ -1598,12 +1598,21 @@ def test_blast_radius_and_prior_render_in_prompt() -> None:
     assert "authored by an LLM agent" in p
 
 
-def test_empty_enrichments_render_placeholders() -> None:
+def test_empty_enrichments_say_NOT_COMPUTED_not_none_found() -> None:
+    """An absent enrichment must not read as a negative RESULT.
+
+    This asserted "(none identified)", which tells a reviewer the sibling
+    surfaces were examined and came back clean. The standalone panel does not
+    compute blast radius at all, so nothing was examined — the same
+    false-confidence shape as an instrument that cannot fail. Changed
+    2026-08-22.
+    """
     p = cfr.build_review_prompt(
         family="codex", ticket_key="T", ticket_summary="s", summary_md="m",
         diff="d", branch="b", base_branch="main",
     )
-    assert "(none identified)" in p
+    assert "not computed for this run" in p
+    assert "(none identified)" not in p
     assert "Blast radius" in p
 
 
@@ -1749,3 +1758,45 @@ def test_unset_domain_infers_rather_than_assuming():
 def test_unknown_domain_fails_loudly_and_lists_what_exists():
     with pytest.raises(FileNotFoundError, match="Available:"):
         cfr._load_prompt("codex", "no-such-domain")
+
+
+def test_domain_supplies_compliance_rubric_and_critical_examples():
+    """Extracting only the domain CONTEXT is not enough.
+
+    The Compliance scoring row and the CRITICAL severity examples were BOTH
+    hardcoded to one product. The Compliance row went further and asserted that
+    "money-ledger/audit concerns apply ONLY to billing & auth paths" — while
+    reviewing a money ledger. A domain fix that left those in place would have
+    changed the preamble and kept the rubric pointed at the wrong product.
+    """
+    wallet = cfr._load_prompt("codex", "walletv2")
+    assert "{DOMAIN_" not in wallet
+    assert "double-spend" in wallet                  # critical examples
+    assert "idempotency key" in wallet               # compliance rubric
+    assert "household-scoped" not in wallet
+    assert "ONLY to billing" not in wallet
+
+
+def test_domain_missing_a_section_fails_loudly(tmp_path, monkeypatch):
+    """A domain file with only context would silently leave the rubric on
+    whatever the template shipped with.
+    """
+    doms = tmp_path / "domains"
+    doms.mkdir()
+    (tmp_path / "codex.md").write_text("x")
+    (tmp_path / "_shared.md").write_text("{DOMAIN_CONTEXT}{DOMAIN_COMPLIANCE}{DOMAIN_CRITICAL}")
+    (doms / "partial.md").write_text("context only, no sections")
+    monkeypatch.setattr(cfr, "_PROMPTS_DIR", tmp_path)
+    with pytest.raises(ValueError, match="COMPLIANCE"):
+        cfr._load_prompt("codex", "partial")
+
+
+def test_uncomputed_blast_radius_does_not_claim_none_were_found():
+    """'(none identified)' told the reviewer the sibling surfaces were checked
+    and clean. They were never examined.
+    """
+    p = cfr.build_review_prompt(
+        family="codex", domain="walletv2", ticket_key="K", ticket_summary="s",
+        summary_md="m", diff="d", branch="b", base_branch="base")
+    assert "not computed for this run" in p
+    assert "(none identified)" not in p

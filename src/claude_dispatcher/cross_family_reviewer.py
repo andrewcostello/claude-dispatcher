@@ -540,9 +540,24 @@ def _load_prompt(family: str, domain: str | None = None) -> str:
             f"domain context missing: {dom_path}. Available: "
             + ", ".join(sorted(p.stem for p in (_PROMPTS_DIR / "domains").glob("*.md")))
         )
-    shared = shared_path.read_text(encoding="utf-8").replace(
-        "{DOMAIN_CONTEXT}", dom_path.read_text(encoding="utf-8").strip()
-    )
+    # The domain file carries THREE sections: the context, the Compliance rubric
+    # row, and the CRITICAL severity examples. All three were hardcoded to one
+    # product, so extracting only the first would have left the scoring rubric
+    # still asserting that "money-ledger concerns apply ONLY to billing paths"
+    # while reviewing a money ledger. Audited 2026-08-22.
+    raw = dom_path.read_text(encoding="utf-8")
+    ctx, _, rest = raw.partition("<!-- COMPLIANCE -->")
+    comp, _, crit = rest.partition("<!-- CRITICAL -->")
+    if not comp.strip() or not crit.strip():
+        raise ValueError(
+            f"{dom_path} must contain <!-- COMPLIANCE --> and <!-- CRITICAL --> "
+            "sections; a domain that supplies only context leaves the scoring "
+            "rubric pointed at whatever product it was written for"
+        )
+    shared = (shared_path.read_text(encoding="utf-8")
+              .replace("{DOMAIN_CONTEXT}", ctx.strip())
+              .replace("{DOMAIN_COMPLIANCE}", " ".join(comp.split()))
+              .replace("{DOMAIN_CRITICAL}", " ".join(crit.split())))
     return f"{fam_path.read_text(encoding='utf-8')}\n\n{shared}"
 
 
@@ -597,8 +612,13 @@ def build_review_prompt(
         diff=diff,
         branch=branch,
         base_branch=base_branch,
-        blast_radius=blast_radius or "(none identified)",
-        implementer_prior=implementer_prior or "(none)",
+        # "(none identified)" asserted that something was CHECKED and came back
+        # empty. Nothing was checked — the standalone panel does not compute
+        # blast radius at all, so a reviewer reading "none identified" was being
+        # told the sibling surfaces are clean when they were never examined.
+        # Same false-confidence shape as an instrument that cannot fail.
+        blast_radius=blast_radius or "(not computed for this run — do NOT read this as 'no sibling surfaces affected')",
+        implementer_prior=implementer_prior or "(not available for this run)",
         risk_context=risk_context or "(classification unavailable — judge the diff on its contents)",
     )
 

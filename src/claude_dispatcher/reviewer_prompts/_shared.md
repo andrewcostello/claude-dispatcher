@@ -32,7 +32,7 @@ Evaluate the change on these 8 dimensions. Each is scored 1–5.
 |-----------|------------------|
 | **Correctness** | Does the logic match the spec? Are edge cases handled AND tested? |
 | **Security** | Is the code free of injection, missing auth, PII leaks, overflow? |
-| **Compliance** | Health-data privacy: access household-scoped with no cross-household leakage? Health events carry attribution (created_by)? Clinical copy structure/function, not diagnostic? FDA disclaimer on supplement surfaces? (Money-ledger/audit concerns apply ONLY to billing & auth paths.) |
+| **Compliance** | {DOMAIN_COMPLIANCE} |
 | **Resilience** | Timeouts on external calls? Context cancellation? Graceful degradation? |
 | **Idempotency** | Safe to replay mutations? Uniqueness constraints? Dedup at DB level? |
 | **Observability** | Structured logs with context? Errors actionable at 3am? Correlation IDs? |
@@ -57,7 +57,7 @@ should be a finding.
 
 **Severity classification for findings:**
 
-- **CRITICAL** — health/PII data leaked across households, auth/OTP bypass, billing/subscription money error, data corrupted, a diagnostic/medical claim, or other regulatory violation. Blocks ship.
+- **CRITICAL** — {DOMAIN_CRITICAL}. Blocks ship.
 - **HIGH** — significant defect (broken edge case, missing required check). Blocks ship.
 - **MEDIUM** — quality issue (suboptimal pattern, missing observability). Does not block.
 - **LOW** — nit, polish, future improvement. Does not block.

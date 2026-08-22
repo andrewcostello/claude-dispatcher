@@ -15,3 +15,16 @@ jurisdictional limit accounting are all IN SCOPE and load-bearing — they are t
 product, not gold-plating. Latency matters: the authorization path targets p99
 under 100ms, so a correctness fix that serialises the hot path is a real
 trade-off and should be called out as one.
+
+<!-- COMPLIANCE -->
+Money: does every mutation carry an idempotency key and an operation class? Is
+every refusal reproducible — rule id, version, and the inputs it was evaluated
+against? Are jurisdictional limits charged to the right regime's counter? Can a
+self-excluded player wager, deposit, or receive a bonus? Is a payout destination
+verified and closed-loop? Are ledger entries and compliance decisions immutable?
+
+<!-- CRITICAL -->
+money created or destroyed, a balance that disagrees with its entries, a
+double-spend through a reservation, a payout to an unverified destination, a
+statutory limit bypassed, a self-excluded player permitted to wager, a compliance
+decision that cannot be reproduced for a regulator, or PII exposure
