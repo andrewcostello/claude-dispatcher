@@ -1713,3 +1713,39 @@ def test_gemini_maps_xhigh_to_high(monkeypatch):
     assert "--effort" in cmd
     assert cmd[cmd.index("--effort") + 1] == "high"
     assert "xhigh" not in cmd
+
+
+def test_domain_context_is_a_parameter_not_hardcoded():
+    """The reviewer's domain description must come from a selectable file.
+
+    Measured under: hardcode a product description into `_shared.md` and every
+    review of every OTHER project inherits it. That is not hypothetical — the
+    template described a dog-health platform and told reviewers NOT to raise
+    "financial-ledger, double-entry, or gambling-compliance requirements", so
+    eleven consecutive panel rounds on a double-entry gambling wallet were judged
+    against the wrong domain, and one reviewer correctly filed the entire design
+    as a CRITICAL domain error.
+    """
+    wallet = cfr._load_prompt("codex", "walletv2")
+    assert "double-entry money ledger" in wallet
+    assert "ForeverIndy" not in wallet
+
+    # The old domain still exists, selectable rather than implicit.
+    indy = cfr._load_prompt("codex", "foreverindy")
+    assert "ForeverIndy" in indy
+    assert "double-entry money ledger" not in indy
+
+
+def test_unset_domain_infers_rather_than_assuming():
+    """No domain named means 'work it out from the repo', never a default
+    product. A wrong assumed domain is worse than an absent one: it produces
+    confidently misdirected findings instead of a request for clarification.
+    """
+    p = cfr._load_prompt("codex", None)
+    assert "Infer the domain from the repository itself" in p
+    assert "ForeverIndy" not in p
+
+
+def test_unknown_domain_fails_loudly_and_lists_what_exists():
+    with pytest.raises(FileNotFoundError, match="Available:"):
+        cfr._load_prompt("codex", "no-such-domain")

@@ -513,15 +513,37 @@ def _strip_label(text: str, labels: tuple[str, ...]) -> str:
 _PROMPTS_DIR = Path(__file__).parent / "reviewer_prompts"
 
 
-def _load_prompt(family: str) -> str:
-    """Concatenate the family-specific preamble and the shared template."""
+def _load_prompt(family: str, domain: str | None = None) -> str:
+    """Concatenate the family preamble, the shared template, and a DOMAIN block.
+
+    The domain used to be hardcoded into `_shared.md`. It described one specific
+    product, and every review of every other project inherited it — including an
+    explicit instruction not to raise "financial-ledger, double-entry, or
+    gambling-compliance requirements". Eleven consecutive panel rounds on a
+    double-entry gambling wallet were reviewed as a dog-health app because of it,
+    and one reviewer correctly filed the entire design as a CRITICAL domain error.
+    Found 2026-08-22.
+
+    `domain` names a file under `reviewer_prompts/domains/`. Unset falls back to
+    `_default.md`, which tells the reviewer to infer the domain from the repo and
+    to report uncertainty rather than assume.
+    """
     fam_path = _PROMPTS_DIR / f"{family}.md"
     shared_path = _PROMPTS_DIR / "_shared.md"
     if not fam_path.exists():
         raise FileNotFoundError(f"reviewer prompt missing: {fam_path}")
     if not shared_path.exists():
         raise FileNotFoundError(f"shared reviewer prompt missing: {shared_path}")
-    return f"{fam_path.read_text(encoding='utf-8')}\n\n{shared_path.read_text(encoding='utf-8')}"
+    dom_path = _PROMPTS_DIR / "domains" / f"{domain or '_default'}.md"
+    if not dom_path.exists():
+        raise FileNotFoundError(
+            f"domain context missing: {dom_path}. Available: "
+            + ", ".join(sorted(p.stem for p in (_PROMPTS_DIR / "domains").glob("*.md")))
+        )
+    shared = shared_path.read_text(encoding="utf-8").replace(
+        "{DOMAIN_CONTEXT}", dom_path.read_text(encoding="utf-8").strip()
+    )
+    return f"{fam_path.read_text(encoding='utf-8')}\n\n{shared}"
 
 
 # Same notice the verifier carries: the diff EXCLUDES generated artifacts
@@ -540,6 +562,7 @@ REVIEW_EXCLUSION_NOTICE = (
 def build_review_prompt(
     *,
     family: str,
+    domain: str | None = None,
     ticket_key: str,
     ticket_summary: str,
     summary_md: str,
@@ -566,7 +589,7 @@ def build_review_prompt(
     carrying hard 5/5 dimension floors. Empty when classification is unavailable.
     """
     diff = REVIEW_EXCLUSION_NOTICE + diff
-    tmpl = _load_prompt(family)
+    tmpl = _load_prompt(family, domain)
     return tmpl.format(
         ticket_key=ticket_key,
         ticket_summary=ticket_summary,
@@ -1352,6 +1375,7 @@ def run_panel(
     blast_radius: str = "",
     implementer_prior: str = "",
     risk_context: str = "",
+    domain: str | None = None,
     reviewers: list[Reviewer] | None = None,
     advisory_reviewers: list[Reviewer] | None = None,
     log: Callable[[str], None] = lambda _m: None,
@@ -1403,6 +1427,7 @@ def run_panel(
     def _review_one(r: Reviewer) -> ReviewerVerdict:
         prompt = build_review_prompt(
             family=r.family,
+            domain=domain,
             ticket_key=ticket_key,
             ticket_summary=ticket_summary,
             summary_md=summary_md,

@@ -61,6 +61,12 @@ def main(argv: list[str] | None = None) -> int:
                    help="Optional one-line ticket summary (rendered in the prompt).")
     p.add_argument("--summary-md", required=True, type=Path,
                    help="Path to the Tasker's summary.md.")
+    p.add_argument("--domain", default=None,
+                   help="Domain context file under reviewer_prompts/domains/ "
+                        "(e.g. 'walletv2'). Unset infers the domain from the "
+                        "repo. This was HARDCODED to one product until "
+                        "2026-08-22, which had every reviewer of every project "
+                        "judging against the wrong domain.")
     p.add_argument("--effort", default="xhigh",
                    choices=("low", "medium", "high", "xhigh"),
                    help="Reasoning effort, PINNED for the panel rather than "
@@ -129,6 +135,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[panel] reviewers: {[r.family for r in reviewers]}", file=sys.stderr)
 
     panel = cfr.run_panel(
+        domain=args.domain,
         ticket_key=args.ticket,
         ticket_summary=args.ticket_summary,
         summary_md=summary_md,
