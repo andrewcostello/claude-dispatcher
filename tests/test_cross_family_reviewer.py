@@ -1800,3 +1800,48 @@ def test_uncomputed_blast_radius_does_not_claim_none_were_found():
         summary_md="m", diff="d", branch="b", base_branch="base")
     assert "not computed for this run" in p
     assert "(none identified)" not in p
+
+
+def test_approve_still_reports_uncorroborated_blocking_findings():
+    """An APPROVE must not discard a dissenting family's findings.
+
+    The corroboration gate decides whether a HIGH BLOCKS. It does not decide
+    whether the finding EXISTS. Measured under: revert to rendering only the
+    verdict line and a round that approved with three blocking HIGHs from one
+    family shows none of them — which happened on 2026-08-22.
+    """
+    reviews = [
+        _approve_verdict("claude"),
+        cfr.ReviewerVerdict(
+            family="codex", verdict=cfr.Verdict.CHANGES_REQUESTED,
+            dimensions={d: 4 for d in cfr.DIMENSION_NAMES} | {"Correctness": 3},
+            findings=[cfr.Finding(
+                severity=cfr.Severity.HIGH, location="a.sql:7",
+                description="deferred constraint costs an aggregate per commit",
+                fix="measure it")],
+        ),
+        cfr.ReviewerVerdict(family="gemini", verdict=cfr.Verdict.UNAVAILABLE,
+                            dimensions={}, findings=[]),
+    ]
+    panel = cfr.aggregate(reviews)
+    assert panel.consensus == "approve"
+    md = cfr.render_findings_markdown(panel)
+    assert "Uncorroborated findings" in md
+    assert "deferred constraint costs an aggregate" in md
+    assert "codex" in md
+
+
+def test_approve_flags_that_corroboration_ran_short_handed():
+    """Corroboration assumes three seats. With one down it becomes unanimity —
+    a lone dissenter can never block a HIGH — and the report must say so rather
+    than presenting the APPROVE as equivalent to a full-panel one.
+    """
+    reviews = [
+        _approve_verdict("claude"),
+        _changes_verdict("codex"),
+        cfr.ReviewerVerdict(family="gemini", verdict=cfr.Verdict.UNAVAILABLE,
+                            dimensions={}, findings=[]),
+    ]
+    md = cfr.render_findings_markdown(cfr.aggregate(reviews))
+    assert "short-handed" in md
+    assert "gemini" in md

@@ -1644,6 +1644,39 @@ def render_findings_markdown(panel: PanelVerdict) -> str:
     """
     if panel.consensus == "approve":
         md = f"## Cross-family panel\n\nVerdict: APPROVE ({panel.summary})\n"
+
+        # An APPROVE used to discard every finding. The corroboration gate
+        # decides whether a HIGH BLOCKS; it does not decide whether the finding
+        # EXISTS. On 2026-08-22 a round approved with three blocking HIGHs from a
+        # dissenting family and the report showed none of them — they were one
+        # `grep` away from being lost entirely.
+        uncorroborated = [
+            (r.family, f)
+            for r in panel.reviewers
+            if r.verdict not in (Verdict.UNAVAILABLE, Verdict.PARSE_FAILED)
+            for f in r.blocking_findings()
+        ]
+        if uncorroborated:
+            md += (
+                "\n### Uncorroborated findings — raised, did NOT block\n\n"
+                "These were flagged by fewer families than the corroboration gate "
+                "requires. They are real observations from a reviewer that read "
+                "the code; the gate only decided they are not ship-stoppers.\n\n"
+            )
+            for fam, f in uncorroborated:
+                md += (f"- **{f.severity.value}** ({fam}) at `{f.location}` — "
+                       f"{f.description}\n")
+
+        # Corroboration assumes three seats. With one down it silently becomes
+        # unanimity: a lone dissenter can never block a HIGH.
+        missing = [r.family for r in panel.reviewers if r.verdict == Verdict.UNAVAILABLE]
+        if missing and uncorroborated:
+            md += (
+                f"\n> **Corroboration ran short-handed.** {', '.join(missing)} did "
+                f"not report, so a HIGH needed agreement from every remaining seat "
+                f"to block. A lone dissent cannot corroborate with itself — treat "
+                f"this APPROVE as weaker than a full-panel one.\n"
+            )
         if panel.advisory:
             md += "\n" + _render_advisory_appendix(panel)
         return md
