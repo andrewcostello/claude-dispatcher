@@ -36,7 +36,36 @@ tasks:
     labels: [size:S, area:dispatcher]
     agent: claude
 
-    status: To Do
+    status: Done
+    started_at: '2026-08-25T13:36:12-07:00'
+    dispatcher_run_id: 2026-08-25T20-36-12Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-25T20-36-12Z-tasks/EPA-1/summary.md
+    branch: feat/EPA-1-implement-endpoint-agents-resolve-endpoint
+    cost_usd: 1.592141
+    completed_at: '2026-08-25T13:42:44-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    mechanical_verification: passed
+    role_diff_loop: not_enabled
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, codex=APPROVE, grok=APPROVE
+    panel_blocking_findings: 0
+    panel_verdict_claude: APPROVE
+    panel_verdict_codex: APPROVE
+    panel_verdict_grok: APPROVE
+    input_tokens: 1109
+    output_tokens: 3635
+    cache_read_input_tokens: 256080
+    cache_creation_input_tokens: 28093
+    duration_ms: 47710
+    num_turns: 7
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.241 (Claude Code)
   - key: EPA-2
     summary: "implement endpoint_agents.build_endpoint_env + un-skip its contract tests"
     description: |
@@ -54,7 +83,36 @@ tasks:
     labels: [size:S, area:dispatcher]
     agent: claude
 
-    status: To Do
+    status: Done
+    started_at: '2026-08-25T13:42:44-07:00'
+    dispatcher_run_id: 2026-08-25T20-36-12Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-25T20-36-12Z-tasks/EPA-2/summary.md
+    branch: feat/EPA-2-implement-endpoint-agents-build-endpoint
+    cost_usd: 1.618583
+    completed_at: '2026-08-25T13:49:18-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    mechanical_verification: passed
+    role_diff_loop: not_enabled
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, codex=APPROVE, grok=APPROVE
+    panel_blocking_findings: 0
+    panel_verdict_claude: APPROVE
+    panel_verdict_codex: APPROVE
+    panel_verdict_grok: APPROVE
+    input_tokens: 1053
+    output_tokens: 2751
+    cache_read_input_tokens: 214231
+    cache_creation_input_tokens: 26700
+    duration_ms: 37518
+    num_turns: 6
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.241 (Claude Code)
   - key: EPA-3
     summary: "implement spawn.spawn_endpoint_agent body + un-skip its contract tests"
     description: |
@@ -76,7 +134,36 @@ tasks:
     labels: [size:M, area:dispatcher]
     agent: claude
     blockedBy: [EPA-1, EPA-2]
-    status: To Do
+    status: Done
+    started_at: '2026-08-25T13:49:18-07:00'
+    dispatcher_run_id: 2026-08-25T20-36-12Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-25T20-36-12Z-tasks/EPA-3/summary.md
+    branch: feat/EPA-3-implement-spawn-spawn-endpoint-agent
+    cost_usd: 2.3005060000000004
+    completed_at: '2026-08-25T14:13:42-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    mechanical_verification: passed
+    role_diff_loop: not_enabled
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=1 (0C/1H)
+    panel_blocking_findings: 1
+    panel_verdict_claude: APPROVE
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: APPROVE
+    input_tokens: 1277
+    output_tokens: 6792
+    cache_read_input_tokens: 456807
+    cache_creation_input_tokens: 41361
+    duration_ms: 85286
+    num_turns: 15
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.241 (Claude Code)
   - key: EPA-4
     summary: "implement endpoint_agents.endpoint_doctor_report + un-skip its contract tests"
     description: |
@@ -94,7 +181,36 @@ tasks:
     labels: [size:XS, area:dispatcher]
     agent: claude
 
-    status: To Do
+    status: Done
+    started_at: '2026-08-25T14:13:42-07:00'
+    dispatcher_run_id: 2026-08-25T20-36-12Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-25T20-36-12Z-tasks/EPA-4/summary.md
+    branch: feat/EPA-4-implement-endpoint-agents-endpoint-doctor
+    cost_usd: 1.5547009999999999
+    completed_at: '2026-08-25T14:20:38-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    mechanical_verification: passed
+    role_diff_loop: not_enabled
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, codex=APPROVE, grok=APPROVE
+    panel_blocking_findings: 0
+    panel_verdict_claude: APPROVE
+    panel_verdict_codex: APPROVE
+    panel_verdict_grok: APPROVE
+    input_tokens: 1307
+    output_tokens: 4082
+    cache_read_input_tokens: 374068
+    cache_creation_input_tokens: 27294
+    duration_ms: 61237
+    num_turns: 10
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.241 (Claude Code)
   - key: EPA-5
     summary: "wire endpoint readiness into `dispatcher doctor` + optional live probe"
     description: |

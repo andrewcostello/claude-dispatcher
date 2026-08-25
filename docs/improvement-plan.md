@@ -96,6 +96,41 @@ gitignored on main — and the stale branch's `.gitignore` PREDATES the entries
 that ignore them, so a worktree cut from July 8 sees the vendor step's output as
 untracked and trips the gate. One root cause, two symptoms that looked unrelated.
 
+### The root cause, found by reproducing it 2026-08-25
+
+The re-dispatch worked and then failed the same way, which is how the cause was
+finally found rather than guessed at.
+
+All four tasks completed, panel-approved, at $7.07. Four PRs were opened. `audit`
+was run immediately and reported all four `unlanded` — main still raising
+`NotImplementedError`. **The identical failure, reproduced in one afternoon
+instead of going unnoticed for seven weeks.**
+
+The cause is structural. The run's integration mode was `branch`, and it **opened
+pull requests against main anyway**. `merge-prs` then declines the run outright —
+"not a pr-mode run (integration='branch') — no PRs to merge" — so the branch path
+does not merge them because they are PRs, and the PR path does not merge them
+because the run is not PR mode. **Nothing owns the merge.** Work reaches a
+mergeable PR and stops there, while the row says Done.
+
+That is not a fluke of one run. It is the default outcome of that combination,
+which is why it happened in July and again in August.
+
+Merged by hand, in dependency order. Result: `endpoint_agents.py` has no stubs
+left, the thirteen skipped contract tests now run, and the suite went from
+3 405 passed / 13 skipped to **3 418 passed / 0 skipped**.
+
+Two things to fix, and the first is the one that matters:
+
+1. **A run must not open PRs it will not merge.** Either `integration='branch'`
+   merges directly and raises no PR, or raising a PR puts the run in PR mode so
+   `merge-prs` will act on it. The current combination guarantees orphans.
+2. **An approval ladder that cannot be satisfied is a deadlock, not a gate.** In
+   a single-maintainer repository GitHub will not let the author approve their own
+   pull request, so a ladder requiring a human review can never clear. The panel
+   verdict — `panel:approve` on all four — is an approval signal that already
+   exists and is already journaled.
+
 ### What would keep this from happening again
 
 One check, and it is small: **a task marked Done whose branch is not reachable
