@@ -13,6 +13,7 @@ files; the run.py orchestrator marks the task Blocked with reason
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import subprocess
@@ -729,7 +730,20 @@ def spawn_endpoint_agent(
       - the returned SpawnResult passes through unchanged EXCEPT
         usage.model, which must carry resolution.model for provenance.
     """
-    raise NotImplementedError("EPA-3")
+    resolution = endpoint_agents_mod.resolve_endpoint_agent(agent, env, model)
+    child_env = endpoint_agents_mod.build_endpoint_env(env, resolution)
+    spawn_extra = list(extra_args or []) + ["--model", resolution.model]
+    if effort:
+        spawn_extra += ["--effort", effort]
+    result = spawn_claude(
+        claude_bin=claude_bin, cwd=cwd, env=child_env, prompt=prompt,
+        extra_args=spawn_extra, timeout_seconds=timeout_seconds, metered=True,
+    )
+    # The provider answers over an Anthropic-shaped API, so the JSON usage
+    # blob may report an Anthropic-looking model id; provenance must name the
+    # provider model actually pinned.
+    result.usage = dataclasses.replace(result.usage, model=resolution.model)
+    return result
 
 
 def spawn_agent(
