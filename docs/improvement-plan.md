@@ -1,7 +1,87 @@
 # Dispatcher Improvement Plan
 
-Status: draft for review
-Date: 2026-06-10
+Written 2026-06-10. Reconciled against main 2026-08-25 — see the status section
+below, which supersedes the phases where they disagree.
+
+## Status — reconciled 2026-08-25
+
+**Read this before the phases below. They are no longer the map.**
+
+The plan was last revised 2026-06-10 and its dogfood log ends at run #6 on
+2026-06-11. Since then main has taken **427 commits across 59 merges**, and the
+codebase has grown past the shape this document describes.
+
+Where things actually stand:
+
+| | |
+|---|---|
+| tests | 3 393 passing, 13 skipped, 0 failing |
+| test files | 109, ~72 000 lines |
+| modules | 64 |
+| CLI | `run`, `status`, `blocked`, `unblock`, `resume`, `merge-prs`, `report`, `watch`, `doctor`, `forecast-create`, `forecast-sync` |
+
+**Every one of the fourteen phases has machinery on main.** That is a weaker
+claim than "complete", and the distinction is the point of this section: it was
+established by probing for each phase's named deliverables, not by re-reading
+the acceptance criteria and confirming each one holds. Nobody has done the
+latter, and this document is not evidence that anybody has.
+
+### What exists that no phase describes
+
+The larger finding. These are whole subsystems on main with no entry anywhere
+below, which is the clearest measure of how far the plan has drifted:
+
+* **Reachability comparators** — `go_reachability`, `branch_reachability`,
+  `call_site_reachability`, `fixture_reachability`, `ts_*`. The four largest test
+  files in the repo, and none of them exists in this plan.
+* **Seal verification and the mutation ledger** — `seal_verify`,
+  `mutation_ledger`, `known_red`. Proving a test can fail, rather than trusting
+  that it passes.
+* **Role protocol** — `role_protocol`, 10 000+ lines, with its own floor and
+  input suites.
+* **Merge machinery** — `merge_authorization`, `merge_engine`, `merge_record`,
+  `push_verify`, `branch_surface`. Phase 3 anticipated a merge pass; it did not
+  anticipate this.
+* **Loop gate, blast radius, batch coherence, prompt provenance, risk
+  classification, quality levels, scaffold shape, money net** — each its own
+  module, none of them planned here.
+
+### Known gap: endpoint agents are Done in the task list and absent from main
+
+`features/endpoint-agents/tasks.yaml` marks EPA-1 through EPA-4 `status: Done`.
+The commits exist on four branches. **None of them ever merged**, so main still
+raises `NotImplementedError` for EPA-1, 2 and 4, and thirteen contract tests stay
+skipped.
+
+This is a false Done, in this repository's own task list, of the exact kind
+Phase 4 exists to prevent — and it went unnoticed for seven weeks. The gate
+proved the work was written. Nothing proved it landed. **"Done" and "on main"
+were allowed to be different things**, and no check compared them.
+
+Recovering it is no longer cheap: the branches were cut 2026-07-06, main is 386
+commits ahead of their merge base, and all four now conflict — EPA-1 alone across
+16 files including `orchestrator`, `cli`, `spawn`, `plan` and `journal`.
+Re-dispatching the four body-fills against current main is very likely cheaper
+than rebasing them, and the seals are intact and still skipped, so the contract
+survives untouched. That is what contract-first is for.
+
+Also unresolved regardless: `MOONSHOT_API_KEY`, `ZAI_API_KEY` and
+`DEEPSEEK_API_KEY` are unset, so the feature cannot be exercised live even once
+merged.
+
+### Also open
+
+* PR #63 (2026-07-13) and PR #75 (2026-08-02), both stale, both reporting
+  `mergeable=UNKNOWN`.
+* The dogfood log below stops at run #6. Runs after 2026-06-11 were not recorded
+  in it, and this reconciliation does not invent them — see the merge history in
+  git for what actually landed.
+
+### What would keep this from happening again
+
+One check, and it is small: **a task marked Done whose branch is not reachable
+from main is not Done.** Everything else here was found by running the suite and
+reading git; that one comparison is the only thing that was missing.
 
 ## Goal
 
