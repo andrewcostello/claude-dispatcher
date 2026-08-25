@@ -415,3 +415,187 @@ def test_auto_integrate_skips_push_verify(repo: Path, monkeypatch) -> None:
     assert row["status"] == "Done"
     assert "needs_push" not in row
     assert _push_verify_events(repo) == []
+
+
+# ── landed verification (the rung above pushing) ────────────────────────────
+#
+# Pushing is not landing. EPA-1 through EPA-4 sat `status: Done` for seven weeks
+# with their work pushed to four branches and main still raising
+# NotImplementedError, because every gate proved the work was WRITTEN and none
+# compared it to the base. These seals pin the check that closes that.
+
+
+def _git(answers):
+    """A fake git. `answers` maps a command prefix to (code, stdout)."""
+    def run(cmd, cwd):
+        if cmd[:2] == ["git", "rev-parse"]:
+            ref = cmd[-1]
+            return answers.get(("rev-parse", ref), (0, "abc123def456\n", ""))[:3]
+        if cmd[:2] == ["git", "merge-base"]:
+            return answers.get(("merge-base",), (0, "", ""))
+        return (0, "", "")
+    return run
+
+
+def test_landed_when_branch_is_an_ancestor_of_base():
+    r = pv.verify_landed("feat/x", cwd=Path("."), run=_git({("merge-base",): (0, "", "")}))
+    assert r.status == "landed"
+    assert not r.needs_review
+
+
+def test_unlanded_needs_review():
+    r = pv.verify_landed("feat/x", cwd=Path("."), run=_git({("merge-base",): (1, "", "")}))
+    assert r.status == "unlanded"
+    assert r.needs_review
+
+
+def test_missing_branch_needs_review():
+    """Work that is not merely unlanded but gone is the worse case, not a skip."""
+    r = pv.verify_landed(
+        "feat/x",
+        cwd=Path("."),
+        run=_git({
+            ("rev-parse", "feat/x"): (1, "", ""),
+            ("rev-parse", "refs/remotes/origin/feat/x"): (1, "", ""),
+        }),
+    )
+    assert r.status == "no-branch"
+    assert r.needs_review
+
+
+def test_a_task_with_no_branch_is_skipped_not_failed():
+    r = pv.verify_landed(None, cwd=Path("."), run=_git({}))
+    assert r.status == "skipped"
+    assert not r.needs_review
+
+
+def test_a_git_failure_never_needs_review():
+    """An inability to check is not evidence of absence.
+
+    The gate that cries wolf is the gate that gets switched off, so a failed
+    read reports `error` and is excluded from `needs_review`.
+    """
+    r = pv.verify_landed(
+        "feat/x", cwd=Path("."), run=_git({("merge-base",): (128, "", "boom")})
+    )
+    assert r.status == "error"
+    assert not r.needs_review
+
+
+def test_a_missing_base_is_an_error_not_a_finding():
+    r = pv.verify_landed(
+        "feat/x",
+        cwd=Path("."),
+        run=_git({
+            ("rev-parse", "main"): (1, "", ""),
+            ("rev-parse", "refs/remotes/origin/main"): (1, "", ""),
+        }),
+    )
+    assert r.status == "error"
+    assert not r.needs_review
+
+
+def test_a_local_only_merge_counts_as_landed():
+    """Merged locally, base not yet pushed, is landed.
+
+    The local ref is preferred over the remote precisely so this case does not
+    raise a false alarm.
+    """
+    seen = []
+
+    def run(cmd, cwd):
+        seen.append(cmd)
+        if cmd[:2] == ["git", "rev-parse"]:
+            return (0, "abc123def456\n", "")
+        return (0, "", "")
+
+    r = pv.verify_landed("feat/x", cwd=Path("."), run=run)
+    assert r.status == "landed"
+    # the remote ref was never consulted — the local one answered first
+    assert not any("refs/remotes/origin/feat/x" in c[-1] for c in seen if c[:2] == ["git", "rev-parse"])
+
+
+def test_audit_checks_only_done_tasks():
+    tasks = [
+        {"key": "A", "status": "Done", "branch": "feat/a"},
+        {"key": "B", "status": "To Do", "branch": "feat/b"},
+        {"key": "C", "status": "Blocked", "branch": "feat/c"},
+    ]
+    rows = pv.audit_done_tasks(tasks, cwd=Path("."), run=_git({("merge-base",): (0, "", "")}))
+    assert [k for k, _ in rows] == ["A"]
+
+
+def test_audit_puts_findings_first():
+    """A caller printing only the head of the list still prints the problems."""
+    def run(cmd, cwd):
+        if cmd[:2] == ["git", "rev-parse"]:
+            return (0, "abc123def456\n", "")
+        # only the branch named in the ancestor check decides
+        return (1, "", "") if "feat/bad" in " ".join(cmd) else (0, "", "")
+
+    tasks = [
+        {"key": "A-ok", "status": "Done", "branch": "feat/ok"},
+        {"key": "Z-bad", "status": "Done", "branch": "feat/bad"},
+    ]
+    # rev-parse returns the same sha for both, so distinguish on the branch name
+    def run2(cmd, cwd):
+        if cmd[:2] == ["git", "rev-parse"]:
+            return (0, ("bad000000" if "bad" in cmd[-1] else "ok0000000") + "\n", "")
+        if cmd[:2] == ["git", "merge-base"]:
+            return (1, "", "") if "bad" in cmd[-2] else (0, "", "")
+        return (0, "", "")
+
+    rows = pv.audit_done_tasks(tasks, cwd=Path("."), run=run2)
+    assert rows[0][0] == "Z-bad", "the finding must sort first despite the key order"
+    assert rows[0][1].needs_review
+    assert not rows[1][1].needs_review
+
+
+def test_a_squash_merged_branch_is_landed_not_a_finding():
+    """The false-alarm case that reframed this check.
+
+    A squash or rebase merge lands the work under a sha the branch tip is not an
+    ancestor of, so reachability alone says "unlanded" about work that is on the
+    base. The forge is asked before concluding anything.
+    """
+    def run(cmd, cwd):
+        if cmd[:2] == ["git", "rev-parse"]:
+            return (0, "abc123def456\n", "")
+        if cmd[:2] == ["git", "merge-base"]:
+            return (1, "", "")           # not an ancestor
+        if cmd[:2] == ["gh", "pr"]:
+            return (0, '[{"number": 42}]', "")   # ...but a PR merged
+        return (0, "", "")
+
+    r = pv.verify_landed("feat/x", cwd=Path("."), run=run)
+    assert r.status == "landed-via-pr"
+    assert not r.needs_review
+
+
+def test_gh_unavailable_leaves_the_branch_needing_review():
+    """A missing or unauthenticated gh must not invent a merge."""
+    def run(cmd, cwd):
+        if cmd[:2] == ["git", "rev-parse"]:
+            return (0, "abc123def456\n", "")
+        if cmd[:2] == ["git", "merge-base"]:
+            return (1, "", "")
+        if cmd[:2] == ["gh", "pr"]:
+            return (127, "", "gh: not found")
+        return (0, "", "")
+
+    r = pv.verify_landed("feat/x", cwd=Path("."), run=run)
+    assert r.status == "unlanded"
+    assert r.needs_review
+
+
+def test_unparseable_gh_output_leaves_the_branch_needing_review():
+    def run(cmd, cwd):
+        if cmd[:2] == ["git", "rev-parse"]:
+            return (0, "abc123def456\n", "")
+        if cmd[:2] == ["git", "merge-base"]:
+            return (1, "", "")
+        if cmd[:2] == ["gh", "pr"]:
+            return (0, "not json at all", "")
+        return (0, "", "")
+
+    assert pv.verify_landed("feat/x", cwd=Path("."), run=run).status == "unlanded"

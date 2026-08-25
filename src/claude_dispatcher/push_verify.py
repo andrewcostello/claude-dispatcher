@@ -17,6 +17,13 @@ when one is expected?".
 Out of scope: the auto-integrate (direct-to-base) workflow never pushes — that
 is the human's call (see ``auto_integrate.py``) — so the orchestrator does not
 invoke this module for auto-integrate runs.
+
+``verify_landed`` is the rung above. Pushing is not landing: a task can push a
+branch, open a PR, be marked Done, and never merge. That is exactly what happened
+to features/endpoint-agents — EPA-1 through EPA-4 sat ``status: Done`` for seven
+weeks while main still raised ``NotImplementedError``, because every gate proved
+the work was WRITTEN and none compared it to what was on main. "Done" and "on
+main" were allowed to be different things.
 """
 
 from __future__ import annotations
@@ -205,3 +212,148 @@ def _pr_open(
     if not isinstance(data, list):
         return None
     return len(data) > 0
+
+
+# ── landed verification ──────────────────────────────────────────────────────
+# Outcomes:
+#   - "landed"        : the branch tip is an ancestor of the base. Definitive.
+#   - "landed-via-pr" : the tip is not an ancestor but a MERGED pull request
+#                       exists for the branch — a squash or rebase merge, whose
+#                       result is a different sha carrying the same work.
+#   - "unlanded"      : neither. Needs review; see the caveat below.
+#   - "no-branch"     : no ref exists locally or on the remote.
+#   - "skipped"       : no branch to check (never dispatched, or an
+#                       auto-integrate run committing straight to the base).
+#   - "error"         : a git read failed. NEVER treated as a problem — an
+#                       inability to check is not evidence of absence.
+#
+# WHAT "unlanded" DOES AND DOES NOT MEAN. It means this BRANCH's tip is not on
+# the base. It does not prove the work is missing: DISP-11 is `unlanded` by this
+# check, its PR was closed unmerged, and `resume.py` is on main anyway because
+# the work was landed by another route. So this is EVIDENCE FOR REVIEW, not a
+# verdict, and it is deliberately not called a "false done" — a gate that
+# announces false failures gets switched off, and then it catches nothing.
+#
+# Where it is decisive is the opposite case: EPA-1 through EPA-4 are `unlanded`,
+# have no pull request at all, and main raises NotImplementedError for three of
+# them. That is the shape worth surfacing.
+_NEEDS_REVIEW = ("unlanded", "no-branch")
+
+
+@dataclass
+class LandedResult:
+    """The verdict of one landed check."""
+
+    status: str
+    detail: str = ""
+    branch: str | None = None
+    base: str | None = None
+
+    @property
+    def needs_review(self) -> bool:
+        """True iff this branch's work could not be found on the base."""
+        return self.status in _NEEDS_REVIEW
+
+
+def _merged_pr_exists(branch: str, *, cwd: Path, r) -> bool:
+    """Did a pull request for ``branch`` merge?
+
+    Consulted only when reachability already said no, because a squash or rebase
+    merge lands the work under a sha the branch tip is not an ancestor of. A
+    missing or unauthenticated ``gh`` returns False, which keeps the caller in
+    "needs review" rather than inventing a merge.
+    """
+    code, out, _ = r(
+        ["gh", "pr", "list", "--head", branch, "--state", "merged",
+         "--json", "number", "--limit", "1"],
+        cwd,
+    )
+    if code != 0 or not out.strip():
+        return False
+    try:
+        return bool(json.loads(out))
+    except (ValueError, TypeError):
+        return False
+
+
+def verify_landed(
+    branch: str | None,
+    *,
+    cwd: Path,
+    base: str = "main",
+    run: Callable[[list[str], Path], tuple[int, str, str]] | None = None,
+) -> LandedResult:
+    """Is ``branch``'s work on ``base``?
+
+    The one check that asks a question of the BASE. Everything else the
+    dispatcher verifies happens on the branch, which is how a task can be Done,
+    gated, verified and reviewed while its work sits unmerged.
+
+    Resolution order matters. The LOCAL branch is preferred over the remote,
+    because a run that merged locally and has not pushed the base yet is landed
+    and must not be reported otherwise.
+    """
+    r = run or (lambda cmd, wd: _run(cmd, cwd=wd))
+
+    if not branch:
+        return LandedResult("skipped", "task has no branch")
+
+    tip = None
+    for ref in (branch, f"refs/remotes/origin/{branch}"):
+        code, out, _ = r(["git", "rev-parse", "--verify", "--quiet", ref], cwd)
+        if code == 0 and out.strip():
+            tip = out.strip()
+            break
+    if tip is None:
+        return LandedResult(
+            "no-branch", f"no local or remote ref for {branch!r}", branch, base
+        )
+
+    base_ref = None
+    for ref in (base, f"refs/remotes/origin/{base}"):
+        code, out, _ = r(["git", "rev-parse", "--verify", "--quiet", ref], cwd)
+        if code == 0 and out.strip():
+            base_ref = ref
+            break
+    if base_ref is None:
+        return LandedResult("error", f"base {base!r} not found", branch, base)
+
+    code, _, err = r(["git", "merge-base", "--is-ancestor", tip, base_ref], cwd)
+    if code == 0:
+        return LandedResult("landed", f"{tip[:9]} is on {base}", branch, base)
+    if code != 1:
+        return LandedResult("error", err.strip()[:200] or "git read failed", branch, base)
+
+    # Not an ancestor. A squash or rebase merge looks exactly like this, so ask
+    # the forge before concluding anything.
+    if _merged_pr_exists(branch, cwd=cwd, r=r):
+        return LandedResult(
+            "landed-via-pr", "merged by pull request (squash or rebase)", branch, base
+        )
+    return LandedResult(
+        "unlanded", f"{tip[:9]} is not on {base} and no merged PR", branch, base
+    )
+
+
+def audit_done_tasks(
+    tasks: list[dict],
+    *,
+    cwd: Path,
+    base: str = "main",
+    run: Callable[[list[str], Path], tuple[int, str, str]] | None = None,
+) -> list[tuple[str, LandedResult]]:
+    """Check every Done task's branch against ``base``.
+
+    Returns one row per Done task, the ones needing review first, so a caller
+    printing only the head of the list still prints the problems. Tasks in any
+    other status are not checked: an unfinished task is not claiming to have
+    landed.
+    """
+    rows: list[tuple[str, LandedResult]] = []
+    for t in tasks:
+        if str(t.get("status", "")).strip().lower() != "done":
+            continue
+        key = str(t.get("key", "?"))
+        rows.append((key, verify_landed(t.get("branch"), cwd=cwd, base=base, run=run)))
+    rows.sort(key=lambda kv: (not kv[1].needs_review, kv[0]))
+    return rows

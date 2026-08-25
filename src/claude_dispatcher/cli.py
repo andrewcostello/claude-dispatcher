@@ -521,6 +521,20 @@ def build_parser() -> argparse.ArgumentParser:
     bl.add_argument("tasks_yaml")
     bl.set_defaults(func=unblock_cmd.list_blocked)
 
+    au = sub.add_parser(
+        "audit",
+        help=("Compare every Done task against the base branch. A branch whose "
+              "work is not on the base and has no merged PR is reported for "
+              "REVIEW — it may have landed by another route. Exit 3 when any "
+              "are found (alertable), 0 when clean."),
+    )
+    au.add_argument("tasks_yaml")
+    au.add_argument("--base", default="main",
+                    help="Branch the work must be reachable from (default: main)")
+    au.add_argument("--repo", default=".",
+                    help="Repository to run the git reads in (default: cwd)")
+    au.set_defaults(func=audit_landed)
+
     ub = sub.add_parser(
         "unblock",
         help=("Clear reviewed Blocked tasks back to To Do so the next run "
@@ -772,6 +786,45 @@ def _watch_entry(args: argparse.Namespace) -> int:
         poll_seconds=float(args.poll),
         follow=not args.no_follow,
     )
+
+
+def audit_landed(args) -> int:
+    """`dispatcher audit` — every Done task whose work is not on the base.
+
+    The one check that asks a question of the BASE rather than of the branch.
+    Everything else the dispatcher verifies happens on the branch, which is why
+    a task could be Done, gated, verified and reviewed while its work sat
+    unmerged: "Done" and "on main" were never compared.
+
+    Reports for review rather than asserting failure — a branch can be unlanded
+    and its work still on the base, landed by another route.
+    """
+    from pathlib import Path
+
+    from . import push_verify, yaml_io
+
+    doc = yaml_io.load(args.tasks_yaml)
+    tasks = doc.get("tasks") if isinstance(doc, dict) else doc
+    rows = push_verify.audit_done_tasks(
+        tasks or [], cwd=Path(args.repo), base=args.base
+    )
+    if not rows:
+        print("no Done tasks to audit")
+        return 0
+
+    findings = [(k, r) for k, r in rows if r.needs_review]
+    for key, r in rows:
+        print(f"  {key:12} {r.status:14} {r.detail}")
+
+    print()
+    if findings:
+        print(f"  {len(findings)} of {len(rows)} Done tasks have work not found on "
+              f"{args.base} — REVIEW")
+        print("  (a branch can be unlanded and its work still on the base, landed "
+              "by another route)")
+        return 3
+    print(f"  {len(rows)} Done tasks, all accounted for on {args.base}")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
