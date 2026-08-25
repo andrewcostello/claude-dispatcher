@@ -77,6 +77,25 @@ merged.
   in it, and this reconciliation does not invent them — see the merge history in
   git for what actually landed.
 
+### Recovering it, 2026-08-25 — two corrections worth keeping
+
+**Clearing the `branch:` field does not give a task a fresh branch.**
+`worktree.branch_name(task_type, task_key, summary)` DERIVES the name from the
+task row; the field records the branch, it does not choose it. The first
+re-dispatch attempt came back within two minutes carrying
+`gate_base_sha: 56ca2c10e` — the July-8 tip — and was stopped at $2.41 rather
+than allowed to work on a base 386 commits behind main. The branches had to be
+deleted, not the field cleared. All four are archived as pushed tags
+(`archive/EPA-N-2026-07-08`) first: that work is the only record of four
+completed body-fills, and deleting a branch to fix a process problem must not be
+the thing that loses it.
+
+**The second symptom had the same cause.** Mechanical verification failed with
+`uncommitted_changes` on the vendored TypeScript parser. Those artifacts are
+gitignored on main — and the stale branch's `.gitignore` PREDATES the entries
+that ignore them, so a worktree cut from July 8 sees the vendor step's output as
+untracked and trips the gate. One root cause, two symptoms that looked unrelated.
+
 ### What would keep this from happening again
 
 One check, and it is small: **a task marked Done whose branch is not reachable
