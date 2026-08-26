@@ -118,11 +118,14 @@ dispatcher report [<run-id>] [--json] [--tasks-yaml PATH] [--runs-dir PATH]
                                             per-reviewer breakdown). <run-id> defaults to
                                             the latest run. See "dispatcher report".
 
-dispatcher doctor [--check] [--config-dir PATH]
+dispatcher doctor [--check] [--probe-endpoints] [--config-dir PATH]
                                             Probe the machine (agent CLIs, tools, dispatcher
                                             install) and write the profile to
                                             ~/.config/claude-dispatcher/machine.yaml.
                                             --check exits 1 if claude or git is missing.
+                                            --probe-endpoints sends one 1-token call to each
+                                            keyed endpoint agent (kimi/glm/deepseek) and exits
+                                            1 unless every probe is ok; offline otherwise.
                                             See "Machine profile (dispatcher doctor)".
 
 dispatcher forecast-create <tasks-yaml> [--dry-run]
@@ -625,6 +628,10 @@ tools:
   docker     ✗ not found
   sqlc       ✗ not found
   buf        ✗ not found
+endpoint agents:
+  kimi       ✓ Moonshot AI: MOONSHOT_API_KEY set (model kimi-k2.7-code)
+  glm        ✗ Z.ai: set ZAI_API_KEY to enable
+  deepseek   ✓ DeepSeek: DEEPSEEK_API_KEY set (model deepseek-v4-pro-max)
 wrote /home/you/.config/claude-dispatcher/machine.yaml
 ```
 
@@ -635,6 +642,16 @@ the exit code:
 ```bash
 dispatcher doctor --check && dispatcher run tasks.yaml --mode unattended ...
 ```
+
+The `endpoint agents:` rows are static (key set or not); the doctor is
+offline by default. `--probe-endpoints` additionally sends **one 1-token
+messages call** to every agent whose key is set, using `Authorization:
+Bearer` exactly as the spawn path does, and reports the outcome
+distinctly — `probe ok`, `probe AUTH FAILED`, `probe MODEL ID NOT FOUND`
+(the registry's pinned `default_model` is rejected by the provider),
+`probe unreachable`, or `probe error` (wrong `base_url`, redirect, 5xx, a
+2xx that is not a message). Any probed endpoint not ok exits 1; agents
+without a key are skipped, never probed. See `docs/machine-profile.md`.
 
 `--config-dir PATH` overrides where `machine.yaml` is written. The file is
 shared with you: everything under the top-level `manual:` key is user-owned

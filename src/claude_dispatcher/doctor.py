@@ -13,13 +13,20 @@ never touched by the doctor, and re-probes mutate the loaded ruamel document
 in place so file comments survive — the same comment-preserving contract
 yaml_io gives the tasks YAML.
 
-Exit codes: 0 ok, 1 `--check` found a required entry missing, 2 environment
-or file errors (e.g. an existing machine.yaml that cannot be parsed — the
-doctor refuses to overwrite it so the manual section is never destroyed).
+Endpoint agents (endpoint_agents.ENDPOINT_AGENTS) get their own section:
+static readiness from the environment always, and behind `--probe-endpoints`
+one minimal live messages call per keyed agent that tells auth failure and a
+wrong model id apart. Without the flag the doctor never touches the network.
+
+Exit codes: 0 ok, 1 `--check` found a required entry missing or
+`--probe-endpoints` found a probed endpoint not ok, 2 environment or file
+errors (e.g. an existing machine.yaml that cannot be parsed — the doctor
+refuses to overwrite it so the manual section is never destroyed).
 """
 
 from __future__ import annotations
 
+import http.client
 import importlib.metadata
 import json
 import os
@@ -29,13 +36,16 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Mapping
 
 from ruamel.yaml.comments import CommentedMap
 
-from . import yaml_io
+from . import endpoint_agents, yaml_io
 
 
 SCHEMA_VERSION = 1
@@ -75,6 +85,29 @@ REQUIRED: tuple[tuple[str, str], ...] = (("agents", "claude"), ("tools", "git"))
 PROBED_KEYS: tuple[str, ...] = (
     "schema_version", "probed_at", "host", "dispatcher", "agents", "tools",
 )
+
+# Wall-clock budget for one endpoint probe. Enforced by a daemon-thread join
+# in probe_endpoint, not by the urlopen timeout alone — that one is
+# per-socket-operation and cannot bound a trickling body.
+ENDPOINT_PROBE_TIMEOUT = 20.0
+# Most response-body bytes a probe reads; a large error page is truncated.
+ENDPOINT_PROBE_MAX_BODY = 64 * 1024
+ANTHROPIC_VERSION_HEADER = "2023-06-01"
+
+# Probe outcomes. "auth" and "model" are the two the ticket needs told apart
+# loudly; everything else is a plain failure of the probe.
+PROBE_OK = "ok"
+PROBE_AUTH = "auth"
+PROBE_MODEL = "model"
+PROBE_UNREACHABLE = "unreachable"
+PROBE_ERROR = "error"
+PROBE_LABELS: dict[str, str] = {
+    PROBE_OK: "probe ok",
+    PROBE_AUTH: "probe AUTH FAILED",
+    PROBE_MODEL: "probe MODEL ID NOT FOUND",
+    PROBE_UNREACHABLE: "probe unreachable",
+    PROBE_ERROR: "probe error",
+}
 
 # First semver-ish token in a version line: "2.43.0", "0.1", "1.2.3-rc1".
 # Tail is limited to semver-ish characters (not \S*) so adjacent punctuation
@@ -259,6 +292,208 @@ def write_profile(path: Path, profile: dict[str, Any]) -> int:
     return 0
 
 
+# --- endpoint agents --------------------------------------------------------
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect: a probe is ONE POST to the configured base_url.
+
+    Following would re-send the provider credential to whatever host Location
+    names and could turn the POST into a GET; the 3xx surfaces as an HTTPError
+    and is classified as a probe error instead.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+PostMessages = Callable[..., tuple[int, str, Mapping[str, str]]]
+
+
+def _post_messages(
+    url: str, key: str, model: str, *, timeout: float, max_body: int,
+) -> tuple[int, str, Mapping[str, str]]:
+    """One minimal messages call. Returns (status, body_text, headers).
+
+    Auth is `Authorization: Bearer` ONLY — the same header the claude CLI
+    sends for ANTHROPIC_AUTH_TOKEN (build_endpoint_env) — so the probe is no
+    more permissive than the spawn path it vouches for. HTTP error statuses
+    are returned, not raised; transport failures propagate to the caller.
+    """
+    payload = json.dumps({
+        "model": model,
+        "max_tokens": 1,
+        "messages": [{"role": "user", "content": "hi"}],
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=payload, method="POST",
+        headers={
+            "Authorization": f"Bearer {key}",
+            "anthropic-version": ANTHROPIC_VERSION_HEADER,
+            "content-type": "application/json",
+            "accept": "application/json",
+        },
+    )
+    opener = urllib.request.build_opener(_NoRedirect)
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            body = resp.read(max_body)
+            return resp.status, body.decode("utf-8", "replace"), dict(resp.headers)
+    except urllib.error.HTTPError as e:
+        body = e.read(max_body) if e.fp is not None else b""
+        return e.code, body.decode("utf-8", "replace"), dict(e.headers or {})
+
+
+def _json_object(body: str) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _snippet(body: str, limit: int = 120) -> str:
+    text = " ".join(body.split())
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def classify_probe_response(
+    status: int, body: str, *, model: str, location: str | None = None,
+) -> tuple[str, str]:
+    """Map one probe response to (PROBE_* kind, detail). PURE.
+
+    A 2xx is ok only when the body is an Anthropic message (type "message"
+    with a content list); a 2xx carrying an error object is classified by
+    that error, and any other 2xx body is an error — the probe must never
+    vouch for an endpoint on status alone. A not-found is reported as a model
+    id problem only when the error message names the model; a bare 404 more
+    likely means base_url is wrong, and saying "model" would send the
+    operator to the wrong fix.
+    """
+    payload = _json_object(body)
+    err = payload.get("error") if payload else None
+    err_type, err_msg = "", ""
+    if isinstance(err, dict):
+        err_type = str(err.get("type") or "")
+        err_msg = str(err.get("message") or "")
+    elif isinstance(err, str):
+        err_msg = err
+    has_error = err is not None or (payload is not None and payload.get("type") == "error")
+    if has_error and not err_msg:
+        err_msg = _snippet(body)
+
+    names_model = bool(
+        err_msg and (
+            model.lower() in err_msg.lower()
+            or re.search(r"\bmodel\b", err_msg, re.IGNORECASE)
+        )
+    )
+
+    if status in (401, 403) or err_type in ("authentication_error", "permission_error"):
+        return PROBE_AUTH, (
+            f"{status} {err_type or 'rejected'}: {err_msg or _snippet(body) or 'no body'}"
+            " — check the key in the env var above"
+        )
+    if (err_type == "not_found_error" or status in (400, 404, 422)) and names_model:
+        return PROBE_MODEL, (
+            f"model {model!r} rejected ({status} {err_type or 'error'}: {err_msg})"
+            " — fix the registry default_model or set model: on the task"
+        )
+    if has_error:
+        hint = " — check base_url" if status == 404 else ""
+        return PROBE_ERROR, f"{status} {err_type or 'error'}: {err_msg}{hint}"
+    if 300 <= status < 400:
+        return PROBE_ERROR, (
+            f"redirected ({status}) to {location or '?'}; refusing to follow"
+            " — check base_url"
+        )
+    if 200 <= status < 300:
+        if (
+            payload is not None
+            and payload.get("type") == "message"
+            and isinstance(payload.get("content"), list)
+        ):
+            echoed = payload.get("model")
+            suffix = f" (as {echoed!r})" if echoed and echoed != model else ""
+            return PROBE_OK, f"model {model} answered{suffix}"
+        return PROBE_ERROR, (
+            f"{status} but body is not a messages response: "
+            f"{_snippet(body) or 'empty'} — check base_url"
+        )
+    if status == 429:
+        return PROBE_ERROR, f"rate limited (429): {_snippet(body) or 'no body'}"
+    return PROBE_ERROR, f"{status}: {_snippet(body) or 'no body'}"
+
+
+def probe_endpoint(
+    name: str,
+    env: Mapping[str, str],
+    *,
+    timeout: float = ENDPOINT_PROBE_TIMEOUT,
+    post: PostMessages | None = None,
+) -> tuple[str, str]:
+    """Live-probe one endpoint agent with a 1-token prompt. Never raises.
+
+    Runs the call on a daemon thread and joins for `timeout` so the doctor's
+    budget holds even against a server that trickles bytes; a probe that
+    outlives it is reported unreachable and abandoned. `post` defaults to the
+    module's _post_messages looked up at call time, so tests that patch it
+    can never fall through to the network.
+    """
+    post = post or _post_messages
+    try:
+        resolution = endpoint_agents.resolve_endpoint_agent(name, env)
+    except endpoint_agents.EndpointConfigError as e:
+        return PROBE_ERROR, str(e)
+    url = resolution.spec.base_url.rstrip("/") + "/v1/messages"
+
+    box: dict[str, Any] = {}
+
+    def run() -> None:
+        try:
+            box["response"] = post(
+                url, resolution.key, resolution.model,
+                timeout=timeout, max_body=ENDPOINT_PROBE_MAX_BODY,
+            )
+        except BaseException as e:  # must reach the caller as data, never escape
+            box["exc"] = e
+
+    worker = threading.Thread(target=run, name=f"probe-{name}", daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        return PROBE_UNREACHABLE, f"no response from {url} within {timeout:g}s"
+    if "exc" in box:
+        exc = box["exc"]
+        if isinstance(exc, (OSError, http.client.HTTPException)):
+            return PROBE_UNREACHABLE, f"{url}: {exc}"
+        return PROBE_ERROR, f"{url}: probe failed: {exc!r}"
+    status, body, headers = box["response"]
+    location = next((v for k, v in headers.items() if k.lower() == "location"), None)
+    return classify_probe_response(status, body, model=resolution.model, location=location)
+
+
+def _print_endpoint_section(
+    env: Mapping[str, str], *, probe: bool, timeout: float = ENDPOINT_PROBE_TIMEOUT,
+) -> list[str]:
+    """Render the endpoint-agents rows; return the names whose probe was not ok."""
+    print("endpoint agents:")
+    failures: list[str] = []
+    for name, ok, detail in endpoint_agents.endpoint_doctor_report(env):
+        print(f"  {name:<10} {'✓' if ok else '✗'} {detail}")
+        if not probe:
+            continue
+        if not ok:
+            print(f"  {name:<10} - probe skipped: key unset")
+            continue
+        kind, probe_detail = probe_endpoint(name, env, timeout=timeout)
+        mark = "✓" if kind == PROBE_OK else "✗"
+        print(f"  {name:<10} {mark} {PROBE_LABELS[kind]}: {probe_detail}")
+        if kind != PROBE_OK:
+            failures.append(f"{name} ({kind})")
+    return failures
+
+
 # --- CLI --------------------------------------------------------------------
 
 
@@ -295,8 +530,14 @@ def execute(args) -> int:
         return rc
 
     _print_table(profile)
+    # The doctor's only environment read for endpoint readiness; the report
+    # and probe functions stay pure/injectable.
+    probe_failures = _print_endpoint_section(
+        os.environ, probe=bool(getattr(args, "probe_endpoints", False)),
+    )
     print(f"wrote {path}")
 
+    rc = 0
     if getattr(args, "check", False):
         missing = _missing_required(profile)
         if missing:
@@ -309,5 +550,12 @@ def execute(args) -> int:
                 "(all other entries are soft and never affect the exit code)",
                 file=sys.stderr,
             )
-            return 1
-    return 0
+            rc = 1
+    if probe_failures:
+        print(
+            "doctor --probe-endpoints failed; endpoints not ok: "
+            + ", ".join(probe_failures),
+            file=sys.stderr,
+        )
+        rc = 1
+    return rc

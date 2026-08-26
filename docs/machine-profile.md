@@ -140,11 +140,50 @@ need existence checks beyond the top-level name:
 | Code | Meaning |
 |------|---------|
 | 0 | Profile written (and, with `--check`, all required entries present). |
-| 1 | `--check` only: a **required** entry is missing. Required entries are exactly `agents.claude` and `tools.git`. Every other entry is *soft* — reported in the table, never affecting the exit code. |
+| 1 | `--check`: a **required** entry is missing (exactly `agents.claude` and `tools.git`; every other entry is *soft* — reported in the table, never affecting the exit code). `--probe-endpoints`: a probed endpoint agent is not ok, of any kind (auth, model, unreachable, error). |
 | 2 | Environment/file error — most notably an existing `machine.yaml` that cannot be parsed (the doctor refuses to overwrite it). |
 
-Note `--check` still writes the profile first; the check gates only the exit
-code, making `dispatcher doctor --check` directly usable as a CI/setup gate.
+Note both gates still write the profile first; they gate only the exit code,
+making `dispatcher doctor --check` directly usable as a CI/setup gate.
+
+## Endpoint agents and `--probe-endpoints`
+
+Below the `tools:` table the doctor prints one row per endpoint agent in
+`endpoint_agents.ENDPOINT_AGENTS` (kimi, glm, deepseek): ✓ with the provider
+and pinned `default_model` when the agent's key env var is set and non-blank,
+✗ naming the var to export otherwise. This is static — read from the
+environment, no network — and is not written to `machine.yaml`.
+
+`--probe-endpoints` adds a second row per agent with a live check:
+
+```
+endpoint agents:
+  kimi       ✓ Moonshot AI: MOONSHOT_API_KEY set (model kimi-k2.7-code)
+  kimi       ✗ probe MODEL ID NOT FOUND: model 'kimi-k2.7-code' rejected (404 not_found_error: model: kimi-k2.7-code) — fix the registry default_model or set model: on the task
+  glm        ✗ Z.ai: set ZAI_API_KEY to enable
+  glm        - probe skipped: key unset
+  deepseek   ✓ DeepSeek: DEEPSEEK_API_KEY set (model deepseek-v4-pro-max)
+  deepseek   ✓ probe ok: model deepseek-v4-pro-max answered
+```
+
+Each probe is exactly one `POST <base_url>/v1/messages` with `max_tokens: 1`
+and a one-word prompt, authenticated with `Authorization: Bearer <key>` only —
+the same header the claude CLI sends for `ANTHROPIC_AUTH_TOKEN`, so a probe
+is never more permissive than the spawn it vouches for. Redirects are refused
+(the credential is never re-sent elsewhere), the body read is capped at 64 KiB,
+and the whole call has a 20 s wall-clock budget. Outcomes:
+
+| Row | Meaning |
+|-----|---------|
+| `probe ok` | 2xx whose body is an Anthropic message (`type: message` with `content`). If the provider echoes a different model id it is shown as `(as '…')`. |
+| `probe AUTH FAILED` | 401/403, or an `authentication_error` / `permission_error` body at any status. Check the key. |
+| `probe MODEL ID NOT FOUND` | A not-found / 400 / 404 / 422 whose error message names the model. The registry's pinned id is wrong for this provider: fix `default_model` or set `model:` on the task. |
+| `probe unreachable` | Connection/TLS/socket failure, a non-HTTP response, or no reply within the budget. |
+| `probe error` | Everything else: a redirect, a 404 that does not mention the model (usually a wrong `base_url`), 429, 5xx, or a 2xx whose body is not a message (empty, `{}`, HTML). |
+
+Agents without a key are skipped, never probed. Any probed agent not `ok`
+exits 1 and is listed on stderr. Without the flag the doctor never touches
+the network.
 
 ## The staleness warning
 

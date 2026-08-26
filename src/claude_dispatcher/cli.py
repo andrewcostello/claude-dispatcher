@@ -693,6 +693,15 @@ def build_parser() -> argparse.ArgumentParser:
               "entries are soft: reported but never affect the exit code."),
     )
     dr.add_argument(
+        "--probe-endpoints",
+        action="store_true",
+        help=("Send one 1-token messages call to each endpoint agent (kimi, "
+              "glm, deepseek) whose API key is set, reporting ok / AUTH FAILED "
+              "/ MODEL ID NOT FOUND / unreachable / error distinctly. Exit 1 "
+              "if any probed endpoint is not ok. Without this flag the doctor "
+              "never touches the network."),
+    )
+    dr.add_argument(
         "--config-dir",
         default=None,
         help=("Override the config directory machine.yaml is written to "
