@@ -370,3 +370,47 @@ def audit_done_tasks(
         rows.append((key, verify_landed(t.get("branch"), cwd=cwd, base=base, run=run)))
     rows.sort(key=lambda kv: (not kv[1].needs_review, kv[0]))
     return rows
+
+
+# ── pruning landed branches ──────────────────────────────────────────────────
+# 126 feature branches, 111 of them already merged into main, is not clutter —
+# it is wrong input. The dispatcher finds a task's branch by DERIVED name and
+# merges dependency branches into each worktree, so every landed-but-undeleted
+# branch is a future conflict waiting for whichever task depends on it. GO-1
+# failed exactly that way: GO-0 had landed by squash-merge weeks earlier, its
+# branch was still present, and the dependency merge conflicted against it.
+#
+# So a landed branch is deleted, and only a landed one. `verify_landed` already
+# knows the difference, including the squash-merge case that reachability alone
+# gets wrong.
+
+
+def landed_branches(
+    *,
+    cwd: Path,
+    base: str = "main",
+    pattern: str = "feat/",
+    run: Callable[[list[str], Path], tuple[int, str, str]] | None = None,
+) -> tuple[list[tuple[str, LandedResult]], list[tuple[str, LandedResult]]]:
+    """Split local branches into (landed, not-landed).
+
+    Only the first list is safe to delete. The second is the review queue: work
+    that is not on the base and has no merged PR, which may be unfinished, may
+    have landed by another route, or may be the next EPA.
+    """
+    r = run or (lambda cmd, wd: _run(cmd, cwd=wd))
+    code, out, _ = r(["git", "for-each-ref", "--format=%(refname:short)",
+                      "refs/heads/"], cwd)
+    if code != 0:
+        return [], []
+
+    landed: list[tuple[str, LandedResult]] = []
+    held: list[tuple[str, LandedResult]] = []
+    for name in (b.strip() for b in out.splitlines()):
+        if not name or not name.startswith(pattern) or name == base:
+            continue
+        res = verify_landed(name, cwd=cwd, base=base, run=r)
+        (landed if res.status in ("landed", "landed-via-pr") else held).append(
+            (name, res)
+        )
+    return landed, held

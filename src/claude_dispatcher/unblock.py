@@ -22,9 +22,28 @@ was hand-editing the YAML. These commands make the human loop first-class:
       "commit helper.go, delete debug.log" or "the seal must fail with the
       fix reverted — strengthen it, do not weaken the fix").
 
+  dispatcher requeue tasks.yaml KEY [KEY ...]
+      Send a task back to To Do for a FRESH attempt: clear every run-state
+      field AND archive-and-delete its branch, so the next run starts from
+      the base instead of from work that is weeks old.
+
 The next `dispatcher run` re-dispatches cleared tasks on their existing
 branches (prior commits preserved), and every gate re-runs — unblocking
 grants a retry, never a waiver.
+
+`unblock` and `requeue` differ in exactly one thing, and it is the thing that
+went wrong three times: unblock KEEPS the branch, requeue DESTROYS it.
+
+Unblock is right for a task blocked an hour ago whose commits are worth keeping.
+It is wrong for one whose branch is weeks and hundreds of commits stale — that
+branch carries an old base, and a stale base drags in old files, an old
+.gitignore, and dependencies that no longer merge. EPA-1..4 and GO-1 each failed
+that way, and clearing the `branch:` field does NOT avoid it: worktree.branch_name
+DERIVES the name from the task row, so the same branch is found again. The branch
+itself has to go.
+
+Nothing is lost. Every requeued branch is tagged `archive/<KEY>-<date>` before
+deletion, because that branch may be the only record of a completed attempt.
 """
 
 from __future__ import annotations
@@ -170,3 +189,139 @@ def unblock(args: argparse.Namespace) -> int:
               f"re-dispatch them on their existing branches. All gates "
               f"re-run: unblocking grants a retry, not a waiver.")
     return 1 if failed else 0
+
+
+# ── requeue ─────────────────────────────────────────────────────────────────
+# Fields written by a dispatch attempt. The task DEFINITION — key, summary,
+# description, type, estimate, labels, agent, blockedBy — is the contract and is
+# never touched: it was not the thing that failed, and preserving it is what
+# makes a fresh attempt cheap rather than a rewrite.
+RUN_STATE_FIELDS = (
+    "started_at", "completed_at", "dispatcher_run_id", "summary_path", "branch",
+    "gate_base_sha", "cost_usd", "effort", "effort_escalated", "iteration_count",
+    "linter_cycles", "final_quality_score", "human_gate_fired",
+    "deferred_findings_count", "pr_not_raised_reason", "mechanical_verification",
+    "verified", "verification_iterations", "input_tokens", "output_tokens",
+    "cache_read_input_tokens", "cache_creation_input_tokens", "duration_ms",
+    "num_turns", "model", "dispatcher_version", "agent_version",
+    "blocked_reason", "blocked_at", "unblocked_at", "needs_push",
+    "pr_url", "pr_number", "pr_approved_by", "merged_sha",
+)
+
+
+def _run_git(cmd: list[str], cwd) -> tuple[int, str, str]:
+    import subprocess
+    try:
+        p = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True,
+                           timeout=120)
+        return p.returncode, p.stdout, p.stderr
+    except FileNotFoundError:
+        return 127, "", "git not found"
+    except Exception as e:  # pragma: no cover - defensive
+        return 1, "", str(e)
+
+
+def archive_and_delete_branch(
+    branch: str,
+    key: str,
+    *,
+    cwd,
+    date: str,
+    run=None,
+) -> tuple[bool, str]:
+    """Tag a branch as ``archive/<key>-<date>``, then delete it and its worktree.
+
+    Tag FIRST. That branch may be the only record of a completed attempt, and
+    deleting it to fix a process problem must never be the thing that loses it.
+    A failed tag aborts the deletion.
+    """
+    r = run or (lambda c: _run_git(c, cwd))
+    tag = f"archive/{key}-{date}"
+
+    code, _, _ = r(["git", "rev-parse", "--verify", "--quiet", branch])
+    if code != 0:
+        return True, f"no local branch {branch!r} — nothing to archive"
+
+    code, _, err = r(["git", "tag", "-f", tag, branch])
+    if code != 0:
+        return False, f"could not tag {tag}: {err.strip()[:120]}"
+
+    # A branch checked out in a worktree cannot be deleted; remove the worktree.
+    code, out, _ = r(["git", "worktree", "list", "--porcelain"])
+    if code == 0:
+        wt = None
+        for block in out.split("\n\n"):
+            if f"branch refs/heads/{branch}" in block:
+                for line in block.splitlines():
+                    if line.startswith("worktree "):
+                        wt = line.split(" ", 1)[1]
+        if wt:
+            r(["git", "worktree", "remove", "--force", wt])
+
+    code, _, err = r(["git", "branch", "-D", branch])
+    if code != 0:
+        return False, f"could not delete {branch}: {err.strip()[:120]}"
+
+    # The remote copy is best-effort: it may not exist, and its absence is not a
+    # failure of the requeue.
+    r(["git", "push", "origin", "--delete", branch])
+    return True, f"archived as {tag}, branch deleted"
+
+
+def requeue(args) -> int:
+    """`dispatcher requeue` — send tasks back to To Do for a FRESH attempt.
+
+    Clears run state AND destroys the branch, which is the difference from
+    `unblock`. Use it when a branch's base is old enough that building on it is
+    the problem rather than a head start.
+    """
+    from datetime import date as _date
+
+    from . import yaml_io
+
+    path = Path(args.tasks_yaml)
+    doc = yaml_io.load(str(path))
+    tasks = doc.get("tasks") if isinstance(doc, dict) else doc
+    wanted = set(args.keys or [])
+    if not wanted:
+        print("requeue: name at least one task key")
+        return 2
+
+    repo = Path(args.repo)
+    stamp = _date.today().isoformat()
+    seen, failed = set(), 0
+
+    for t in (tasks or []):
+        key = str(t.get("key", ""))
+        if key not in wanted:
+            continue
+        seen.add(key)
+        branch = t.get("branch")
+
+        if branch and not args.keep_branch:
+            ok, detail = archive_and_delete_branch(
+                str(branch), key, cwd=repo, date=stamp
+            )
+            print(f"  {key:12} branch: {detail}")
+            if not ok:
+                # A branch that could not be archived is a branch that must not
+                # be deleted, and a task that must not be requeued yet.
+                print(f"  {key:12} NOT requeued — resolve the branch first")
+                failed += 1
+                continue
+        elif branch:
+            print(f"  {key:12} branch kept: {branch}")
+
+        cleared = sum(1 for f in RUN_STATE_FIELDS if t.pop(f, None) is not None)
+        t["status"] = "To Do"
+        print(f"  {key:12} To Do ({cleared} run-state fields cleared)")
+
+    missing = wanted - seen
+    for k in sorted(missing):
+        print(f"  {k:12} NOT FOUND in {path.name}")
+
+    yaml_io.dump(doc, str(path))
+    if failed or missing:
+        return 1
+    print(f"\n  {len(seen)} task(s) requeued — the next run starts from the base")
+    return 0

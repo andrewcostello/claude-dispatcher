@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from claude_dispatcher import yaml_io
+from claude_dispatcher import unblock, yaml_io
 from claude_dispatcher.cli import build_parser
 
 
@@ -113,3 +113,74 @@ def test_unblock_requires_keys_or_all(tmp_path: Path, capsys) -> None:
     p = _write_tasks(tmp_path)
     assert _run(["unblock", str(p)]) == 2
     assert "at least one task key" in capsys.readouterr().err
+
+
+# ── requeue ─────────────────────────────────────────────────────────────────
+# The difference from unblock is the branch: unblock KEEPS it, requeue DESTROYS
+# it. That difference is the fix for a failure that recurred three times —
+# EPA-1..4 and GO-1 each re-dispatched onto a branch weeks old, dragging in an
+# old base, an old .gitignore and dependencies that no longer merged.
+
+
+def _fake_git(existing=("feat/x",), fail=()):
+    calls = []
+
+    def run(cmd):
+        calls.append(cmd)
+        if cmd[:2] == ["git", "rev-parse"]:
+            return (0, "abc\n", "") if cmd[-1] in existing else (1, "", "")
+        if cmd[:2] == ["git", "tag"]:
+            return (1, "", "tag refused") if "tag" in fail else (0, "", "")
+        if cmd[:2] == ["git", "branch"]:
+            return (1, "", "delete refused") if "delete" in fail else (0, "", "")
+        if cmd[:2] == ["git", "worktree"]:
+            return (0, "", "")
+        return (0, "", "")
+
+    return run, calls
+
+
+def test_requeue_tags_before_it_deletes():
+    """The tag must come first. That branch may be the only record of a
+    completed attempt, and deleting it to fix a process problem must never be
+    the thing that loses it."""
+    run, calls = _fake_git()
+    ok, detail = unblock.archive_and_delete_branch(
+        "feat/x", "EPA-1", cwd=Path("."), date="2026-08-25", run=run
+    )
+    assert ok, detail
+    verbs = [c[1] for c in calls if c[0] == "git"]
+    assert verbs.index("tag") < verbs.index("branch"), "tag must precede delete"
+    assert any(c[:2] == ["git", "tag"] and "archive/EPA-1-2026-08-25" in c
+               for c in calls)
+
+
+def test_requeue_aborts_when_the_archive_fails():
+    """A branch that cannot be archived must not be deleted."""
+    run, calls = _fake_git(fail={"tag"})
+    ok, detail = unblock.archive_and_delete_branch(
+        "feat/x", "EPA-1", cwd=Path("."), date="2026-08-25", run=run
+    )
+    assert not ok
+    assert "could not tag" in detail
+    assert not any(c[:2] == ["git", "branch"] for c in calls), (
+        "no delete may be attempted once the archive has failed"
+    )
+
+
+def test_requeue_on_a_missing_branch_is_a_no_op_not_an_error():
+    run, _ = _fake_git(existing=())
+    ok, detail = unblock.archive_and_delete_branch(
+        "feat/gone", "EPA-9", cwd=Path("."), date="2026-08-25", run=run
+    )
+    assert ok
+    assert "nothing to archive" in detail
+
+
+def test_run_state_fields_cover_what_a_dispatch_writes():
+    """The list must include `branch` — clearing every other field and leaving
+    that one is precisely the mistake that made three re-dispatches reuse a
+    stale branch."""
+    for essential in ("branch", "status" if False else "gate_base_sha",
+                      "blocked_reason", "dispatcher_run_id"):
+        assert essential in unblock.RUN_STATE_FIELDS

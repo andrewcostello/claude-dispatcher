@@ -521,6 +521,35 @@ def build_parser() -> argparse.ArgumentParser:
     bl.add_argument("tasks_yaml")
     bl.set_defaults(func=unblock_cmd.list_blocked)
 
+    pb = sub.add_parser(
+        "prune-branches",
+        help=("Delete local branches whose work is already on the base. A "
+              "landed-but-undeleted branch is not clutter: the dispatcher "
+              "merges dependency branches by name, so each one is a future "
+              "conflict. DRY RUN unless --yes."),
+    )
+    pb.add_argument("--repo", default=".", help="Repository (default: cwd)")
+    pb.add_argument("--base", default="main")
+    pb.add_argument("--pattern", default="feat/",
+                    help="Only branches with this prefix (default: feat/)")
+    pb.add_argument("--yes", action="store_true",
+                    help="Actually delete. Without it, nothing is changed.")
+    pb.set_defaults(func=prune_branches)
+
+    rq = sub.add_parser(
+        "requeue",
+        help=("Send tasks back to To Do for a FRESH attempt: clear run state AND "
+              "archive-and-delete the branch. Unlike `unblock`, which keeps the "
+              "branch, this is for a base old enough that building on it is the "
+              "problem. Branches are tagged archive/<KEY>-<date> first."),
+    )
+    rq.add_argument("tasks_yaml")
+    rq.add_argument("keys", nargs="*", metavar="KEY")
+    rq.add_argument("--repo", default=".", help="Repository (default: cwd)")
+    rq.add_argument("--keep-branch", action="store_true",
+                    help="Clear run state but leave the branch alone")
+    rq.set_defaults(func=unblock_cmd.requeue)
+
     au = sub.add_parser(
         "audit",
         help=("Compare every Done task against the base branch. A branch whose "
@@ -795,6 +824,54 @@ def _watch_entry(args: argparse.Namespace) -> int:
         poll_seconds=float(args.poll),
         follow=not args.no_follow,
     )
+
+
+def prune_branches(args) -> int:
+    """`dispatcher prune-branches` — delete branches whose work is on the base.
+
+    Dry run unless --yes, because deleting branches is the one operation here
+    that destroys something. Only branches `verify_landed` calls landed are
+    touched; everything else is printed as a review queue.
+    """
+    from pathlib import Path
+
+    from . import push_verify
+
+    repo = Path(args.repo)
+    landed, held = push_verify.landed_branches(
+        cwd=repo, base=args.base, pattern=args.pattern
+    )
+
+    if held:
+        print(f"NOT landed — review, do not delete ({len(held)}):")
+        for name, res in held:
+            print(f"  {name:60} {res.status}")
+        print()
+
+    if not landed:
+        print(f"no landed branches matching {args.pattern!r}")
+        return 0
+
+    print(f"landed on {args.base} ({len(landed)}):")
+    for name, res in landed:
+        print(f"  {name:60} {res.status}")
+
+    if not args.yes:
+        print(f"\n  DRY RUN — {len(landed)} branch(es) would be deleted. "
+              f"Re-run with --yes.")
+        return 0
+
+    deleted = failed = 0
+    for name, _ in landed:
+        code, _, err = push_verify._run(["git", "branch", "-D", name], cwd=repo)
+        if code == 0:
+            deleted += 1
+            push_verify._run(["git", "push", "origin", "--delete", name], cwd=repo)
+        else:
+            failed += 1
+            print(f"  could not delete {name}: {err.strip()[:100]}")
+    print(f"\n  {deleted} deleted, {failed} failed, {len(held)} left for review")
+    return 1 if failed else 0
 
 
 def audit_landed(args) -> int:

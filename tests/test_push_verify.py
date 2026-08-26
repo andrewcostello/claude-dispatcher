@@ -634,3 +634,63 @@ def test_audit_also_checks_awaiting_review():
         "Awaiting Review and Merged claim the work is finished; In Progress does not"
     )
     assert all(r.needs_review for _, r in rows)
+
+
+# ── prune-branches ───────────────────────────────────────────────────────────
+def _branch_git(branches, ancestor_of_base, merged_prs=()):
+    """Fake git for landed_branches: `branches` exist, those in
+    `ancestor_of_base` are reachable, those in `merged_prs` have a merged PR."""
+    def run(cmd, cwd):
+        if cmd[:2] == ["git", "for-each-ref"]:
+            return (0, "\n".join(branches) + "\n", "")
+        if cmd[:2] == ["git", "rev-parse"]:
+            return (0, "sha_" + cmd[-1].replace("/", "_") + "\n", "")
+        if cmd[:2] == ["git", "merge-base"]:
+            tip = cmd[-2]
+            name = tip[4:].replace("_", "/") if tip.startswith("sha_") else ""
+            return (0, "", "") if name in ancestor_of_base else (1, "", "")
+        if cmd[:2] == ["gh", "pr"]:
+            head = cmd[cmd.index("--head") + 1]
+            return (0, '[{"number": 1}]' if head in merged_prs else "[]", "")
+        return (0, "", "")
+    return run
+
+
+def test_prune_splits_landed_from_held():
+    landed, held = pv.landed_branches(
+        cwd=Path("."),
+        run=_branch_git(["feat/a", "feat/b", "feat/c"],
+                        ancestor_of_base={"feat/a"}, merged_prs={"feat/b"}),
+    )
+    assert sorted(n for n, _ in landed) == ["feat/a", "feat/b"]
+    assert [n for n, _ in held] == ["feat/c"]
+    assert dict(landed)["feat/b"].status == "landed-via-pr", (
+        "a squash-merged branch is landed and must be prunable"
+    )
+
+
+def test_prune_only_touches_the_pattern():
+    """main and unrelated branches must never enter the delete list."""
+    landed, held = pv.landed_branches(
+        cwd=Path("."),
+        run=_branch_git(["feat/a", "main", "hotfix/x"],
+                        ancestor_of_base={"feat/a", "main", "hotfix/x"}),
+    )
+    assert [n for n, _ in landed] == ["feat/a"]
+    assert held == []
+
+
+def test_prune_never_lists_an_unverifiable_branch_as_landed():
+    """A git read that fails must not get a branch deleted."""
+    def run(cmd, cwd):
+        if cmd[:2] == ["git", "for-each-ref"]:
+            return (0, "feat/a\n", "")
+        if cmd[:2] == ["git", "rev-parse"]:
+            return (0, "abc123\n", "")
+        if cmd[:2] == ["git", "merge-base"]:
+            return (128, "", "boom")
+        return (0, "", "")
+
+    landed, held = pv.landed_branches(cwd=Path("."), run=run)
+    assert landed == []
+    assert held and held[0][1].status == "error"

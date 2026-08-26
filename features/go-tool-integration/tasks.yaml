@@ -236,7 +236,7 @@ tasks:
     estimate: 2h
     labels: [size:S, area:cfr, risk:high, phase:go-integration]
     blockedBy: [GO-0]
-    status: To Do
+    status: In Progress
     agent: claude
     panel_consensus: block
     panel_summary: consensus=block | claude=CHANGES_REQUESTED, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=2 (0C/2H)
@@ -249,6 +249,14 @@ tasks:
     panel_verdict_claude: CHANGES_REQUESTED
     mechanical_verification_detail: 'uncommitted changes in worktree at verification time — test evidence is not keyed to the committed tree: src/claude_dispatcher/ts_signature_fingerprint/'
     role_diff_loop: not_enabled
+    completed_at: '2026-08-25T22:17:53-07:00'
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.241 (Claude Code)
+    started_at: '2026-08-25T22:19:56-07:00'
+    dispatcher_run_id: 2026-08-26T05-19-56Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-26T05-19-56Z-tasks/GO-1/summary.md
+    branch: feat/GO-1-risk-py-consumes-cmd-classify
+    gate_base_sha: 820707f7af1eb6ed88d650070f633581d3fc4f10
   - key: GO-2
     summary: "Panel dispatches cmd/reviewer, with cross_family_reviewer retained as fallback"
     description: |
