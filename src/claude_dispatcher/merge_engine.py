@@ -226,6 +226,14 @@ def _consider_one(
     if verdict.classification_summary:
         log(f"  merge: {task.key} path classification: "
             f"{verdict.classification_summary}")
+    else:
+        # No binary on this host: the verdict is the legacy rule set alone.
+        # Said out loud so a reader of the run log knows no table was consulted
+        # (the pr_approved event carries classification=null for the same
+        # reason). A *present* binary that failed never lands here — that is
+        # "unavailable: ..." above, and elevated.
+        log(f"  merge: {task.key} path classification: none "
+            f"(classify binary not installed — legacy rules only)")
     if verdict.is_low:
         approver = DISPATCHER_APPROVER
         log(f"  merge: {task.key} risk=low — dispatcher self-approves "
