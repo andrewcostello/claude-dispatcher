@@ -233,3 +233,33 @@ tasks:
     labels: [size:M, area:dispatcher]
     agent: claude
     blockedBy: [EPA-3, EPA-4]
+    status: Done
+    started_at: '2026-08-25T17:04:08-07:00'
+    dispatcher_run_id: 2026-08-26T00-04-08Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-26T00-04-08Z-tasks/EPA-5/summary.md
+    branch: feat/EPA-5-wire-endpoint-readiness-into-dispatcher
+    cost_usd: 11.394161
+    completed_at: '2026-08-25T18:06:08-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    mechanical_verification: passed
+    role_diff_loop: not_enabled
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=2 (0C/2H)
+    panel_blocking_findings: 2
+    panel_verdict_claude: APPROVE
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: APPROVE
+    input_tokens: 1953
+    output_tokens: 33310
+    cache_read_input_tokens: 1460999
+    cache_creation_input_tokens: 78681
+    duration_ms: 1387931
+    num_turns: 21
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.241 (Claude Code)
