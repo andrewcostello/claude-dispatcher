@@ -2062,7 +2062,20 @@ def _run_task(
     elif (final_status == plan_mod.DONE
             and not cfg.auto_integrate
             and final_url is None):
-        expect_pr = not s.pr_not_raised_reason
+        # BRANCH MODE RAISES NO PULL REQUEST, and this is the fix for the
+        # failure that orphaned EPA-1..4 for seven weeks and then reproduced
+        # itself on the re-dispatch.
+        #
+        # `merge-prs` declines a branch-mode run outright — "not a pr-mode run
+        # (integration='branch') — no PRs to merge" — so nothing merges a PR
+        # opened here. The branch path will not merge it because it is a PR; the
+        # PR path will not merge it because the run is not PR mode. The work
+        # reaches a mergeable pull request and stops there while the row says
+        # Done. A run must not open a PR it will not merge.
+        #
+        # The branch PUSH is still verified, because the work must be pushed
+        # somewhere recoverable — only the PR half is off.
+        expect_pr = False
         needs_push = _verify_push_and_maybe_retry(
             cfg, snap, wt, summary_path, env, log_path, expect_pr=expect_pr,
         )

@@ -335,6 +335,19 @@ def verify_landed(
     )
 
 
+# Statuses that CLAIM the work is finished. "Awaiting Review" is here because a
+# stalled approval ladder is indistinguishable from a finished task otherwise:
+# the row reads like progress and the work sits in an open PR indefinitely.
+#
+# That is not hypothetical. The ladder self-approves a low-risk PR, but an
+# ELEVATED one needs an external GitHub approval — and in a single-maintainer
+# repository GitHub forbids approving your own pull request, so the condition can
+# never be met. A ladder that cannot be satisfied is a deadlock, not a gate, and
+# the least this can do is make the deadlock visible instead of leaving a row
+# that looks like it is still moving.
+_CLAIMS_FINISHED = ("done", "awaiting review", "merged")
+
+
 def audit_done_tasks(
     tasks: list[dict],
     *,
@@ -342,16 +355,16 @@ def audit_done_tasks(
     base: str = "main",
     run: Callable[[list[str], Path], tuple[int, str, str]] | None = None,
 ) -> list[tuple[str, LandedResult]]:
-    """Check every Done task's branch against ``base``.
+    """Check every task that CLAIMS to be finished against ``base``.
 
-    Returns one row per Done task, the ones needing review first, so a caller
+    Returns one row per such task, the ones needing review first, so a caller
     printing only the head of the list still prints the problems. Tasks in any
     other status are not checked: an unfinished task is not claiming to have
     landed.
     """
     rows: list[tuple[str, LandedResult]] = []
     for t in tasks:
-        if str(t.get("status", "")).strip().lower() != "done":
+        if str(t.get("status", "")).strip().lower() not in _CLAIMS_FINISHED:
             continue
         key = str(t.get("key", "?"))
         rows.append((key, verify_landed(t.get("branch"), cwd=cwd, base=base, run=run)))

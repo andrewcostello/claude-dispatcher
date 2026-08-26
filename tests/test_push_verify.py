@@ -361,11 +361,20 @@ def test_no_remote_skips_with_journaled_reason(repo: Path, monkeypatch) -> None:
     assert evs[0].payload["retry_attempted"] is False
 
 
-def test_pushed_no_pr_retries_then_flags(repo: Path, monkeypatch) -> None:
-    """Pushed branch but no open PR (and PR expected): the no-pr path fires the
-    retry end-to-end and, with the PR still absent, flags needs_push. Simulates
-    a present-but-conclusive `gh` (the local bare-repo origin can't host real
-    PRs) by forcing _pr_open to report 'no open PR'."""
+def test_branch_mode_pushed_without_a_pr_is_fine(repo: Path, monkeypatch) -> None:
+    """Branch mode expects NO pull request, so a pushed branch without one is
+    complete rather than flagged.
+
+    This test used to assert the opposite, and that contract is what orphaned
+    EPA-1..4. `merge-prs` declines a branch-mode run outright, so a PR raised
+    here is one nothing will ever merge: the branch path will not merge it
+    because it is a PR, the PR path will not merge it because the run is not PR
+    mode, and the row says Done while the work sits in limbo. A run must not
+    open a PR it will not merge.
+
+    `_pr_open` is forced to report "no open PR" — the local bare-repo origin
+    cannot host real ones.
+    """
     monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "done-pushed")
     monkeypatch.setattr(pv, "_pr_open", lambda *a, **k: False)
     _patch_spawn(monkeypatch)
@@ -373,13 +382,17 @@ def test_pushed_no_pr_retries_then_flags(repo: Path, monkeypatch) -> None:
     assert rc == 0
     row = _row(repo)
     assert row["status"] == "Done"
-    assert row.get("needs_push") is True
+    assert row.get("needs_push") is not True, (
+        "branch mode must not flag a missing PR — it never wanted one"
+    )
     evs = _push_verify_events(repo)
     assert len(evs) == 1
     p = evs[0].payload
-    assert p["outcome"] == "needs_push"
-    assert p["pre_retry_status"] == "no-pr"
-    assert p["post_retry_status"] == "no-pr"
+    assert p["outcome"] == "pushed"
+    assert p["expect_pr"] is False, (
+        "branch mode must not EXPECT a pull request; expecting one is what "
+        "caused it to be raised and then orphaned"
+    )
 
 
 def test_explicit_not_raised_pr_is_not_flagged(repo: Path, monkeypatch) -> None:
@@ -599,3 +612,25 @@ def test_unparseable_gh_output_leaves_the_branch_needing_review():
         return (0, "", "")
 
     assert pv.verify_landed("feat/x", cwd=Path("."), run=run).status == "unlanded"
+
+
+def test_audit_also_checks_awaiting_review():
+    """A stalled approval ladder must be visible, not look like progress.
+
+    The ladder self-approves low risk but requires an external GitHub approval
+    for elevated risk — and in a single-maintainer repo GitHub forbids approving
+    your own PR, so that condition can never be met. Without this, the row reads
+    "Awaiting Review" forever and the work sits in an open PR.
+    """
+    tasks = [
+        {"key": "A", "status": "Awaiting Review", "branch": "feat/a"},
+        {"key": "B", "status": "Merged", "branch": "feat/b"},
+        {"key": "C", "status": "In Progress", "branch": "feat/c"},
+    ]
+    rows = pv.audit_done_tasks(
+        tasks, cwd=Path("."), run=_git({("merge-base",): (1, "", "")})
+    )
+    assert sorted(k for k, _ in rows) == ["A", "B"], (
+        "Awaiting Review and Merged claim the work is finished; In Progress does not"
+    )
+    assert all(r.needs_review for _, r in rows)
