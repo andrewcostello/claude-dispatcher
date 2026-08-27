@@ -151,20 +151,46 @@ repository even references them:
 The suite reads 3 461 green while three modules are unverified. A green suite is
 evidence about the tests that exist, and says nothing about code no test imports.
 
-**The seals do not currently pass against main**, so this is not a merge. Extracted
-and run: 157 failed, 42 passed — and they are genuine assertion failures, not API
-drift. `test_branch_surface` asserts a branch widening a sealed interface from a
-second file is a VIOLATION; main returns CLEAN. Either main's bodies are
-incomplete and the seals are right, or the design changed deliberately after the
-seals were written and they are stale.
+**RESOLVED — the work was never finished.** The first version of this note said
+it was either incomplete bodies or stale seals and left it open. It is neither
+ambiguous nor a merge problem, and the commit that put each module on main says
+so outright:
 
-**That is a question for a human, not a merge to force.** Landing failing seals
-would break the suite; deleting them would destroy the only statement of what
-those modules were supposed to do. Both branches of that choice are wrong without
-knowing which of the two stories is true.
+| module | the commit on main | stubs |
+|---|---|---|
+| `prompt_provenance.py` | `fix(prompt-provenance): [W2-1-1]` | 3 |
+| `branch_surface.py` | `scaffold(branch-surface): [W2-2-1]` | 6 |
+| `mutation_ledger.py` | `scaffold(mutation-ledger): [W2-3-1]` | 14 |
 
-Recorded rather than resolved. The four W2/D branches are excluded from any
-prune until it is.
+Every one is a **W2-x-1 scaffold**, and between them they carry **23
+NotImplementedError stubs**. W2 ran scaffold (P1) → seals (P2) → bodies (P3), and
+only the scaffolds merged. The seals never landed and the bodies were never
+written.
+
+So the seals are not stale — they are the SPECIFICATION, written by a different
+author on purpose, per the ruling that a scaffold may not write the seals it will
+be judged by. They fail because the thing they specify does not exist. 157 failing
+seals against 23 stubs is not a contradiction, it is the expected reading.
+
+**And the repo already supports landing them.** `known_red.py` plus
+`test_exclusion: pytest-deselect` in `.dispatcher.yaml` exist precisely so a seal
+can land RED while its body is pending — that is the contract-first model this
+repo runs on. Landing them red is the normal path, not a violation of the gate.
+
+The finish, in order:
+
+1. Land the three seal files, registered as known-red so the suite stays
+   meaningful rather than merely green.
+2. Dispatch the body tasks against them. `feat/W2-1-3` already has bodies written
+   for one of them, so that one may be a merge rather than a build.
+3. As each body lands, deregister its rows. A register that never shrinks is a
+   list of excuses.
+
+What made this invisible for nine days is worth keeping: a green suite is
+evidence about the tests that EXIST. Three modules with no test file at all
+generate no signal — no failure, no skip, nothing. `dispatcher audit` cannot see
+it either; it checks branches, not coverage. **The check that would have caught
+it is "a module on main with no test that imports it".**
 
 ### What would keep this from happening again
 
