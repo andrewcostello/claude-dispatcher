@@ -291,24 +291,15 @@ tasks:
     labels: [size:M, area:dispatcher]
     agent: claude
     role: seals
-    status: Blocked
     blockedBy: [W2-1-1]
     unblocked_at: '2026-08-27T19:43:51+00:00'
 
-    started_at: '2026-08-27T12:44:08-07:00'
-    dispatcher_run_id: 2026-08-27T19-44-08Z-tasks
-    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-27T19-44-08Z-tasks/W2-1-2/summary.md
-    branch: feat/W2-1-2-seals-a-role-that-writes
-    gate_base_sha: 0b275d48599808b2c46d7a015508d96d2b99fd14
-    cost_usd: 20.48504
-    effort: high
     completed_at: '2026-08-27T13:03:04-07:00'
     iteration_count: 0
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
     panel_consensus: block
-    panel_summary: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=6 (0C/6H)
     panel_blocking_findings: 6
     panel_verdict_claude: CHANGES_REQUESTED
     panel_error_claude: cli timed out after 600s
@@ -325,11 +316,139 @@ tasks:
     model: claude-opus-5[1m]
     dispatcher_version: 0.1.0
     agent_version: 2.1.247 (Claude Code)
-    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=6 (0C/6H)'
     mechanical_verification: skipped
     role_diff_loop: not_enabled
     verified: true
     verification_iterations: 0
+    status: Superseded
+    superseded_by: W2-1-2a, W2-1-2b, W2-1-2c
+    superseded_reason: |-
+      Two fix rounds, both blocked, getting worse: 2 HIGH with two reviewers
+      UNAVAILABLE, then 6 HIGH with all three unanimous. The findings are one
+      objection restated — you cannot decide from a syntax tree that a
+      declaration will EXECUTE. `if skip: return` before it, a rebound alias, a
+      look-alike import, `declare_unanchored(*(), *())`: each is a
+      path-feasibility question, and in general undecidable.
+
+      The repo already owns the machinery this would need and it is enrolled for
+      GO ONLY (call_site_reachability.ANALYZERS == [Language.GO]). Python is the
+      harder language for exactly the reasons the reviewers exploited, and even a
+      perfect Python call graph answers 'can control reach here', not 'does the
+      declaration run first on every path' — a strictly harder, flow- and
+      path-sensitive analysis.
+
+      RULED: W2-1 claims 'the default refuses, and these three entry points are
+      wired' — NOT 'no unwired entry point can exist'. The completeness proof is
+      not bought. It would cost an analyzer wave plus a capability nothing here
+      has, to move a FAIL-CLOSED failure from run time to review time, for three
+      call sites that change rarely.
+
+      And it was the wrong completeness claim. What protects the gate is 'every
+      load goes through it', not 'every declaration executes' — a load that
+      bypasses check_prompt_tree has no declaration to analyse. That claim is a
+      registry check, and it is W2-1-2c.
+  - key: W2-1-2a
+    summary: seals — the prompt gate's states, proved by running it
+    description: |-
+      Seal prompt_provenance's STATE MACHINE, with no AST and no repo scanning.
+      Pure and hermetic; this is most of the invariant and none of the difficulty.
+
+      Rows to prove, each by driving the module directly:
+        * THE DEFAULT REFUSES. A load with no anchor and no declaration refuses,
+          and the refusal names which state it was in. This is the row the whole
+          unit rests on: it is why a forgotten entry point breaks its own tool
+          rather than leaving the hole open.
+        * An anchor and a declaration NEVER coexist (constraint 3) — in both
+          orders, since dropping the anchor must not uncover a declaration.
+        * A declared-unanchored process loads AND SAYS SO. Silence is a failure.
+        * Ambiguity is decided by DISAGREEMENT, not count (constraint 4): several
+          live anchors attesting ONE digest is not ambiguous; two digests is.
+        * publish_pin_from_genesis does not raise, and a failure it records
+          surfaces as constraint 3's refusal (constraint 5).
+
+      NON-VACUITY BAR: no row may pass against a body that returns a constant.
+      Each must distinguish the refusal from the permit by OBSERVED STATE, not by
+      `is None`. W2-3-2's panel round rejected exactly that shape — degraded-run
+      tests that asserted only `returned is None` and so passed for an
+      implementation that does nothing.
+    type: Task
+    estimate: 2h
+    labels:
+      - size:M
+      - area:dispatcher
+      - phase:w2
+    blockedBy:
+      - W2-1-1
+    status: To Do
+    role: seals
+  - key: W2-1-2b
+    summary: seals — each journal-less entry point, by executing it
+    description: |-
+      One seal per row of prompt_provenance.UNANCHORED_ENTRY_POINTS. There are
+      THREE, and they are already enumerated:
+        src/claude_dispatcher/bakeoff.py:384 cfr.run_panel
+        tools/cross_family_panel.py:110    cfr.run_panel
+        tools/retroactive_sweep.py:114     cfr.run_panel
+
+      RUN each one and assert the resulting state. Do not parse it.
+
+      That is the whole point of this task. Every objection the panel raised
+      against the static approach — a declaration behind `if skip: return`, a
+      rebound alias, a look-alike import, `declare_unanchored(*(), *())` passing
+      an arity check — is answered by execution, because a declaration that does
+      not run produces a refusal you can observe. You stop modelling runtime
+      semantics and simply watch them.
+
+      Each row must FAIL if its entry point's declaration is removed. Prove that
+      by removing it, not by asserting it.
+
+      Isolation: if an entry point runs pytest in-process, drive it in a
+      SUBPROCESS. W2-3-2's panel found a seal that would have been killed by the
+      nested run's own os._exit.
+    type: Task
+    estimate: 2h
+    labels:
+      - size:M
+      - area:dispatcher
+      - phase:w2
+    blockedBy:
+      - W2-1-1
+      - W2-1-2a
+    status: To Do
+    role: seals
+  - key: W2-1-2c
+    summary: seals — every prompt load is a listed load
+    description: |-
+      The completeness claim this unit DOES buy, and it is a different one from
+      the abandoned proof.
+
+      Assert that every call site reaching cross_family_reviewer._load_prompt
+      appears in prompt_provenance.UNANCHORED_ENTRY_POINTS or goes through the
+      gate. Grep-level: 'is this call site listed', not 'does this declaration
+      execute'. No path feasibility, no call-graph reachability.
+
+      This catches the failure that actually matters — a load that BYPASSES
+      check_prompt_tree entirely, which no amount of declaration analysis could
+      ever find, because it has no declaration to analyse.
+
+      It is deliberately weaker than the proof W2-1-2 attempted. A new entry
+      point that is added and not listed still fails CLOSED at run time; this
+      moves that detection to review time at a cost of tens of lines rather than
+      an analyzer wave.
+
+      Seal the register itself: a call site added to the repo and NOT added to
+      the tuple must turn this row red.
+    type: Task
+    estimate: 2h
+    labels:
+      - size:M
+      - area:dispatcher
+      - phase:w2
+    blockedBy:
+      - W2-1-1
+      - W2-1-2a
+    status: To Do
+    role: seals
   - key: W2-1-3
     summary: bodies — close the reach in the unfloored layer and name what is left
     description: |
@@ -353,7 +472,10 @@ tasks:
     agent: claude
     role: bodies
     status: To Do
-    blockedBy: [W2-1-2]
+    blockedBy:
+      - W2-1-2a
+      - W2-1-2b
+      - W2-1-2c
 
   - key: W2-1-4
     summary: adjudicate — rule W2-1-3's disputes and hand the floored half over
@@ -1010,12 +1132,43 @@ tasks:
     labels: [size:M, area:dispatcher]
     agent: claude
     role: seals
-    status: To Do
+    status: Blocked
     blockedBy: [W2-3-1]
     unblocked_at: '2026-08-18T19:21:17+00:00'
 
     branch: feat/W2-3-2-seals-a-ledger-entry-that
     gate_base_sha: eb5d4bac1114a7daebedb0f09d3639557e9795ed
+    started_at: '2026-08-27T13:08:40-07:00'
+    dispatcher_run_id: 2026-08-27T20-08-40Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-27T20-08-40Z-tasks/W2-3-2/summary.md
+    cost_usd: 16.374366000000002
+    effort: high
+    effort_escalated: true
+    completed_at: '2026-08-27T13:44:41-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    blocked_reason: 'cross_family_panel: consensus=block | claude=APPROVE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=4 (0C/4H)'
+    mechanical_verification: skipped
+    role_diff_loop: not_enabled
+    verified: true
+    verification_iterations: 1
+    panel_consensus: block
+    panel_summary: consensus=block | claude=APPROVE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=4 (0C/4H)
+    panel_blocking_findings: 4
+    panel_verdict_claude: APPROVE
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: CHANGES_REQUESTED
+    input_tokens: 902
+    output_tokens: 29951
+    cache_read_input_tokens: 910293
+    cache_creation_input_tokens: 66968
+    duration_ms: 371120
+    num_turns: 16
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.247 (Claude Code)
   - key: W2-3-3
     summary: bodies — build the ledger and populate it from what is still true
     description: |
