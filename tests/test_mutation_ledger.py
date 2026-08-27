@@ -33,7 +33,7 @@ vocabulary a row carries follows from that, and is not a stylistic choice:
   * ``Measured under:`` — the five rows green today over implemented seams.
     Each named mutation was applied to :mod:`mutation_ledger` and the row
     observed to go PASSED->FAILED on 2026-08-18.
-  * ``Predicted (unmeasured) under:`` — the sixteen rows red against a
+  * ``Predicted (unmeasured) under:`` — the eighteen rows red against a
     declared hole (the four folds, the harness, the applier, the
     provisioner/collector/runner, the reader/writer, the citation check and
     the CLI). They are red under control as well as mutant, so no transition
@@ -1679,6 +1679,15 @@ def test_the_applier_positively_exercises_add_default_branch() -> None:
     an anchor that was not a conditional, so an implementation that always
     refuses it would pass. This test applies the mutation where it should
     succeed and verifies the tree changed by the right amount.
+
+    Predicted (unmeasured) under: refuse ADD_DEFAULT_BRANCH unconditionally
+    and the first call reddens; return ``source`` unchanged for a conditional
+    with no ``else`` and the "something different" and digest assertions
+    redden; append the branch to the LAST conditional in the module rather
+    than the one under the anchor, or add it to every conditional, and the
+    tree equality and the one-function-moved assertion redden; emit the
+    branch with a body other than ``return <argument>`` and the tree
+    equality reddens.
     """
     source = _SUBJECT_SRC.encode()
     site = MutationSite(subject="src/subject.py", anchor="choose",
@@ -1881,6 +1890,14 @@ def test_a_run_interrupted_by_os_exit_is_refused_and_isolated(
 
     A provisioned tree with a seal file that calls ``os._exit(0)`` in a test
     must result in a refused run, not a crashed seal process.
+
+    Predicted (unmeasured) under: run the nested pytest in-process and the
+    nested ``os._exit(0)`` ends the seal interpreter before this row can
+    report — the row does not redden, it vanishes, which is what the whole
+    session shows; gate on the subprocess's exit code alone and the run
+    reads as green, ``run_rows`` returns a map, and the ``is None`` assertion
+    reddens; return the partial map (``test_a_reported`` PASSED, the rest
+    unreported) instead of raising and the same assertion reddens.
     """
     repo, _, rows, head = _tiny_repo(tmp_path)
 
