@@ -553,27 +553,59 @@ def test_parametrised(case):
     assert other() == 7
 """
 
+#: The seal file at the revision a `deleted_row` entry names: `_SEAL_SRC`
+#: plus one row a later commit deletes. It reddens under the recorded
+#: operator, so the record's reddened set carries it beside `reddens`.
+_DOOMED_ROW = "test_a_row_a_later_commit_deletes"
+_SEAL_WITH_DOOMED_ROW_SRC = _SEAL_SRC + f"""
+
+def {_DOOMED_ROW}():
+    assert answer() == 41
+"""
+
+
+def _init_repo(repo: Path) -> None:
+    """``git init`` with NO template: the repository gets no hooks directory,
+    so nothing the host's git installation ships can run on a fixture commit.
+    """
+    _git("init", "-q", "-b", "main", "--template=", cwd=repo)
+
+
+def _commit(repo: Path, message: str) -> str:
+    """Commit the index of ``repo`` under a fixed identity; the new sha.
+
+    :func:`scrubbed_git_env` nulls the global and system config, which is
+    why the identity has to be supplied here. Signing and the hooks path are
+    pinned off in the same breath so a fixture commit can never wait on a
+    pinentry or run a hook, whatever git the host has.
+    """
+    _git("-c", "user.name=seal", "-c", "user.email=seal@example.invalid",
+         "-c", "commit.gpgsign=false", "-c", f"core.hooksPath={os.devnull}",
+         "commit", "-qm", message, cwd=repo)
+    return _git("rev-parse", "HEAD", cwd=repo).stdout.decode().strip()
+
 
 def _tiny_repo(tmp_path: Path, *, over_claim: bool = False,
                revision: str | None = None, deleted_row: bool = False):
-    """A one-commit repository, an entry against it, and its row names.
+    """A repository, an entry against a revision of it, and its row names.
 
-    ``deleted_row`` records the entry against a claiming row the tree does
-    not collect, and puts that row in the recorded population too — the shape
-    a DELETED row leaves behind, where the absence and the population change
-    arrive together.
+    Returns ``(repo, entry, rows, recorded)``; ``recorded`` is the revision
+    the entry names, and it is HEAD — except under ``deleted_row``, where the
+    entry claims a row that EXISTS at the recorded revision and a second
+    commit then deletes it, so HEAD is a tree the row is gone from. The
+    recorded population and reddened set carry the row, as a record taken at
+    that revision would; ``rows["gone"]`` names it.
     """
     repo = tmp_path / "repo"
     (repo / "src").mkdir(parents=True)
     (repo / "tests").mkdir()
     (repo / "src" / "subject.py").write_text(_SUBJECT_SRC)
     (repo / "tests" / "conftest.py").write_text(_CONFTEST_SRC)
-    (repo / "tests" / "test_seal.py").write_text(_SEAL_SRC)
-    _git("init", "-q", "-b", "main", cwd=repo)
+    (repo / "tests" / "test_seal.py").write_text(
+        _SEAL_WITH_DOOMED_ROW_SRC if deleted_row else _SEAL_SRC)
+    _init_repo(repo)
     _git("add", "-A", cwd=repo)
-    _git("-c", "user.name=seal", "-c", "user.email=seal@example.invalid",
-         "commit", "-qm", "the tree the entry names", cwd=repo)
-    head = _git("rev-parse", "HEAD", cwd=repo).stdout.decode().strip()
+    head = _commit(repo, "the tree the entry names")
 
     seal = _TINY_SEAL
     # Function-level, which is what `population_digest` and `collect_rows`
@@ -586,10 +618,16 @@ def _tiny_repo(tmp_path: Path, *, over_claim: bool = False,
         "untouched": f"{seal}::test_untouched",
         "parametrised": f"{seal}::test_parametrised",
     }
-    gone = f"{seal}::test_a_row_this_tree_no_longer_has"
+    gone = f"{seal}::{_DOOMED_ROW}"
     claiming = gone if deleted_row else rows["reddens"]
     population = (tuple(rows.values()) + (gone,) if deleted_row
                   else tuple(rows.values()))
+    if over_claim:
+        reddened = (rows["baseline_red"], rows["reddens"])
+    elif deleted_row:
+        reddened = (rows["reddens"], gone)
+    else:
+        reddened = (claiming,)
     entry = ml.new_entry(
         seal_file=seal, claiming_row=claiming,
         site=MutationSite(subject="src/subject.py", anchor="answer",
@@ -598,9 +636,11 @@ def _tiny_repo(tmp_path: Path, *, over_claim: bool = False,
         subject_sha256=ml.source_digest(_SUBJECT_SRC.encode()),
         mutant_sha256=ml.source_digest(_MUTANT_SRC.encode()),
         population_sha256=ml.population_digest(population),
-        reddened=((rows["baseline_red"], rows["reddens"]) if over_claim
-                  else (claiming,)),
-        control_green=True, observed_on=MEASURED_ON)
+        reddened=reddened, control_green=True, observed_on=MEASURED_ON)
+    if deleted_row:
+        # The deletion is a SECOND commit, after the record: HEAD and the
+        # recorded revision are now different trees, and only one has the row.
+        _recommit(repo, seal, _SEAL_SRC)
     # `gone` is in the map only when it is in the record: `rows` is otherwise
     # exactly the tree's population, which is what the collector rows compare
     # against.
@@ -611,9 +651,7 @@ def _recommit(repo: Path, path: str, source: str) -> str:
     """Replace ``path`` in ``repo``, commit, and return the new revision."""
     (repo / path).write_text(source)
     _git("add", "-A", cwd=repo)
-    _git("-c", "user.name=seal", "-c", "user.email=seal@example.invalid",
-         "commit", "-qm", f"rewrite {path}", cwd=repo)
-    return _git("rev-parse", "HEAD", cwd=repo).stdout.decode().strip()
+    return _commit(repo, f"rewrite {path}")
 
 
 #: A record with no measurement behind it, for the rows about IDENTITY and the
@@ -917,26 +955,58 @@ def test_a_deleted_claiming_row_is_resolved_before_anything_is_classified(
     would report ``HARNESS_FAULT`` — parking a clause on a re-run that can
     never collect a row somebody deleted.
 
-    The recorded population carries the deleted row too, so ``ROW_ABSENT``
-    and ``POPULATION`` drift arrive together and the hard absence must win.
-    No result map is consulted for the verdict: ``NOT_ATTEMPTED`` is the
-    observation, and no other row's transition may stand in for the missing
-    one.
+    The history is real, not declared: the claiming row EXISTS at the
+    recorded revision and a later commit deletes it, so the two modes ask
+    two different trees and are judged in the same call. Under
+    ``AT_RECORDED`` the row is found, run, and reddens as recorded — the
+    control that makes the other half a test of the MODE. A harness that
+    ignored the mode and provisioned ``entry.revision`` for every call would
+    find the row both times, and a fixture whose row never existed anywhere
+    could not tell that harness from a correct one.
 
-    Predicted (unmeasured) under: classify before resolving the row and this
-    reads ``HARNESS_FAULT``/``FAULTED``; fold ``POPULATION`` above
-    ``ROW_ABSENT`` and the freshness reads ``POPULATION_MOVED``; let another
-    row's transition answer for the claiming row and ``reddened_observed``
-    stops being empty.
+    Under ``AT_TARGET`` the recorded population carries the deleted row too,
+    so ``ROW_ABSENT`` and ``POPULATION`` drift arrive together and the hard
+    absence must win. No result map is consulted for the verdict:
+    ``NOT_ATTEMPTED`` is the observation, and no other row's transition may
+    stand in for the missing one.
+
+    Predicted (unmeasured) under: provision ``entry.revision`` whatever the
+    mode and the AT_TARGET block reddens on ``revision_run`` and on
+    ``ROW_ABSENT``; classify before resolving the row and it reads
+    ``HARNESS_FAULT``/``FAULTED``; fold ``POPULATION`` above ``ROW_ABSENT``
+    and the freshness reads ``POPULATION_MOVED``; let another row's
+    transition answer for the claiming row and ``reddened_observed`` stops
+    being empty.
     """
-    repo, entry, rows, _ = _tiny_repo(tmp_path, deleted_row=True)
+    repo, entry, rows, recorded = _tiny_repo(tmp_path, deleted_row=True)
+    target = _git("rev-parse", "HEAD", cwd=repo).stdout.decode().strip()
 
-    # AT_TARGET, not AT_RECORDED: a well-formed observation cannot show a row
-    # missing at its own revision — the row was collected when it was taken —
-    # so the deleted row is only observable against the target tree, which is
-    # also the mode W2-3-3 and W2-3-5 will run in.
+    # The two trees really differ in exactly this row — read from the object
+    # store, not through `collect_rows`, so this block reddens on `rederive`
+    # alone.
+    row_name = rows["gone"].rpartition("::")[2].encode()
+    assert target != recorded
+    assert row_name in _at_revision(repo, recorded, _TINY_SEAL)
+    assert row_name not in _at_revision(repo, target, _TINY_SEAL)
+
+    # Control: at its own revision the row is there and the claim holds.
+    held = ml.rederive(entry, repo_root=str(repo),
+                       mode=RederiveMode.AT_RECORDED)
+    assert held.revision_run == recorded
+    assert held.drift == (), (
+        "a well-formed observation cannot drift at its own revision")
+    assert held.freshness is Freshness.ANCHORED
+    assert held.observation is Observation.REDDENED_AS_RECORDED
+    assert set(held.reddened_observed) == set(entry.reddened)
+    assert held.status is Status.HELD
+
+    # AT_TARGET is the tree the row is gone from, and the mode W2-3-3 and
+    # W2-3-5 will run in.
     r = ml.rederive(entry, repo_root=str(repo), mode=RederiveMode.AT_TARGET)
 
+    assert r.revision_run == target, (
+        "the target tree is the one that was provisioned, and the one the "
+        "absence was observed in")
     assert Drift.ROW_ABSENT in r.drift
     assert r.freshness is Freshness.ROW_GONE
     assert r.observation is Observation.NOT_ATTEMPTED
@@ -945,10 +1015,6 @@ def test_a_deleted_claiming_row_is_resolved_before_anything_is_classified(
         "comparison that did not happen")
     assert r.status is Status.UNDERIVABLE
     assert ml.proposed_fate(r.status) is ClauseFate.RELABEL_PREDICTED
-
-    # The row really is not there — checked against the seal file's source,
-    # not through `collect_rows`, so this row reddens on `rederive` alone.
-    assert rows["gone"].rpartition("::")[2] not in _SEAL_SRC
 
 
 # --------------------------------------------------------------------------- #
@@ -1668,10 +1734,7 @@ def test_the_provisioner_stands_up_the_whole_population_and_runs_it(
     repo, entry, rows, head = _tiny_repo(tmp_path)
     collected = set(rows.values())
 
-    _git("add", "-A", cwd=repo)
-    _git("-c", "user.name=seal", "-c", "user.email=seal@example.invalid",
-         "commit", "-qm", "a second commit after the subject entry was created",
-         cwd=repo)
+    _recommit(repo, "NOTE", "a commit after the entry was recorded\n")
 
     clone = ml.provision_subject_tree(str(repo), head, str(tmp_path / "dest"))
     assert ml.collect_rows(clone, _TINY_SEAL) == tuple(sorted(collected)), (
@@ -1864,12 +1927,20 @@ def test_a_ledger_is_written_only_where_it_can_be_read_back_unchanged(
     each refusal below is followed by the bytes that were there before, and
     the refused PATH is checked for not having been created at all.
 
+    A write REPLACES the file. The refusals cannot show that — their input
+    is rejected before the file is opened — so the same valid sequence is
+    written twice and pinned byte-for-byte, and a different valid sequence
+    is written over it and pinned to leave no earlier line behind. A writer
+    that appended would pass everything else here and hand the next reader
+    two copies of every record.
+
     Predicted (unmeasured) under: drop the ``validate_ledger`` call from
     ``write_ledger`` and the rival-entry block reddens; validate AFTER
     writing and the surviving-bytes assertions redden while the ``raises``
     blocks stay green; drop the ``refuse_unwritable_ledger_path`` call and
-    the misplaced-path block reddens; skip an unparseable line instead of
-    refusing the file and the last block reddens.
+    the misplaced-path block reddens; open the file for append and the
+    replay and replacement blocks redden; skip an unparseable line instead
+    of refusing the file and the last block reddens.
     """
     monkeypatch.chdir(tmp_path)
     (tmp_path / ml.LEDGER_DIR).mkdir(parents=True)
@@ -1883,6 +1954,11 @@ def test_a_ledger_is_written_only_where_it_can_be_read_back_unchanged(
     assert ml.load_ledger(path) == records
     committed = Path(path).read_bytes()
 
+    ml.write_ledger(path, records)
+    assert Path(path).read_bytes() == committed, (
+        "replaying one valid write changed the file: the writer appends")
+    assert ml.load_ledger(path) == records
+
     with pytest.raises(ml.MutationLedgerError):
         ml.write_ledger("docs/other.jsonl", records)
     assert not Path("docs/other.jsonl").exists(), (
@@ -1895,6 +1971,12 @@ def test_a_ledger_is_written_only_where_it_can_be_read_back_unchanged(
         "refusal; the exception says nothing was written and the file says "
         "otherwise")
     assert ml.load_ledger(path) == records
+
+    replacement = (first, _wire_prediction(described="a different clause"))
+    ml.write_ledger(path, replacement)
+    assert ml.load_ledger(path) == replacement
+    assert ml.canonical_line(second).encode() not in Path(path).read_bytes(), (
+        "a record the new sequence does not carry survived the write")
 
     # A blank line is not a record; a damaged one is not a missing one.
     Path(path).write_text(
