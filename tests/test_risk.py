@@ -12,12 +12,13 @@ Three layers:
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from claude_dispatcher import risk
+from claude_dispatcher import classification, risk
 from claude_dispatcher.risk import (
     DEFAULT_RISK_CONFIG,
     ELEVATED,
@@ -72,9 +73,9 @@ def test_baseline_is_low_with_no_reasons():
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize(
-    "overrides, needle",
-    [
+# Every rule, each flipping the low baseline on its own. Shared with the
+# classification sweep below.
+_RULE_CASES = [
         # size threshold (max_size defaults to S)
         (dict(size_label="M", labels=["size:M"]), "size M exceeds max_size S"),
         (dict(size_label="XL", labels=["size:XL"]), "size XL exceeds max_size S"),
@@ -118,8 +119,10 @@ def test_baseline_is_low_with_no_reasons():
         (dict(verified=False), "first-pass verification not satisfied"),
         (dict(verified=None), "first-pass verification not satisfied"),
         (dict(verification_iterations=1), "first-pass verification not satisfied"),
-    ],
-)
+]
+
+
+@pytest.mark.parametrize("overrides, needle", _RULE_CASES)
 def test_each_rule_flips_to_elevated(overrides, needle):
     verdict = evaluate(**_low_kwargs(**overrides))
     assert verdict.level == ELEVATED
@@ -442,3 +445,328 @@ def test_classify_fails_closed_on_bad_base_ref(git_repo: Path):
     verdict = risk.classify(task_row, git_repo, "no-such-ref")
     assert verdict.level == ELEVATED
     assert any("could not compute effective diff" in r for r in verdict.reasons)
+
+
+# --------------------------------------------------------------------------- #
+# GO-1: cmd/classify as an additional ELEVATING signal (pure evaluate)
+# --------------------------------------------------------------------------- #
+
+
+def _cls(**kw) -> classification.Classification:
+    return classification.Classification(**kw)
+
+
+@pytest.mark.parametrize(
+    "cls, needle",
+    [
+        (_cls(risk="high"), "classification risk tier high"),
+        (_cls(risk="critical"), "classification risk tier critical"),
+        (_cls(risk="CRITICAL"), "classification risk tier CRITICAL"),
+        (_cls(risk="low", financial_paths_touched=True), "financial path touched"),
+        (_cls(risk="low", gate_signals=("env-gate",)), "gate signals in changed lines: env-gate"),
+    ],
+)
+def test_elevated_classification_forces_elevated_on_a_low_task(cls, needle):
+    assert evaluate(**_low_kwargs()).level == LOW
+    verdict = evaluate(**_low_kwargs(), classification=cls)
+    assert verdict.level == ELEVATED
+    assert any(needle in r for r in verdict.reasons), verdict.reasons
+
+
+@pytest.mark.parametrize(
+    "cls",
+    [
+        _cls(risk="low"),
+        _cls(risk="medium"),
+        _cls(risk="low", panel_reduced=True, client_only=True, panel_seats=1),
+        _cls(risk="", components=("web",)),
+    ],
+)
+def test_non_elevating_classification_leaves_a_low_verdict_low(cls):
+    assert evaluate(**_low_kwargs(), classification=cls) == evaluate(**_low_kwargs())
+
+
+@pytest.mark.parametrize("overrides, needle", _RULE_CASES)
+def test_low_classification_never_downgrades_an_elevated_verdict(overrides, needle):
+    """One-directional: path evidence may raise, never lower."""
+    legacy = evaluate(**_low_kwargs(**overrides))
+    assert legacy.level == ELEVATED
+    for cls in (_cls(risk="low"), _cls(risk="low", panel_reduced=True)):
+        verdict = evaluate(**_low_kwargs(**overrides), classification=cls)
+        assert verdict.level == ELEVATED
+        assert verdict.reasons == legacy.reasons
+        assert any(needle in r for r in verdict.reasons)
+
+
+def test_elevating_classification_keeps_the_rule_reasons_and_adds_its_own():
+    verdict = evaluate(
+        **_low_kwargs(labels=["size:S", "security"]),
+        classification=_cls(risk="high", financial_paths_touched=True),
+    )
+    assert verdict.level == ELEVATED
+    joined = " | ".join(verdict.reasons)
+    assert "forbidden label: security" in joined
+    assert "classification risk tier high" in joined
+    assert "financial path touched" in joined
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [_low_kwargs()]
+    + [_low_kwargs(**o) for o, _ in _RULE_CASES]
+    + [
+        _low_kwargs(changed_files=[_prod("docs/big.md", 5000, 0)]),
+        _low_kwargs(changed_files=[_prod(".github/SECURITY.md", 3, 0)]),
+        _low_kwargs(changed_files=[]),
+        _low_kwargs(size_label="L", labels=["size:L", "security"], verified=False),
+    ],
+)
+def test_none_classification_reproduces_the_legacy_verdict_exactly(kwargs):
+    """``classification=None`` (and omitting it) IS today's verdict."""
+    legacy = risk._evaluate_rules(**kwargs)
+    assert evaluate(**kwargs) == legacy
+    assert evaluate(**kwargs, classification=None) == legacy
+    assert evaluate(**kwargs).classification is None
+
+
+def test_path_evidence_elevates_even_a_docs_only_diff():
+    """The carve-out bypasses the RULES, not path evidence — a classification
+    is allowed to add review anywhere, and only ever add."""
+    docs = _low_kwargs(changed_files=[_prod("docs/big.md", 5000, 0)])
+    assert evaluate(**docs).level == LOW
+    assert evaluate(**docs, classification=_cls(risk="low")).level == LOW
+    verdict = evaluate(**docs, classification=_cls(risk="high"))
+    assert verdict.level == ELEVATED
+    # The docs-only note is a LOW explanation; it does not survive an elevation.
+    assert verdict.reasons == ("classification risk tier high",)
+
+
+def test_classification_reasons_is_empty_for_none_and_for_low():
+    assert risk.classification_reasons(None) == ()
+    assert risk.classification_reasons(_cls(risk="low")) == ()
+    assert risk.classification_reasons(_cls(risk="medium")) == ()
+
+
+# --------------------------------------------------------------------------- #
+# GO-1: classify() shells out to the binary — absent / present / failing
+# --------------------------------------------------------------------------- #
+
+
+_LOW_ROW = {
+    "labels": ["size:S", "area:config"],
+    "verified": True,
+    "verification_iterations": 0,
+}
+
+HIGH_PAYLOAD = {
+    "risk": "high",
+    "components": ["wallet"],
+    "financial_paths_touched": True,
+    "panel": {"seats": 5, "reduced": False},
+    "gate_signals": [{"signal": "env-gate", "file": "src/app.py"}],
+}
+
+LOW_PAYLOAD = {"risk": "low", "panel": {"seats": 1, "reduced": True}}
+
+
+def _fake_classify(tmp_path: Path, monkeypatch, script: str, *, executable=True) -> Path:
+    """Install ``script`` as the ``classify`` binary via CLASSIFY_BIN."""
+    bin_path = tmp_path / "bin" / "classify"
+    bin_path.parent.mkdir(exist_ok=True)
+    bin_path.write_text(script, encoding="utf-8")
+    if executable:
+        bin_path.chmod(0o755)
+    monkeypatch.setenv("CLASSIFY_BIN", str(bin_path))
+    assert classification.classify_binary() == str(bin_path)
+    return bin_path
+
+
+def _emitting(payload: dict, capture: Path | None = None) -> str:
+    sink = f"cat > '{capture}'" if capture else "cat > /dev/null"
+    return f"#!/bin/sh\n{sink}\nprintf '%s' '{json.dumps(payload)}'\n"
+
+
+def test_classify_absent_binary_degrades_to_the_legacy_rules(git_repo: Path):
+    """The conftest pin makes the binary ABSENT; that is the legacy path."""
+    assert classification.classify_binary() is None
+    _branch_with_changes(git_repo, {"src/app.py": "one\ntwo\n"})
+    verdict = risk.classify(_LOW_ROW, git_repo, "main")
+    assert verdict.level == LOW
+    assert verdict.reasons == ()
+    assert verdict.classification == "classification unavailable: classify binary absent"
+
+
+def test_classify_present_binary_elevates_a_task_the_rules_call_low(
+    git_repo: Path, tmp_path: Path, monkeypatch
+):
+    """The cheapest proof that a worktree can shell out to cmd/classify and
+    parse the result: the diff reaches the binary, and its verdict lands."""
+    received = tmp_path / "received.diff"
+    _fake_classify(tmp_path, monkeypatch, _emitting(HIGH_PAYLOAD, received))
+    _branch_with_changes(git_repo, {"src/app.py": "one\ntwo\n"})
+
+    verdict = risk.classify(_LOW_ROW, git_repo, "main")
+
+    assert verdict.level == ELEVATED
+    joined = " | ".join(verdict.reasons)
+    assert "classification risk tier high" in joined
+    assert "financial path touched" in joined
+    assert "env-gate" in joined
+    # summary_line() is what the merge engine journals.
+    assert verdict.classification == classification.parse_classification(HIGH_PAYLOAD).summary_line()
+    assert verdict.classification == "risk=high components=wallet financial gate-signals=env-gate"
+    diff = received.read_text(encoding="utf-8")
+    assert "+++ b/src/app.py" in diff and "+one" in diff
+
+
+def test_classify_present_low_classification_never_downgrades(
+    git_repo: Path, tmp_path: Path, monkeypatch
+):
+    _fake_classify(tmp_path, monkeypatch, _emitting(LOW_PAYLOAD))
+    _branch_with_changes(git_repo, {"internal/auth/token.py": "secret\n"})
+    verdict = risk.classify(_LOW_ROW, git_repo, "main")
+    assert verdict.level == ELEVATED
+    assert any("**/auth/**" in r for r in verdict.reasons)
+    assert verdict.classification == "risk=low"
+
+
+def test_classify_present_low_classification_leaves_low_low(
+    git_repo: Path, tmp_path: Path, monkeypatch
+):
+    _fake_classify(tmp_path, monkeypatch, _emitting(LOW_PAYLOAD))
+    _branch_with_changes(git_repo, {"src/app.py": "one\n"})
+    verdict = risk.classify(_LOW_ROW, git_repo, "main")
+    assert verdict.level == LOW and verdict.reasons == ()
+    assert verdict.classification == "risk=low"
+
+
+@pytest.mark.parametrize(
+    "script, executable, needle",
+    [
+        # non-zero exit (what a missing rule table produces)
+        ("#!/bin/sh\ncat >/dev/null\necho 'no risk-paths config found' >&2\nexit 3\n",
+         True, "classify exited 3: no risk-paths config found"),
+        ("#!/bin/sh\ncat >/dev/null\nexit 1\n", True, "classify exited 1"),
+        # unparsable JSON
+        ("#!/bin/sh\ncat >/dev/null\necho 'not json at all'\n", True, "unusable output"),
+        # exception while invoking: present-but-not-executable raises OSError
+        ("#!/bin/sh\nexit 0\n", False, "classify invocation failed (PermissionError"),
+    ],
+)
+def test_classify_present_but_failing_binary_fails_closed(
+    git_repo: Path, tmp_path: Path, monkeypatch, script, executable, needle
+):
+    """A host that HAS the binary must not have a failure look like never
+    having had it: ``low`` is auto-merge, so a crash is ``elevated`` — and it
+    is a verdict, not an exception."""
+    _fake_classify(tmp_path, monkeypatch, script, executable=executable)
+    _branch_with_changes(git_repo, {"src/app.py": "one\n"})
+    assert risk.classify(_LOW_ROW, git_repo, "main") is not None  # no raise
+    verdict = risk.classify(_LOW_ROW, git_repo, "main")
+    assert verdict.level == ELEVATED
+    assert len(verdict.reasons) == 1
+    assert verdict.reasons[0].startswith("classification failed with classify binary present: ")
+    assert needle in verdict.reasons[0], verdict.reasons
+    assert verdict.classification == verdict.reasons[0]
+
+
+def test_classify_present_binary_raising_arbitrary_exception_fails_closed(
+    git_repo: Path, tmp_path: Path, monkeypatch
+):
+    _fake_classify(tmp_path, monkeypatch, _emitting(LOW_PAYLOAD))
+    _branch_with_changes(git_repo, {"src/app.py": "one\n"})
+
+    def _boom(**_kw):
+        raise RuntimeError("parser regression")
+
+    monkeypatch.setattr(classification, "classify_diff_strict", _boom)
+    verdict = risk.classify(_LOW_ROW, git_repo, "main")
+    assert verdict.level == ELEVATED
+    assert "parser regression" in verdict.reasons[0]
+
+
+def test_classify_present_binary_is_not_invoked_on_an_empty_diff(
+    git_repo: Path, tmp_path: Path, monkeypatch
+):
+    bin_path = _fake_classify(tmp_path, monkeypatch, "#!/bin/sh\nexit 1\n")
+    verdict = risk.classify(_LOW_ROW, git_repo, "main", head_ref="main")
+    assert verdict.classification == "classification skipped: empty diff"
+    assert verdict.level == LOW
+    assert bin_path.exists()
+
+
+# --------------------------------------------------------------------------- #
+# GO-1: TOCTOU — every read is pinned to SHAs resolved once
+# --------------------------------------------------------------------------- #
+
+
+def _sha(repo: Path, ref: str) -> str:
+    return subprocess.run(
+        ["git", "rev-parse", ref], cwd=repo, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def test_classify_reads_both_diffs_against_the_same_resolved_shas(
+    git_repo: Path, tmp_path: Path, monkeypatch
+):
+    _fake_classify(tmp_path, monkeypatch, _emitting(LOW_PAYLOAD))
+    _branch_with_changes(git_repo, {"src/app.py": "one\n"})
+    base_sha, head_sha = _sha(git_repo, "main"), _sha(git_repo, "feat/x")
+    assert base_sha != head_sha
+
+    real_run = subprocess.run
+    diff_specs: list[str] = []
+
+    def _spy(argv, **kw):
+        if argv[:2] == ["git", "diff"]:
+            diff_specs.append(argv[-1])
+        return real_run(argv, **kw)
+
+    monkeypatch.setattr(risk.subprocess, "run", _spy)
+    verdict = risk.classify(_LOW_ROW, git_repo, "main", head_ref="feat/x")
+
+    assert verdict.level == LOW
+    # numstat + unified: two reads, one spec, and it is SHAs, not names.
+    assert len(diff_specs) == 2
+    assert diff_specs == [f"{base_sha}...{head_sha}"] * 2
+
+
+def test_classify_is_immune_to_the_branch_moving_between_reads(
+    git_repo: Path, tmp_path: Path, monkeypatch
+):
+    """The branch gains a forbidden-path commit after the numstat read. Both
+    the rules and cmd/classify must still describe the commit judged, so the
+    verdict stays low and the binary never sees the auth file."""
+    received = tmp_path / "received.diff"
+    _fake_classify(tmp_path, monkeypatch, _emitting(LOW_PAYLOAD, received))
+    _branch_with_changes(git_repo, {"src/app.py": "one\n"})
+    judged = _sha(git_repo, "feat/x")
+
+    real_run = subprocess.run
+    state = {"diffs": 0}
+
+    def _mover(argv, **kw):
+        out = real_run(argv, **kw)
+        if argv[:2] == ["git", "diff"]:
+            state["diffs"] += 1
+            if state["diffs"] == 1:
+                p = git_repo / "internal" / "auth" / "token.py"
+                p.parent.mkdir(parents=True)
+                p.write_text("secret\n", encoding="utf-8")
+                real_run(["git", "add", "."], cwd=git_repo, check=True, capture_output=True)
+                real_run(["git", "commit", "-q", "-m", "moved"], cwd=git_repo,
+                         check=True, capture_output=True)
+        return out
+
+    monkeypatch.setattr(risk.subprocess, "run", _mover)
+    verdict = risk.classify(_LOW_ROW, git_repo, "main")  # head_ref=HEAD
+
+    assert _sha(git_repo, "feat/x") != judged  # the branch really moved
+    assert verdict.level == LOW, verdict.reasons
+    assert "internal/auth" not in received.read_text(encoding="utf-8")
+
+
+def test_resolve_commit_fails_closed_on_a_bad_ref(git_repo: Path):
+    with pytest.raises(risk.RiskDiffError, match="does not name a commit"):
+        risk.resolve_commit(git_repo, "no-such-ref")
+    assert len(risk.resolve_commit(git_repo, "main")) == 40

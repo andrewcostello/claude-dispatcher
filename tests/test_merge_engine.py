@@ -384,6 +384,10 @@ def test_elevated_with_external_approval_merges(repo: Path, monkeypatch) -> None
               if e.event_type == "pr_merged"]
     assert len(approved) == 1 and approved[0].payload["risk_level"] == "elevated"
     assert approved[0].payload["approver"] == "external:reviewer-bot"
+    # GO-1: the audit trail says which classification fed the verdict — here
+    # none, because the conftest pin makes the classify binary absent.
+    assert approved[0].payload["classification"] == \
+        "classification unavailable: classify binary absent"
     # DF-2: the elevated merge argv is pinned by equality to the commit.oid
     # of the approving review (the tree the reviewer saw — NOT the local
     # tip), and pr_approved stamps that authorization with its provenance.

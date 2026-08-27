@@ -23,9 +23,16 @@ change safe to roll out — the worst case is more review than before.
 
 Degradation
 -----------
-If the binary is missing or errors, :func:`classify_diff` returns ``None`` and
-callers fall back to the existing metadata gating. A classification failure must
-never block a run; it simply stops adding its safety net.
+Two entry points, because callers differ in what a failure must mean:
+
+* :func:`classify_diff_strict` — ``None`` only when the binary is genuinely
+  ABSENT (or the diff is empty); a PRESENT binary that fails (non-zero exit,
+  timeout, unparsable JSON, any exception) raises :class:`ClassificationError`.
+  ``risk.classify`` uses this and fails closed on the error, because its
+  ``low`` means auto-merge without human review.
+* :func:`classify_diff` — the lenient wrapper: every failure collapses to
+  ``None`` and callers fall back to metadata gating. Right for the panel
+  callers, whose worst case on ``None`` is the review they already had.
 """
 
 from __future__ import annotations
@@ -186,7 +193,17 @@ def classify_binary() -> str | None:
     return str(candidate) if candidate.is_file() else None
 
 
-def classify_diff(
+class ClassificationError(RuntimeError):
+    """The ``classify`` binary is present but produced no usable classification.
+
+    Distinct from the binary being absent (``None`` from
+    :func:`classify_diff_strict`): a host that has the binary must not have a
+    crash, a broken rule table or a parser regression look like never having
+    had it. The message carries the reason for the journal.
+    """
+
+
+def classify_diff_strict(
     *,
     diff: str,
     repo_root: str | Path | None = None,
@@ -194,8 +211,9 @@ def classify_diff(
     binary: str | None = None,
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> Classification | None:
-    """Classify a diff. Returns None when classification is unavailable.
+    """Classify a diff; ``None`` only for an absent binary or an empty diff.
 
+    Any failure of a PRESENT binary raises :class:`ClassificationError`.
     ``-no-git`` is passed because the caller already knows its base and branch;
     this call is purely "what do these paths mean", not a repo-state check.
     """
@@ -222,23 +240,44 @@ def classify_diff(
             timeout=timeout_seconds,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError) as exc:
-        log.warning("classify invocation failed (%s); falling back to metadata gating", exc)
-        return None
+    except Exception as exc:  # OSError, TimeoutExpired, anything: all fail closed
+        raise ClassificationError(
+            f"classify invocation failed ({type(exc).__name__}: {exc})"
+        ) from exc
 
-    # Exit 3 is INVALID_INPUT — an empty or unparsable diff. Nothing to add.
+    # Exit 3 is INVALID_INPUT — an unparsable diff or no rule table for the
+    # project. Still a failure of a present binary: the caller decides.
     if proc.returncode != 0:
-        log.warning(
-            "classify exited %d; falling back to metadata gating. stderr: %s",
-            proc.returncode,
-            (proc.stderr or "").strip()[:400],
+        raise ClassificationError(
+            f"classify exited {proc.returncode}: "
+            f"{(proc.stderr or '').strip()[:400] or '(no stderr)'}"
         )
-        return None
 
     try:
-        payload = json.loads(proc.stdout)
-    except json.JSONDecodeError as exc:
-        log.warning("classify produced unparsable JSON (%s); falling back", exc)
-        return None
+        return parse_classification(json.loads(proc.stdout))
+    except Exception as exc:  # JSONDecodeError, or a payload of the wrong shape
+        raise ClassificationError(
+            f"classify produced unusable output ({type(exc).__name__}: {exc})"
+        ) from exc
 
-    return parse_classification(payload)
+
+def classify_diff(
+    *,
+    diff: str,
+    repo_root: str | Path | None = None,
+    config: str | Path | None = None,
+    binary: str | None = None,
+    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+) -> Classification | None:
+    """Classify a diff, or ``None`` when classification is unavailable for ANY
+    reason — absent binary, failed invocation, bad output. Callers that must
+    tell those apart use :func:`classify_diff_strict`.
+    """
+    try:
+        return classify_diff_strict(
+            diff=diff, repo_root=repo_root, config=config, binary=binary,
+            timeout_seconds=timeout_seconds,
+        )
+    except ClassificationError as exc:
+        log.warning("%s; falling back to metadata gating", exc)
+        return None

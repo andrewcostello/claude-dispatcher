@@ -137,6 +137,47 @@ def test_classify_diff_degrades_to_none(monkeypatch, tmp_path, runner):
     assert classification.classify_diff(diff="diff --git a/x b/x\n", binary=str(fake_bin)) is None
 
 
+# GO-1: the strict entry point tells "absent" from "present but failed".
+
+
+def test_classify_diff_strict_returns_none_only_when_the_binary_is_absent(monkeypatch):
+    monkeypatch.setattr(classification, "classify_binary", lambda: None)
+    assert classification.classify_diff_strict(diff="diff --git a/x b/x\n") is None
+    assert classification.classify_diff_strict(diff="") is None
+
+
+@pytest.mark.parametrize(
+    "runner, needle",
+    [
+        (_fake_run(returncode=3), "classify exited 3: boom"),
+        (_fake_run(returncode=1, stdout=json.dumps(WALLET_PAYLOAD)), "classify exited 1"),
+        (_fake_run(stdout="not json at all"), "unusable output (JSONDecodeError"),
+        (_fake_run(stdout=json.dumps({"panel": {"seats": "many"}})), "unusable output (ValueError"),
+        (_fake_run(exc=OSError("no such binary")), "invocation failed (OSError"),
+        (_fake_run(exc=subprocess.TimeoutExpired("classify", 60)), "invocation failed (TimeoutExpired"),
+        (_fake_run(exc=RuntimeError("anything")), "invocation failed (RuntimeError"),
+    ],
+)
+def test_classify_diff_strict_raises_when_a_present_binary_fails(
+    monkeypatch, tmp_path, runner, needle
+):
+    fake_bin = tmp_path / "classify"
+    fake_bin.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(subprocess, "run", runner)
+    with pytest.raises(classification.ClassificationError, match=needle.replace("(", "\\(")):
+        classification.classify_diff_strict(diff="diff --git a/x b/x\n", binary=str(fake_bin))
+    # The lenient wrapper still collapses the same failure to None.
+    assert classification.classify_diff(diff="diff --git a/x b/x\n", binary=str(fake_bin)) is None
+
+
+def test_classify_diff_strict_parses_binary_output(monkeypatch, tmp_path):
+    fake_bin = tmp_path / "classify"
+    fake_bin.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(subprocess, "run", _fake_run(stdout=json.dumps(WALLET_PAYLOAD)))
+    c = classification.classify_diff_strict(diff="diff --git a/x b/x\n", binary=str(fake_bin))
+    assert c is not None and c.risk == "critical"
+
+
 def test_classify_binary_honours_env_override(monkeypatch, tmp_path):
     real = tmp_path / "classify"
     real.write_text("#!/bin/sh\n")

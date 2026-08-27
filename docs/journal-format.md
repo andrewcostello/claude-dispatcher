@@ -450,6 +450,7 @@ Emitted just before the merge is attempted.
 | `approver`   | string      | `dispatcher-agent` (self-approved low-risk), or `external:<login>` / `external` (a GitHub approval). |
 | `risk_level` | string      | The classifier verdict: `low` or `elevated`. |
 | `reasons`    | array\<str> | The classifier's reasons (empty for a clean `low`; the violated rules for `elevated`). |
+| `classification` | string \| null | *(GO-1)* `cmd/classify`'s `summary_line()` when a path-derived classification fed the verdict (e.g. `risk=high components=wallet financial`), else why none did (`classification unavailable: classify binary absent`, `classification skipped: empty diff`, or the failure reason on a fail-closed `elevated`). `null` on events written before GO-1. |
 
 **`pr_merged`** *(PRF-4)* — the PR landed via `gh pr merge --merge`. The row
 moves `Awaiting Review` → `Merged` (the terminal success state in PR mode).

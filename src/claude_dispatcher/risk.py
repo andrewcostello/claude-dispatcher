@@ -32,6 +32,16 @@ protobuf output on an otherwise small change must not push it out of low-risk.
 The exclusion is for *counting only* — excluded files still ship through the PR
 and its gates like everything else.
 
+**cmd/classify is an additional elevating signal, not a replacement.** When a
+path-derived :class:`classification.Classification` is available it is OR-ed
+with the verdict above: ``risk in {high, critical}``, a financial path, or any
+gate signal raises ``low`` to ``elevated``. It can never lower a verdict, and
+the size/label/forbidden-path rules above stay exactly as they are — they answer
+a different question (binary low-vs-elevated for auto-merge). Because ``low``
+means auto-merge without human review, a PRESENT ``classify`` binary that fails
+is ``elevated`` (fail closed, like a failed ``git diff``); only a genuinely
+ABSENT binary degrades to the legacy rules.
+
 The rule logic is split out as a pure function (:func:`evaluate`) that takes
 already-collected inputs, with :func:`classify` as the thin adapter that reads
 the task row and runs git. This keeps the rules unit-testable without a git
@@ -46,11 +56,14 @@ import subprocess
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Sequence
+from typing import TYPE_CHECKING, Any, Sequence
 
 from ruamel.yaml.error import YAMLError
 
 from claude_dispatcher import yaml_io
+
+if TYPE_CHECKING:  # type-only: keeps classification off the role-gate path
+    from claude_dispatcher import classification as classification_mod
 
 CONFIG_FILENAME = ".dispatcher.yaml"
 
@@ -131,6 +144,9 @@ class RiskVerdict:
 
     level: str
     reasons: tuple[str, ...] = field(default=())
+    #: Audit note for the journal: the classification's ``summary_line()`` when
+    #: one was obtained, else why not. ``None`` from the pure :func:`evaluate`.
+    classification: str | None = None
 
     @property
     def is_low(self) -> bool:
@@ -284,8 +300,41 @@ def evaluate(
     verified: Any,
     verification_iterations: Any,
     config: RiskConfig = DEFAULT_RISK_CONFIG,
+    classification: classification_mod.Classification | None = None,
 ) -> RiskVerdict:
     """Apply the low-risk rule set to already-collected inputs.
+
+    ``classification`` (optional, ``None`` = unavailable) is OR-ed on top of
+    the rules: it can only ever raise the verdict to ``elevated`` — see
+    :func:`classification_reasons` — never lower it, and with ``None`` the
+    result is exactly :func:`_evaluate_rules`'s. The OR applies even over the
+    docs-only carve-out: path evidence is allowed to add review anywhere.
+    """
+    verdict = _evaluate_rules(
+        size_label=size_label,
+        labels=labels,
+        changed_files=changed_files,
+        verified=verified,
+        verification_iterations=verification_iterations,
+        config=config,
+    )
+    extra = classification_reasons(classification)
+    if not extra:
+        return verdict
+    kept = verdict.reasons if verdict.level == ELEVATED else ()
+    return RiskVerdict(ELEVATED, tuple(kept) + extra)
+
+
+def _evaluate_rules(
+    *,
+    size_label: str | None,
+    labels: Sequence[str],
+    changed_files: Sequence[FileDiff],
+    verified: Any,
+    verification_iterations: Any,
+    config: RiskConfig,
+) -> RiskVerdict:
+    """The size/label/path/diff/verification rule set, without classification.
 
     ALL conditions must hold for a ``low`` verdict; each independent violation
     appends a reason. The docs-only carve-out short-circuits to ``low`` ahead of
@@ -345,6 +394,34 @@ def evaluate(
         )
 
     return RiskVerdict(ELEVATED, tuple(reasons)) if reasons else RiskVerdict(LOW, ())
+
+
+# Path-derived tiers that elevate on their own (cmd/classify's four-tier scale
+# folded onto this module's two).
+ELEVATING_RISK_TIERS = frozenset({"high", "critical"})
+
+
+def classification_reasons(
+    classification: classification_mod.Classification | None,
+) -> tuple[str, ...]:
+    """The reasons a classification ELEVATES a verdict; empty if it does not.
+
+    One-directional by construction: this only ever produces reasons to add,
+    so a ``low``/reduced classification is indistinguishable from ``None``.
+    """
+    if classification is None:
+        return ()
+    reasons: list[str] = []
+    if (classification.risk or "").lower() in ELEVATING_RISK_TIERS:
+        reasons.append(f"classification risk tier {classification.risk}")
+    if classification.financial_paths_touched:
+        reasons.append("classification: financial path touched")
+    if classification.gate_signals:
+        reasons.append(
+            "classification: gate signals in changed lines: "
+            + ", ".join(sorted(set(classification.gate_signals)))
+        )
+    return tuple(reasons)
 
 
 # --------------------------------------------------------------------------- #
@@ -513,9 +590,15 @@ def classify(
 
     ``config`` defaults to the repo's ``risk:`` section loaded from
     ``worktree`` (or the built-in defaults when absent). A caller that has
-    already loaded the config can pass it to skip the re-read. If the diff
-    cannot be computed we fail closed with an ``elevated`` verdict — we cannot
-    prove low-risk without measuring the change.
+    already loaded the config can pass it to skip the re-read.
+
+    Both refs are resolved to commit SHAs ONCE and every git read below uses
+    those SHAs, so the numstat the rules judge and the unified diff
+    ``cmd/classify`` judges describe the same commits even if a branch moves
+    mid-call. Fail-closed cases (``elevated``): a ref that will not resolve, a
+    diff that cannot be computed, and a PRESENT ``classify`` binary that fails.
+    An ABSENT binary degrades to the rules alone and says so in
+    ``RiskVerdict.classification``.
     """
     cfg = config if config is not None else load_risk_config(worktree)
 
@@ -525,18 +608,104 @@ def classify(
     verification_iterations = _row_get(task_row, "verification_iterations")
 
     try:
-        changed_files = collect_diff(worktree, base_ref, head_ref)
+        base_sha = resolve_commit(worktree, base_ref)
+        head_sha = resolve_commit(worktree, head_ref)
+        changed_files = collect_diff(worktree, base_sha, head_sha)
+        unified = unified_diff(worktree, base_sha, head_sha)
     except RiskDiffError as exc:
         return RiskVerdict(ELEVATED, (f"could not compute effective diff: {exc}",))
 
-    return evaluate(
+    # Function-local on purpose: role_protocol's floor gate imports this module
+    # for matches_any_glob, and the floor closure (tests/test_floor_closure.py)
+    # must not grow to cmd/classify's wrapper, whose code never runs there.
+    from . import classification as classification_mod
+
+    cls: classification_mod.Classification | None = None
+    if not unified.strip():
+        note = "classification skipped: empty diff"
+    else:
+        try:
+            cls = classification_mod.classify_diff_strict(
+                diff=unified, repo_root=worktree,
+            )
+        except Exception as exc:  # ClassificationError or anything else: closed
+            reason = f"classification failed with classify binary present: {exc}"
+            return RiskVerdict(ELEVATED, (reason,), classification=reason)
+        if cls is None:
+            note = "classification unavailable: classify binary absent"
+        else:
+            note = cls.summary_line()
+
+    verdict = evaluate(
         size_label=size_label,
         labels=labels,
         changed_files=changed_files,
         verified=verified,
         verification_iterations=verification_iterations,
         config=cfg,
+        classification=cls,
     )
+    return RiskVerdict(verdict.level, verdict.reasons, classification=note)
+
+
+def resolve_commit(worktree: str | Path, ref: str) -> str:
+    """The 40-hex commit SHA ``ref`` names in ``worktree``.
+
+    Raises :class:`RiskDiffError` when it names nothing (or is not a commit).
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+            cwd=str(worktree),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+    except OSError as exc:
+        raise RiskDiffError(f"git rev-parse failed to launch in {worktree}: {exc}") from exc
+    sha = (proc.stdout or "").strip()
+    if proc.returncode != 0 or not sha:
+        raise RiskDiffError(
+            f"ref {ref!r} does not name a commit in {worktree}: "
+            f"{(proc.stderr or '').strip() or 'unknown revision'}"
+        )
+    return sha
+
+
+def unified_diff(worktree: str | Path, base_ref: str, head_ref: str) -> str:
+    """The full unified diff of ``base_ref...head_ref`` (two-dot fallback).
+
+    Same range semantics as :func:`collect_diff`, so the two reads name the
+    same files. Untruncated: a path ``cmd/classify`` never sees is a rule it
+    can never fire, so this must not be cut to a reviewer-sized window.
+    """
+    worktree = Path(worktree)
+
+    def _run(spec: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "diff", "--no-renames", spec],
+            cwd=str(worktree),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+
+    try:
+        proc = _run(f"{base_ref}...{head_ref}")
+        if proc.returncode != 0:
+            proc = _run(f"{base_ref}..{head_ref}")
+    except OSError as exc:
+        raise RiskDiffError(f"git diff failed to launch in {worktree}: {exc}") from exc
+    if proc.returncode != 0:
+        raise RiskDiffError(
+            f"git diff {base_ref!r}...{head_ref!r} in {worktree} failed: "
+            f"{(proc.stderr or '').strip()}"
+        )
+    return proc.stdout
 
 
 def _row_get(task_row: Any, key: str) -> Any:
