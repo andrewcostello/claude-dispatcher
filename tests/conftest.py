@@ -36,6 +36,21 @@ def _default_verifier_verified():
     orchestrator.set_verifier(None)
 
 
+@pytest.fixture(autouse=True)
+def _no_host_classify_binary(monkeypatch, tmp_path: Path):
+    """Hide any ``classify`` binary installed on the host.
+
+    ``risk.classify`` (GO-1) shells out to ``cmd/classify`` when one is found
+    and FAILS CLOSED when a present binary errors — which it does on every
+    tmp_path repo, since none carries a rule table. Without this pin the
+    suite's verdicts would depend on the host's ``~/Project/claude-workflow``
+    checkout. ``classify_binary`` honours ``CLASSIFY_BIN`` only when it names a
+    file, so a missing path means "absent". Tests that exercise the binary
+    set ``CLASSIFY_BIN`` themselves (an inner ``monkeypatch.setenv`` wins).
+    """
+    monkeypatch.setenv("CLASSIFY_BIN", str(tmp_path / "no-classify-binary"))
+
+
 @pytest.fixture
 def three_task_yaml(tmp_path: Path) -> Path:
     """Copy the three-task fixture into a tmp_path so tests can mutate it."""

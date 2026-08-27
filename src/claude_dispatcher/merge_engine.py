@@ -245,6 +245,10 @@ def _consider_one(
         return "unactionable"
 
     verdict = _classify(cfg, row, authorization.head_sha, risk_cfg)
+    # GO-1: the audit trail records which path-derived classification (or its
+    # absence/failure) fed the verdict, on every outcome — not only approval.
+    log(f"  merge: {task.key} classification: "
+        f"{verdict.classification or 'not attempted'}")
     if verdict.is_low:
         approver = DISPATCHER_APPROVER
         log(f"  merge: {task.key} risk=low — dispatcher self-approves "
@@ -298,6 +302,8 @@ def _consider_one(
         "approver": approver,
         "risk_level": verdict.level,
         "reasons": list(verdict.reasons),
+        # GO-1: cmd/classify's summary_line() when obtained, else why not.
+        "classification": verdict.classification,
         # DF-2: the audit stamp — which tree was authorized, and by which
         # named source (the pin travels on pr_approved, not pr_merged).
         **authorization.stamp_fields(),
