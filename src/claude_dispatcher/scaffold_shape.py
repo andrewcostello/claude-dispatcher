@@ -27,6 +27,7 @@ Protocol members and @abstractmethod bodies read as stubs. Harmless for
 from __future__ import annotations
 
 import ast
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -228,6 +229,97 @@ def declared_holes_report(
                       missing=tuple(missing))
 
 
+@dataclass(frozen=True)
+class SealCoverage:
+    """One module, its stubs, and whether any test even mentions it."""
+
+    module: str
+    stubs: int
+    executable_lines: int
+    referencing_tests: tuple[str, ...]
+
+    @property
+    def unsealed(self) -> bool:
+        """No test file references this module at all."""
+        return not self.referencing_tests
+
+    @property
+    def unfinished_and_unwatched(self) -> bool:
+        """Stubs AND no seals — work nothing will ever notice is missing.
+
+        This is the W2 shape: three scaffolds merged carrying 23
+        NotImplementedError stubs, their seals stranded on unmerged branches,
+        and a suite reporting green for nine days because a module no test
+        imports produces no signal at all — no failure, no skip, nothing.
+        """
+        return self.stubs > 0 and self.unsealed
+
+
+def seal_coverage(
+    src_dir: str | Path = "src/claude_dispatcher",
+    tests_dir: str | Path = "tests",
+    *,
+    skip: tuple[str, ...] = ("__init__", "__main__"),
+) -> list[SealCoverage]:
+    """Every module, with the tests that reference it — worst first.
+
+    "References" is deliberately generous: any whole-word mention of the module
+    name anywhere under ``tests``. A module can be exercised indirectly through
+    another, so a mention is weak evidence of coverage — but its ABSENCE is
+    strong evidence of none, and that asymmetry is the point. Zero mentions
+    means no test could be exercising it on purpose.
+    """
+    src, tests = Path(src_dir), Path(tests_dir)
+    corpus: list[tuple[str, str]] = []
+    if tests.is_dir():
+        for t in sorted(tests.rglob("*.py")):
+            try:
+                corpus.append((str(t), t.read_text(encoding="utf-8", errors="replace")))
+            except OSError:
+                continue
+
+    out: list[SealCoverage] = []
+    for mod in sorted(src.glob("*.py")):
+        name = mod.stem
+        if name in skip:
+            continue
+        try:
+            shape = measure(mod)
+        except Exception:
+            continue
+        pat = re.compile(rf"\b{re.escape(name)}\b")
+        refs = tuple(path for path, text in corpus if pat.search(text))
+        out.append(SealCoverage(
+            module=name,
+            stubs=len(shape.stubs),
+            executable_lines=shape.executable,
+            referencing_tests=refs,
+        ))
+    out.sort(key=lambda c: (not c.unfinished_and_unwatched, not c.unsealed,
+                            -c.stubs, c.module))
+    return out
+
+
+def _cmd_unsealed(_rest: list[str]) -> int:
+    """`unsealed` — modules no test references, worst first."""
+    rows = seal_coverage()
+    bad = [r for r in rows if r.unsealed]
+    if not bad:
+        print(f"every one of {len(rows)} modules is referenced by at least one test")
+        return 0
+
+    worst = [r for r in bad if r.unfinished_and_unwatched]
+    print(f"{len(bad)} module(s) that NO test references:\n")
+    for r in bad:
+        mark = f"{r.stubs} stub(s)  <-- UNFINISHED AND UNWATCHED" if r.stubs else ""
+        print(f"  {r.module:28} {r.executable_lines:5} lines  {mark}")
+    if worst:
+        print(f"\n  {len(worst)} of them carry stubs: work that is unfinished AND "
+              f"has nothing watching it.")
+        print("  A green suite is evidence about the tests that EXIST.")
+    return 3
+
+
 def _cmd_measure(paths: list[str]) -> int:
     print(f"{'file':52} {'total':>6} {'code':>6} {'prose':>7} {'fn':>4} "
           f"{'stub':>5} {'impl':>5}")
@@ -250,7 +342,7 @@ def _cmd_holes(phase: str, holes: list[str]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    if not argv or argv[0] not in ("measure", "holes"):
+    if not argv or argv[0] not in ("measure", "holes", "unsealed"):
         print(
             "usage:\n"
             "  scaffold_shape measure <file.py>...\n"
@@ -261,6 +353,8 @@ def main(argv: list[str] | None = None) -> int:
     cmd, rest = argv[0], argv[1:]
     if cmd == "measure":
         return _cmd_measure(rest) if rest else 2
+    if cmd == "unsealed":
+        return _cmd_unsealed(rest)
     if not rest or rest[0] not in ("--scaffold", "--bodies"):
         print("holes: need --scaffold or --bodies", file=sys.stderr)
         return 2

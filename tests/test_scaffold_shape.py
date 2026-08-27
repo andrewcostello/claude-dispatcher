@@ -285,3 +285,90 @@ def test_the_wave2_scaffolds_reproduce_the_measurement_that_motivated_this(
     me = ss.measure(Path(ss.__file__))
     assert me.executable > 100
     assert me.prose_ratio < 1.0, f"this module has drifted to {me.prose_ratio:.1f}:1"
+
+
+# ── seal coverage ────────────────────────────────────────────────────────────
+# What hid the W2 gap for nine days: three scaffolds merged carrying 23
+# NotImplementedError stubs, their seals stranded on unmerged branches, and the
+# suite reporting green throughout — because a module no test imports produces
+# no signal at all. Not a failure, not a skip, nothing.
+
+
+def _mod(tmp_path, name, body):
+    src = tmp_path / "src"
+    src.mkdir(exist_ok=True)
+    (src / f"{name}.py").write_text(body, encoding="utf-8")
+    return src
+
+
+def _tests(tmp_path, files):
+    t = tmp_path / "tests"
+    t.mkdir(exist_ok=True)
+    for fname, body in files.items():
+        (t / fname).write_text(body, encoding="utf-8")
+    return t
+
+
+def test_a_module_no_test_mentions_is_unsealed(tmp_path):
+    src = _mod(tmp_path, "lonely", "def f():\n    return 1\n")
+    tst = _tests(tmp_path, {"test_other.py": "from x import y\n"})
+    rows = ss.seal_coverage(src, tst)
+    assert [r.module for r in rows] == ["lonely"]
+    assert rows[0].unsealed
+
+
+def test_a_mention_anywhere_counts_as_a_reference(tmp_path):
+    """Generous on purpose: a mention is weak evidence of coverage, but its
+    ABSENCE is strong evidence of none, and only the absence is acted on."""
+    src = _mod(tmp_path, "seen", "def f():\n    return 1\n")
+    tst = _tests(tmp_path, {"test_a.py": "from claude_dispatcher import seen\n"})
+    rows = ss.seal_coverage(src, tst)
+    assert not rows[0].unsealed
+    assert rows[0].referencing_tests
+
+
+def test_a_substring_match_is_not_a_reference(tmp_path):
+    """`seen` must not be satisfied by `unseen_thing` — whole words only,
+    or a module could look covered because another name contains it."""
+    src = _mod(tmp_path, "seen", "def f():\n    return 1\n")
+    tst = _tests(tmp_path, {"test_a.py": "from x import unseen_thing\n"})
+    rows = ss.seal_coverage(src, tst)
+    assert rows[0].unsealed
+
+
+def test_stubs_without_seals_are_the_worst_case_and_sort_first(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "stubbed.py").write_text(
+        "def f():\n    raise NotImplementedError('x')\n", encoding="utf-8")
+    (src / "plain.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    tst = _tests(tmp_path, {"test_none.py": "pass\n"})
+    rows = ss.seal_coverage(src, tst)
+    assert rows[0].module == "stubbed", "unfinished AND unwatched must sort first"
+    assert rows[0].unfinished_and_unwatched
+    assert not rows[1].unfinished_and_unwatched, (
+        "a module with no stubs is unsealed but not unfinished"
+    )
+
+
+def test_a_sealed_stub_is_not_flagged_as_unwatched(tmp_path):
+    """A stub with seals is normal contract-first work in progress, not a gap."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "pending.py").write_text(
+        "def f():\n    raise NotImplementedError('x')\n", encoding="utf-8")
+    tst = _tests(tmp_path, {"test_p.py": "from claude_dispatcher import pending\n"})
+    rows = ss.seal_coverage(src, tst)
+    assert rows[0].stubs == 1
+    assert not rows[0].unsealed
+    assert not rows[0].unfinished_and_unwatched
+
+
+def test_dunder_modules_are_skipped(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "__init__.py").write_text("", encoding="utf-8")
+    (src / "__main__.py").write_text("", encoding="utf-8")
+    (src / "real.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    rows = ss.seal_coverage(src, _tests(tmp_path, {"t.py": "pass\n"}))
+    assert [r.module for r in rows] == ["real"]
