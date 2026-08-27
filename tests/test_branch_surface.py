@@ -235,6 +235,28 @@ _TS_WIDENED = (
 )
 _TS_NEIGHBOUR = "interface Ledger {\n  id: string;\n}\nexport type { Ledger };\n"
 
+#: The acceptance list's other TypeScript spelling: `interface Bet { newField:
+#: string }` in a file that IMPORTS the sealed module. `web/src/importer.ts`
+#: names `./bet` at both revisions and the branch adds its OWN `Bet` beside the
+#: import; the alias is what keeps both names legal in one file.
+#:
+#: This is not `_TS_NEIGHBOUR` with extra text. The importing file NAMES the
+#: sealed module, so a fold that resolves every specifier a file mentions —
+#: rather than only the ones a `declare module` heads — routes this `Bet` into
+#: `bet.ts`'s space and reports a widening the language does not perform.
+#: Measured on this tree an import emits no key of its own, so nothing but the
+#: routing rule decides the answer.
+_TS_IMPORTER = (
+    "import type { Bet as SealedBet } from './bet';\n"
+    "interface Ledger {\n  id: string;\n}\n"
+    "export type { Ledger };\n"
+    "export const read = (b: SealedBet) => b.id;\n"
+)
+_TS_IMPORTER_REDECLARING = (
+    _TS_IMPORTER
+    + "interface Bet {\n  newField: string;\n}\nexport type { Bet };\n"
+)
+
 _GO_SEALED = (
     "package wallet\n\ntype Wallet struct{}\n\n"
     "func (w Wallet) Debit(a int) int { return a }\n"
@@ -263,6 +285,7 @@ _TS_AUGMENTATION = (
 
 _SEALED_TS_PATH = "web/src/bet.ts"
 _AUGMENTING_TS_PATH = "web/src/aug.ts"
+_IMPORTING_TS_PATH = "web/src/importer.ts"
 
 
 # --------------------------------------------------------------------------- #
@@ -303,6 +326,8 @@ def test_every_sealed_typescript_fixture_proves_it_is_a_module() -> None:
         ("_TS_SEALED", _SEALED_TS_PATH, _TS_SEALED),
         ("_TS_WIDENED", _SEALED_TS_PATH, _TS_WIDENED),
         ("_TS_NEIGHBOUR", "web/src/extra.ts", _TS_NEIGHBOUR),
+        ("_TS_IMPORTER", _IMPORTING_TS_PATH, _TS_IMPORTER),
+        ("_TS_IMPORTER_REDECLARING", _IMPORTING_TS_PATH, _TS_IMPORTER_REDECLARING),
         ("_TS_AUGMENTATION", _AUGMENTING_TS_PATH, _TS_AUGMENTATION),
         ("_TS_GLOBAL_AUGMENTATION", _GLOBAL_TS_PATH, _TS_GLOBAL_AUGMENTATION),
         *((f"_augmenting_tree {path}", path, text)
@@ -548,7 +573,7 @@ def test_the_widening_in_a_second_file_stops_being_zero_changes(
 #    above being satisfied by "every same-named symbol in the diff is one
 #    symbol".
 #
-#    THE SECOND FILE EXISTS AT THE MERGE-BASE in all three, and that is not
+#    THE SECOND FILE EXISTS AT THE MERGE-BASE in all four, and that is not
 #    dressing: a file the branch ADDS has no base revision, so the per-file
 #    loop skips it and these rows would be green through the new-file skip
 #    rather than through SURFACE_RULES — green for the same reason the bypass
@@ -658,11 +683,11 @@ def test_a_second_typescript_module_declaring_the_same_name_is_not_a_merge(
     implementation that keys on the qualname alone passes that row and fails
     this one.
 
-    It is also the ruling on ``interface Bet { newField: string }`` in an
-    IMPORTING file: measured on this tree that spelling is not a bypass at all.
-    A non-ambient interface in a separate module is a separate type, so
-    ``declare module`` is the only way to widen an exported type from outside
-    the module that declares it.
+    The IMPORTING spelling — ``interface Bet { newField: string }`` in a file
+    that names ``./bet`` — is the row below, which carries it with a fixture
+    rather than in prose. Neither is a bypass: a non-ambient interface in a
+    separate module is a separate type, so ``declare module`` is the only way
+    to widen an exported type from outside the module that declares it.
     """
     result = _bodies(
         _branch(
@@ -682,6 +707,48 @@ def test_a_second_typescript_module_declaring_the_same_name_is_not_a_merge(
     assert result.verdict is DiffVerdict.CLEAN, (
         "a second TypeScript module declaring its own Bet was reported as a "
         f"widening of another module's: {result.verdict} — {result.detail}"
+    )
+    assert not result.signature.changes, [
+        (c.path, c.symbol) for c in result.signature.changes
+    ]
+
+
+def test_an_importing_file_redeclaring_the_name_is_not_a_merge(
+    tmp_path: Path,
+) -> None:
+    """The same ruling, from a file that NAMES the sealed module. GREEN, both sides.
+
+    ``web/src/importer.ts`` imports ``Bet`` from ``./bet`` at both revisions,
+    and the branch adds ``interface Bet { newField: string }`` beside the
+    import. That is a second, unrelated ``Bet``: declaration merging happens
+    inside ONE declaration space, and importing a module does not put the
+    importing file into it. Nothing about ``bet.ts``'s ``Bet`` changed, so the
+    whole-diff verdict is CLEAN and the added key is clause 1's added symbol in
+    the importer's own space.
+
+    It differs from the row above in the one respect that matters to routing:
+    this file mentions ``'./bet'``. ``declare module './bet'`` is the only
+    spelling that widens the sealed module, so an implementation that greens
+    the bypass row by resolving every specifier appearing in a file — rather
+    than only the ones a ``declare module`` heads — passes that row and fails
+    this one.
+
+    Reddens under: the augmentation rule keyed on a specifier's PRESENCE rather
+    than on the ``declare module`` head; the fold keying by qualname across the
+    diff; clause 1 reversed, which makes the added ``i:Bet`` a change.
+    """
+    result = _bodies(
+        _branch(
+            tmp_path,
+            "ts_importer",
+            {_SEALED_TS_PATH: _TS_SEALED, _IMPORTING_TS_PATH: _TS_IMPORTER},
+            {_IMPORTING_TS_PATH: _TS_IMPORTER_REDECLARING},
+        )
+    )
+    _assert_read(result, "typescript")
+    assert result.verdict is DiffVerdict.CLEAN, (
+        "an importing file declaring its own Bet was reported as a widening of "
+        f"the module it imports: {result.verdict} — {result.detail}"
     )
     assert not result.signature.changes, [
         (c.path, c.symbol) for c in result.signature.changes
