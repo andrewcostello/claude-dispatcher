@@ -131,6 +131,41 @@ Two things to fix, and the first is the one that matters:
    verdict — `panel:approve` on all four — is an approval signal that already
    exists and is already journaled.
 
+### The inverse failure, found 2026-08-27: modules on main with their seals stranded
+
+Auditing the seven branches `prune-branches` refused to delete turned up
+something worse than EPA, because it is invisible.
+
+EPA was **seals on main, bodies stranded** — and that announces itself as skipped
+tests. This is **bodies on main, seals stranded**, and nothing announces it at
+all. Three modules are on main with ZERO test coverage; not one test file in the
+repository even references them:
+
+| module | on main | its seals |
+|---|---|---|
+| `prompt_provenance.py` | yes | stranded on `feat/W2-1-2` |
+| `branch_surface.py` | yes | stranded on `feat/W2-2-2` |
+| `mutation_ledger.py` | yes | stranded on `feat/W2-3-2` |
+| `claude_accounts.py` | **absent** | stranded on `feat/D1` and `feat/W2-1-3` |
+
+The suite reads 3 461 green while three modules are unverified. A green suite is
+evidence about the tests that exist, and says nothing about code no test imports.
+
+**The seals do not currently pass against main**, so this is not a merge. Extracted
+and run: 157 failed, 42 passed — and they are genuine assertion failures, not API
+drift. `test_branch_surface` asserts a branch widening a sealed interface from a
+second file is a VIOLATION; main returns CLEAN. Either main's bodies are
+incomplete and the seals are right, or the design changed deliberately after the
+seals were written and they are stale.
+
+**That is a question for a human, not a merge to force.** Landing failing seals
+would break the suite; deleting them would destroy the only statement of what
+those modules were supposed to do. Both branches of that choice are wrong without
+knowing which of the two stories is true.
+
+Recorded rather than resolved. The four W2/D branches are excluded from any
+prune until it is.
+
 ### What would keep this from happening again
 
 One check, and it is small: **a task marked Done whose branch is not reachable
