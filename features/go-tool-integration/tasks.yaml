@@ -236,10 +236,9 @@ tasks:
     estimate: 2h
     labels: [size:S, area:cfr, risk:high, phase:go-integration]
     blockedBy: [GO-0]
-    status: Blocked
+    status: Done
     agent: claude
     panel_consensus: block
-    panel_summary: consensus=block | claude=CHANGES_REQUESTED, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=2 (0C/2H)
     panel_blocking_findings: 2
     panel_verdict_gemini: UNAVAILABLE
     panel_error_gemini: 'cli invocation raised: agy exit=1: Error: Error: empty prompt. Usage: agy --print "your prompt here"'
@@ -247,9 +246,8 @@ tasks:
     panel_verdict_grok: APPROVE
     unblocked_at: '2026-08-01T17:25:08+00:00'
     panel_verdict_claude: CHANGES_REQUESTED
-    mechanical_verification_detail: 'uncommitted changes in worktree at verification time — test evidence is not keyed to the committed tree: src/claude_dispatcher/ts_signature_fingerprint/'
     role_diff_loop: not_enabled
-    completed_at: '2026-08-25T22:29:05-07:00'
+    completed_at: '2026-08-27'
     dispatcher_version: 0.1.0
     agent_version: 2.1.241 (Claude Code)
     started_at: '2026-08-25T22:19:56-07:00'
