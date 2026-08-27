@@ -274,14 +274,22 @@ tasks:
       Use `Measured under:` / `Predicted (unmeasured) under:`. Do not use the
       bare `Reddens under a body on:` spelling — W2-3 exists because 41 of
       those clauses in this repo record nothing checkable.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=UNAVAILABLE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=2 (0C/2H))
+      Fix round. Your branch has been rebased onto current main and your staged prose cut (896 lines) committed — that half of the panel's findings is addressed.
+
+      ONE HIGH FINDING REMAINS AND IT IS THE DELIVERABLE: the structural entry-point seal can accept declarations that never execute, because _provenance_bindings treats any declaration as a binding. A seal that passes on a declaration nothing runs is a FALSE-PASSING SEAL — precisely the defect class this wave exists to catch, so it cannot ship inside the wave's own seals.
+
+      Close that. Do not re-add narrative prose to the module docstring; rationale belongs in the commit message.
     type: Task
     estimate: 2h
     labels: [size:M, area:dispatcher]
     agent: claude
     role: seals
-    status: Blocked
+    status: To Do
     blockedBy: [W2-1-1]
-    unblocked_at: '2026-08-18T19:21:17+00:00'
+    unblocked_at: '2026-08-27T19:41:34+00:00'
 
     started_at: '2026-08-18T12:25:56-07:00'
     dispatcher_run_id: 2026-08-18T19-25-56Z-tasks
@@ -295,12 +303,6 @@ tasks:
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
-    blocked_reason: 'cross_family_panel: consensus=block | claude=UNAVAILABLE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=2 (0C/2H)'
-    mechanical_verification: skipped
-    role_diff_loop: checked_clean
-    role_diff_loop_detail: "2 changed path(s) checked against the allow_only_globs rule for 'seals' and against the 20-glob floor; signatures: not_applicable"
-    verified: true
-    verification_iterations: 0
     panel_consensus: block
     panel_summary: consensus=block | claude=UNAVAILABLE, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=2 (0C/2H)
     panel_blocking_findings: 2
@@ -608,14 +610,26 @@ tasks:
       pinning that the algebra is actually CALLED from the driver. Without it a
       correct-but-unwired module passes everything — D-69's "the money net is
       dark", which is the failure this unit would otherwise ship.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=4 (0C/4H))
+      Fix round. Your branch has been rebased onto current main; it rebased clean.
+
+      THREE HIGH FINDINGS REMAIN, and the first makes the file self-contradictory:
+
+      1. Every sealed TypeScript fixture lacks module-ness proof, so the file's FLAGSHIP ROW IS UNSATISFIABLE. A seal that can never pass would block its body for ever — fix the fixtures or withdraw the row, but it cannot stay as it is.
+      2. The core end-to-end fixtures require bet.ts to be recognised as an external module, which _TS_SEALED does not supply.
+      3. _assert_read hard-fails on UNCHECKED_COMPARATOR_UNAVAILABLE — the right fail-closed shape, but check what it does to the rows that depend on it.
+
+      Also cut the commit narrative, historical findings and future-task sequencing out of the 2,298-line module; that belongs in the commit message.
     type: Task
     estimate: 3h
     labels: [size:L, area:dispatcher]
     agent: claude
     role: seals
-    status: Blocked
+    status: To Do
     blockedBy: [W2-2-1]
-    unblocked_at: '2026-08-18T19:21:17+00:00'
+    unblocked_at: '2026-08-27T19:41:35+00:00'
 
     started_at: '2026-08-18T12:25:56-07:00'
     dispatcher_run_id: 2026-08-18T19-25-56Z-tasks
@@ -629,12 +643,6 @@ tasks:
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
-    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=4 (0C/4H)'
-    mechanical_verification: skipped
-    role_diff_loop: checked_clean
-    role_diff_loop_detail: "1 changed path(s) checked against the allow_only_globs rule for 'seals' and against the 20-glob floor; signatures: not_applicable"
-    verified: true
-    verification_iterations: 0
     panel_consensus: block
     panel_summary: consensus=block | claude=CHANGES_REQUESTED, gemini=UNAVAILABLE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=4 (0C/4H)
     panel_blocking_findings: 4
@@ -990,13 +998,10 @@ tasks:
     labels: [size:M, area:dispatcher]
     agent: claude
     role: seals
-    status: In Progress
+    status: To Do
     blockedBy: [W2-3-1]
     unblocked_at: '2026-08-18T19:21:17+00:00'
 
-    started_at: '2026-08-18T13:02:31-07:00'
-    dispatcher_run_id: 2026-08-18T19-25-56Z-tasks
-    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-18T19-25-56Z-tasks/W2-3-2/summary.md
     branch: feat/W2-3-2-seals-a-ledger-entry-that
     gate_base_sha: eb5d4bac1114a7daebedb0f09d3639557e9795ed
   - key: W2-3-3
