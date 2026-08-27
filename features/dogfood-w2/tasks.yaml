@@ -379,8 +379,38 @@ tasks:
       - phase:w2
     blockedBy:
       - W2-1-1
-    status: To Do
+    status: Done
     role: seals
+    started_at: '2026-08-27T13:49:39-07:00'
+    dispatcher_run_id: 2026-08-27T20-49-39Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-27T20-49-39Z-tasks/W2-1-2a/summary.md
+    branch: feat/W2-1-2a-seals-the-prompt-gate-s
+    cost_usd: 14.535459
+    agent: claude
+    completed_at: '2026-08-27T14:20:43-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    mechanical_verification: skipped
+    role_diff_loop: not_enabled
+    verified: true
+    verification_iterations: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, codex=CHANGES_REQUESTED, grok=APPROVE | blocking=1 (0C/1H)
+    panel_blocking_findings: 1
+    panel_verdict_claude: APPROVE
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: APPROVE
+    input_tokens: 928
+    output_tokens: 36387
+    cache_read_input_tokens: 1292314
+    cache_creation_input_tokens: 102641
+    duration_ms: 419246
+    num_turns: 28
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.247 (Claude Code)
   - key: W2-1-2b
     summary: seals — each journal-less entry point, by executing it
     description: |-
