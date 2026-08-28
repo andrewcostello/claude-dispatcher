@@ -603,6 +603,13 @@ def _reachable_functions(source: str) -> frozenset[str]:
 #: a record of one.
 _DELEGATION_TARGETS: tuple[tuple[str, str, str, str, str], ...] = (
     (
+        "branch_surface",
+        "src/claude_dispatcher/branch_surface.py",
+        "sub/project/src/claude_dispatcher/branch_surface.py",
+        "vendor/thirdparty/branch_surface.py",
+        "imported by role_protocol._compare_branch_signatures()",
+    ),
+    (
         "risk",
         "src/claude_dispatcher/risk.py",
         "sub/project/src/claude_dispatcher/risk.py",

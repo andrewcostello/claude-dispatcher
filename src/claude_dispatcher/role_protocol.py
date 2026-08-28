@@ -1417,6 +1417,10 @@ FLOOR_GLOBS: tuple[str, ...] = (
     # rather than against one that does not.
     "**/src/claude_dispatcher/loop_gate.py",
     "**/src/claude_dispatcher/orchestrator.py",
+    # The branch-wide half of the signature gate (W2-2, 2026-08-18). It is on
+    # the gate path from the commit that adds the call above, and a check a
+    # branch can edit is not a check.
+    "**/src/claude_dispatcher/branch_surface.py",
 )
 
 #: What a floor violation prints, and deliberately NOT the violated role's own
@@ -9304,6 +9308,20 @@ def _compare_branch_signatures(
         status = _worst_signature_status(status, comparison.status)
         if comparison.detail:
             details.append(comparison.detail)
+
+    # The branch-wide half (W2-2). Everything this could decide is decided in
+    # `branch_surface`; nothing but `RoleDiffError` crosses back.
+    from . import branch_surface as _branch_surface
+
+    if merge_base is None:
+        merge_base = _merge_base_of(repo_root, base_ref, branch_ref, run=run)
+    fold = _branch_surface.fold_branch_signatures(
+        repo_root, merge_base, branch_ref, changed_paths, run=run,
+    )
+    status = _worst_signature_status(status, fold.status)
+    changes.extend(fold.changes)
+    if fold.detail:
+        details.append(fold.detail)
 
     if not examined and unsupported_paths:
         # NOTHING in this diff is a file this gate has a comparator for. That

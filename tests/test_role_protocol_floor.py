@@ -881,6 +881,16 @@ _FLOOR_ROWS: tuple[tuple[str, str], ...] = (
         "**/src/claude_dispatcher/scaffold_shape.py",
         "sub/project/src/claude_dispatcher/scaffold_shape.py",
     ),
+    # The branch-wide half of the signature gate: on the gate path from the
+    # commit that added role_protocol's call into it, so on the floor.
+    (
+        "**/src/claude_dispatcher/branch_surface.py",
+        "src/claude_dispatcher/branch_surface.py",
+    ),
+    (
+        "**/src/claude_dispatcher/branch_surface.py",
+        "sub/project/src/claude_dispatcher/branch_surface.py",
+    ),
 )
 
 
