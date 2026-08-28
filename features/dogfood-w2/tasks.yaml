@@ -543,25 +543,25 @@ tasks:
     blockedBy:
       - W2-1-1
       - W2-1-2a
-    status: To Do
+    status: Done
     role: seals
     agent: claude
-    completed_at: '2026-08-28T12:49:18-07:00'
+    completed_at: '2026-08-28T14:51:09-07:00'
     iteration_count: 0
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
-    panel_consensus: block
-    panel_blocking_findings: 6
-    panel_verdict_claude: CHANGES_REQUESTED
-    panel_verdict_codex: CHANGES_REQUESTED
-    panel_verdict_grok: CHANGES_REQUESTED
-    input_tokens: 648
-    output_tokens: 16672
-    cache_read_input_tokens: 442718
-    cache_creation_input_tokens: 41793
-    duration_ms: 208236
-    num_turns: 12
+    panel_consensus: approve
+    panel_blocking_findings: 0
+    panel_verdict_claude: APPROVE
+    panel_verdict_codex: APPROVE
+    panel_verdict_grok: APPROVE
+    input_tokens: 984
+    output_tokens: 16774
+    cache_read_input_tokens: 816628
+    cache_creation_input_tokens: 50316
+    duration_ms: 231729
+    num_turns: 18
     model: claude-fable-5
     dispatcher_version: 0.1.0
     agent_version: 2.1.251 (Claude Code)
@@ -570,6 +570,12 @@ tasks:
     role_diff_loop: not_enabled
     verified: true
     verification_iterations: 0
+    started_at: '2026-08-28T14:43:54-07:00'
+    dispatcher_run_id: 2026-08-28T21-43-54Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-28T21-43-54Z-tasks/W2-1-2c/summary.md
+    branch: feat/W2-1-2c-seals-every-listed-entry-point
+    cost_usd: 3.206898999999999
+    panel_summary: consensus=approve | claude=APPROVE, codex=APPROVE, grok=APPROVE
   - key: W2-1-3
     summary: bodies — close the reach in the unfloored layer and name what is left
     description: |
@@ -1379,16 +1385,69 @@ tasks:
       be UNDERIVABLE) so W2-3-5 starts from a measurement rather than a guess.
 
       NOT yours: the other 36 clauses. Do not start them.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=7 (0C/7H))
+      Fix round. Seven HIGH collapse to five defects. All are located and actionable —
+      this is not a design impasse, so fix them rather than redesigning.
+
+      1. THE RECORD IS NOT THE MEASUREMENT IT ADJUDICATED. One bug, found
+      INDEPENDENTLY BY ALL THREE REVIEWERS (claude :2555, codex :2553, grok :2556).
+      `rederive --record` measures the entry, prints that status, then calls
+      observe_claim — which provisions and runs the whole thing A SECOND TIME — and
+      records that second run. The ledger stores a different run than the status line
+      just emitted, and a failed second run is silently ignored.
+
+      This is the worst defect this unit could have. The mutation ledger exists so a
+      coverage claim is REPRODUCIBLE EVIDENCE; its own admission path records evidence
+      it did not adjudicate. Under load, a tight remaining budget, flake or a checkout
+      smudge the two transition sets diverge and the ledger is simply wrong.
+
+      Measure once. Record THAT measurement. Make the exit status describe the evidence
+      actually written.
+
+      2. DO NOT WEAKEN THE SCAFFOLD'S CONTRACT (codex :2373). check_citations was
+      changed from rejecting cited claims whose current status does not count as
+      coverage, to merely checking a live record exists — and the replacement docstring
+      justifies it by claiming coverage is 'not computable from the file'. That is
+      false: the function has the repository root and rederive computes exactly that
+      status.
+
+      A body may not redefine what it was built to satisfy. If a contract genuinely
+      cannot be met, that is a Deviation reported under its own heading with kind,
+      original, changed, reason and blast_radius — never a rewritten docstring. Restore
+      the contract or report the deviation.
+
+      3. SUBJECT_ABSENT MUST SHORT-CIRCUIT (codex :2050). _measure records it and then
+      continues into collection, so a seal importing the missing subject fails
+      collection and produces HARNESS_FAULT / AWAIT_RERUN instead of the contracted
+      SUBJECT_ABSENT plus NOT_ATTEMPTED. Apply the hard-absence result before
+      collecting.
+
+      4. THE DIGEST MUST DESCRIBE THE POPULATION COMPARED (codex :2070). It comes from
+      a standalone collect-only invocation while control and mutant each collect
+      separately and discard their node sets. If collection is dynamic, or the mutation
+      changes collection behaviour, transition_set compares different populations and
+      the stored digest describes neither.
+
+      5. THE TIMEOUT HANDLER IS ITSELF UNBOUNDED (grok :1647). After communicate(timeout=)
+      expires, _run_bounded SIGKILLs the group then calls communicate() with NO timeout.
+      Only ProcessLookupError is swallowed, so a PermissionError from killpg skips the
+      reap and leaves the session alive — the bounded runner can hang unboundedly.
+
+      Your seals are registered as known-red against this task, so they are red for
+      everyone else and RED FOR YOU: greening them is the deliverable. When they pass,
+      the register entry retires automatically.
     type: Task
     estimate: 3h
     labels: [size:L, area:dispatcher]
     agent: claude
     role: bodies
-    status: Blocked
+    status: In Progress
     blockedBy: [W2-3-2]
-    started_at: '2026-08-28T10:18:17-07:00'
-    dispatcher_run_id: 2026-08-28T17-18-17Z-tasks
-    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-28T17-18-17Z-tasks/W2-3-3/summary.md
+    started_at: '2026-08-28T14:57:11-07:00'
+    dispatcher_run_id: 2026-08-28T21-57-10Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-28T21-57-10Z-tasks/W2-3-3/summary.md
 
     branch: feat/W2-3-3-bodies-build-the-ledger-and
     gate_base_sha: efd05ca0f795bb223a3e9482f622d8dfcfa54817
@@ -1400,11 +1459,6 @@ tasks:
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
-    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=7 (0C/7H)'
-    mechanical_verification: passed
-    role_diff_loop: not_enabled
-    verified: true
-    verification_iterations: 0
     panel_consensus: block
     panel_summary: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=7 (0C/7H)
     panel_blocking_findings: 7
@@ -1420,6 +1474,7 @@ tasks:
     model: claude-fable-5
     dispatcher_version: 0.1.0
     agent_version: 2.1.247 (Claude Code)
+    unblocked_at: '2026-08-28T21:57:10+00:00'
   - key: W2-3-5
     summary: bodies — populate the remaining clauses from re-derivation
     description: |
