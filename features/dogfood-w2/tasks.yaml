@@ -932,7 +932,7 @@ tasks:
     labels: [size:L, area:dispatcher]
     agent: claude
     role: bodies
-    status: Blocked
+    status: Done
     blockedBy: [W2-2-2]
     started_at: '2026-08-27T18:17:17-07:00'
     dispatcher_run_id: 2026-08-28T01-17-17Z-tasks
@@ -948,9 +948,6 @@ tasks:
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
-    blocked_reason: mechanical_verification_failed
-    mechanical_verification: failed
-    mechanical_verification_detail: "hes these, so the branch-wide half of the signature gate does not run and the second-file widening is CLEAN in production however correct the algebra is: ['claude_dispatcher.branch_surface.fold_branch_signatures', 'claude_dispatcher.branch_surface._fold', 'claude_dispatcher.branch_surface.build_surface', 'claude_dispatcher.branch_surface.compare_surfaces', 'claude_dispatcher.branch_surface.closure_request']. Wire it per docs/branch-surface-amendment.md\n=============================== warnings summary ===============================\ntests/boundary/test_pr0.py::test_ast_allowlists_fail_closed[t8-construction]\n  /home/andrew/.local/lib/python3.14/site-packages/_pytest/python.py:167: UserWarning: t8_construction: FAIL-CLOSED GATE DEGRADED — allowlisted modules absent as expected pre-PR2: ['src/claude_dispatcher/boundary/wire.py']; the gate still hard-fails any guarded name defined elsewhere\n    result = testfunction(**testargs)\n\ntests/boundary/test_pr0.py::test_ast_allowlists_fail_closed[t9-interpretation]\n  /home/andrew/.local/lib/python3.14/site-packages/_pytest/python.py:167: UserWarning: t9_interpretation: FAIL-CLOSED GATE DEGRADED — allowlisted modules absent as expected pre-PR2: ['src/claude_dispatcher/boundary/authority_channels.py', 'src/claude_dispatcher/boundary/doors.py', 'src/claude_dispatcher/boundary/panel_runner.py']; the gate still hard-fails any guarded name defined elsewhere\n    result = testfunction(**testargs)\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/test_branch_surface.py::test_the_widening_in_a_second_file_stops_being_zero_changes\nFAILED tests/test_branch_surface.py::test_a_baseline_that_does_not_parse_refuses_and_claims_no_widening\nFAILED tests/test_branch_surface.py::test_a_closure_too_large_to_finish_refuses_and_is_never_clean\nFAILED tests/test_branch_surface.py::test_the_branch_surface_algebra_is_reached_from_production\n"
     role_diff_loop: not_enabled
     input_tokens: 1123
     output_tokens: 41132
@@ -961,6 +958,7 @@ tasks:
     model: claude-fable-5
     dispatcher_version: 0.1.0
     agent_version: 2.1.247 (Claude Code)
+    operator_note: "Its mechanical_verification_failed was the false positive its own summary predicted: the algebra cannot be reachable until the floored call lands, and that call is W2-2-5's. Landed together; suite green."
   - key: W2-2-4
     summary: adjudicate — rule the move/rename boundary and the floored call site
     description: |
@@ -1011,9 +1009,8 @@ tasks:
     type: Task
     estimate: 30m
     labels: [size:S, area:dispatcher]
-    status: Blocked
-    blocked_reason: 'operator action, not dispatchable: the target is on the non-overridable floor. Mark Done once W2-2-3''s patch is transcribed and its seals pass.'
-
+    status: Done
+    operator_note: Patch applied verbatim from W2-2-3's summary, plus the three floor-count seals the body found while re-verifying (guide glob count, _FLOOR_ROWS, _DELEGATION_TARGETS). Nothing decided here. 3 587 passing on the merged tree.
   - key: W2-3-1
     summary: scaffold — a mutation-coverage claim needs a ledger, not a docstring
     description: |
