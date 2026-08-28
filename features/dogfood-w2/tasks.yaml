@@ -477,66 +477,63 @@ tasks:
     dispatcher_version: 0.1.0
     agent_version: 2.1.247 (Claude Code)
   - key: W2-1-2c
-    summary: seals — every prompt load is a listed load
-    description: |
-      The completeness claim this unit DOES buy, and it is a different one from
-      the abandoned proof.
+    summary: seals — every listed entry point still contains the call it names
+    description: |-
+      REGISTRY INTEGRITY, AND NOTHING ELSE. Narrowed 2026-08-28 after two rounds.
 
-      Assert that every call site reaching cross_family_reviewer._load_prompt
-      appears in prompt_provenance.UNANCHORED_ENTRY_POINTS or goes through the
-      gate. Grep-level: 'is this call site listed', not 'does this declaration
-      execute'. No path feasibility, no call-graph reachability.
+      Seal exactly one claim:
 
-      This catches the failure that actually matters — a load that BYPASSES
-      check_prompt_tree entirely, which no amount of declaration analysis could
-      ever find, because it has no declaration to analyse.
+        For each row of prompt_provenance.UNANCHORED_ENTRY_POINTS, the file it names
+        still contains the call it names.
 
-      It is deliberately weaker than the proof W2-1-2 attempted. A new entry
-      point that is added and not listed still fails CLOSED at run time; this
-      moves that detection to review time at a cost of tens of lines rather than
-      an analyzer wave.
+      Three rows. Finite, enumerable, decidable. That is the whole task.
 
-      Seal the register itself: a call site added to the repo and NOT added to
-      the tuple must turn this row red.
+      WHAT WAS REMOVED, AND WHY IT IS NOT COMING BACK
+      The previous description also asked you to assert that no OTHER file calls the
+      prompt-load seam. That half is deleted. It is universally quantified over all
+      source, all spellings, for ever — and it is the SAME claim that got W2-1-2
+      superseded, written in a different notation.
 
-      ## Unblock note (human)
-      (cleared from Blocked: cross_family_panel: consensus=block | claude=APPROVE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=5 (0C/5H))
-      Fix round, and the first instruction is a scope correction on my part.
+      Round 1 tried it with an AST model (load_chain, opens_journal, scannable) and
+      drew 5 HIGH: missed `render = lambda: ...` aliases, silently skipped every
+      test_* file, accepted FakeJournal.create.
 
-      1. DELETE THE CALL-CHAIN ANALYZER. load_chain(), opens_journal() and scannable()
-      are a static reachability model, and building one is explicitly OUT OF SCOPE for
-      this task — it is the technique that got W2-1-2 superseded after two failed
-      rounds. All five HIGH findings are that analyzer being incomplete: it misses
-      `render = lambda: ...` aliases, silently skips every test_* file even under src/,
-      tools/ and scripts/, and opens_journal() accepts any attribute ending in the
-      right string INCLUDING FakeJournal.create. Those are not bugs to patch. Any
-      analyzer of that shape will keep producing them, which is the whole reason this
-      claim was narrowed.
+      Round 2 tried it with regex, correctly deleting the analyzer, and drew 6 HIGH:
+      missed the relative `from .cross_family_reviewer import` spelling, missed
+      `loader = cfr.run_panel; loader(...)`, missed `getattr(cfr, "run_panel")(...)`,
+      missed line-broken calls, and exempted whole files at a time.
 
-      Replace it with the grep-level check the ticket asks for, and nothing more:
-        * for each entry in UNANCHORED_ENTRY_POINTS, assert the named file still
-          contains the named call;
-        * assert no OTHER file calls the prompt-load seam outside the gate.
-      No call chains, no scan-scope rules, no journal-opening inference.
+      Those are the same objection twice. Changing the technique did not help because
+      the technique was never the problem — the CLAIM is not decidable by reading
+      source text, and a third notation will draw a third set of misses.
 
-      2. GROK'S BIJECTION FINDING IS A TRUE POSITIVE — SEAL IT, DO NOT FIX IT.
-      The register says `tools/cross_family_panel.py:110 cfr.run_panel`. The live call
-      is at line 137. Two of the three entries are correct; that one has rotted.
+      DO NOT reintroduce it in any form: no call-graph model, no import scanning, no
+      repo-wide regex sweep, no "and also check nothing else calls it".
 
-      You CANNOT fix it: SEALS is ALLOW_ONLY_GLOBS over test paths and docs/**, because
-      a seal author who may edit the implementation can make its own seal pass. The
-      registry lives in src/claude_dispatcher/prompt_provenance.py.
+      WHY DROPPING IT COSTS NOTHING
+      The runtime default already refuses. A load with no anchor and no declaration is
+      a named refusal (constraint 3), so an entry point that is added and never listed
+      BREAKS ITS OWN TOOL the first time it runs. The deleted half bought detection at
+      review time instead of run time, for a failure that is already loud and already
+      fail-closed — and it could not deliver even that.
 
-      So state the truth and go red. The row that asserts every listed entry point
-      still contains the call it names MUST fail on this tree, and that is correct
-      behaviour, not a defect in your seal. Report it in your summary as a known-red
-      row against body_task: W2-1-3 and I will register it.
+      THE ROW THAT MUST GO RED
+      `tools/cross_family_panel.py:110 cfr.run_panel` is stale; the live call is at
+      line 137. Your seal MUST fail on this tree. That is the check working, not a
+      defect in it.
 
-      3. FOR W2-1-3, IN YOUR SUMMARY, AS A RECOMMENDATION NOT A CHANGE: the registry
-      identifies entries as "file:line symbol", and a line number is not a stable
-      identity — any edit above line 110 rots the entry silently, which is exactly what
-      happened. Recommend identifying by file + symbol. Do not implement it; it is a
-      source change and it is not yours.
+      You cannot fix it — SEALS is ALLOW_ONLY_GLOBS over test paths and docs/**,
+      because a seal author who may edit the implementation can make its own seal
+      pass. Report it in your summary as a known-red row against body_task: W2-1-3.
+
+      FOR W2-1-3, AS A RECOMMENDATION IN YOUR SUMMARY, NOT A CHANGE YOU MAKE
+      The registry identifies entries as "file:line symbol". A line number is not a
+      stable identity: any edit above line 110 rots the entry silently, which is
+      exactly what happened here. Recommend identifying by file + symbol.
+
+      NON-VACUITY BAR
+      Your seal must fail if a registry row is altered to name a call that is not
+      there. Prove that by altering one in a scratch copy, not by asserting it.
     type: Task
     estimate: 2h
     labels:
@@ -546,24 +543,15 @@ tasks:
     blockedBy:
       - W2-1-1
       - W2-1-2a
-    status: Blocked
+    status: To Do
     role: seals
-    started_at: '2026-08-28T12:38:44-07:00'
-    dispatcher_run_id: 2026-08-28T19-38-43Z-tasks
-    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-28T19-38-43Z-tasks/W2-1-2c/summary.md
-    branch: feat/W2-1-2c-seals-every-prompt-load-is
-    gate_base_sha: 774307b09e0be35627a084222a0e6d535a613bb9
-    cost_usd: 18.309230000000003
     agent: claude
-    effort: high
-    effort_escalated: true
     completed_at: '2026-08-28T12:49:18-07:00'
     iteration_count: 0
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
     panel_consensus: block
-    panel_summary: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=6 (0C/6H)
     panel_blocking_findings: 6
     panel_verdict_claude: CHANGES_REQUESTED
     panel_verdict_codex: CHANGES_REQUESTED
@@ -578,7 +566,6 @@ tasks:
     dispatcher_version: 0.1.0
     agent_version: 2.1.251 (Claude Code)
     unblocked_at: '2026-08-28T19:38:43+00:00'
-    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=6 (0C/6H)'
     mechanical_verification: skipped
     role_diff_loop: not_enabled
     verified: true
