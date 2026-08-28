@@ -55,19 +55,12 @@ pass:
     the ``sub.ts`` / ``sub/index.ts`` pair, whose aliasing was a measured false
     positive.
 
-WHAT THIS SCAFFOLD LEAVES UNDONE, on purpose, and it is exactly this unit's
-FIVE declared holes: :func:`build_surface`, :func:`compare_surfaces`,
-:func:`closure_request`, :func:`fold_branch_signatures` and :func:`_fold`.
 Every judgement W2-2-2's rows score — routing, module-ness, ambiguity, the
 unread policy, the three clauses, revision selection, closure construction,
-fault precedence and the error contract — is inside one of the five, and each
-one's docstring is the contract those rows are written from. What is left
-implemented is types, validation, enumeration and pure helpers.
-
-Four of those helpers — :func:`_merging_paths`, :func:`_surface_at`,
-:func:`_fault_fold` and :func:`_unenumerated` — have no caller until the holes
-are filled. That is the shape and not dead code: they are the plumbing
-W2-2-3 assembles, each specified by the hole that will call it.
+fault precedence and the error contract — lives in one of :func:`build_surface`,
+:func:`compare_surfaces`, :func:`closure_request`,
+:func:`fold_branch_signatures` and :func:`_fold`, and each one's docstring is
+the contract those rows are written from.
 """
 
 from __future__ import annotations
@@ -666,16 +659,25 @@ def build_surface(
     ROUTING, per key, by its leading segment (:func:`ts_key_segments`):
 
       * ``s:<specifier>`` — an ambient module declaration. Resolve
-        ``specifier`` against ``attempted``: exactly one of
-        :func:`specifier_candidates` present resolves to that file's
-        :func:`ts_namespace_of`; zero or several give
-        :func:`unresolved_namespace`, which is UNREAD — never guessed, and
-        never aliased, which is what the ``sub.ts`` / ``sub/index.ts`` false
-        positive cost. The key lands under the REMAINING segments, re-joined
-        with ``ts_symbol_key``; the bare ``s:<specifier>`` key itself is
-        DROPPED, since it is the augmenting file's own declaration and its own
+        ``specifier`` against the files that CAME BACK: exactly one
+        :func:`ts_namespace_of` among the :func:`specifier_candidates` present
+        in ``files`` resolves to it (``w.ts`` beside ``w.d.ts`` is one space
+        and resolves); zero or several give :func:`unresolved_namespace`,
+        which is UNREAD — never guessed, and never aliased, which is what the
+        ``sub.ts`` / ``sub/index.ts`` false positive cost. ``attempted`` is
+        what makes a candidate's absence a fact rather than a guess, so a
+        candidate attempted and absent does not count against resolution. The
+        key lands under the REMAINING segments, re-joined with
+        ``ts_symbol_key``; the bare ``s:<specifier>`` key itself is DROPPED,
+        since it is the augmenting file's own declaration and its own
         per-file comparison covers it.
-      * ``k:global`` — :data:`GLOBAL_NAMESPACE`, under the remaining segments.
+      * ``k:global`` — :data:`GLOBAL_NAMESPACE`, under the remaining segments,
+        and the global space is recorded UNREAD (NOT_ENUMERABLE) for every
+        such key. The bare ``k:global`` key — the ``declare global`` block's
+        own head, which the fingerprinter emits beside its members — is
+        DROPPED exactly as the bare ``s:<specifier>`` key is, and still marks
+        the space unread: a file that declares into the global space has
+        touched it whether or not this gate can name a member.
       * anything else — the file's OWN space, and which space that is depends
         on module-ness:
 
@@ -703,12 +705,128 @@ def build_surface(
       * a file whose own path is not in ``attempted``: the claim and the input
         disagree, and the completeness check would then be vacuous.
 
-    Total in ``files``: every supplied key reaches exactly one space or the one
-    documented drop, so a key cannot be silently discarded.
+    Total in ``files``: every supplied key reaches exactly one space or one of
+    the two documented drops, so a key cannot be silently discarded.
     """
-    raise NotImplementedError(
-        "W2-2-3 builds this; W2-2-2's rows are red against it until then"
+    attempted_set = frozenset(attempted)
+    present: dict[str, FileSurface] = {}
+    for surface in files:
+        rule = surface_rule_for(surface.language)
+        if not rule.merges_across_files:
+            raise BranchSurfaceError(
+                f"{surface.path!r} is {surface.language.value}, which does not "
+                f"merge declarations across files ({rule.why}); its space "
+                "could never be proven read, so no surface is built for it"
+            )
+        if surface.path not in attempted_set:
+            raise BranchSurfaceError(
+                f"{surface.path!r} was supplied but is not in `attempted`; "
+                "the completeness claim and the input disagree"
+            )
+        if surface.path in present:
+            raise BranchSurfaceError(f"{surface.path!r} was supplied twice")
+        present[surface.path] = surface
+
+    contributions: dict[SymbolKey, list[Contribution]] = {}
+    unread: dict[tuple[Namespace, UnreadReason], UnreadNamespace] = {}
+
+    def note_unread(namespace: Namespace, reason: UnreadReason, detail: str) -> None:
+        unread.setdefault((namespace, reason), UnreadNamespace(namespace, reason, detail))
+
+    for path, surface in present.items():
+        own_space, own_reason = _own_namespace(surface)
+        for qualname, fingerprint in surface.fingerprints:
+            segments = ts_key_segments(qualname)
+            tag, text = segments[0]
+            rest = segments[1:]
+            if tag == "s":
+                if not rest:
+                    continue  # the augmenting file's own declaration
+                namespace = _resolve_specifier(path, text, present)
+                if namespace.kind is NamespaceKind.UNRESOLVED:
+                    note_unread(
+                        namespace,
+                        UnreadReason.UNRESOLVED_SPECIFIER,
+                        f"{path} augments {text!r}, which names no single "
+                        "file among those read",
+                    )
+                key = SymbolKey(namespace, ts_symbol_key(rest))
+            elif tag == "k" and text == "global":
+                note_unread(
+                    GLOBAL_NAMESPACE,
+                    UnreadReason.NOT_ENUMERABLE,
+                    f"{path} declares into the global space, which no path "
+                    "list bounds",
+                )
+                if not rest:
+                    continue  # the `declare global` block's own head
+                key = SymbolKey(GLOBAL_NAMESPACE, ts_symbol_key(rest))
+            else:
+                if own_reason is not None:
+                    note_unread(
+                        own_space,
+                        own_reason,
+                        f"{path}: top-level declarations may be global "
+                        + (
+                            "(no comparator reported module-ness and its "
+                            "keys do not prove it)"
+                            if own_reason is UnreadReason.MODULE_NESS_UNREPORTED
+                            else "(the caller said it is a script)"
+                        ),
+                    )
+                key = SymbolKey(own_space, qualname)
+            contributions.setdefault(key, []).append(Contribution(path, fingerprint))
+
+    entries = tuple(
+        SurfaceEntry(key, tuple(sorted(found, key=lambda c: c.path)))
+        for key, found in sorted(
+            contributions.items(), key=lambda item: item[0].label
+        )
     )
+    surface_so_far = BranchSurface(entries=entries, attempted=attempted_set)
+    for entry in entries:
+        namespace = entry.key.namespace
+        if namespace.enumerable and not surface_so_far.namespace_is_read(namespace):
+            note_unread(
+                namespace,
+                UnreadReason.NOT_ATTEMPTED,
+                f"no attempted path names {namespace.label}",
+            )
+    return BranchSurface(
+        entries=entries,
+        attempted=attempted_set,
+        unread=tuple(
+            sorted(
+                unread.values(),
+                key=lambda u: (u.namespace.label, u.reason.value),
+            )
+        ),
+    )
+
+
+def _own_namespace(surface: FileSurface) -> tuple[Namespace, UnreadReason | None]:
+    """Where ``surface``'s own top-level declarations land, and why that is
+    unread when it is the global space."""
+    if surface.is_module is True or surface.module_evidence:
+        return ts_namespace_of(surface.path), None
+    if surface.is_module is False:
+        return GLOBAL_NAMESPACE, UnreadReason.NOT_ENUMERABLE
+    return GLOBAL_NAMESPACE, UnreadReason.MODULE_NESS_UNREPORTED
+
+
+def _resolve_specifier(
+    path: str, specifier: str, present: dict[str, FileSurface]
+) -> Namespace:
+    """The one space ``specifier`` written in ``path`` names among ``present``,
+    or the unresolved space keyed by it."""
+    spaces = {
+        ts_namespace_of(candidate)
+        for candidate in specifier_candidates(path, specifier)
+        if candidate in present
+    }
+    if len(spaces) == 1:
+        return next(iter(spaces))
+    return unresolved_namespace(specifier)
 
 
 def compare_surfaces(
@@ -738,8 +856,37 @@ def compare_surfaces(
     Ordered by ``key.label`` and ``namespace.label`` so a report and a seal see
     one order.
     """
-    raise NotImplementedError(
-        "W2-2-3 builds this; W2-2-2's rows are red against it until then"
+    unread: dict[tuple[Namespace, UnreadReason], UnreadNamespace] = {}
+    for entry in (*base.unread, *head.unread):
+        unread.setdefault((entry.namespace, entry.reason), entry)
+    unread_spaces = {namespace for namespace, _ in unread}
+
+    changes: list[SurfaceChange] = []
+    for head_entry in head.entries:
+        key = head_entry.key
+        if key.namespace in unread_spaces:
+            continue
+        base_entry = base.entry(key)
+        if base_entry is None:
+            continue  # clause 1: an added key is not a change
+        introduced_by = head_entry.paths - base_entry.paths
+        if not introduced_by:
+            continue  # clause 2: no new contributor
+        before, after = base_entry.merged, head_entry.merged
+        if before == after:
+            continue  # clause 3: a pure move
+        changes.append(
+            SurfaceChange(key, before, after, tuple(sorted(introduced_by)))
+        )
+
+    return SurfaceComparison(
+        changes=tuple(sorted(changes, key=lambda c: c.key.label)),
+        unread=tuple(
+            sorted(
+                unread.values(),
+                key=lambda u: (u.namespace.label, u.reason.value),
+            )
+        ),
     )
 
 
@@ -807,9 +954,23 @@ def closure_request(surfaces: Sequence[FileSurface]) -> ClosureRequest:
          stable list a caller may hand to git unchanged;
       4. at :data:`MAX_CLOSURE_READS` the request STOPS and reports
          ``truncated``. Enumerating past the cap and slicing would be the
-         silent truncation the cap exists to refuse.
+         silent truncation the cap exists to refuse. A request that fits the
+         cap exactly dropped nothing and is not truncated.
     """
-    raise NotImplementedError("W2-2-3 builds the closure enumeration")
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for surface in surfaces:
+        if not surface_rule_for(surface.language).merges_across_files:
+            continue
+        for specifier in augmentation_specifiers(surface):
+            for candidate in specifier_candidates(surface.path, specifier):
+                if candidate in seen:
+                    continue
+                if len(candidates) >= MAX_CLOSURE_READS:
+                    return ClosureRequest(tuple(candidates), truncated=True)
+                seen.add(candidate)
+                candidates.append(candidate)
+    return ClosureRequest(tuple(candidates), truncated=False)
 
 
 def fold_branch_signatures(
@@ -852,7 +1013,25 @@ def fold_branch_signatures(
     measured from it, and reading a baseline at another revision is the defect
     ``_compare_branch_signatures`` documents.
     """
-    raise NotImplementedError("W2-2-3 builds the fold entry point")
+    if merge_base is None:
+        raise RoleDiffError(
+            f"the branch-wide signature fold has no merge-base for {branch_ref}; "
+            "unknown input denies, and a fold that answered from the path "
+            "list alone would clear a branch it never established a baseline "
+            "for"
+        )
+    try:
+        paths = _merging_paths(changed_paths)
+        if not paths:
+            return CLEAN_FOLD
+        return _fold(repo_root, merge_base, branch_ref, paths, run=run)
+    except RoleDiffError:
+        raise
+    except Exception as exc:
+        raise RoleDiffError(
+            "the branch-wide signature fold failed closed: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
 
 
 @dataclass(frozen=True)
@@ -987,8 +1166,93 @@ def _fold(
     ``detail`` names every widening in one clause each, for the line
     ``check_branch`` prints.
     """
-    raise NotImplementedError(
-        "W2-2-3 builds the read order, the closure pass and the emitted result"
+    faults: list[ReadFault] = []
+    base_files: dict[str, FileSurface] = {}
+    head_files: dict[str, FileSurface] = {}
+    for path in paths:
+        for ref, found in ((merge_base, base_files), (branch_ref, head_files)):
+            surface, fault = _surface_at(repo_root, ref, path, run=run)
+            if fault is not None:
+                faults.append(fault)
+            elif surface is not None:
+                found[path] = surface
+
+    head_surfaces = tuple(head_files.values())
+    request = closure_request(head_surfaces)
+    closure: dict[str, FileSurface] = {}
+    changed = set(paths)
+    for candidate in request.candidates:
+        if candidate in changed:
+            continue
+        surface, fault = _surface_at(repo_root, merge_base, candidate, run=run)
+        if fault is not None:
+            faults.append(fault)
+        elif surface is not None:
+            closure[candidate] = surface
+
+    if faults:
+        return _fault_fold(faults)
+
+    if request.truncated:
+        cut = _unenumerated(head_surfaces, request)
+        raise RoleDiffError(
+            _unread_refusal(
+                tuple(
+                    UnreadNamespace(
+                        unresolved_namespace(specifier),
+                        UnreadReason.BUDGET_EXCEEDED,
+                        f"the closure stopped at {MAX_CLOSURE_READS} candidate "
+                        f"reads before every spelling of {specifier!r} was "
+                        "looked for",
+                    )
+                    for specifier in cut
+                )
+                or (
+                    UnreadNamespace(
+                        unresolved_namespace("<closure>"),
+                        UnreadReason.BUDGET_EXCEEDED,
+                        f"the closure stopped at {MAX_CLOSURE_READS} "
+                        "candidate reads",
+                    ),
+                )
+            )
+        )
+
+    attempted = frozenset(paths) | frozenset(request.candidates)
+    base = build_surface(
+        (*base_files.values(), *closure.values()), attempted=attempted
+    )
+    head = build_surface(
+        (*head_files.values(), *closure.values()), attempted=attempted
+    )
+    comparison = compare_surfaces(base, head)
+    if comparison.unread:
+        raise RoleDiffError(_unread_refusal(comparison.unread))
+
+    changes = tuple(
+        change.as_signature_change() for change in comparison.changes
+    )
+    return BranchFold(
+        status=SignatureCheckStatus.CHECKED,
+        changes=changes,
+        detail="; ".join(
+            f"{change.path} widens {change.symbol} from another file: "
+            f"{change.before!r} -> {change.after!r}"
+            for change in changes
+        ),
+    )
+
+
+def _unread_refusal(unread: Sequence[UnreadNamespace]) -> str:
+    """The one line naming every space the fold could not compare and why."""
+    named = "; ".join(
+        f"{entry.namespace.label} ({entry.reason.value})"
+        + (f": {entry.detail}" if entry.detail else "")
+        for entry in unread
+    )
+    return (
+        "the branch-wide signature fold could not compare every declaration "
+        f"space it reached, and not looking is not a pass: {named}"
     )
 
 
