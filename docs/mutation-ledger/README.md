@@ -346,12 +346,31 @@ Two more shapes are refused rather than returned, and neither is visible in
 an exception check alone:
 
 * `run_rows` is given three runs that produce a well-formed result and no
-  measurement — a seal file that stops importing, a row that calls
-  `os._exit(0)` mid-run, and a file that collects nothing. The middle one is
-  the shape that defeats an exit-code check specifically: pytest never
-  reaches its reporting hook, so there are no results, and the process exits
-  **0**. The healthy tree is run first in the same call, so a `run_rows` that
-  refuses everything fails rather than passing three refusals.
+  measurement — a seal file that stops importing, a file that collects
+  nothing, and a row that calls `os._exit(0)` mid-run. Each refusal is
+  asserted as the raise (`pytest.raises`), never as "no map came back": a
+  body that returns `None` for a degraded run is the fail-open, not a
+  refusal. The last shape is the one that defeats an exit-code check
+  specifically: pytest never reaches its reporting hook, so there are no
+  results, and the process exits **0** — and it is the one the seal cannot
+  observe from its own interpreter, because a `run_rows` that runs pytest
+  in-process is ended by the nested `os._exit(0)` with nothing raised and
+  the session reporting green. So that case is driven from a **child
+  interpreter** that prints a completion sentinel after the control run and
+  the refusal; the parent judges the child's report, never its exit code
+  (an in-process body exits 0 without the sentinel). The healthy tree is run
+  first in the same call — in the same child for the `os._exit` case — so a
+  `run_rows` that refuses everything fails rather than passing refusals.
+* the provisioner row distinguishes the **requested revision** on a row
+  rather than a marker file: the entry is recorded at a revision whose seal
+  file carries a row that a later commit deletes, so a provisioner that
+  stands up HEAD collects one row fewer and reddens the whole-set
+  assertions. Its **isolation** is shown by swapping the recorded mutant
+  into the clone through `scratch_clone.swap_in` and observing it redden
+  there while the repository's bytes, status and HEAD are unchanged — plus
+  `scratch_clone.assert_isolated`, because a linked worktree of the
+  repository handed back as the clone passes every content check while its
+  git commands operate on the real object database.
 * `write_ledger`'s refusals are asserted on the **file**, not only on the
   exception. "It raised" is satisfied by a writer that truncates the ledger,
   writes the rival records, validates last and then raises — the previously
@@ -393,7 +412,7 @@ mutation was applied to `mutation_ledger.py` and the row observed to go
 | `…_two_live_observations_has_no_answer_and_is_refused` | drop the `superseders` check |
 | `…_two_live_observations_has_no_answer_and_is_refused` | resolve `supersedes` against later entries too |
 
-The other sixteen rows are red against `freshness_of`, `classify_observation`,
+The other eighteen rows are red against `freshness_of`, `classify_observation`,
 `fold`, `proposed_fate`, `rederive`, `apply_mutation`,
 `provision_subject_tree`, `collect_rows`, `run_rows`, `write_ledger`,
 `load_ledger`, `check_citations` or `main` under the **control** as well as
@@ -401,7 +420,7 @@ the mutant, so no `PASSED` → `FAILED` transition exists to observe. They carry
 `Predicted (unmeasured) under:`, which is what the ledger's own vocabulary
 requires of a claim with no comparison behind it — the same rule this unit
 applies to the 31 expired clauses. **W2-3-3 owes the re-measurement**: when it
-fills the holes, each of the fifteen becomes measurable and the clause should
+fills the holes, each of the eighteen becomes measurable and the clause should
 be promoted to `Measured under:` with the run that promoted it.
 
 ## What running the seal file costs, and what it must not touch

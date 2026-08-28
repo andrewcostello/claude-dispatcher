@@ -76,7 +76,9 @@ from claude_dispatcher.mutation_ledger import (
     ClauseFate, Drift, Freshness, LedgerEntry, MutationOperator, MutationSite,
     NonDerivable, Observation, RederiveMode, RowResult, Status,
 )
-from claude_dispatcher.scratch_clone import scrubbed_git_env
+from claude_dispatcher.scratch_clone import (
+    ScratchClone, assert_isolated, scrubbed_git_env, swap_back, swap_in,
+)
 
 # --------------------------------------------------------------------------- #
 # The measured claim. Every constant here was re-derived on 2026-08-18 by
@@ -1708,6 +1710,7 @@ def test_the_applier_positively_exercises_add_default_branch() -> None:
         "the ONE function whose body moved is the anchor")
 
 
+
 def test_the_provisioner_stands_up_the_whole_population_and_runs_it(
         tmp_path: Path) -> None:
     """``provision_subject_tree``, ``collect_rows`` and ``run_rows``, over a
@@ -1723,9 +1726,21 @@ def test_the_provisioner_stands_up_the_whole_population_and_runs_it(
     membership check ever written against it, so the baseline-red row is
     pinned to FAILED by value.
 
-    The provisioned tree is a copy: the assertion that the source repository
-    still holds the unmutated bytes is what stops a provisioner that mutates
-    in place from passing, which is the accident DF-4 exists for.
+    The REQUESTED revision is distinguished on a row, not on a marker file
+    nothing inspects: the entry is recorded at a revision whose seal file
+    carries ``rows["gone"]`` and a later commit deletes it, so HEAD collects
+    one row fewer. Both trees are read from the object store first, so the
+    difference is a fact about the repository and not about the collector.
+    A provisioner that stood up HEAD whatever it was asked for reddens the
+    population, the result set and the population digest below.
+
+    The provisioned tree is a COPY, and that is shown by mutating it: the
+    recorded mutant is swapped into the clone through
+    :func:`scratch_clone.swap_in`, the seam the contract names, and the
+    claiming row reddens THERE while the source repository still holds the
+    unmutated bytes, is clean, and has not moved. A provisioner that handed
+    back the repository itself, or a linked worktree of it, would show the
+    mutation in the tree under measurement — the accident DF-4 exists for.
 
     ``run_rows`` is node-id level and ``collect_rows`` is function-level, and
     the tiny repo carries one parametrised row so that the difference is
@@ -1733,22 +1748,35 @@ def test_the_provisioner_stands_up_the_whole_population_and_runs_it(
     ran behind one that passed, and a collector that did not fold would move
     ``population_digest`` every time a case is added to a row.
 
-    Predicted (unmeasured) under: fold parametrisations inside ``run_rows``
-    and the node-id assertion reddens; return node ids from ``collect_rows``
-    and the population assertion reddens; report only what pytest printed and
-    the whole-set assertions redden; provision by checking out into
-    ``repo_root`` and the last assertion reddens; ignore the requested
-    revision and provision HEAD anyway.
+    Predicted (unmeasured) under: ignore the requested revision and provision
+    HEAD, and the population, result-set and digest assertions redden on the
+    deleted row; fold parametrisations inside ``run_rows`` and the node-id
+    assertion reddens; return node ids from ``collect_rows`` and the
+    population assertion reddens; report only what pytest printed and the
+    whole-set assertions redden; provision by checking out into
+    ``repo_root`` and the mutation lands in the source tree and the
+    isolation block reddens; hand back a linked worktree of ``repo_root``
+    (severed from nothing) and :func:`scratch_clone.assert_isolated`
+    refuses it; report PASSED for the swapped-in mutant and the reddening
+    block reddens.
     """
-    repo, entry, rows, head = _tiny_repo(tmp_path)
+    repo, entry, rows, recorded = _tiny_repo(tmp_path, deleted_row=True)
     collected = set(rows.values())
+    head = _git("rev-parse", "HEAD", cwd=repo).stdout.decode().strip()
 
-    _recommit(repo, "NOTE", "a commit after the entry was recorded\n")
+    doomed = rows["gone"].rpartition("::")[2].encode()
+    assert head != recorded
+    assert doomed in _at_revision(repo, recorded, _TINY_SEAL)
+    assert doomed not in _at_revision(repo, head, _TINY_SEAL), (
+        "the fixture's later commit must delete a row, or nothing here can "
+        "tell the requested revision from HEAD")
 
-    clone = ml.provision_subject_tree(str(repo), head, str(tmp_path / "dest"))
+    clone = ml.provision_subject_tree(str(repo), recorded,
+                                      str(tmp_path / "dest"))
     assert ml.collect_rows(clone, _TINY_SEAL) == tuple(sorted(collected)), (
         "function-level and sorted by contract, so a re-ordering or a "
-        "parametrisation cannot move population_digest")
+        "parametrisation cannot move population_digest; and the deleted row "
+        "is collected, so the tree stood up is the REQUESTED revision")
 
     results = ml.run_rows(clone, _TINY_SEAL)
     assert set(results) == (collected - {rows["parametrised"]}) | {
@@ -1758,20 +1786,11 @@ def test_the_provisioner_stands_up_the_whole_population_and_runs_it(
     assert results[rows["baseline_red"]] is RowResult.FAILED
     assert results[rows["reddens"]] is RowResult.PASSED
     assert results[rows["untouched"]] is RowResult.PASSED
+    assert results[rows["gone"]] is RowResult.PASSED, (
+        "the row HEAD deleted exists and is green at the recorded revision")
     assert ml.fold_row_results(results)[rows["parametrised"]] is (
         RowResult.PASSED)
 
-    # Provisioning adds a worktree inside `repo_root` and deletes a path in
-    # it. The source tree it provisions FROM must come back untouched, or a
-    # re-derivation edits the repository it is measuring. Verify that the
-    # source was provisioned from the REQUESTED revision, not HEAD: the
-    # repository now sits at a different commit.
-    assert (repo / "src" / "subject.py").read_text() == _SUBJECT_SRC
-    assert _git("status", "--porcelain", cwd=repo).stdout == b""
-    current_head = _git("rev-parse", "HEAD", cwd=repo).stdout.decode().strip()
-    assert current_head != head, (
-        "the repository moved to a new HEAD after the entry was created; the "
-        "provisioner was asked for the old one and must have honored it")
     # The entry recorded its population in the order the fixture built it and
     # the collector returns it sorted. The two agree because
     # `population_digest` sorts and de-duplicates before hashing — pinned
@@ -1781,6 +1800,34 @@ def test_the_provisioner_stands_up_the_whole_population_and_runs_it(
         ml.collect_rows(clone, _TINY_SEAL))
     shuffled = tuple(reversed(sorted(collected))) + (rows["untouched"],)
     assert ml.population_digest(shuffled) == entry.population_sha256
+
+    # Isolation, shown by a mutation rather than claimed: the recorded mutant
+    # goes into the clone through the contract's own seam and reddens the
+    # rows it should, and none of it reaches the repository.
+    assert isinstance(clone, ScratchClone), (
+        "the contract hands back a quarantined ScratchClone, the only tree "
+        "the swap seam will write into")
+    # DF-4's own probe, because the content checks below cannot see this
+    # one: a LINKED WORKTREE of the repository handed back as the clone
+    # keeps the repository's status clean and its bytes untouched while
+    # every git command run in it operates on the real object database.
+    assert_isolated(clone.path)
+    token = swap_in(clone, "src/subject.py", _MUTANT_SRC.encode())
+    try:
+        under_mutant = ml.run_rows(clone, _TINY_SEAL)
+    finally:
+        swap_back(clone, token)
+    assert under_mutant[rows["reddens"]] is RowResult.FAILED
+    assert under_mutant[rows["gone"]] is RowResult.FAILED
+    assert under_mutant[rows["untouched"]] is RowResult.PASSED
+    assert under_mutant[rows["baseline_red"]] is RowResult.FAILED
+
+    assert (repo / "src" / "subject.py").read_text() == _SUBJECT_SRC, (
+        "the mutation reached the repository under measurement: the "
+        "provisioned tree is not a copy")
+    assert _git("status", "--porcelain", cwd=repo).stdout == b""
+    assert _git("rev-parse", "HEAD", cwd=repo).stdout.decode().strip() == head, (
+        "provisioning the recorded revision moved the repository's HEAD")
 
 
 def test_a_collection_that_broke_refuses_rather_than_reporting_a_short_file(
@@ -1809,43 +1856,41 @@ def test_a_collection_that_broke_refuses_rather_than_reporting_a_short_file(
         ml.collect_rows(clone, _TINY_SEAL)
 
 
+
 def test_a_run_that_did_not_complete_is_refused_and_not_reported_as_results(
         tmp_path: Path) -> None:
-    """``run_rows`` on three runs that produce a well-formed result and no
+    """``run_rows`` on two runs that produce a well-formed result and no
     measurement.
 
     The contract states ``run_rows``'s fail-closed rule for one case — a row
     collected and then not reported is ABSENT, never PASSED — and is silent
     on the case that produces the SAME map for a different reason: the run
     stopped. Its signature carries no channel for "there is no measurement
-    here", so refusing is the only way to say it, and these three are where
-    a body that trusts pytest's exit code says the opposite:
+    here", so refusing is the only way to say it, and these are where a body
+    that trusts pytest's exit code says the opposite:
 
       * the seal file no longer IMPORTS. Every recorded row comes back
         ABSENT, which folds to ``MUTANT_UNEVALUABLE`` or ``HARNESS_FAULT``
         and parks the clause on a re-run that will never collect anything.
-      * a row KILLS the interpreter mid-run. ``os._exit(0)`` is the shape
-        that defeats an exit-code check specifically: pytest never reaches
-        its reporting hook, so the run has no results and every row is
-        unreported, while the process exits 0 — "all tests passed". A body
-        checking only the code accepts an empty run as a green file.
       * the file collects NOTHING. An empty map is a legal ``Mapping[str,
         RowResult]`` and reads downstream as a population that vanished.
 
-    The healthy tree is run FIRST and in the same call, so a ``run_rows``
-    that raises on everything fails here rather than passing three refusals.
+    The third shape — a row that KILLS the interpreter with ``os._exit(0)``
+    mid-run — is
+    :func:`test_a_run_interrupted_by_os_exit_is_refused_and_isolated`, driven
+    from a child process because it cannot be observed from this one.
 
-    The ``os._exit`` case must be isolated in a subprocess: if ``run_rows``
-    is implemented to run pytest in-process, the nested test's ``os._exit(0)``
-    will terminate the seal interpreter itself before any handler can run.
-    This isolation demonstrates that the requirement for a subprocess
-    implementation is necessary, not just convenient.
+    Each refusal is asserted as the RAISE, with ``pytest.raises``: a body
+    that returned ``None`` for a degraded run, or a partial map, is the
+    fail-open the contract forbids, and "no map came back" cannot tell the
+    two apart. The healthy tree is run FIRST and in the same call, so a
+    ``run_rows`` that raises on everything fails here rather than passing
+    two refusals.
 
     Predicted (unmeasured) under: return the partial map instead of raising
-    and all three blocks redden; gate on pytest's exit code alone and the
-    ``os._exit`` block reddens; treat "no rows" as an empty result and the
-    third block reddens; refuse every run and the control block reddens;
-    run the nested pytest in-process and the os._exit block kills the seal.
+    and the import block reddens; treat "no rows" as an empty result and the
+    second block reddens; return ``None`` for a degraded run and both
+    redden; refuse every run and the control block reddens.
     """
     repo, _, rows, head = _tiny_repo(tmp_path)
 
@@ -1864,40 +1909,87 @@ def test_a_run_that_did_not_complete_is_refused_and_not_reported_as_results(
         revision = _recommit(repo, _TINY_SEAL, source)
         clone = ml.provision_subject_tree(
             str(repo), revision, str(tmp_path / f"dest-{revision[:8]}"))
-        returned = None
-        try:
-            returned = ml.run_rows(clone, _TINY_SEAL)
-        except ml.MutationLedgerError:
-            pass
-        assert returned is None, (
-            f"{label}: run_rows returned {returned!r} for a run that took no "
-            f"measurement")
+        with pytest.raises(ml.MutationLedgerError):
+            ml.run_rows(clone, _TINY_SEAL)
+        # Refused, and refused for THIS run: the same clone still collects
+        # (or, for the import failure, refuses to) exactly as the seal file
+        # at that revision says, so the refusal above was not a harness that
+        # cannot stand up a tree at all.
+        if label == "the seal file stops importing":
+            with pytest.raises(ml.MutationLedgerError):
+                ml.collect_rows(clone, _TINY_SEAL)
+        else:
+            assert ml.collect_rows(clone, _TINY_SEAL) == (), (
+                "a file with no tests collects nothing; a non-empty "
+                "population here means the wrong tree was provisioned")
+
+
+
+#: Runs ``run_rows`` twice in a CHILD interpreter — the healthy tree, then
+#: the tree whose row calls ``os._exit(0)`` — and reports each outcome on its
+#: own line. ``COMPLETED`` is the completion sentinel: a ``run_rows`` that runs
+#: pytest in-process dies with the nested ``os._exit(0)`` before printing it,
+#: and exits 0 doing so, which is why the parent may not read the exit code
+#: as the verdict.
+_RUN_ROWS_DRIVER = '''import json
+import sys
+
+from claude_dispatcher import mutation_ledger as ml
+
+repo, seal, healthy_rev, killed_rev, dest = sys.argv[1:6]
+
+
+def report(tag, results):
+    print(tag + " " + json.dumps({k: v.value for k, v in results.items()}),
+          flush=True)
+
+
+clone = ml.provision_subject_tree(repo, healthy_rev, dest + "/healthy")
+report("CONTROL", ml.run_rows(clone, seal))
+clone = ml.provision_subject_tree(repo, killed_rev, dest + "/killed")
+try:
+    got = ml.run_rows(clone, seal)
+except ml.MutationLedgerError as exc:
+    print("REFUSED " + json.dumps(str(exc)), flush=True)
+else:
+    report("RETURNED", got)
+print("COMPLETED", flush=True)
+'''
 
 
 def test_a_run_interrupted_by_os_exit_is_refused_and_isolated(
         tmp_path: Path) -> None:
-    """``run_rows`` on a run where a test calls ``os._exit(0)`` mid-execution.
+    """``run_rows`` on a run where a test calls ``os._exit(0)`` mid-run,
+    driven from a supervised child interpreter.
 
-    This is the ``os._exit`` case from
-    ``test_a_run_that_did_not_complete_is_refused_and_not_reported_as_results``,
-    isolated in its own test to ensure the seal process is protected.
+    This is the shape that defeats an exit-code check specifically: pytest
+    never reaches its reporting hook, so the run has no results and every
+    row after the killer is unreported, while the process exits 0 — "all
+    tests passed". A body checking only the code accepts an empty run as a
+    green file.
 
-    If ``run_rows`` is implemented to run pytest in-process (using
-    ``pytest.main()`` or similar), the nested test's ``os._exit(0)`` will
-    terminate the Python interpreter immediately, bypassing any exception
-    handler and killing the seal process itself. This test must run the nested
-    pytest as a subprocess to prevent that termination from propagating.
+    It is also the shape this file cannot observe from its own interpreter.
+    A ``run_rows`` that runs pytest in-process (``pytest.main()`` or
+    similar) has the nested row's ``os._exit(0)`` end the SEAL interpreter:
+    nothing raises, no assertion reddens, the remaining rows never run, and
+    the session exits 0 — a green suite that compared nothing. So
+    ``run_rows`` is called in a child (:data:`_RUN_ROWS_DRIVER`) and the
+    parent judges the child's REPORT, never its exit status: the completion
+    sentinel must be present, the control must have run, and the degraded
+    run must have been refused with :class:`MutationLedgerError` — not
+    returned, and not absent.
 
-    A provisioned tree with a seal file that calls ``os._exit(0)`` in a test
-    must result in a refused run, not a crashed seal process.
+    The control is judged in the same child, so a ``run_rows`` that refuses
+    everything fails on the healthy tree rather than passing one refusal.
 
     Predicted (unmeasured) under: run the nested pytest in-process and the
-    nested ``os._exit(0)`` ends the seal interpreter before this row can
-    report — the row does not redden, it vanishes, which is what the whole
-    session shows; gate on the subprocess's exit code alone and the run
-    reads as green, ``run_rows`` returns a map, and the ``is None`` assertion
-    reddens; return the partial map (``test_a_reported`` PASSED, the rest
-    unreported) instead of raising and the same assertion reddens.
+    child exits 0 without ``COMPLETED`` — the sentinel assertion reddens,
+    and this interpreter is untouched; gate on the subprocess's exit code
+    alone and the child prints ``RETURNED``; return the partial map
+    (``test_a_reported`` PASSED, the rest unreported) instead of raising and
+    the same line appears; return ``None`` and the child crashes on
+    ``.items()`` before ``COMPLETED``; refuse every run and the ``CONTROL``
+    block reddens.
     """
     repo, _, rows, head = _tiny_repo(tmp_path)
 
@@ -1906,18 +1998,38 @@ def test_a_run_interrupted_by_os_exit_is_refused_and_isolated(
               "def test_b_kills_the_run():\n    os._exit(0)\n\n\n"
               "def test_c_never_runs():\n    assert other() == 7\n")
     revision = _recommit(repo, _TINY_SEAL, source)
-    clone = ml.provision_subject_tree(
-        str(repo), revision, str(tmp_path / f"dest-{revision[:8]}"))
 
-    returned = None
-    try:
-        returned = ml.run_rows(clone, _TINY_SEAL)
-    except ml.MutationLedgerError:
-        pass
+    driver = tmp_path / "drive_run_rows.py"
+    driver.write_text(_RUN_ROWS_DRIVER)
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(
+        p for p in (str(_repo_root() / "src"), env.get("PYTHONPATH")) if p)
+    proc = subprocess.run(
+        (sys.executable, str(driver), str(repo), _TINY_SEAL, head, revision,
+         str(tmp_path / "dest")),
+        env=env, capture_output=True, text=True, timeout=TIMEOUT_SECONDS)
+    lines = proc.stdout.splitlines()
+    report = {line.split(" ", 1)[0]: line.split(" ", 1)[1:]
+              for line in lines}
+    transcript = (f"exit {proc.returncode}\nstdout:\n{proc.stdout}"
+                  f"\nstderr:\n{proc.stderr}")
 
-    assert returned is None, (
-        "a run that did not complete (os._exit(0) mid-run): run_rows returned "
-        f"{returned!r} instead of refusing")
+    assert "COMPLETED" in report, (
+        "the child never reported completion: a run_rows that runs pytest "
+        "in-process died with the nested os._exit(0) (exit 0, no refusal), "
+        f"or the harness crashed\n{transcript}")
+    assert proc.returncode == 0, transcript
+
+    assert "CONTROL" in report, f"the control run never reported\n{transcript}"
+    control = json.loads(report["CONTROL"][0])
+    assert control[rows["untouched"]] == RowResult.PASSED.value, (
+        "the control run is refused, so nothing below means")
+
+    assert "RETURNED" not in report, (
+        "a run that did not complete (os._exit(0) mid-run) came back as a "
+        f"result map instead of being refused\n{transcript}")
+    assert "REFUSED" in report, (
+        f"the degraded run was neither refused nor returned\n{transcript}")
 
 
 def test_a_ledger_is_written_only_where_it_can_be_read_back_unchanged(
