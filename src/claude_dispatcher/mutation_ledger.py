@@ -1,9 +1,7 @@
 """Unit W2-3 — a durable ledger for mutation-coverage claims.
 
-**SCAFFOLD (W2-3-1): contract only.** Four folds — :func:`freshness_of`,
-:func:`classify_observation`, :func:`fold`, :func:`proposed_fate` — are this
-row's declared holes and raise :class:`NotImplementedError` on purpose;
-W2-3-2 seals them, W2-3-3 fills them. Nothing imports this module yet.
+Run as ``python -m claude_dispatcher.mutation_ledger`` (:func:`main`);
+``docs/mutation-ledger/README.md`` is the operator's guide.
 
 A docstring clause is a CITATION here, never evidence. The evidence is a
 ledger record, and there are two kinds, because the population this ledger
@@ -54,16 +52,27 @@ the fixed fate of the other kind.
 
 from __future__ import annotations
 
+import argparse
+import ast
 import datetime
 import hashlib
 import json
 import math
+import os
 import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from . import role_protocol
+from . import role_protocol, scratch_clone
 
 #: Repo-relative, posix. One directory, checked against the role table by
 #: :func:`refuse_unwritable_ledger_path`.
@@ -666,9 +675,7 @@ class Rederivation:
     :attr:`freshness` and :attr:`status` are DERIVED PROPERTIES, not stored
     fields: an incoherent triple is unrepresentable here rather than checked
     for, so no later run can emit one and no constructor argument can bypass
-    it. The cost is that a :class:`Rederivation` cannot answer either
-    question until W2-3-3 fills :func:`freshness_of` and :func:`fold`, which
-    is the correct order.
+    it.
     """
 
     claim_id: str
@@ -808,11 +815,9 @@ LedgerRecord = LedgerEntry | Prediction
 # --------------------------------------------------------------------------- #
 # Identity, paths and records.
 #
-# Implemented here because each fails SILENTLY when it is wrong: an id that
-# drifts from what it names, a ledger the body role cannot write, a parsed
-# line whose "false" became True, a ledger with two current observations for
-# one claim. The IO and the folds are left to W2-3-3 — a missing subprocess
-# is loud, and a fold is the decision W2-3-2's rows must be able to redden.
+# Each fails SILENTLY when it is wrong: an id that drifts from what it names,
+# a ledger the body role cannot write, a parsed line whose "false" became
+# True, a ledger with two current observations for one claim.
 # --------------------------------------------------------------------------- #
 
 
@@ -1378,35 +1383,75 @@ def counts_as_coverage(status: Status) -> bool:
 
 
 # --------------------------------------------------------------------------- #
-# THE FOUR FOLDS — declared holes, owed by W2-3-3 (bodies), sealed by W2-3-2.
-#
-# These are the decision this unit is about, so a scaffold that implemented
-# them would hand W2-3-2 rows written against existing code. The BEHAVIOUR is
-# specified here and on the enum members; only the table is the body's.
+# THE FOUR FOLDS. The behaviour is specified on the enum members; these are
+# the tables. Sealed by tests/test_mutation_ledger.py by VALUE, cell by cell.
 # --------------------------------------------------------------------------- #
+
+
+#: :func:`freshness_of`'s precedence, first match wins. NOT :class:`Drift`
+#: declaration order: ``REVISION_ABSENT`` is declared first and ranks fourth,
+#: because it blocks the audit of the record and not the comparison.
+_FRESHNESS_PRECEDENCE: tuple[tuple[Drift, Freshness], ...] = (
+    (Drift.SUBJECT_ABSENT, Freshness.SUBJECT_GONE),
+    (Drift.SITE_ABSENT, Freshness.SITE_GONE),
+    (Drift.ROW_ABSENT, Freshness.ROW_GONE),
+    (Drift.REVISION_ABSENT, Freshness.PROVENANCE_GONE),
+    (Drift.SUBJECT_BYTES, Freshness.SUBJECT_MOVED),
+    (Drift.POPULATION, Freshness.POPULATION_MOVED),
+)
+
+_NO_COMPARISON: frozenset[Observation] = frozenset({
+    Observation.NOT_ATTEMPTED, Observation.CONTROL_RED,
+    Observation.MUTANT_UNEVALUABLE,
+})
+
+_GONE: frozenset[Freshness] = frozenset({
+    Freshness.SUBJECT_GONE, Freshness.SITE_GONE, Freshness.ROW_GONE,
+})
+
+_FATES: dict[Status, ClauseFate] = {
+    Status.HELD: ClauseFate.CITE_CLAIM,
+    Status.REANCHORED: ClauseFate.REOBSERVE_THEN_CITE,
+    Status.SCOPE_BROKEN: ClauseFate.AMEND_SCOPE,
+    Status.BROKEN: ClauseFate.STRIKE,
+    Status.EXPIRED: ClauseFate.STRIKE,
+    Status.UNDERIVABLE: ClauseFate.RELABEL_PREDICTED,
+    Status.FAULTED: ClauseFate.AWAIT_RERUN,
+}
 
 
 def freshness_of(drift: Sequence[Drift]) -> Freshness:
     """The observed drift set folded to one :class:`Freshness`.
 
-    Total, and single-valued so :func:`fold` is a table. Precedence, and it
-    is load-bearing rather than cosmetic — report the strongest fact, and
-    absence of the thing being compared outranks a difference in it:
-
-      1. :data:`HARD_ABSENCE` in declaration order — SUBJECT_ABSENT,
-         SITE_ABSENT, ROW_ABSENT — to SUBJECT_GONE, SITE_GONE, ROW_GONE.
-      2. :attr:`Drift.REVISION_ABSENT` to
-         :attr:`Freshness.PROVENANCE_GONE`. Below hard absence and above the
-         MOVED members, because it blocks the audit of the record's
-         provenance and not the comparison itself.
-      3. :attr:`Drift.SUBJECT_BYTES` to :attr:`Freshness.SUBJECT_MOVED`.
-      4. :attr:`Drift.POPULATION` to :attr:`Freshness.POPULATION_MOVED`.
-      5. Empty to :attr:`Freshness.ANCHORED`.
-
-    Nothing is lost by the fold: the full set stays on
-    :attr:`Rederivation.drift`.
+    Precedence: the :data:`HARD_ABSENCE` members in declaration order, then
+    :attr:`Drift.REVISION_ABSENT`, then :attr:`Drift.SUBJECT_BYTES`, then
+    :attr:`Drift.POPULATION`; empty is :attr:`Freshness.ANCHORED`. Absence
+    of the thing being compared outranks a difference in it, and a missing
+    provenance outranks a moved body because it blocks the audit rather than
+    the comparison. The full set stays on :attr:`Rederivation.drift`.
     """
-    raise NotImplementedError("W2-3-3 owes this fold; W2-3-2 seals it")
+    observed: set[Drift] = set()
+    for member in drift:
+        if not isinstance(member, Drift):
+            raise MutationLedgerError(f"not a Drift: {member!r}")
+        observed.add(member)
+    for member, freshness in _FRESHNESS_PRECEDENCE:
+        if member in observed:
+            return freshness
+    return Freshness.ANCHORED
+
+
+def transition_set(control: Mapping[str, RowResult],
+                   mutant: Mapping[str, RowResult]) -> tuple[str, ...]:
+    """The rows PASSED in ``control`` and FAILED in ``mutant``, sorted.
+
+    The one definition of "reddened": a baseline failure is never credited to
+    the mutation, and a row the mutant could not evaluate is not a failure.
+    """
+    return tuple(sorted(
+        row for row, after in mutant.items()
+        if after is RowResult.FAILED
+        and control.get(row) is RowResult.PASSED))
 
 
 def classify_observation(*, control: Mapping[str, RowResult],
@@ -1414,164 +1459,703 @@ def classify_observation(*, control: Mapping[str, RowResult],
                          recorded_reddened: Sequence[str]) -> Observation:
     """What one control/mutant pair showed, over ROW-level results.
 
-    Both maps are row-level — pass them through :func:`fold_row_results`
-    first. Total over :class:`Observation`; the members are reached in this
-    order, and the order is the contract:
+    Both maps are row-level (:func:`fold_row_results` first). The arms are
+    reached in this order and the order is the contract: both maps empty is
+    NOT_ATTEMPTED; exactly one empty is HARNESS_FAULT; the claiming row
+    ERRORED or ABSENT in the control is HARNESS_FAULT (``rederive`` resolves a
+    genuinely uncollected row as drift before calling this, so ABSENT here is
+    "collected and never reported"); FAILED in the control is CONTROL_RED,
+    checked before the mutant so a row that was red anyway never reads as
+    reddened; ERRORED or ABSENT under the mutant is MUTANT_UNEVALUABLE, not
+    SURVIVED and not a fault; PASSED under the mutant is SURVIVED; otherwise
+    the PASSED-to-FAILED :func:`transition_set` is compared with
+    ``recorded_reddened`` as sets.
 
-      * BOTH maps empty — neither run reported anything —
-        :attr:`Observation.NOT_ATTEMPTED`.
-      * exactly ONE map empty — :attr:`Observation.HARNESS_FAULT`. The other
-        run collected and reported rows, so the tree is runnable and this one
-        broke. "Empty" is not how a crashed pytest is reported to this
-        function; :func:`rederive` may not reach here on a run it could not
-        complete.
-      * ``claiming_row`` ERRORED or ABSENT in the CONTROL —
-        :attr:`Observation.HARNESS_FAULT`. ABSENT here is "collected and then
-        not reported": :func:`rederive` resolves the row against the tree
-        first and reports a genuinely uncollected row as
-        :attr:`Drift.ROW_ABSENT` with NOT_ATTEMPTED, so by this point a
-        control that cannot execute the row is a broken run and not a fact
-        about the claim. Reading either as CONTROL_RED would turn a broken
-        environment into a durable relabelling of the clause.
-      * ``control[claiming_row]`` FAILED — :attr:`Observation.CONTROL_RED`.
-        Checked before the mutant, so a row that is red anyway can never read
-        as reddened.
-      * ``claiming_row`` ERRORED or ABSENT under the MUTANT —
-        :attr:`Observation.MUTANT_UNEVALUABLE`. The assertion the claim is
-        about was never reached, so this is not SURVIVED; and it reproduces
-        on every re-run, so it is not HARNESS_FAULT. Reading an error as a
-        failure is how a broken import becomes coverage.
-      * ``mutant[claiming_row]`` PASSED — :attr:`Observation.SURVIVED`.
-      * otherwise (FAILED under the mutant), compare the REDDENED SET against
-        ``recorded_reddened``: equal is
-        :attr:`Observation.REDDENED_AS_RECORDED`, different is
-        :attr:`Observation.REDDENED_SCOPE_DIVERGED`. As sets — order is not
-        a fact about a run.
-
-    **The reddened set is the PASSED-to-FAILED transition set**: rows that
-    were PASSED in the control and are FAILED under the mutant. Not "rows
-    failing under the mutant", which credits the mutation with every
-    baseline failure in the file and is how a broken fixture turns into a
-    blast radius. This is also why one ``control_green`` boolean is enough on
-    the wire: a transition set cannot contain a row that was already red, so
-    the full control map is not needed to re-compare one.
+    A ``claiming_row`` missing from a non-empty map is refused: the contract
+    does not define it, and answering would invent a disposition.
     """
-    raise NotImplementedError("W2-3-3 owes this fold; W2-3-2 seals it")
+    for name, results in (("control", control), ("mutant", mutant)):
+        for row, result in results.items():
+            if not isinstance(result, RowResult):
+                raise MutationLedgerError(
+                    f"{name}[{row!r}] is {result!r}, not a RowResult")
+    if not control and not mutant:
+        return Observation.NOT_ATTEMPTED
+    if not control or not mutant:
+        return Observation.HARNESS_FAULT
+    if claiming_row not in control or claiming_row not in mutant:
+        raise MutationLedgerError(
+            f"claiming row {claiming_row!r} is not in both result maps; "
+            "rederive resolves the row against the tree before classifying")
+    before = control[claiming_row]
+    if before in (RowResult.ERRORED, RowResult.ABSENT):
+        return Observation.HARNESS_FAULT
+    if before is RowResult.FAILED:
+        return Observation.CONTROL_RED
+    after = mutant[claiming_row]
+    if after in (RowResult.ERRORED, RowResult.ABSENT):
+        return Observation.MUTANT_UNEVALUABLE
+    if after is RowResult.PASSED:
+        return Observation.SURVIVED
+    if set(transition_set(control, mutant)) == set(recorded_reddened):
+        return Observation.REDDENED_AS_RECORDED
+    return Observation.REDDENED_SCOPE_DIVERGED
 
 
 def fold(freshness: Freshness, observation: Observation) -> Status:
     """:class:`Freshness` and :class:`Observation` folded to one
-    :class:`Status`.
+    :class:`Status`, total over 7 x 7.
 
-    TOTAL over all 7 x 7 combinations, and no combination may fold to "kept
-    as it was". Precedence, in order:
-
-      1. ``observation is HARNESS_FAULT`` — :attr:`Status.FAULTED`. A broken
-         RUN says nothing about the claim, at any freshness.
-      2. ``observation`` in {NOT_ATTEMPTED, CONTROL_RED, MUTANT_UNEVALUABLE}
-         — :attr:`Status.UNDERIVABLE`, at any freshness. No refuting
-         comparison was possible: nothing to look at, a control that was
-         already red, or a mutation this site cannot be evaluated under.
-         This arm comes BEFORE the absence arm on purpose: a deleted row, a
-         deleted subject and an unresolvable anchor are the cases UNDERIVABLE
-         names, and they arrive here as absence drift carrying NOT_ATTEMPTED.
-         Ranked the other way they fold to FAULTED, whose fate is
-         :attr:`ClauseFate.AWAIT_RERUN` — and no number of re-runs restores a
-         row that was deleted, so the clause is stranded un-relabelled and
-         un-struck forever, which is "kept as it was" under another name.
-         MUTANT_UNEVALUABLE is in this arm for the same reason from the other
-         side: it reproduces identically on every re-run.
-      3. ``freshness`` in {SUBJECT_GONE, SITE_GONE, ROW_GONE} —
-         :attr:`Status.FAULTED`. Only reachable now with a COMPLETED
-         comparison, which is a record contradicting itself: nothing can
-         report both that the row was absent and that it reddened.
-      4. ``observation is REDDENED_SCOPE_DIVERGED`` —
-         :attr:`Status.SCOPE_BROKEN`, at any remaining freshness.
-      5. ``freshness is ANCHORED`` — REDDENED_AS_RECORDED to
-         :attr:`Status.HELD`, SURVIVED to :attr:`Status.BROKEN`.
-      6. otherwise (SUBJECT_MOVED, POPULATION_MOVED, PROVENANCE_GONE) —
-         REDDENED_AS_RECORDED to :attr:`Status.REANCHORED`, SURVIVED to
-         :attr:`Status.EXPIRED`. PROVENANCE_GONE is here and not with the
-         absences because the comparison at the target tree was a real one:
-         a claim whose recorded revision was rebased away is still refutable,
-         and is owed a fresh observation rather than a permanent wait.
-
-    Refuse an argument that is not a member rather than answering: an unknown
-    input reaching a default arm is how a fold silently keeps an entry.
+    Precedence: HARNESS_FAULT is FAULTED at any freshness; NOT_ATTEMPTED,
+    CONTROL_RED and MUTANT_UNEVALUABLE are UNDERIVABLE at any freshness (this
+    arm is BEFORE the absence arm: a deleted row arrives as absence drift with
+    NOT_ATTEMPTED and must be disposed of, not parked); a completed
+    comparison under a GONE freshness is a record contradicting itself,
+    FAULTED; REDDENED_SCOPE_DIVERGED is SCOPE_BROKEN; ANCHORED folds
+    REDDENED_AS_RECORDED to HELD and SURVIVED to BROKEN; every moved freshness
+    folds them to REANCHORED and EXPIRED. A non-member is refused, never
+    defaulted.
     """
-    raise NotImplementedError("W2-3-3 owes this fold; W2-3-2 seals it")
+    if not isinstance(freshness, Freshness):
+        raise MutationLedgerError(f"not a Freshness: {freshness!r}")
+    if not isinstance(observation, Observation):
+        raise MutationLedgerError(f"not an Observation: {observation!r}")
+    if observation is Observation.HARNESS_FAULT:
+        return Status.FAULTED
+    if observation in _NO_COMPARISON:
+        return Status.UNDERIVABLE
+    if freshness in _GONE:
+        return Status.FAULTED
+    if observation is Observation.REDDENED_SCOPE_DIVERGED:
+        return Status.SCOPE_BROKEN
+    reddened = observation is Observation.REDDENED_AS_RECORDED
+    if freshness is Freshness.ANCHORED:
+        return Status.HELD if reddened else Status.BROKEN
+    return Status.REANCHORED if reddened else Status.EXPIRED
 
 
 def proposed_fate(status: Status) -> ClauseFate:
     """What is PROPOSED for the clause behind an observation with ``status``.
 
-    Proposed, not applied: W2-3-4 rules and W2-3-2 edits. Total over
-    :class:`Status`, and it must refuse a member it has no fate for, so that
-    a new :class:`Status` cannot ship unruled:
-
-      HELD to CITE_CLAIM; REANCHORED to REOBSERVE_THEN_CITE; SCOPE_BROKEN to
-      AMEND_SCOPE; BROKEN and EXPIRED to STRIKE; UNDERIVABLE to
-      RELABEL_PREDICTED; FAULTED to AWAIT_RERUN.
-
-    Every fate but AWAIT_RERUN disposes of the clause, and AWAIT_RERUN is
-    reachable only from :attr:`Status.FAULTED`, whose causes are all faults
-    in the RUN — so a clause waits only while the repository cannot run it,
-    and every fact about the mutation or the tree reaches a fate that
-    disposes of it. :data:`PREDICTION_FATE` covers the other record kind.
+    Proposed, not applied: W2-3-4 rules and SEALS edits. A :class:`Status`
+    with no fate is refused, so a new member cannot ship unruled.
+    :data:`PREDICTION_FATE` covers the other record kind.
     """
-    raise NotImplementedError("W2-3-3 owes this table; W2-3-2 seals it")
+    if not isinstance(status, Status):
+        raise MutationLedgerError(f"not a Status: {status!r}")
+    fate = _FATES.get(status)
+    if fate is None:
+        raise MutationLedgerError(f"{status!r} has no ruled fate")
+    return fate
 
 
 # --------------------------------------------------------------------------- #
-# The harness — owed by W2-3-3. Every one is IO or a subprocess, where a
-# missing implementation is loud rather than silent.
+# The harness. Every subprocess is bounded and killed as a process group; every
+# refusal is a raise, never a short or empty result.
 # --------------------------------------------------------------------------- #
+
+#: What a re-derivation reports as ``revision_run`` when NOTHING was
+#: provisioned. Never the recorded revision — that would be fabricated
+#: provenance — and not a real sha, so it cannot be mistaken for one.
+NULL_REVISION = "0" * 40
+
+#: Bound on any git child and on a pytest run made outside :func:`rederive`
+#: (which bounds its runs by the entry budget instead).
+RUN_TIMEOUT_SECONDS = 600
+
+#: Directory names never scanned for citations: tool state, and the ledger
+#: itself, whose records name their own ids and are not citations.
+_UNSCANNED_DIRS: frozenset[str] = frozenset({
+    ".git", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    ".venv", "venv", "node_modules", ".tox",
+})
+
+#: Loaded into every nested pytest run to record the COLLECTED node ids.
+#: A row collected and then never reported is what separates ABSENT from
+#: PASSED, and neither the summary line nor the junit file carries it.
+_COLLECT_PLUGIN = '''import os
+
+
+def pytest_collection_finish(session):
+    with open(os.environ["MUTATION_LEDGER_COLLECTED"], "w",
+              encoding="utf-8") as fh:
+        for item in session.items:
+            fh.write(item.nodeid + "\\n")
+'''
+
+#: pytest exit codes under which a RUN completed: all passed, or some failed.
+_RAN = frozenset({0, 1})
+#: ... and under which a COLLECTION completed: collected, or collected nothing.
+_COLLECTED = frozenset({0, 5})
+
+
+def _git(cwd: Path, *args: str) -> str:
+    """``git`` in ``cwd`` under the scrubbed environment; stdout, or a
+    refusal carrying stderr."""
+    try:
+        proc = subprocess.run(
+            ("git", *args), cwd=cwd, env=scratch_clone.scrubbed_git_env(),
+            capture_output=True, text=True, timeout=RUN_TIMEOUT_SECONDS)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise MutationLedgerError(f"git {' '.join(args)} in {cwd}: {exc}")
+    if proc.returncode != 0:
+        raise MutationLedgerError(
+            f"git {' '.join(args)} in {cwd} exited {proc.returncode}: "
+            f"{proc.stderr.strip()}")
+    return proc.stdout
+
+
+def _resolve_commit(repo_root: Path, revision: str) -> str | None:
+    """The 40-char sha ``revision`` names in ``repo_root``, or None when the
+    repository does not have it. A git that cannot answer is a refusal."""
+    proc = subprocess.run(
+        ("git", "rev-parse", "--verify", "--quiet", f"{revision}^{{commit}}"),
+        cwd=repo_root, env=scratch_clone.scrubbed_git_env(),
+        capture_output=True, text=True, timeout=RUN_TIMEOUT_SECONDS)
+    if proc.returncode == 0:
+        sha = proc.stdout.strip()
+        if not _SHA40.match(sha):
+            raise MutationLedgerError(
+                f"git resolved {revision!r} to {sha!r}, not a sha")
+        return sha
+    if proc.returncode == 1:
+        return None
+    raise MutationLedgerError(
+        f"git could not answer whether {revision} is in {repo_root} "
+        f"(exit {proc.returncode}): {proc.stderr.strip()}")
+
+
+def _run_bounded(cmd: Sequence[str], *, cwd: Path, env: Mapping[str, str],
+                 timeout: float) -> subprocess.CompletedProcess:
+    """Run ``cmd`` in its own session and kill the whole group on timeout,
+    so a grandchild the run spawned cannot outlive the bound."""
+    try:
+        proc = subprocess.Popen(
+            cmd, cwd=cwd, env=dict(env), stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, start_new_session=True)
+    except OSError as exc:
+        raise MutationLedgerError(f"could not start {cmd[0]}: {exc}")
+    try:
+        out, err = proc.communicate(timeout=max(timeout, 0.001))
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.communicate()
+        raise MutationLedgerError(
+            f"{' '.join(cmd[:4])} ... exceeded {timeout:.1f}s and was killed")
+    return subprocess.CompletedProcess(list(cmd), proc.returncode, out, err)
+
+
+def _nested_env(tree: Path, plugins: Path, collected: Path) -> dict[str, str]:
+    """The environment for a nested pytest run, scrubbed of the host's.
+
+    Drop-by-prefix: ``PYTEST_ADDOPTS`` with ``-k``/``--lf``/``--maxfail``, a
+    ``PYTEST_PLUGINS`` entry, a coverage wrapper, or an inherited
+    ``PYTHONPATH`` each change the population a run observes. Plugin
+    autoload is off because an installed ``pytest11`` entry point is loaded
+    with no variable naming it; the one plugin needed is passed with ``-p``.
+    """
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(("PYTEST_", "COVERAGE_", "PYTHON", "GIT_",
+                                "TOX_", "NOSE_"))}
+    env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    path = [str(plugins)]
+    if (tree / "src").is_dir():
+        path.insert(0, str(tree / "src"))
+    env["PYTHONPATH"] = os.pathsep.join(path)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["MUTATION_LEDGER_COLLECTED"] = str(collected)
+    return env
+
+
+def _unusable(what: str, proc: subprocess.CompletedProcess) -> str:
+    return (f"the nested pytest run is unusable ({what}); refused rather "
+            f"than parsed around\ncommand: {proc.args}\nstdout:\n"
+            f"{proc.stdout}\nstderr:\n{proc.stderr}")
+
+
+def _require_clone(clone: object) -> scratch_clone.ScratchClone:
+    if not isinstance(clone, scratch_clone.ScratchClone):
+        raise MutationLedgerError(
+            f"expected a ScratchClone, got {type(clone).__name__}: only a "
+            "quarantined copy may be run or mutated")
+    return clone
+
+
+def _pytest(clone: object, seal_file: str, *, collect_only: bool,
+            timeout: float) -> tuple[subprocess.CompletedProcess,
+                                     list[str] | None, bytes | None]:
+    """One nested pytest run over ``seal_file`` in ``clone``.
+
+    Returns the process, the collected node ids (None when collection never
+    finished) and the junit report bytes (None when the run never finished).
+    """
+    tree = _require_clone(clone).path
+    _require_repo_path(seal_file, name="seal_file", suffix=".py")
+    if not (tree / seal_file).is_file():
+        raise MutationLedgerError(
+            f"{seal_file} is not a file in the provisioned tree {tree}")
+    with tempfile.TemporaryDirectory(prefix="mutation-ledger-run-") as work:
+        plugins = Path(work) / "plugins"
+        plugins.mkdir()
+        (plugins / "mutation_ledger_collect.py").write_text(
+            _COLLECT_PLUGIN, encoding="utf-8")
+        collected = Path(work) / "collected.ids"
+        junit = Path(work) / "results.xml"
+        cmd = [sys.executable, "-m", "pytest", seal_file, "-q", "--tb=line",
+               "-p", "no:cacheprovider", "-p", "mutation_ledger_collect"]
+        cmd.append("--collect-only" if collect_only else f"--junitxml={junit}")
+        proc = _run_bounded(cmd, cwd=tree,
+                            env=_nested_env(tree, plugins, collected),
+                            timeout=timeout)
+        ids = (collected.read_text(encoding="utf-8").splitlines()
+               if collected.exists() else None)
+        report = junit.read_bytes() if junit.exists() else None
+    return proc, ids, report
+
+
+def _junit_node_id(seal_file: str, case: ET.Element,
+                   proc: subprocess.CompletedProcess) -> str:
+    """The node id a junit ``testcase`` reports on: ``classname`` carries
+    the dotted module plus any enclosing classes, ``name`` the function."""
+    module = seal_file[:-len(".py")].replace("/", ".")
+    classname = case.get("classname") or ""
+    if classname == module:
+        enclosing: tuple[str, ...] = ()
+    elif classname.startswith(f"{module}."):
+        enclosing = tuple(classname[len(module) + 1:].split("."))
+    else:
+        raise MutationLedgerError(_unusable(
+            f"reported classname {classname!r}, which is not {module!r} nor "
+            "a class in it", proc))
+    return "::".join((seal_file, *enclosing, case.get("name") or ""))
+
+
+def _collect_rows(clone: object, seal_file: str, *,
+                  timeout: float) -> tuple[str, ...]:
+    proc, ids, _ = _pytest(clone, seal_file, collect_only=True,
+                           timeout=timeout)
+    if proc.returncode not in _COLLECTED or ids is None:
+        raise MutationLedgerError(_unusable(
+            f"collection exited {proc.returncode}", proc))
+    rows: set[str] = set()
+    for node in ids:
+        if not node:
+            continue
+        row = node.split("[", 1)[0]
+        if not _NODE_ID.match(row):
+            raise MutationLedgerError(
+                f"collected {node!r}, which is not a pytest node id")
+        rows.add(row)
+    return tuple(sorted(rows))
+
+
+def _run_rows(clone: object, seal_file: str, *,
+              timeout: float) -> dict[str, RowResult]:
+    proc, ids, report = _pytest(clone, seal_file, collect_only=False,
+                                timeout=timeout)
+    if proc.returncode not in _RAN:
+        raise MutationLedgerError(_unusable(f"exit {proc.returncode}", proc))
+    if ids is None:
+        raise MutationLedgerError(_unusable("collection never finished", proc))
+    results = dict.fromkeys((i for i in ids if i), RowResult.ABSENT)
+    if not results:
+        raise MutationLedgerError(_unusable("collected nothing", proc))
+    if report is None:
+        raise MutationLedgerError(_unusable(
+            "the run never reported: no junit file was written, so the "
+            "session ended before its results did", proc))
+    try:
+        root = ET.fromstring(report)
+    except ET.ParseError as exc:
+        raise MutationLedgerError(_unusable(f"junit unreadable: {exc}", proc))
+    for case in root.iter("testcase"):
+        node = _junit_node_id(seal_file, case, proc)
+        if node not in results:
+            raise MutationLedgerError(_unusable(
+                f"reported {node!r}, which it did not collect", proc))
+        kinds = {child.tag for child in case}
+        if "skipped" in kinds:
+            # No SKIPPED member: ABSENT ranks below PASSED, so a skip can
+            # neither manufacture a PASSED->FAILED transition nor hide one.
+            continue
+        if "error" in kinds:
+            results[node] = RowResult.ERRORED
+        elif "failure" in kinds:
+            results[node] = RowResult.FAILED
+        else:
+            results[node] = RowResult.PASSED
+    return results
+
+
+def _resolve_anchor(module: ast.Module, anchor: str) -> ast.AST:
+    node: ast.AST = module
+    for part in anchor.split("."):
+        body = getattr(node, "body", None)
+        if not isinstance(body, list):
+            raise MutationLedgerError(
+                f"anchor {anchor!r}: {part!r} is looked up inside something "
+                "with no body")
+        matches = [n for n in body
+                   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                     ast.ClassDef)) and n.name == part]
+        if len(matches) != 1:
+            raise MutationLedgerError(
+                f"anchor {anchor!r} does not resolve: {part!r} names "
+                f"{len(matches)} definitions at that level")
+        node = matches[0]
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        raise MutationLedgerError(f"anchor {anchor!r} is not a function")
+    return node
+
+
+def _leading_whitespace(line: str) -> str:
+    return line[:len(line) - len(line.lstrip())]
+
+
+def _statements_after_docstring(fn: ast.AST) -> list[ast.stmt]:
+    body = list(fn.body)
+    if body and isinstance(body[0], ast.Expr) and isinstance(
+            body[0].value, ast.Constant) and isinstance(
+            body[0].value.value, str):
+        body = body[1:]
+    return body
+
+
+def _literal(argument: str, operator: MutationOperator) -> str:
+    try:
+        ast.literal_eval(argument)
+    except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+        raise MutationLedgerError(
+            f"{operator.value} needs a Python literal, got {argument!r}")
+    return argument
+
+
+def _return_chain(fn: ast.AST) -> list[ast.If]:
+    """The one if/elif chain among the anchor's direct statements whose
+    every arm ends in ``return`` and which has no ``else``; refused when
+    there is none or more than one."""
+    chains: list[list[ast.If]] = []
+    for stmt in fn.body:
+        if not isinstance(stmt, ast.If):
+            continue
+        chain = [stmt]
+        while len(chain[-1].orelse) == 1 and isinstance(chain[-1].orelse[0],
+                                                        ast.If):
+            chain.append(chain[-1].orelse[0])
+        if chain[-1].orelse:
+            continue
+        if all(arm.body and isinstance(arm.body[-1], ast.Return)
+               for arm in chain):
+            chains.append(chain)
+    if len(chains) != 1:
+        raise MutationLedgerError(
+            f"{fn.name} has {len(chains)} else-less dispatch chains whose "
+            "arms all return; add_default_branch needs exactly one")
+    return chains[0]
 
 
 def apply_mutation(source: bytes, site: MutationSite) -> bytes:
     """``source`` with ``site``'s mutation applied.
 
-    Resolve ``site.anchor`` with :mod:`ast` against ``source`` itself, never
-    by line number, so the same recorded mutation re-applies to a body that
-    has changed. Refuse (do not no-op) when the anchor does not resolve or
-    the operator does not fit what is there — a returned copy of the input
-    would be recorded as a mutation that reddened nothing.
+    The anchor is resolved with :mod:`ast` against ``source`` itself (a
+    dotted path of ``def``/``class`` names), never by line number. Refuses —
+    never returns a copy — when the anchor does not resolve, the operator
+    does not fit what is there, the argument is not what the operator takes,
+    the edit changes nothing, or the result does not compile.
     """
-    raise NotImplementedError("W2-3-3 owes the applier")
+    if not isinstance(source, bytes):
+        raise MutationLedgerError("apply_mutation takes bytes")
+    if not isinstance(site, MutationSite):
+        raise MutationLedgerError("site must be a MutationSite")
+    try:
+        text = source.decode("utf-8")
+        module = ast.parse(text)
+    except (UnicodeDecodeError, SyntaxError) as exc:
+        raise MutationLedgerError(f"subject does not parse: {exc}")
+    fn = _resolve_anchor(module, site.anchor)
+    lines = text.splitlines(keepends=True)
+    op = site.operator
+
+    if op in (MutationOperator.BODY_TO_NO_OP, MutationOperator.RETURN_CONSTANT):
+        stmts = _statements_after_docstring(fn)
+        if not stmts:
+            raise MutationLedgerError(
+                f"{site.anchor} has no statement after its docstring")
+        first, last = stmts[0], stmts[-1]
+        if first.lineno == fn.lineno:
+            raise MutationLedgerError(
+                f"{site.anchor} is a one-line definition; {op.value} needs "
+                "a body on its own lines")
+        value = ("None" if op is MutationOperator.BODY_TO_NO_OP
+                 else _literal(site.argument, op))
+        indent = _leading_whitespace(lines[first.lineno - 1])
+        lines[first.lineno - 1:last.end_lineno] = [f"{indent}return {value}\n"]
+    elif op is MutationOperator.RAISE_TO_CONTINUE:
+        handlers = [h for node in ast.walk(fn) if isinstance(node, ast.Try)
+                    for h in node.handlers
+                    if h.type is not None
+                    and ast.unparse(h.type) == site.argument]
+        if len(handlers) != 1:
+            raise MutationLedgerError(
+                f"{site.anchor} has {len(handlers)} `except {site.argument}` "
+                "handlers; raise_to_continue needs exactly one")
+        raises = [s for s in handlers[0].body if isinstance(s, ast.Raise)]
+        if len(raises) != 1:
+            raise MutationLedgerError(
+                f"the `except {site.argument}` handler in {site.anchor} has "
+                f"{len(raises)} raise statements; raise_to_continue needs one")
+        stmt = raises[0]
+        indent = _leading_whitespace(lines[stmt.lineno - 1])
+        lines[stmt.lineno - 1:stmt.end_lineno] = [f"{indent}continue\n"]
+    elif op is MutationOperator.ADD_DEFAULT_BRANCH:
+        value = _literal(site.argument, op)
+        chain = _return_chain(fn)
+        outer = _leading_whitespace(lines[chain[0].lineno - 1])
+        inner = _leading_whitespace(lines[chain[-1].body[0].lineno - 1])
+        at = chain[-1].body[-1].end_lineno
+        lines[at:at] = [f"{outer}else:\n", f"{inner}return {value}\n"]
+    else:
+        raise MutationLedgerError(f"no applier for {op!r}")
+
+    mutated = "".join(lines).encode("utf-8")
+    if mutated == source:
+        raise MutationLedgerError(
+            f"{op.value} at {site.anchor} changed nothing; a mutation that "
+            "is the input would be recorded as one that reddened nothing")
+    try:
+        compile(mutated, f"<mutant {site.subject}>", "exec")
+    except SyntaxError as exc:
+        raise MutationLedgerError(
+            f"{op.value} at {site.anchor} does not fit what is there: the "
+            f"mutant does not compile ({exc.msg}, line {exc.lineno})")
+    return mutated
 
 
 def provision_subject_tree(repo_root: str, revision: str, dest: str) -> object:
     """A quarantined :class:`scratch_clone.ScratchClone` of ``revision``.
 
-    ``git worktree add --detach`` then
-    :func:`scratch_clone.make_scratch_clone`, which severs and re-inits the
-    copy. The subject module is on :data:`role_protocol.FLOOR_GLOBS`, so the
-    mutation goes into the CLONE through
-    :func:`scratch_clone.swap_in`/``swap_back`` and the real tree is never
-    edited. Remove ``.claude/workflow`` from the staging worktree first: it
-    is a symlink out of the tree and the clone refuses one.
+    ``git worktree add --detach`` into a sibling staging path, the
+    out-of-tree ``.claude/workflow`` symlink removed, then
+    :func:`scratch_clone.make_scratch_clone` into ``dest``. The staging
+    worktree is removed on every path, so the repository is left as found.
     """
-    raise NotImplementedError("W2-3-3 owes the provisioner")
+    root = Path(repo_root)
+    target = Path(dest)
+    if not root.is_dir():
+        raise MutationLedgerError(f"repo_root {repo_root!r} is not a directory")
+    if os.path.lexists(target):
+        raise MutationLedgerError(f"dest {dest!r} already exists")
+    staging = target.parent / f"{target.name}.staging"
+    if os.path.lexists(staging):
+        raise MutationLedgerError(f"staging path {staging} already exists")
+    sha = _resolve_commit(root, revision)
+    if sha is None:
+        raise MutationLedgerError(f"{revision} is not a commit in {repo_root}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _git(root, "worktree", "add", "--detach", "--quiet", str(staging), sha)
+    try:
+        head = _git(staging, "rev-parse", "HEAD").strip()
+        if head != sha:
+            raise MutationLedgerError(
+                f"the staging worktree is at {head}, not the requested {sha}")
+        link = staging / ".claude" / "workflow"
+        if link.is_symlink():
+            link.unlink()
+        return scratch_clone.make_scratch_clone(staging, target)
+    finally:
+        try:
+            _git(root, "worktree", "remove", "--force", str(staging))
+        except MutationLedgerError:
+            shutil.rmtree(staging, ignore_errors=True)
+            try:
+                _git(root, "worktree", "prune")
+            except MutationLedgerError:
+                pass
 
 
 def collect_rows(clone: object, seal_file: str) -> tuple[str, ...]:
     """The function-level rows ``seal_file`` collects in ``clone``, sorted.
 
-    Collection only. This is the input to :func:`population_digest`, so a
-    collection error must RAISE rather than return a short list: a truncated
-    population reads as a file that shrank.
+    Collection only. A collection that did not complete RAISES; a file that
+    collects nothing is ``()``.
     """
-    raise NotImplementedError("W2-3-3 owes the collector")
+    return _collect_rows(clone, seal_file, timeout=RUN_TIMEOUT_SECONDS)
 
 
 def run_rows(clone: object, seal_file: str) -> Mapping[str, RowResult]:
     """Run ``seal_file`` in ``clone``; node id to :class:`RowResult`.
 
-    Node-id level, including parametrisations — :func:`fold_row_results` is
-    the caller's step. A row that was collected but not reported is ABSENT,
-    never PASSED.
+    Node-id level, including parametrisations. A row collected and never
+    reported is ABSENT. A run that did not complete — a non-{0,1} exit, a
+    collection that never finished or collected nothing, a session that
+    ended before writing its report — is refused, never returned as a map.
     """
-    raise NotImplementedError("W2-3-3 owes the runner")
+    return _run_rows(clone, seal_file, timeout=RUN_TIMEOUT_SECONDS)
+
+
+@dataclass(frozen=True)
+class Measurement:
+    """What one provision-and-run of a claim produced, before any record is
+    compared against it. :func:`rederive` and :func:`observe_claim` both
+    read one; only the first has a record to disagree with."""
+
+    revision_run: str
+    drift: tuple[Drift, ...]
+    #: Set only when no comparison happened (NOT_ATTEMPTED, HARNESS_FAULT).
+    observation: Observation | None
+    control: dict[str, RowResult] | None
+    #: None when the control ran and the mutant run was refused.
+    mutant: dict[str, RowResult] | None
+    subject_sha256: str | None
+    mutant_sha256: str | None
+    population: tuple[str, ...] | None
+    detail: str
+    cost_seconds: float
+
+    @property
+    def compared(self) -> bool:
+        return self.control is not None
+
+
+def _drift_tuple(drift: set[Drift]) -> tuple[Drift, ...]:
+    order = list(Drift)
+    return tuple(sorted(drift, key=order.index))
+
+
+def _measure(*, repo_root: str, revision: str, seal_file: str,
+             claiming_row: str, site: MutationSite,
+             expected_subject_sha256: str | None,
+             expected_population_sha256: str | None, historical: bool,
+             budget_seconds: float, drift: set[Drift],
+             started: float) -> Measurement:
+    """Provision ``revision``, run the control and the mutant, and report.
+
+    ``historical`` (AT_RECORDED) turns a digest mismatch into HARNESS_FAULT:
+    git is content-addressed, so the provisioned tree is not the one the
+    record names. Otherwise a mismatch is drift.
+    """
+    root = Path(repo_root)
+
+    def done(observation: Observation | None, *, control=None, mutant=None,
+             subject_sha256=None, mutant_sha256=None, population=None,
+             detail="") -> Measurement:
+        return Measurement(
+            revision_run=revision, drift=_drift_tuple(drift),
+            observation=observation, control=control, mutant=mutant,
+            subject_sha256=subject_sha256, mutant_sha256=mutant_sha256,
+            population=population, detail=detail,
+            cost_seconds=time.monotonic() - started)
+
+    def remaining() -> float:
+        return budget_seconds - (time.monotonic() - started)
+
+    with tempfile.TemporaryDirectory(prefix="mutation-ledger-") as work:
+        try:
+            clone = provision_subject_tree(str(root), revision,
+                                           str(Path(work) / "tree"))
+        except (MutationLedgerError, scratch_clone.ScratchCloneError,
+                OSError) as exc:
+            return done(Observation.HARNESS_FAULT,
+                        detail=f"provisioning refused: {exc}")
+        tree = clone.path
+
+        subject_sha256 = mutant_sha256 = None
+        mutant_bytes: bytes | None = None
+        notes: list[str] = []
+        subject_path = tree / site.subject
+        if not subject_path.is_file():
+            drift.add(Drift.SUBJECT_ABSENT)
+            notes.append(f"{site.subject} is not in the tree")
+        else:
+            source = subject_path.read_bytes()
+            subject_sha256 = source_digest(source)
+            if (expected_subject_sha256 is not None
+                    and subject_sha256 != expected_subject_sha256):
+                if historical:
+                    return done(Observation.HARNESS_FAULT, detail=(
+                        f"the provisioned {site.subject} at {revision} does "
+                        "not have the recorded digest, so this is not the "
+                        "tree the observation names"))
+                drift.add(Drift.SUBJECT_BYTES)
+            try:
+                mutant_bytes = apply_mutation(source, site)
+                mutant_sha256 = source_digest(mutant_bytes)
+            except MutationLedgerError as exc:
+                drift.add(Drift.SITE_ABSENT)
+                notes.append(f"site does not resolve: {exc}")
+
+        population: tuple[str, ...] | None = None
+        if not (tree / seal_file).is_file():
+            drift.add(Drift.ROW_ABSENT)
+            notes.append(f"{seal_file} is not in the tree")
+        else:
+            try:
+                population = _collect_rows(clone, seal_file,
+                                           timeout=remaining())
+            except MutationLedgerError as exc:
+                return done(Observation.HARNESS_FAULT,
+                            detail=f"collecting {seal_file} failed: {exc}")
+            if (expected_population_sha256 is not None
+                    and population_digest(population)
+                    != expected_population_sha256):
+                if historical:
+                    return done(Observation.HARNESS_FAULT, detail=(
+                        f"the provisioned {seal_file} at {revision} does not "
+                        "collect the recorded population, so this is not the "
+                        "tree the observation names"))
+                drift.add(Drift.POPULATION)
+            if claiming_row not in population:
+                drift.add(Drift.ROW_ABSENT)
+                notes.append(f"{claiming_row} is not collected")
+
+        if drift & set(HARD_ABSENCE):
+            return done(Observation.NOT_ATTEMPTED,
+                        subject_sha256=subject_sha256,
+                        mutant_sha256=mutant_sha256, population=population,
+                        detail="; ".join(notes))
+        assert mutant_bytes is not None  # SITE_ABSENT is a hard absence
+
+        try:
+            control = fold_row_results(
+                _run_rows(clone, seal_file, timeout=remaining()))
+        except MutationLedgerError as exc:
+            return done(Observation.HARNESS_FAULT,
+                        subject_sha256=subject_sha256,
+                        mutant_sha256=mutant_sha256, population=population,
+                        detail=f"the control run was refused: {exc}")
+        mutant: dict[str, RowResult] | None
+        token = scratch_clone.swap_in(clone, site.subject, mutant_bytes)
+        try:
+            mutant = fold_row_results(
+                _run_rows(clone, seal_file, timeout=remaining()))
+            detail = ""
+        except MutationLedgerError as exc:
+            mutant = None
+            detail = f"the mutant run was refused: {exc}"
+        finally:
+            scratch_clone.swap_back(clone, token)
+        if remaining() < 0:
+            return done(Observation.HARNESS_FAULT,
+                        subject_sha256=subject_sha256,
+                        mutant_sha256=mutant_sha256, population=population,
+                        detail=f"budget of {budget_seconds}s exceeded")
+        return done(None, control=control, mutant=mutant,
+                    subject_sha256=subject_sha256, mutant_sha256=mutant_sha256,
+                    population=population, detail=detail)
+
+
+def _mutant_or_unevaluable(m: Measurement) -> dict[str, RowResult]:
+    """The mutant map to classify with: the real one, or — when the mutant
+    run was refused after the control completed — every row ABSENT, which
+    :func:`classify_observation` reads as MUTANT_UNEVALUABLE behind the
+    control's own arms."""
+    if m.mutant is not None:
+        return m.mutant
+    assert m.control is not None
+    return {row: RowResult.ABSENT for row in m.control}
 
 
 def rederive(entry: LedgerEntry, *, repo_root: str,
@@ -1580,33 +2164,137 @@ def rederive(entry: LedgerEntry, *, repo_root: str,
              budget_seconds: float = PER_ENTRY_BUDGET_SECONDS) -> Rederivation:
     """Re-derive one entry: provision, control run, mutant run, compare.
 
-    Never re-reads the docstring, and never trusts the entry beyond its
-    inputs. Under :attr:`RederiveMode.AT_RECORDED` a ``target`` is refused —
-    two answers to "which tree" is the defect :class:`RederiveMode` prevents.
+    Never re-reads the docstring. Under :attr:`RederiveMode.AT_RECORDED` a
+    ``target`` is refused. A ``target`` that names no commit is refused too:
+    both are malformed requests, not run outcomes.
 
-    Returns a :class:`Rederivation` in every terminating case, including
-    failure. The split between the two failure shapes is the contract:
-
-      * A BROKEN RUN — clone refused, ``budget_seconds`` exceeded, pytest
-        unusable, a provisioned tree that is not the one the entry names —
-        is :attr:`Observation.HARNESS_FAULT`, with the reason in ``detail``.
-        Every one of those is worth retrying.
-      * A TREE THAT LACKS WHAT THE ENTRY NAMES — no subject file, no
-        resolvable anchor, no claiming row, or (in AT_RECORDED) no such
-        revision to provision — is DRIFT: the matching :class:`Drift` member
-        on ``drift``, with :attr:`Observation.NOT_ATTEMPTED`. It is a fact
-        about the tree, not a fault, and re-running cannot change it.
-
-    That split is what :func:`classify_observation` is entitled to assume:
-    the claiming row was COLLECTED in both runs before it is called, so an
-    ABSENT there means "collected and then not reported", which is a broken
-    run rather than a missing row. Do not call it on a run that did not
-    complete.
-
-    Nothing here raises to mean "the claim failed" — that is a
-    :class:`Status`.
+    Returns a :class:`Rederivation` in every other terminating case. A
+    BROKEN RUN — a refused clone, an exceeded budget, an unusable pytest, a
+    provisioned tree that is not the one the entry names, a control run that
+    was refused — is :attr:`Observation.HARNESS_FAULT` with the reason in
+    ``detail``. A TREE THAT LACKS WHAT THE ENTRY NAMES is the matching
+    :class:`Drift` with :attr:`Observation.NOT_ATTEMPTED`; an absent recorded
+    revision under AT_RECORDED reports :data:`NULL_REVISION` as
+    ``revision_run``, since nothing was provisioned. A mutant run refused
+    after a completed control is the mutation's doing and classifies as
+    :attr:`Observation.MUTANT_UNEVALUABLE`.
     """
-    raise NotImplementedError("W2-3-3 owes the harness")
+    if not isinstance(entry, LedgerEntry):
+        raise MutationLedgerError("rederive takes a LedgerEntry")
+    if not isinstance(mode, RederiveMode):
+        raise MutationLedgerError(f"not a RederiveMode: {mode!r}")
+    budget = _require_cost(budget_seconds, name="budget_seconds")
+    if mode is RederiveMode.AT_RECORDED and target is not None:
+        raise MutationLedgerError(
+            "AT_RECORDED names the tree already; a target is a second answer")
+    started = time.monotonic()
+    root = Path(repo_root)
+    if not root.is_dir():
+        raise MutationLedgerError(f"repo_root {repo_root!r} is not a directory")
+    drift: set[Drift] = set()
+
+    def report(observation: Observation, *, revision_run: str, reddened=(),
+               unexpected=(), missing=(), detail="") -> Rederivation:
+        return Rederivation(
+            claim_id=entry.claim_id, observation_id=entry.observation_id,
+            mode=mode, revision_run=revision_run, drift=_drift_tuple(drift),
+            observation=observation, reddened_observed=tuple(reddened),
+            unexpected_rows=tuple(unexpected), missing_rows=tuple(missing),
+            cost_seconds=time.monotonic() - started, detail=detail)
+
+    recorded = _resolve_commit(root, entry.revision)
+    if recorded is None:
+        drift.add(Drift.REVISION_ABSENT)
+    if mode is RederiveMode.AT_RECORDED:
+        if recorded is None:
+            return report(Observation.NOT_ATTEMPTED, revision_run=NULL_REVISION,
+                          detail=(f"revision {entry.revision} is not in "
+                                  f"{repo_root}; nothing was provisioned"))
+        revision = recorded
+    else:
+        revision = _resolve_commit(root, target or "HEAD")
+        if revision is None:
+            if target is not None:
+                raise MutationLedgerError(
+                    f"target {target!r} is not a commit in {repo_root}")
+            return report(Observation.HARNESS_FAULT, revision_run=NULL_REVISION,
+                          detail=f"{repo_root} has no HEAD commit to run")
+
+    m = _measure(
+        repo_root=repo_root, revision=revision, seal_file=entry.seal_file,
+        claiming_row=entry.claiming_row, site=entry.site,
+        expected_subject_sha256=entry.subject_sha256,
+        expected_population_sha256=entry.population_sha256,
+        historical=mode is RederiveMode.AT_RECORDED, budget_seconds=budget,
+        drift=drift, started=started)
+    if not m.compared:
+        assert m.observation is not None
+        return report(m.observation, revision_run=m.revision_run,
+                      detail=m.detail)
+    assert m.control is not None
+    mutant = _mutant_or_unevaluable(m)
+    observation = classify_observation(
+        control=m.control, mutant=mutant, claiming_row=entry.claiming_row,
+        recorded_reddened=entry.reddened)
+    observed = transition_set(m.control, mutant)
+    return report(
+        observation, revision_run=m.revision_run, reddened=observed,
+        unexpected=sorted(set(observed) - set(entry.reddened)),
+        missing=sorted(set(entry.reddened) - set(observed)), detail=m.detail)
+
+
+def observe_claim(*, repo_root: str, seal_file: str, claiming_row: str,
+                  site: MutationSite, target: str | None = None,
+                  observed_on: str | None = None,
+                  supersedes: str | None = None, note: str = "",
+                  budget_seconds: float = PER_ENTRY_BUDGET_SECONDS,
+                  ) -> tuple[LedgerEntry | None, Measurement]:
+    """Measure a claim at ``target`` (HEAD by default) and, when both runs
+    completed, the :class:`LedgerEntry` that records what was seen.
+
+    The admission path: an entry made here carries the digests of the tree
+    that was run and the transition set that was observed, never a typed
+    one. No entry comes back for a run that compared nothing; the
+    :class:`Measurement` says why.
+    """
+    _require_repo_path(seal_file, name="seal_file", suffix=".py")
+    _require_node_id(claiming_row, name="claiming_row")
+    if not isinstance(site, MutationSite):
+        raise MutationLedgerError("site must be a MutationSite")
+    budget = _require_cost(budget_seconds, name="budget_seconds")
+    root = Path(repo_root)
+    if not root.is_dir():
+        raise MutationLedgerError(f"repo_root {repo_root!r} is not a directory")
+    revision = _resolve_commit(root, target or "HEAD")
+    if revision is None:
+        raise MutationLedgerError(
+            f"{target or 'HEAD'} is not a commit in {repo_root}")
+    m = _measure(
+        repo_root=repo_root, revision=revision, seal_file=seal_file,
+        claiming_row=claiming_row, site=site, expected_subject_sha256=None,
+        expected_population_sha256=None, historical=False,
+        budget_seconds=budget, drift=set(), started=time.monotonic())
+    if m.mutant is None or m.control is None:
+        return None, m
+    assert m.subject_sha256 and m.mutant_sha256 and m.population is not None
+    before = m.control.get(claiming_row)
+    if before in (RowResult.ERRORED, RowResult.ABSENT, None):
+        return None, m
+    entry = new_entry(
+        seal_file=seal_file, claiming_row=claiming_row, site=site,
+        revision=revision, subject_sha256=m.subject_sha256,
+        mutant_sha256=m.mutant_sha256,
+        population_sha256=population_digest(m.population),
+        reddened=transition_set(m.control, m.mutant),
+        control_green=before is RowResult.PASSED,
+        observed_on=observed_on or datetime.date.today().isoformat(),
+        supersedes=supersedes, cost_seconds=m.cost_seconds, note=note)
+    return entry, m
+
+
+# --------------------------------------------------------------------------- #
+# The file, and the check that closes the loop from the docstrings back.
+# --------------------------------------------------------------------------- #
 
 
 def load_ledger(path: str) -> tuple[LedgerRecord, ...]:
@@ -1615,51 +2303,403 @@ def load_ledger(path: str) -> tuple[LedgerRecord, ...]:
     Blank lines are skipped; a malformed line refuses the whole file rather
     than being dropped, and :func:`validate_ledger` runs on the result.
     """
-    raise NotImplementedError("W2-3-3 owes the reader")
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise MutationLedgerError(f"cannot read ledger {path}: {exc}")
+    records: list[LedgerRecord] = []
+    for number, line in enumerate(text.splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            records.append(parse_line(line))
+        except MutationLedgerError as exc:
+            raise MutationLedgerError(f"{path}:{number}: {exc}") from None
+    validate_ledger(records)
+    return tuple(records)
+
+
+def _write_records(target: Path, records: Sequence[LedgerRecord]) -> None:
+    """Write to a sibling temp file and ``os.replace`` it over ``target``:
+    a crash mid-write leaves the previous file, never a torn one."""
+    text = "".join(canonical_line(r) + "\n" for r in records)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.",
+                               suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, target)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def write_ledger(path: str, records: Sequence[LedgerRecord]) -> None:
     """Write a ledger, refusing one that :func:`validate_ledger` rejects and
     a ``path`` that :func:`refuse_unwritable_ledger_path` rejects.
 
-    Admission is a separate question from consistency, and this function
-    answers only the second: the ids on a record prove it is self-consistent,
-    not that a run produced it. A caller adding an observation it did not
-    measure is writing a well-formed lie, which is why the CLI's ``rederive``
-    verb — not this function — is what admits evidence.
+    Consistency only: the ids prove a record is self-consistent, not that a
+    run produced it. ``rederive``/:func:`observe_claim` admit evidence.
     """
-    raise NotImplementedError("W2-3-3 owes the writer")
+    refuse_unwritable_ledger_path(path)
+    for record in records:
+        if not isinstance(record, (LedgerEntry, Prediction)):
+            raise MutationLedgerError(f"not a ledger record: {record!r}")
+    validate_ledger(records)
+    _write_records(Path(path), records)
+
+
+def _ledger_files(root: Path) -> list[Path]:
+    ledger_dir = root / LEDGER_DIR
+    if not ledger_dir.is_dir():
+        return []
+    return sorted(p for p in ledger_dir.iterdir()
+                  if p.is_file() and p.name.endswith(LEDGER_SUFFIX))
 
 
 def check_citations(repo_root: str) -> tuple[str, ...]:
     """Every ledger citation in the tree that no longer holds up.
 
-    The check that closes the loop the other direction: a clause relabelled
-    to cite ``ml-…`` is only as good as the record behind it, and nothing
-    else here answers "does every id in this repository still resolve to a
-    live record whose status reads as coverage".
-
-    Greps for :data:`CITATION_ID`, resolves each against its subject's ledger
-    through :func:`current_observations` and the prediction set, and returns
-    one line per problem — unresolved, superseded, cited as a claim whose
-    live observation does not :func:`counts_as_coverage`, or an ``mlo-``
-    observation id cited where a claim id belongs (an observation id is
-    evidence and is replaced; a citation to one goes stale by design).
-    Empty when the tree is clean, so the CLI verb can exit on its length.
+    Loads every ledger under :data:`LEDGER_DIR`, then greps the rest of the
+    tree for :data:`CITATION_ID`. One line per problem: an ``ml-`` id with no
+    live observation, an ``mlp-`` id with no prediction, or an ``mlo-``
+    observation id cited where a claim id belongs (evidence is replaced, so
+    such a citation goes stale by design; a superseded one already has).
+    The ledger files themselves are not citations and are not scanned.
+    "A claim whose live observation does not count as coverage" is not
+    reported: no record carries a :class:`Status`, so it is not computable
+    from the file. Empty when the tree is clean.
     """
-    raise NotImplementedError("W2-3-3 owes the citation check")
+    root = Path(repo_root)
+    if not root.is_dir():
+        raise MutationLedgerError(f"repo_root {repo_root!r} is not a directory")
+    live_claims: set[str] = set()
+    observation_ids: set[str] = set()
+    superseded: set[str] = set()
+    prediction_ids: set[str] = set()
+    for ledger in _ledger_files(root):
+        records = load_ledger(str(ledger))
+        live_claims |= set(current_observations(records))
+        for entry in observations(records):
+            observation_ids.add(entry.observation_id)
+            if entry.supersedes is not None:
+                superseded.add(entry.supersedes)
+        prediction_ids |= {p.prediction_id for p in predictions(records)}
+
+    problems: list[str] = []
+    ledger_dir = (root / LEDGER_DIR).resolve()
+    for dirpath, dirnames, filenames in os.walk(root):
+        here = Path(dirpath)
+        dirnames[:] = sorted(
+            d for d in dirnames
+            if d not in _UNSCANNED_DIRS and (here / d).resolve() != ledger_dir)
+        for name in sorted(filenames):
+            file = here / name
+            if file.is_symlink():
+                continue
+            try:
+                text = file.read_bytes().decode("utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            if "ml" not in text:
+                continue
+            rel = file.relative_to(root).as_posix()
+            for number, line in enumerate(text.splitlines(), 1):
+                for match in CITATION_ID.finditer(line):
+                    cited = match.group(0)
+                    where = f"{rel}:{number}: {cited}"
+                    if cited.startswith(OBSERVATION_ID_PREFIX):
+                        state = ("superseded" if cited in superseded
+                                 else "live" if cited in observation_ids
+                                 else "unresolved")
+                        problems.append(
+                            f"{where} is an observation id ({state}) cited "
+                            "where a claim id belongs; cite the ml- claim")
+                    elif cited.startswith(PREDICTION_ID_PREFIX):
+                        if cited not in prediction_ids:
+                            problems.append(
+                                f"{where} resolves to no prediction")
+                    elif cited not in live_claims:
+                        problems.append(
+                            f"{where} resolves to no live observation")
+    return tuple(problems)
+
+
+# --------------------------------------------------------------------------- #
+# The CLI face.
+# --------------------------------------------------------------------------- #
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="python -m claude_dispatcher.mutation_ledger",
+        description="Re-derive, dispose of, and check mutation-coverage "
+                    "claims against a ledger.")
+    verbs = parser.add_subparsers(dest="verb", required=True)
+
+    def common(sub: argparse.ArgumentParser, *, runs: bool) -> None:
+        sub.add_argument("--repo", default=".",
+                         help="repository root (default: the current directory)")
+        which = sub.add_mutually_exclusive_group(required=True)
+        which.add_argument("--subject",
+                           help="subject module; the ledger path is derived")
+        which.add_argument("--ledger",
+                           help=f"ledger path, repo-relative, under {LEDGER_DIR}/")
+        if runs:
+            sub.add_argument("--mode", choices=[m.value for m in RederiveMode],
+                             default=RederiveMode.AT_TARGET.value)
+            sub.add_argument("--target",
+                             help="commit to run at (AT_TARGET; default HEAD)")
+            sub.add_argument("--budget", type=float,
+                             default=PER_ENTRY_BUDGET_SECONDS,
+                             help="seconds per entry before it faults")
+
+    rederive_ = verbs.add_parser(
+        "rederive", help="re-run entries and report each status; "
+                         "--record admits what was observed")
+    common(rederive_, runs=True)
+    rederive_.add_argument("--record", action="store_true",
+                           help="write a superseding observation for every "
+                                "completed comparison, and record new claims")
+    rederive_.add_argument("--observed-on", help="YYYY-MM-DD (default today)")
+    rederive_.add_argument("--note", default="", help="prose on new records")
+    rederive_.add_argument(
+        "--claim", action="append", nargs="+", metavar="ARG", default=[],
+        help="a claim not yet in the ledger: SEAL_FILE::ROW ANCHOR OPERATOR "
+             "[ARGUMENT]; measured and, with --record, admitted")
+    rederive_.add_argument("claim_ids", nargs="*",
+                           help="restrict to these ml- claim ids")
+
+    fates = verbs.add_parser("fates", help="proposed_fate over a ledger")
+    common(fates, runs=True)
+
+    citations = verbs.add_parser(
+        "citations", help="check every ledger citation in the tree")
+    citations.add_argument("--repo", default=".")
+
+    predict = verbs.add_parser(
+        "predict", help="record a clause no operator can measure")
+    common(predict, runs=False)
+    predict.add_argument("--row", required=True, metavar="SEAL_FILE::ROW")
+    predict.add_argument("--described", required=True,
+                         help="the clause's mutation sentence, verbatim")
+    predict.add_argument("--reason", required=True,
+                         choices=[r.value for r in NonDerivable])
+    predict.add_argument("--target", help="commit judged at (default HEAD)")
+    predict.add_argument("--recorded-on", help="YYYY-MM-DD (default today)")
+    predict.add_argument("--note", default="")
+    return parser
+
+
+def _ledger_for(args: argparse.Namespace) -> tuple[str, Path]:
+    """The repo-relative ledger path and its absolute location."""
+    rel = args.ledger if args.ledger else ledger_path_for(args.subject)
+    refuse_unwritable_ledger_path(rel)
+    return rel, Path(args.repo) / rel
+
+
+def _load_or_empty(location: Path) -> tuple[LedgerRecord, ...]:
+    return load_ledger(str(location)) if location.exists() else ()
+
+
+def _subject_of(records: Sequence[LedgerRecord],
+                args: argparse.Namespace) -> str | None:
+    subjects = {e.site.subject for e in observations(records)}
+    subjects |= {p.subject for p in predictions(records)}
+    if args.subject:
+        subjects.add(args.subject)
+    if len(subjects) > 1:
+        raise MutationLedgerError(f"one subject per ledger, got {sorted(subjects)}")
+    return next(iter(subjects), None)
+
+
+def _format(r: Rederivation, row: str) -> str:
+    drift = ",".join(d.value for d in r.drift) or "-"
+    return (f"{r.claim_id} {r.status.value} freshness={r.freshness.value} "
+            f"observation={r.observation.value} at={r.revision_run[:12]} "
+            f"drift={drift} reddened={len(r.reddened_observed)} "
+            f"+{len(r.unexpected_rows)} -{len(r.missing_rows)} "
+            f"{r.cost_seconds:.1f}s {row}"
+            + (f"\n    {r.detail}" if r.detail else ""))
+
+
+def _verb_rederive(args: argparse.Namespace) -> int:
+    rel, location = _ledger_for(args)
+    records = list(_load_or_empty(location))
+    subject = _subject_of(records, args)
+    mode = RederiveMode(args.mode)
+    if mode is RederiveMode.AT_RECORDED and args.target:
+        raise MutationLedgerError("--target is not allowed with at_recorded")
+    observed_on = args.observed_on or datetime.date.today().isoformat()
+    all_covered = True
+    written = 0
+
+    live = current_observations(records)
+    wanted = set(args.claim_ids)
+    unknown = wanted - set(live)
+    if unknown:
+        raise MutationLedgerError(f"no live observation for {sorted(unknown)}")
+    for claim, entry in live.items():
+        if wanted and claim not in wanted:
+            continue
+        r = rederive(entry, repo_root=args.repo, mode=mode,
+                     target=args.target, budget_seconds=args.budget)
+        print(_format(r, entry.claiming_row))
+        all_covered &= counts_as_coverage(r.status)
+        if args.record and r.observation not in (
+                Observation.NOT_ATTEMPTED, Observation.HARNESS_FAULT,
+                Observation.MUTANT_UNEVALUABLE):
+            fresh, _ = observe_claim(
+                repo_root=args.repo, seal_file=entry.seal_file,
+                claiming_row=entry.claiming_row, site=entry.site,
+                target=r.revision_run, observed_on=observed_on,
+                supersedes=entry.observation_id, note=args.note,
+                budget_seconds=args.budget)
+            if fresh is not None:
+                records.append(fresh)
+                written += 1
+                print(f"    recorded {fresh.observation_id} superseding "
+                      f"{entry.observation_id}")
+
+    for spec in args.claim:
+        if len(spec) not in (3, 4):
+            raise MutationLedgerError(
+                f"--claim takes SEAL_FILE::ROW ANCHOR OPERATOR [ARGUMENT], "
+                f"got {spec}")
+        if subject is None:
+            raise MutationLedgerError("--claim needs --subject")
+        row, anchor, operator = spec[:3]
+        seal_file = row.split("::", 1)[0]
+        site = MutationSite(subject=subject, anchor=anchor,
+                            operator=MutationOperator(operator),
+                            argument=spec[3] if len(spec) == 4 else "")
+        claim = claim_id(seal_file=seal_file, claiming_row=row, site=site)
+        if claim in live:
+            raise MutationLedgerError(
+                f"{claim} already has a live observation; rederive it instead")
+        fresh, m = observe_claim(
+            repo_root=args.repo, seal_file=seal_file, claiming_row=row,
+            site=site, target=args.target, observed_on=observed_on,
+            note=args.note, budget_seconds=args.budget)
+        drift = ",".join(d.value for d in m.drift) or "-"
+        if fresh is None:
+            print(f"{claim} NOT-RECORDED at={m.revision_run[:12]} "
+                  f"drift={drift} {m.cost_seconds:.1f}s {row}\n    "
+                  f"{m.detail or 'the comparison did not complete'}")
+            all_covered = False
+            continue
+        assert m.control is not None
+        print(f"{claim} OBSERVED at={m.revision_run[:12]} "
+              f"control={m.control[row].value} reddened="
+              f"{len(fresh.reddened)} {m.cost_seconds:.1f}s {row}")
+        for reddened in fresh.reddened:
+            print(f"    reddened {reddened}")
+        if args.record:
+            records.append(fresh)
+            written += 1
+            print(f"    recorded {fresh.observation_id} as {claim}")
+
+    if written:
+        refuse_unwritable_ledger_path(rel)
+        validate_ledger(records)
+        _write_records(location, records)
+        print(f"wrote {written} record(s) to {rel}")
+    return 0 if all_covered else 1
+
+
+def _verb_fates(args: argparse.Namespace) -> int:
+    _, location = _ledger_for(args)
+    records = _load_or_empty(location)
+    mode = RederiveMode(args.mode)
+    if mode is RederiveMode.AT_RECORDED and args.target:
+        raise MutationLedgerError("--target is not allowed with at_recorded")
+    for claim, entry in current_observations(records).items():
+        r = rederive(entry, repo_root=args.repo, mode=mode, target=args.target,
+                     budget_seconds=args.budget)
+        print(f"{claim} {r.status.value} -> {proposed_fate(r.status).value} "
+              f"{entry.claiming_row}")
+    for p in predictions(records):
+        print(f"{p.prediction_id} prediction({p.reason.value}) -> "
+              f"{PREDICTION_FATE.value} {p.claiming_row}")
+    return 0
+
+
+def _verb_citations(args: argparse.Namespace) -> int:
+    problems = check_citations(args.repo)
+    for line in problems:
+        print(line)
+    return 1 if problems else 0
+
+
+def _verb_predict(args: argparse.Namespace) -> int:
+    rel, location = _ledger_for(args)
+    records = list(_load_or_empty(location))
+    subject = _subject_of(records, args)
+    if subject is None:
+        raise MutationLedgerError("predict needs --subject")
+    root = Path(args.repo)
+    revision = _resolve_commit(root, args.target or "HEAD")
+    if revision is None:
+        raise MutationLedgerError(f"{args.target or 'HEAD'} is not a commit")
+    try:
+        source = subprocess.run(
+            ("git", "show", f"{revision}:{subject}"), cwd=root,
+            env=scratch_clone.scrubbed_git_env(), capture_output=True,
+            check=True, timeout=RUN_TIMEOUT_SECONDS).stdout
+    except (subprocess.CalledProcessError, OSError,
+            subprocess.TimeoutExpired) as exc:
+        raise MutationLedgerError(f"{subject} at {revision[:12]}: {exc}")
+    prediction = new_prediction(
+        seal_file=args.row.split("::", 1)[0], claiming_row=args.row,
+        subject=subject, described=args.described,
+        reason=NonDerivable(args.reason), revision=revision,
+        subject_sha256=source_digest(source),
+        recorded_on=args.recorded_on or datetime.date.today().isoformat(),
+        note=args.note)
+    # Re-examined in place: the same clause replaces its earlier judgement.
+    kept = [r for r in records if not (isinstance(r, Prediction)
+                                       and r.prediction_id
+                                       == prediction.prediction_id)]
+    replaced = len(kept) != len(records)
+    kept.append(prediction)
+    refuse_unwritable_ledger_path(rel)
+    validate_ledger(kept)
+    _write_records(location, kept)
+    print(f"{prediction.prediction_id} {'re-examined' if replaced else 'recorded'} "
+          f"({prediction.reason.value}) at={revision[:12]} {args.row}")
+    return 0
+
+
+_VERBS = {
+    "rederive": _verb_rederive,
+    "fates": _verb_fates,
+    "citations": _verb_citations,
+    "predict": _verb_predict,
+}
 
 
 def main(argv: Sequence[str]) -> int:
-    """The CLI face, owed by W2-3-3. Three verbs:
+    """The CLI face. ``rederive`` re-runs entries and, with ``--record``,
+    admits evidence; ``fates`` proposes each clause's fate; ``citations``
+    checks the tree and exits non-zero on any problem; ``predict`` records a
+    clause no operator can measure. Usage errors and refusals exit 2."""
+    try:
+        args = _parser().parse_args(list(argv))
+    except SystemExit as exc:
+        code = exc.code
+        return code if isinstance(code, int) else 2
+    try:
+        return _VERBS[args.verb](args)
+    except (MutationLedgerError, scratch_clone.ScratchCloneError) as exc:
+        print(f"mutation_ledger {args.verb}: {exc}", file=sys.stderr)
+        return 2
 
-      * ``rederive`` — re-run entries and report each :class:`Status`.
-      * ``fates`` — :func:`proposed_fate` over a ledger, for W2-3-4 to rule.
-      * ``citations`` — :func:`check_citations` over the tree, non-zero exit
-        on any problem.
 
-    It does not exist yet, and the module is deliberately not wired to
-    ``__main__`` until it does: a command that half-runs is worse than one
-    that is absent.
-    """
-    raise NotImplementedError("W2-3-3 owes the CLI")
+if __name__ == "__main__":  # pragma: no cover - script face
+    sys.exit(main(sys.argv[1:]))

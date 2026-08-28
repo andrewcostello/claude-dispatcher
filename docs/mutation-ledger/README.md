@@ -1,8 +1,10 @@
 # The mutation ledger
 
 One JSON Lines file per subject module, named
-`claude_dispatcher.<module>.jsonl` (`mutation_ledger.ledger_path_for`). This
-directory holds **no ledger yet** — see *What is owed* below.
+`claude_dispatcher.<module>.jsonl` (`mutation_ledger.ledger_path_for`).
+`claude_dispatcher.call_site_reachability.jsonl` is the first ledger, built
+by W2-3-3 on 2026-08-28 — see *What the ledger holds so far* below for its
+five records and the handover to W2-3-5.
 
 ## The two kinds of record
 
@@ -202,58 +204,75 @@ row's `added_immutable_globs` can only add denials to a `DENY_GLOBS` rule — so
 passing here is necessary, not sufficient, and the branch gate remains the
 thing that judges a diff.
 
-## What is owed, and by whom
+## What is implemented, and how to run it
 
-Nothing in `mutation_ledger.py` runs today. It is a contract, and this is the
-whole of what exists and what does not.
+Everything in `mutation_ledger.py` runs. W2-3-1 wrote the contract and the
+silent-failure surfaces (ids, records, path rule, wire); W2-3-2 sealed the
+rest; W2-3-3 filled it on 2026-08-28 against those seals — all 23 rows of
+`tests/test_mutation_ledger.py` are green, and the module measures 0.5:1
+prose-to-code (`scaffold_shape measure`).
 
-**Implemented (W2-3-1, this scaffold)** — the surfaces whose failure is
-*silent*: the enums; `MutationSite`, `LedgerEntry`, `Rederivation` and
-`Prediction` with their validation; `claim_id`, `observation_id`,
-`prediction_id`, `new_entry`, `new_prediction`; `ledger_path_for` and
-`refuse_unwritable_ledger_path`; `fold_row_results`, `population_digest`,
-`source_digest`; `canonical_line`, `parse_line`; `observations`,
-`predictions`, `current_observations`, `validate_ledger`,
-`counts_as_coverage`.
+```
+python -m claude_dispatcher.mutation_ledger rederive  --subject SRC [--mode at_target|at_recorded] [--target REV] [--record] [--claim 'SEAL::ROW' ANCHOR OPERATOR [ARGUMENT]]... [CLAIM_ID...]
+python -m claude_dispatcher.mutation_ledger predict   --subject SRC --row 'SEAL::ROW' --described 'verbatim sentence' --reason REASON [--note ...]
+python -m claude_dispatcher.mutation_ledger fates     --subject SRC [--mode ...] [--target REV]
+python -m claude_dispatcher.mutation_ledger citations [--repo ROOT]
+```
 
-**Owed by W2-3-3 (bodies), sealed first by W2-3-2 (seals):**
+* **`rederive`** re-runs every live observation in the ledger and prints one
+  line per claim: status, freshness, observation, the revision run, the drift
+  set, the size of the observed transition set and the `+unexpected`/
+  `-missing` counts. Exit 0 only when every status counts as coverage.
+  `--record` is the **admission path**: a completed comparison is written back
+  as a new observation superseding the old one, and each `--claim` not yet in
+  the ledger is measured at the target and recorded with the digests of the
+  tree that was run and the transition set that was observed — never a typed
+  one (`observe_claim`). A comparison that did not complete records nothing
+  and says why.
+* **`predict`** records a clause no operator can measure: the sentence
+  verbatim, a closed reason, and the subject's digest at the judged
+  revision. Re-examining the same sentence replaces the record in place.
+* **`fates`** is `rederive` plus `proposed_fate`, and `PREDICTION_FATE` for
+  each prediction — the input W2-3-4 rules on.
+* **`citations`** greps the tree (not the ledger directory) for `ml-`/`mlo-`/
+  `mlp-` ids and exits non-zero on one that resolves to no live record, or on
+  an `mlo-` observation id cited where a claim id belongs.
 
-* the four folds — `freshness_of`, `classify_observation`, `fold`,
-  `proposed_fate`. These are the decision W2-3-2's rows must be able to
-  redden, which is why this scaffold specifies them and does not write them.
-* the harness — `apply_mutation`, `provision_subject_tree`, `collect_rows`,
-  `run_rows`, `rederive`, `load_ledger`, `write_ledger`, `check_citations`.
-* the CLI — `main`. There is **no `rederive`, `fates` or `citations` command**
-  today, and the module is deliberately not wired to `__main__`: a command
-  that half-runs is worse than one that is absent.
+How a run is made, and what it costs here: `provision_subject_tree` adds a
+detached worktree in a sibling staging path, removes the out-of-tree
+`.claude/workflow` symlink, scratch-clones it, and removes the staging
+worktree on every path (the repository under measurement is left as found —
+`git status` clean, HEAD unmoved). Each nested pytest runs under an
+environment scrubbed by prefix (`PYTEST_*`, `COVERAGE_*`, `PYTHON*`,
+`GIT_*`, `TOX_*`, `NOSE_*`) with `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` and only
+the collection plugin named with `-p`, in its own process group, killed
+whole on timeout. One claim against `tests/test_call_site_reachability.py`
+costs **2.0 s** measured on this branch (provision + control + mutant).
 
-`Rederivation.freshness` and `.status` are derived properties, not stored
-fields, so no run can emit a triple that disagrees with itself — and no
-`Rederivation` can answer either question until `freshness_of` and `fold` are
-filled. That is the intended order.
+Choices the contract left to the body, stated so a later reader does not
+infer omission:
 
-**Known gaps in this contract, carried to W2-3-2/3/5** — recorded here rather
-than left for a later reader to rediscover, and adjudicated as not owed by
-this scaffold:
+* `revision_run` is the null sha `000…0` when NOTHING was provisioned (a
+  recorded revision absent under `at_recorded`). The seal refuses only the
+  echo of the absent revision; W2-3-4 may rule a different spelling.
+* A mutant run refused after a completed control (the mutation broke
+  import or collection) classifies as `mutant_unevaluable`, not as a harness
+  fault: the same tree just ran the control.
+* `apply_mutation` refuses a mutant that does not compile (a `continue`
+  outside a loop) and validates `return_constant`/`add_default_branch`
+  arguments as Python literals, closing the contract's "argument not
+  validated by operator" gap at the applier. `add_default_branch` extends
+  exactly one else-less if/elif chain, a direct statement of the anchor,
+  whose every arm returns; anything else is refused.
+* `write_ledger` writes a sibling temp file and `os.replace`s it, so a crash
+  mid-write leaves the previous ledger rather than a torn one.
+* A skipped row stays `absent` (no SKIPPED member; ranks below PASSED).
 
-* **no shared clause key.** `claim_id` identifies a clause by `(row, site)`,
-  `prediction_id` by `(row, described)`, so "an observation and a prediction
-  of the same sentence" is not expressible and `validate_ledger` cannot
-  refuse it. Adding one (e.g. the verbatim sentence on both kinds) changes
-  both ids and so is a format-version bump.
-* **`Prediction` carries no structured reason data.** `ANCHOR_NOT_IN_SUBJECT`
-  has no anchor field, so re-examining one means re-reading `described`. And
-  nothing yet *checks* prediction freshness: `revision`/`subject_sha256` make
-  a stale judgement visible to a reader, but `check_citations` resolves an
-  `mlp-…` id without comparing either against the tree.
-* **`MutationSite` does not validate its `argument` by operator.** A
-  `RETURN_CONSTANT` whose argument is not a Python literal, or a
-  `RAISE_TO_CONTINUE` whose argument is not an exception name, is admitted at
-  construction and refused later by `apply_mutation`.
-* **no atomicity or cleanup contract** on `write_ledger` and
-  `provision_subject_tree`: temp-write-and-`os.replace`, and removing the
-  worktree and scratch clone on every non-success path, are specified nowhere
-  and are the body's to get right.
+**Still open, carried to W2-3-4/W2-3-5:** no shared clause key between the
+two record kinds (a format-version bump); `Prediction` carries no structured
+reason data and nothing checks prediction freshness against the tree; the
+`fold_row_results` ABSENT-below-PASSED ranking; the operator set itself (see
+the handover below).
 
 ## The measurement W2-3-2 seals
 
@@ -419,9 +438,10 @@ The other eighteen rows are red against `freshness_of`, `classify_observation`,
 the mutant, so no `PASSED` → `FAILED` transition exists to observe. They carry
 `Predicted (unmeasured) under:`, which is what the ledger's own vocabulary
 requires of a claim with no comparison behind it — the same rule this unit
-applies to the 31 expired clauses. **W2-3-3 owes the re-measurement**: when it
-fills the holes, each of the eighteen becomes measurable and the clause should
-be promoted to `Measured under:` with the run that promoted it.
+applies to the 31 expired clauses. W2-3-3 filled the holes and every one of
+the eighteen is green over a real body now, so each has become measurable;
+the promotion to `Measured under:` is an edit to `tests/`, which BODIES may
+not make, and stays with SEALS under W2-3-4's ruling.
 
 ## What running the seal file costs, and what it must not touch
 
@@ -512,3 +532,56 @@ author cannot correct in `mutation_ledger.py`:
   Written this way round, a W2-3-4 ruling that adds the key and refuses the
   duplicate does not have to redden a row demanding that the pair stay
   accepted.
+
+## What the ledger holds so far (W2-3-3, 2026-08-28)
+
+Five records at `efd05ca0f795bb223a3e9482f622d8dfcfa54817`, every one made by
+the CLI above and none transcribed from a clause. The population is 40 rows
+carrying the `Reddens under a body on:` header (41 grep hits: line 2968 of
+the seal file is a mention of another row's clause, inside row
+`test_discover_roots_raises_on_a_fault_without_help_from_the_graph_builder`).
+
+| record | row | what was observed / judged | clause text vs. record |
+| --- | --- | --- | --- |
+| `ml-bf1a80e6438d` | `test_discover_roots_raises_on_a_fault_without_help_from_the_graph_builder` | `raise_to_continue` on `discover_roots`/`AnalyzerError`: control green, reddens exactly this row | **agrees** ("this row and no other in the file"); re-derives `held` at target and at recorded |
+| `ml-c3420ec3a18c` | `test_root_kind_is_derived_from_the_kind_and_never_asserted_by_the_row` | `body_to_no_op` on `_validate_root`: control green, reddens **4** rows — this one, `…_disagrees_with_its_own_file…`, `test_a_test_function_outside_the_tests_is_refused_in_both_spellings`, `test_root_kind_derives_from_the_kind_and_the_declaring_file_together` | **disagrees**: the clause says "this row and its sibling, and no other row in the file". The two extra rows were added by `seals(D5)` `3eedd07` after the clause was written at `4e66a01` — the file grew. Proposed for W2-3-4: `amend_scope` (keep the mutation sentence, cite the claim) |
+| `ml-02d29bf4548e` | `test_a_root_that_disagrees_with_its_own_file_or_names_no_kind_is_refused` | same mutation, same 4 rows | **disagrees** the same way ("the first reddens this row and the sweep above"). Proposed: `amend_scope`. Its other two sentences (a default on `_ROOT_KIND_BY_ENTRYPOINT`; dropping the `is_test_path` cross-check) are edits outside the operator set and are W2-3-5's to record as predictions |
+| `mlp-e51598c10e9f` | `test_adjudicate_is_total_over_the_grid` | "a default branch of any kind" — `reference_implementation_discarded` | the clause predates the shipped body; `adjudicate` dispatches through the `_RULINGS` table, so `add_default_branch` finds no else-less return chain and is refused |
+| `mlp-bb680f38bd5f` | `test_an_edge_kind_in_neither_strength_class_is_a_refusal_not_a_default` | "``return False`` or ``return True`` in place of ``_edge_is_resolved``'s raise" — `no_applicable_operator` | measured against the shipped body at `4e66a01`, but "replace one raise with a return" is not `return_constant`, which replaces the whole body |
+
+`fates` proposes `cite_claim` for the three observations (each is `held`)
+and `relabel_predicted` for the two predictions. The scope disagreements on
+the two `_validate_root` clauses are **reported here, not corrected**: the
+clause text is in `tests/`, and the ruling is W2-3-4's.
+
+**Which reason a prediction takes**, the rule applied above and offered to
+W2-3-5: a clause on a row that was `RED at HEAD` when written (rows 1–29 of
+the population, `seals(D5)` `094fffb`..`4e66a01`, before the shipped body)
+is `reference_implementation_discarded` — whatever it was measured against
+is gone; a clause on a `GREEN at HEAD, mutation-verified` row whose edit is
+outside the closed operator set is `no_applicable_operator`;
+`anchor_not_in_subject` is for an operator that fits but an anchor that no
+longer resolves (none found yet).
+
+**The shape of the remaining 35 rows, measured rather than guessed.** Read
+against the four operators, none of them names an edit the closed set can
+apply:
+
+* 28 rows (`RED at HEAD` when written) name whole alternative bodies —
+  "any discrimination on `detail`", "any write into `tree`", "swapping the
+  two behaviours" — expected: 28 predictions, `reference_implementation_discarded`.
+* 7 rows (`GREEN at HEAD, mutation-verified`) name edits the set does not
+  express: deleting one call (`_validate_subject` in `check_tree`;
+  `_validate_finding` at either layer), restoring a default argument or a
+  fallback, moving one check after another, sorting a result, a specific
+  return value for one branch (`_chain_quality` on the empty chain) —
+  expected: 7 predictions, `no_applicable_operator`, plus the two extra
+  sentences on `ml-02d29bf4548e`'s row.
+* Expected observations among the 35: **0**. The three recorded are the
+  whole reach of the operator set over this file.
+
+So the ceiling on this ledger is the operator set, not the harness. A fifth
+operator — *delete one call statement in the anchor* — would reach three
+more rows (four sentences) with real runs; the contract says such an
+amendment must arrive **with an observation that exercises it**, which makes
+it W2-3-5's to propose with a measurement, or W2-3-4's to rule out.
