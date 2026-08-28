@@ -20,7 +20,38 @@
 # `.dispatcher.yaml` must carry `test_exclusion:` and read
 # $DISPATCHER_KNOWN_RED_FILE, or active entries BLOCK with a named fault.
 
-entries: []
+entries:
+  - rows:
+      - tests/test_mutation_ledger.py::test_a_claim_that_does_not_reproduce_is_red_and_its_control_holds
+      - tests/test_mutation_ledger.py::test_rederive_is_the_oracle_and_must_reproduce_the_measurement
+      - tests/test_mutation_ledger.py::test_classify_observation_answers_one_pair_of_runs_in_a_fixed_order
+      - tests/test_mutation_ledger.py::test_the_reddened_set_drops_a_row_that_was_red_before_the_mutation
+      - tests/test_mutation_ledger.py::test_rederive_returns_a_verdict_when_the_recorded_revision_is_gone
+      - tests/test_mutation_ledger.py::test_a_deleted_claiming_row_is_resolved_before_anything_is_classified
+      - tests/test_mutation_ledger.py::test_every_cell_of_the_fold_and_every_fate_has_a_pinned_value
+      - tests/test_mutation_ledger.py::test_no_combination_leaves_a_clause_as_it_was_and_only_a_broken_run_waits
+      - tests/test_mutation_ledger.py::test_a_deleted_row_is_disposed_of_rather_than_parked_forever
+      - tests/test_mutation_ledger.py::test_freshness_reports_the_strongest_fact_about_the_tree
+      - tests/test_mutation_ledger.py::test_the_applier_reproduces_an_independent_mutation_and_refuses_a_miss
+      - tests/test_mutation_ledger.py::test_the_applier_positively_exercises_add_default_branch
+      - tests/test_mutation_ledger.py::test_the_provisioner_stands_up_the_whole_population_and_runs_it
+      - tests/test_mutation_ledger.py::test_a_collection_that_broke_refuses_rather_than_reporting_a_short_file
+      - tests/test_mutation_ledger.py::test_a_run_that_did_not_complete_is_refused_and_not_reported_as_results
+      - tests/test_mutation_ledger.py::test_a_run_interrupted_by_os_exit_is_refused_and_isolated
+      - tests/test_mutation_ledger.py::test_a_ledger_is_written_only_where_it_can_be_read_back_unchanged
+      - tests/test_mutation_ledger.py::test_a_citation_to_evidence_that_is_gone_is_reported_and_exits_non_zero
+    seals_task: W2-3-2
+    body_task: W2-3-3
+    reason: |
+      P2 seals for the mutation-coverage ledger, committed RED by design. Every
+      row is red at its ledger-construction or run assertion and green in the
+      shape assertions above it: the ledger W2-3-1 scaffolded still carries 14
+      NotImplementedError stubs, and greening them is W2-3-3's deliverable.
+      Registered by the operator when the seals landed, so that tasks dispatched
+      in the window between P2 and P3 are not failed by a gate they cannot
+      satisfy. The entry retires when W2-3-3 is Done, after which these rows are
+      REQUIRED green.
+    registered_at_sha: 448b0dc
 
 # entries:
 #   - rows:
