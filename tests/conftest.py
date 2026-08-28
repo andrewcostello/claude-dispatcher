@@ -51,6 +51,31 @@ def _no_host_classify_binary(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("CLASSIFY_BIN", str(tmp_path / "no-classify-binary"))
 
 
+@pytest.fixture(autouse=True)
+def _no_prompt_anchors():
+    """Drop ``prompt_provenance``'s process state between tests.
+
+    The anchors are process-global (unit W2-1, constraint 4), so without this
+    one test's genesis anchors the next test's prompt load and the W2-1 seals
+    become order-dependent. ``clear_anchors`` exists for this caller only.
+    """
+    from claude_dispatcher import prompt_provenance
+
+    prompt_provenance.clear_anchors()
+    previous = prompt_provenance.set_load_reporter(
+        prompt_provenance.default_load_reporter
+    )
+    yield
+    prompt_provenance.clear_anchors()
+    prompt_provenance.set_load_reporter(previous)
+    # A leaked declaration is the fail-OPEN half of this state: it makes a
+    # later test's no-anchor load permissive instead of refusing.
+    assert prompt_provenance.live_declaration() is None, (
+        "clear_anchors left a live unanchored declaration; every later test in "
+        "this worker loads against an unverified prompt tree"
+    )
+
+
 @pytest.fixture
 def three_task_yaml(tmp_path: Path) -> Path:
     """Copy the three-task fixture into a tmp_path so tests can mutate it."""
