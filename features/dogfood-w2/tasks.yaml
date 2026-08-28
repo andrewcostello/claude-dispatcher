@@ -478,7 +478,7 @@ tasks:
     agent_version: 2.1.247 (Claude Code)
   - key: W2-1-2c
     summary: seals — every prompt load is a listed load
-    description: |-
+    description: |
       The completeness claim this unit DOES buy, and it is a different one from
       the abandoned proof.
 
@@ -498,6 +498,45 @@ tasks:
 
       Seal the register itself: a call site added to the repo and NOT added to
       the tuple must turn this row red.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=APPROVE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=5 (0C/5H))
+      Fix round, and the first instruction is a scope correction on my part.
+
+      1. DELETE THE CALL-CHAIN ANALYZER. load_chain(), opens_journal() and scannable()
+      are a static reachability model, and building one is explicitly OUT OF SCOPE for
+      this task — it is the technique that got W2-1-2 superseded after two failed
+      rounds. All five HIGH findings are that analyzer being incomplete: it misses
+      `render = lambda: ...` aliases, silently skips every test_* file even under src/,
+      tools/ and scripts/, and opens_journal() accepts any attribute ending in the
+      right string INCLUDING FakeJournal.create. Those are not bugs to patch. Any
+      analyzer of that shape will keep producing them, which is the whole reason this
+      claim was narrowed.
+
+      Replace it with the grep-level check the ticket asks for, and nothing more:
+        * for each entry in UNANCHORED_ENTRY_POINTS, assert the named file still
+          contains the named call;
+        * assert no OTHER file calls the prompt-load seam outside the gate.
+      No call chains, no scan-scope rules, no journal-opening inference.
+
+      2. GROK'S BIJECTION FINDING IS A TRUE POSITIVE — SEAL IT, DO NOT FIX IT.
+      The register says `tools/cross_family_panel.py:110 cfr.run_panel`. The live call
+      is at line 137. Two of the three entries are correct; that one has rotted.
+
+      You CANNOT fix it: SEALS is ALLOW_ONLY_GLOBS over test paths and docs/**, because
+      a seal author who may edit the implementation can make its own seal pass. The
+      registry lives in src/claude_dispatcher/prompt_provenance.py.
+
+      So state the truth and go red. The row that asserts every listed entry point
+      still contains the call it names MUST fail on this tree, and that is correct
+      behaviour, not a defect in your seal. Report it in your summary as a known-red
+      row against body_task: W2-1-3 and I will register it.
+
+      3. FOR W2-1-3, IN YOUR SUMMARY, AS A RECOMMENDATION NOT A CHANGE: the registry
+      identifies entries as "file:line symbol", and a line number is not a stable
+      identity — any edit above line 110 rots the entry silently, which is exactly what
+      happened. Recommend identifying by file + symbol. Do not implement it; it is a
+      source change and it is not yours.
     type: Task
     estimate: 2h
     labels:
@@ -507,11 +546,11 @@ tasks:
     blockedBy:
       - W2-1-1
       - W2-1-2a
-    status: Blocked
+    status: In Progress
     role: seals
-    started_at: '2026-08-27T17:10:08-07:00'
-    dispatcher_run_id: 2026-08-27T23-46-15Z-tasks
-    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-27T23-46-15Z-tasks/W2-1-2c/summary.md
+    started_at: '2026-08-28T12:38:44-07:00'
+    dispatcher_run_id: 2026-08-28T19-38-43Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-28T19-38-43Z-tasks/W2-1-2c/summary.md
     branch: feat/W2-1-2c-seals-every-prompt-load-is
     gate_base_sha: 774307b09e0be35627a084222a0e6d535a613bb9
     cost_usd: 14.785714
@@ -523,11 +562,6 @@ tasks:
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
-    blocked_reason: 'cross_family_panel: consensus=block | claude=APPROVE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=5 (0C/5H)'
-    mechanical_verification: skipped
-    role_diff_loop: not_enabled
-    verified: true
-    verification_iterations: 0
     panel_consensus: block
     panel_summary: consensus=block | claude=APPROVE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=5 (0C/5H)
     panel_blocking_findings: 5
@@ -543,6 +577,7 @@ tasks:
     model: claude-fable-5
     dispatcher_version: 0.1.0
     agent_version: 2.1.247 (Claude Code)
+    unblocked_at: '2026-08-28T19:38:43+00:00'
   - key: W2-1-3
     summary: bodies — close the reach in the unfloored layer and name what is left
     description: |
@@ -1357,9 +1392,42 @@ tasks:
     labels: [size:L, area:dispatcher]
     agent: claude
     role: bodies
-    status: To Do
+    status: Blocked
     blockedBy: [W2-3-2]
+    started_at: '2026-08-28T10:18:17-07:00'
+    dispatcher_run_id: 2026-08-28T17-18-17Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-28T17-18-17Z-tasks/W2-3-3/summary.md
 
+    branch: feat/W2-3-3-bodies-build-the-ledger-and
+    gate_base_sha: efd05ca0f795bb223a3e9482f622d8dfcfa54817
+    cost_usd: 16.658736
+    effort: high
+    effort_escalated: true
+    completed_at: '2026-08-28T10:51:24-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=7 (0C/7H)'
+    mechanical_verification: passed
+    role_diff_loop: not_enabled
+    verified: true
+    verification_iterations: 0
+    panel_consensus: block
+    panel_summary: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | blocking=7 (0C/7H)
+    panel_blocking_findings: 7
+    panel_verdict_claude: CHANGES_REQUESTED
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: CHANGES_REQUESTED
+    input_tokens: 1589
+    output_tokens: 98934
+    cache_read_input_tokens: 4899901
+    cache_creation_input_tokens: 274595
+    duration_ms: 1212110
+    num_turns: 56
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.247 (Claude Code)
   - key: W2-3-5
     summary: bodies — populate the remaining clauses from re-derivation
     description: |
