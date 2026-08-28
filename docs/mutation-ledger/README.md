@@ -254,3 +254,261 @@ this scaffold:
   `provision_subject_tree`: temp-write-and-`os.replace`, and removing the
   worktree and scratch clone on every non-success path, are specified nowhere
   and are the body's to get right.
+
+## The measurement W2-3-2 seals
+
+`tests/test_mutation_ledger.py` is the seal file, and its flagship row runs a
+real mutation rather than asserting over a fixture. Re-derived 2026-08-18 at
+`4e66a01da37c5ea4d480cc2aa3bca84728a2a4da` (`feat/D5-seals2`), not carried
+from the P4 report:
+
+* subject `src/claude_dispatcher/call_site_reachability.py`, anchor
+  `discover_roots`, operator `raise_to_continue` on `AnalyzerError`.
+* control: 95 node ids, 53 rows after folding, **all green**.
+* mutant: exactly one row transitions —
+  `test_discover_roots_raises_on_a_fault_without_help_from_the_graph_builder`
+  (six parametrisations). Nothing else in the file moves.
+* the row whose own clause names that mutation,
+  `test_discover_roots_refuses_a_tree_it_cannot_sweep`, **passes under the
+  mutant**. The clause was never true, which is why it was struck.
+
+Both facts are recorded as `LedgerEntry`s over the same site and revision and
+judged from the same pair of runs, so the expired claim folds to `broken` /
+`strike` while the control folds to `held` / `cite_claim`. A fold that answers
+either one constantly fails the other.
+
+## Why the folds are pinned by VALUE and not by invariant
+
+The first round of seals pinned `fold` with constraints — 7x7 totality,
+`await_rerun`'s exact preimage, surjectivity over `Status` and `ClauseFate`,
+and `citable == {cite_claim}`. A panel showed every one of them is satisfied
+by an **inverted** table, and demonstrated two independent inversions that
+kept all nine rows green:
+
+* `fold(subject_moved | population_moved | provenance_gone,
+  reddened_as_recorded) → expired` with `(…, survived) → reanchored`; and
+* `proposed_fate(reanchored) = strike` with
+  `proposed_fate(expired) = reobserve_then_cite`.
+
+Under either, a clause whose mutation *still reddens exactly as recorded* is
+proposed for `strike`, and a clause that **survived** — an entry that no
+longer reproduces, which is this task's whole subject — folds to
+`reobserve_then_cite` and stays citable pending a re-run. That is the failure
+this unit exists to prevent, passing its own seal.
+
+So all 49 cells are now written out as a literal table, `proposed_fate` is
+pinned per member, and `freshness_of` is swept over all 64 drift subsets
+against its numbered precedence list. The last of those closes a third
+demonstrated hole: scanning `Drift` in **declaration order** and taking the
+first match — which is also the order `Rederivation.__post_init__` forces the
+tuple into, so it is the natural misreading — passed the old table of named
+pairs while answering `provenance_gone` for `(revision_absent,
+subject_absent)`, where the contract says `subject_gone`.
+
+Arm 6 is not an edge case. It is the **common** path for W2-3-3 and W2-3-5,
+which re-derive 41 clauses against subjects whose bytes have moved since the
+clause was written; the flagship reaches only `anchored`.
+
+## The harness holes, and why a seals task had to close them
+
+Eight of the module's declared holes had no row anywhere in the repository:
+`apply_mutation`, `provision_subject_tree`, `collect_rows`, `run_rows`,
+`write_ledger`, `load_ledger`, `check_citations` and `main`. W2-3-2 is the
+only seals task in this unit — W2-3-3 and W2-3-5 fill bodies, W2-3-4
+adjudicates — so nothing later would have closed them.
+
+Three of the eight are **fail-open by shape**, which is why they could not be
+left:
+
+| hole | a body that does nothing | reads as |
+|---|---|---|
+| `check_citations` | `return ()` | every tree is clean, `citations` exits 0 |
+| `collect_rows` | swallow the collection error | the seal file shrank, so every entry against it reports population drift |
+| `run_rows` | omit an unreported row | the row is `absent`, not "collected and never reported" |
+
+The tiny repository these run against carries a **parametrised** row, because
+that is the only place `collect_rows` (function-level, sorted) and `run_rows`
+(node-id level, pre-fold) are allowed to differ — and a runner that folded
+would hide a parametrisation that never ran behind one that passed.
+
+The rows added for them assert **whole sets** rather than membership, and the
+applier is checked against `_swallow` — the independent `ast` mutation this
+file already carries and took the flagship measurement through. If the two
+disagree, every re-derivation runs a different mutation from the one the
+ledger records. That comparison is over **parsed trees**, not bytes: the
+contract says "resolve the anchor with `ast`, refuse rather than no-op" and
+says nothing about the emitted text, `mutant_sha256` is provenance that no
+`Drift` member compares, and pinning bytes would make the harness answerable
+to a private helper's indentation. What is pinned instead is that the parsed
+trees agree and that the **only** function whose body moved is the anchor.
+
+Two more shapes are refused rather than returned, and neither is visible in
+an exception check alone:
+
+* `run_rows` is given three runs that produce a well-formed result and no
+  measurement — a seal file that stops importing, a file that collects
+  nothing, and a row that calls `os._exit(0)` mid-run. Each refusal is
+  asserted as the raise (`pytest.raises`), never as "no map came back": a
+  body that returns `None` for a degraded run is the fail-open, not a
+  refusal. The last shape is the one that defeats an exit-code check
+  specifically: pytest never reaches its reporting hook, so there are no
+  results, and the process exits **0** — and it is the one the seal cannot
+  observe from its own interpreter, because a `run_rows` that runs pytest
+  in-process is ended by the nested `os._exit(0)` with nothing raised and
+  the session reporting green. So that case is driven from a **child
+  interpreter** that prints a completion sentinel after the control run and
+  the refusal; the parent judges the child's report, never its exit code
+  (an in-process body exits 0 without the sentinel). The healthy tree is run
+  first in the same call — in the same child for the `os._exit` case — so a
+  `run_rows` that refuses everything fails rather than passing refusals.
+* the provisioner row distinguishes the **requested revision** on a row
+  rather than a marker file: the entry is recorded at a revision whose seal
+  file carries a row that a later commit deletes, so a provisioner that
+  stands up HEAD collects one row fewer and reddens the whole-set
+  assertions. Its **isolation** is shown by swapping the recorded mutant
+  into the clone through `scratch_clone.swap_in` and observing it redden
+  there while the repository's bytes, status and HEAD are unchanged — plus
+  `scratch_clone.assert_isolated`, because a linked worktree of the
+  repository handed back as the clone passes every content check while its
+  git commands operate on the real object database.
+* `write_ledger`'s refusals are asserted on the **file**, not only on the
+  exception. "It raised" is satisfied by a writer that truncates the ledger,
+  writes the rival records, validates last and then raises — the previously
+  valid ledger is destroyed and the caller is told the write was refused. So
+  the committed bytes are compared before and after each refusal, and the
+  refused path is checked for not having been created.
+
+Two things are deliberately **not** sealed there, and both are named in the
+rows: `check_citations`'s "a claim whose live observation does not
+`counts_as_coverage`", because a W2-3-1 finding is that no stored record
+carries a `Status` and the predicate is not computable from a ledger file;
+and `rederive`'s `revision_run` beyond the one value that would be a lie.
+
+## Which rows say `Measured under:`, and which do not
+
+`Measured under:` is a claim about a run. In `tests/test_mutation_ledger.py`
+only the five rows green over implemented seams can make it. Each named
+mutation was applied to `mutation_ledger.py` and the row observed to go
+`PASSED` → `FAILED` (2026-08-18):
+
+| row | mutation |
+| --- | --- |
+| `…_is_predicted_and_never_cited` | drop `Prediction.subject_sha256` |
+| `…_is_predicted_and_never_cited` | put the judgement's `reason` into `prediction_id` |
+| `…_is_predicted_and_never_cited` | drop `described` from `prediction_id` |
+| `…_is_predicted_and_never_cited` | let `observations` return every record |
+| `…_reddens_the_row_and_a_missing_one_does_not` | rank `FAILED` below `PASSED` |
+| `…_reddens_the_row_and_a_missing_one_does_not` | drop the `[param]` split |
+| `…_no_role_could_create_is_refused_before_it_is_used` | drop the `first_matching_glob` floor check |
+| `…_no_role_could_create_is_refused_before_it_is_used` | scan `rule.globs` instead of calling `evaluate_changed_paths` |
+| `…_no_role_could_create_is_refused_before_it_is_used` | drop the dot-in-segment refusal in `ledger_path_for` |
+| `…_round_trips_and_a_damaged_one_is_refused_not_guessed` | guess the record kind from which keys are present |
+| `…_round_trips_and_a_damaged_one_is_refused_not_guessed` | coerce a string to a bool in `_typed` |
+| `…_round_trips_and_a_damaged_one_is_refused_not_guessed` | drop BOTH id re-derivations from `LedgerEntry.__post_init__` |
+| `…_round_trips_and_a_damaged_one_is_refused_not_guessed` | drop `_refuse_unknown_keys` from `_parse_observation` |
+| `…_round_trips_and_a_damaged_one_is_refused_not_guessed` | drop `parse_constant=` from `json.loads` |
+| `…_two_live_observations_has_no_answer_and_is_refused` | pick the later entry by file order in `current_observations` |
+| `…_two_live_observations_has_no_answer_and_is_refused` | drop the `target.claim_id` check |
+| `…_two_live_observations_has_no_answer_and_is_refused` | drop the `superseders` check |
+| `…_two_live_observations_has_no_answer_and_is_refused` | resolve `supersedes` against later entries too |
+
+The other eighteen rows are red against `freshness_of`, `classify_observation`,
+`fold`, `proposed_fate`, `rederive`, `apply_mutation`,
+`provision_subject_tree`, `collect_rows`, `run_rows`, `write_ledger`,
+`load_ledger`, `check_citations` or `main` under the **control** as well as
+the mutant, so no `PASSED` → `FAILED` transition exists to observe. They carry
+`Predicted (unmeasured) under:`, which is what the ledger's own vocabulary
+requires of a claim with no comparison behind it — the same rule this unit
+applies to the 31 expired clauses. **W2-3-3 owes the re-measurement**: when it
+fills the holes, each of the eighteen becomes measurable and the clause should
+be promoted to `Measured under:` with the run that promoted it.
+
+## What running the seal file costs, and what it must not touch
+
+The flagship's measurement is a real pair of pytest runs, so the file is
+explicit about its own footprint:
+
+* it takes the subject tree with `git archive`, never `git worktree add`, so
+  no repository metadata is written to take a measurement;
+* `rederive` *is* specified to add a worktree and delete `.claude/workflow`
+  inside it, so the rows that call it are handed a throwaway
+  `git clone --shared --no-checkout` of this repository, never the developer's
+  checkout;
+* the nested runs get an environment scrubbed by prefix (`PYTEST_*`,
+  `COVERAGE_*`, `PYTHON*`, `GIT_*`), because `PYTEST_ADDOPTS` carrying `-k`,
+  `--lf` or `--maxfail` silently changes the population the flagship calls a
+  whole file — **and** `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`, because a
+  `pytest11` entry point installed in the interpreter (`cov`, `timeout`,
+  `xdist`, `rerunfailures`, `testmon`) is loaded with no environment variable
+  naming it, which is the same "a clean shell is not CI" escape the scrub
+  exists to close. The one plugin the measurement needs is named with `-p`;
+* every subprocess is bounded (`TIMEOUT_SECONDS`), the nested pytest's exit
+  code is checked against `{0, 1}`, and its output is reported on anything
+  else — a junit file from an interrupted run is well-formed and can hold the
+  two rows the flagship asserts on while the rest never ran;
+* the collected population comes from a plugin loaded into the measurement run
+  itself, so a row that was collected and then not reported is `ABSENT` rather
+  than missing from the map.
+
+`4e66a01…` and `2e0dc89…` are object-database dependencies, and their absence
+**fails**. Every row that takes a measurement needs them — the flagship, the
+rederive oracle, the applier, and the one green prediction-staleness row — so
+a clone without them does not lose a row, it loses the file's entire subject
+and still exits 0. That is "a green suite that compared nothing", which is the
+reading this whole unit exists to make impossible; the file must not produce
+one about itself. Nothing in this repository sets an opt-in variable, there is
+no CI workflow, and `actions/checkout` defaults to `fetch-depth: 1`, so a gate
+that skipped unless told otherwise would be fail-open in every environment
+that exists today.
+
+`MLSEAL_ALLOW_MISSING_HISTORY=1` restores the skip for a clone that genuinely
+cannot fetch. It is a named act: whoever sets it is saying "this run does not
+measure", and the skip message says so.
+
+The gate is narrow in the other direction too, because a skip is also how a
+green run comes to mean nothing:
+
+* only the **absence itself** is skippable. `git cat-file -e <sha>` —
+  unpeeled — exits 1 with an empty stderr for an object this clone does not
+  have, and 128 with a message for no repository, an unreadable object
+  database, or a git that will not start. The rest are raised. (Peeled,
+  `<sha>^{commit}` reports the absence as 128 too, and the two become
+  indistinguishable, which is what the previous gate did.)
+* it names **every** revision a row will reach, so a clone carrying
+  `4e66a01…` but not `2e0dc89…` is answered here rather than raising
+  `CalledProcessError` out of `git show`.
+
+## What the seals could not fix
+
+**Three** defects the rows pin the *correct* side of, and which the seal
+author cannot correct in `mutation_ledger.py`:
+* **`Rederivation.revision_run` has no truthful value** when nothing was
+  provisioned, while `rederive` must still return a `Rederivation` for an
+  absent revision. The seal asserts the disposition (`underivable`) and the
+  one answer that would be a *lie* — `revision_run` may not echo back the
+  revision that is absent, which is the cheapest value for a body to reach
+  for. The null sha and the revision of whatever tree was in fact stood up
+  both stay open; W2-3-4 owns the ruling that closes them.
+* **`fold_row_results` ranks `ABSENT` below `PASSED`**, so a row whose `[b]`
+  was collected and never reported folds to `PASSED`. The seal pins the
+  current ranking so that changing it is a visible diff, and names it as
+  unruled rather than answering it.
+* **The two record kinds share no clause key**, so `validate_ledger` cannot
+  tell one *row* carrying two clauses — which is legitimate and common in
+  this population, and which it argues at length it must keep accepting —
+  from one *clause* recorded twice, where a citation could pick whichever
+  disposition supports it. `claim_id` keys on `(row, site)` and
+  `prediction_id` on `(row, described)`.
+  `test_a_claim_with_two_live_observations_has_no_answer_and_is_refused`
+  pins the **missing key** rather than the acceptance: it asserts that the
+  pair it uses names two different clauses, and that the two kinds share
+  exactly the five field names `seal_file`, `claiming_row`, `revision`,
+  `subject_sha256`, `note` — of which the first two name the *row*, the next
+  two are provenance equal at one commit, and the last is prose. Any added
+  shared clause key reddens that line **whatever it is named**, which a
+  comparison of `claim_id` against `prediction_id` could not do: their
+  `ml-`/`mlp-` prefixes make them unequal under every possible
+  implementation, so such a comparison asserts nothing about this module.
+  Written this way round, a W2-3-4 ruling that adds the key and refuses the
+  duplicate does not have to redden a row demanding that the pair stay
+  accepted.
