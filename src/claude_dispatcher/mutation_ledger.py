@@ -1563,6 +1563,11 @@ NULL_REVISION = "0" * 40
 #: (which bounds its runs by the entry budget instead).
 RUN_TIMEOUT_SECONDS = 600
 
+#: How long :func:`_run_bounded` waits for a killed group to be reaped. The
+#: handler for an exceeded bound must itself be bounded, or a group that
+#: could not be signalled leaves the runner waiting on a pipe forever.
+KILL_GRACE_SECONDS = 10
+
 #: Directory names never scanned for citations: tool state, and the ledger
 #: itself, whose records name their own ids and are not citations.
 _UNSCANNED_DIRS: frozenset[str] = frozenset({
@@ -1638,13 +1643,29 @@ def _run_bounded(cmd: Sequence[str], *, cwd: Path, env: Mapping[str, str],
     try:
         out, err = proc.communicate(timeout=max(timeout, 0.001))
     except subprocess.TimeoutExpired:
+        head = ' '.join(cmd[:4])
+        # Any OSError, not only "already gone": a group that refuses the
+        # signal (PermissionError) must still reach the bounded reap below.
+        for kill in (lambda: os.killpg(proc.pid, signal.SIGKILL), proc.kill):
+            try:
+                kill()
+            except OSError:
+                pass
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        proc.communicate()
+            proc.communicate(timeout=KILL_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            # A grandchild holding the pipes is what usually keeps this
+            # open; reap the child if it did die, drop the pipes, move on.
+            proc.poll()
+            for pipe in (proc.stdout, proc.stderr):
+                if pipe is not None:
+                    pipe.close()
+            raise MutationLedgerError(
+                f"{head} ... exceeded {timeout:.1f}s, was killed, and was "
+                f"still not reaped after {KILL_GRACE_SECONDS}s; abandoned "
+                "rather than waited on")
         raise MutationLedgerError(
-            f"{' '.join(cmd[:4])} ... exceeded {timeout:.1f}s and was killed")
+            f"{head} ... exceeded {timeout:.1f}s and was killed")
     return subprocess.CompletedProcess(list(cmd), proc.returncode, out, err)
 
 
@@ -2036,6 +2057,12 @@ def _measure(*, repo_root: str, revision: str, seal_file: str,
     ``historical`` (AT_RECORDED) turns a digest mismatch into HARNESS_FAULT:
     git is content-addressed, so the provisioned tree is not the one the
     record names. Otherwise a mismatch is drift.
+
+    A hard absence is applied BEFORE any run: a seal that imports an absent
+    subject fails collection, and that is absence, not a harness fault. The
+    population is the CONTROL RUN's own collection — the digest names the
+    rows that were compared, not a separate collect-only pass — and a
+    mutant that collects a different row set is not comparable to it.
     """
     root = Path(repo_root)
 
@@ -2087,34 +2114,13 @@ def _measure(*, repo_root: str, revision: str, seal_file: str,
                 drift.add(Drift.SITE_ABSENT)
                 notes.append(f"site does not resolve: {exc}")
 
-        population: tuple[str, ...] | None = None
         if not (tree / seal_file).is_file():
             drift.add(Drift.ROW_ABSENT)
             notes.append(f"{seal_file} is not in the tree")
-        else:
-            try:
-                population = _collect_rows(clone, seal_file,
-                                           timeout=remaining())
-            except MutationLedgerError as exc:
-                return done(Observation.HARNESS_FAULT,
-                            detail=f"collecting {seal_file} failed: {exc}")
-            if (expected_population_sha256 is not None
-                    and population_digest(population)
-                    != expected_population_sha256):
-                if historical:
-                    return done(Observation.HARNESS_FAULT, detail=(
-                        f"the provisioned {seal_file} at {revision} does not "
-                        "collect the recorded population, so this is not the "
-                        "tree the observation names"))
-                drift.add(Drift.POPULATION)
-            if claiming_row not in population:
-                drift.add(Drift.ROW_ABSENT)
-                notes.append(f"{claiming_row} is not collected")
-
         if drift & set(HARD_ABSENCE):
             return done(Observation.NOT_ATTEMPTED,
                         subject_sha256=subject_sha256,
-                        mutant_sha256=mutant_sha256, population=population,
+                        mutant_sha256=mutant_sha256,
                         detail="; ".join(notes))
         assert mutant_bytes is not None  # SITE_ABSENT is a hard absence
 
@@ -2124,8 +2130,29 @@ def _measure(*, repo_root: str, revision: str, seal_file: str,
         except MutationLedgerError as exc:
             return done(Observation.HARNESS_FAULT,
                         subject_sha256=subject_sha256,
-                        mutant_sha256=mutant_sha256, population=population,
+                        mutant_sha256=mutant_sha256,
                         detail=f"the control run was refused: {exc}")
+        population = tuple(sorted(control))
+        if (expected_population_sha256 is not None
+                and population_digest(population)
+                != expected_population_sha256):
+            if historical:
+                return done(Observation.HARNESS_FAULT,
+                            subject_sha256=subject_sha256,
+                            mutant_sha256=mutant_sha256,
+                            population=population, detail=(
+                                f"the provisioned {seal_file} at {revision} "
+                                "does not collect the recorded population, so "
+                                "this is not the tree the observation names"))
+            drift.add(Drift.POPULATION)
+        if claiming_row not in control:
+            drift.add(Drift.ROW_ABSENT)
+            # No result map is consulted: the row was not collected.
+            return done(Observation.NOT_ATTEMPTED,
+                        subject_sha256=subject_sha256,
+                        mutant_sha256=mutant_sha256, population=population,
+                        detail=f"{claiming_row} is not collected")
+
         mutant: dict[str, RowResult] | None
         token = scratch_clone.swap_in(clone, site.subject, mutant_bytes)
         try:
@@ -2137,6 +2164,13 @@ def _measure(*, repo_root: str, revision: str, seal_file: str,
             detail = f"the mutant run was refused: {exc}"
         finally:
             scratch_clone.swap_back(clone, token)
+        if mutant is not None and set(mutant) != set(control):
+            gained = sorted(set(mutant) - set(control))
+            lost = sorted(set(control) - set(mutant))
+            detail = ("the mutant run collected a different population from "
+                      f"the control (gained {gained}, lost {lost}), so the "
+                      "two runs are not comparable")
+            mutant = None
         if remaining() < 0:
             return done(Observation.HARNESS_FAULT,
                         subject_sha256=subject_sha256,
@@ -2158,27 +2192,12 @@ def _mutant_or_unevaluable(m: Measurement) -> dict[str, RowResult]:
     return {row: RowResult.ABSENT for row in m.control}
 
 
-def rederive(entry: LedgerEntry, *, repo_root: str,
-             mode: RederiveMode = RederiveMode.AT_TARGET,
-             target: str | None = None,
-             budget_seconds: float = PER_ENTRY_BUDGET_SECONDS) -> Rederivation:
-    """Re-derive one entry: provision, control run, mutant run, compare.
-
-    Never re-reads the docstring. Under :attr:`RederiveMode.AT_RECORDED` a
-    ``target`` is refused. A ``target`` that names no commit is refused too:
-    both are malformed requests, not run outcomes.
-
-    Returns a :class:`Rederivation` in every other terminating case. A
-    BROKEN RUN — a refused clone, an exceeded budget, an unusable pytest, a
-    provisioned tree that is not the one the entry names, a control run that
-    was refused — is :attr:`Observation.HARNESS_FAULT` with the reason in
-    ``detail``. A TREE THAT LACKS WHAT THE ENTRY NAMES is the matching
-    :class:`Drift` with :attr:`Observation.NOT_ATTEMPTED`; an absent recorded
-    revision under AT_RECORDED reports :data:`NULL_REVISION` as
-    ``revision_run``, since nothing was provisioned. A mutant run refused
-    after a completed control is the mutation's doing and classifies as
-    :attr:`Observation.MUTANT_UNEVALUABLE`.
-    """
+def _rederive(entry: LedgerEntry, *, repo_root: str, mode: RederiveMode,
+              target: str | None, budget_seconds: float,
+              ) -> tuple[Rederivation, Measurement | None]:
+    """:func:`rederive`, also handing back the one :class:`Measurement` the
+    verdict came from (None when nothing was provisioned), so a caller that
+    records can record THAT run and not a second one."""
     if not isinstance(entry, LedgerEntry):
         raise MutationLedgerError("rederive takes a LedgerEntry")
     if not isinstance(mode, RederiveMode):
@@ -2209,7 +2228,8 @@ def rederive(entry: LedgerEntry, *, repo_root: str,
         if recorded is None:
             return report(Observation.NOT_ATTEMPTED, revision_run=NULL_REVISION,
                           detail=(f"revision {entry.revision} is not in "
-                                  f"{repo_root}; nothing was provisioned"))
+                                  f"{repo_root}; nothing was provisioned")
+                          ), None
         revision = recorded
     else:
         revision = _resolve_commit(root, target or "HEAD")
@@ -2218,7 +2238,8 @@ def rederive(entry: LedgerEntry, *, repo_root: str,
                 raise MutationLedgerError(
                     f"target {target!r} is not a commit in {repo_root}")
             return report(Observation.HARNESS_FAULT, revision_run=NULL_REVISION,
-                          detail=f"{repo_root} has no HEAD commit to run")
+                          detail=f"{repo_root} has no HEAD commit to run"
+                          ), None
 
     m = _measure(
         repo_root=repo_root, revision=revision, seal_file=entry.seal_file,
@@ -2230,7 +2251,7 @@ def rederive(entry: LedgerEntry, *, repo_root: str,
     if not m.compared:
         assert m.observation is not None
         return report(m.observation, revision_run=m.revision_run,
-                      detail=m.detail)
+                      detail=m.detail), m
     assert m.control is not None
     mutant = _mutant_or_unevaluable(m)
     observation = classify_observation(
@@ -2240,7 +2261,58 @@ def rederive(entry: LedgerEntry, *, repo_root: str,
     return report(
         observation, revision_run=m.revision_run, reddened=observed,
         unexpected=sorted(set(observed) - set(entry.reddened)),
-        missing=sorted(set(entry.reddened) - set(observed)), detail=m.detail)
+        missing=sorted(set(entry.reddened) - set(observed)),
+        detail=m.detail), m
+
+
+def rederive(entry: LedgerEntry, *, repo_root: str,
+             mode: RederiveMode = RederiveMode.AT_TARGET,
+             target: str | None = None,
+             budget_seconds: float = PER_ENTRY_BUDGET_SECONDS) -> Rederivation:
+    """Re-derive one entry: provision, control run, mutant run, compare.
+
+    Never re-reads the docstring. Under :attr:`RederiveMode.AT_RECORDED` a
+    ``target`` is refused. A ``target`` that names no commit is refused too:
+    both are malformed requests, not run outcomes.
+
+    Returns a :class:`Rederivation` in every other terminating case. A
+    BROKEN RUN — a refused clone, an exceeded budget, an unusable pytest, a
+    provisioned tree that is not the one the entry names, a control run that
+    was refused — is :attr:`Observation.HARNESS_FAULT` with the reason in
+    ``detail``. A TREE THAT LACKS WHAT THE ENTRY NAMES is the matching
+    :class:`Drift` with :attr:`Observation.NOT_ATTEMPTED`; an absent recorded
+    revision under AT_RECORDED reports :data:`NULL_REVISION` as
+    ``revision_run``, since nothing was provisioned. A mutant run refused
+    after a completed control is the mutation's doing and classifies as
+    :attr:`Observation.MUTANT_UNEVALUABLE`.
+    """
+    return _rederive(entry, repo_root=repo_root, mode=mode, target=target,
+                     budget_seconds=budget_seconds)[0]
+
+
+def _admit(m: Measurement, *, seal_file: str, claiming_row: str,
+           site: MutationSite, observed_on: str | None, supersedes: str | None,
+           note: str) -> LedgerEntry | None:
+    """The entry ONE measurement supports, or None when it compared nothing
+    the ledger can hold: both runs must have completed and the control must
+    have reported the claiming row PASSED or FAILED. The single admission
+    rule, so a record never describes a run other than the one adjudicated.
+    """
+    if m.control is None or m.mutant is None:
+        return None
+    before = m.control.get(claiming_row)
+    if before not in (RowResult.PASSED, RowResult.FAILED):
+        return None
+    assert m.subject_sha256 and m.mutant_sha256 and m.population is not None
+    return new_entry(
+        seal_file=seal_file, claiming_row=claiming_row, site=site,
+        revision=m.revision_run, subject_sha256=m.subject_sha256,
+        mutant_sha256=m.mutant_sha256,
+        population_sha256=population_digest(m.population),
+        reddened=transition_set(m.control, m.mutant),
+        control_green=before is RowResult.PASSED,
+        observed_on=observed_on or datetime.date.today().isoformat(),
+        supersedes=supersedes, cost_seconds=m.cost_seconds, note=note)
 
 
 def observe_claim(*, repo_root: str, seal_file: str, claiming_row: str,
@@ -2274,22 +2346,9 @@ def observe_claim(*, repo_root: str, seal_file: str, claiming_row: str,
         claiming_row=claiming_row, site=site, expected_subject_sha256=None,
         expected_population_sha256=None, historical=False,
         budget_seconds=budget, drift=set(), started=time.monotonic())
-    if m.mutant is None or m.control is None:
-        return None, m
-    assert m.subject_sha256 and m.mutant_sha256 and m.population is not None
-    before = m.control.get(claiming_row)
-    if before in (RowResult.ERRORED, RowResult.ABSENT, None):
-        return None, m
-    entry = new_entry(
-        seal_file=seal_file, claiming_row=claiming_row, site=site,
-        revision=revision, subject_sha256=m.subject_sha256,
-        mutant_sha256=m.mutant_sha256,
-        population_sha256=population_digest(m.population),
-        reddened=transition_set(m.control, m.mutant),
-        control_green=before is RowResult.PASSED,
-        observed_on=observed_on or datetime.date.today().isoformat(),
-        supersedes=supersedes, cost_seconds=m.cost_seconds, note=note)
-    return entry, m
+    return _admit(m, seal_file=seal_file, claiming_row=claiming_row,
+                  site=site, observed_on=observed_on, supersedes=supersedes,
+                  note=note), m
 
 
 # --------------------------------------------------------------------------- #
@@ -2364,7 +2423,8 @@ def _ledger_files(root: Path) -> list[Path]:
 
 
 def check_citations(repo_root: str) -> tuple[str, ...]:
-    """Every ledger citation in the tree that no longer holds up.
+    """Every ledger citation in the tree that does not resolve to a live
+    record.
 
     Loads every ledger under :data:`LEDGER_DIR`, then greps the rest of the
     tree for :data:`CITATION_ID`. One line per problem: an ``ml-`` id with no
@@ -2372,9 +2432,12 @@ def check_citations(repo_root: str) -> tuple[str, ...]:
     observation id cited where a claim id belongs (evidence is replaced, so
     such a citation goes stale by design; a superseded one already has).
     The ledger files themselves are not citations and are not scanned.
-    "A claim whose live observation does not count as coverage" is not
-    reported: no record carries a :class:`Status`, so it is not computable
-    from the file. Empty when the tree is clean.
+    Empty when the tree is clean.
+
+    STATIC: reads the ledger and the tree, runs nothing. So it answers
+    whether a citation RESOLVES, not whether its live observation still
+    :func:`counts_as_coverage` — that is a run outcome, and the ``rederive``
+    verb's exit status answers it (deviation D-W2-3-3-citations).
     """
     root = Path(repo_root)
     if not root.is_dir():
@@ -2548,20 +2611,21 @@ def _verb_rederive(args: argparse.Namespace) -> int:
     for claim, entry in live.items():
         if wanted and claim not in wanted:
             continue
-        r = rederive(entry, repo_root=args.repo, mode=mode,
-                     target=args.target, budget_seconds=args.budget)
+        # One measurement: the status printed and the record written are
+        # the same run, so the exit status describes the evidence admitted.
+        r, m = _rederive(entry, repo_root=args.repo, mode=mode,
+                         target=args.target, budget_seconds=args.budget)
         print(_format(r, entry.claiming_row))
         all_covered &= counts_as_coverage(r.status)
-        if args.record and r.observation not in (
-                Observation.NOT_ATTEMPTED, Observation.HARNESS_FAULT,
-                Observation.MUTANT_UNEVALUABLE):
-            fresh, _ = observe_claim(
-                repo_root=args.repo, seal_file=entry.seal_file,
-                claiming_row=entry.claiming_row, site=entry.site,
-                target=r.revision_run, observed_on=observed_on,
-                supersedes=entry.observation_id, note=args.note,
-                budget_seconds=args.budget)
-            if fresh is not None:
+        if args.record:
+            fresh = None if m is None else _admit(
+                m, seal_file=entry.seal_file, claiming_row=entry.claiming_row,
+                site=entry.site, observed_on=observed_on,
+                supersedes=entry.observation_id, note=args.note)
+            if fresh is None:
+                print("    not recorded: the comparison did not complete")
+            else:
+                assert set(fresh.reddened) == set(r.reddened_observed)
                 records.append(fresh)
                 written += 1
                 print(f"    recorded {fresh.observation_id} superseding "

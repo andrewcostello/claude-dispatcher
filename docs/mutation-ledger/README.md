@@ -224,11 +224,13 @@ python -m claude_dispatcher.mutation_ledger citations [--repo ROOT]
   set, the size of the observed transition set and the `+unexpected`/
   `-missing` counts. Exit 0 only when every status counts as coverage.
   `--record` is the **admission path**: a completed comparison is written back
-  as a new observation superseding the old one, and each `--claim` not yet in
-  the ledger is measured at the target and recorded with the digests of the
-  tree that was run and the transition set that was observed — never a typed
-  one (`observe_claim`). A comparison that did not complete records nothing
-  and says why.
+  as a new observation superseding the old one — from the SAME measurement
+  whose status line was just printed, never a second run — and each `--claim`
+  not yet in the ledger is measured at the target and recorded with the
+  digests of the tree that was run and the transition set that was observed,
+  never a typed one (`observe_claim`). A comparison that did not complete
+  records nothing and says why. The exit status describes the evidence
+  written.
 * **`predict`** records a clause no operator can measure: the sentence
   verbatim, a closed reason, and the subject's digest at the judged
   revision. Re-examining the same sentence replaces the record in place.
@@ -236,7 +238,10 @@ python -m claude_dispatcher.mutation_ledger citations [--repo ROOT]
   each prediction — the input W2-3-4 rules on.
 * **`citations`** greps the tree (not the ledger directory) for `ml-`/`mlo-`/
   `mlp-` ids and exits non-zero on one that resolves to no live record, or on
-  an `mlo-` observation id cited where a claim id belongs.
+  an `mlo-` observation id cited where a claim id belongs. It is static and
+  runs nothing: whether a live observation still *counts as coverage* is a
+  run outcome, answered by `rederive`'s exit status (a deviation from the
+  scaffold's `check_citations` contract, recorded in W2-3-3's summary).
 
 How a run is made, and what it costs here: `provision_subject_tree` adds a
 detached worktree in a sibling staging path, removes the out-of-tree
@@ -246,8 +251,14 @@ worktree on every path (the repository under measurement is left as found —
 environment scrubbed by prefix (`PYTEST_*`, `COVERAGE_*`, `PYTHON*`,
 `GIT_*`, `TOX_*`, `NOSE_*`) with `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` and only
 the collection plugin named with `-p`, in its own process group, killed
-whole on timeout. One claim against `tests/test_call_site_reachability.py`
-costs **2.0 s** measured on this branch (provision + control + mutant).
+whole on timeout (and the reap after the kill is bounded too, so a group
+that refuses the signal is abandoned rather than waited on). The recorded
+population is the CONTROL RUN's own collection, folded to rows — the digest
+names the rows that were compared, not a separate collect-only pass — and a
+mutant that collects a different row set is `mutant_unevaluable`. A hard
+absence (subject, site, or seal file gone) is applied before any run. One
+claim against `tests/test_call_site_reachability.py` costs **1.8 s**
+measured on this branch (provision + control + mutant).
 
 Choices the contract left to the body, stated so a later reader does not
 infer omission:
@@ -400,7 +411,8 @@ an exception check alone:
 Two things are deliberately **not** sealed there, and both are named in the
 rows: `check_citations`'s "a claim whose live observation does not
 `counts_as_coverage`", because a W2-3-1 finding is that no stored record
-carries a `Status` and the predicate is not computable from a ledger file;
+carries a `Status` — the predicate is a run outcome (`rederive` computes
+it), not a fact readable from a ledger file;
 and `rederive`'s `revision_run` beyond the one value that would be a lie.
 
 ## Which rows say `Measured under:`, and which do not
