@@ -1,0 +1,224 @@
+[
+  {
+    "claude": {
+      "verdict": "REJECT",
+      "findings": 4,
+      "blocking": 2,
+      "seconds": 38.3,
+      "detail": [
+        {
+          "severity": "CRITICAL",
+          "location": "src/queries.ts:8",
+          "description": "The migration at `src/migrate.ts:3` renames `amount_minor` to `amount_cents`, and `sumEntries` was updated to match, but `listEntries` (the diff's context line at line 7 hides its body) still runs `SELECT key, amount_minor FROM entry ...`. The moment the migration is applied, every call to `listEntries` fails with `column \"amount_minor\" does not exist`. This is a ledger `entry` table \u2014 the per-acc"
+        },
+        {
+          "severity": "HIGH",
+          "location": "src/migrate.ts:3",
+          "description": "The migration list is a plain array of SQL strings with no versioning, no checksum, and no transaction/guard, and the rename is appended as a second statement rather than folded into a new numbered migration. `ALTER TABLE ... RENAME COLUMN` is not idempotent: re-running `MIGRATIONS` against an already-migrated database (a retry after a partial deploy, a second replica applying the same list, a cra"
+        },
+        {
+          "severity": "MEDIUM",
+          "location": "src/migrate.ts:3",
+          "description": "The rename changes the semantic contract, not just the name. `amount_minor` means \"smallest currency unit\" and is currency-agnostic (yen, dinar with 3 minor digits, etc.); `amount_cents` asserts a two-decimal, cent-denominated currency. If this ledger ever holds non-cent currencies the new name is actively misleading, and the summary gives no reason for the rename. The blast-radius section was not"
+        },
+        {
+          "severity": "MEDIUM",
+          "location": "src/queries.ts:?",
+          "description": "Test coverage for this change is asserted (\"existing suite passes\") but no test is added or modified in the diff, and the existing suite evidently does not run queries against the migrated schema \u2014 otherwise the `listEntries` breakage would have been caught. That is false confidence rather than a test."
+        }
+      ],
+      "outcome": "caught"
+    },
+    "codex": {
+      "verdict": "CHANGES_REQUESTED",
+      "findings": 1,
+      "blocking": 0,
+      "seconds": 18.8,
+      "detail": [
+        {
+          "severity": "MEDIUM",
+          "location": "src/migrate.ts:3",
+          "description": "No regression test demonstrates that both an existing database is upgraded from `amount_minor` and a fresh database reaches the final `amount_cents` schema. The summary\u2019s claim that the existing suite passes does not establish that this new migration or the updated aggregate query is exercised, so future migration drift could ship undetected."
+        }
+      ],
+      "outcome": "missed"
+    },
+    "grok": {
+      "verdict": "CHANGES_REQUESTED",
+      "findings": 4,
+      "blocking": 2,
+      "seconds": 173.3,
+      "detail": [
+        {
+          "severity": "HIGH",
+          "location": "src/migrate.ts:3",
+          "description": "This is a breaking in-place rename of a column that live queries already key on (`amount_minor` \u2192 `amount_cents`) shipped in the same change as the reader cutover. After the ALTER applies, any still-running old process, replica, or un-updated sibling query that selects `amount_minor` fails immediately; if code rolls out before the migration, new `amount_cents` queries fail the other way. There is "
+        },
+        {
+          "severity": "HIGH",
+          "location": "src/queries.ts:7",
+          "description": "The column rename is reflected only in `sumEntries`. `listEntries` is a sibling reader of `entry` in the same module and is unchanged in this hunk; any `amount_minor` reference in its SQL (or callers that read `amount_minor` off the row) breaks at runtime once the migration applies. Blast radius was not computed for this run and must not be treated as empty \u2014 a money-column rename has to update ev"
+        },
+        {
+          "severity": "MEDIUM",
+          "location": "src/migrate.ts:3",
+          "description": "`ALTER TABLE entry RENAME COLUMN amount_minor TO amount_cents` is not replay-safe. A retry after the rename succeeded but the migration version was not recorded, or a database that already has `amount_cents` (manual fix, partial apply, drifted env), fails with \u201ccolumn amount_minor does not exist\u201d and leaves migrate stuck. PostgreSQL has no `RENAME COLUMN IF EXISTS`."
+        },
+        {
+          "severity": "MEDIUM",
+          "location": "src/migrate.ts:3",
+          "description": "There is no test (and the Tasker only reports \u201cthe existing suite passes\u201d) for the two real apply paths: greenfield (CREATE `amount_minor` then RENAME) and upgrade (already-applied CREATE, pending RENAME). A suite that never runs the new array entry, or that builds the table from the first string only, will pass while production upgrade or a drifted env fails."
+        }
+      ],
+      "outcome": "caught"
+    }
+  },
+  {
+    "claude": {
+      "verdict": "CHANGES_REQUESTED",
+      "findings": 4,
+      "blocking": 1,
+      "seconds": 44.0,
+      "detail": [
+        {
+          "severity": "HIGH",
+          "location": "src/queries.ts:8",
+          "description": "The migration at `src/migrate.ts:3` renames `entry.amount_minor` to `amount_cents`, but only `sumEntries` was updated. `listEntries` \u2014 visible as the very next function in the diff's context lines and untouched \u2014 still executes `SELECT key, amount_minor FROM entry ...`. The moment migration #2 is applied, every call to `listEntries` fails with `column \"amount_minor\" does not exist`. In a ledger th"
+        },
+        {
+          "severity": "MEDIUM",
+          "location": "src/migrate.ts:3",
+          "description": "Renaming `amount_minor` to `amount_cents` narrows the semantics. \"Minor units\" is currency-agnostic (JPY has 0 decimals, KWD/BHD have 3); \"cents\" asserts a 100-subunit currency. If the ledger ever holds a non-USD/EUR-style currency, the column name will lie, and future code will reasonably compute `amount_cents / 100` for display. No rationale for the rename is given in the summary or a decision r"
+        },
+        {
+          "severity": "MEDIUM",
+          "location": "src/migrate.ts:3",
+          "description": "`ALTER TABLE ... RENAME COLUMN` is not re-runnable: Postgres has no `IF EXISTS` form for column rename, and nothing in the diff shows a migration ledger table that records which entries of `MIGRATIONS` have been applied. If the runner replays the array on every boot (the CREATE TABLE at line 2 has no `IF NOT EXISTS` either, which suggests it expects a fresh DB), the second start after the rename l"
+        },
+        {
+          "severity": "LOW",
+          "location": "summary.md:?",
+          "description": "\"The existing suite passes\" is the only testing evidence for a schema rename, and no test is added in the diff. For a column rename in a money table the summary should state which queries were audited for the old name and how the migration was exercised."
+        }
+      ],
+      "outcome": "caught"
+    },
+    "codex": {
+      "verdict": "CHANGES_REQUESTED",
+      "findings": 1,
+      "blocking": 0,
+      "seconds": 27.2,
+      "detail": [
+        {
+          "severity": "MEDIUM",
+          "location": "src/migrate.ts:3",
+          "description": "No test demonstrates that the migration preserves existing rows or that a fresh database running the complete migration sequence exposes `amount_cents`. The summary\u2019s statement that the existing suite passes does not establish either migration behavior, so schema drift or data-access regressions could ship unnoticed."
+        }
+      ],
+      "outcome": "missed"
+    },
+    "grok": {
+      "verdict": "CHANGES_REQUESTED",
+      "findings": 4,
+      "blocking": 2,
+      "seconds": 135.5,
+      "detail": [
+        {
+          "severity": "HIGH",
+          "location": "src/migrate.ts:3",
+          "description": "This change appends `ALTER TABLE entry RENAME COLUMN amount_minor TO amount_cents` in the same deploy as retargeting `sumEntries` to `amount_cents`. That pair is not safe in either order: new code against a database that has not applied the migration fails with `column \"amount_cents\" does not exist`; any remaining old instance (rolling, blue-green, delayed job, replica app) against a migrated data"
+        },
+        {
+          "severity": "HIGH",
+          "location": "src/queries.ts:7",
+          "description": "Only `sumEntries` was updated. `listEntries` is untouched in this diff, and the Tasker summary says the aggregate query was the only consumer change. After the rename, a `listEntries` body that still selects `amount_minor` errors; a `SELECT *` now returns `amount_cents` and breaks callers still mapping `amount_minor`. Sibling writers were not in this diff \u2014 inserts/updates still using `amount_mino"
+        },
+        {
+          "severity": "MEDIUM",
+          "location": "src/migrate.ts:3",
+          "description": "`ALTER TABLE entry` is not schema-qualified. If `search_path` is unset or differs per environment, the rename can miss the intended table or rename a different `entry` relation. The same unqualified `FROM entry` remains in `sumEntries`."
+        },
+        {
+          "severity": "MEDIUM",
+          "location": "src/queries.ts:4",
+          "description": "Testing is \u201cthe existing suite passes.\u201d A suite that runs the full `MIGRATIONS` array on a fresh database and then hits only `sumEntries` will pass while a v0 production database, a mixed-version roll, or `listEntries` breaks. There is no assertion that version 1 sorts after the already-applied create, or that old-name SQL fails only after that version is recorded as applied."
+        }
+      ],
+      "outcome": "caught"
+    }
+  },
+  {
+    "claude": {
+      "verdict": "REJECT",
+      "findings": 4,
+      "blocking": 2,
+      "seconds": 38.7,
+      "detail": [
+        {
+          "severity": "CRITICAL",
+          "location": "src/queries.ts:8",
+          "description": "Migration 2 renames `entry.amount_minor` to `amount_cents`, and the diff updates `sumEntries` accordingly, but `listEntries` (unchanged, outside the diff) still executes `SELECT key, amount_minor FROM entry ...`. After the migration runs, that column no longer exists, so every call to `listEntries` fails at runtime with `column \"amount_minor\" does not exist` (Postgres 42703). This is a ledger read"
+        },
+        {
+          "severity": "HIGH",
+          "location": "src/migrate.ts:3",
+          "description": "There is no test coverage of the migration itself, and the ticket provides none. A column rename on the ledger's entry table is a schema change whose correctness can only be established by running the migration list end-to-end and then running every consumer; \"the existing suite passes\" for a diff that adds a migration and touches one of two consumers is precisely the signal that the suite does no"
+        },
+        {
+          "severity": "MEDIUM",
+          "location": "src/migrate.ts:3",
+          "description": "The rename is a breaking, non-additive schema change with no compatibility window: any deployed process still running the old code (or the untouched `listEntries`) breaks the instant the migration commits, and rollback requires a reverse migration that does not exist. For a money table, an expand/contract sequence (add `amount_cents`, dual-read/write, backfill, drop `amount_minor`) or at minimum a"
+        },
+        {
+          "severity": "LOW",
+          "location": "src/migrate.ts:3",
+          "description": "`amount_minor` (minor currency units, currency-agnostic) is a more accurate ledger name than `amount_cents`, which is wrong for zero-decimal (JPY) and three-decimal (KWD, BHD) currencies. The ticket gives no reason for the rename, so it reads as a naming regression on a multi-currency-sensitive column."
+        }
+      ],
+      "outcome": "caught"
+    },
+    "codex": {
+      "verdict": "CHANGES_REQUESTED",
+      "findings": 1,
+      "blocking": 0,
+      "seconds": 33.3,
+      "detail": [
+        {
+          "severity": "MEDIUM",
+          "location": "src/migrate.ts:3",
+          "description": "No focused regression test demonstrates that an existing database with `amount_minor` upgrades successfully, that a fresh migration replay reaches the same schema, or that `sumEntries` works afterward. The summary\u2019s \u201cexisting suite passes\u201d claim therefore provides no evidence that the migration and query remain synchronized or that reverting either half would fail a test."
+        }
+      ],
+      "outcome": "missed"
+    },
+    "grok": {
+      "verdict": "CHANGES_REQUESTED",
+      "findings": 4,
+      "blocking": 2,
+      "seconds": 160.7,
+      "detail": [
+        {
+          "severity": "HIGH",
+          "location": "src/migrate.ts:3",
+          "description": "`ALTER TABLE entry RENAME COLUMN amount_minor TO amount_cents` is a hard cutover. After this DDL, every in-flight process still querying `amount_minor` fails; before it, the new `sumEntries` query fails with `column \"amount_cents\" does not exist`. There is no dual-name window, no lockstep migrate-before-serve guarantee in this change, and PostgreSQL `RENAME COLUMN` takes `ACCESS EXCLUSIVE` (blocks"
+        },
+        {
+          "severity": "HIGH",
+          "location": "src/queries.ts:7",
+          "description": "The same module still exports `listEntries` immediately below the updated aggregate, and that function was not modified. A column rename is only correct if every SQL consumer (and every INSERT/UPDATE binding `amount_minor`) is updated in the same change. Leaving `listEntries` and any out-of-diff writers on the old name means those paths break the moment the new migration runs. The ticket/summary o"
+        },
+        {
+          "severity": "MEDIUM",
+          "location": "src/migrate.ts:3",
+          "description": "The new statement is not idempotent (`RENAME COLUMN` errors once `amount_minor` is gone) and is not schema-qualified (`entry` vs `public.entry`). If the runner ever re-applies the SQL, or `search_path` does not point at the intended schema, this either fails loudly or renames the wrong table. Replay safety is entirely implicit on array position, which this diff does not show is recorded transactio"
+        },
+        {
+          "severity": "MEDIUM",
+          "location": "src/migrate.ts:3",
+          "description": "Testing is \u201cthe existing suite passes.\u201d There is no check that an already-applied v1 database (`amount_minor`) reaches `amount_cents`, that a fresh install running both SQL strings ends on the same schema, or that `sumEntries` fails closed if the rename has not run. Green tests here do not protect the upgrade path this ticket exists to change."
+        }
+      ],
+      "outcome": "caught"
+    }
+  }
+]

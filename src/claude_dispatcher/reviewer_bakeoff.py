@@ -50,6 +50,10 @@ class Case:
     severity: str
     control: bool
     defect_file: str | None
+    #: Every file the defect spans. A cross-file defect has no single site —
+    #: each hunk is plausible alone and only the INTERACTION is wrong — so
+    #: naming any of the involved files is a legitimate way to report it.
+    defect_files: tuple[str, ...]
     defect_description: str | None
     #: Optional narrowing. Matching on the file alone is enough when the file
     #: holds only the seeded defect, and NOT enough for a large file where a
@@ -63,6 +67,10 @@ class Case:
     @property
     def defect_basename(self) -> str:
         return Path(self.defect_file or "").name
+
+    @property
+    def defect_basenames(self) -> tuple[str, ...]:
+        return tuple(Path(f).name for f in self.defect_files if f)
 
 
 @dataclass
@@ -99,6 +107,8 @@ def load_corpus(corpus_dir: Path) -> list[Case]:
             severity=meta["severity"],
             control=bool(meta.get("control")),
             defect_file=defect.get("file"),
+            defect_files=tuple(defect.get("files") or (
+                [defect["file"]] if defect.get("file") else [])),
             defect_description=defect.get("description"),
             defect_markers=tuple(defect.get("markers") or ()),
             summary=meta["summary"],
@@ -134,12 +144,12 @@ def _caught(verdict: cfr.ReviewerVerdict, case: Case) -> bool:
     differently (`src/ledger.ts:12`, `ledger.ts`, `split()` in `src/ledger.ts`),
     and requiring an exact line would score presentation rather than detection.
     """
-    name = case.defect_basename
+    names = case.defect_basenames
     for f in verdict.findings:
         if f.severity not in BLOCKING:
             continue
         where = f"{getattr(f, 'location', '') or ''} {getattr(f, 'description', '') or ''}"
-        if not name or name not in where:
+        if not names or not any(n in where for n in names):
             continue
         if case.defect_markers and not any(
             m.lower() in where.lower() for m in case.defect_markers

@@ -1,0 +1,23 @@
+{
+  "id": "xf-widened-union",
+  "language": "typescript",
+  "kind": "cross-file-exhaustiveness",
+  "severity": "critical",
+  "control": false,
+  "summary": "Adds a chargeback entry kind, and truncates the posted amount defensively.",
+  "defect": {
+    "file": "src/kind.ts",
+    "files": [
+      "src/kind.ts",
+      "src/apply.ts"
+    ],
+    "markers": [
+      "chargeback",
+      "default",
+      "switch",
+      "exhaust",
+      "sign"
+    ],
+    "description": "`chargeback` is added to EntryKind but signedMinor has no case for it, so it falls into the `default` branch and is CREDITED like a deposit. The default arm hides the omission from the compiler, and the apply.ts hunk is an unrelated tidy."
+  }
+}

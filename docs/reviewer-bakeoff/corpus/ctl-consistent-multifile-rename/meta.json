@@ -1,0 +1,9 @@
+{
+  "id": "ctl-consistent-multifile-rename",
+  "language": "typescript",
+  "kind": "refactor",
+  "severity": "none",
+  "control": true,
+  "summary": "Renames `zero` to `zeroMoney` and updates both call sites. No behaviour change.",
+  "defect": null
+}

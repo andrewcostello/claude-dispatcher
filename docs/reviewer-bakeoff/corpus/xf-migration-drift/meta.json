@@ -1,0 +1,23 @@
+{
+  "id": "xf-migration-drift",
+  "language": "typescript",
+  "kind": "cross-file-schema",
+  "severity": "critical",
+  "control": false,
+  "summary": "Renames the entry amount column to amount_cents and updates the aggregate query.",
+  "defect": {
+    "file": "src/migrate.ts",
+    "files": [
+      "src/migrate.ts",
+      "src/queries.ts"
+    ],
+    "markers": [
+      "amount_minor",
+      "amount_cents",
+      "rename",
+      "column",
+      "listEntries"
+    ],
+    "description": "The migration renames amount_minor to amount_cents and sumEntries is updated, but listEntries still selects amount_minor \u2014 it will fail at runtime the moment the migration lands."
+  }
+}

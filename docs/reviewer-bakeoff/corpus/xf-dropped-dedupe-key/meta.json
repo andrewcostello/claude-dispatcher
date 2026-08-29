@@ -1,0 +1,24 @@
+{
+  "id": "xf-dropped-dedupe-key",
+  "language": "typescript",
+  "kind": "cross-file-idempotency",
+  "severity": "critical",
+  "control": false,
+  "summary": "Drops the redundant idempotencyKey from the message (it duplicated eventId) and renames a parameter in the consumer.",
+  "defect": {
+    "file": "src/producer.ts",
+    "files": [
+      "src/producer.ts",
+      "src/consumer.ts"
+    ],
+    "markers": [
+      "idempotencyKey",
+      "undefined",
+      "dedupe",
+      "dedup",
+      "seen",
+      "drop"
+    ],
+    "description": "The producer stops emitting idempotencyKey while the consumer still dedupes on it. Every message now carries `undefined` there, so the first message poisons the set and EVERY later message is silently discarded."
+  }
+}

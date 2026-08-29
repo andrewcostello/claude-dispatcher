@@ -1372,17 +1372,19 @@ def test_a_recommendation_at_or_above_the_roster_seats_everyone(
     }
 
 
-def test_the_trim_keeps_the_fastest_seats_not_the_bakeoff_order(
-    repo: Path, monkeypatch,
-) -> None:
-    """Seats run in PARALLEL, so the panel costs its SLOWEST seat — trimming
-    only shortens it if the slow seat is the one dropped.
+def test_the_trim_keeps_the_seats_that_catch(repo: Path, monkeypatch) -> None:
+    """A trim must not drop a seat the consensus needs.
 
-    The old order (claude, grok, gemini, codex) dropped codex first on
-    PR-1353's claim that only claude reliably catches a Critical. That claim is
-    not reproducible and `docs/reviewer-bakeoff` contradicts it: 14/14 for all
-    three families, with wall-clock the only separator — codex 407s, claude
-    959s, grok 1427s. So a 2-seat trim keeps codex and claude and drops grok.
+    Over 27 seeded defects (docs/reviewer-bakeoff) claude and grok caught
+    27/27; codex caught 26/27 and the miss is stable across 4 of 4 repetitions
+    — `xf-migration-drift`, where a column rename left one of two queries in
+    the same file untouched.
+
+    That one case decides the order, because a non-CRITICAL block needs TWO
+    families: seated {claude, codex} only claude raises it, so the panel
+    APPROVES a runtime-breaking schema change; seated {claude, grok} both raise
+    it and the panel blocks. This row exists because an earlier round ordered
+    by wall-clock instead, on tiers where every family caught everything.
     """
     _seed_yaml(repo, _MEDIUM_LOW_RISK_TASK_YAML)
     (repo / ".dispatcher.yaml").write_text(
@@ -1394,4 +1396,4 @@ def test_the_trim_keeps_the_fastest_seats_not_the_bakeoff_order(
 
     assert orchestrator.execute(_args(repo, key="PANEL-B", panel_mode="always")) == 0
     seated = {r.family for r in revs if r.call_count}
-    assert seated == {"codex", "claude"}, seated
+    assert seated == {"claude", "grok"}, seated

@@ -1,0 +1,22 @@
+{
+  "id": "xf-lock-ordering",
+  "language": "typescript",
+  "kind": "cross-file-deadlock",
+  "severity": "critical",
+  "control": false,
+  "summary": "Removes the sort from the locking in transfer and refund; each now locks in the order it acts on.",
+  "defect": {
+    "file": "src/transfer.ts",
+    "files": [
+      "src/transfer.ts",
+      "src/refund.ts"
+    ],
+    "markers": [
+      "deadlock",
+      "lock",
+      "order",
+      "FOR UPDATE"
+    ],
+    "description": "Both functions drop the canonical sort and now take their two row locks in OPPOSITE orders \u2014 transfer payer-then-payee, refund payee-then-payer. A concurrent transfer and refund over the same pair deadlock. Each function reads fine on its own."
+  }
+}

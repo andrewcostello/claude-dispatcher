@@ -1,0 +1,24 @@
+{
+  "id": "xf-epoch-units",
+  "language": "typescript",
+  "kind": "cross-file-units",
+  "severity": "critical",
+  "control": false,
+  "summary": "Emits token expiry as a second epoch for consistency with our other services; renames a parameter in the verifier.",
+  "defect": {
+    "file": "src/issue.ts",
+    "files": [
+      "src/issue.ts",
+      "src/verify.ts"
+    ],
+    "markers": [
+      "second",
+      "millisecond",
+      "Date.now",
+      "epoch",
+      "1000",
+      "expire"
+    ],
+    "description": "issue() switches the expiry to a SECOND epoch while isExpired still compares against Date.now() in MILLISECONDS. A second-epoch value is always far smaller, so every token reads as expired immediately \u2014 or, once the comparison is inverted by an operator, never expires."
+  }
+}

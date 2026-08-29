@@ -1364,12 +1364,15 @@ def default_reviewers(timeout_seconds: int = DEFAULT_REVIEWER_TIMEOUT_SECONDS) -
     #       claude reliably catches a Critical — grok is a cheap supplementary
     #       seat and codex was dropped.
     #
-    #       SUPERSEDED 2026-08-29. That result was not reproducible from
-    #       anything in this repo, and `docs/reviewer-bakeoff` now contradicts
-    #       it: over 14 seeded defects each of claude, codex and grok caught
-    #       14/14, with no adjudicated false positive. The conclusion below —
-    #       seat the author family — is unaffected, but do not cite PR-1353 for
-    #       a RANKING; `dispatcher reviewer-bakeoff` re-runs the evidence.
+    #       RE-MEASURED 2026-08-29, because that result was not reproducible
+    #       from anything in this repo. `docs/reviewer-bakeoff` now holds
+    #       evidence that re-runs: over 27 seeded defects claude and grok each
+    #       caught 27/27 and codex 26/27, its one miss stable across 4 of 4
+    #       repetitions on a cross-file column rename. So the ranking is half
+    #       right and for the wrong reason — claude is not the ONLY reliable
+    #       detector (grok matches it), and grok is not merely "supplementary".
+    #       Dropping codex first does hold up. Two plainer tiers of defects
+    #       separated nobody; only cross-file cases did.
     #       Since nearly every task is
     #       claude-authored, that circularity argument was removing the only
     #       reliable detector from effectively every review. It traded a

@@ -1,0 +1,24 @@
+{
+  "id": "xf-unit-boundary",
+  "language": "typescript",
+  "kind": "cross-file-units",
+  "severity": "critical",
+  "control": false,
+  "summary": "Returns the balance in minor units, and tidies the local name in the summary renderer.",
+  "defect": {
+    "file": "src/balance.ts",
+    "files": [
+      "src/balance.ts",
+      "src/summary.ts"
+    ],
+    "markers": [
+      "minor",
+      "major",
+      "unit",
+      "100",
+      "cents",
+      "toFixed"
+    ],
+    "description": "getBalance switches from MAJOR to MINOR units while renderSummary still formats the result with toFixed(2) as if it were major, so every displayed balance is 100x too large. Each hunk is plausible alone."
+  }
+}

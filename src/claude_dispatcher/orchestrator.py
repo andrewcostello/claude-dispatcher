@@ -2504,18 +2504,26 @@ def _run_cross_family_panel(
         if honour and cls.panel_seats < len(reviewers):
             keep = max(2, cls.panel_seats)
             if keep < len(reviewers):
-                # Keep the FASTEST seats, because the bake-off found nothing
-                # else to choose on: over 14 seeded defects (docs/reviewer-
-                # bakeoff) claude, codex and grok each caught 14/14 with no
-                # adjudicated false positives, and wall-clock was the only axis
-                # that separated them — codex 407s, claude 959s, grok 1427s.
-                # Seats run in PARALLEL, so the panel costs its slowest seat and
-                # dropping grok is the trim that actually shortens it.
+                # Keep the seats that CATCH, not the ones that finish first.
                 #
-                # This inverts the old order, which put codex last on PR-1353's
-                # unreproduced claim that "only claude reliably catches a
-                # Critical". `dispatcher reviewer-bakeoff` re-runs the evidence.
-                rank = {"codex": 0, "claude": 1, "grok": 2, "gemini": 3}
+                # Over 27 seeded defects (docs/reviewer-bakeoff) claude and grok
+                # each caught 27/27; codex caught 26/27 and its miss is stable —
+                # 4 of 4 repetitions on `xf-migration-drift`, a column rename
+                # where one of two queries in the same file was not updated.
+                # Every repetition it produced the same substitute finding about
+                # missing migration tests and never saw the drift.
+                #
+                # That single case decides the order, because consensus needs
+                # TWO families to raise a blocking finding: seated
+                # {claude, codex} exactly one does, so the panel APPROVES a
+                # runtime-breaking schema change; seated {claude, grok} both do
+                # and it blocks. A faster panel that ships the defect is not
+                # cheaper.
+                #
+                # An earlier round of this work ordered by wall-clock instead,
+                # on two tiers of defects that every family caught. That was
+                # measuring a tie. Only the cross-file tier separated them.
+                rank = {"claude": 0, "grok": 1, "codex": 2, "gemini": 3}
                 reviewers = sorted(
                     reviewers,
                     key=lambda r: rank.get(getattr(r, "family", None) or "", 9),

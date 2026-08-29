@@ -1,0 +1,555 @@
+{
+  "harness_version": "1",
+  "corpus": "docs/reviewer-bakeoff/corpus",
+  "cases": 7,
+  "defect_cases": 6,
+  "control_cases": 1,
+  "families": [
+    "claude",
+    "codex",
+    "grok"
+  ],
+  "rows": [
+    {
+      "case": "ctl-consistent-multifile-rename",
+      "kind": "refactor",
+      "control": true,
+      "severity": "none",
+      "seconds": 45.5,
+      "families": {
+        "claude": {
+          "verdict": "APPROVE",
+          "findings": 0,
+          "blocking": 0,
+          "seconds": 23.1,
+          "detail": [],
+          "outcome": "clean"
+        },
+        "codex": {
+          "verdict": "APPROVE",
+          "findings": 0,
+          "blocking": 0,
+          "seconds": 10.5,
+          "detail": [],
+          "outcome": "clean"
+        },
+        "grok": {
+          "verdict": "APPROVE",
+          "findings": 0,
+          "blocking": 0,
+          "seconds": 45.5,
+          "detail": [],
+          "outcome": "clean"
+        }
+      }
+    },
+    {
+      "case": "xf-dropped-dedupe-key",
+      "kind": "cross-file-idempotency",
+      "control": false,
+      "severity": "critical",
+      "seconds": 74.4,
+      "families": {
+        "claude": {
+          "verdict": "REJECT",
+          "findings": 4,
+          "blocking": 2,
+          "seconds": 28.1,
+          "detail": [
+            {
+              "severity": "CRITICAL",
+              "location": "src/consumer.ts:4",
+              "description": "The producer no longer emits `idempotencyKey` (src/producer.ts:1-5), but the consumer still dedupes on `message.idempotencyKey`. Every message now arrives with that field `undefined`. The first `consume` call does `seen.has(undefined)` \u2192 false, adds `undefined` to the set, and applies. Every subsequent message \u2014 regardless of `eventId` \u2014 hits `seen.has(undefined)` \u2192 true and is silently dropped. T"
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/consumer.ts:1",
+              "description": "Dedup state is a process-local `Set`. It is not durable, not shared across replicas, and is lost on restart \u2014 so a replayed message after a redeploy is applied twice, and two consumer instances each apply it once. For a message carrying `amountMinor` this is a double-apply of money. This predates the diff, but the diff is explicitly a refactor of the idempotency surface and the summary makes no me"
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/consumer.ts:3",
+              "description": "A dropped duplicate returns silently. When the CRITICAL bug above ships, nothing distinguishes \"correctly deduped\" from \"everything is being dropped\". At minimum a structured log with `eventId` on the duplicate path would have made this visible within minutes."
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/consumer.ts:?",
+              "description": "\"The existing suite passes\" is the whole test claim, and the suite evidently contains no test that sends two distinct messages through `consume`. A dedup mechanism with no test for \"distinct messages are all applied\" is untested on its most important axis."
+            }
+          ],
+          "outcome": "caught"
+        },
+        "codex": {
+          "verdict": "CHANGES_REQUESTED",
+          "findings": 1,
+          "blocking": 1,
+          "seconds": 16.5,
+          "detail": [
+            {
+              "severity": "HIGH",
+              "location": "src/consumer.ts:4",
+              "description": "The producer removes `idempotencyKey`, but the consumer still deduplicates on `message.idempotencyKey`. Produced messages therefore all have an `undefined` deduplication key: the first message is applied, then every subsequent message is silently discarded. The `any` parameter hides this contract mismatch from TypeScript, and the claim that the existing suite passes provides no evidence that the i"
+            }
+          ],
+          "outcome": "caught"
+        },
+        "grok": {
+          "verdict": "REJECT",
+          "findings": 5,
+          "blocking": 3,
+          "seconds": 74.4,
+          "detail": [
+            {
+              "severity": "CRITICAL",
+              "location": "src/consumer.ts:4",
+              "description": "The producer no longer emits `idempotencyKey`, but `consume` still dedupes on `message.idempotencyKey`. Every inbound message therefore keys as `undefined`. The first call applies; every later call hits `seen.has(undefined)` and returns without calling `apply`. Distinct `eventId`s are silently discarded, including any `amountMinor` they carry. That is lost work in production, not a missed edge cas"
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/consumer.ts:2",
+              "description": "Dedup lives in a module-level `Set` with no backing store, uniqueness constraint, TTL, or process identity. After this change that in-memory set is the only remaining idempotency mechanism. A restart replays already-applied events; a second consumer instance double-applies; a long-running process grows `seen` without bound. Under real traffic that is both a correctness hole and an ops failure (unb"
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/consumer.ts:?",
+              "description": "The diff does not update tests. The Tasker report that \u201cthe existing suite passes\u201d is expected: nothing asserts that the consumer\u2019s dedupe field matches the producer\u2019s payload. A suite that still passes after dropping `idempotencyKey` while `consume` still reads it is not covering this ticket."
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/consumer.ts:4",
+              "description": "Duplicate (and now \u201cduplicate-undefined\u201d) paths return with no log, metric, or reason. After deploy this looks like a quiet stall: producers emit, consumers ack, amounts never apply, and a 3am on-call has no event id or drop reason."
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/producer.ts:1",
+              "description": "`amountMinor` on the message implies monetary units, but the repo snippet does not evidence which ledger/compliance rules apply. Silently dropping all events after the first is unsafe in any money-adjacent pipeline, and this change does not say how in-flight messages that still carry `idempotencyKey` should be handled across a rolling deploy."
+            }
+          ],
+          "outcome": "caught"
+        }
+      }
+    },
+    {
+      "case": "xf-epoch-units",
+      "kind": "cross-file-units",
+      "control": false,
+      "severity": "critical",
+      "seconds": 80.2,
+      "families": {
+        "claude": {
+          "verdict": "REJECT",
+          "findings": 4,
+          "blocking": 3,
+          "seconds": 41.3,
+          "detail": [
+            {
+              "severity": "CRITICAL",
+              "location": "src/issue.ts:3",
+              "description": "`issue()` now emits `expiresAt` as a **second** epoch (`Math.floor(Date.now() / 1000) + ttlSeconds`, \u22481.76e9), but `isExpired()` in `src/verify.ts:2` still compares it against `Date.now()`, which is a **millisecond** epoch (\u22481.76e12). The two halves of the token lifecycle now disagree on units by a factor of 1000. A second-epoch expiry is always ~1000\u00d7 smaller than the ms clock, so `expiresAt < Da"
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/issue.ts:1",
+              "description": "`expiresAt` is a shared contract \u2014 the ticket's own rationale is \"consistency with our other services\", i.e. other readers exist. Changing its units without renaming the field is a silent breaking change to every consumer that read it as ms per the previous docstring (client-side \"refresh 30 s before expiry\" logic, cache TTLs, anything that does `new Date(expiresAt)`). Under this repository's own "
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/verify.ts:1",
+              "description": "\"The existing suite passes\" after a change that makes every token expire on issue means no test exercises `issue()` \u2192 `isExpired()` together, and none pins the units of `expiresAt`. The one test that would have caught this is absent, and the summary presents the green suite as evidence of correctness. The `t` \u2192 `token` rename is the only change to the verifier and it is cosmetic; it makes the diff"
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/issue.ts:1",
+              "description": "The rewritten docstring states the wire rationale (\"what our other services emit\") \u2014 that is commit-message content per house style \u2014 and drops the one constraint a future reader needs: which clock the verifier must use. The comment that would prevent someone breaking the code was the old one."
+            }
+          ],
+          "outcome": "caught"
+        },
+        "codex": {
+          "verdict": "CHANGES_REQUESTED",
+          "findings": 1,
+          "blocking": 1,
+          "seconds": 26.9,
+          "detail": [
+            {
+              "severity": "HIGH",
+              "location": "src/verify.ts:2",
+              "description": "`issue` now emits epoch seconds, but `isExpired` still compares `expiresAt` with the millisecond value returned by `Date.now()`. Consequently, every newly issued token is treated as expired immediately because a seconds timestamp is roughly three orders of magnitude smaller. The unchanged suite passing is vacuous with respect to the new unit contract: an issue-then-verify test with a positive TTL "
+            }
+          ],
+          "outcome": "caught"
+        },
+        "grok": {
+          "verdict": "CHANGES_REQUESTED",
+          "findings": 2,
+          "blocking": 1,
+          "seconds": 80.1,
+          "detail": [
+            {
+              "severity": "HIGH",
+              "location": "src/verify.ts:2",
+              "description": "`issue()` now emits `expiresAt` as a Unix second epoch (`Math.floor(Date.now() / 1000) + ttlSeconds`), but `isExpired()` still compares that value to `Date.now()` (milliseconds). A second-scale timestamp (~1e9) is always less than a millisecond timestamp (~1e12), so every issued token is treated as expired immediately. This is an operations-unit mismatch: the producer was aligned with other servic"
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/issue.ts:3",
+              "description": "The emitted unit of `expiresAt` changed and no test in this diff asserts the issue\u2192verify contract (second-scale magnitude, or that a freshly issued token is not expired). The Tasker reports the existing suite still passes, which is only possible if tests do not check that pairing. That is false confidence and is exactly the gap that let the unit split land."
+            }
+          ],
+          "outcome": "caught"
+        }
+      }
+    },
+    {
+      "case": "xf-lock-ordering",
+      "kind": "cross-file-deadlock",
+      "control": false,
+      "severity": "critical",
+      "seconds": 84.6,
+      "families": {
+        "claude": {
+          "verdict": "REJECT",
+          "findings": 2,
+          "blocking": 1,
+          "seconds": 36.9,
+          "detail": [
+            {
+              "severity": "HIGH",
+              "location": "src/transfer.ts:5",
+              "description": "The `sort()` was the deadlock guard, and this diff deletes it from both movement paths and replaces it with two *opposite* fixed orders. `transfer(A, B)` now locks A then B; `refund(payer=A, payee=B)` locks B then A. A concurrent transfer and its refund on the same pair (the most likely concurrent pairing in a money system \u2014 chargeback racing a new payment) take the two row locks in inverted order"
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/refund.ts:3",
+              "description": "The replaced docstring stated a constraint whose absence lets someone break the code (\"canonical order so concurrent movements cannot deadlock\") \u2014 exactly the kind of comment house style keeps. The new one (\"Lock the payee first, then the payer\") merely restates the two lines beneath it and carries no constraint, so it is dead weight, and deleting the original removed the one signal that would hav"
+            }
+          ],
+          "outcome": "caught"
+        },
+        "codex": {
+          "verdict": "CHANGES_REQUESTED",
+          "findings": 2,
+          "blocking": 1,
+          "seconds": 33.7,
+          "detail": [
+            {
+              "severity": "HIGH",
+              "location": "src/transfer.ts:5",
+              "description": "Lock ordering is now data- and operation-dependent. A transfer from A to B locks A then B, while a refund involving payer A and payee B locks B then A; opposing transfers have the same inversion. Concurrent transactions can therefore each hold one row while waiting for the other, causing PostgreSQL to abort one as a deadlock. This directly regresses the safety property documented by the removed ca"
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/refund.ts:5",
+              "description": "No regression test accompanies the lock-order change. The claim that the existing suite passes does not demonstrate that the requested behavior is correct or safe, and evidently does not detect the cross-operation deadlock introduced here."
+            }
+          ],
+          "outcome": "caught"
+        },
+        "grok": {
+          "verdict": "CHANGES_REQUESTED",
+          "findings": 3,
+          "blocking": 2,
+          "seconds": 84.6,
+          "detail": [
+            {
+              "severity": "HIGH",
+              "location": "src/transfer.ts:5",
+              "description": "Canonical lock ordering was the deadlock invariant. `transfer` now locks `from` then `to`, so two concurrent opposite transfers (`A\u2192B` and `B\u2192A`) wait on each other. Postgres will abort one with `40P01`. Sequential tests still pass; this only fails under concurrent production load \u2014 the exact laptop-vs-world gap this lens is for. The old sort existed to prevent that."
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/refund.ts:5",
+              "description": "`refund` locks `payee` then `payer`, which is the reverse of `transfer`'s `from` then `to`. A transfer `A\u2192B` concurrent with a refund of the same pair (`payer=A`, `payee=B`) is a guaranteed deadlock. Two opposite refunds deadlock the same way. Lock order also does not match this function's own update order (payer then payee), so it does not even \"lock in the order it acts on.\""
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/transfer.ts:3",
+              "description": "The replacement comments restate the next two lines and drop the constraint that made the old comment worth keeping: concurrent movements must lock a shared order or they deadlock. A later agent can \"improve\" this the same way again. The only stated testing (\"existing suite passes\") cannot see lock-order bugs."
+            }
+          ],
+          "outcome": "caught"
+        }
+      }
+    },
+    {
+      "case": "xf-migration-drift",
+      "kind": "cross-file-schema",
+      "control": false,
+      "severity": "critical",
+      "seconds": 161.2,
+      "families": {
+        "claude": {
+          "verdict": "CHANGES_REQUESTED",
+          "findings": 4,
+          "blocking": 1,
+          "seconds": 44.1,
+          "detail": [
+            {
+              "severity": "HIGH",
+              "location": "src/queries.ts:8",
+              "description": "The migration renames `entry.amount_minor` to `amount_cents` and `sumEntries` is updated, but `listEntries` (the function whose header appears as unchanged trailing context in the diff) still executes `SELECT key, amount_minor FROM entry WHERE account_key = $1 ORDER BY key`. The moment migration #2 applies, every call to `listEntries` fails with `column \"amount_minor\" does not exist`. For a ledger"
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/migrate.ts:3",
+              "description": "`ALTER TABLE ... RENAME COLUMN` is a breaking, non-additive schema change with no expand/contract step. Any process still running the previous build between the migration applying and the new code deploying (rolling deploy, a second replica, a rollback) fails on every `entry` read and write, and rolling the code back does not restore service without a reverse migration, which does not exist. For a"
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/migrate.ts:3",
+              "description": "The rename narrows the column's semantics. `amount_minor` is currency-agnostic (minor units of whatever the account's currency is); `amount_cents` asserts a 100-subunit currency, which is wrong for zero-decimal (JPY, KRW) and three-decimal (KWD, BHD) currencies. Nothing in the diff shows the ledger is single-currency USD, and the ticket gives no reason for the rename. In a money schema a misleadin"
+            },
+            {
+              "severity": "LOW",
+              "location": "summary.md:?",
+              "description": "The summary claims the change \"updates the aggregate query\" and that \"the existing suite passes\", but it updates only one of two queries against the renamed column and the diff contains no test changes. A summary that overstates completeness is exactly what lets a half-applied rename through a cross-family panel."
+            }
+          ],
+          "outcome": "caught"
+        },
+        "codex": {
+          "verdict": "APPROVE",
+          "findings": 0,
+          "blocking": 0,
+          "seconds": 15.7,
+          "detail": [],
+          "outcome": "missed"
+        },
+        "grok": {
+          "verdict": "CHANGES_REQUESTED",
+          "findings": 5,
+          "blocking": 2,
+          "seconds": 161.2,
+          "detail": [
+            {
+              "severity": "HIGH",
+              "location": "src/migrate.ts:3",
+              "description": "`ALTER TABLE entry RENAME COLUMN amount_minor TO amount_cents` is a breaking catalog change. PostgreSQL takes ACCESS EXCLUSIVE, so the rename waits behind in-flight work on `entry` and then blocks every read and write. There is no `lock_timeout`, no retry, and no expand/contract. The query change lands in the same commit, so rolling deploy is unsafe in both orders: migrate-first breaks old process"
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/queries.ts:7",
+              "description": "Only `sumEntries` was retargeted at `amount_cents`. `listEntries` in the same module is unchanged, and no inserts/updates appear in the diff. After the rename, any remaining SQL, type, or mapper that still names `amount_minor` fails at runtime. That is schema/code drift on the write/read surface the ticket is meant to keep aligned."
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/migrate.ts:3",
+              "description": "The rename is not schema-qualified. If `search_path` differs by environment, the statement can miss `entry`, hit a different schema, or fail while the query layer talks to another table of the same name."
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/migrate.ts:3",
+              "description": "`RENAME COLUMN` is not idempotent. If the runner retries after the rename commits but before the version row does, the retry errors with `column \"amount_minor\" does not exist` and the upgrade sticks. The supplied materials do not show a transactional migrator that records version in the same txn as the DDL."
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/queries.ts:4",
+              "description": "Testing is \u201cthe existing suite passes.\u201d That does not prove an already-applied `CREATE TABLE ... amount_minor` database can apply the new statement, nor that a green-field run of both statements leaves `sumEntries` correct. A suite that never executes the new migration stays green while production upgrade fails."
+            }
+          ],
+          "outcome": "caught"
+        }
+      }
+    },
+    {
+      "case": "xf-unit-boundary",
+      "kind": "cross-file-units",
+      "control": false,
+      "severity": "critical",
+      "seconds": 82.6,
+      "families": {
+        "claude": {
+          "verdict": "REJECT",
+          "findings": 3,
+          "blocking": 2,
+          "seconds": 29.9,
+          "detail": [
+            {
+              "severity": "CRITICAL",
+              "location": "src/summary.ts:5",
+              "description": "`getBalance` changed its return contract from major units (`balance_minor / 100`) to minor units (`balance_minor` raw), but its only caller `renderSummary` was not updated \u2014 it still does `amount.toFixed(2)` and appends the currency code, formatting exactly as it did when the value was in major units. For a row with `balance_minor: 1234`, the summary now renders `\"1234.00 USD\"` instead of `\"12.34 "
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/balance.ts:2",
+              "description": "The semantic change of `getBalance` is signalled only by a doc-comment edit (MAJOR \u2192 MINOR). The function name, signature, and return type (`number`) are unchanged, so nothing in the type system or the name tells any consumer \u2014 present or future \u2014 that the contract flipped. The summary states this as a deliberate contract change but gives no reason, no enumeration of callers, and no test; in a cod"
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/summary.ts:4",
+              "description": "Test coverage is absent for a change whose whole risk is the interaction between two files. \"The existing suite passes\" after a 100\u00d7 behavioural change means the suite does not exercise `renderSummary`'s output at all, so it provides no evidence for this ticket."
+            }
+          ],
+          "outcome": "caught"
+        },
+        "codex": {
+          "verdict": "CHANGES_REQUESTED",
+          "findings": 1,
+          "blocking": 1,
+          "seconds": 19.5,
+          "detail": [
+            {
+              "severity": "HIGH",
+              "location": "src/summary.ts:4",
+              "description": "`getBalance` now returns minor units, but `renderSummary` still formats that value directly as a currency amount. A row containing `balance_minor: 1234` therefore changes from `12.34 USD` to `1234.00 USD`. The ticket describes only returning the balance in minor units and tidying the renderer\u2019s local name, so this unintended 100\u00d7 display change contradicts the claimed scope. The absence of a chang"
+            }
+          ],
+          "outcome": "caught"
+        },
+        "grok": {
+          "verdict": "CHANGES_REQUESTED",
+          "findings": 2,
+          "blocking": 1,
+          "seconds": 82.6,
+          "detail": [
+            {
+              "severity": "HIGH",
+              "location": "src/summary.ts:5",
+              "description": "`getBalance` now returns minor units (commented example: `1234 = 12.34 USD`), but `renderSummary` still formats that value with `toFixed(2)`. For `balance_minor = 1234` the string becomes `1234.00 USD` instead of `12.34 USD` \u2014 a 100\u00d7 display error on the only in-diff consumer. The local rename (`bal` \u2192 `amount`) does not adapt the unit boundary; any caller that treated the old major-unit number as"
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/balance.ts:2",
+              "description": "The return-value contract of `getBalance` changed from major to minor units while the exported signature stayed `number`. The Tasker reports the existing suite still passes, and this diff contains no test updates. A 100\u00d7 scale change that does not fail tests means nothing locked the numeric meaning, so the broken `renderSummary` composition would ship with false confidence. Blast radius outside th"
+            }
+          ],
+          "outcome": "caught"
+        }
+      }
+    },
+    {
+      "case": "xf-widened-union",
+      "kind": "cross-file-exhaustiveness",
+      "control": false,
+      "severity": "critical",
+      "seconds": 180.4,
+      "families": {
+        "claude": {
+          "verdict": "REJECT",
+          "findings": 4,
+          "blocking": 2,
+          "seconds": 37.5,
+          "detail": [
+            {
+              "severity": "CRITICAL",
+              "location": "src/apply.ts:8",
+              "description": "`chargeback` is added to `EntryKind` (`src/kind.ts:1`) but `signedMinor` gains no case for it. The switch's `default` arm absorbs the new member, so a chargeback \u2014 money being pulled *back out* of the account \u2014 is posted as a positive amount, i.e. credited exactly like a `deposit`. Every chargeback therefore increases the balance by the disputed amount instead of decreasing it: the account is over"
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/apply.ts:11",
+              "description": "`Math.trunc(amountMinor)` is presented as \"defensive\" but it silently rewrites the amount rather than rejecting a bad one. `amountMinor` is by name already an integer minor-unit quantity; a fractional value reaching this function is a caller bug (unit mismatch, unrounded FX, float arithmetic upstream) and should be a hard error, not quietly floored toward zero. `Math.trunc` also rounds asymmetrica"
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/apply.ts:?",
+              "description": "No tests were added or changed. The summary states only that the existing suite passes, which for a change that introduces a new enum member is evidence of nothing \u2014 the new member is never executed. For a function whose sole job is deciding whether money is added or removed, absence of a per-kind sign test is what allowed the CRITICAL above to land."
+            },
+            {
+              "severity": "LOW",
+              "location": "src/apply.ts:9",
+              "description": "Listing `case \"deposit\": case \"adjustment\":` immediately above `default:` is misleading \u2014 the explicit cases are dead labels because `default` catches them anyway, which reads as if the enumeration were complete when it is not."
+            }
+          ],
+          "outcome": "caught"
+        },
+        "codex": {
+          "verdict": "CHANGES_REQUESTED",
+          "findings": 3,
+          "blocking": 2,
+          "seconds": 32.2,
+          "detail": [
+            {
+              "severity": "HIGH",
+              "location": "src/apply.ts:10",
+              "description": "`EntryKind` now includes `\"chargeback\"`, but `signedMinor` has no chargeback case. It therefore falls through the positive default path used by deposits and adjustments. This leaves the new kind's monetary behavior implicit and likely reverses the intended sign of a chargeback; the default also prevents TypeScript from detecting future unhandled union members."
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/apply.ts:6",
+              "description": "The claim that the posted amount is truncated is not true for withdrawals: the existing withdrawal branch returns `-amountMinor` before reaching the newly changed `Math.trunc` call. A fractional withdrawal therefore remains fractional while deposits, adjustments, and chargebacks are truncated."
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/apply.ts:3",
+              "description": "No tests were added for either changed behavior, so the statement that the existing suite passes provides no evidence that chargebacks have the correct sign or that every entry kind truncates fractional amounts. Reverting the truncation or removing the new kind-specific behavior would not necessarily fail any test."
+            }
+          ],
+          "outcome": "caught"
+        },
+        "grok": {
+          "verdict": "CHANGES_REQUESTED",
+          "findings": 4,
+          "blocking": 2,
+          "seconds": 180.4,
+          "detail": [
+            {
+              "severity": "HIGH",
+              "location": "src/apply.ts:10",
+              "description": "`\"chargeback\"` was added to `EntryKind` but is not an explicit `switch` arm, so it falls through `default` and is posted with the same sign as `\"deposit\"` / `\"adjustment\"` (a truncated credit). `signedMinor` exists to map kind \u2192 signed minor units; a chargeback is a reversal of a deposit and, on a wallet/merchant ledger, must debit. Production postings of `kind: \"chargeback\"` will inflate balances"
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/apply.ts:11",
+              "description": "Defensive truncation is applied only on the deposit/adjustment/default arm. The hunk does not touch the earlier kind arm(s) (almost certainly `\"withdrawal\"`), so those still return the raw `amountMinor`. In production that means a deposit of `10.9` posts `10` while a withdrawal of `10.9` posts `-10.9`: mixed integer/float minor units, driver/BIGINT coercion failures on one path only, and silent de"
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/apply.ts:?",
+              "description": "The Tasker reports only that \u201cthe existing suite passes.\u201d No test covers the new kind or the new truncation behaviour. Existing tests cannot have asserted `\"chargeback\"` before the union existed, and integer fixtures will not notice `Math.trunc`. That is false confidence on a money-posting function."
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/kind.ts:1",
+              "description": "The repository evidences a financial ledger (deposit, withdrawal, adjustment, chargeback, minor units). Widening the posted-entry union without encoding chargeback as a reversing entry leaves posting semantics unspecified. The exact regulatory regime (card-network chargeback windows, wallet vs merchant books, double-entry constraints) is not in this diff; shipping a new money-movement kind without"
+            }
+          ],
+          "outcome": "caught"
+        }
+      }
+    }
+  ],
+  "scores": {
+    "claude": {
+      "detection_rate": 1.0,
+      "detected": 6,
+      "missed": 0,
+      "false_positive_rate": 0.0,
+      "false_positives": 0,
+      "clean_controls": 1,
+      "unavailable": 0,
+      "findings_total": 21,
+      "seconds_total": 241.0,
+      "missed_cases": [],
+      "false_positive_cases": []
+    },
+    "codex": {
+      "detection_rate": 0.833,
+      "detected": 5,
+      "missed": 1,
+      "false_positive_rate": 0.0,
+      "false_positives": 0,
+      "clean_controls": 1,
+      "unavailable": 0,
+      "findings_total": 8,
+      "seconds_total": 155.0,
+      "missed_cases": [
+        "xf-migration-drift"
+      ],
+      "false_positive_cases": []
+    },
+    "grok": {
+      "detection_rate": 1.0,
+      "detected": 6,
+      "missed": 0,
+      "false_positive_rate": 0.0,
+      "false_positives": 0,
+      "clean_controls": 1,
+      "unavailable": 0,
+      "findings_total": 21,
+      "seconds_total": 708.8,
+      "missed_cases": [],
+      "false_positive_cases": []
+    }
+  }
+}
