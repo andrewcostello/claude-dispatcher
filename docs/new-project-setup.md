@@ -65,6 +65,16 @@ runs_dir: ../dispatcher-runs
 
 panel:
   advisory: [grok]        # advisory seats: they report, they cannot block
+  # Trim the panel to the seat count `cmd/classify` recommends (2 for a small
+  # low-risk change, 5 for a risky one). OFF by default — it REDUCES how many
+  # families see a change. The dispatcher floors it at 2 whatever the
+  # classifier says, because a non-CRITICAL block needs two families to
+  # corroborate and a one-seat panel can never produce one.
+  #
+  # What this saves is subscription quota, not dollars or wall-clock: the
+  # seats are fixed-cost CLIs and they run in parallel, so dropping one only
+  # shortens the panel when it was the slowest seat.
+  honour_classification_seats: false
 
 integration: branch       # or `pr`
 model_routing:

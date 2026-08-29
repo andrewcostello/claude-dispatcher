@@ -70,6 +70,10 @@ class RepoConfig:
     test: str | None
     unknown_keys: tuple[str, ...] = field(default=())
     panel_advisory: tuple[str, ...] = ()
+    # Trim the panel to the seat count `cmd/classify` recommends. OFF by
+    # default: turning it on reduces how many families review a low-risk
+    # change, and that is a repo's decision to make explicitly.
+    panel_honour_classification_seats: bool = False
     # Repo-default integration mode (PRF-1): "branch" (today's behavior) or
     # "pr" (run-level feature branch + auto PRs). None when the key is absent
     # — the orchestrator then falls back to the built-in "branch" default. The
@@ -157,6 +161,7 @@ def load(repo_root: str | Path) -> RepoConfig:
             )
 
     panel_advisory: tuple[str, ...] = ()
+    panel_honour_seats: bool = False
     panel_unknown: list[str] = []
     if "panel" in doc:
         panel = doc.get("panel")
@@ -181,10 +186,21 @@ def load(repo_root: str | Path) -> RepoConfig:
                         f"non-empty strings, got {entry!r}"
                     )
             panel_advisory = tuple(advisory)
+        if "honour_classification_seats" in panel:
+            seats_flag = panel.get("honour_classification_seats")
+            # Strict, as everywhere in this loader: a truthy string here would
+            # silently enable a seat reduction nobody asked for.
+            if not isinstance(seats_flag, bool):
+                raise RepoConfigError(
+                    f"'panel.honour_classification_seats' in {path} must be "
+                    f"true or false, got {seats_flag!r}"
+                )
+            panel_honour_seats = seats_flag
         # Unknown keys INSIDE panel are tolerated (same forward-compat
         # stance as the top level) and reported as "panel.<key>".
         panel_unknown = [
-            f"panel.{key}" for key in panel if key != "advisory"
+            f"panel.{key}" for key in panel
+            if key not in ("advisory", "honour_classification_seats")
         ]
 
     integration: str | None = None
@@ -292,6 +308,7 @@ def load(repo_root: str | Path) -> RepoConfig:
         test=test,
         unknown_keys=unknown,
         panel_advisory=panel_advisory,
+        panel_honour_classification_seats=panel_honour_seats,
         integration=integration,
         model_routing=model_routing,
         test_exclusion=test_exclusion,

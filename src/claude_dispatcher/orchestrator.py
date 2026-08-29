@@ -2486,6 +2486,34 @@ def _run_cross_family_panel(
         reviewers = preferred[:1]
         _log(log_path,
              f"  {snap.key} panel: single seat → {reviewers[0].family}")
+    # Seat count from the classification (opt-in per repo). cmd/classify sizes
+    # the panel to the diff — 2 seats for a small low-risk change, 5 for a
+    # risky one — and `panel_seats` was parsed and then read by nothing, so
+    # every task paid for the full panel however small its surface.
+    #
+    # Floored at 2, below the classifier's own "solo" floor: aggregate()
+    # corroborates a non-CRITICAL block by FAMILY count, so a one-seat panel
+    # cannot block on a HIGH finding no matter what it finds.
+    if cls is not None and len(reviewers) > 2:
+        try:
+            honour = repo_config_mod.load(
+                repo_root
+            ).panel_honour_classification_seats
+        except repo_config_mod.RepoConfigError:
+            honour = False  # never let a malformed config change seating
+        if honour and cls.panel_seats < len(reviewers):
+            keep = max(2, cls.panel_seats)
+            if keep < len(reviewers):
+                rank = {"claude": 0, "grok": 1, "gemini": 2, "codex": 3}
+                reviewers = sorted(
+                    reviewers,
+                    key=lambda r: rank.get(getattr(r, "family", None) or "", 9),
+                )[:keep]
+                _log(log_path,
+                     f"  {snap.key} panel: classification recommends "
+                     f"{cls.panel_seats} seat(s) → seating {keep} "
+                     f"({', '.join(r.family for r in reviewers)})")
+
     advisory_reviewers = _panel_advisory_reviewer_factory(
         cfg, repo_root, log_path, snap.key,
     )

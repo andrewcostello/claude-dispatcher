@@ -1274,3 +1274,99 @@ def test_exclusion_never_drops_below_two_seats(repo: Path, monkeypatch) -> None:
     # Dropping claude would leave one seat, so the author family is re-seated.
     by_family = {r.family: r.call_count for r in revs}
     assert by_family == {"claude": 1, "gemini": 1}
+
+
+# --- classification-recommended seat count ----------------------------------
+# `cmd/classify` sizes the panel to the diff (2 seats for a small low-risk
+# change, 5 for a risky one). `Classification.panel_seats` carried that number
+# and NOTHING read it, so every task paid for the full panel however small its
+# surface — measured on a real TS run: 3 seats for an 11-line low-risk diff the
+# classifier had sized at 2.
+
+
+def _classification(seats: int):
+    from claude_dispatcher import classification as cls_mod
+    return cls_mod.Classification(risk="low", panel_seats=seats, panel_reduced=False)
+
+
+def _force_classification(monkeypatch, seats: int) -> None:
+    monkeypatch.setattr(
+        orchestrator.classification, "classify_diff",
+        lambda **kw: _classification(seats),
+    )
+
+
+def _seat_three(monkeypatch):
+    return _set_reviewers(monkeypatch, [
+        ("claude", _APPROVE_OUTPUT),
+        ("codex", _APPROVE_OUTPUT),
+        ("grok", _APPROVE_OUTPUT),
+    ])
+
+
+def test_recommended_seats_are_ignored_unless_the_repo_opts_in(
+    repo: Path, monkeypatch,
+) -> None:
+    """Default OFF. Honouring the recommendation REDUCES how many families see
+    a change, and no repo should get that silently from an upgrade."""
+    _seed_yaml(repo, _MEDIUM_LOW_RISK_TASK_YAML)
+    _patch_spawn(monkeypatch)
+    revs = _seat_three(monkeypatch)
+    _force_classification(monkeypatch, 2)
+
+    assert orchestrator.execute(_args(repo, key="PANEL-B", panel_mode="always")) == 0
+    assert {r.family: r.call_count for r in revs} == {
+        "claude": 1, "codex": 1, "grok": 1,
+    }
+
+
+def test_a_repo_may_opt_into_the_recommended_seat_count(
+    repo: Path, monkeypatch,
+) -> None:
+    _seed_yaml(repo, _MEDIUM_LOW_RISK_TASK_YAML)
+    (repo / ".dispatcher.yaml").write_text(
+        "panel:\n  honour_classification_seats: true\n", encoding="utf-8",
+    )
+    _patch_spawn(monkeypatch)
+    revs = _seat_three(monkeypatch)
+    _force_classification(monkeypatch, 2)
+
+    assert orchestrator.execute(_args(repo, key="PANEL-B", panel_mode="always")) == 0
+    seated = {r.family: r.call_count for r in revs if r.call_count}
+    assert len(seated) == 2, seated
+    assert "claude" in seated, "the family that reliably catches a Critical stays"
+
+
+def test_seat_trimming_never_drops_below_two(repo: Path, monkeypatch) -> None:
+    """Below the classifier's own `solo` floor on purpose: `aggregate`
+    corroborates a non-CRITICAL block by FAMILY count, so a one-seat panel
+    cannot block on a HIGH finding however bad the finding is."""
+    _seed_yaml(repo, _MEDIUM_LOW_RISK_TASK_YAML)
+    (repo / ".dispatcher.yaml").write_text(
+        "panel:\n  honour_classification_seats: true\n", encoding="utf-8",
+    )
+    _patch_spawn(monkeypatch)
+    revs = _seat_three(monkeypatch)
+    _force_classification(monkeypatch, 1)
+
+    assert orchestrator.execute(_args(repo, key="PANEL-B", panel_mode="always")) == 0
+    assert len([r for r in revs if r.call_count]) == 2
+
+
+def test_a_recommendation_at_or_above_the_roster_seats_everyone(
+    repo: Path, monkeypatch,
+) -> None:
+    """The trim only ever REMOVES seats. A classifier asking for 5 must not
+    conjure families the roster does not have."""
+    _seed_yaml(repo, _MEDIUM_LOW_RISK_TASK_YAML)
+    (repo / ".dispatcher.yaml").write_text(
+        "panel:\n  honour_classification_seats: true\n", encoding="utf-8",
+    )
+    _patch_spawn(monkeypatch)
+    revs = _seat_three(monkeypatch)
+    _force_classification(monkeypatch, 5)
+
+    assert orchestrator.execute(_args(repo, key="PANEL-B", panel_mode="always")) == 0
+    assert {r.family: r.call_count for r in revs} == {
+        "claude": 1, "codex": 1, "grok": 1,
+    }
