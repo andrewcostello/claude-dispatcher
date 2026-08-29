@@ -1443,7 +1443,7 @@ tasks:
     labels: [size:L, area:dispatcher]
     agent: claude
     role: bodies
-    status: In Progress
+    status: Blocked
     blockedBy: [W2-3-2]
     started_at: '2026-08-28T14:57:11-07:00'
     dispatcher_run_id: 2026-08-28T21-57-10Z-tasks
@@ -1451,10 +1451,10 @@ tasks:
 
     branch: feat/W2-3-3-bodies-build-the-ledger-and
     gate_base_sha: efd05ca0f795bb223a3e9482f622d8dfcfa54817
-    cost_usd: 16.658736
+    cost_usd: 23.783597
     effort: high
     effort_escalated: true
-    completed_at: '2026-08-28T10:51:24-07:00'
+    completed_at: '2026-08-28T15:06:38-07:00'
     iteration_count: 0
     linter_cycles: 0
     human_gate_fired: false
@@ -1465,16 +1465,20 @@ tasks:
     panel_verdict_claude: CHANGES_REQUESTED
     panel_verdict_codex: CHANGES_REQUESTED
     panel_verdict_grok: CHANGES_REQUESTED
-    input_tokens: 1589
-    output_tokens: 98934
-    cache_read_input_tokens: 4899901
-    cache_creation_input_tokens: 274595
-    duration_ms: 1212110
-    num_turns: 56
+    input_tokens: 1163
+    output_tokens: 44981
+    cache_read_input_tokens: 2245101
+    cache_creation_input_tokens: 130954
+    duration_ms: 561117
+    num_turns: 50
     model: claude-fable-5
     dispatcher_version: 0.1.0
-    agent_version: 2.1.247 (Claude Code)
+    agent_version: 2.1.251 (Claude Code)
     unblocked_at: '2026-08-28T21:57:10+00:00'
+    blocked_reason: mechanical_verification_failed
+    mechanical_verification: failed
+    mechanical_verification_detail: 'uncommitted changes in worktree at verification time — test evidence is not keyed to the committed tree: docs/mutation-ledger/README.md, src/claude_dispatcher/mutation_ledger.py'
+    role_diff_loop: not_enabled
   - key: W2-3-5
     summary: bodies — populate the remaining clauses from re-derivation
     description: |
