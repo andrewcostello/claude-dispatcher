@@ -1,0 +1,22 @@
+{
+  "id": "hard-needle-in-rename",
+  "language": "typescript",
+  "kind": "attention-under-noise",
+  "severity": "critical",
+  "control": false,
+  "summary": "Renames the local `acct` to `account_` throughout the wallet service. Mechanical; no behaviour change.",
+  "defect": {
+    "file": "src/wallet.ts",
+    "description": "Buried in a whole-file rename of `acct` to `account_`, the reserve guard becomes `availableMinor(account_) < amountMinor - 1`, which permits a reservation one minor unit beyond the available balance and drives the account negative.",
+    "markers": [
+      "reserve",
+      "amountMinor - 1",
+      "amountMinor-1",
+      "InsufficientFunds",
+      "off-by-one",
+      "overdraw",
+      "one minor unit",
+      "available"
+    ]
+  }
+}

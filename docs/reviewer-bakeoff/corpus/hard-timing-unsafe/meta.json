@@ -1,0 +1,12 @@
+{
+  "id": "hard-timing-unsafe",
+  "language": "typescript",
+  "kind": "timing-attack",
+  "severity": "high",
+  "control": false,
+  "summary": "Removes the crypto dependency from token comparison.",
+  "defect": {
+    "file": "src/token.ts",
+    "description": "Replaces a constant-time comparison with `===`, which short-circuits on the first differing byte and leaks the secret one character at a time to an attacker who can time the endpoint."
+  }
+}

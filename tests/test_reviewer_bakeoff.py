@@ -195,3 +195,83 @@ def test_the_recorded_result_is_readable_and_matches_the_corpus() -> None:
     data = json.loads(results.read_text(encoding="utf-8"))
     corpus_ids = {c.cid for c in rb.load_corpus(CORPUS)}
     assert {r["case"] for r in data["rows"]} == corpus_ids
+
+
+# --- markers: naming the right file is not always evidence -------------------
+
+
+def test_markers_reject_a_finding_that_names_the_file_for_another_reason() -> None:
+    """The attention-under-noise case is a 200-line file, so a reviewer can
+    name the right file while talking about something else entirely. Without
+    markers the harness credits that as a catch and the case measures nothing.
+    """
+    revs = [_Stub("claude", _body(
+        "CHANGES_REQUESTED",
+        _finding("HIGH", "src/wallet.ts:11",
+                 "listEntries orders by key, which is not a chronological order."),
+    ))]
+    res = rb.run_bakeoff(corpus_dir=CORPUS, reviewers=revs,
+                         only=["hard-needle-in-rename"], log=lambda _m: None)
+    assert res["scores"]["claude"]["detected"] == 0
+    assert res["scores"]["claude"]["missed"] == 1
+
+
+def test_markers_accept_a_finding_about_the_seeded_defect() -> None:
+    revs = [_Stub("claude", _body(
+        "REJECT",
+        _finding("CRITICAL", "src/wallet.ts:33",
+                 "The reserve guard now permits one minor unit beyond available."),
+    ))]
+    res = rb.run_bakeoff(corpus_dir=CORPUS, reviewers=revs,
+                         only=["hard-needle-in-rename"], log=lambda _m: None)
+    assert res["scores"]["claude"]["detected"] == 1
+
+
+def test_cases_without_markers_still_match_on_the_file_alone() -> None:
+    """Markers are an optional narrowing. A single-defect file needs none, and
+    requiring them everywhere would make the corpus tedious to extend."""
+    case = _one_case("ts-value-loss")
+    assert case.defect_markers == ()
+    revs = [_Stub("claude", _body("REJECT", _finding("HIGH", "src/ledger.ts:12")))]
+    res = rb.run_bakeoff(corpus_dir=CORPUS, reviewers=revs,
+                         only=[case.cid], log=lambda _m: None)
+    assert res["scores"]["claude"]["detected"] == 1
+
+
+def _non_async_functions_using_await(body: str) -> list[str]:
+    """Function names declared without `async` whose body contains `await`."""
+    offenders: list[str] = []
+    lines = body.splitlines()
+    for i, line in enumerate(lines):
+        if not line.startswith("export function "):
+            continue
+        name = line.removeprefix("export function ").split("(")[0]
+        for later in lines[i + 1:]:
+            if later.startswith("export ") or later.startswith("}"):
+                break
+            if "await " in later:
+                offenders.append(name)
+                break
+    return offenders
+
+
+def test_no_corpus_file_awaits_outside_an_async_function() -> None:
+    """A corpus file that does not compile is not a case, it is noise.
+
+    `loadAccount` shipped as `export function` with `await` in its body — a
+    compile error on BOTH sides of the pair. It made the large-rename control
+    invalid, because reviewers rightly blocked on it, and it corrupted the
+    attention case: with matching done on the FILE, a finding about the bad
+    `await` was credited as catching the seeded guard. Both were re-run once
+    fixed. (The whole corpus was also checked with `tsc --noEmit` on
+    2026-08-29; this row is the part that runs without a node toolchain.)
+    """
+    for case in rb.load_corpus(CORPUS):
+        for side in ("before", "after"):
+            for path in (CORPUS / case.cid / side).rglob("*.ts"):
+                bad = _non_async_functions_using_await(
+                    path.read_text(encoding="utf-8"))
+                assert not bad, (
+                    f"{case.cid}/{side}/{path.name}: {bad} use await but are "
+                    "not declared async"
+                )

@@ -1,9 +1,9 @@
 {
   "harness_version": "1",
   "corpus": "docs/reviewer-bakeoff/corpus",
-  "cases": 18,
-  "defect_cases": 14,
-  "control_cases": 4,
+  "cases": 26,
+  "defect_cases": 21,
+  "control_cases": 5,
   "families": [
     "claude",
     "codex",
@@ -15,23 +15,23 @@
       "kind": "feature",
       "control": true,
       "severity": "none",
-      "seconds": 103.7,
+      "seconds": 71.9,
       "families": {
         "claude": {
           "verdict": "APPROVE",
           "findings": 2,
           "blocking": 0,
-          "seconds": 46.2,
+          "seconds": 30.4,
           "detail": [
             {
               "severity": "MEDIUM",
               "location": "src/money.ts:8",
-              "description": "`subtract` ships with no test. The summary's \"the existing suite passes\" is literally true only because the fixture repo contains no test files at all (`find . -name \"*.test.*\"` returns nothing), so neither the currency-mismatch throw nor the minor-unit arithmetic \u2014 including the sign of the result and the operand order in the error message (`${b.currency} from ${a.currency}`) \u2014 is pinned. The fun"
+              "description": "`subtract` lands with no test of its own; the summary's \"existing suite passes\" is vacuous for new code, since nothing existing exercises it. The two behaviours worth pinning are the currency guard (mixed currencies throw, and the error message names the operands in the right order \u2014 `b` from `a`) and the arithmetic on a result crossing zero (e.g. 500 \u2212 700 = \u2212200), which is the case where a later"
             },
             {
               "severity": "LOW",
-              "location": "src/money.ts:1",
-              "description": "`amountMinor` is a plain `number` with no integer/safe-range guard, so `subtract` (like `add`) will silently accept `0.5` or values beyond `Number.MAX_SAFE_INTEGER`. This is pre-existing and out of the ticket's stated scope (\"mirror `add`\"), and the repository gives no evidence of which financial regime, if any, applies, so I am not scoring it as a defect \u2014 flagging it so the panel does not assume"
+              "location": "src/money.ts:11",
+              "description": "The result is an unbounded JS `number`; `amountMinor` is only exact up to `Number.MAX_SAFE_INTEGER`. This is identical to `add` and not a regression, but the module now has two arithmetic entry points and no shared guard, so the precision assumption lives in two places."
             }
           ],
           "outcome": "clean"
@@ -40,12 +40,12 @@
           "verdict": "CHANGES_REQUESTED",
           "findings": 1,
           "blocking": 0,
-          "seconds": 13.8,
+          "seconds": 18.0,
           "detail": [
             {
               "severity": "MEDIUM",
               "location": "src/money.ts:8",
-              "description": "The new exported operation has no accompanying tests. The claim that the existing suite passes provides no evidence that `subtract` is exercised, so regressions such as reversed operands, incorrect result currency, or removal of the currency guard could ship undetected."
+              "description": "The new exported behavior has no accompanying tests, so the claim that subtraction mirrors addition is unsupported by regression evidence. The existing-suite result could remain green if `subtract` were removed or its arithmetic or currency guard were later broken."
             }
           ],
           "outcome": "clean"
@@ -54,12 +54,12 @@
           "verdict": "CHANGES_REQUESTED",
           "findings": 1,
           "blocking": 0,
-          "seconds": 103.7,
+          "seconds": 71.9,
           "detail": [
             {
               "severity": "MEDIUM",
               "location": "src/money.ts:8",
-              "description": "`subtract` is a new exported money primitive and the diff adds no tests. The Tasker only reports that the existing suite passes, which cannot exercise a function nothing previously called, so same-currency results (including zero and sign-crossing) and the currency-mismatch throw are unverified."
+              "description": "New exported `subtract` lands with no tests in the diff; the Tasker only reports that the existing suite passes. This is a public money primitive (currency-guarded minor-unit arithmetic). Currency mismatch, zero, and sign-reversing cases are unproven, so a regression in the guard or the `a - b` operand order would not be caught."
             }
           ],
           "outcome": "clean"
@@ -71,32 +71,32 @@
       "kind": "docs",
       "control": true,
       "severity": "none",
-      "seconds": 54.4,
+      "seconds": 55.7,
       "families": {
         "claude": {
           "verdict": "APPROVE",
           "findings": 1,
           "blocking": 0,
-          "seconds": 21.5,
+          "seconds": 29.0,
           "detail": [
             {
               "severity": "LOW",
               "location": "src/clamp.ts:4",
-              "description": "The sentence \"Callers pass display bounds\" is a claim about code outside this file, not a constraint on `clamp` itself. It is exactly the kind of prose this project has flagged as going stale: the moment a non-display caller appears (a wager limit, a credit cap), the comment becomes false while still reading authoritatively, and a reader will trust it in preference to grepping the call sites. The "
+              "description": "The second paragraph mixes a constraint with a rationale. The constraint \u2014 `lo <= hi` is a precondition and the function does not guard it \u2014 is worth keeping: without it a future reader could reasonably \"fix\" the function to swap or throw, and it correctly describes the actual behaviour (with `lo > hi`, `Math.max(lo, n) >= lo > hi`, so the function silently returns `hi` for every input). The justi"
             }
           ],
           "outcome": "clean"
         },
         "codex": {
-          "verdict": "CHANGES_REQUESTED",
+          "verdict": "APPROVE",
           "findings": 1,
           "blocking": 0,
-          "seconds": 20.9,
+          "seconds": 26.3,
           "detail": [
             {
               "severity": "MEDIUM",
-              "location": "src/clamp.ts:2",
-              "description": "The new documentation outruns the implementation: JavaScript numbers include `NaN`, for which this function returns `NaN` rather than a value in `[lo, hi]`. It also asserts that all callers use display bounds and that reversed bounds are programming errors, but neither claim is enforced or evidenced by the provided artifact. This creates a misleading contract around otherwise self-explanatory code"
+              "location": "src/clamp.ts:4",
+              "description": "The comment claims all callers pass display bounds, but the provided artifact offers no evidence for that repository-wide assertion. This implementation only establishes the narrower precondition that `lo <= hi`; embedding an unsupported caller description risks becoming stale or misleading."
             }
           ],
           "outcome": "clean"
@@ -105,12 +105,12 @@
           "verdict": "APPROVE",
           "findings": 1,
           "blocking": 0,
-          "seconds": 54.4,
+          "seconds": 55.7,
           "detail": [
             {
               "severity": "LOW",
-              "location": "src/clamp.ts:4",
-              "description": "The phrase \"Callers pass display bounds, so\" is rationale, and the opening sentence restates the function name. Neither is a purpose or constraint a future reader needs in order not to break this one-line body; rationale of that kind is what this repo keeps in the commit message, and it is the part most likely to go stale if `clamp` is reused off the display path."
+              "location": "src/clamp.ts:1",
+              "description": "The first sentence restates `Math.min(hi, Math.max(lo, n))`. The clause \"Callers pass display bounds, so\" is caller-rationale, not a constraint; a generic `clamp` docstring that freezes one call-site story can go stale. The only line a later agent needs is that inverted bounds are a programming error and are deliberately unguarded."
             }
           ],
           "outcome": "clean"
@@ -122,18 +122,23 @@
       "kind": "refactor",
       "control": true,
       "severity": "none",
-      "seconds": 46.9,
+      "seconds": 79.8,
       "families": {
         "claude": {
           "verdict": "APPROVE",
-          "findings": 1,
+          "findings": 2,
           "blocking": 0,
-          "seconds": 39.0,
+          "seconds": 35.5,
           "detail": [
             {
               "severity": "LOW",
+              "location": "src/bucket.ts:5",
+              "description": "`??=` is ES2021 syntax (TypeScript \u2265 4.0). No `tsconfig.json` or `package.json` accompanies the change, so I cannot confirm the compile target downlevels or accepts it. The summary says \"the existing suite passes\", which implies it compiles in this project, but that is the Tasker's claim, not evidence in the diff."
+            },
+            {
+              "severity": "LOW",
               "location": "src/bucket.ts:2",
-              "description": "Pre-existing, not introduced by this diff, and behaviour-identical across both versions: `out` is a plain `{}` with `Object.prototype` on its chain, so a key such as `\"constructor\"`, `\"toString\"` or `\"__proto__\"` resolves to an inherited non-nullish value. The old `!out[k]` guard and the new `??=` both skip initialisation in that case and then call `.push` on a function / `Object.prototype`, throw"
+              "description": "Pre-existing, NOT introduced by this diff, and the rewrite preserves it exactly: `out` is a plain `{}` with `Object.prototype`, so a key such as `\"constructor\"`, `\"toString\"`, or `\"__proto__\"` resolves to an inherited function/object. In the old code `!out[k]` is false and `out[k].push(r)` throws `TypeError`; in the new code `out[k]` is non-nullish so `??=` does not assign and `.push` throws the s"
             }
           ],
           "outcome": "clean"
@@ -142,7 +147,7 @@
           "verdict": "APPROVE",
           "findings": 0,
           "blocking": 0,
-          "seconds": 25.4,
+          "seconds": 20.7,
           "detail": [],
           "outcome": "clean"
         },
@@ -150,8 +155,58 @@
           "verdict": "APPROVE",
           "findings": 0,
           "blocking": 0,
-          "seconds": 46.9,
+          "seconds": 79.8,
           "detail": [],
+          "outcome": "clean"
+        }
+      }
+    },
+    {
+      "case": "ctl-large-rename",
+      "kind": "refactor",
+      "control": true,
+      "severity": "none",
+      "seconds": 84.9,
+      "families": {
+        "claude": {
+          "verdict": "APPROVE",
+          "findings": 2,
+          "blocking": 0,
+          "seconds": 27.0,
+          "detail": [
+            {
+              "severity": "LOW",
+              "location": "src/wallet.ts:52",
+              "description": "In `totalReserved` the accumulator was `acct` and is now `account_`, but it is a `number` (a running sum of `reservedMinor`), not an account. The rename faithfully preserves a pre-existing misnomer; it does not introduce a behaviour change, but the new name is arguably more misleading than the old one because it reads as a full `Account` value in a money-summing loop."
+            },
+            {
+              "severity": "LOW",
+              "location": "src/wallet.ts:12",
+              "description": "The trailing-underscore identifier `account_` is an unusual convention for this file \u2014 every other local (`row`, `res`, `key`, `amountMinor`) is plain camelCase, and the underscore exists only to avoid shadowing the `account` parameter. In the six functions that receive an `Account` parameter the local is a pure alias (`const account_ = account;`) that adds nothing; in `loadAccount` it holds a `Qu"
+            }
+          ],
+          "outcome": "clean"
+        },
+        "codex": {
+          "verdict": "APPROVE",
+          "findings": 0,
+          "blocking": 0,
+          "seconds": 9.2,
+          "detail": [],
+          "outcome": "clean"
+        },
+        "grok": {
+          "verdict": "APPROVE",
+          "findings": 1,
+          "blocking": 0,
+          "seconds": 84.9,
+          "detail": [
+            {
+              "severity": "LOW",
+              "location": "src/wallet.ts:61",
+              "description": "In `totalReserved`, the identifier `acct` was a numeric accumulator, not an account. Renaming it to `account_` makes a number read as an account object and is the only place the mechanical substitution degrades local meaning. Query shapes, table names, and mutation SQL are otherwise unchanged."
+            }
+          ],
           "outcome": "clean"
         }
       }
@@ -161,23 +216,18 @@
       "kind": "refactor",
       "control": true,
       "severity": "none",
-      "seconds": 64.9,
+      "seconds": 66.8,
       "families": {
         "claude": {
           "verdict": "APPROVE",
-          "findings": 2,
+          "findings": 1,
           "blocking": 0,
-          "seconds": 42.8,
+          "seconds": 33.1,
           "detail": [
             {
               "severity": "LOW",
               "location": "src/total.ts:8",
-              "description": "The refactor allocates an intermediate array via `filter` before `reduce`, where the original loop did a single pass with no allocation. For a money-summing helper this is almost certainly called on small row sets and the cost is negligible, but it is a strict (if tiny) regression in a function that previously had none, and the summary's \"no behaviour change\" claim is accurate only for observable "
-            },
-            {
-              "severity": "LOW",
-              "location": "src/total.ts:?",
-              "description": "The diff adds no test and the summary says only \"the existing suite passes\" without naming which test exercises `totalMinor`. For a pure refactor, the safety argument rests entirely on existing coverage of the mixed-currency, empty-input, and negative-amount cases; none of that coverage is visible in the change, and the corpus contains no test file to check."
+              "description": "`rows.filter(...)` allocates an intermediate array that the original single-pass loop did not. For the row counts a per-currency total is realistically called with this is noise, but it is the one measurable cost the rewrite introduces, and the summary's \"no behaviour change\" claim is about semantics, not allocation. Not blocking."
             }
           ],
           "outcome": "clean"
@@ -186,17 +236,17 @@
           "verdict": "CHANGES_REQUESTED",
           "findings": 2,
           "blocking": 1,
-          "seconds": 55.8,
+          "seconds": 25.0,
           "detail": [
             {
               "severity": "HIGH",
               "location": "src/total.ts:8",
-              "description": "The \u201cno behaviour change\u201d claim is false for sparse arrays. `for...of` visits an unassigned array index as `undefined`, causing the old implementation to throw when reading `r.currency`; `filter` skips that index, so the new implementation silently returns a total. TypeScript permits sparse values typed as `Money[]`, and no changed test establishes the claimed equivalence."
+              "description": "The \u201cno behaviour change\u201d claim is false for sparse arrays. The original `for...of` visits holes as `undefined` and throws when reading `r.currency`, while `filter` skips holes and returns a total. It also changes observable property-access ordering for `Money` objects with getters: the loop reads each matching row\u2019s currency and amount together, whereas the new code reads every currency before an"
             },
             {
               "severity": "MEDIUM",
               "location": "src/total.ts:8",
-              "description": "The refactor changes auxiliary space from O(1) to O(n) by materializing every matching row before reducing it, while also making two passes over matching elements. This weakens performance without changing the result for ordinary dense inputs."
+              "description": "The refactor replaces a single-pass, constant-extra-space calculation with two passes and an intermediate array containing every matching row. For large inputs or high match rates, this increases allocation and memory pressure without providing new functionality."
             }
           ],
           "outcome": "false-positive"
@@ -205,20 +255,577 @@
           "verdict": "APPROVE",
           "findings": 2,
           "blocking": 0,
-          "seconds": 64.9,
+          "seconds": 66.8,
           "detail": [
             {
-              "severity": "MEDIUM",
+              "severity": "LOW",
               "location": "src/total.ts:8",
-              "description": "`filter` then `reduce` is two full walks plus an intermediate array of every matching `Money` row. The previous loop was a single O(n) pass with a scalar accumulator. `totalMinor` is an unbounded in-memory sum over a caller-supplied list; under a large transaction or statement set that extra allocation is the only operational change in this refactor and it is strictly worse than the code it replac"
+              "description": "`filter` then `reduce` walks `rows` twice and allocates an intermediate array of matching entries; the previous loop was a single pass with no extra allocation. Complexity is still O(n), so this is not a hot-path break, but any caller that already hands this function an unbounded in-memory ledger now pays a second pass plus GC for the filtered copy."
             },
             {
               "severity": "LOW",
               "location": "src/total.ts:3",
-              "description": "`isCurrency` is a once-used factory whose name reads as a boolean predicate, not a curried matcher. It adds a named internal surface with no reuse and no constraint a future reader would miss."
+              "description": "`isCurrency` reads as \u201cis this string a currency code\u201d but is a curried row predicate. The extra helper is unused elsewhere and adds a closure per call without clarifying the sum."
             }
           ],
           "outcome": "clean"
+        }
+      }
+    },
+    {
+      "case": "hard-lexicographic-sort",
+      "kind": "sort-order",
+      "control": false,
+      "severity": "high",
+      "seconds": 71.3,
+      "families": {
+        "claude": {
+          "verdict": "REJECT",
+          "findings": 5,
+          "blocking": 3,
+          "seconds": 41.7,
+          "detail": [
+            {
+              "severity": "CRITICAL",
+              "location": "src/rank.ts:5",
+              "description": "`.sort()` with no comparator sorts by UTF-16 string value, not numerically. `[9, 10, 100]` sorts to `[\"10\",\"100\",\"9\"]`, so after `.reverse()` the ranking is 9, 100, 10 \u2014 the player with 9 points is ranked first and the player with 100 second. This misranks any leaderboard whose scores cross a digit-count boundary, which is essentially every real one. If leaderboard position drives prize/payout/tie"
+            },
+            {
+              "severity": "CRITICAL",
+              "location": "src/rank.ts:6",
+              "description": "The second `.map` rebuilds entries by `entries.find((e) => e.score === s)`, which always returns the *first* entry with that score. With any tie, that one player appears N times and the other tied players are silently dropped from the output. Two players at 50 \u2192 one of them is erased from the leaderboard and the other is listed twice. In a prize-by-position context this pays one player twice and s"
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/rank.ts:6",
+              "description": "The non-null assertion `!` hides a real crash path. If any score is `NaN` (a plausible upstream parse failure), `NaN === NaN` is false, `find` returns `undefined`, and the array now contains `undefined` entries that will throw on first property access downstream \u2014 far from the cause, at 3am, with no context. The original code degraded gracefully (NaN comparators just produce an unspecified-but-com"
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/rank.ts:5-6",
+              "description": "`entries.find` inside `.map` makes this O(n\u00b2) (plus an extra intermediate array and a `reverse` pass) where the original was O(n log n) in one pass. For a leaderboard of tens of thousands of players this is a material regression, and it exists purely to reconstruct information the original sort never threw away."
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/rank.ts:?",
+              "description": "The summary claims \"Simplifies leaderboard ranking\" and \"The existing suite passes\" with no test changes in the diff. A change that alters ordering semantics, tie handling, and output cardinality without adding a single test \u2014 and whose only test evidence is that a suite too weak to notice any of it stayed green \u2014 should not be presented as a simplification. The replacement is also longer and hard"
+            }
+          ],
+          "outcome": "caught"
+        },
+        "codex": {
+          "verdict": "CHANGES_REQUESTED",
+          "findings": 4,
+          "blocking": 2,
+          "seconds": 23.0,
+          "detail": [
+            {
+              "severity": "HIGH",
+              "location": "src/rank.ts:5",
+              "description": "Calling `sort()` without a comparator sorts scores lexicographically after string conversion, so reversing does not produce descending numeric order. For example, scores `2` and `10` are returned as `2, 10`, violating the documented highest-score-first contract."
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/rank.ts:6",
+              "description": "Reconstructing entries with `find()` loses distinct players when scores are tied. For two entries with the same score, both result positions contain the first matching entry and the other entry disappears."
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/rank.ts:6",
+              "description": "Running `find()` for every sorted score changes ranking from `O(n log n)` to `O(n\u00b2)`, which can materially degrade leaderboard performance as the entry count grows."
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/rank.ts:5",
+              "description": "No changed tests demonstrate the new behavior, and the claimed passing existing suite evidently does not protect the numeric-ordering and duplicate-score contracts broken by this implementation."
+            }
+          ],
+          "outcome": "caught"
+        },
+        "grok": {
+          "verdict": "REJECT",
+          "findings": 6,
+          "blocking": 4,
+          "seconds": 71.3,
+          "detail": [
+            {
+              "severity": "CRITICAL",
+              "location": "src/rank.ts:5",
+              "description": "Default `Array.prototype.sort()` stringifies scores and orders them lexicographically, then `reverse()` is applied. That is not numeric descending rank: `[10, 2, 100]` becomes `\"10\",\"100\",\"2\"` then `\"2\",\"100\",\"10\"`. Any production leaderboard whose scores span digit lengths (or include negatives) is mis-ordered. Laptop tests with single-digit scores can still pass, which is why \u201cthe existing suite"
+            },
+            {
+              "severity": "CRITICAL",
+              "location": "src/rank.ts:6",
+              "description": "After discarding player identity, each score is rebound with `entries.find((e) => e.score === s)!`. `find` always returns the first entry with that score, so ties emit the same player repeatedly and drop the others. Tied scores are normal leaderboard data; this corrupts the result set (duplicates + missing players) rather than ranking distinct entries."
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/rank.ts:6",
+              "description": "The second `.map` does a full-array `find` per score: O(n\u00b2) versus the previous O(n log n) sort. Under real leaderboard sizes this is a timeout/CPU regression with no bound, no index analog, and no early exit. That is the ops failure mode of this change even if ranking were correct."
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/rank.ts:6",
+              "description": "The non-null assertion assumes `find` always hits. Combined with the score-only pass, a concurrent mutation, NaN score, or any mismatch yields `undefined` entries in the returned array instead of a thrown, empty, or filtered failure. Callers that index `.player` will blow up at rank render time, not at the ranking seam."
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/rank.ts:5",
+              "description": "`[...entries]` is mapped to scores immediately, so the copy does not preserve rank identity or original order; the later `find` searches the unsorted original. The new pipeline is not a simplification of \u201chighest score first\u201d \u2014 it drops the stable-sort tie behavior of the previous implementation."
+            },
+            {
+              "severity": "LOW",
+              "location": "summary.md:?",
+              "description": "Tasker testing is \u201cthe existing suite passes\u201d with no cases for multi-digit scores, ties, negatives, or ordering identity. Those are the production inputs this function will see; the suite as cited cannot catch this diff."
+            }
+          ],
+          "outcome": "caught"
+        }
+      }
+    },
+    {
+      "case": "hard-needle-in-rename",
+      "kind": "attention-under-noise",
+      "control": false,
+      "severity": "critical",
+      "seconds": 91.7,
+      "families": {
+        "claude": {
+          "verdict": "REJECT",
+          "findings": 3,
+          "blocking": 1,
+          "seconds": 36.8,
+          "detail": [
+            {
+              "severity": "CRITICAL",
+              "location": "src/wallet.ts:34",
+              "description": "The summary claims a mechanical rename with \"no behaviour change\", but `reserve()` changed its funds check from `availableMinor(acct) < amountMinor` to `availableMinor(account_) < amountMinor - 1`. That is an off-by-one that lets a reservation succeed when available funds are exactly one minor unit short: with `balance_minor - reserved_minor == amountMinor - 1` the guard passes and `reserved_minor"
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/wallet.ts:61",
+              "description": "In `totalReserved` the accumulator (a `number`) is renamed from `acct` to `account_`, and in `loadAccount` (line 13) the pg `QueryResult` is likewise called `account_`. Neither is an `Account`; naming a numeric sum and a query result the same as the domain type (with a trailing-underscore convention that suggests a shadowed parameter) makes the file harder to read than before the rename and is exa"
+            },
+            {
+              "severity": "LOW",
+              "location": "src/wallet.ts:?",
+              "description": "The Tasker's summary says \"The existing suite passes\" with no test added or cited. For a change touching `reserve`/`release`/`post` in a money path, a review cannot verify the \"no behaviour change\" claim from the summary alone \u2014 and here the claim was false."
+            }
+          ],
+          "outcome": "caught"
+        },
+        "codex": {
+          "verdict": "CHANGES_REQUESTED",
+          "findings": 1,
+          "blocking": 1,
+          "seconds": 24.4,
+          "detail": [
+            {
+              "severity": "HIGH",
+              "location": "src/wallet.ts:33",
+              "description": "The purportedly mechanical rename changes the insufficient-funds condition from `availableMinor(account_) < amountMinor` to `< amountMinor - 1`. An account with one minor unit less than the requested amount can now reserve funds, potentially persisting `reserved_minor > balance_minor`. This contradicts the no-behaviour-change claim, and the reported passing suite does not establish the required bo"
+            }
+          ],
+          "outcome": "caught"
+        },
+        "grok": {
+          "verdict": "REJECT",
+          "findings": 3,
+          "blocking": 1,
+          "seconds": 91.7,
+          "detail": [
+            {
+              "severity": "CRITICAL",
+              "location": "src/wallet.ts:34",
+              "description": "This is not a mechanical rename. `reserve` changed `availableMinor(acct) < amountMinor` to `availableMinor(account_) < amountMinor - 1`, so a reserve of `available + 1` now succeeds. A zero-available account can reserve 1 minor unit; `reserved_minor` can exceed `balance_minor` and `availableMinor` goes negative. That breaks the wallet invariant this function exists to enforce and writes invalid mo"
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/wallet.ts:?",
+              "description": "\u201cThe existing suite passes\u201d after an insufficient-funds boundary change means the suite does not pin the reserve threshold, or the passing tests never exercised it. That is false confidence for a wallet mutation."
+            },
+            {
+              "severity": "LOW",
+              "location": "src/wallet.ts:52",
+              "description": "`totalReserved` renamed a numeric accumulator (`acct`) to `account_`. The identifier now looks like an `Account` and is a worse name than before."
+            }
+          ],
+          "outcome": "caught"
+        }
+      }
+    },
+    {
+      "case": "hard-negative-modulo",
+      "kind": "off-by-one",
+      "control": false,
+      "severity": "high",
+      "seconds": 55.6,
+      "families": {
+        "claude": {
+          "verdict": "REJECT",
+          "findings": 3,
+          "blocking": 2,
+          "seconds": 39.1,
+          "detail": [
+            {
+              "severity": "CRITICAL",
+              "location": "src/ring.ts:3",
+              "description": "`i % len` in JavaScript/TypeScript is a signed remainder, not a modulo: the result carries the sign of the dividend. `wrapIndex(-1, 8)` now returns `-1` (was `7`), `wrapIndex(-9, 8)` returns `-1` (was `7`). The function's only stated purpose \u2014 the docstring on line 1 says \"wrapping negatives correctly\" \u2014 is exactly the case the \"simplification\" breaks. Every consumer that steps backwards off the h"
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/ring.ts:? (test suite)",
+              "description": "The summary's only evidence is \"the existing suite passes\". A change that alters the sign behaviour of the function for the entire negative half of its domain while leaving the suite green means the suite never covered a negative input \u2014 the case the function exists to handle. That is a test-coverage hole that let a semantics change ship as a \"simplification\", and it will let the next one through "
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/ring.ts:2",
+              "description": "Neither version guards `len`. `wrapIndex(i, 0)` returns `NaN` (both before and after), and a negative `len` produces a negative result in both. Callers indexing with `NaN` again get `undefined` silently. Pre-existing, not introduced here, but a one-line reviewer of this function should note that the contract \"index into a ring buffer\" is only meaningful for `len > 0` and nothing enforces it."
+            }
+          ],
+          "outcome": "caught"
+        },
+        "codex": {
+          "verdict": "CHANGES_REQUESTED",
+          "findings": 1,
+          "blocking": 1,
+          "seconds": 22.0,
+          "detail": [
+            {
+              "severity": "HIGH",
+              "location": "src/ring.ts:3",
+              "description": "JavaScript/TypeScript `%` computes a remainder, not a non-negative modulo. For any negative `i` not divisible by `len`, `i % len` is negative, directly violating the function\u2019s documented contract and potentially producing an invalid ring-buffer index. The claim that the existing suite passes therefore supplies no evidence for the required negative-input behavior; the suite evidently does not catc"
+            }
+          ],
+          "outcome": "caught"
+        },
+        "grok": {
+          "verdict": "CHANGES_REQUESTED",
+          "findings": 3,
+          "blocking": 1,
+          "seconds": 55.6,
+          "detail": [
+            {
+              "severity": "HIGH",
+              "location": "src/ring.ts:3",
+              "description": "`wrapIndex` was changed from Euclidean wrap `((i % len) + len) % len` to raw remainder `i % len`. In JavaScript/TypeScript `%` is truncated-division remainder, not mathematical modulo: `-1 % 5 === -1`, not `4`. The function's documented contract is \"wrapping negatives correctly\"; the ticket key is `hard-negative-modulo`. Every negative `i` that is not a multiple of `len` now returns a negative (or"
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/ring.ts:1",
+              "description": "The docstring still claims the helper wraps negatives correctly, but the body no longer does. A future reader (or agent) will trust the comment and index backward without noticing the remainder footgun."
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/ring.ts:?",
+              "description": "The Tasker reports only that the existing suite passes after deleting negative wrap. Those tests therefore do not assert the documented contract; they would still pass after a from-scratch rewrite that returns `i % len` for all `i`. That is false confidence, not coverage."
+            }
+          ],
+          "outcome": "caught"
+        }
+      }
+    },
+    {
+      "case": "hard-prototype-pollution",
+      "kind": "prototype-pollution",
+      "control": false,
+      "severity": "critical",
+      "seconds": 106.2,
+      "families": {
+        "claude": {
+          "verdict": "REJECT",
+          "findings": 4,
+          "blocking": 3,
+          "seconds": 34.5,
+          "detail": [
+            {
+              "severity": "CRITICAL",
+              "location": "src/merge.ts:2",
+              "description": "The removed line `if (key === \"__proto__\" || key === \"constructor\" || key === \"prototype\") continue;` was the only prototype-pollution guard in this deep-merge. With it gone, a `source` derived from untrusted input \u2014 e.g. `JSON.parse('{\"__proto__\":{\"isAdmin\":true}}')` \u2014 makes `merge` recurse into `target[\"__proto__\"]`, which resolves to `Object.prototype`, and write `isAdmin = true` onto it. Every"
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/merge.ts:2",
+              "description": "Switching `Object.keys(source)` to `for (const key in source)` changes iteration semantics independently of the pollution guard: `for...in` walks inherited enumerable properties, so if `source` is a class instance or any object whose prototype has enumerable members (or if `Object.prototype` has already been polluted by a prior call), those inherited keys are copied into `target`. This both broade"
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/merge.ts:?",
+              "description": "The summary claims \"the existing suite passes\" \u2014 which means the existing suite has no test asserting the pollution guard, since the guard was removed and nothing failed. A security-critical invariant with zero test coverage is how this regression got proposed as a \"simplification\" in the first place; the test suite currently gives false confidence."
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/merge.ts:1",
+              "description": "The summary (\"Simplifies the deep-merge helper\") does not disclose that a security control was deleted, and gives no reason why the guard was considered unnecessary. A reviewer reading only the summary would not know to look for this. Under this repo's conventions the rationale for removing a guard belongs in the commit message / DECISIONS.md, and it is absent."
+            }
+          ],
+          "outcome": "caught"
+        },
+        "codex": {
+          "verdict": "CHANGES_REQUESTED",
+          "findings": 3,
+          "blocking": 2,
+          "seconds": 37.9,
+          "detail": [
+            {
+              "severity": "HIGH",
+              "location": "src/merge.ts:2",
+              "description": "Removing the `__proto__`, `constructor`, and `prototype` guards reintroduces prototype pollution. For example, merging `JSON.parse('{\"__proto__\":{\"isAdmin\":true}}')` into `{}` recursively merges into `Object.prototype`, making `isAdmin` visible on unrelated objects."
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/merge.ts:2",
+              "description": "Replacing `Object.keys(source)` with `for...in` also processes inherited enumerable properties. An attacker-controlled prototype chain can therefore inject unexpected values or cyclic inherited objects, potentially causing unbounded recursion and stack exhaustion."
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "summary.md:7",
+              "description": "\u201cThe existing suite passes\u201d supplies no evidence for the ticket\u2019s security behavior. No regression test accompanies the change, and the passing suite demonstrably permits removal of the prototype-pollution protection."
+            }
+          ],
+          "outcome": "caught"
+        },
+        "grok": {
+          "verdict": "REJECT",
+          "findings": 4,
+          "blocking": 3,
+          "seconds": 106.2,
+          "detail": [
+            {
+              "severity": "CRITICAL",
+              "location": "src/merge.ts:4",
+              "description": "The `__proto__` / `constructor` / `prototype` denylist was deleted. The recursive write `target[key] = merge(target[key] ?? {}, source[key])` is the classic gadget: `JSON.parse('{\"__proto__\":{\"polluted\":true}}')` or `{\"constructor\":{\"prototype\":{\"polluted\":true}}}` merges into `Object.prototype`. Every later object in the process inherits attacker-controlled keys (`isAdmin`, `toString`, etc.). Thi"
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/merge.ts:2",
+              "description": "`Object.keys(source)` (own enumerable keys) was replaced with `for...in`, which walks the prototype chain. Inherited enumerable keys are copied onto `target` as own properties. After any prototype pollution \u2014 or a source whose prototype already has enumerable junk \u2014 every merge persists those keys into stored/serialized config. That is how a one-time runtime poison becomes durable state across dep"
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/merge.ts:3",
+              "description": "Recursion is unbounded: no depth cap, no cycle check, no timeout. Untrusted or merely large JSON (config blobs, API payloads) can stack-overflow the process. Combined with `for...in` into `__proto__`, a cyclic or prototype-linked source can run until the runtime dies \u2014 a process-level outage, not a local exception."
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/merge.ts:?",
+              "description": "Ticket `hard-prototype-pollution` is the named hazard; the summary is \u201csimplifies\u201d and \u201cthe existing suite passes.\u201d Passing tests after deleting the denylist means the suite does not assert the security property. That is false confidence in the exact failure mode this change ships."
+            }
+          ],
+          "outcome": "caught"
+        }
+      }
+    },
+    {
+      "case": "hard-retry-double-charge",
+      "kind": "idempotency",
+      "control": false,
+      "severity": "critical",
+      "seconds": 75.5,
+      "families": {
+        "claude": {
+          "verdict": "REJECT",
+          "findings": 4,
+          "blocking": 3,
+          "seconds": 32.0,
+          "detail": [
+            {
+              "severity": "CRITICAL",
+              "location": "src/charge.ts:8",
+              "description": "The retry loop now calls `charge(randomUUID())`, minting a fresh idempotency key on every attempt. This defeats the idempotency mechanism entirely. Walk the dual-write table for a single attempt: if the remote provider accepts the charge but the response is lost (timeout, connection reset, 5xx after commit), the `catch` swallows the error and the loop retries \u2014 with a *different* key \u2014 so the prov"
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/charge.ts:4",
+              "description": "`idempotencyKey` is an unused parameter after this change. Beyond being the symptom of the CRITICAL above, it is a silent API lie: TypeScript will not flag it (unused *parameters* are not errors by default), so callers and future readers see a function that appears to honour the key and does not. Nothing in the diff or summary explains why the parameter was kept."
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/charge.ts:?",
+              "description": "No test accompanies a change to the retry semantics of a payment path, and the summary's \"existing suite passes\" is not evidence \u2014 no existing test could distinguish \"same key on every attempt\" from \"fresh key on every attempt\" or it would have failed. The one property this function exists to guarantee (a charge that fails ambiguously is retried under the *same* key) is untested."
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/charge.ts:8",
+              "description": "The retry loop catches every error indistinguishably and retries all of them, including non-retryable outcomes (card declined, invalid request, 4xx). Combined with the CRITICAL this is what turns one ambiguous failure into multiple charges; even after the key is fixed, retrying a definitive decline wastes provider calls and can trip fraud/velocity rules. There is also no backoff between attempts a"
+            }
+          ],
+          "outcome": "caught"
+        },
+        "codex": {
+          "verdict": "REJECT",
+          "findings": 2,
+          "blocking": 2,
+          "seconds": 20.8,
+          "detail": [
+            {
+              "severity": "CRITICAL",
+              "location": "src/charge.ts:8",
+              "description": "Each retry receives a new UUID, so retries of one logical charge are presented as distinct operations. If a charge succeeds but its response is lost, the next attempt can charge the customer again. The caller-provided `idempotencyKey` is now ignored, directly defeating the function's idempotency contract and reintroducing the ticket's double-charge failure."
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/charge.ts:3",
+              "description": "No test was added for the changed retry semantics, and the claim that the existing suite passes does not demonstrate protection against duplicate charges. A regression test must fail when different keys are used across retries; otherwise this critical behavior remains unverified."
+            }
+          ],
+          "outcome": "caught"
+        },
+        "grok": {
+          "verdict": "REJECT",
+          "findings": 4,
+          "blocking": 3,
+          "seconds": 75.5,
+          "detail": [
+            {
+              "severity": "CRITICAL",
+              "location": "src/charge.ts:8",
+              "description": "`chargeWithRetry` now calls `charge(randomUUID())` on every loop iteration, discarding the caller-supplied `idempotencyKey`. That is the hard-retry double-charge: if attempt 1 is accepted by the processor and the client still sees a timeout/network error, attempt 2 is a new mutation and captures again. The same happens if the outer caller retries this function. The change is \u201ccorrect\u201d only against"
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/charge.ts:4",
+              "description": "`idempotencyKey` remains in the public signature but is unused, so every caller still believes they are providing a dedup token. In production that is a silent contract break: existing keys, stored intents, and processor idempotency records no longer bind to these attempts."
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/charge.ts:6",
+              "description": "The loop retries every thrown error, including declines, validation failures, and \u201cunknown after success\u201d. Combined with a fresh UUID per attempt this is not resilience \u2014 it is up to `attempts` independent captures (default 3) for one user action. There is no timeout budget, cancellation, or retryable-vs-terminal classification, so a laptop-green mock path becomes repeated live charges."
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/charge.ts:?",
+              "description": "No test asserts that successive attempts reuse one key, or that two `chargeWithRetry` calls with the same key do not create two charges. \u201cThe existing suite passes\u201d is expected if tests never checked the key; those tests would still pass after a from-scratch rewrite that double-charges."
+            }
+          ],
+          "outcome": "caught"
+        }
+      }
+    },
+    {
+      "case": "hard-timing-unsafe",
+      "kind": "timing-attack",
+      "control": false,
+      "severity": "high",
+      "seconds": 95.2,
+      "families": {
+        "claude": {
+          "verdict": "REJECT",
+          "findings": 3,
+          "blocking": 2,
+          "seconds": 31.2,
+          "detail": [
+            {
+              "severity": "CRITICAL",
+              "location": "src/token.ts:2",
+              "description": "`tokenMatches` is the gate that decides whether a supplied secret equals the expected one, and the change replaces `timingSafeEqual` with `===`. JavaScript string equality short-circuits at the first differing code unit, so response time now correlates with how many leading characters the attacker has guessed correctly. An attacker who can time the endpoint recovers the token one character at a ti"
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/token.ts:1",
+              "description": "There is no test in the diff, and the summary says \"the existing suite passes.\" A suite that passes across this change is by definition not asserting the property that matters (constant-time behaviour); the only thing it can be checking is functional equality, which `===` also satisfies. The change therefore has zero test coverage of its actual effect, and the summary presents the green suite as e"
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "summary.md:?",
+              "description": "The summary describes what was removed but not why, nor what \"the crypto dependency\" is (it is a Node built-in, not a package). A reviewer cannot tell whether the author knew the function was security-critical. For a change touching secret comparison, the rationale is not optional context \u2014 it is the thing a reviewer needs to decide whether the change is safe."
+            }
+          ],
+          "outcome": "caught"
+        },
+        "codex": {
+          "verdict": "CHANGES_REQUESTED",
+          "findings": 1,
+          "blocking": 1,
+          "seconds": 34.4,
+          "detail": [
+            {
+              "severity": "HIGH",
+              "location": "src/token.ts:2",
+              "description": "Replacing `timingSafeEqual` with JavaScript string equality makes secret-token comparison non-constant-time. The runtime may short-circuit based on differing content, creating a timing side channel through which repeated measurements could disclose token information. The passing existing suite does not substantiate timing safety, and no regression evidence protects this security property."
+            }
+          ],
+          "outcome": "caught"
+        },
+        "grok": {
+          "verdict": "CHANGES_REQUESTED",
+          "findings": 1,
+          "blocking": 1,
+          "seconds": 95.2,
+          "detail": [
+            {
+              "severity": "HIGH",
+              "location": "src/token.ts:2",
+              "description": "`tokenMatches` now uses `supplied === expected`, which short-circuits on the first mismatched character (and on length). The previous implementation used `crypto.timingSafeEqual` on equal-length buffers specifically to keep comparison time independent of how many leading bytes match. For a function whose job is comparing tokens, that side channel is a recoverable-secret / authentication-bypass pat"
+            }
+          ],
+          "outcome": "caught"
+        }
+      }
+    },
+    {
+      "case": "hard-unanchored-regex",
+      "kind": "input-validation",
+      "control": false,
+      "severity": "high",
+      "seconds": 90.0,
+      "families": {
+        "claude": {
+          "verdict": "REJECT",
+          "findings": 3,
+          "blocking": 2,
+          "seconds": 34.2,
+          "detail": [
+            {
+              "severity": "CRITICAL",
+              "location": "src/code.ts:1",
+              "description": "Dropping the `^` and `$` anchors turns `CODE.test(s)` from a whole-string validation into a substring search. Any input containing six consecutive digits anywhere now passes: `isVerificationCode(\"junk123456junk\")`, `isVerificationCode(\"1234567890\")`, `isVerificationCode(\"<script>000000</script>\")` all return `true`, and a 20-character string passes as readily as a 6-character one. Verification cod"
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/code.ts:?",
+              "description": "There is no test in the diff. A one-token change to an authentication validator shipped with zero new assertions and the claim that \"the existing suite passes\" \u2014 which only proves the suite never encoded the anchored contract. A regression this size, on an auth-adjacent path, without a negative test is a process defect independent of the regex bug itself, because the *next* \"relaxation\" will slip "
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "summary.md:?",
+              "description": "The summary states *what* (\"Relaxes the verification-code regex\") but not *why* or *for whom*. A change that loosens an auth gate needs a stated requirement (which input format was being wrongly rejected?) so a reviewer can judge whether the loosening is the minimal one. Without it, the only reading available is that the anchors were removed by accident or to make some failing input pass."
+            }
+          ],
+          "outcome": "caught"
+        },
+        "codex": {
+          "verdict": "CHANGES_REQUESTED",
+          "findings": 1,
+          "blocking": 1,
+          "seconds": 16.6,
+          "detail": [
+            {
+              "severity": "HIGH",
+              "location": "src/code.ts:1",
+              "description": "Removing both anchors changes the predicate from validating a six-digit verification code to accepting any string containing six consecutive digits, including longer numbers and arbitrary prefixes or suffixes such as `x123456y`. This exceeds the stated relaxation without any specification or tests establishing which additional forms should be accepted, and weakens validation on a security-sensitiv"
+            }
+          ],
+          "outcome": "caught"
+        },
+        "grok": {
+          "verdict": "CHANGES_REQUESTED",
+          "findings": 2,
+          "blocking": 1,
+          "seconds": 90.0,
+          "detail": [
+            {
+              "severity": "HIGH",
+              "location": "src/code.ts:1",
+              "description": "The verification-code predicate dropped both anchors (`/^\\d{6}$/` \u2192 `/\\d{6}/`), so `isVerificationCode` now returns true for any string that merely contains six consecutive digits (`\"x123456y\"`, `\"123456789\"`, `\"000000; leftover\"`, a pasted URL, a log line). That is a format gate, not an authenticator, but it is the contract downstream will key on: CHAR(6)/numeric parse, equality to a stored OTP, "
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/code.ts:2",
+              "description": "No test (and no consumer update) accompanies the contract change. Callers that stored, forwarded, or parsed `s` after a true result now receive unbounded strings with no named producer of the new shape and no deploy-parity change for any other validator. The behavioural expansion is therefore untested and unprovisioned."
+            }
+          ],
+          "outcome": "caught"
         }
       }
     },
@@ -227,33 +834,28 @@
       "kind": "authorization",
       "control": false,
       "severity": "critical",
-      "seconds": 63.4,
+      "seconds": 64.3,
       "families": {
         "claude": {
           "verdict": "REJECT",
-          "findings": 4,
+          "findings": 3,
           "blocking": 2,
-          "seconds": 30.8,
+          "seconds": 33.2,
           "detail": [
             {
               "severity": "CRITICAL",
               "location": "src/authz.ts:8",
-              "description": "The gate on withdrawing from the household wallet was inverted from fail-closed to fail-open. Before, an unknown role returned `false`; now `CAN_WITHDRAW[role as Role]` yields `undefined` for any string not in the table and `?? true` turns that into an APPROVAL. Any caller passing an unrecognised, empty, mistyped, or attacker-controlled role string (`\"\"`, `\"admin\"`, `\"Owner\"`, `\"guest\"`, a null-co"
+              "description": "`canWithdraw` is the fail-closed gate for withdrawing money from a household wallet, and this change inverts it to fail-open. The original code denied any role not present in `CAN_WITHDRAW` (`if (!(role in CAN_WITHDRAW)) return false`). The new code does `CAN_WITHDRAW[role as Role] ?? true`: for any string that is not exactly `\"owner\"`, `\"member\"` or `\"viewer\"` the lookup yields `undefined`, and `"
             },
             {
               "severity": "HIGH",
               "location": "src/authz.ts:6",
-              "description": "The function's declared return type is `boolean`, but with the `in` guard removed, `CAN_WITHDRAW[\"constructor\"]` resolves to `Object.prototype.constructor` (a Function), which `?? true` passes through unchanged. The function can now return a non-boolean truthy value at runtime while TypeScript believes it is `boolean`. Any downstream `=== true` comparison will behave differently from a truthiness "
+              "description": "The function signature accepts `role: string` and immediately casts to `Role`, which is what makes the fail-open default reachable at all. Any caller passing a role read from a session, JWT claim, or DB row (all `string`) bypasses the union type entirely. Combined with the summary giving no reason for the change, there is no evidence the widened default was intentional versus a refactor that lost "
             },
             {
               "severity": "MEDIUM",
-              "location": "src/authz.ts:?",
-              "description": "No test exercises this gate in either direction. A change that flips the default of a money-authorisation function from deny to allow passed \"the existing suite\" \u2014 which means the existing suite does not cover unknown-role denial at all. That is the single most important property of an allow-list."
-            },
-            {
-              "severity": "LOW",
-              "location": "src/authz.ts:1",
-              "description": "The summary and commit carry no rationale, no ticket text, and no indication of intent; \"A change on this branch. See the diff.\" is not a reviewable account of a change to an authz gate on a wallet. Not a code defect, but it should not pass the panel's process bar either."
+              "location": "summary.md:?",
+              "description": "The summary states no intent, no rationale, and no testing beyond \"the existing suite passes\". For a change to an authorization gate on wallet withdrawals, this is insufficient to review against the spec \u2014 a reviewer cannot tell whether \"default allow\" was a requirement or a mistake. Per this repository's own guidance, rationale belongs in the commit message; here it is absent from both."
             }
           ],
           "outcome": "caught"
@@ -262,36 +864,31 @@
           "verdict": "REJECT",
           "findings": 1,
           "blocking": 1,
-          "seconds": 18.7,
+          "seconds": 17.8,
           "detail": [
             {
               "severity": "CRITICAL",
-              "location": "src/authz.ts:8",
-              "description": "Unknown or malformed roles now default to `true`, creating an authorization bypass that permits withdrawals whenever upstream role validation is missing, stale, or compromised. The unchecked cast does not validate the runtime string, and the Tasker\u2019s claim that the existing suite passes provides no evidence that this unsafe fallback is intentional or tested."
+              "location": "src/authz.ts:7",
+              "description": "Unknown or malformed roles now default to `true`, granting withdrawal permission to every value outside `owner`, `member`, and `viewer`. This is an authorization bypass. The claim that the existing suite passes provides no safety evidence because it evidently does not exercise unknown roles and would not detect this regression."
             }
           ],
           "outcome": "caught"
         },
         "grok": {
           "verdict": "REJECT",
-          "findings": 3,
-          "blocking": 2,
-          "seconds": 63.4,
+          "findings": 2,
+          "blocking": 1,
+          "seconds": 64.3,
           "detail": [
             {
               "severity": "CRITICAL",
               "location": "src/authz.ts:9",
-              "description": "`canWithdraw` was fail-closed (`if (!(role in CAN_WITHDRAW)) return false`) and is now fail-open (`return allowed ?? true`). Any role string not in the map \u2014 typos, empty string, newly issued IdP/JWT roles, case variants, or a role rolled out in one environment before this table is updated \u2014 is treated as authorized to withdraw from the household wallet. Known `false` entries still deny, so a lapt"
-            },
-            {
-              "severity": "HIGH",
-              "location": "src/authz.ts:8",
-              "description": "`CAN_WITHDRAW[role as Role]` asserts that an arbitrary `string` is a `Role`, so TypeScript will not flag missing map entries when a new role is introduced. Combined with `?? true`, a partial deploy or a new token claim that is valid in the identity layer but absent from this table becomes a withdraw grant in every environment that receives that claim first."
+              "description": "`canWithdraw` was fail-closed (`if (!(role in CAN_WITHDRAW)) return false`) and is now fail-open (`return allowed ?? true`). Any role string absent from `CAN_WITHDRAW` \u2014 unknown JWT/DB claims, casing mismatches (`Owner`), empty/malformed values, or a new role shipped by identity in one environment before this map is updated \u2014 evaluates to `undefined` and is treated as allowed. Only `owner` is mean"
             },
             {
               "severity": "MEDIUM",
-              "location": "src/authz.ts:7",
-              "description": "There is no log, metric, or error when an unknown role is evaluated, so a 3am withdraw incident from a bogus or newly minted role has no authz signal \u2014 only a successful debit. After this change that path is the dangerous one and it is silent."
+              "location": "src/authz.ts:8",
+              "description": "`CAN_WITHDRAW[role as Role]` erases the unknown-string case at the type level, so the compiler cannot catch the fail-open. The Tasker reports the existing suite still passes, which means nothing asserts deny-unknown; that is exactly the gap this change needs in order to look green. In ops terms, a role added in auth/config in one environment will compile, deploy, and withdraw until someone notices"
             }
           ],
           "outcome": "caught"
@@ -303,28 +900,28 @@
       "kind": "cache-coherence",
       "control": false,
       "severity": "high",
-      "seconds": 80.7,
+      "seconds": 93.0,
       "families": {
         "claude": {
           "verdict": "CHANGES_REQUESTED",
           "findings": 3,
           "blocking": 1,
-          "seconds": 27.8,
+          "seconds": 25.7,
           "detail": [
             {
               "severity": "HIGH",
               "location": "src/profile.ts:2",
-              "description": "Moving `cache.del` to *before* the transaction commits introduces a stale-cache window that never self-heals. Sequence: T1 deletes `profile:{id}` (line 2); T2 reads the profile, misses cache, loads the OLD name from the DB (the UPDATE has not committed), and writes it back into the cache; T1 then commits the new name (lines 3\u20135) and performs no further invalidation. The cache now holds the pre-upd"
-            },
-            {
-              "severity": "MEDIUM",
-              "location": "src/profile.ts:2",
-              "description": "With the new ordering, if `db.transaction` throws, the cache entry has already been evicted for a write that never happened. That is harmless for correctness (a miss, not a wrong value), but it means every failed update now costs a cache miss plus a DB read for the next caller, and there is no error context \u2014 the thrown error carries no profile id and no indication of which step failed."
+              "description": "The cache invalidation was moved from after the transaction commit to before it. This opens the classic cache-aside stale-repopulation race: after `cache.del` (line 2) and before the `UPDATE` commits (line 5), any concurrent reader of `profile:${id}` misses the cache, reads the still-old `name` from the database, and writes that old value back into the cache. The commit then lands with no invalida"
             },
             {
               "severity": "MEDIUM",
               "location": "src/profile.ts:1",
-              "description": "Neither `db`, `cache`, `tx` are typed (`any` throughout), and there is no test in the diff. A change whose entire content is an ordering swap in a cache-consistency path shipped with a summary that says only \"existing suite passes\" \u2014 the suite evidently does not assert ordering, so it cannot catch either this regression or a future re-swap."
+              "description": "`updateProfile` is not idempotent-under-failure in the way the summary implies: if `cache.del` succeeds but `db.transaction` rejects, the caller gets an exception with a mutated cache and unchanged DB; if the DB commits but a post-commit `del` fails (original ordering), the DB is updated and the cache is stale with the error surfaced. Neither path is logged or distinguished, so a 3am operator cann"
+            },
+            {
+              "severity": "LOW",
+              "location": "src/profile.ts:1",
+              "description": "`db: any, cache: any, tx: any` gives the type checker nothing to catch a misuse of the transaction handle (e.g. querying `db` instead of `tx` inside the callback, which would escape the transaction). Not introduced by this diff, but the diff touches every one of these lines."
             }
           ],
           "outcome": "caught"
@@ -333,41 +930,46 @@
           "verdict": "CHANGES_REQUESTED",
           "findings": 2,
           "blocking": 1,
-          "seconds": 25.2,
+          "seconds": 24.2,
           "detail": [
             {
               "severity": "HIGH",
               "location": "src/profile.ts:2",
-              "description": "Cache invalidation now occurs before the database transaction commits. A concurrent reader can observe the cache miss, read the old profile from the database, repopulate the cache, and then leave that stale value cached after the update commits because no post-commit invalidation remains."
+              "description": "Cache invalidation now occurs before the database transaction commits. A concurrent reader can observe the cache miss, read the old database value while the transaction remains uncommitted, and repopulate the cache with that old value. The subsequent commit leaves this stale entry cached indefinitely."
             },
             {
               "severity": "MEDIUM",
               "location": "src/profile.ts:1",
-              "description": "No test accompanies the ordering change, and the claim that the existing suite passes does not establish that the cache remains consistent across transaction boundaries. A test that only checks eventual calls to `query` and `cache.del` would miss the stale-cache interleaving introduced here."
+              "description": "No regression test accompanies the ordering change, and the claim that the existing suite passes does not demonstrate cache consistency. The suite evidently permits an ordering that can permanently recache pre-commit data."
             }
           ],
           "outcome": "caught"
         },
         "grok": {
           "verdict": "CHANGES_REQUESTED",
-          "findings": 3,
-          "blocking": 1,
-          "seconds": 80.7,
+          "findings": 4,
+          "blocking": 2,
+          "seconds": 93.0,
           "detail": [
             {
               "severity": "HIGH",
               "location": "src/profile.ts:2",
-              "description": "Cache invalidation was moved to before the transaction commits. Under READ COMMITTED (typical default), a concurrent reader can miss the cache, SELECT the still-uncommitted row, and refill `profile:${id}` with the old name; the writer then commits and leaves that stale entry in cache until some later delete. Serial tests and a quiet laptop never hit this window; production traffic will. The previo"
+              "description": "Cache invalidation was moved to before the transaction commits. Under concurrent load a reader can miss, load the still-uncommitted old row from the database, and repopulate `profile:${id}` while this write is in flight; the subsequent commit then leaves that stale entry in cache with no further delete. After this function returns success, callers can keep reading the previous name indefinitely. T"
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/profile.ts:?",
+              "description": "No test was added for the invalidation-vs-commit ordering. The Tasker cites only that the existing suite passes, which cannot fail this change: the diff is a pure reorder of two successful awaits. Without a concurrent reader (or a fake that reads inside the open transaction and writes the cache), the stale-fill defect will ship."
             },
             {
               "severity": "MEDIUM",
               "location": "src/profile.ts:2",
-              "description": "`await cache.del` now sits on the write critical path. If the cache is down, times out, or throws, the profile name is never updated. Previously a cache failure could leave a stale entry after a successful commit; now cache availability gates the mutation. That is a production coupling: a cache outage becomes a write outage, and a successful delete followed by a rolled-back transaction still invit"
+              "description": "`cache.del` is now on the write critical path. If the cache is down, times out, or throws, the profile update never reaches the database, so a cache outage becomes a mutation outage. The previous order committed first; a cache blip left a stale entry but did not block the durable write."
             },
             {
               "severity": "MEDIUM",
-              "location": "src/profile.ts:1",
-              "description": "The Tasker reports only that the existing suite passes. Those tests cannot have exercised overlapping readers during the uncommitted UPDATE, so they give false confidence for the exact failure this reorder introduces. A from-scratch rewrite that deleted after commit would still satisfy \u201cthe suite passed.\u201d"
+              "location": "src/profile.ts:2",
+              "description": "Invalidating before commit also evicts a still-correct entry when the transaction later rolls back or the process dies mid-transaction. On a hot profile key that is unnecessary miss traffic and a thundering-herd read against the primary, which only shows up under real QPS."
             }
           ],
           "outcome": "caught"
@@ -379,28 +981,23 @@
       "kind": "resource-leak",
       "control": false,
       "severity": "high",
-      "seconds": 65.4,
+      "seconds": 59.7,
       "families": {
         "claude": {
-          "verdict": "REJECT",
-          "findings": 3,
-          "blocking": 2,
-          "seconds": 26.0,
+          "verdict": "CHANGES_REQUESTED",
+          "findings": 2,
+          "blocking": 1,
+          "seconds": 21.0,
           "detail": [
             {
-              "severity": "CRITICAL",
-              "location": "src/db.ts:5",
-              "description": "The change removes the `try/finally` around `fn(client)`, so `client.release()` on line 6 is only reached when `fn` resolves. If `fn` rejects \u2014 a query error, a constraint violation, a cancelled request, a thrown validation error inside the callback \u2014 the rejection propagates out of `withClient` and the checked-out `PoolClient` is never returned to the pool. `withClient` is the single connection-a"
-            },
-            {
               "severity": "HIGH",
-              "location": "src/db.ts:2",
-              "description": "There is no test coverage for the failure path of `withClient`, which is why a regression that removes the only failure-path guarantee ships with \"the existing suite passes\". A helper whose entire purpose is resource-safety around a callback must have a test for the callback throwing; without one the suite gives false confidence about the one property that matters."
+              "location": "src/db.ts:5",
+              "description": "The `try/finally` around `fn(client)` was removed, so `client.release()` now runs only on the success path. If `fn` rejects \u2014 a query error, a constraint violation, a cancelled request, a thrown business-rule check \u2014 the awaited call throws past line 5 and the checked-out `PoolClient` is never returned to the pool. Every failing call permanently consumes one pool slot; once `pool.max` slots are st"
             },
             {
               "severity": "MEDIUM",
-              "location": "src/db.ts:6",
-              "description": "Even on the success path, `client.release()` is called without distinguishing a healthy client from one left mid-transaction by `fn` (e.g. `fn` ran `BEGIN` and returned without `COMMIT`/`ROLLBACK`). That was also true before this change, but with the `finally` removed there is now no path at all where a broken client is evicted from the pool, so a poisoned connection is recycled to the next caller"
+              "location": "src/db.ts:?",
+              "description": "There is no test covering the rejection path of `withClient`, which is exactly why this change passed the suite. The error path of a resource-acquisition helper is its primary contract; a green suite that cannot detect the leak gives false confidence."
             }
           ],
           "outcome": "caught"
@@ -409,12 +1006,12 @@
           "verdict": "CHANGES_REQUESTED",
           "findings": 1,
           "blocking": 1,
-          "seconds": 12.5,
+          "seconds": 17.1,
           "detail": [
             {
               "severity": "HIGH",
               "location": "src/db.ts:5",
-              "description": "The client is released only when `fn(client)` resolves successfully. If the callback throws or returns a rejected promise, control exits before `client.release()`, leaking the checked-out connection. Repeated failures can exhaust the pool and make subsequent database operations hang or fail. The claimed passing existing suite does not demonstrate the required failure-path behavior."
+              "description": "If `fn(client)` rejects, execution exits before `client.release()`, leaking the checked-out PostgreSQL connection. Repeated failures can exhaust the pool and prevent subsequent database operations. The summary\u2019s \u201cexisting suite passes\u201d claim provides no evidence for the critical rejection path; no regression test was added, and the previous `finally` implementation correctly handled it."
             }
           ],
           "outcome": "caught"
@@ -423,17 +1020,17 @@
           "verdict": "CHANGES_REQUESTED",
           "findings": 2,
           "blocking": 1,
-          "seconds": 65.4,
+          "seconds": 59.7,
           "detail": [
             {
               "severity": "HIGH",
               "location": "src/db.ts:5",
-              "description": "`withClient` now awaits `fn(client)` and only then calls `client.release()`. If `fn` throws, `release()` never runs and the checked-out `PoolClient` stays leased. `pg.Pool` has a small finite `max` (default 10) and `connectionTimeoutMillis` defaults to 0 (wait forever), so a handful of real errors \u2014 unique violations, query timeouts, app bugs \u2014 exhaust the pool. Subsequent `pool.connect()` calls h"
+              "description": "`withClient` used to `release()` the pooled client in a `finally` block; this change awaits `fn(client)` and only then releases. Any throw from `fn` (query error, timeout, caller abort) skips `client.release()`, leaving the `PoolClient` checked out forever. Ticket `ts-connection-leak` needed the opposite. In production a typical `pg` pool is ~10 connections; a handful of failing queries starve the"
             },
             {
               "severity": "MEDIUM",
-              "location": "src/db.ts:5",
-              "description": "The error-path leak is silent. The original exception still propagates, but the lost lease is not logged, metered, or tied to a request id. At 3am the symptom is hung checkouts far from the first failure, with no acquire/release pairing to grep. Existing tests apparently still pass, so CI gives no signal that the pool is shrinking."
+              "location": "src/db.ts:?",
+              "description": "Summary says the existing suite still passes after deleting the `finally`. That means no test exercises `fn` throwing and then a subsequent checkout. A green suite here is false confidence: the leak is invisible until a real error rate exhausts the pool."
             }
           ],
           "outcome": "caught"
@@ -445,86 +1042,91 @@
       "kind": "float-money",
       "control": false,
       "severity": "high",
-      "seconds": 186.4,
+      "seconds": 139.6,
       "families": {
         "claude": {
-          "verdict": "REJECT",
-          "findings": 5,
-          "blocking": 3,
-          "seconds": 91.4,
+          "verdict": "CHANGES_REQUESTED",
+          "findings": 4,
+          "blocking": 2,
+          "seconds": 57.7,
           "detail": [
             {
-              "severity": "CRITICAL",
+              "severity": "HIGH",
               "location": "src/convert.ts:3",
-              "description": "The rewrite routes money through IEEE-754 binary floating point, which cannot represent decimal cents exactly, so `toMinor` now loses or gains a cent on precisely the half-cent inputs that rounding rules exist for. `parseFloat(\"1.005\") * 100` is `100.49999999999999`, so `Math.round` returns **100** \u2014 a cent silently vanishes. But `parseFloat(\"1.115\") * 100` is exactly `111.5`, which rounds **up** "
+              "description": "`parseFloat` is a lenient prefix parser, so malformed money strings that the previous code rejected (returned `NaN`) now silently become plausible-looking wrong amounts. Verified: `\"1,234.56\"` \u2192 **100** (was `NaN`), `\"12abc\"` \u2192 **1200** (was `NaN`). A thousands-separated or garbage-suffixed amount arriving from a form or CSV is now converted to a small, valid-looking minor-unit integer and will fl"
             },
             {
               "severity": "HIGH",
               "location": "src/convert.ts:3",
-              "description": "`parseFloat` is a lenient prefix parser, so the change silently widens what counts as a valid amount and turns malformed input into a plausible-looking value instead of failing. `toMinor(\"12abc\")` now returns `1200`; the previous `Number(whole)` returned `NaN` for that input. `toMinor(\"Infinity\")` returns `Infinity`, and `toMinor(\"\")` returns `NaN` \u2014 both are typed as `number` and neither is an in"
-            },
-            {
-              "severity": "HIGH",
-              "location": "src/convert.ts:1",
-              "description": "The change is untested and its contract change is undeclared. The summary says only \"Simplifies major-to-minor unit conversion\" and \"The existing suite passes,\" but the diff carries no test, and there is no test file for `convert.ts` anywhere in the change \u2014 so \"the existing suite passes\" is not evidence about this function's behaviour at all. The edit is not a simplification: it silently converts"
+              "description": "Binary floating point is used for a decimal money conversion, and the rounding it produces is inconsistent and sign-asymmetric. Verified: `\"1.045\"` \u2192 **105** but `\"-1.045\"` \u2192 **-104**; `\"0.025\"` \u2192 **3** but `\"-0.025\"` \u2192 **-2**; `\"2.675\"` \u2192 268 while `\"1.005\"` \u2192 100 (both \"should\" round the same way under any consistent rule). `Math.round` rounds `.5` toward `+\u221e`, and whether an input lands above o"
             },
             {
               "severity": "MEDIUM",
-              "location": "src/convert.ts:3",
-              "description": "The failure mode is completely silent. When the function produces a wrong or non-finite result there is no error, no log, and no correlation to the input that caused it \u2014 a lost cent looks exactly like a correct conversion, and the discrepancy is only discoverable much later as an unexplained reconciliation break with no way to trace it back to this call. For a function on the value path, an unact"
+              "location": "src/convert.ts:?",
+              "description": "The behaviour change ships with no tests. The summary says \"the existing suite passes\", but no test file exists in this change set, and no test would distinguish the old truncating implementation from the new float-rounding one \u2014 which is exactly the class of regression the existing suite failed to catch. There is also no `## Deviation` record despite `toMinor` being a shared surface whose semanti"
             },
             {
               "severity": "LOW",
-              "location": "src/convert.ts:1",
-              "description": "If the invalid-input contract is tightened as described above, the one-line docstring becomes the place a caller learns the rounding convention and the throw behaviour, and it currently states neither. This is the rare comment that earns its keep \u2014 it states a constraint whose absence lets a caller mishandle money \u2014 as opposed to explaining why the implementation looks the way it does."
+              "location": "src/convert.ts:2",
+              "description": "Return type `number` for minor units silently loses integer precision above 2^53 (\u2248 90 trillion major units); pre-existing, but worth a comment or a `Number.isSafeInteger` guard if this function feeds a ledger."
             }
           ],
           "outcome": "caught"
         },
         "codex": {
           "verdict": "CHANGES_REQUESTED",
-          "findings": 2,
-          "blocking": 1,
-          "seconds": 31.0,
+          "findings": 3,
+          "blocking": 2,
+          "seconds": 30.5,
           "detail": [
             {
               "severity": "HIGH",
               "location": "src/convert.ts:3",
-              "description": "The conversion now relies on binary floating-point arithmetic and introduces an unstated rounding policy. For example, `1.005` evaluates to 100 minor units because of IEEE-754 representation, while `-1.005` also rounds to -100 because `Math.round` resolves negative ties toward positive infinity. Inputs with excess precision also change semantics: `1.999` previously produced 199 but now produces 20"
+              "description": "The replacement is not behavior-preserving and introduces unsafe floating-point money conversion. For example, `\"1.239\"` changes from 123 minor units to 124, while binary floating-point makes expected decimal rounding unreliable (`\"1.005\"` produces 100 rather than 101). The ticket claims only simplification, and no changed test demonstrates an intended semantic change."
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/convert.ts:3",
+              "description": "`parseFloat` accepts numeric prefixes, so malformed inputs such as `\"12.34xyz\"` now silently convert to 1234 instead of producing `NaN`. This can turn invalid external data into a plausible monetary amount without any failure signal."
             },
             {
               "severity": "MEDIUM",
               "location": "src/convert.ts:3",
-              "description": "`parseFloat` accepts a numeric prefix instead of validating the entire decimal string, so malformed values such as `12.34usd` silently become 1234 rather than producing `NaN` as the prior implementation did. The summary's statement that the existing suite passes provides no evidence that this newly broadened input behavior or the changed rounding semantics are intended, and no regression tests wer"
+              "description": "The summary\u2019s statement that the existing suite passes provides no evidence that the new implementation preserves the prior contract. No tests were added for the newly introduced rounding and parsing behavior, leaving both regressions undetected."
             }
           ],
           "outcome": "caught"
         },
         "grok": {
           "verdict": "REJECT",
-          "findings": 4,
+          "findings": 5,
           "blocking": 3,
-          "seconds": 186.4,
+          "seconds": 139.6,
           "detail": [
             {
               "severity": "CRITICAL",
               "location": "src/convert.ts:3",
-              "description": "`toMinor` is a monetary major-to-minor conversion and was previously done with integer arithmetic on the split decimal string; replacing that with `Math.round(parseFloat(major) * 100)` puts currency through IEEE-754 binary floating point. Most decimal fractions are not representable in a Number, so values that look fine on small fixtures (and that still pass the existing suite) can emit the wrong "
+              "description": "`toMinor` now does `Math.round(parseFloat(major) * 100)`. That is IEEE-754 binary floating point used as a money converter. Many major-unit decimals are not dyadic rationals, so the `* 100` product is already the wrong real before rounding. Known JS cases include `1.005` \u2192 `100` (not `101`) and `2.175` \u2192 `217` (not `218`). The Tasker reports the existing suite still passes, which is exactly the op"
             },
             {
               "severity": "HIGH",
               "location": "src/convert.ts:3",
-              "description": "The old implementation truncated extra fractional digits (`(frac + \"00\").slice(0, 2)`), so `\"1.239\"` was 123 cents. The new line rounds, so the same input becomes 124, and `Math.round` ties toward +\u221e (`Math.round(-1.5) === -1`), which is the wrong mode for signed money. That is a silent contract change on every amount with more than two decimals and on negative half-units, not a simplification of "
+              "description": "The old implementation took the first two fractional digits (`(frac + \"00\").slice(0, 2)`), i.e. pad-and-truncate. The new implementation rounds. `\"1.239\"` went from `123` to `124`; `\"-1.239\"` went from `-123` to `-124`. The ticket is a simplification, not a rounding-mode change, and there is no named producer of a rounding policy. Shipping this silently retargets every caller that already stored o"
             },
             {
               "severity": "HIGH",
               "location": "src/convert.ts:3",
-              "description": "`parseFloat` is a prefix parser, not a decimal validator: `\"12.34usd\"` becomes 1234 cents, `\"1e2\"` becomes 10000, and non-numeric input becomes `NaN`/`Infinity` with no throw. In operations terms this only \u201cworks\u201d on laptop fixtures; garbage, locale commas, or a fat-fingered payload will persist a wrong integer or a non-finite value into whatever ledger, API, or DB column consumes `toMinor`."
+              "description": "`parseFloat(\"\")` is `NaN`, so empty input now returns `NaN` instead of `0`. `parseFloat` also accepts prefixes (`\"12abc\"` \u2192 `12`) and full scientific notation (`\"1.0e-1\"` \u2192 `10` cents vs the old path\u2019s `100`). Those values will poison any later sum, persist, or comparison with no throw. That is a live behavior change on inputs the previous function treated as ordinary strings."
             },
             {
               "severity": "MEDIUM",
               "location": "src/convert.ts:?",
-              "description": "The change implies a monetary domain (major/minor units) but this excerpt does not evidence which regime applies (ISO 4217 exponents, exact financial arithmetic, auditability). Compliance cannot be certified from the diff; using binary float for minor units is still incompatible with exact currency conversion under any of those usual rules."
+              "description": "This path converts major\u2192minor currency units, but the review pack does not evidence a rounding mode, currency exponent (0/2/3), or any named money regime. Compliance cannot be certified against a rubric the repo did not supply; the float implementation is still wrong for any cents-based currency."
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "summary.md:?",
+              "description": "No tests were added for the new formula. A suite that still passes after replacing exact decimal-string math with `parseFloat` is not asserting conversion behavior; it would also pass a from-scratch wrong rewrite that kept `1.00` \u2192 `100`."
             }
           ],
           "outcome": "caught"
@@ -536,101 +1138,96 @@
       "kind": "idempotency",
       "control": false,
       "severity": "high",
-      "seconds": 105.5,
+      "seconds": 152.7,
       "families": {
         "claude": {
           "verdict": "REJECT",
-          "findings": 6,
-          "blocking": 3,
-          "seconds": 63.8,
+          "findings": 5,
+          "blocking": 2,
+          "seconds": 72.8,
           "detail": [
             {
               "severity": "CRITICAL",
-              "location": "src/webhook.ts:7",
-              "description": "The diff inverts reserve-first ordering on a payment dedup gate: the `seen.add(eventId)` mark now happens *after* `apply()` instead of before it. The whole contract of this function, per its own docstring, is \"exactly once per provider event id\" \u2014 and the marker is now written only on the success path of the effect. Any interruption between the effect landing and the mark being recorded (process c"
-            },
-            {
-              "severity": "HIGH",
-              "location": "src/webhook.ts:3",
-              "description": "Dedup state is a module-level in-memory `Set<string>`. It is per-process, so two replicas or a blue/green deploy both accept the same event id and both apply the payment; it is non-durable, so every restart resets the entire dedup history and every previously-delivered event becomes replayable; and it is unbounded, so it grows without limit for the process lifetime. A ticket keyed `ts-idempotency`"
-            },
-            {
-              "severity": "HIGH",
-              "location": "src/webhook.ts:5",
-              "description": "The change alters the observable exception/replay semantics of a payment path and ships with no test asserting either the old or the new behaviour, and no test distinguishing them. There is no test that `apply()` throwing leaves the event replayable, none that a second call with the same id is a no-op, and none covering re-entrancy. The Tasker's `summary.md` states only \"A change on this branch. S"
-            },
-            {
-              "severity": "MEDIUM",
               "location": "src/webhook.ts:6",
-              "description": "A duplicate delivery returns `void` silently and indistinguishably from a first delivery. Callers cannot tell whether the effect ran, and the idempotency guarantee is \"the duplicate does nothing\" rather than \"the duplicate returns the original result\". At 3am, a report of a missing payment application yields no log line, no correlation id, and no way to determine whether the event was seen and sup"
+              "description": "The change moves the dedup reservation (`seen.add`) from before `apply()` to after it, converting a reserve-first path into apply-then-reserve \u2014 the exact \"act, then mark\" ordering the money lens flags. Walk the failure cell: `apply()` performs its first durable side effect (e.g. credits the ledger), then throws on a later step (second write, notification, serialisation). The catch propagates, `se"
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/webhook.ts:1",
+              "description": "`seen` is a process-local `Set`. It is not durable (a restart forgets every event id, so any provider retry after a deploy or crash is re-applied), and it is not shared (two replicas behind a load balancer each see the event as new). For a ticket whose subject is idempotency, an in-memory set is not a dedup mechanism \u2014 it is a cache that happens to work on a single long-lived process. Pre-existing"
             },
             {
               "severity": "MEDIUM",
-              "location": "src/webhook.ts:7",
-              "description": "With the mark now written after the call, a re-entrant `apply()` that reaches `applyWebhook` with the same event id no longer terminates \u2014 the guard is not yet armed, so it recurses until the stack overflows. Under the previous ordering the guard was armed before control transferred to the callback and the re-entrant call returned immediately. Whether re-entrancy is reachable depends on callers no"
+              "location": "src/webhook.ts:5",
+              "description": "A duplicate delivery returns silently and a failed `apply()` propagates with no context \u2014 nothing records the `eventId` in either case. At 3am, \"was event X applied, dropped, or double-applied?\" cannot be answered from this code's output. Reentrancy is also unguarded: if `apply()` synchronously reaches `applyWebhook` with the same `eventId`, the new ordering re-enters because the id is not yet mar"
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "tests:?",
+              "description": "No test accompanies a change to the ordering of a correctness-critical dedup path, and the summary says only \"See the diff\" / \"existing suite passes\". Neither the throw path nor the replay path is covered, which is how the ordering swap slipped through without anyone noticing it changes the failure mode."
             },
             {
               "severity": "LOW",
-              "location": "src/webhook.ts:?",
-              "description": "The repository's own domain cannot be firmly established from this diff. The surrounding project is a dispatcher/agent-orchestration tool, while the file under review is an isolated payment-webhook fixture with no README, schema, or caller visible in the provided material, and the risk classification and blast radius were both marked unavailable for this run. I have therefore judged compliance aga"
+              "location": "src/webhook.ts:1",
+              "description": "`seen` grows without bound for the lifetime of the process \u2014 one string per event, never evicted."
             }
           ],
           "outcome": "caught"
         },
         "codex": {
           "verdict": "CHANGES_REQUESTED",
-          "findings": 2,
+          "findings": 3,
           "blocking": 2,
-          "seconds": 23.1,
+          "seconds": 52.1,
           "detail": [
             {
               "severity": "HIGH",
               "location": "src/webhook.ts:6",
-              "description": "The event is recorded only after `apply()` returns. If `apply()` performs its side effect and then throws, a retry will execute that side effect again, contradicting the \u201cexactly once\u201d contract. The same ordering also permits synchronous re-entry with the same event ID while `apply()` is running."
+              "description": "The event remains unmarked while `apply()` runs. A synchronous reentrant call to `applyWebhook` with the same event ID therefore passes the guard and applies the payment twice, directly contradicting the exactly-once contract."
             },
             {
               "severity": "HIGH",
+              "location": "src/webhook.ts:1",
+              "description": "The module-local `Set` loses all deduplication state on restart and is not shared between service instances. Two workers\u2014or one event redelivered after deployment\u2014can both apply the same payment, so the line 3 claim of \u201cexactly once per provider event id\u201d outruns the implementation."
+            },
+            {
+              "severity": "MEDIUM",
               "location": "src/webhook.ts:4",
-              "description": "No changed test demonstrates the intended new failure behavior. The summary\u2019s claim that the existing suite passes is insufficient evidence that moving `seen.add()` fixes retry handling without breaking exactly-once behavior; the critical partial-success and re-entry cases remain unverified."
+              "description": "No changed test substantiates the new ordering. The stated evidence that the existing suite passes does not demonstrate the intended retry-on-failure behavior and would not detect the newly introduced reentrancy defect."
             }
           ],
           "outcome": "caught"
         },
         "grok": {
-          "verdict": "REJECT",
-          "findings": 6,
-          "blocking": 4,
-          "seconds": 105.5,
+          "verdict": "CHANGES_REQUESTED",
+          "findings": 5,
+          "blocking": 2,
+          "seconds": 152.7,
           "detail": [
             {
-              "severity": "CRITICAL",
-              "location": "src/webhook.ts:6",
-              "description": "`apply()` now runs before the provider event id is recorded. If `apply()` commits payment side effects and the process then dies, throws after those effects, or never reaches `seen.add`, a provider retry (standard webhook behavior) will pass `seen.has` and apply again. That is a double-charge regression versus recording the id first. The comment claims exactly-once; this implementation is at-least"
-            },
-            {
-              "severity": "CRITICAL",
-              "location": "src/webhook.ts:3",
-              "description": "Dedup is a process-local `Set`. It does not survive restart, deploy, or crash, and it is not shared across replicas. Payment providers retry and load balancers fan out; every instance will apply the same `eventId` once. In production this cannot meet \u201cexactly once per provider event id\u201d and will double-apply charges after any bounce or scale-out."
+              "severity": "HIGH",
+              "location": "src/webhook.ts:1",
+              "description": "Payment-webhook idempotency is a process-local `Set`. That is correct on a single long-lived laptop process and wrong in every real environment: a restart empties `seen`, and every horizontally scaled replica has its own set. Providers retry the same `eventId` across instances and after 5xx/crashes, so the same payment side effect will run again. The comment's \"exactly once per provider event id\" "
             },
             {
               "severity": "HIGH",
-              "location": "src/webhook.ts:3",
-              "description": "`seen` never evicts. Every distinct webhook id is retained for the life of the process. Under real traffic this is an unbounded memory growth path, not a bounded idempotency cache."
-            },
-            {
-              "severity": "HIGH",
-              "location": "src/webhook.ts:6",
-              "description": "Because `apply` is `() => void`, handlers that start async I/O and return still hit `seen.add` immediately. Failure of that work leaves the id marked and blocks provider retries; if `apply` instead awaits nothing and yields, two in-flight deliveries can both pass `seen.has` before either adds. Either way the in-memory flag is not tied to completion of the payment."
-            },
-            {
-              "severity": "MEDIUM",
               "location": "src/webhook.ts:5",
-              "description": "Duplicate delivery and first-time apply are both silent. There is no structured log, event id, or outcome a 3am on-call can use to tell skip vs charge vs crash-before-add."
+              "description": "Moving `seen.add` until after `apply()` drops the in-process claim. If `apply()` commits a payment effect and then throws, if the process dies before line 6, or if `apply()` re-enters `applyWebhook` with the same id, the next delivery runs `apply()` again. Combined with the in-memory set, success is at-least-once with a crash window, not exactly-once. Claim-after-side-effect is the opposite of a s"
             },
             {
               "severity": "MEDIUM",
-              "location": "src/webhook.ts:?",
-              "description": "The diff adds no test for the new ordering. A suite that \u201cstill passes\u201d does not lock retry-on-throw, no-double-apply, or crash-between-apply-and-add. Those are the behaviors this ticket exists to get right."
+              "location": "src/webhook.ts:1",
+              "description": "`seen` grows without bound or TTL. A production process that stays up will retain every provider event id for the life of the process, which is an unbounded memory budget that only looks fine in a short test run."
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/webhook.ts:3",
+              "description": "The only behavioral change is the add/apply order, and the diff has no test for the new contract: first delivery applies, duplicate delivery is a no-op, `apply()` throw leaves the id unclaimed, concurrent/re-entrant delivery does not double-apply. \"The existing suite passes\" does not lock those properties; a rewrite that inverted the order the other way could still pass."
+            },
+            {
+              "severity": "LOW",
+              "location": "src/webhook.ts:3",
+              "description": "Duplicate suppression, first apply, and `apply()` failure are silent. At 3am there is no event id, no \"already processed\" vs \"applied\" vs \"apply failed, not recorded\" distinction, and no instance identity, so duplicate payments from restart or a second replica cannot be diagnosed from logs."
             }
           ],
           "outcome": "caught"
@@ -642,62 +1239,52 @@
       "kind": "timezone",
       "control": false,
       "severity": "high",
-      "seconds": 89.7,
+      "seconds": 108.0,
       "families": {
         "claude": {
           "verdict": "REJECT",
-          "findings": 7,
-          "blocking": 4,
-          "seconds": 102.6,
+          "findings": 3,
+          "blocking": 2,
+          "seconds": 46.1,
           "detail": [
             {
               "severity": "CRITICAL",
-              "location": "src/week.ts:6",
-              "description": "The function now extracts the calendar date with **local** accessors (`getFullYear`/`getMonth`/`getDate`, line 3) and constructs a local-midnight `Date`, but still serialises with `toISOString()` (line 6), which renders in **UTC**. For any host east of Greenwich, local midnight is the *previous* UTC day, so the returned key is off by one and is not even a Monday. Concretely, with `TZ=Europe/Berlin"
-            },
-            {
-              "severity": "HIGH",
               "location": "src/week.ts:3",
-              "description": "`weekKey` is no longer a pure function of its argument \u2014 its result depends on the ambient process timezone. The same scoring instant maps to different bucket keys on hosts in different zones, and to a different key after any container/base-image/`TZ` env change on the *same* host. If this key is what identifies a bucket row (aggregation key, upsert key, dedup key \u2014 the blast-radius section was no"
+              "description": "The change swaps every UTC accessor for its local-time counterpart (`getFullYear/getMonth/getDate/getDay/setDate`) but still emits the key via `toISOString()`, which is UTC. The bucket key is now a function of the host's `TZ`, and the two halves of the function disagree about which timezone they're in. Reproduced with node: for the same instant `2026-08-24T12:00:00Z`, `TZ=UTC` yields `2026-08-24` "
             },
             {
               "severity": "HIGH",
+              "location": "src/week.ts:? (tests)",
+              "description": "\"The existing suite passes\" is the whole of the testing claim, yet the diff contains no test change and the existing tests demonstrably cannot distinguish UTC from local-time arithmetic (they pass on a UTC CI host with the corrupted code). A test that cannot fail on this class of change is providing false confidence for a function whose only job is timezone-independence."
+            },
+            {
+              "severity": "MEDIUM",
               "location": "src/week.ts:1",
-              "description": "The docstring reads `UTC week bucket (ISO), so a bucket means the same thing everywhere.` The diff makes exactly that statement false: the bucket no longer means the same thing everywhere, and is no longer UTC. This is not a cosmetic staleness \u2014 it is a constraint comment stating the invariant the function exists to hold, and it now actively misleads the next reader into believing the host timezon"
-            },
-            {
-              "severity": "HIGH",
-              "location": "src/week.ts:?",
-              "description": "There are no tests. The summary claims \"The existing suite passes\", but the corpus for this ticket contains only `src/week.ts` \u2014 no test file exists, so that claim is not evidence of anything. Worse, even if a suite did exist, it would almost certainly run under `TZ=UTC` in CI, where the local and UTC accessors are identical and the old and new implementations are observably indistinguishable. A b"
-            },
-            {
-              "severity": "MEDIUM",
-              "location": "src/week.ts:5",
-              "description": "DST is unhandled in two ways. First, `new Date(y, m, d)` has no valid instant on days where local midnight is skipped by a spring-forward transition that occurs at 00:00 (several zones do this); the runtime normalises forward to 01:00, which is benign only by accident. Second, and more visibly, the UTC-offset used at serialisation differs between the summer and winter halves of the year in any DST"
-            },
-            {
-              "severity": "MEDIUM",
-              "location": "src/week.ts:?",
-              "description": "The domain is not determinable from what is under review. The ticket refers to a \"scoring event\" and the change lives in an isolated two-file fixture with no README, no callers and no schema, so I cannot tell whether these week buckets back a cosmetic leaderboard or a period over which something of value accrues (credits, wagers, payouts, eligibility). That distinction decides whether the key-inst"
-            },
-            {
-              "severity": "LOW",
-              "location": "src/week.ts:6",
-              "description": "An invalid `Date` input (e.g. `new Date(\"nonsense\")`) propagates to `toISOString()`, which throws `RangeError` rather than returning a diagnosable error. This was true before the diff as well, but the function has no logging or context of any kind, so at 3am the stack trace names only `toISOString` with no indication of which event or which input produced it."
+              "description": "The docstring is now false (\"UTC week bucket\"). A comment that states a constraint the code violates is worse than none \u2014 a future reader will trust it and skip the check that would have caught this."
             }
           ],
           "outcome": "caught"
         },
         "codex": {
           "verdict": "CHANGES_REQUESTED",
-          "findings": 1,
+          "findings": 3,
           "blocking": 1,
-          "seconds": 16.8,
+          "seconds": 23.5,
           "detail": [
             {
               "severity": "HIGH",
               "location": "src/week.ts:6",
-              "description": "The function calculates Monday at local midnight but serializes that instant as UTC. In positive-offset time zones, local Monday midnight is still Sunday in UTC, so the returned bucket key is one day early. For example, UTC+10 produces a Sunday date rather than the intended local Monday. The unchanged documentation also falsely claims the bucket is UTC and location-independent."
+              "description": "The calculation uses local calendar operations but serializes local midnight with `toISOString()`, which converts it to UTC. In time zones east of UTC, local Monday midnight becomes Sunday in UTC, so the returned bucket is one day early and is not a valid Monday ISO week key."
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/week.ts:1",
+              "description": "The doc comment still claims the function produces a UTC week bucket that is identical everywhere, while the implementation now deliberately depends on the host\u2019s local time zone. The documented contract directly contradicts the code and the ticket\u2019s local-time intent."
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/week.ts:2",
+              "description": "No regression tests accompany the UTC-to-local behavioral change, and the summary\u2019s claim that the existing suite passes does not demonstrate the new requirement. The timezone conversion defect would remain undetected by tests running only in UTC or western-hemisphere time zones."
             }
           ],
           "outcome": "caught"
@@ -706,27 +1293,27 @@
           "verdict": "CHANGES_REQUESTED",
           "findings": 4,
           "blocking": 2,
-          "seconds": 89.7,
+          "seconds": 108.0,
           "detail": [
             {
               "severity": "HIGH",
               "location": "src/week.ts:6",
-              "description": "The function now builds a local-midnight `Date` but still serializes with `toISOString().slice(0, 10)`, which is always UTC. In any runtime east of UTC (typical EU/Asia hosts, or `TZ=Europe/Berlin` in a container), local Monday 00:00 is still Sunday in UTC, so the bucket key is the previous calendar day \u2014 and therefore the previous ISO week. The same scoring instant therefore lands in different we"
+              "description": "The function now builds a **local-midnight** `Date` (`getFullYear`/`getMonth`/`getDate`, then `setDate`), but still serializes with `toISOString().slice(0, 10)`, which is always UTC. In any timezone east of UTC, local Monday 00:00 is still the previous UTC calendar day, so the returned key is Sunday\u2019s date (or Saturday near offsets \u226524h with DST). ISO week buckets will be off-by-one for every UTC+"
             },
             {
               "severity": "HIGH",
               "location": "src/week.ts:3",
-              "description": "Switching `Date.UTC` / `getUTC*` / `setUTCDate` to `getFullYear` / `getDay` / `setDate` makes the bucket key a function of the process timezone, not of the event. `Date` carries no IANA zone, so this is server TZ, not \u201cthe player\u2019s local week.\u201d Two environments scoring the same `at` (laptop vs container, region A vs region B, missing `TZ=` in one deploy) emit different keys. Existing UTC keys and "
+              "description": "Switching from `getUTC*`/`Date.UTC` to host-local getters makes the bucket key a function of **process/browser timezone**, not of the scoring event. `weekKey` still takes only a `Date` (a UTC instant). There is no event/venue/player zone argument, no named producer of \u201clocal\u201d, and no deploy-time `TZ` contract. The same scoring instant therefore hashes to different weeks on a PST laptop vs UTC CI v"
             },
             {
               "severity": "MEDIUM",
               "location": "src/week.ts:1",
-              "description": "The docstring still says \u201cUTC week bucket (ISO), so a bucket means the same thing everywhere.\u201d The body now uses local getters/setters, so the comment is false and will cause a later change to assume timezone-invariant keys. That is a constraint comment whose absence (or worse, whose lie) lets someone break scoring aggregation."
+              "description": "The module comment still claims a UTC ISO week \u201cso a bucket means the same thing everywhere\u201d while the body uses local civil time. That is a stale constraint: a later agent (or a UTC production host) will \u201cfix\u201d this back to UTC or trust the comment and ship mismatched keys."
             },
             {
               "severity": "MEDIUM",
               "location": "src/week.ts:?",
-              "description": "The Tasker reports only that the existing suite passes. This diff has no tests for offset sign, DST-adjacent midnights, or `toISOString` vs civil date. Suites running in UTC (CI) or UTC\u2212 (many laptops) will pass both before and after this change and still miss the UTC+ mis-bucket. That is false confidence on the exact production failure mode."
+              "description": "The only test claim is \u201cthe existing suite passes.\u201d This change inverts the timezone model and introduces an environment-dependent key; a UTC CI run will not catch the `toISOString` east-of-UTC failure or host-`TZ` drift. That is false confidence, not coverage of the new behaviour."
             }
           ],
           "outcome": "caught"
@@ -738,28 +1325,33 @@
       "kind": "async-ordering",
       "control": false,
       "severity": "critical",
-      "seconds": 48.3,
+      "seconds": 51.2,
       "families": {
         "claude": {
           "verdict": "REJECT",
-          "findings": 3,
-          "blocking": 1,
-          "seconds": 32.1,
+          "findings": 4,
+          "blocking": 2,
+          "seconds": 28.0,
           "detail": [
             {
               "severity": "CRITICAL",
               "location": "src/settle.ts:3",
-              "description": "The `await` was removed from `credit(bet)`, so `settle()` no longer waits for the credit to complete before executing `await markSettled(bet)`. The function's stated contract \u2014 \"credits the player, then marks the bet settled\" \u2014 is now violated in two ways. First, ordering: `markSettled` is invoked while the credit is still in flight, so the bet can be recorded as settled before (or without) the pl"
+              "description": "The `await` on `credit(bet)` was removed, so `credit` is now fire-and-forget. `markSettled(bet)` no longer waits for the credit to complete, which breaks the ordering the summary itself promises (\"credits the player, then marks the bet settled\"). Walk the dual-write table: if `credit` rejects (insufficient float, wallet down, timeout, DB constraint), the rejection is unobserved \u2014 `settle()` still "
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/settle.ts:1",
+              "description": "No test accompanies a change to the ordering of two durable writes on the settlement path; the summary says only \"the existing suite passes\", which \u2014 given the suite did not catch this regression \u2014 demonstrates the suite does not cover the credit/settle ordering or the credit-failure case at all. A change that flips money-state semantics with zero tests is not shippable, independent of the defect "
             },
             {
               "severity": "MEDIUM",
               "location": "src/settle.ts:1",
-              "description": "`settle()` has no logging or correlation context. When a settlement fails partway, there is no record of which bet was in flight, which of the two steps completed, or what the underlying error was \u2014 an operator paged at 3am has only a stack trace from an unhandled rejection with no bet identifier attached to the settlement attempt."
+              "description": "`settle` has no idempotency guard: calling it twice for the same bet issues two credits. The function depends entirely on the caller/DB to reject a second credit. Nothing in this diff or the function signature enforces a settle-once constraint or a CAS on the bet's state before the credit is issued."
             },
             {
               "severity": "MEDIUM",
               "location": "src/settle.ts:1",
-              "description": "`settle()` takes `credit` and `markSettled` as injected callbacks but offers no guarantee that either is idempotent, and performs no dedup of its own. Even with the `await` restored, the \"credit succeeded, markSettled failed\" cell of the outcome table leaves a caller with no safe action: retrying `settle()` double-credits, and not retrying strands a settled-in-fact bet as unsettled in the record."
+              "description": "The function emits nothing \u2014 no log on credit failure, no correlation of bet ID to the credit outcome. Combined with the dropped `await`, a failed credit would be completely invisible at 3am: no error, no log, a bet that looks correctly settled."
             }
           ],
           "outcome": "caught"
@@ -767,42 +1359,37 @@
         "codex": {
           "verdict": "CHANGES_REQUESTED",
           "findings": 2,
-          "blocking": 2,
-          "seconds": 20.2,
+          "blocking": 1,
+          "seconds": 14.0,
           "detail": [
             {
               "severity": "HIGH",
-              "location": "src/settle.ts:3",
-              "description": "Removing `await` contradicts the ticket\u2019s claim that the player is credited before the bet is marked settled. `markSettled` can now complete first, and `settle` can resolve while crediting is still pending. If `credit` rejects, its failure is detached from the returned promise, potentially producing an unhandled rejection while the bet remains recorded as settled but unpaid."
+              "location": "src/settle.ts:4",
+              "description": "Removing `await` directly contradicts the stated requirement to credit the player before marking the bet settled. `markSettled` can now complete before `credit`, and a rejected credit promise is detached from the returned promise. The caller may therefore observe successful settlement even though the player was never credited, with the rejection potentially becoming unhandled."
             },
             {
-              "severity": "HIGH",
-              "location": "src/settle.ts:3",
-              "description": "The claim that \u201cthe existing suite passes\u201d provides false confidence because the shipped diff contains no test capable of detecting the missing await. A behavioral test must prove that `markSettled` is not invoked until the credit promise resolves and that credit rejection prevents settlement."
+              "severity": "MEDIUM",
+              "location": "src/settle.ts:4",
+              "description": "No test accompanies the changed ordering behavior, while the summary merely claims the existing suite passes. That claim provides no evidence the ticket requirement is covered; an existing suite that accepts both implementations is vacuous for this regression."
             }
           ],
           "outcome": "caught"
         },
         "grok": {
           "verdict": "REJECT",
-          "findings": 3,
+          "findings": 2,
           "blocking": 2,
-          "seconds": 48.3,
+          "seconds": 51.2,
           "detail": [
             {
               "severity": "CRITICAL",
               "location": "src/settle.ts:3",
-              "description": "`await` was removed from `credit(bet)`, so settlement no longer happens in the required order. `markSettled(bet)` can complete while `credit` is still in flight or after it has already failed. The ticket requires crediting the player, then marking the bet settled; a settled-but-uncredited bet is a ledger mutation that looks complete to every downstream reader while the player was never paid."
+              "description": "`credit(bet)` is invoked without `await`, then `markSettled(bet)` runs immediately. The ticket requires crediting the player *then* marking the bet settled. Because `credit` returns `Promise<void>`, settlement can now complete while the credit is still in flight, rejected, or never applied. In production that yields settled bets whose players were never paid \u2014 inconsistent ledger state, not a cosm"
             },
             {
               "severity": "HIGH",
               "location": "src/settle.ts:3",
-              "description": "The `credit` promise is discarded. If it rejects, Node (15+) can surface an `unhandledRejection` and terminate the process, while `settle()` still resolves successfully after `markSettled`. Operators retrying from a crash or from a \u201csettled\u201d row will either skip the credit (if settled is the gate) or credit twice (if they replay `settle`). That is an operations failure under real async timing, not"
-            },
-            {
-              "severity": "MEDIUM",
-              "location": "src/settle.ts:?",
-              "description": "The Tasker reports only that \u201cthe existing suite passes.\u201d A suite that stays green after dropping `await credit` is not asserting the contract (credit completes successfully before settled). That is false confidence in production."
+              "description": "The existing suite still passes after dropping `await`, so nothing asserts ordering, completion, or failure of `credit`. Under real load this also starts an unbounded set of fire-and-forget credit promises with no timeout, concurrency cap, or retry \u2014 laptop-green, production-unsafe."
             }
           ],
           "outcome": "caught"
@@ -814,33 +1401,28 @@
       "kind": "off-by-one",
       "control": false,
       "severity": "high",
-      "seconds": 53.6,
+      "seconds": 54.7,
       "families": {
         "claude": {
-          "verdict": "CHANGES_REQUESTED",
-          "findings": 4,
+          "verdict": "REJECT",
+          "findings": 3,
           "blocking": 2,
-          "seconds": 62.9,
+          "seconds": 27.8,
           "detail": [
             {
-              "severity": "HIGH",
+              "severity": "CRITICAL",
               "location": "src/page.ts:2",
-              "description": "The change makes `page()` return `limit - 1` items instead of `limit`. `items.slice(offset, offset + limit)` is already the correct half-open form: `slice`'s `end` is exclusive, so the original returned exactly `limit` elements. Subtracting 1 drops the last element of every page. For the standard consumer that walks pages with `offset += limit`, the element at index `offset + limit - 1` is returne"
+              "description": "The change turns a correct pagination slice into an off-by-one that silently drops the last item of every page. `Array.prototype.slice(start, end)` is already end-exclusive, so `items.slice(offset, offset + limit)` returns exactly `limit` items; the new `offset + limit - 1` returns `limit - 1`. Concretely: `page([1,2,3,4], 0, 2)` now returns `[1]` instead of `[1,2]`; `page([1,2,3,4], 2, 2)` return"
             },
             {
               "severity": "HIGH",
-              "location": "src/page.ts:2",
-              "description": "`limit = 0` now returns an unbounded slice instead of an empty page. With `offset = 0, limit = 0`, the call becomes `items.slice(0, -1)` \u2014 a negative `end` is interpreted relative to the array's end, so this returns **every element but the last**, i.e. essentially the entire collection, for a caller that explicitly asked for zero items. The previous code returned `[]` correctly. Any caller that co"
+              "location": "src/page.ts:1",
+              "description": "The Tasker's summary claims \"the existing suite passes\" while the function's core contract (returns `limit` items) has been inverted. Either there is no test for `page` at all, or the tests assert something that survives an off-by-one. A pagination primitive with no length assertion is a latent hazard independent of this diff \u2014 the next \"harmless\" edit will slip through the same way."
             },
             {
               "severity": "MEDIUM",
-              "location": "src/page.ts:?",
-              "description": "There is no test covering `page()` anywhere in the change, yet the summary asserts \"The existing suite passes.\" Both statements can be true only because no test exercises this function \u2014 the suite's passing therefore carries no information about the change, which is precisely the false-confidence case the review rubric warns about. A one-line behavioural inversion in a pagination primitive reachin"
-            },
-            {
-              "severity": "LOW",
               "location": "src/page.ts:1",
-              "description": "The repository's own documentation describes a dispatcher/reviewer harness, and this file is a standalone generic paging helper with no surrounding call sites in the diff; the blast-radius section is explicitly not computed for this run. I therefore cannot determine which callers depend on `page()` or whether any regulated regime (money, identity, health) applies to the data it pages. I am reporti"
+              "description": "`offset` and `limit` are unvalidated. Negative `offset` is interpreted by `slice` as an index from the end, and negative `limit` produces a reversed or empty range, so a caller passing an un-sanitised query parameter gets surprising, not erroring, behaviour. Not introduced by this diff, but the diff touches the only line where this matters."
             }
           ],
           "outcome": "caught"
@@ -849,31 +1431,36 @@
           "verdict": "CHANGES_REQUESTED",
           "findings": 1,
           "blocking": 1,
-          "seconds": 14.8,
+          "seconds": 17.8,
           "detail": [
             {
               "severity": "HIGH",
               "location": "src/page.ts:2",
-              "description": "`Array.prototype.slice` uses an exclusive end index, so subtracting one makes every page return at most `limit - 1` items; notably, `limit === 1` always returns an empty array. The unchanged implementation already returned exactly `limit` items. The claim that the existing suite passes therefore exposes vacuous or missing coverage for the function\u2019s core contract."
+              "description": "The slice end is exclusive, so subtracting one returns one fewer item than requested. For example, `page([1, 2, 3], 0, 2)` now returns `[1]`, and `limit === 1` always returns an empty array. The claimed passing suite is not evidence of correctness because no regression test accompanies the change and the suite evidently does not detect this behavior."
             }
           ],
           "outcome": "caught"
         },
         "grok": {
           "verdict": "CHANGES_REQUESTED",
-          "findings": 2,
+          "findings": 3,
           "blocking": 2,
-          "seconds": 53.6,
+          "seconds": 54.7,
           "detail": [
             {
               "severity": "HIGH",
               "location": "src/page.ts:2",
-              "description": "`Array.prototype.slice(start, end)` treats `end` as exclusive, so `items.slice(offset, offset + limit)` already returns exactly `limit` items. Changing the end index to `offset + limit - 1` returns `limit - 1` items on every call. With the usual client pattern `offset += limit`, the item at each page boundary (`limit-1`, `2*limit-1`, \u2026) is never returned; with `limit === 1` the end equals the star"
+              "description": "`Array.prototype.slice` is end-exclusive, so `items.slice(offset, offset + limit)` is the correct window of `limit` items. Changing the end to `offset + limit - 1` returns `limit - 1` items on every call. Under the usual production pattern `offset = page * limit`, the record at index `n * limit - 1` is never returned on any page, so consumers silently drop one item per page. That is a live data-lo"
             },
             {
               "severity": "HIGH",
               "location": "src/page.ts:2",
-              "description": "The Tasker reports that the existing suite still passes after a change that alters the length of every non-empty page. That means there is no behavioural assertion on page size or on which indices are included. A green suite here is false confidence: the same tests would pass if `page` returned `[]` or dropped a different index."
+              "description": "When `limit === 1`, the new end equals the start (`slice(offset, offset)`), so the function always returns `[]`. Ops clients that treat an empty page as end-of-stream (cursors, drain loops, \"fetch next one\") will stop immediately or spin, depending on whether they advance offset on empty results. That only shows up under real request patterns, not a laptop smoke of `limit=10`."
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/page.ts:?",
+              "description": "The Tasker reports the existing suite still passes after this change. A pagination helper whose tests still pass while every page is one item short does not lock the contract. Those tests will not catch the skipped-index failure in production."
             }
           ],
           "outcome": "caught"
@@ -885,43 +1472,33 @@
       "kind": "redos",
       "control": false,
       "severity": "high",
-      "seconds": 102.4,
+      "seconds": 86.1,
       "families": {
         "claude": {
           "verdict": "REJECT",
-          "findings": 6,
+          "findings": 4,
           "blocking": 3,
-          "seconds": 101.5,
+          "seconds": 43.7,
           "detail": [
             {
               "severity": "CRITICAL",
               "location": "src/email.ts:1",
-              "description": "The new pattern `/^([a-zA-Z0-9]+)+@[^@\\s]{1,255}$/` contains a nested quantifier \u2014 `+` applied to a group that is itself `[a-zA-Z0-9]+` \u2014 over an overlapping character class. This is the textbook catastrophic-backtracking construction. For any input that is a run of alphanumerics followed by a character that is neither alphanumeric nor `@`, the engine must try every partition of that run before it"
+              "description": "The new local-part pattern `([a-zA-Z0-9]+)+` is a nested quantifier \u2014 the textbook catastrophic-backtracking shape. On any non-matching input (a run of alphanumerics with no `@`, or a trailing invalid character) the engine tries every partition of the run before failing, and the cost doubles with roughly every 1\u20132 extra characters. Measured with node: 20 chars \u2192 16 ms, 24 \u2192 35 ms, 26 \u2192 142 ms, 28 "
             },
             {
               "severity": "HIGH",
               "location": "src/email.ts:1",
-              "description": "Restricting the local part to `[a-zA-Z0-9]` rejects a large share of real, deliverable addresses. Verified against both patterns: `a.b@x.com`, `first+tag@x.com`, `a_b@x.com` and `a-b@x.com` all pass the old regex and all fail the new one. Dots are ubiquitous in `firstname.lastname@` corporate addressing, and `+`-tagging is standard on Gmail and most modern providers; `_` and `-` are common as well"
+              "description": "The rewrite silently rejects the most common real-world local parts. `.`, `+`, `-` and `_` are all gone, so `john.doe@example.com`, `first-last@corp.com` and `user+tag@gmail.com` (verified: all return `false` under the new pattern, `true` under the old) will fail validation. For a system where email is a login or contact identity, that locks legitimate users out of signup and any email-gated flow "
             },
             {
               "severity": "HIGH",
               "location": "src/email.ts:1",
-              "description": "The change ships zero tests, and the summary's Testing section states \"The existing suite passes.\" There is no suite: the module under review is two lines and the corpus contains no test file referencing `isEmail`. The claim is therefore not merely thin, it is unsupported by anything in the tree, and it is the specific claim that would have caught both defects above \u2014 a single valid-address table "
+              "description": "The 64-character upper bound on the local part was dropped. `\"a\".repeat(65) + \"@x.io\"` now returns `true` (previously `false`). The 64-octet limit is the SMTP local-part maximum (RFC 5321 \u00a74.5.3.1); accepting longer values means addresses that pass validation cannot actually be delivered to, and downstream storage columns sized to the old contract may now truncate or reject. This is the opposite o"
             },
             {
               "severity": "MEDIUM",
-              "location": "src/email.ts:1",
-              "description": "The old pattern bounded the local part at `{1,64}`, matching the RFC 5321 limit. The new pattern replaces that with an unbounded `+`, so the local part now has no ceiling at all. On its own this is an over-acceptance bug \u2014 a 10 KB local part is now structurally valid and will be passed downstream to storage and to whatever SMTP or provider API consumes it. In combination with the nested quantifier"
-            },
-            {
-              "severity": "MEDIUM",
-              "location": "src/email.ts:1",
-              "description": "`isEmail` decides acceptance purely from string shape, and returns a bare boolean with no indication of which rule fired. If this predicate gates anything that grants or protects state \u2014 account creation, an identity claim, a recovery channel, an eligibility check \u2014 then a shape regex is the wrong instrument: syntactic well-formedness is not evidence that an address is controlled by the requester,"
-            },
-            {
-              "severity": "LOW",
-              "location": "src/email.ts:1",
-              "description": "The capture group in `([a-zA-Z0-9]+)+` is never referenced \u2014 nothing reads `match[1]`, since the only call is `EMAIL.test(s)`. It is a capturing group whose sole effect is to create the nested quantifier. Beyond the correctness problem, its presence is what makes the defect easy to miss on a skim: it looks like harmless grouping."
+              "location": "src/email.ts:?",
+              "description": "The summary claims \"the existing suite passes\" but the diff contains no test change and no test file, and the behaviour changed in three observable ways (ReDoS, narrowed accepted set, dropped length cap). A suite that passes unchanged across all three is a suite that does not exercise this function's contract at all \u2014 that is false confidence, not evidence. The one-line summary also gives no reaso"
             }
           ],
           "outcome": "caught"
@@ -930,46 +1507,46 @@
           "verdict": "CHANGES_REQUESTED",
           "findings": 3,
           "blocking": 2,
-          "seconds": 18.9,
+          "seconds": 22.6,
           "detail": [
             {
               "severity": "HIGH",
               "location": "src/email.ts:1",
-              "description": "The nested quantifiers in `([a-zA-Z0-9]+)+` create catastrophic backtracking. A long alphanumeric string that does not contain `@` can require exponentially increasing work, allowing attacker-controlled input to block the JavaScript event loop and cause denial of service."
+              "description": "The nested quantifiers in `([a-zA-Z0-9]+)+` cause catastrophic backtracking on attacker-controlled non-matching strings, such as a long alphanumeric sequence without `@`. Because the new regex also removes the previous 64-character bound, processing time can grow exponentially without an input-length ceiling, creating a ReDoS vulnerability."
             },
             {
               "severity": "HIGH",
               "location": "src/email.ts:1",
-              "description": "The new local-part expression accepts only ASCII letters and digits, rejecting ordinary addresses containing dots, hyphens, underscores, or plus tags. The ticket only claims tighter validation and provides no specification or tests establishing that this substantial compatibility break is intended."
+              "description": "The change is described as tightening validation, but it removes the local-part maximum of 64 characters and therefore accepts addresses the previous expression rejected. It also rejects common local-part characters previously accepted, including `.`, `+`, `_`, and `-`, with no specification or tests establishing that this compatibility break is intended."
             },
             {
               "severity": "MEDIUM",
               "location": "src/email.ts:1",
-              "description": "No tests accompany the changed validation contract, so the claim that the existing suite passes provides no evidence that the new behavior is correct or that the introduced ReDoS case is covered."
+              "description": "No regression tests accompany the regex change, so the claim that validation was safely tightened is supported only by an existing suite that evidently does not exercise the newly introduced backtracking pattern, removed length limit, or changed character set."
             }
           ],
           "outcome": "caught"
         },
         "grok": {
-          "verdict": "CHANGES_REQUESTED",
+          "verdict": "REJECT",
           "findings": 3,
           "blocking": 2,
-          "seconds": 102.4,
+          "seconds": 86.1,
           "detail": [
             {
               "severity": "HIGH",
               "location": "src/email.ts:1",
-              "description": "The new local-part pattern `([a-zA-Z0-9]+)+` is nested-quantifier ReDoS (CWE-1333). On a string of alphanumerics with no `@` (or an alphanumeric prefix followed by a non-`@` reject), the engine backtracks through 2^(n-1) partitions. `isEmail` is synchronous TypeScript; a single user-controlled address can pin the Node event loop. The previous `{1,64}` bound made matching linear; this change is saf"
+              "description": "The new local-part pattern `([a-zA-Z0-9]+)+` is the textbook nested-quantifier ReDoS anti-pattern. It matches the same language as `[a-zA-Z0-9]+` when it succeeds, but on a long alphanumeric string that then fails (no `@`, bad domain, trailing junk) the engine explores an exponential partition space. The original `/^[^@\\s]{1,64}@[^@\\s]{1,255}$/` was bounded; this change also drops the 64-character"
             },
             {
               "severity": "HIGH",
               "location": "src/email.ts:1",
-              "description": "Tightening the local part to `[a-zA-Z0-9]+` rejects routine valid addresses (`first.last@`, `user+tag@`, `user_name@`, `user-name@`). The 64-octet local-part cap is also gone, so the new pattern is both stricter on charset and looser on length than RFC 5321 and the prior regex. Callers that previously accepted real-world emails will now false-negative; the summary does not record that contract cha"
+              "description": "The local part is restricted to `[a-zA-Z0-9]` only, so previously accepted (and RFC-common) addresses such as `user.name@host`, `user+tag@host`, `user_name@host`, and `user-name@host` now fail. The ticket was to tighten against ReDoS, not to shrink the accepted alphabet. Combined with the claim that \u201cthe existing suite passes,\u201d the tests do not cover realistic emails and give false confidence."
             },
             {
               "severity": "MEDIUM",
               "location": "src/email.ts:1",
-              "description": "Removing `{1,64}` leaves the local part unbounded, so a huge alphanumeric blob is both a worse ReDoS input and a larger value than downstream stores/indexes typically allow. That only shows up under real payload sizes, not the existing suite."
+              "description": "Domain-side validation is unchanged (`[^@\\s]{1,255}`) while the local side was rewritten, so this is not a coherent tightening. There is no new test for length, charset, or pathological input; a from-scratch rewrite of `isEmail` would still satisfy \u201cexisting suite passes.\u201d"
             }
           ],
           "outcome": "caught"
@@ -981,86 +1558,66 @@
       "kind": "injection",
       "control": false,
       "severity": "critical",
-      "seconds": 61.4,
+      "seconds": 44.3,
       "families": {
         "claude": {
           "verdict": "REJECT",
-          "findings": 5,
+          "findings": 3,
           "blocking": 2,
-          "seconds": 46.9,
+          "seconds": 33.5,
           "detail": [
             {
               "severity": "CRITICAL",
               "location": "src/players.ts:4",
-              "description": "The change removes a parameterised query and replaces it with string interpolation of caller-supplied input directly into SQL: `` `SELECT key, email FROM player WHERE email = '${email}'` ``. `email` is an unconstrained `string` arriving from the caller, and there is no escaping, validation, or allow-listing anywhere on this path. Any caller-reachable value containing a single quote terminates the "
+              "description": "The change replaces a correctly parameterised query (`WHERE email = $1`, `[email]`) with direct string interpolation of a caller-supplied value into SQL text. `email` is untrusted input by construction (it is the lookup key for a player record), so any caller can terminate the string literal and append arbitrary SQL \u2014 e.g. `' OR '1'='1` returns every player's key and email (a privacy leak across t"
             },
             {
               "severity": "HIGH",
               "location": "src/players.ts:4",
-              "description": "The change deletes the only test-visible behaviour guarantee on this function and adds no test in its place. The diff contains no test file, and the summary asserts only that \"the existing suite passes\" \u2014 which is exactly what you would expect, because a suite that exercises `findByEmail` with well-formed addresses cannot distinguish a bound parameter from an interpolated literal. The suite passin"
-            },
-            {
-              "severity": "MEDIUM",
-              "location": "src/players.ts:4",
-              "description": "Beyond the security defect, the interpolated form is functionally wrong for legitimate input. Local-parts containing an apostrophe are valid per RFC 5321 (`o'brien@example.com` is a well-formed address, quoted local-parts more so), and under this line such an address produces a syntax error from Postgres rather than a lookup miss. The previous parameterised form handled these correctly. So the cha"
+              "description": "Independent of the attack surface, the interpolated form is functionally broken for legitimate input. Any email containing a single quote (RFC 5321 permits `'` in the local part, e.g. `o'reilly@example.com`) now produces a malformed statement and the query throws a syntax error, so valid users become unfindable. The parameterised version handled this correctly."
             },
             {
               "severity": "MEDIUM",
               "location": "src/players.ts:?",
-              "description": "The commit is undocumented. The summary reads \"A change on this branch. See the diff.\" with no statement of intent, no rationale, and no acknowledgement that a security control was removed. This repository's conventions place rationale in the commit message precisely so a reviewer reads it once \u2014 that channel is empty here. A reviewer cannot tell whether this was an accidental revert, a copy-paste"
-            },
-            {
-              "severity": "LOW",
-              "location": "src/players.ts:4",
-              "description": "Interpolating the literal also forfeits statement plan reuse \u2014 each distinct email produces a distinct query text, so the parse/plan is redone per call and any prepared-statement or plan cache is defeated. Under load on a hot lookup path this is measurable, though it is far from the main problem with this line."
+              "description": "`email` is not normalised (trim, lower-case) before lookup and the function exposes the raw `pg` `QueryResult` rather than a typed row or `undefined`, so every caller re-implements both. This predates the diff but the diff is the only change on the branch and it touches exactly this line."
             }
           ],
           "outcome": "caught"
         },
         "codex": {
           "verdict": "REJECT",
-          "findings": 2,
-          "blocking": 2,
-          "seconds": 12.9,
+          "findings": 1,
+          "blocking": 1,
+          "seconds": 22.0,
           "detail": [
             {
               "severity": "CRITICAL",
               "location": "src/players.ts:4",
-              "description": "The change replaces a parameterized query with direct interpolation of untrusted `email` input into SQL. An attacker can inject SQL syntax to alter the query, expose player data, bypass lookup semantics, or potentially mutate/destroy data depending on database permissions. Values containing an apostrophe also break ordinary lookups. This directly contradicts the `ts-sql-injection` ticket\u2019s apparen"
-            },
-            {
-              "severity": "HIGH",
-              "location": "src/players.ts:4",
-              "description": "No regression test accompanies the security-sensitive change, while the Tasker\u2019s only testing claim is that the existing suite passes. That claim does not demonstrate the injection case is covered; indeed, the vulnerable implementation landed despite the suite passing."
+              "description": "Untrusted `email` input is interpolated directly into the SQL statement. An attacker can alter the query, potentially exposing or destroying database data; ordinary addresses containing apostrophes also cause syntax errors. The unchanged passing suite does not validate resistance to this regression."
             }
           ],
           "outcome": "caught"
         },
         "grok": {
           "verdict": "REJECT",
-          "findings": 4,
-          "blocking": 3,
-          "seconds": 61.4,
+          "findings": 3,
+          "blocking": 2,
+          "seconds": 44.3,
           "detail": [
             {
               "severity": "CRITICAL",
               "location": "src/players.ts:4",
-              "description": "`findByEmail` interpolates `email` into the SQL string (`WHERE email = '${email}'`) instead of the previous parameterized `$1` bind. Any caller-supplied value can close the quote and append SQL, so this is a classic injection: dump the `player` table (`' OR '1'='1`), UNION-exfiltrate other columns, or run stacked statements (`'; DROP TABLE player; --`) depending on the `pg` client and server setti"
+              "description": "`findByEmail` interpolates `email` into SQL (`WHERE email = '${email}'`) instead of the previous `pg` parameterized query (`$1` + bind array). Any caller-controlled string is now query text: `' OR '1'='1` returns every player; `'; DROP TABLE player; --` (or other multi-statement payloads, depending on the driver/server) can destroy or alter data; a normal address like `o'brien@example.com` is a sy"
             },
             {
               "severity": "HIGH",
               "location": "src/players.ts:4",
-              "description": "Even without an attacker, any real email with an apostrophe (`o'brien@example.com`) produces invalid SQL (`WHERE email = 'o'brien@...'`) and throws at the database. That is an operational break on production data, not a theoretical payload: lookups fail for legitimate players, and the error surface is a syntax error rather than a not-found."
-            },
-            {
-              "severity": "HIGH",
-              "location": "src/players.ts:4",
-              "description": "The query has no `LIMIT` and keys only on `email`. After injection (or a non-unique email), `SELECT key, email FROM player` can return the whole table. Under real data that is an unbounded result set, a hot-table read, and a PII dump in one round-trip. Timeout budgets that look fine for a single-row index lookup do not apply to a full scan."
+              "description": "The Tasker reports the existing suite still passes after dropping the bind parameter. That means nothing asserts parameterized lookup or quote-safe email handling, so this injection ships with a green build."
             },
             {
               "severity": "MEDIUM",
-              "location": "src/players.ts:3",
-              "description": "Failures become database syntax errors with the interpolated SQL in the driver message. There is no structured log of a bound parameter, request/correlation id, or sanitized error. At 3am the on-call sees a broken query string (and possibly the raw email) rather than \u201clookup failed for a bound email.\u201d"
+              "location": "src/players.ts:4",
+              "description": "Interpolated SQL cannot reuse a prepared plan keyed on `$1`. Distinct email strings become distinct statements, polluting `pg_stat_statements` / the plan cache and making 3am errors look like unique query text per user rather than one lookup."
             }
           ],
           "outcome": "caught"
@@ -1072,91 +1629,81 @@
       "kind": "silent-failure",
       "control": false,
       "severity": "high",
-      "seconds": 60.7,
+      "seconds": 80.1,
       "families": {
         "claude": {
           "verdict": "REJECT",
-          "findings": 5,
-          "blocking": 3,
-          "seconds": 56.9,
+          "findings": 3,
+          "blocking": 2,
+          "seconds": 30.5,
           "detail": [
             {
               "severity": "CRITICAL",
               "location": "src/scores.ts:4",
-              "description": "The new `catch {}` discards every failure from `write()` and execution falls straight through to `log(\"score persisted\")` on line 7. The function is `Promise<void>` and swallows rather than rethrows, so the caller receives a resolved promise indistinguishable from a real success. A failed durable write \u2014 the network dropping, a constraint violation, a permission denial, the store being down \u2014 now "
+              "description": "The `catch {}` swallows any failure of the durable `write()` and then the function falls through to `log(\"score persisted\")` on line 8 and resolves successfully. Every caller of `persistScore` now receives a fulfilled promise whether or not the score was persisted, and the log emits a false success record. This is silent data loss: a score that failed to persist is gone, nothing upstream can retry"
             },
             {
               "severity": "HIGH",
-              "location": "src/scores.ts:7",
-              "description": "`log(\"score persisted\")` is unconditional and is therefore an outright false statement on the failure path. This is worse than no logging: any dashboard, alert, or 3am investigation built on this line will report a healthy persistence rate while writes are being dropped, so the CRITICAL above cannot be detected even in aggregate. The message also carries no context \u2014 no score identity, no user or "
-            },
-            {
-              "severity": "HIGH",
-              "location": "src/scores.ts:1",
-              "description": "There are no tests in this change, and none exist for this module anywhere in the corpus fixture (`after/` contains only `src/scores.ts`). The entire behavioural content of the diff is what happens when `write()` rejects, which is precisely the case with zero coverage. A two-line test injecting a rejecting `write` and asserting on what `log` receives would have caught the false success message imm"
+              "location": "src/scores.ts:6",
+              "description": "The caught error is discarded entirely \u2014 no log, no metric, no rethrow. Even if fire-and-forget were the intended semantics, an operator at 3am has zero signal that writes are failing; the only log line present asserts the opposite. The comment `// keep the request fast` is rationale, not a constraint, and it is also wrong: catching an exception does not make an awaited call any faster, so the com"
             },
             {
               "severity": "MEDIUM",
-              "location": "src/scores.ts:5",
-              "description": "The comment `// keep the request fast` asserts a rationale that is not true of the code beneath it \u2014 the `await` still blocks for the full duration of `write()`, so nothing about the request got faster. A future reader will trust it and preserve the swallow while trying to optimise latency elsewhere. Per this repo's stated comment policy, rationale belongs in the commit message; here the inline ra"
-            },
-            {
-              "severity": "LOW",
-              "location": "src/scores.ts:?",
-              "description": "I could not establish the domain regime this code sits under. The change lives in a bakeoff corpus fixture (`docs/reviewer-bakeoff/corpus/ts-swallowed-write/`) whose only contents are `meta.json` and the two `src/scores.ts` variants \u2014 there is no README, schema, or caller evidencing what a \"score\" is or what retention/auditability rules apply to it. I have judged it on general durable-write semant"
+              "location": "src/scores.ts:1",
+              "description": "No test accompanies a behavioural change to a persistence path. The summary says \"the existing suite passes\", which \u2014 given the change inverts the failure contract \u2014 means the suite never exercised the failing-write case. That is a coverage gap in its own right, independent of this diff."
             }
           ],
           "outcome": "caught"
         },
         "codex": {
           "verdict": "CHANGES_REQUESTED",
-          "findings": 3,
+          "findings": 2,
           "blocking": 1,
-          "seconds": 21.1,
+          "seconds": 19.6,
           "detail": [
             {
               "severity": "HIGH",
               "location": "src/scores.ts:4",
-              "description": "Every write failure is silently swallowed, after which the function logs `\"score persisted\"` despite knowing persistence failed. Callers therefore receive apparent success and operators receive a false success signal, allowing lost scores to go undetected."
-            },
-            {
-              "severity": "MEDIUM",
-              "location": "src/scores.ts:5",
-              "description": "The comment claims the catch keeps the request fast, but the function still awaits the write until it succeeds or fails; swallowing its error does not reduce write latency. This documentation claim misrepresents the implemented behavior."
+              "description": "The catch-all handler suppresses every write failure, returns apparent success, and then logs \u201cscore persisted\u201d even though persistence failed. Callers can neither report nor retry the failure, while operational telemetry explicitly claims the opposite of reality. The comment\u2019s claim about keeping the request fast is also unsupported: handling a rejected promise does not reduce the time spent awai"
             },
             {
               "severity": "MEDIUM",
               "location": "src/scores.ts:1",
-              "description": "No changed test demonstrates the new failure behavior, while the summary only claims that the existing suite passes. That evidence does not establish that write failures are handled correctly or that false success logging is prevented."
+              "description": "No regression test accompanies the changed failure semantics, so the summary\u2019s statement that the existing suite passes provides no evidence that suppressing failed writes is intended or safe. A test must demonstrate what callers observe when `write` rejects and must reject the false success log."
             }
           ],
           "outcome": "caught"
         },
         "grok": {
           "verdict": "REJECT",
-          "findings": 4,
+          "findings": 5,
           "blocking": 3,
-          "seconds": 60.7,
+          "seconds": 80.1,
           "detail": [
             {
               "severity": "CRITICAL",
               "location": "src/scores.ts:4",
-              "description": "`persistScore` now swallows every rejection from `write()` in an empty `catch`. The persist can fail (timeout, unique violation, connection drop, disk full) and the function still returns as if it succeeded. Callers and any downstream reader will treat the score as stored when it is not \u2014 silent data loss, not a degraded path."
-            },
-            {
-              "severity": "CRITICAL",
-              "location": "src/scores.ts:7",
-              "description": "`log(\"score persisted\")` runs unconditionally after the empty `catch`. Operators and any log-based alerting will see a successful persist on the failure path. That is a false operational signal: at 3am the logs say the write landed while the store is missing the row."
+              "description": "`persistScore` now catches every rejection from `write()` and continues. The score is not persisted, the error never reaches the caller, and line 7 still logs `\"score persisted\"`. Callers and operators treat a failed write as success, so scores are silently dropped. That is data loss on the persistence path this function exists to own."
             },
             {
               "severity": "HIGH",
               "location": "src/scores.ts:3",
-              "description": "The added comment says the catch exists to \u201ckeep the request fast,\u201d but the `await write()` is unchanged: a hung or slow store still blocks the request for the full duration, and a fast rejection was already cheap. There is no timeout, cancellation, or bounded retry. In production this hides failed writes without improving latency under load, pool exhaustion, or a wedged backend."
+              "description": "The catch is justified as \u201ckeep the request fast\u201d, but it does not bound latency. `await write()` still waits for the full promise; a hung or slow store still holds the request for as long as the backend does. Catching a rejection only hides failures that already finished. In production this adds no timeout, no cancellation, and no deadline, while teaching the next reader that swallowing errors is"
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/scores.ts:7",
+              "description": "The success log is unconditional. After a swallowed failure the only operational signal is `\"score persisted\"`. On-call will trust that line, dashboards keyed on it will under-count write errors, and there is no error object, score identity, or correlation field to hunt the dropped write."
             },
             {
               "severity": "MEDIUM",
+              "location": "src/scores.ts:4",
+              "description": "The Tasker reports only that the existing suite passes. This change inverts failure behaviour; any suite that still passes did not assert that a rejected `write()` fails the function or skips the success log. There is no new test of the error path, so the silent-drop behaviour is unguarded."
+            },
+            {
+              "severity": "LOW",
               "location": "src/scores.ts:5",
-              "description": "`// keep the request fast` is rationale, not a constraint, and it is wrong: catching a rejection does not shorten `await write()`. It will go stale and will teach the next editor that swallowing persist errors is an acceptable latency trick."
+              "description": "`// keep the request fast` is rationale, and it is false: catching a rejection does not make the await faster. House style wants comments for constraints, not justifications."
             }
           ],
           "outcome": "caught"
@@ -1168,86 +1715,91 @@
       "kind": "race-condition",
       "control": false,
       "severity": "critical",
-      "seconds": 85.3,
+      "seconds": 71.2,
       "families": {
         "claude": {
           "verdict": "REJECT",
           "findings": 5,
-          "blocking": 2,
-          "seconds": 43.7,
+          "blocking": 3,
+          "seconds": 33.6,
           "detail": [
             {
               "severity": "CRITICAL",
               "location": "src/debit.ts:5",
-              "description": "The change replaces a single atomic conditional `UPDATE ... WHERE key = $1 AND balance_minor >= $2` with a check-then-act sequence: a `SELECT` of the balance, an application-level comparison, then an unconditional `UPDATE ... SET balance_minor = balance_minor - $2`. This is a textbook TOCTOU race on the balance, and it is on the path where money actually moves. The two `pool.query` calls are not i"
+              "description": "The change replaces a single atomic conditional `UPDATE ... WHERE balance_minor >= $2` with a read-then-write across two separate `pool.query` calls on a connection pool \u2014 no transaction, no `FOR UPDATE`, no re-check in the UPDATE's WHERE clause. Two concurrent debits of 60 against a balance of 100 both SELECT 100, both pass the `< amountMinor` check, both UPDATE unconditionally, and the account l"
             },
             {
               "severity": "HIGH",
               "location": "src/debit.ts:6",
-              "description": "`cur.rows[0].balance_minor` dereferences `rows[0]` without checking that the `SELECT` returned a row. For a non-existent `accountId` the query returns zero rows and the function throws `TypeError: Cannot read properties of undefined (reading 'balance_minor')` rather than a domain error. The previous code handled this case correctly and uniformly: an unknown key matched zero rows and produced `Erro"
+              "description": "`cur.rows[0].balance_minor` dereferences `rows[0]` without checking that a row came back. For an unknown `accountId` the original code threw \"insufficient funds\" (rowCount 0 \u2014 arguably the wrong message, but a controlled failure). The new code throws `TypeError: Cannot read properties of undefined` from inside the money path, which callers will not recognise as a domain error and which reads as a "
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/debit.ts:7",
+              "description": "The UPDATE is now unconditional and still carries no idempotency key, so a retry after a timeout on the second query (client saw failure, DB committed) debits twice \u2014 and, unlike the original, the second debit can now push the balance negative because the guard is only in the already-passed application check. The 4-cell dual-write table for {SELECT ok, UPDATE ?} has no convergence story: an UPDATE"
             },
             {
               "severity": "MEDIUM",
-              "location": "src/debit.ts:4",
-              "description": "The function performs a value-moving mutation with no idempotency key, no dedup at the database level, and no correlation identifier in either the failure path or any log line. A retried or replayed call \u2014 including one retried by a client after a network timeout on the response \u2014 applies the decrement a second time. The pre-existing code shares this gap, so the change does not introduce it, but t"
+              "location": "src/debit.ts:6",
+              "description": "No validation that `amountMinor` is a positive integer. A negative or NaN amount passes `balance < amountMinor` (NaN comparisons are always false, so NaN never throws) and the UPDATE would credit the account or set the balance to NULL/NaN depending on driver coercion. The original had the same gap but its DB-side `>=` comparison at least bounded the damage; with the guard removed this is now the o"
             },
             {
               "severity": "MEDIUM",
-              "location": "src/debit.ts:1",
-              "description": "The diff ships a change to the core money-movement primitive with no accompanying test. The summary states only \"the existing suite passes,\" which is exactly what one would expect: the removed guarantee was atomicity under concurrency, and a sequential unit test cannot observe its loss. A change that alters the concurrency semantics of a balance decrement needs a test that exercises concurrent deb"
-            },
-            {
-              "severity": "LOW",
-              "location": "src/debit.ts:?",
-              "description": "The summary file (\"A change on this branch. See the diff.\" / \"The existing suite passes.\") states nothing about what changed or why. For a diff that inverts the safety property of a balance decrement, the absence of any stated rationale is itself a review problem \u2014 a reviewer cannot tell whether the atomic form was removed deliberately (and if so, in service of what) or by accident. This is not a "
+              "location": "src/debit.ts:3",
+              "description": "The summary says \"A change on this branch. See the diff.\" and \"The existing suite passes.\" A regression of this kind passing the existing suite means the suite has no concurrent-debit test; there is no test in the diff either. The docstring (\"refusing to go negative\") is now false, which is exactly the stale-prose failure mode this project's CLAUDE.md warns about."
             }
           ],
           "outcome": "caught"
         },
         "codex": {
-          "verdict": "CHANGES_REQUESTED",
+          "verdict": "REJECT",
           "findings": 3,
           "blocking": 2,
-          "seconds": 23.3,
+          "seconds": 20.5,
           "detail": [
             {
-              "severity": "HIGH",
+              "severity": "CRITICAL",
               "location": "src/debit.ts:5",
-              "description": "The separate, non-locking `SELECT` and `UPDATE` create a time-of-check/time-of-use race. Concurrent debits can both observe sufficient funds and then both subtract, producing a negative balance. The removed conditional `UPDATE` performed the check and mutation atomically."
+              "description": "The separate `SELECT`, balance check, and unconditional `UPDATE` introduce a TOCTOU race. Concurrent debits can both observe sufficient funds and then both subtract, producing a negative balance and corrupting account data. The claimed passing suite provides no evidence against this regression because the diff adds no concurrency test."
             },
             {
               "severity": "HIGH",
               "location": "src/debit.ts:6",
-              "description": "When the account does not exist, `cur.rows[0]` is undefined and accessing `balance_minor` throws a `TypeError`. This replaces the prior deliberate `\"insufficient funds\"` error with an accidental implementation error."
+              "description": "When `accountId` does not exist, `cur.rows[0]` is undefined and accessing `balance_minor` throws a `TypeError`. The previous implementation deterministically returned the domain error `\"insufficient funds\"` for both missing accounts and inadequate balances."
             },
             {
               "severity": "MEDIUM",
               "location": "src/debit.ts:5",
-              "description": "No regression test accompanies the concurrency-sensitive rewrite. The claim that the existing suite passes provides no evidence that simultaneous debits preserve the non-negative-balance invariant; ordinary sequential tests would pass despite this race."
+              "description": "Each debit now requires two database round trips instead of one, increasing latency and database load while providing weaker correctness."
             }
           ],
           "outcome": "caught"
         },
         "grok": {
           "verdict": "REJECT",
-          "findings": 3,
-          "blocking": 2,
-          "seconds": 85.3,
+          "findings": 4,
+          "blocking": 3,
+          "seconds": 71.2,
           "detail": [
             {
               "severity": "CRITICAL",
               "location": "src/debit.ts:5",
-              "description": "The debit is split into a unlocked `SELECT` of `balance_minor` and a later `UPDATE` that subtracts with no `balance_minor >= $2` predicate. Two concurrent callers can both observe a sufficient balance and both write, so the account goes negative \u2014 the exact failure the function docstring forbids. That is lost-update / TOCTOU under real concurrent load, not a laptop-serial path; the previous single"
+              "description": "The debit was an atomic `UPDATE \u2026 WHERE key = $1 AND balance_minor >= $2`. It is now a `SELECT` then a separate unguarded `UPDATE` on two `pool.query` calls (two autocommit transactions, no `BEGIN`, no checked-out client, no `FOR UPDATE`). Concurrent debits can both pass the in-memory check and both subtract, driving `balance_minor` negative and inventing spend the docstring still claims to refuse"
             },
             {
               "severity": "HIGH",
               "location": "src/debit.ts:6",
-              "description": "`cur.rows[0].balance_minor` assumes a row exists. A missing `key` yields `undefined` and a `TypeError` instead of `insufficient funds`. A row deleted between the `SELECT` and `UPDATE` makes the `UPDATE` a silent no-op, so the caller believes the debit applied. The old `RETURNING` / `rowCount === 0` path at least failed closed."
+              "description": "`cur.rows[0].balance_minor` throws `TypeError` when the account is missing (`rows[0]` is `undefined`). The old path treated missing account and insufficient funds as `rowCount === 0`. Callers and ops now get an unhandled crash instead of `\"insufficient funds\"` (or a distinct not-found error), and there is no test covering this edge."
+            },
+            {
+              "severity": "HIGH",
+              "location": "src/debit.ts:7",
+              "description": "The write dropped `AND balance_minor >= $2`. Even a later attempt to \u201cfix\u201d the race with `SELECT FOR UPDATE` on `pool.query` would still be wrong: the lock is released when that statement\u2019s implicit transaction ends, before the `UPDATE`. The non-negative invariant is no longer enforced at the database."
             },
             {
               "severity": "MEDIUM",
               "location": "src/debit.ts:5",
-              "description": "The new path is two network round-trips with no transaction, lock, timeout, or isolation. That widens the race window under pool contention and adds a failure mode the single-statement form did not have (check succeeds, update never runs). There is no test of concurrent debits, so \u201cthe existing suite passes\u201d cannot see production interleaving."
+              "description": "Debit now takes two round trips instead of one. That is extra latency on the hot path and still does not serialize the balance; indexes and laptop timeouts will not save it."
             }
           ],
           "outcome": "caught"
@@ -1259,67 +1811,47 @@
       "kind": "resource-exhaustion",
       "control": false,
       "severity": "high",
-      "seconds": 92.8,
+      "seconds": 78.0,
       "families": {
         "claude": {
           "verdict": "CHANGES_REQUESTED",
-          "findings": 6,
-          "blocking": 2,
-          "seconds": 69.5,
+          "findings": 4,
+          "blocking": 1,
+          "seconds": 31.1,
           "detail": [
             {
               "severity": "HIGH",
-              "location": "src/notify.ts:1",
-              "description": "The change deletes an existing concurrency bound (`CONCURRENCY = 10`) and replaces sequential batches with `Promise.all(ids.map(send))`, so the number of simultaneous in-flight `send` calls is now exactly `ids.length` \u2014 an attacker-, data- or growth-controlled number with no ceiling. `ids` is an unvalidated array parameter; nothing in the function, its signature, or the summary bounds it. At 10k r"
-            },
-            {
-              "severity": "HIGH",
               "location": "src/notify.ts:2",
-              "description": "`Promise.all` rejects on the first failing `send` and propagates that single error, discarding both the successes and the other failures. The caller receives one error and cannot tell which recipients were notified, which failed, or how many. Combined with the fanout change this is materially worse than before: previously a failure in chunk *k* prevented chunks *k+1\u2026n* from ever starting, so the s"
+              "description": "The diff deletes the only backpressure in the fan-out. Before, `notifyAll` sent in windows of 10; now `ids.map(send)` starts every send in the same tick, so a 50,000-recipient list opens 50,000 in-flight calls at once. Whatever `send` wraps (HTTP, SMTP, push gateway, DB write) will hit rate limits, socket/file-descriptor exhaustion, or provider throttling, and the caller holds 50k pending promises"
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/notify.ts:2",
+              "description": "`Promise.all` rejects on the first failed `send` while the rest continue in the background with no record of which ids succeeded. Any caller that retries `notifyAll` on error re-notifies everyone, including recipients who already received the message. This pre-existed, but unbounded fan-out makes the first-failure case (429s from the provider) far more likely, so the duplicate-notification retry s"
             },
             {
               "severity": "MEDIUM",
               "location": "src/notify.ts:1",
-              "description": "There is no observability on a fanout path. No correlation id is threaded through, nothing records the recipient count, the concurrency actually used, per-send latency, or which ids failed. When this pages at 3am the operator has one rejected promise with whatever message the underlying `send` produced and no way to determine scope \u2014 how many recipients were affected, or whether the incident is \"o"
+              "description": "No test accompanies the change, and \"the existing suite passes\" is only evidence that the suite never asserted the concurrency cap in the first place \u2014 a from-scratch rewrite that dropped the cap would also pass. The behavioural property that mattered here was untested and has now been removed silently."
             },
             {
-              "severity": "MEDIUM",
+              "severity": "LOW",
               "location": "src/notify.ts:1",
-              "description": "`send` is an opaque async callback invoked without any timeout or cancellation signal. A hung `send` holds its slot forever; with the concurrency cap gone there is nothing to bound how many such hangs accumulate, and `notifyAll` itself never settles. There is no `AbortSignal` parameter, so a caller that has already given up (request cancelled, shutdown initiated) cannot stop the fanout."
-            },
-            {
-              "severity": "MEDIUM",
-              "location": "docs/reviewer-bakeoff/corpus/ts-unbounded-fanout/meta.json:?",
-              "description": "The submission provides no evidence of the system's domain, and I could not establish one. `notify.ts` is a three-line standalone file with no callers, no tests, no README, and no consumer in the diff or the surrounding fixture directory; blast radius was not computed for this run, so I cannot rule out that these notifications gate or accompany value-bearing or regulated actions. Per the review co"
-            },
-            {
-              "severity": "MEDIUM",
-              "location": "src/notify.ts:1",
-              "description": "The summary is not a reviewable account of the change. \"Sends a notification to every recipient id\" describes what the function did before the change as well as after, so it conveys zero information about what landed; \"The existing suite passes\" is asserted without any test being added or identified, and since no test exercises `notifyAll`'s concurrency, the passing suite is not evidence that the "
+              "description": "Nothing in the function reports progress or failures with context (batch size, failed ids, duration). At 3am the only signal from a 50k fan-out gone wrong is a single rejected promise with the provider's error text."
             }
           ],
           "outcome": "caught"
         },
         "codex": {
           "verdict": "CHANGES_REQUESTED",
-          "findings": 3,
+          "findings": 1,
           "blocking": 1,
-          "seconds": 33.0,
+          "seconds": 24.2,
           "detail": [
             {
               "severity": "HIGH",
               "location": "src/notify.ts:2",
-              "description": "Replacing bounded batches with `Promise.all(ids.map(send))` creates unbounded fan-out. A large recipient list can exhaust sockets, memory, or downstream rate limits. Additionally, `Promise.all` rejects on the first failure while other sends remain in flight, so callers may retry and produce duplicate notifications before the original work finishes."
-            },
-            {
-              "severity": "MEDIUM",
-              "location": "src/notify.ts:2",
-              "description": "No test accompanies the behavioral change, so \u201cthe existing suite passes\u201d does not demonstrate that every recipient is attempted after one send fails or that concurrency remains bounded. The stated requirement could therefore appear satisfied while the implementation introduces overload and retry hazards."
-            },
-            {
-              "severity": "MEDIUM",
-              "location": "src/notify.ts:2",
-              "description": "The function exposes only the first rejection and adds no recipient context, making partial delivery failures difficult to diagnose or retry selectively."
+              "description": "`Promise.all(ids.map(send))` starts every notification concurrently, so recipient count directly controls outstanding work. Large lists can exhaust sockets, memory, rate limits, or downstream capacity, causing throttling and widespread failures. The removed implementation already notified every ID while bounding concurrency, so the summary does not justify this regression."
             }
           ],
           "outcome": "caught"
@@ -1328,27 +1860,27 @@
           "verdict": "CHANGES_REQUESTED",
           "findings": 4,
           "blocking": 2,
-          "seconds": 92.8,
+          "seconds": 78.0,
           "detail": [
             {
               "severity": "HIGH",
               "location": "src/notify.ts:2",
-              "description": "`await Promise.all(ids.map(send))` launches one in-flight `send` per recipient with no cap. The previous implementation processed slices of `CONCURRENCY = 10`. Under a real recipient list this is unbounded fan-out: connection-pool and file-descriptor exhaustion, heap growth linear in `ids.length`, and a thundering herd against whatever `send` talks to (SMTP, push, SMS, HTTP). Downstream rate limit"
+              "description": "`notifyAll` now does `Promise.all(ids.map(send))` with no cap, replacing a chunked limit of 10. `ids` is unbounded, so a real recipient list (campaign, org-wide blast, import) schedules every send at once. In production that exhausts sockets/FDs, blows process memory with one Promise per id, stampedes the downstream notifier, and trips timeouts that only hold for laptop-sized arrays. A crash or OO"
             },
             {
               "severity": "HIGH",
               "location": "src/notify.ts:2",
-              "description": "Removing the batch loop also removes backpressure. A single `send` rejection now rejects the outer promise only after every call has already been started, so timeouts, process abort, and retries cannot stop the remaining work. The old loop at least declined to start later slices after a batch failed. There is still no per-send timeout, no `AbortSignal`, and no isolation, so one hung `send` holds t"
+              "description": "There is no timeout, cancellation, or backpressure on `send`. One hung recipient holds every other promise and the caller forever; Node\u2019s HTTP agent no longer caps sockets by default, so the hang can pin the whole process. `Promise.all` also fail-fasts: the first rejection rejects the function while in-flight sends keep running, with no record of who was notified."
             },
             {
               "severity": "MEDIUM",
               "location": "src/notify.ts:2",
-              "description": "The existing suite still passes after the concurrency cap was deleted, which means no test asserts bounded fan-out, large-N behaviour, or \u201clater ids are not started after a failure\u201d. That is false confidence: a from-scratch unbounded `Promise.all` satisfies the same tests."
+              "description": "Replaying `notifyAll` re-invokes `send` for every id with no idempotency key, dedup, or \u201calready notified\u201d guard. Combined with unbounded in-flight work, a timeout/retry at the caller duplicates a large blast instead of a batch of 10."
             },
             {
               "severity": "MEDIUM",
-              "location": "src/notify.ts:2",
-              "description": "On failure the caller gets one rejected `Promise.all` with no count of started vs completed vs remaining ids and no recipient context. At 3am this looks like a generic timeout while the process is still emitting N concurrent notifications."
+              "location": "src/notify.ts:?",
+              "description": "No structured log, count, correlation id, or per-id error. At 3am the only signal is a single `Promise.all` rejection (or a dead process) with no \u201csent M of N\u201d or failed-id list. The Tasker report (\u201cexisting suite passes\u201d) does not cover large-N, timeout, or partial-failure behaviour, so the suite can stay green on a laptop-sized fixture."
             }
           ],
           "outcome": "caught"
@@ -1360,38 +1892,28 @@
       "kind": "money-conservation",
       "control": false,
       "severity": "critical",
-      "seconds": 61.9,
+      "seconds": 101.9,
       "families": {
         "claude": {
           "verdict": "REJECT",
-          "findings": 5,
-          "blocking": 3,
-          "seconds": 53.4,
+          "findings": 3,
+          "blocking": 2,
+          "seconds": 34.9,
           "detail": [
             {
               "severity": "CRITICAL",
               "location": "src/ledger.ts:12",
-              "description": "The change deletes the remainder distribution from `split`, so the returned shares no longer sum to the input. `base = Math.floor(m.amountMinor / parts)` truncates, and the truncated `remainder` minor units are now discarded rather than allocated to the first `remainder` shares. `split({amountMinor: 100, currency: 'USD'}, 3)` previously returned `[34, 33, 33]` (sum 100); it now returns `[33, 33, 3"
+              "description": "`split()` no longer distributes the remainder, so the shares no longer sum to the input. `remainder` is still computed on line 9 but never used; every share now receives exactly `base = floor(amountMinor / parts)`. For any uneven split (e.g. 100 minor units into 3 parts) the output is `[33, 33, 33]` \u2014 99 units \u2014 and 1 unit silently vanishes. This is a money-conservation violation in a ledger primi"
             },
             {
               "severity": "HIGH",
               "location": "src/ledger.ts:9",
-              "description": "After the change, `remainder` is computed on line 9 and never read. Beyond being dead code, this is the specific tell that the deletion was an unintended excision rather than a deliberate policy change: a real move to truncating shares would have removed the computation too. It will also fail any build configured with `noUnusedLocals` in tsconfig, meaning the claim in the summary that \"the existin"
-            },
-            {
-              "severity": "HIGH",
-              "location": "src/ledger.ts:3",
-              "description": "The docstring \"Split `m` into `parts` shares. Every minor unit is preserved.\" is now false. This is precisely the class of comment the house style says to keep \u2014 it states a constraint whose absence would let someone break the code \u2014 and the diff has broken the code out from under it without touching it. A future reader has an explicit, authoritative-looking guarantee of conservation that the impl"
-            },
-            {
-              "severity": "MEDIUM",
-              "location": "src/ledger.ts:?",
-              "description": "The diff ships a behavioural change to a money primitive with zero test coverage in the change, and the summary asserts only that \"the existing suite passes\" \u2014 which, given the change silently alters the return value of the single exported function, means the existing suite does not assert the conservation invariant at all. There is no visible test file for `ledger.ts` in the change, so the module"
+              "description": "Independently of the fix above, the test suite is deficient: the summary claims \"the existing suite passes\" while a one-line change that breaks the function's single stated invariant slipped through. A ledger `split` with no sum-preservation assertion gives false confidence \u2014 any future edit to this loop is equally unguarded. The now-dead `remainder` variable is also a signal a linter (`noUnusedLo"
             },
             {
               "severity": "LOW",
-              "location": "src/ledger.ts:?",
-              "description": "The summary file carries no information \u2014 \"A change on this branch. See the diff.\" for both the what and the why, with testing recorded as \"The existing suite passes.\" A summary that restates nothing forces every reviewer to reconstruct intent from the diff alone, which is exactly what makes an unintended deletion like this one hard to distinguish from a deliberate policy change. Under this repo's"
+              "location": "src/ledger.ts:1",
+              "description": "`amountMinor` is a JS `number`; for amounts beyond `Number.MAX_SAFE_INTEGER` the `floor`/`remainder` arithmetic silently loses precision. Not introduced by this diff, but worth guarding at the boundary with `Number.isSafeInteger(m.amountMinor)` alongside the existing `parts` check."
             }
           ],
           "outcome": "caught"
@@ -1400,36 +1922,31 @@
           "verdict": "REJECT",
           "findings": 1,
           "blocking": 1,
-          "seconds": 19.2,
+          "seconds": 24.2,
           "detail": [
             {
               "severity": "CRITICAL",
-              "location": "src/ledger.ts:13",
-              "description": "`split` now discards every indivisible remainder: for example, splitting 10 minor units into 3 parts returns `[3, 3, 3]`, destroying 1 minor unit. This violates the fundamental conservation invariant for monetary splitting, while the still-computed but unused `remainder` makes the regression explicit. The claim that the existing suite passes therefore provides no meaningful evidence that value pre"
+              "location": "src/ledger.ts:12",
+              "description": "The implementation computes `remainder` but no longer distributes it. Whenever `amountMinor` is not evenly divisible by `parts`, the returned amounts sum to less than the input, silently destroying monetary value. The claim that the existing suite passes therefore exposes a coverage gap rather than validating the change: a conservation assertion would fail here."
             }
           ],
           "outcome": "caught"
         },
         "grok": {
           "verdict": "REJECT",
-          "findings": 3,
+          "findings": 2,
           "blocking": 2,
-          "seconds": 61.9,
+          "seconds": 101.9,
           "detail": [
             {
               "severity": "CRITICAL",
               "location": "src/ledger.ts:12",
-              "description": "`split` still computes `remainder = m.amountMinor - base * parts` but no longer distributes those leftover minor units. Every part now gets only `base`, so the returned amounts sum to `base * parts` and drop `remainder` (0..parts-1) minor units. Classic case: 100 cents into 3 parts used to be [34, 33, 33] (sum 100) and is now [33, 33, 33] (sum 99). This is silent monetary destruction in a ledger `"
+              "description": "`split` no longer conserves `amountMinor`. The remainder (`m.amountMinor - base * parts`) was previously allocated as `+1` to the first `remainder` parts so `sum(out) === m.amountMinor`. Every part now gets only `base`, so up to `parts - 1` minor units are discarded on each call. In a `Money` ledger that is silent destruction of value: downstream posters that credit the returned parts will not bal"
             },
             {
               "severity": "HIGH",
               "location": "src/ledger.ts:9",
-              "description": "`remainder` is now dead. The conservation term is still calculated and then ignored, which is the production-shape of this bug: laptop-scale even splits (`remainder === 0`) still look correct, so \u201cthe existing suite passes\u201d can be true while every non-divisible split leaks value. Under real traffic that leak is unbounded over time (at most `parts-1` minor units per call, accumulated across every s"
-            },
-            {
-              "severity": "MEDIUM",
-              "location": "src/ledger.ts:12",
-              "description": "There is no log, metric, or assertion when allocated total \u2260 `m.amountMinor`. A 3am operator cannot see the drain; the function returns a plausible `Money[]` with the same currency and a slightly smaller sum."
+              "description": "`remainder` is still computed and then ignored. The leftover is neither returned, posted, nor logged, so operators cannot reconcile a short split after the fact. The Tasker reports the existing suite still passes, which means conservation of minor units is not asserted; this invariant can regress in production with no CI or 3am signal."
             }
           ],
           "outcome": "caught"
@@ -1440,27 +1957,27 @@
   "scores": {
     "claude": {
       "detection_rate": 1.0,
-      "detected": 14,
+      "detected": 21,
       "missed": 0,
       "false_positive_rate": 0.0,
       "false_positives": 0,
-      "clean_controls": 4,
+      "clean_controls": 5,
       "unavailable": 0,
-      "findings_total": 73,
-      "seconds_total": 958.8,
+      "findings_total": 82,
+      "seconds_total": 924.1,
       "missed_cases": [],
       "false_positive_cases": []
     },
     "codex": {
       "detection_rate": 1.0,
-      "detected": 14,
+      "detected": 21,
       "missed": 0,
-      "false_positive_rate": 0.25,
+      "false_positive_rate": 0.2,
       "false_positives": 1,
-      "clean_controls": 3,
+      "clean_controls": 4,
       "unavailable": 0,
-      "findings_total": 31,
-      "seconds_total": 406.6,
+      "findings_total": 44,
+      "seconds_total": 608.4,
       "missed_cases": [],
       "false_positive_cases": [
         "ctl-pure-refactor"
@@ -1468,14 +1985,14 @@
     },
     "grok": {
       "detection_rate": 1.0,
-      "detected": 14,
+      "detected": 21,
       "missed": 0,
       "false_positive_rate": 0.0,
       "false_positives": 0,
-      "clean_controls": 4,
+      "clean_controls": 5,
       "unavailable": 0,
-      "findings_total": 52,
-      "seconds_total": 1427.4,
+      "findings_total": 76,
+      "seconds_total": 2129.4,
       "missed_cases": [],
       "false_positive_cases": []
     }
@@ -1486,13 +2003,13 @@
       "family": "codex",
       "scored": "false-positive",
       "adjudicated": "true-positive",
-      "note": "The control's summary claimed \"no behaviour change\". codex showed that is false for sparse arrays: `for...of` visits a hole as `undefined` and throws on `r.currency`, while `filter` skips it. Pedantic, and correct \u2014 the claim was wrong, not the reviewer. Counted as codex's only false positive in the table above; on adjudication it has none."
+      "note": "The control's summary claims \"no behaviour change\". codex showed that is false for sparse arrays: the original `for...of` visits a hole as `undefined` and throws on `r.currency`, while `filter` skips it. Reproduced independently on both runs. Pedantic, and correct \u2014 the claim was wrong, not the reviewer, so codex has no adjudicated false positive."
     }
   ],
   "notes": [
-    "claude's seat runs Fable 5 and exhausted that model's quota 7 cases in, returning UNAVAILABLE in ~4.5s for the remaining 11. Those cells were re-run on a pool account via CLAUDE_CONFIG_DIR and grafted in; `claude-rerun.json` holds the raw re-run. That is a quota fact about the run, not a review fact about the family.",
-    "An earlier pass scored a SECOND codex false positive, on ctl-correct-feature. That was a harness defect: every control was handed the summary \"a refactor with no behaviour change\", which was false of the case that adds a function. All three families flagged the mismatch and only codex rated it HIGH, so the harness scored the strictest reviewer for the author's error. Each case now carries its own summary.",
-    "No case discriminated between the families: all three caught all 14 seeded defects, including the subtle tier (ReDoS, cache-invalidation-before-commit, local-time week bucketing, float money, missing await, unbounded fan-out). This corpus establishes a FLOOR \u2014 no seated family is blind to a planted defect \u2014 and cannot rank them. Ranking needs defects that at least one family misses.",
-    "Wall-clock is the one axis that separated them, by 3.5x across 18 cases: codex 407s, claude 959s, grok 1427s."
+    "RUN 2 (2026-08-29). Every family was reachable throughout, so no cell is grafted from another account \u2014 the previous run lost claude to a Fable 5 quota limit 7 cases in and had to re-run it separately.",
+    "The corpus gained a HARD tier for this run, built specifically to try to separate the families: lexicographic sort on numeric scores, a timing-unsafe secret comparison, an unanchored validation regex, prototype pollution via for...in merge, negative-modulo ring wrapping, a retry that mints a fresh idempotency key per attempt, and an attention-under-noise case hiding an off-by-one guard change inside a whole-file rename.",
+    "hard-needle-in-rename and ctl-large-rename were re-run after the main pass: their wallet.ts declared `loadAccount` without `async` while using `await`, a compile error on both sides. That made the control invalid and corrupted the attention case, because matching on the FILE credited a finding about the bad `await` as catching the seeded guard. The corpus is now tsc-clean, a seal enforces the bug class, and that case carries `markers` so a finding must name the defect and not merely the file.",
+    "Wall-clock spread across 26 cases: codex 608s, claude 924s, grok 2129s (3.5x)."
   ]
 }

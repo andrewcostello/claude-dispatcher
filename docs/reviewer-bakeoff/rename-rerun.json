@@ -1,0 +1,176 @@
+{
+  "harness_version": "1",
+  "corpus": "docs/reviewer-bakeoff/corpus",
+  "cases": 2,
+  "defect_cases": 1,
+  "control_cases": 1,
+  "families": [
+    "claude",
+    "codex",
+    "grok"
+  ],
+  "rows": [
+    {
+      "case": "ctl-large-rename",
+      "kind": "refactor",
+      "control": true,
+      "severity": "none",
+      "seconds": 84.9,
+      "families": {
+        "claude": {
+          "verdict": "APPROVE",
+          "findings": 2,
+          "blocking": 0,
+          "seconds": 27.0,
+          "detail": [
+            {
+              "severity": "LOW",
+              "location": "src/wallet.ts:52",
+              "description": "In `totalReserved` the accumulator was `acct` and is now `account_`, but it is a `number` (a running sum of `reservedMinor`), not an account. The rename faithfully preserves a pre-existing misnomer; it does not introduce a behaviour change, but the new name is arguably more misleading than the old one because it reads as a full `Account` value in a money-summing loop."
+            },
+            {
+              "severity": "LOW",
+              "location": "src/wallet.ts:12",
+              "description": "The trailing-underscore identifier `account_` is an unusual convention for this file \u2014 every other local (`row`, `res`, `key`, `amountMinor`) is plain camelCase, and the underscore exists only to avoid shadowing the `account` parameter. In the six functions that receive an `Account` parameter the local is a pure alias (`const account_ = account;`) that adds nothing; in `loadAccount` it holds a `Qu"
+            }
+          ],
+          "outcome": "clean"
+        },
+        "codex": {
+          "verdict": "APPROVE",
+          "findings": 0,
+          "blocking": 0,
+          "seconds": 9.2,
+          "detail": [],
+          "outcome": "clean"
+        },
+        "grok": {
+          "verdict": "APPROVE",
+          "findings": 1,
+          "blocking": 0,
+          "seconds": 84.9,
+          "detail": [
+            {
+              "severity": "LOW",
+              "location": "src/wallet.ts:61",
+              "description": "In `totalReserved`, the identifier `acct` was a numeric accumulator, not an account. Renaming it to `account_` makes a number read as an account object and is the only place the mechanical substitution degrades local meaning. Query shapes, table names, and mutation SQL are otherwise unchanged."
+            }
+          ],
+          "outcome": "clean"
+        }
+      }
+    },
+    {
+      "case": "hard-needle-in-rename",
+      "kind": "attention-under-noise",
+      "control": false,
+      "severity": "critical",
+      "seconds": 91.7,
+      "families": {
+        "claude": {
+          "verdict": "REJECT",
+          "findings": 3,
+          "blocking": 1,
+          "seconds": 36.8,
+          "detail": [
+            {
+              "severity": "CRITICAL",
+              "location": "src/wallet.ts:34",
+              "description": "The summary claims a mechanical rename with \"no behaviour change\", but `reserve()` changed its funds check from `availableMinor(acct) < amountMinor` to `availableMinor(account_) < amountMinor - 1`. That is an off-by-one that lets a reservation succeed when available funds are exactly one minor unit short: with `balance_minor - reserved_minor == amountMinor - 1` the guard passes and `reserved_minor"
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/wallet.ts:61",
+              "description": "In `totalReserved` the accumulator (a `number`) is renamed from `acct` to `account_`, and in `loadAccount` (line 13) the pg `QueryResult` is likewise called `account_`. Neither is an `Account`; naming a numeric sum and a query result the same as the domain type (with a trailing-underscore convention that suggests a shadowed parameter) makes the file harder to read than before the rename and is exa"
+            },
+            {
+              "severity": "LOW",
+              "location": "src/wallet.ts:?",
+              "description": "The Tasker's summary says \"The existing suite passes\" with no test added or cited. For a change touching `reserve`/`release`/`post` in a money path, a review cannot verify the \"no behaviour change\" claim from the summary alone \u2014 and here the claim was false."
+            }
+          ],
+          "outcome": "caught"
+        },
+        "codex": {
+          "verdict": "CHANGES_REQUESTED",
+          "findings": 1,
+          "blocking": 1,
+          "seconds": 24.4,
+          "detail": [
+            {
+              "severity": "HIGH",
+              "location": "src/wallet.ts:33",
+              "description": "The purportedly mechanical rename changes the insufficient-funds condition from `availableMinor(account_) < amountMinor` to `< amountMinor - 1`. An account with one minor unit less than the requested amount can now reserve funds, potentially persisting `reserved_minor > balance_minor`. This contradicts the no-behaviour-change claim, and the reported passing suite does not establish the required bo"
+            }
+          ],
+          "outcome": "caught"
+        },
+        "grok": {
+          "verdict": "REJECT",
+          "findings": 3,
+          "blocking": 1,
+          "seconds": 91.7,
+          "detail": [
+            {
+              "severity": "CRITICAL",
+              "location": "src/wallet.ts:34",
+              "description": "This is not a mechanical rename. `reserve` changed `availableMinor(acct) < amountMinor` to `availableMinor(account_) < amountMinor - 1`, so a reserve of `available + 1` now succeeds. A zero-available account can reserve 1 minor unit; `reserved_minor` can exceed `balance_minor` and `availableMinor` goes negative. That breaks the wallet invariant this function exists to enforce and writes invalid mo"
+            },
+            {
+              "severity": "MEDIUM",
+              "location": "src/wallet.ts:?",
+              "description": "\u201cThe existing suite passes\u201d after an insufficient-funds boundary change means the suite does not pin the reserve threshold, or the passing tests never exercised it. That is false confidence for a wallet mutation."
+            },
+            {
+              "severity": "LOW",
+              "location": "src/wallet.ts:52",
+              "description": "`totalReserved` renamed a numeric accumulator (`acct`) to `account_`. The identifier now looks like an `Account` and is a worse name than before."
+            }
+          ],
+          "outcome": "caught"
+        }
+      }
+    }
+  ],
+  "scores": {
+    "claude": {
+      "detection_rate": 1.0,
+      "detected": 1,
+      "missed": 0,
+      "false_positive_rate": 0.0,
+      "false_positives": 0,
+      "clean_controls": 1,
+      "unavailable": 0,
+      "findings_total": 5,
+      "seconds_total": 63.7,
+      "missed_cases": [],
+      "false_positive_cases": []
+    },
+    "codex": {
+      "detection_rate": 1.0,
+      "detected": 1,
+      "missed": 0,
+      "false_positive_rate": 0.0,
+      "false_positives": 0,
+      "clean_controls": 1,
+      "unavailable": 0,
+      "findings_total": 1,
+      "seconds_total": 33.6,
+      "missed_cases": [],
+      "false_positive_cases": []
+    },
+    "grok": {
+      "detection_rate": 1.0,
+      "detected": 1,
+      "missed": 0,
+      "false_positive_rate": 0.0,
+      "false_positives": 0,
+      "clean_controls": 1,
+      "unavailable": 0,
+      "findings_total": 4,
+      "seconds_total": 176.6,
+      "missed_cases": [],
+      "false_positive_cases": []
+    }
+  }
+}

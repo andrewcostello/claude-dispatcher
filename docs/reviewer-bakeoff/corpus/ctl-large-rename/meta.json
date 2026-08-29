@@ -1,0 +1,9 @@
+{
+  "id": "ctl-large-rename",
+  "language": "typescript",
+  "kind": "refactor",
+  "severity": "none",
+  "control": true,
+  "summary": "Renames the local `acct` to `account_` throughout the wallet service. Mechanical; no behaviour change.",
+  "defect": null
+}

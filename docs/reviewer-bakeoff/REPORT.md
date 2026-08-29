@@ -1,15 +1,15 @@
 # Reviewer bake-off
 
-14 seeded-defect cases, 4 controls, 3 families.
+21 seeded-defect cases, 5 controls, 3 families.
 
 A catch is a HIGH or CRITICAL finding naming the file the defect is in.
 A false positive is a blocking finding on a case that has no defect.
 
 | family | detection | caught | missed | false-positive rate | FPs | findings | total s |
 |---|---|---|---|---|---|---|---|
-| claude | 100% | 14 | 0 | 0% | 0 | 73 | 958.8 |
-| codex | 100% | 14 | 0 | 25% | 1 | 31 | 406.6 |
-| grok | 100% | 14 | 0 | 0% | 0 | 52 | 1427.4 |
+| claude | 100% | 21 | 0 | 0% | 0 | 82 | 924.1 |
+| codex | 100% | 21 | 0 | 20% | 1 | 44 | 608.4 |
+| grok | 100% | 21 | 0 | 0% | 0 | 76 | 2129.4 |
 
 ## Per case
 
@@ -18,7 +18,15 @@ A false positive is a blocking finding on a case that has no defect.
 | ctl-correct-feature | CONTROL | clean | clean | clean |
 | ctl-docs-only | CONTROL | clean | clean | clean |
 | ctl-equivalent-rewrite | CONTROL | clean | clean | clean |
+| ctl-large-rename | CONTROL | clean | clean | clean |
 | ctl-pure-refactor | CONTROL | clean | false-positive | clean |
+| hard-lexicographic-sort | sort-order | caught | caught | caught |
+| hard-needle-in-rename | attention-under-noise | caught | caught | caught |
+| hard-negative-modulo | off-by-one | caught | caught | caught |
+| hard-prototype-pollution | prototype-pollution | caught | caught | caught |
+| hard-retry-double-charge | idempotency | caught | caught | caught |
+| hard-timing-unsafe | timing-attack | caught | caught | caught |
+| hard-unanchored-regex | input-validation | caught | caught | caught |
 | ts-auth-bypass | authorization | caught | caught | caught |
 | ts-cache-before-commit | cache-coherence | caught | caught | caught |
 | ts-connection-leak | resource-leak | caught | caught | caught |
@@ -38,11 +46,11 @@ A false positive is a blocking finding on a case that has no defect.
 
 Cases where a human overruled the harness score, with the reason.
 
-* **ctl-pure-refactor / codex** — scored `false-positive`, adjudicated **true-positive**. The control's summary claimed "no behaviour change". codex showed that is false for sparse arrays: `for...of` visits a hole as `undefined` and throws on `r.currency`, while `filter` skips it. Pedantic, and correct — the claim was wrong, not the reviewer. Counted as codex's only false positive in the table above; on adjudication it has none.
+* **ctl-pure-refactor / codex** — scored `false-positive`, adjudicated **true-positive**. The control's summary claims "no behaviour change". codex showed that is false for sparse arrays: the original `for...of` visits a hole as `undefined` and throws on `r.currency`, while `filter` skips it. Reproduced independently on both runs. Pedantic, and correct — the claim was wrong, not the reviewer, so codex has no adjudicated false positive.
 
 ## Notes
 
-* claude's seat runs Fable 5 and exhausted that model's quota 7 cases in, returning UNAVAILABLE in ~4.5s for the remaining 11. Those cells were re-run on a pool account via CLAUDE_CONFIG_DIR and grafted in; `claude-rerun.json` holds the raw re-run. That is a quota fact about the run, not a review fact about the family.
-* An earlier pass scored a SECOND codex false positive, on ctl-correct-feature. That was a harness defect: every control was handed the summary "a refactor with no behaviour change", which was false of the case that adds a function. All three families flagged the mismatch and only codex rated it HIGH, so the harness scored the strictest reviewer for the author's error. Each case now carries its own summary.
-* No case discriminated between the families: all three caught all 14 seeded defects, including the subtle tier (ReDoS, cache-invalidation-before-commit, local-time week bucketing, float money, missing await, unbounded fan-out). This corpus establishes a FLOOR — no seated family is blind to a planted defect — and cannot rank them. Ranking needs defects that at least one family misses.
-* Wall-clock is the one axis that separated them, by 3.5x across 18 cases: codex 407s, claude 959s, grok 1427s.
+* RUN 2 (2026-08-29). Every family was reachable throughout, so no cell is grafted from another account — the previous run lost claude to a Fable 5 quota limit 7 cases in and had to re-run it separately.
+* The corpus gained a HARD tier for this run, built specifically to try to separate the families: lexicographic sort on numeric scores, a timing-unsafe secret comparison, an unanchored validation regex, prototype pollution via for...in merge, negative-modulo ring wrapping, a retry that mints a fresh idempotency key per attempt, and an attention-under-noise case hiding an off-by-one guard change inside a whole-file rename.
+* hard-needle-in-rename and ctl-large-rename were re-run after the main pass: their wallet.ts declared `loadAccount` without `async` while using `await`, a compile error on both sides. That made the control invalid and corrupted the attention case, because matching on the FILE credited a finding about the bad `await` as catching the seeded guard. The corpus is now tsc-clean, a seal enforces the bug class, and that case carries `markers` so a finding must name the defect and not merely the file.
+* Wall-clock spread across 26 cases: codex 608s, claude 924s, grok 2129s (3.5x).

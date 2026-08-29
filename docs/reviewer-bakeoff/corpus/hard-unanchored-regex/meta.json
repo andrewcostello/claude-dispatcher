@@ -1,0 +1,12 @@
+{
+  "id": "hard-unanchored-regex",
+  "language": "typescript",
+  "kind": "input-validation",
+  "severity": "high",
+  "control": false,
+  "summary": "Relaxes the verification-code regex.",
+  "defect": {
+    "file": "src/code.ts",
+    "description": "Dropping `^` and `$` makes the test a SUBSTRING match: `isVerificationCode('junk123456junk')` is true, so any string containing six digits anywhere passes verification."
+  }
+}

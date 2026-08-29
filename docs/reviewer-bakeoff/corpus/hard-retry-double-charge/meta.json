@@ -1,0 +1,12 @@
+{
+  "id": "hard-retry-double-charge",
+  "language": "typescript",
+  "kind": "idempotency",
+  "severity": "critical",
+  "control": false,
+  "summary": "Generates a unique key per charge attempt.",
+  "defect": {
+    "file": "src/charge.ts",
+    "description": "Each retry now sends a FRESH idempotency key, which defeats the mechanism entirely: a charge that succeeded but timed out is retried as a new payment and the customer is billed twice."
+  }
+}

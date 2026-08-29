@@ -1,0 +1,12 @@
+{
+  "id": "hard-prototype-pollution",
+  "language": "typescript",
+  "kind": "prototype-pollution",
+  "severity": "critical",
+  "control": false,
+  "summary": "Simplifies the deep-merge helper.",
+  "defect": {
+    "file": "src/merge.ts",
+    "description": "Drops the __proto__/constructor/prototype guard and switches to `for...in`, so attacker-controlled JSON can set Object.prototype keys and change behaviour process-wide."
+  }
+}

@@ -51,6 +51,12 @@ class Case:
     control: bool
     defect_file: str | None
     defect_description: str | None
+    #: Optional narrowing. Matching on the file alone is enough when the file
+    #: holds only the seeded defect, and NOT enough for a large file where a
+    #: reviewer can name the right file for the wrong reason — the
+    #: attention-under-noise case is exactly that. When set, a finding must
+    #: also mention one of these.
+    defect_markers: tuple[str, ...]
     summary: str
     diff: str
 
@@ -94,6 +100,7 @@ def load_corpus(corpus_dir: Path) -> list[Case]:
             control=bool(meta.get("control")),
             defect_file=defect.get("file"),
             defect_description=defect.get("description"),
+            defect_markers=tuple(defect.get("markers") or ()),
             summary=meta["summary"],
             diff=_render_diff(d),
         ))
@@ -132,8 +139,13 @@ def _caught(verdict: cfr.ReviewerVerdict, case: Case) -> bool:
         if f.severity not in BLOCKING:
             continue
         where = f"{getattr(f, 'location', '') or ''} {getattr(f, 'description', '') or ''}"
-        if name and name in where:
-            return True
+        if not name or name not in where:
+            continue
+        if case.defect_markers and not any(
+            m.lower() in where.lower() for m in case.defect_markers
+        ):
+            continue
+        return True
     return False
 
 

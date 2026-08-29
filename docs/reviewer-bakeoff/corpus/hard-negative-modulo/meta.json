@@ -1,0 +1,12 @@
+{
+  "id": "hard-negative-modulo",
+  "language": "typescript",
+  "kind": "off-by-one",
+  "severity": "high",
+  "control": false,
+  "summary": "Simplifies ring-buffer index wrapping.",
+  "defect": {
+    "file": "src/ring.ts",
+    "description": "JS `%` keeps the sign of the dividend, so wrapIndex(-1, 8) is -1 rather than 7; every backwards step off the start of the ring buffer indexes out of bounds and reads undefined."
+  }
+}

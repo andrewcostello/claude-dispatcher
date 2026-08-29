@@ -1,0 +1,12 @@
+{
+  "id": "hard-lexicographic-sort",
+  "language": "typescript",
+  "kind": "sort-order",
+  "severity": "high",
+  "control": false,
+  "summary": "Simplifies leaderboard ranking.",
+  "defect": {
+    "file": "src/rank.ts",
+    "description": "`Array.prototype.sort()` with no comparator sorts by STRING: 9 ranks above 100, so the leaderboard order is wrong for any score crossing a digit boundary. The find() remap also collapses ties onto one player."
+  }
+}
