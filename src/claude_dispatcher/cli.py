@@ -536,6 +536,25 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Actually delete. Without it, nothing is changed.")
     pb.set_defaults(func=prune_branches)
 
+    rb = sub.add_parser(
+        "reviewer-bakeoff",
+        help=("Score each reviewer family against a corpus of seeded defects. "
+              "The seat order decides which seat is dropped when the panel is "
+              "trimmed, so it needs evidence that can be re-run rather than a "
+              "tally nobody can reproduce. Spends real reviewer quota."),
+    )
+    rb.add_argument("--corpus", default="docs/reviewer-bakeoff/corpus",
+                    help="Corpus directory (default: docs/reviewer-bakeoff/corpus)")
+    rb.add_argument("--out", default="docs/reviewer-bakeoff",
+                    help="Where results.json and REPORT.md are written")
+    rb.add_argument("--only", default="",
+                    help="Comma-separated case ids; default is every case")
+    rb.add_argument("--family", default="",
+                    help=("Comma-separated families to seat; default is the "
+                          "production roster. Use to re-run one family whose "
+                          "seat hit a quota limit mid-run."))
+    rb.set_defaults(func=reviewer_bakeoff_cmd)
+
     rq = sub.add_parser(
         "requeue",
         help=("Send tasks back to To Do for a FRESH attempt: clear run state AND "
@@ -815,6 +834,45 @@ def _print_bridge_result(result: dict, *, action: str) -> int:
             print(f"  {k}: {msg}", file=sys.stderr)
         return 1
     return 0
+
+
+def reviewer_bakeoff_cmd(args) -> int:
+    """`dispatcher reviewer-bakeoff` — score the seats against seeded defects."""
+    import json
+
+    from . import cross_family_reviewer as cfr
+    from . import reviewer_bakeoff as rb_mod
+
+    corpus = Path(args.corpus)
+    if not corpus.is_dir():
+        print(f"error: corpus not found: {corpus}", file=sys.stderr)
+        return 2
+
+    reviewers = None
+    if args.family:
+        want = {f.strip().lower() for f in args.family.split(",") if f.strip()}
+        reviewers = [r for r in cfr.default_reviewers() if r.family in want]
+        if not reviewers:
+            print(f"error: no seated family matches {sorted(want)}", file=sys.stderr)
+            return 2
+
+    result = rb_mod.run_bakeoff(
+        corpus_dir=corpus,
+        reviewers=reviewers,
+        only=[k.strip() for k in args.only.split(",") if k.strip()] or None,
+    )
+
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "results.json").write_text(
+        json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    (out_dir / "REPORT.md").write_text(
+        rb_mod.render_markdown(result), encoding="utf-8")
+    print()
+    print(rb_mod.render_markdown(result))
+    print(f"written to {out_dir}/results.json and {out_dir}/REPORT.md")
+    # A family that could not be reached did not pass; say so in the exit code.
+    return 1 if any(s["unavailable"] for s in result["scores"].values()) else 0
 
 
 def _watch_entry(args: argparse.Namespace) -> int:

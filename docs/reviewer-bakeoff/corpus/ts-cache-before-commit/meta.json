@@ -1,0 +1,12 @@
+{
+  "id": "ts-cache-before-commit",
+  "language": "typescript",
+  "kind": "cache-coherence",
+  "severity": "high",
+  "control": false,
+  "summary": "Updates a profile name and invalidates its cache entry.",
+  "defect": {
+    "file": "src/profile.ts",
+    "description": "The cache is invalidated BEFORE the transaction commits, so a concurrent read repopulates it from the pre-commit row and the stale value persists indefinitely."
+  }
+}

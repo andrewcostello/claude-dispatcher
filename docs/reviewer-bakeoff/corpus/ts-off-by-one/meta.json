@@ -1,0 +1,12 @@
+{
+  "id": "ts-off-by-one",
+  "language": "typescript",
+  "kind": "off-by-one",
+  "severity": "high",
+  "control": false,
+  "defect": {
+    "file": "src/page.ts",
+    "description": "`offset + limit - 1` returns limit-1 items, so one row is dropped from every page and the last row of the set is never reachable."
+  },
+  "summary": "A change on this branch. See the diff."
+}

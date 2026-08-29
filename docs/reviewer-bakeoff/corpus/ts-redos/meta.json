@@ -1,0 +1,12 @@
+{
+  "id": "ts-redos",
+  "language": "typescript",
+  "kind": "redos",
+  "severity": "high",
+  "control": false,
+  "summary": "Tightens the email validation regex.",
+  "defect": {
+    "file": "src/email.ts",
+    "description": "`([a-zA-Z0-9]+)+` is a nested quantifier with catastrophic backtracking: a crafted non-matching input hangs the event loop, so any unauthenticated caller can take the service down."
+  }
+}

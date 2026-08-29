@@ -1,0 +1,12 @@
+{
+  "id": "ts-idempotency",
+  "language": "typescript",
+  "kind": "idempotency",
+  "severity": "high",
+  "control": false,
+  "defect": {
+    "file": "src/webhook.ts",
+    "description": "The event is marked seen only AFTER apply() returns, so a throw or a concurrent redelivery re-applies the payment \u2014 double credit."
+  },
+  "summary": "A change on this branch. See the diff."
+}

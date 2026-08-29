@@ -1362,7 +1362,15 @@ def default_reviewers(timeout_seconds: int = DEFAULT_REVIEWER_TIMEOUT_SECONDS) -
     #   (a) "Claude-reviewing-Claude is same-family/partially circular." The
     #       PR-1353 bake-off then found that of the available families, only
     #       claude reliably catches a Critical — grok is a cheap supplementary
-    #       seat and codex was dropped. Since nearly every task is
+    #       seat and codex was dropped.
+    #
+    #       SUPERSEDED 2026-08-29. That result was not reproducible from
+    #       anything in this repo, and `docs/reviewer-bakeoff` now contradicts
+    #       it: over 14 seeded defects each of claude, codex and grok caught
+    #       14/14, with no adjudicated false positive. The conclusion below —
+    #       seat the author family — is unaffected, but do not cite PR-1353 for
+    #       a RANKING; `dispatcher reviewer-bakeoff` re-runs the evidence.
+    #       Since nearly every task is
     #       claude-authored, that circularity argument was removing the only
     #       reliable detector from effectively every review. It traded a
     #       false-POSITIVE risk for a false-NEGATIVE one, and missed Criticals

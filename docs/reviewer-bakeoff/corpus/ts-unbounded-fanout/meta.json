@@ -1,0 +1,12 @@
+{
+  "id": "ts-unbounded-fanout",
+  "language": "typescript",
+  "kind": "resource-exhaustion",
+  "severity": "high",
+  "control": false,
+  "summary": "Sends a notification to every recipient id.",
+  "defect": {
+    "file": "src/notify.ts",
+    "description": "Removes the concurrency bound: a 100k-recipient batch opens 100k simultaneous requests, exhausting sockets and file descriptors and taking the process down under exactly the load it is meant to serve."
+  }
+}

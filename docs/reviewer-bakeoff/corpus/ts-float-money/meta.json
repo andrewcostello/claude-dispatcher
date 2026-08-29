@@ -1,0 +1,12 @@
+{
+  "id": "ts-float-money",
+  "language": "typescript",
+  "kind": "float-money",
+  "severity": "high",
+  "control": false,
+  "summary": "Simplifies major-to-minor unit conversion.",
+  "defect": {
+    "file": "src/convert.ts",
+    "description": "Routes money through binary floating point: `parseFloat('1.005')*100` is 100.49999999999999, so Math.round yields 100 and a cent is lost on exactly the half-cent values rounding rules care about."
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "id": "ts-auth-bypass",
+  "language": "typescript",
+  "kind": "authorization",
+  "severity": "critical",
+  "control": false,
+  "defect": {
+    "file": "src/authz.ts",
+    "description": "Unknown roles default to ALLOWED (`allowed ?? true`), so any unrecognised or attacker-supplied role string may withdraw."
+  },
+  "summary": "A change on this branch. See the diff."
+}

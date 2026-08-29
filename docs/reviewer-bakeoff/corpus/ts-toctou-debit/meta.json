@@ -1,0 +1,12 @@
+{
+  "id": "ts-toctou-debit",
+  "language": "typescript",
+  "kind": "race-condition",
+  "severity": "critical",
+  "control": false,
+  "defect": {
+    "file": "src/debit.ts",
+    "description": "Check-then-act across two statements with no lock or conditional update: concurrent debits both pass the SELECT and drive the balance negative."
+  },
+  "summary": "A change on this branch. See the diff."
+}

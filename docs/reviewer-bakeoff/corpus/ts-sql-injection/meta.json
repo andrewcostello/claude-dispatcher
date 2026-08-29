@@ -1,0 +1,12 @@
+{
+  "id": "ts-sql-injection",
+  "language": "typescript",
+  "kind": "injection",
+  "severity": "critical",
+  "control": false,
+  "defect": {
+    "file": "src/players.ts",
+    "description": "User-supplied email is interpolated into SQL instead of parameterised \u2014 straightforward SQL injection."
+  },
+  "summary": "A change on this branch. See the diff."
+}

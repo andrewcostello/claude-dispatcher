@@ -1,0 +1,12 @@
+{
+  "id": "ts-swallowed-write",
+  "language": "typescript",
+  "kind": "silent-failure",
+  "severity": "high",
+  "control": false,
+  "defect": {
+    "file": "src/scores.ts",
+    "description": "A failed write is swallowed by an empty catch and then logged as if it succeeded; the caller and the operator both believe the score was persisted."
+  },
+  "summary": "A change on this branch. See the diff."
+}

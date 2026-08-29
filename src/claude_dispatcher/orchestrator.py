@@ -2504,7 +2504,18 @@ def _run_cross_family_panel(
         if honour and cls.panel_seats < len(reviewers):
             keep = max(2, cls.panel_seats)
             if keep < len(reviewers):
-                rank = {"claude": 0, "grok": 1, "gemini": 2, "codex": 3}
+                # Keep the FASTEST seats, because the bake-off found nothing
+                # else to choose on: over 14 seeded defects (docs/reviewer-
+                # bakeoff) claude, codex and grok each caught 14/14 with no
+                # adjudicated false positives, and wall-clock was the only axis
+                # that separated them — codex 407s, claude 959s, grok 1427s.
+                # Seats run in PARALLEL, so the panel costs its slowest seat and
+                # dropping grok is the trim that actually shortens it.
+                #
+                # This inverts the old order, which put codex last on PR-1353's
+                # unreproduced claim that "only claude reliably catches a
+                # Critical". `dispatcher reviewer-bakeoff` re-runs the evidence.
+                rank = {"codex": 0, "claude": 1, "grok": 2, "gemini": 3}
                 reviewers = sorted(
                     reviewers,
                     key=lambda r: rank.get(getattr(r, "family", None) or "", 9),

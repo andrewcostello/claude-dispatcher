@@ -1370,3 +1370,28 @@ def test_a_recommendation_at_or_above_the_roster_seats_everyone(
     assert {r.family: r.call_count for r in revs} == {
         "claude": 1, "codex": 1, "grok": 1,
     }
+
+
+def test_the_trim_keeps_the_fastest_seats_not_the_bakeoff_order(
+    repo: Path, monkeypatch,
+) -> None:
+    """Seats run in PARALLEL, so the panel costs its SLOWEST seat — trimming
+    only shortens it if the slow seat is the one dropped.
+
+    The old order (claude, grok, gemini, codex) dropped codex first on
+    PR-1353's claim that only claude reliably catches a Critical. That claim is
+    not reproducible and `docs/reviewer-bakeoff` contradicts it: 14/14 for all
+    three families, with wall-clock the only separator — codex 407s, claude
+    959s, grok 1427s. So a 2-seat trim keeps codex and claude and drops grok.
+    """
+    _seed_yaml(repo, _MEDIUM_LOW_RISK_TASK_YAML)
+    (repo / ".dispatcher.yaml").write_text(
+        "panel:\n  honour_classification_seats: true\n", encoding="utf-8",
+    )
+    _patch_spawn(monkeypatch)
+    revs = _seat_three(monkeypatch)
+    _force_classification(monkeypatch, 2)
+
+    assert orchestrator.execute(_args(repo, key="PANEL-B", panel_mode="always")) == 0
+    seated = {r.family for r in revs if r.call_count}
+    assert seated == {"codex", "claude"}, seated

@@ -1,0 +1,12 @@
+{
+  "id": "ts-value-loss",
+  "language": "typescript",
+  "kind": "money-conservation",
+  "severity": "critical",
+  "control": false,
+  "defect": {
+    "file": "src/ledger.ts",
+    "description": "split() drops the remainder: the shares no longer sum to the input, so every uneven split silently destroys minor units."
+  },
+  "summary": "A change on this branch. See the diff."
+}

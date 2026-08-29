@@ -1,0 +1,12 @@
+{
+  "id": "ts-local-time-bucket",
+  "language": "typescript",
+  "kind": "timezone",
+  "severity": "high",
+  "control": false,
+  "summary": "Computes the ISO week bucket key for a scoring event.",
+  "defect": {
+    "file": "src/week.ts",
+    "description": "Switched from UTC accessors to LOCAL ones while the docstring still claims UTC: the same instant buckets into different weeks depending on server timezone, and events near midnight land in the wrong leaderboard week."
+  }
+}

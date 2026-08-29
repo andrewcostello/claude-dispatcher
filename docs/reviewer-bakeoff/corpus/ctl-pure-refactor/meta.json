@@ -1,0 +1,9 @@
+{
+  "id": "ctl-pure-refactor",
+  "language": "typescript",
+  "kind": "refactor",
+  "severity": "none",
+  "control": true,
+  "defect": null,
+  "summary": "Rewrites `totalMinor` over `filter`/`reduce`. No behaviour change and no new surface."
+}

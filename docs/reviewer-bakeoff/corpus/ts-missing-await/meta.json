@@ -1,0 +1,12 @@
+{
+  "id": "ts-missing-await",
+  "language": "typescript",
+  "kind": "async-ordering",
+  "severity": "critical",
+  "control": false,
+  "summary": "Settles a bet: credits the player, then marks the bet settled.",
+  "defect": {
+    "file": "src/settle.ts",
+    "description": "`credit(bet)` is not awaited, so the bet is marked settled before (or without) the credit landing; a rejection becomes an unhandled promise rejection and the player is never paid."
+  }
+}

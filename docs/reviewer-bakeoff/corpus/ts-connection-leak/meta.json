@@ -1,0 +1,12 @@
+{
+  "id": "ts-connection-leak",
+  "language": "typescript",
+  "kind": "resource-leak",
+  "severity": "high",
+  "control": false,
+  "defect": {
+    "file": "src/db.ts",
+    "description": "release() no longer runs on the throwing path, so every failed query leaks a pool connection until the pool is exhausted."
+  },
+  "summary": "A change on this branch. See the diff."
+}

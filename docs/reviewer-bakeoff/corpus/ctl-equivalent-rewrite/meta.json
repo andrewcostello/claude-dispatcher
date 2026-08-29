@@ -1,0 +1,9 @@
+{
+  "id": "ctl-equivalent-rewrite",
+  "language": "typescript",
+  "kind": "refactor",
+  "severity": "none",
+  "control": true,
+  "summary": "Rewrites the bucket accumulation using `??=`. Same behaviour, same surface.",
+  "defect": null
+}

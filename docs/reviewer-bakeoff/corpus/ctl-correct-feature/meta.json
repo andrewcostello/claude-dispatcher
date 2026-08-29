@@ -1,0 +1,9 @@
+{
+  "id": "ctl-correct-feature",
+  "language": "typescript",
+  "kind": "feature",
+  "severity": "none",
+  "control": true,
+  "defect": null,
+  "summary": "Adds an exported `subtract(a, b)` to the money module, mirroring `add`: same currency guard, same minor-unit arithmetic."
+}

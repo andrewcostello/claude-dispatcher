@@ -1,0 +1,9 @@
+{
+  "id": "ctl-docs-only",
+  "language": "typescript",
+  "kind": "docs",
+  "severity": "none",
+  "control": true,
+  "defect": null,
+  "summary": "Adds a doc comment to `clamp`. No code change."
+}
