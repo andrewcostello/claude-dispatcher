@@ -1859,3 +1859,117 @@ def test_approve_flags_that_corroboration_ran_short_handed():
     md = cfr.render_findings_markdown(cfr.aggregate(reviews))
     assert "short-handed" in md
     assert "gemini" in md
+
+
+# ── corroboration counts unhappy FAMILIES, not blocking SEVERITIES ──────────
+# Measured on a real run (TSP-1, 2026-08-28): claude=APPROVE,
+# codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED aggregated to `approve`,
+# because `families_with_blocking` counted families with a CRITICAL/HIGH
+# FINDING and grok had rated its findings MEDIUM. Two of three reviewers
+# rejected the diff and the panel shipped it. All three had independently found
+# the same real defect.
+
+
+def _seat(family: str, verdict, severities=()) -> cfr.ReviewerVerdict:
+    return cfr.ReviewerVerdict(
+        family=family,
+        verdict=verdict,
+        findings=[
+            cfr.Finding(severity=s, location="src/x.ts:1",
+                        description="d", fix="f")
+            for s in severities
+        ],
+    )
+
+
+def test_two_dissenting_families_block_even_with_no_high_finding() -> None:
+    """The regression. Both dissenters rated everything MEDIUM, so a count over
+    severities sees zero and the panel approves a diff two thirds of it
+    rejected."""
+    panel = cfr.aggregate([
+        _seat("claude", cfr.Verdict.APPROVE),
+        _seat("codex", cfr.Verdict.CHANGES_REQUESTED, [cfr.Severity.MEDIUM]),
+        _seat("grok", cfr.Verdict.CHANGES_REQUESTED, [cfr.Severity.MEDIUM]),
+    ])
+    assert panel.consensus == "block"
+
+
+def test_the_recorded_tsp1_panel_now_blocks() -> None:
+    """The exact shape that shipped: one APPROVE and two CHANGES_REQUESTED,
+    only one of which carried HIGH findings."""
+    panel = cfr.aggregate([
+        _seat("claude", cfr.Verdict.APPROVE, [cfr.Severity.MEDIUM]),
+        _seat("codex", cfr.Verdict.CHANGES_REQUESTED,
+              [cfr.Severity.HIGH, cfr.Severity.HIGH]),
+        _seat("grok", cfr.Verdict.CHANGES_REQUESTED, [cfr.Severity.MEDIUM]),
+    ])
+    assert panel.consensus == "block"
+
+
+def test_a_lone_dissenter_still_ships() -> None:
+    """The property the relaxed bar exists for, and the fix must not cost it:
+    three strict reviewers each surface a different idiosyncratic finding, so
+    requiring unanimity never converges and good work parks."""
+    panel = cfr.aggregate([
+        _seat("claude", cfr.Verdict.APPROVE),
+        _seat("codex", cfr.Verdict.CHANGES_REQUESTED, [cfr.Severity.HIGH]),
+        _seat("grok", cfr.Verdict.APPROVE, [cfr.Severity.MEDIUM]),
+    ])
+    assert panel.consensus == "approve"
+
+
+def test_one_critical_still_blocks_on_its_own() -> None:
+    panel = cfr.aggregate([
+        _seat("claude", cfr.Verdict.APPROVE),
+        _seat("codex", cfr.Verdict.APPROVE),
+        _seat("grok", cfr.Verdict.APPROVE, [cfr.Severity.CRITICAL]),
+    ])
+    assert panel.consensus == "block"
+
+
+def test_unanimous_approval_is_unaffected() -> None:
+    panel = cfr.aggregate([
+        _seat("claude", cfr.Verdict.APPROVE),
+        _seat("codex", cfr.Verdict.APPROVE, [cfr.Severity.MEDIUM]),
+        _seat("grok", cfr.Verdict.APPROVE, [cfr.Severity.LOW]),
+    ])
+    assert panel.consensus == "approve"
+
+
+def test_an_unavailable_seat_does_not_count_as_a_dissenter() -> None:
+    """UNAVAILABLE means the seat never reviewed. Counting it as unhappy would
+    turn every flaky CLI into a block."""
+    panel = cfr.aggregate([
+        _seat("claude", cfr.Verdict.APPROVE),
+        _seat("codex", cfr.Verdict.CHANGES_REQUESTED, [cfr.Severity.MEDIUM]),
+        _seat("grok", cfr.Verdict.UNAVAILABLE),
+    ])
+    assert panel.consensus == "approve"
+
+
+def test_the_summary_names_the_dissenters() -> None:
+    """A block can now be carried entirely by verdicts with every finding rated
+    MEDIUM. Without this the row reads `consensus=block` with no blocking
+    findings and no stated reason."""
+    panel = cfr.aggregate([
+        _seat("claude", cfr.Verdict.APPROVE),
+        _seat("codex", cfr.Verdict.CHANGES_REQUESTED, [cfr.Severity.MEDIUM]),
+        _seat("grok", cfr.Verdict.CHANGES_REQUESTED, [cfr.Severity.MEDIUM]),
+    ])
+    assert "dissenting=2" in panel.summary
+    assert "codex" in panel.summary and "grok" in panel.summary
+
+
+def test_a_parse_failed_seat_is_not_named_as_a_dissenter() -> None:
+    """`is_blocker()` is True for PARSE_FAILED — deliberately, since a seat
+    that produced no parseable verdict must not prop up an approve. But it did
+    not DISSENT, and naming it in the summary would report a disagreement that
+    never happened. (UNAVAILABLE needs no such guard: is_blocker() is already
+    False for it.)"""
+    panel = cfr.aggregate([
+        _seat("claude", cfr.Verdict.APPROVE),
+        _seat("codex", cfr.Verdict.CHANGES_REQUESTED, [cfr.Severity.MEDIUM]),
+        _seat("grok", cfr.Verdict.PARSE_FAILED),
+    ])
+    assert "grok" not in panel.summary.split("dissenting=")[-1]
+    assert "dissenting=1" in panel.summary

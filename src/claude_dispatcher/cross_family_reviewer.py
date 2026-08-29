@@ -188,9 +188,13 @@ class PanelVerdict:
     """Aggregate of the three reviewers. `consensus` is the orchestrator gate.
 
     consensus values (relaxed corroboration bar — see aggregate()):
-      - "approve" — ≥2 valid seats reviewed; no CRITICAL; HIGH findings from
-                    fewer than 2 families (lone HIGH is logged, not blocking).
-      - "block"   — any CRITICAL, or HIGH findings from ≥2 valid families.
+      - "approve" — ≥2 valid seats reviewed; no CRITICAL; fewer than 2 valid
+                    families dissenting (a lone dissenter is logged, not
+                    blocking).
+      - "block"   — any CRITICAL, or ≥2 valid families dissenting. A family
+                    dissents by returning CHANGES_REQUESTED/REJECT **or** by
+                    raising a CRITICAL/HIGH finding — severity alone used to
+                    decide this, which let a 2-of-3 rejection read as approve.
       - "incomplete" — fewer than two seats produced a valid (parseable, ran)
                     review — i.e. the panel is mostly/entirely UNAVAILABLE
                     and/or PARSE_FAILED, so it cannot be trusted as a real
@@ -1689,7 +1693,16 @@ def aggregate(
     # blocking findings, so the block-side corroboration count is unchanged.)
     available = [r for r in reviews if r.verdict != Verdict.UNAVAILABLE]
     valid = [r for r in available if r.verdict != Verdict.PARSE_FAILED]
-    families_with_blocking = sum(1 for r in valid if r.blocking_findings())
+    # Corroboration counts UNHAPPY FAMILIES, which is `is_blocker()` and not
+    # `blocking_findings()`. Measured 2026-08-28 on a real run: claude=APPROVE,
+    # codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED came out `approve`,
+    # because grok rated its findings MEDIUM and so contributed nothing to a
+    # count over severities. Two of three reviewers rejected the diff and the
+    # panel shipped it. `is_blocker()` already encoded the right rule — a
+    # CHANGES_REQUESTED/REJECT verdict OR a CRITICAL/HIGH finding — and nothing
+    # called it. On `valid` (UNAVAILABLE and PARSE_FAILED are already out) it
+    # means exactly "this family is not happy".
+    families_with_blocking = sum(1 for r in valid if r.is_blocker())
     any_critical = any(f.severity == Severity.CRITICAL for f in blocking_findings)
 
     # Block wins over everything (a real ship-stopper was found). Otherwise an
@@ -1726,6 +1739,16 @@ def _summarize(
     """One-line human-readable summary stamped on the YAML row."""
     verdicts = ", ".join(f"{r.family}={r.verdict.value}" for r in reviews)
     parts = [f"consensus={consensus}", verdicts]
+    # Name the dissent count. A block can now be carried entirely by verdicts
+    # with every finding rated MEDIUM, and a summary showing no blocking
+    # findings would otherwise look like a block with no reason.
+    dissenting = [
+        r.family for r in reviews
+        if r.verdict not in (Verdict.UNAVAILABLE, Verdict.PARSE_FAILED)
+        and r.is_blocker()
+    ]
+    if dissenting:
+        parts.append(f"dissenting={len(dissenting)} ({','.join(dissenting)})")
     if blocking_findings:
         sevs = [f.severity.value for f in blocking_findings]
         parts.append(
