@@ -66,7 +66,23 @@ def test_each_example_loads_with_the_real_loader(label, body, tmp_path) -> None:
             "the guide's test command must read the known-red rows file, or §6 "
             "documents a mechanism the example silently ignores"
         )
-        assert cfg.test_exclusion == "pytest-deselect"
+        # Each documented gate must declare a real style AND spell that
+        # style's actual idiom. Hard-coding one style stopped working when the
+        # guide grew a second example; asserting the PAIRING is what catches a
+        # gate that declares vitest and then loops pytest's --deselect.
+        style = kr.ExclusionStyle(cfg.test_exclusion)
+        if style is kr.ExclusionStyle.PYTEST_DESELECT:
+            assert "--deselect" in cfg.test, (
+                "a pytest-deselect gate must emit --deselect per row"
+            )
+        else:
+            assert "--testNamePattern" in cfg.test, (
+                "a vitest-name-pattern gate must pass the file as one pattern"
+            )
+            assert "$(cat" in cfg.test, (
+                "the pattern is pre-built by the dispatcher; the gate "
+                "interpolates the file rather than rebuilding it in shell"
+            )
         assert cfg.runs_dir, "the guide tells readers to point runs_dir outside the repo"
         assert cfg.unknown_keys == (), f"guide uses keys the loader ignores: {cfg.unknown_keys}"
 

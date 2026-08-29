@@ -72,6 +72,37 @@ model_routing:
   default: claude-sonnet-5
 ```
 
+### A TypeScript / vitest repo
+
+Two things differ and both have bitten a real run:
+
+```yaml
+# file: .dispatcher.yaml
+test: |
+  set -e
+  # node_modules is gitignored, so a FRESH WORKTREE has none and `npm test`
+  # alone exits 2 before running a single test. Installing is the repo's job —
+  # the dispatcher does not know what a package manager is.
+  npm ci --silent --no-audit --no-fund
+  npx tsc --noEmit
+  # Vitest cannot deselect a node id; it filters by regex over the test's FULL
+  # name. The file holds ONE ready-built pattern because escaping arbitrary
+  # test names is not safe in shell — interpolate it, never rebuild it.
+  if [ -n "${DISPATCHER_KNOWN_RED_FILE:-}" ] && [ -f "${DISPATCHER_KNOWN_RED_FILE}" ]; then
+    npx vitest run --reporter=dot --testNamePattern "$(cat "${DISPATCHER_KNOWN_RED_FILE}")"
+  else
+    npx vitest run --reporter=dot
+  fi
+
+test_exclusion: vitest-name-pattern
+runs_dir: ../dispatcher-runs
+```
+
+A vitest row is the test's full name — its `describe` names and its own, joined
+by single spaces (`split loses nothing`), NOT a file path. The dispatcher
+anchors each one, so a registered `loads a user` does not also suppress
+`loads a user with no email`.
+
 Strict on purpose: an unrecognised value raises rather than falling back, because
 a silently dropped protection is one you believe you have.
 
@@ -257,10 +288,50 @@ entries:
 * Rows are hidden from every gate **except `body_task`'s** — greening them is
   its deliverable.
 * Entries retire automatically when `body_task` is Done.
-* Prove a row is red before adding it: `pytest '<nodeid>' -q` must exit non-zero.
+* Prove a row is red before adding it: `pytest '<nodeid>' -q` — or, for a
+  vitest repo, `npx vitest run -t '<full name>'` — must exit non-zero.
 * A stale or misspelled entry deselects nothing, so the row still runs. The
   mechanism **fails toward red** and cannot hide a regression.
 * No dispatched role may write this file — it is on the floor. An operator can.
+
+---
+
+## 6a. `.agent/risk-paths.json` — what a change is worth reviewing
+
+Without this file every changed path is **unmatched**, and unmatched fails
+closed to **high** risk — so every task runs a full three-seat cross-family
+panel. That is safe and expensive, and the run does not say which it is: the
+log reads `risk=high unclassified=N` whether the repo declared nothing or
+genuinely touched its riskiest code. Preflight warns when the table is absent.
+
+It must be **tracked at the base branch** — the classifier reads it out of the
+base ref's tree, so a file present only in your working copy is not there for a
+task worktree.
+
+```json
+{
+  "schema_version": 1,
+  "unmatched_risk": "high",
+  "server_surface_extensions": [".ts", ".tsx"],
+  "rules": [
+    {
+      "id": "money",
+      "risk": "high",
+      "note": "Why this is risky, in a sentence a reviewer can act on.",
+      "paths": ["src/money.ts"]
+    },
+    {
+      "id": "tests",
+      "risk": "medium",
+      "note": "Weakening a seal is invisible in a green run.",
+      "paths": ["tests/**"]
+    }
+  ]
+}
+```
+
+Leave `unmatched_risk` at `high`. It is the fail-closed default: a path nobody
+has classified is a path nobody has thought about.
 
 ---
 

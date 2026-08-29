@@ -216,7 +216,7 @@ def test_the_rows_file_is_ids_only_and_never_arguments(tmp_path: Path) -> None:
     Measured under: render the file with `deselect_args` instead of
     `rows_payload` and this reddens on the `--deselect` check.
     """
-    path = kr.write_rows_file(("a.py::t[x y]", "b.py::t"), directory=tmp_path)
+    path = kr.write_rows_file(("a.py::t[x y]", "b.py::t"), directory=tmp_path, style=kr.ExclusionStyle.PYTEST_DESELECT)
     body = path.read_text()
     assert "--deselect" not in body
     assert body.splitlines() == ["a.py::t[x y]", "b.py::t"]
@@ -440,7 +440,7 @@ def test_this_repos_own_test_command_consumes_the_rows_file(tmp_path: Path) -> N
         "test_suite.py::test_seal[a plain property]",
         "test_suite.py::test_seal[a static property]",
     )
-    rows_file = kr.write_rows_file(rows, directory=tmp_path / "artifacts")
+    rows_file = kr.write_rows_file(rows, directory=tmp_path / "artifacts", style=kr.ExclusionStyle.PYTEST_DESELECT)
 
     script = prologue + f'{sys.executable} -m pytest test_suite.py -q --tb=no "$@"\n'
 
@@ -465,6 +465,7 @@ def test_this_repos_own_test_command_consumes_the_rows_file(tmp_path: Path) -> N
     stale = kr.write_rows_file(
         ("test_suite.py::test_seal[a renamed property]",),
         directory=tmp_path / "stale",
+        style=kr.ExclusionStyle.PYTEST_DESELECT,
     )
     assert run({kr.EXCLUSION_ENV: str(stale)}).returncode != 0
 
@@ -494,3 +495,121 @@ def test_a_suppressed_row_that_starts_passing_is_not_hidden_forever(
         [sys.executable, "-m", "pytest", "test_suite.py", "-q", "--tb=no"],
         cwd=tmp_path, capture_output=True, text=True,
     ).returncode == 0
+
+
+# ── vitest-name-pattern ─────────────────────────────────────────────────────
+# The second exclusion style. Vitest cannot deselect a node id; it filters by a
+# regex over the test's FULL name (`describe` names and the test's own, joined
+# by single spaces). That makes the pattern the dispatcher builds the whole
+# safety surface, so these rows weight the two ways it could hide too much.
+#
+# Verified against real vitest 3.x in ts-dispatch-probe on 2026-08-28 — the
+# equivalent of this file's REAL-pytest row, which cannot run here because the
+# dispatcher repo has no node toolchain:
+#   no pattern                      -> exit 1 (1 failed | 2 passed)
+#   ^(?!(?:outer red row one)$)     -> exit 0 (2 passed | 1 skipped)
+#   ^(?!(?:outer no such test)$)    -> exit 1  (stale entry, fails toward red)
+
+
+def _js_pattern_matches(pattern: str, name: str) -> bool:
+    """Whether vitest would RUN `name` under `pattern`.
+
+    Evaluated with Python's `re`, which is sound for the constructs used here
+    (`^`, `(?!...)`, `(?:...)`, `$`, backslash escapes) — the empirical JS
+    check is recorded in this section's header.
+    """
+    import re
+    return re.search(pattern, name) is not None
+
+
+def test_name_pattern_excludes_the_registered_row():
+    pattern = kr.name_pattern(("outer red row one",))
+    assert not _js_pattern_matches(pattern, "outer red row one")
+
+
+def test_name_pattern_does_not_exclude_a_row_that_merely_starts_the_same():
+    """The anchoring seal. Unanchored, a registered "loads a user" also
+    suppresses "loads a user with no email" — hiding a row nobody registered,
+    on a branch that would then go green carrying a real regression."""
+    pattern = kr.name_pattern(("loads a user",))
+    assert not _js_pattern_matches(pattern, "loads a user")
+    assert _js_pattern_matches(pattern, "loads a user with no email")
+
+
+def test_name_pattern_keeps_every_unregistered_row_running():
+    pattern = kr.name_pattern(("outer red one", "outer red two"))
+    assert not _js_pattern_matches(pattern, "outer red one")
+    assert not _js_pattern_matches(pattern, "outer red two")
+    assert _js_pattern_matches(pattern, "outer green row")
+
+
+def test_name_pattern_escapes_regex_metacharacters_in_a_test_name():
+    """Test names routinely contain `(`, `)` and `.`. Unescaped, `split(m, 3)`
+    is a group and a wildcard: it stops matching its own row (which then runs
+    and reddens the gate) and starts matching rows it was never given."""
+    pattern = kr.name_pattern(("money split(m, 3) rounds down",))
+    assert not _js_pattern_matches(pattern, "money split(m, 3) rounds down")
+    assert _js_pattern_matches(pattern, "money splitXm, 3Y rounds down")
+
+
+def test_name_pattern_escape_stays_within_javascript_syntax():
+    """`re.escape` would also escape ` `, `&`, `#` and `~`. Those are identity
+    escapes JS rejects under the `u` flag, so a pattern built with it is one
+    `new RegExp(p, "u")` away from a SyntaxError — which fails the gate OPEN by
+    excluding nothing."""
+    pattern = kr.name_pattern(("a b & c # d ~ e",))
+    for forbidden in (r"\ ", r"\&", r"\#", r"\~"):
+        assert forbidden not in pattern, f"{forbidden!r} is not a JS escape"
+
+
+def test_vitest_payload_is_one_ready_built_pattern():
+    """The repo interpolates the file and must not have to escape anything."""
+    payload = kr.rows_payload(
+        ("outer red row one", "outer red row two"),
+        style=kr.ExclusionStyle.VITEST_NAME_PATTERN,
+    )
+    assert payload.splitlines() == [kr.name_pattern(
+        ("outer red row one", "outer red row two")
+    )]
+
+
+def test_pytest_payload_is_unchanged_by_the_second_style():
+    payload = kr.rows_payload(
+        ("a.py::t", "b.py::t"), style=kr.ExclusionStyle.PYTEST_DESELECT,
+    )
+    assert payload == "a.py::t\nb.py::t\n"
+
+
+def test_resolve_writes_the_payload_of_the_declared_style(tmp_path):
+    """The end-to-end seal: a vitest repo's gate must receive a pattern, not
+    the node ids. A payload in the other style is a well-formed file that
+    excludes nothing — a silent fail-open."""
+    register = kr.Register(entries=(kr.KnownRedEntry(
+        rows=("outer red row one",),
+        seals_task="S-1", body_task="B-1", reason="body not landed",
+    ),))
+    excl = kr.resolve(
+        register,
+        task_key="OTHER-1",
+        done_keys=(),
+        style=kr.ExclusionStyle.VITEST_NAME_PATTERN,
+        test_command=f'npx vitest run --testNamePattern "$(cat ${kr.EXCLUSION_ENV})"',
+        rows_dir=tmp_path,
+    )
+    assert excl.applied, excl.detail
+    written = Path(excl.env[kr.EXCLUSION_ENV]).read_text(encoding="utf-8")
+    assert written.strip() == kr.name_pattern(("outer red row one",))
+
+
+def test_a_repo_may_declare_the_vitest_style(tmp_path):
+    """`repo_config` derives its allowed set from the enum, so a new member is
+    declarable the moment it exists. This row is what says so out loud."""
+    from claude_dispatcher import repo_config
+
+    (tmp_path / ".dispatcher.yaml").write_text(
+        'test: npx vitest run\ntest_exclusion: vitest-name-pattern\n',
+        encoding="utf-8",
+    )
+    cfg = repo_config.load(tmp_path)
+    assert cfg.test_exclusion == "vitest-name-pattern"
+    assert kr.ExclusionStyle(cfg.test_exclusion) is kr.ExclusionStyle.VITEST_NAME_PATTERN

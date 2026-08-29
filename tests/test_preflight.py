@@ -71,6 +71,14 @@ def repo(tmp_path: Path) -> Path:
     roles = repo_dir / ".claude" / "workflow" / "roles"
     roles.mkdir(parents=True)
     (roles / "tasker.md").write_text("stub", encoding="utf-8")
+    # A CONFIGURED repo: carries a risk table, so the rows below that assert
+    # warning-silence are asserting silence about their own subject.
+    agent_dir = repo_dir / ".agent"
+    agent_dir.mkdir()
+    (agent_dir / "risk-paths.json").write_text(
+        '{"schema_version": 1, "unmatched_risk": "high", "rules": []}',
+        encoding="utf-8",
+    )
     (repo_dir / "tasks.yaml").write_text(
         (FIXTURE_DIR / "three_task.yaml").read_text(encoding="utf-8"),
         encoding="utf-8",
@@ -640,3 +648,34 @@ def test_resume_does_not_rerun_preflight(repo: Path, monkeypatch) -> None:
     )
     rc = orchestrator.resume_run(args, journal)
     assert rc == 0
+
+
+# --- check 7: the repo declares a risk table ---------------------------------
+
+
+def test_missing_risk_table_warns_and_never_fails(bare_repo: Path) -> None:
+    """Warn, not fail: running the panel is safe, just expensive. Failing here
+    would refuse to dispatch a repo whose only sin is paying for review."""
+    res = _pf(bare_repo)
+    assert res.ok, res.failures
+    assert res.checks["risk_table"]["ok"] is False
+    assert any("fails closed to HIGH risk" in w for w in res.warnings)
+
+
+def test_a_tracked_risk_table_is_silent(repo: Path) -> None:
+    res = _pf(repo)
+    assert res.checks["risk_table"]["ok"] is True
+    assert all("HIGH risk" not in w for w in res.warnings)
+
+
+def test_an_untracked_risk_table_still_warns(bare_repo: Path) -> None:
+    """The table is read out of the BASE REF's tree, because that is where the
+    classifier reads it. A file present only in the working tree is not there
+    for a task worktree cut from the base."""
+    agent = bare_repo / ".agent"
+    agent.mkdir()
+    (agent / "risk-paths.json").write_text('{"rules": []}', encoding="utf-8")
+
+    res = _pf(bare_repo)
+    assert res.checks["risk_table"]["ok"] is False
+    assert any("fails closed to HIGH risk" in w for w in res.warnings)

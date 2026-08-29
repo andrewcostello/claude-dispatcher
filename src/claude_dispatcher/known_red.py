@@ -51,9 +51,14 @@ class ExclusionStyle(str, Enum):
 
     `go test` needs its own member (a `-run` regex, not per-row); until it has
     one, a Go repo with active entries is UNSUPPORTED_STYLE, never a no-op.
+
+    The two members deliver DIFFERENT FILE CONTENTS, because the runners differ
+    in what they can be handed (see `rows_payload`): pytest takes one node id
+    per row, vitest takes a single pattern covering all of them.
     """
 
     PYTEST_DESELECT = "pytest-deselect"
+    VITEST_NAME_PATTERN = "vitest-name-pattern"
 
 
 class RegisterFault(str, Enum):
@@ -225,20 +230,39 @@ def rows_for_task(
     return tuple(out)
 
 
-def rows_payload(rows: Iterable[str]) -> str:
-    """Contents of the rows file: one node id per line, trailing newline. Data,
-    never arguments — see :data:`EXCLUSION_ENV`.
+def rows_payload(rows: Iterable[str], *, style: ExclusionStyle) -> str:
+    """Contents of the rows file. Data, never arguments — see
+    :data:`EXCLUSION_ENV`.
+
+    The contents are style-specific because the runners are:
+
+      * PYTEST_DESELECT — one node id per line; the repo loops and emits one
+        ``--deselect`` per row.
+      * VITEST_NAME_PATTERN — ONE ready-built regex, because vitest excludes by
+        pattern and building that pattern means regex-escaping arbitrary test
+        names. A repo cannot do that safely in shell, so the dispatcher renders
+        it and the repo only interpolates.
+
+    ``style`` is required: a payload written in the other style parses as a
+    valid file and excludes nothing, which is a silent fail-open.
     """
+    rows = tuple(rows)
+    if not rows:
+        return ""
+    if style is ExclusionStyle.VITEST_NAME_PATTERN:
+        return f"{name_pattern(rows)}\n"
     body = "\n".join(rows)
-    return f"{body}\n" if body else ""
+    return f"{body}\n"
 
 
-def write_rows_file(rows: Iterable[str], *, directory: Path) -> Path:
+def write_rows_file(
+    rows: Iterable[str], *, directory: Path, style: ExclusionStyle,
+) -> Path:
     """Write the rows file into ``directory`` (created if absent) and return it."""
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / ROWS_FILENAME
-    path.write_text(rows_payload(rows), encoding="utf-8")
+    path.write_text(rows_payload(rows, style=style), encoding="utf-8")
     return path
 
 
@@ -250,6 +274,33 @@ def deselect_args(rows: Iterable[str]) -> str:
     contain spaces, e.g. ``...::test_slot[a plain property]``.
     """
     return " ".join(f"--deselect {shlex.quote(r)}" for r in rows)
+
+
+#: Characters that carry meaning in a JavaScript regular expression. Python's
+#: `re.escape` is not usable here: it escapes `&`, `~`, `#` and space, which are
+#: identity escapes JS accepts only outside unicode mode, so a pattern built
+#: with it is one `new RegExp(p, "u")` away from a SyntaxError that would fail
+#: the gate OPEN by matching nothing.
+_JS_REGEX_SPECIAL = set(r"^$\.*+?()[]{}|/")
+
+
+def _js_regex_escape(text: str) -> str:
+    return "".join(f"\\{c}" if c in _JS_REGEX_SPECIAL else c for c in text)
+
+
+def name_pattern(rows: Iterable[str]) -> str:
+    """Render ``rows`` as one vitest ``--testNamePattern`` regex.
+
+    A row is a test's FULL name — its `describe` names and its own, joined by
+    single spaces, which is what vitest matches against.
+
+    Anchored with `$` inside the lookahead so a row excludes only its own exact
+    name: unanchored, a registered "loads a user" would also suppress "loads a
+    user with no email", hiding a row nobody registered. That is the fail-open
+    this register exists to refuse.
+    """
+    alternatives = "|".join(_js_regex_escape(r) for r in rows)
+    return f"^(?!(?:{alternatives})$)"
 
 
 def resolve(
@@ -307,7 +358,7 @@ def resolve(
             detail=f"{len(rows)} registered known-red row(s), no rows_dir given",
         )
 
-    path = write_rows_file(rows, directory=rows_dir)
+    path = write_rows_file(rows, directory=rows_dir, style=style)
     return Exclusions(
         rows=rows,
         env={EXCLUSION_ENV: str(path)},

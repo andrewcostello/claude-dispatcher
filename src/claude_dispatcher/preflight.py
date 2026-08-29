@@ -226,6 +226,7 @@ def run_preflight(
 
     _check_dispatcher_staleness(repo_root, warnings, checks)
     _check_base_branch(repo_root, base_branch, failures, checks)
+    _check_risk_table(repo_root, base_branch, warnings, checks)
     _check_role_file(
         repo_root, base_branch, role_file, failures, warnings, checks,
         worktree_base=worktree_base,
@@ -533,6 +534,49 @@ def _check_base_branch(
     failures.append(
         f"base branch {base_branch!r} does not resolve in {repo_root} — every "
         f"task worktree would fail to create.{hint}"
+    )
+
+
+# --- check 7: the repo declares a risk table ---------------------------------
+
+
+def _check_risk_table(
+    repo_root: Path,
+    base_branch: str,
+    warnings: list[str],
+    checks: dict[str, Any],
+) -> None:
+    """A repo with no risk table classifies EVERY changed path as unmatched,
+    and unmatched fails closed to high risk — so every task runs a full
+    cross-family panel. That is safe and expensive, and nothing on the run
+    says so: the panel line reads `risk=high unclassified=N` whether the repo
+    declared nothing or genuinely touched its riskiest code. Warn, never fail
+    — paying for review is not an error."""
+    from .money_net import TABLE_RELPATH
+
+    entry: dict[str, Any] = {"ok": True, "table": TABLE_RELPATH}
+    checks["risk_table"] = entry
+
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_root), "cat-file", "-e",
+             f"{base_branch}:{TABLE_RELPATH}"],
+            capture_output=True, text=True, check=False,
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:  # noqa: BLE001 - a probe failure is not a verdict
+        entry["detail"] = f"could not probe: {exc}"
+        return
+
+    if proc.returncode == 0:
+        return
+
+    entry["ok"] = False
+    warnings.append(
+        f"no tracked {TABLE_RELPATH} at {base_branch}, so every changed path "
+        f"classifies as unmatched and fails closed to HIGH risk — each task "
+        f"will run a full cross-family panel. Add the table to classify paths "
+        f"and reserve the panel for changes that need it."
     )
 
 
