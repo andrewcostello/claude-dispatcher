@@ -40,6 +40,14 @@ class WorktreeError(RuntimeError):
         super().__init__(message)
         self.stderr = stderr
 
+    def __str__(self) -> str:
+        # The reason reaches the operator as `str(e)` — through the run log and
+        # through `blocked_reason` in tasks.yaml. Without git's stderr it names
+        # the worktree path and not the cause, which is the same for a missing
+        # base ref, an occupied directory and a locked worktree.
+        message = super().__str__()
+        return f"{message}: {self.stderr}" if self.stderr else message
+
 
 class WorktreeLayout(Enum):
     """Where per-task worktree directories live, relative to the base path.

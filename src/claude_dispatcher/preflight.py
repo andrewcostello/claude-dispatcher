@@ -225,6 +225,7 @@ def run_preflight(
         checks["fleet_binaries"] = fleet_bins
 
     _check_dispatcher_staleness(repo_root, warnings, checks)
+    _check_base_branch(repo_root, base_branch, failures, checks)
     _check_role_file(
         repo_root, base_branch, role_file, failures, warnings, checks,
         worktree_base=worktree_base,
@@ -469,6 +470,70 @@ def _role_file_tracked(repo_root: Path, role_file: str) -> bool:
     except Exception:
         return False
     return proc.returncode == 0
+
+
+# --- check 6: the base branch resolves ---------------------------------------
+
+
+def _rev_parse_ok(repo_root: Path, ref: str) -> bool:
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--verify", "--quiet",
+             f"{ref}^{{commit}}"],
+            capture_output=True, text=True, check=False,
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+        return proc.returncode == 0
+    except Exception:
+        return False
+
+
+def _local_branches(repo_root: Path) -> list[str]:
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_root), "for-each-ref", "--format=%(refname:short)",
+             "refs/heads"],
+            capture_output=True, text=True, check=False,
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+        if proc.returncode != 0:
+            return []
+        return [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
+    except Exception:
+        return []
+
+
+def _check_base_branch(
+    repo_root: Path,
+    base_branch: str,
+    failures: list[str],
+    checks: dict[str, Any],
+) -> None:
+    """Every task worktree is cut from ``base_branch``. When the ref does not
+    resolve, worktree creation fails for EVERY task and each blocks with
+    ``worktree_create_failed``, which names the worktree path and not the ref —
+    so a single wrong branch name reads as a whole broken task list. Fail here
+    instead, naming branches that do exist."""
+    entry: dict[str, Any] = {"ok": True, "base_branch": base_branch}
+    checks["base_branch"] = entry
+
+    if _rev_parse_ok(repo_root, base_branch):
+        return
+
+    entry["ok"] = False
+    candidates = _local_branches(repo_root)
+    entry["candidates"] = candidates
+    hint = ""
+    if candidates:
+        shown = ", ".join(repr(c) for c in candidates[:5])
+        hint = (
+            f" Local branches: {shown}. Set `base_branch:` in the tasks YAML"
+            f" or `.dispatcher.yaml`, or pass --base-branch."
+        )
+    failures.append(
+        f"base branch {base_branch!r} does not resolve in {repo_root} — every "
+        f"task worktree would fail to create.{hint}"
+    )
 
 
 def _probe_ref(repo_root: Path, base_branch: str) -> str:

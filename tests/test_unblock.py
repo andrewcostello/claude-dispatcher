@@ -184,3 +184,18 @@ def test_run_state_fields_cover_what_a_dispatch_writes():
     for essential in ("branch", "status" if False else "gate_base_sha",
                       "blocked_reason", "dispatcher_run_id"):
         assert essential in unblock.RUN_STATE_FIELDS
+
+
+def test_requeue_cli_entrypoint_runs(tmp_path: Path) -> None:
+    """Every other requeue test calls `archive_and_delete_branch` directly, so
+    the command itself was never imported and run — and it shipped with a
+    missing `Path` import that made every real invocation crash."""
+    tasks = _write_tasks(tmp_path)
+    args = build_parser().parse_args(
+        ["requeue", str(tasks), "A", "--repo", str(tmp_path)]
+    )
+    assert args.func(args) == 0
+
+    row = next(t for t in yaml_io.load(tasks)["tasks"] if t["key"] == "A")
+    assert row["status"] == "To Do"
+    assert "blocked_reason" not in row

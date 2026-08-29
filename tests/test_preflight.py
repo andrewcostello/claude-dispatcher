@@ -416,9 +416,55 @@ def test_tracked_symlink_resolvable_passes_via_probe(symlink_repo: Path) -> None
 def test_probe_falls_back_to_head_when_base_branch_missing(
     symlink_repo: Path,
 ) -> None:
+    """The role-file probe still cuts from HEAD when the base ref is missing —
+    but the run no longer proceeds, because the base-branch check fails it."""
     res = _pf(symlink_repo, base_branch="no-such-branch")
-    assert res.ok, res.failures
     assert res.checks["tasker_role_file"]["probe_ref"] == "HEAD"
+    assert not res.ok
+    assert all("tasker" not in f for f in res.failures)
+
+
+# --- check 6: the base branch resolves ---------------------------------------
+
+
+def test_missing_base_branch_fails(repo: Path) -> None:
+    res = _pf(repo, base_branch="no-such-branch")
+    assert not res.ok
+    assert any("does not resolve" in f for f in res.failures)
+    assert res.checks["base_branch"]["ok"] is False
+
+
+def test_missing_base_branch_names_the_branches_that_exist(repo: Path) -> None:
+    """The whole point of the check: say what to use instead. A repo whose
+    default is `master` is the case that produced it."""
+    _git(repo, "branch", "-m", "main", "master")
+    res = _pf(repo, base_branch="main")
+    assert not res.ok
+    failure = next(f for f in res.failures if "does not resolve" in f)
+    assert "'master'" in failure
+    assert res.checks["base_branch"]["candidates"] == ["master"]
+
+
+def test_present_base_branch_passes(repo: Path) -> None:
+    res = _pf(repo)
+    assert res.checks["base_branch"] == {"ok": True, "base_branch": "main"}
+    assert all("does not resolve" not in f for f in res.failures)
+
+
+def test_base_branch_accepts_a_non_branch_commit_ish(repo: Path) -> None:
+    """`base_branch` is a ref, not necessarily a branch — a tag or SHA that
+    names a commit is a legitimate base and must not be rejected."""
+    _git(repo, "tag", "v1")
+    res = _pf(repo, base_branch="v1")
+    assert res.checks["base_branch"]["ok"] is True
+
+
+def test_base_branch_rejects_a_ref_that_is_not_a_commit(repo: Path) -> None:
+    """A tree-ish that resolves but cannot be checked out is not a usable base;
+    plain `rev-parse --verify` would accept it."""
+    res = _pf(repo, base_branch="main^{tree}")
+    assert not res.ok
+    assert res.checks["base_branch"]["ok"] is False
 
 
 def test_probe_infrastructure_failure_is_warning_not_failure(

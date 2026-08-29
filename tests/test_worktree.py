@@ -264,3 +264,16 @@ def test_ensure_feature_branch_bad_base_raises(repo: Path) -> None:
     """A base branch that doesn't resolve → WorktreeError (can't fork)."""
     with pytest.raises(wt.WorktreeError):
         wt.ensure_feature_branch(repo, "feature/smoke", "no-such-branch")
+
+
+def test_worktree_error_str_includes_git_stderr() -> None:
+    """`blocked_reason` and the run log both render the error with `str(e)`.
+    Dropping stderr there leaves every failure looking identical."""
+    e = wt.WorktreeError("git worktree add failed for T-1 at /x",
+                         stderr="fatal: invalid reference: main")
+    assert "fatal: invalid reference: main" in str(e)
+    assert "git worktree add failed for T-1 at /x" in str(e)
+
+
+def test_worktree_error_str_without_stderr_is_unchanged() -> None:
+    assert str(wt.WorktreeError("plain message")) == "plain message"
