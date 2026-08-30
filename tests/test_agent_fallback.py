@@ -125,7 +125,7 @@ def _args(repo: Path, **overrides) -> Any:
         "--max-parallel", "1",
         "--run-id", "fallback-test-run",
         "--runs-dir", str(repo / "_runs"),
-        "--worktree-base", str(repo.parent / "worktrees-fallback"),
+        "--worktree-base", str(repo.parent / f"worktrees-fallback-{repo.name}"),
         "--claude-bin", sys.executable,
         # keep the panel out of this hermetic test — no real reviewer CLIs
         "--cross-family-panel", "never",

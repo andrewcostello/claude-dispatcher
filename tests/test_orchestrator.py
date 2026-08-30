@@ -73,7 +73,12 @@ def _build_args(repo: Path, **overrides) -> Any:
         "--max-iterations", "2",
         "--run-id", "smoke-test-run",
         "--runs-dir", runs_dir,
-        "--worktree-base", str(repo.parent / "worktrees-test"),
+        # Per-test, not per-session. `repo.parent` is pytest's SESSION
+        # directory, so a fixed name here gave every test in the file the
+        # same worktree base with a different repo — the exact collision
+        # `worktree.create` refuses since 3441451, and the reason 16 rows
+        # reddened when that refusal landed.
+        "--worktree-base", str(repo.parent / f"worktrees-test-{repo.name}"),
         "--claude-bin", f"{sys.executable}",
         # Permission-bypass flag so the run-start preflight passes; the smoke
         # harness runs WITH preflight enabled (more realistic than skipping).

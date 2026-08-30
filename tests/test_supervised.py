@@ -41,7 +41,7 @@ def _args(repo: Path, **overrides):
         "--mode", "supervised",
         "--run-id", "sup-test-run",
         "--runs-dir", str(repo / "_runs"),
-        "--worktree-base", str(repo.parent / "worktrees-sup"),
+        "--worktree-base", str(repo.parent / f"worktrees-sup-{repo.name}"),
         "--claude-bin", sys.executable,
         "--only", "SMOKE-A",
         # Preflight applies to supervised mode too — keep the harness clean.
