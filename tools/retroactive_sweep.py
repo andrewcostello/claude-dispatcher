@@ -32,6 +32,7 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from claude_dispatcher import cross_family_reviewer as cfr  # noqa: E402
+from claude_dispatcher import prompt_provenance  # noqa: E402
 
 
 EVENPLAY = Path("/home/andrew/Project/evenplay-mono")
@@ -111,6 +112,12 @@ def run_one(ticket: dict, results_dir: Path, timeout: int, log) -> dict:
 
     started = time.monotonic()
     log(f"[{key}] running panel (timeout {timeout}s/reviewer)...")
+    # A retroactive sweep re-judges merged work with no run journal. Declare
+    # it under this file's registry row or the prompt gate refuses the load.
+    prompt_provenance.declare_unanchored(
+        prompt_provenance.entry_point_row("tools/retroactive_sweep.py"),
+        "retroactive sweep: no run journal, no genesis to anchor the prompt to",
+    )
     panel = cfr.run_panel(
         ticket_key=key,
         ticket_summary=ticket_summary or "",

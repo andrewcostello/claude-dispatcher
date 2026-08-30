@@ -134,6 +134,13 @@ def main(argv: list[str] | None = None) -> int:
                                  args.dry_run_with_stub_output, args.effort)
     print(f"[panel] reviewers: {[r.family for r in reviewers]}", file=sys.stderr)
 
+    # Standalone panel: no run, no journal. Declare it under this file's
+    # registry row or the prompt gate refuses the load (prompt_provenance).
+    from claude_dispatcher import prompt_provenance
+    prompt_provenance.declare_unanchored(
+        prompt_provenance.entry_point_row("tools/cross_family_panel.py"),
+        "standalone panel CLI: no run journal, no genesis to anchor the prompt to",
+    )
     panel = cfr.run_panel(
         domain=args.domain,
         ticket_key=args.ticket,

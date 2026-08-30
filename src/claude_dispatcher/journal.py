@@ -454,6 +454,13 @@ class Journal:
         journal = cls(p, last_seq=-1, last_hash=GENESIS_PREV_HASH, clock=clock)
         journal.append(EventType.run_started, genesis_payload, task_key=None)
         _fsync_dir(p.parent)
+        # After the append and its fsync, so a genesis that failed to write
+        # leaves no anchor claiming it succeeded. Total; never wrapped.
+        prompt_provenance.publish_pin_from_genesis(
+            genesis_payload,
+            source=prompt_provenance.PinSource.RUN_START,
+            detail=_anchor_detail(genesis_payload, p),
+        )
         return journal
 
     @classmethod
@@ -473,14 +480,26 @@ class Journal:
             )
         last_seq = -1
         last_hash = GENESIS_PREV_HASH
+        genesis: JournalEvent | None = None
         for event in read_events(p):
+            if genesis is None:
+                genesis = event
             last_seq = event.seq
             last_hash = event.hash
-        if last_seq < 0:
+        if last_seq < 0 or genesis is None:
             # An empty (or absent) journal has no genesis to chain from.
             # Appending here would write a non-genesis event at seq 0, which
             # verify() would reject — fail loudly now instead.
             raise JournalError(f"cannot resume an empty journal: {p} (use create())")
+        # Republish the digest this chain was started with — never re-anchor
+        # against the tree now installed. A tree that moved across the
+        # interruption is REFUSE_DRIFTED for this run's life; the remedy is a
+        # new run on a new chain.
+        prompt_provenance.publish_pin_from_genesis(
+            genesis.payload,
+            source=prompt_provenance.PinSource.RESUMED_GENESIS,
+            detail=f"{_anchor_detail(genesis.payload, p)} (genesis written {genesis.timestamp})",
+        )
         return cls(p, last_seq=last_seq, last_hash=last_hash, clock=clock)
 
     def append(
@@ -552,6 +571,14 @@ class Journal:
             self._last_seq = seq
             self._last_hash = event_hash
             return event
+
+
+def _anchor_detail(genesis_payload: Any, path: Path) -> str:
+    """What a prompt refusal quotes about this run: the run id and the journal.
+    Built from those two facts only, so an unusable genesis keyed by this text
+    collapses across retries on one journal."""
+    run_id = genesis_payload.get("run_id") if isinstance(genesis_payload, dict) else None
+    return f"run {run_id or '?'} journal {path}"
 
 
 def build_genesis_payload(
