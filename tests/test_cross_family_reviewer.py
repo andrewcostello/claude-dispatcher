@@ -1973,3 +1973,9 @@ def test_a_parse_failed_seat_is_not_named_as_a_dissenter() -> None:
     ])
     assert "grok" not in panel.summary.split("dissenting=")[-1]
     assert "dissenting=1" in panel.summary
+
+
+@pytest.fixture(autouse=True)
+def _journal_less_test_process():
+    from claude_dispatcher import prompt_provenance as pp
+    pp.declare_unanchored("tests/test_cross_family_reviewer.py", "test process: no run journal")

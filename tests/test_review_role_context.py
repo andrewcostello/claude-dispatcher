@@ -9,6 +9,8 @@ tests when SCAFFOLD denies `tests/**`.
 
 from __future__ import annotations
 
+import pytest
+
 from pathlib import Path
 
 from claude_dispatcher import cross_family_reviewer as cfr, role_protocol as rp
@@ -144,3 +146,9 @@ def test_the_orchestrator_forwards_it_at_every_run_panel_call_site() -> None:
     ).read_text()
     assert src.count("role_context=role_context,") == 3
     assert src.count("risk_context=risk_context,") == 3
+
+
+@pytest.fixture(autouse=True)
+def _journal_less_test_process():
+    from claude_dispatcher import prompt_provenance as pp
+    pp.declare_unanchored("tests/test_review_role_context.py", "test process: no run journal")

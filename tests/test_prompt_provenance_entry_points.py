@@ -53,6 +53,12 @@ _ENTRY_FILES = (
     "src/claude_dispatcher/bakeoff.py",
     "tools/cross_family_panel.py",
     "tools/retroactive_sweep.py",
+    # The fourth, added when `dispatcher reviewer-bakeoff` landed. It drives
+    # `cfr.run_panel` with no journal, which is the shape this register names —
+    # so it needs a row, a declaration, and a driver here that RUNS it. Adding
+    # it to the register alone would grow the count without proving the
+    # declaration is reached.
+    "src/claude_dispatcher/reviewer_bakeoff.py",
 )
 
 
@@ -279,10 +285,42 @@ def _drive_retroactive_sweep(repo: Path, tmp_path: Path, monkeypatch: pytest.Mon
     return Outcome(True, result["consensus"])
 
 
+def _drive_reviewer_bakeoff(repo: Path, tmp_path: Path,
+                            _mp: pytest.MonkeyPatch,
+                            after_import: Hook) -> Outcome:
+    """Run one corpus case past one stubbed seat.
+
+    No CLI is invoked and no quota is spent: the seat returns a fixed body, so
+    what is observed is the entry point's DECLARATION and the prompt load it
+    permits, not a review.
+    """
+    from claude_dispatcher import cross_family_reviewer as cfr_mod
+    from claude_dispatcher import reviewer_bakeoff as rb_mod
+
+    after_import()
+
+    class _Stub(cfr_mod.Reviewer):
+        family = "claude"
+
+        def _invoke_cli(self, prompt: str) -> str:  # noqa: ARG002 - fixed reply
+            return _APPROVE_OUTPUT
+
+    corpus = Path(__file__).resolve().parents[1] / "docs" / "reviewer-bakeoff" / "corpus"
+    if not corpus.is_dir():
+        return Outcome(False, "corpus absent")
+    result = rb_mod.run_bakeoff(
+        corpus_dir=corpus, reviewers=[_Stub()], only=["ctl-docs-only"],
+        log=lambda _m: None,
+    )
+    rows = result.get("rows") or []
+    return Outcome(bool(rows), "ran one case" if rows else "no case ran")
+
+
 _DRIVERS = {
     "src/claude_dispatcher/bakeoff.py": _drive_bakeoff,
     "tools/cross_family_panel.py": _drive_cross_family_panel,
     "tools/retroactive_sweep.py": _drive_retroactive_sweep,
+    "src/claude_dispatcher/reviewer_bakeoff.py": _drive_reviewer_bakeoff,
 }
 
 
@@ -329,7 +367,7 @@ def _silent_under_stub(obs: Observation, entry_file: str) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_the_register_names_exactly_these_three_files_once_each():
+def test_the_register_names_exactly_these_files_once_each():
     assert len(pp.UNANCHORED_ENTRY_POINTS) == len(_ENTRY_FILES)
     for entry_file in _ENTRY_FILES:
         assert (ROOT / entry_file).is_file(), entry_file

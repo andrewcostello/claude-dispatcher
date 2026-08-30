@@ -1379,3 +1379,9 @@ def test_scaffold_still_writes_everything_that_is_not_a_machine_read_instruction
         (v.path, v.matched_glob) for v in result.violations
     ]
     assert result.violations == ()
+
+
+@pytest.fixture(autouse=True)
+def _journal_less_test_process():
+    from claude_dispatcher import prompt_provenance as pp
+    pp.declare_unanchored("tests/test_role_protocol_provenance.py", "test process: no run journal")

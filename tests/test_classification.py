@@ -267,3 +267,9 @@ def test_review_prompt_says_so_when_classification_is_unavailable():
         base_branch="main",
     )
     assert "classification unavailable" in prompt
+
+
+@pytest.fixture(autouse=True)
+def _journal_less_test_process():
+    from claude_dispatcher import prompt_provenance as pp
+    pp.declare_unanchored("tests/test_classification.py", "test process: no run journal")
