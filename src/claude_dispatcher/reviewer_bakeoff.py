@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import cross_family_reviewer as cfr
+from . import prompt_provenance
 
 #: Severities that make a finding count as "caught it". A MEDIUM note about a
 #: money-conservation defect did not stop the merge, so it is not a catch.
@@ -180,6 +181,14 @@ def run_bakeoff(
     scores: dict[str, FamilyScore] = {f: FamilyScore() for f in families}
     rows: list[dict] = []
 
+    # A bake-off opens no journal, so the prompt gate has nothing to anchor
+    # to: declare it under this file's registry row or the load refuses.
+    # Raises if this process holds an anchor — a bake-off run inside a
+    # journalled process is judged by that run's tree.
+    prompt_provenance.declare_unanchored(
+        prompt_provenance.entry_point_row("src/claude_dispatcher/reviewer_bakeoff.py"),
+        "reviewer bake-off: no run journal, no genesis to anchor the prompt to",
+    )
     for i, case in enumerate(cases, 1):
         log(f"[{i}/{len(cases)}] {case.cid} ({'control' if case.control else case.kind})")
         started = time.monotonic()

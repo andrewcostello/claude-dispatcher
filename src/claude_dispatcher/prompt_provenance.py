@@ -5,8 +5,8 @@ genesis already records ``hash_tree`` of that directory as
 ``reviewer_prompts_hash`` — a fact nothing compares to anything. This module is
 that comparison. Every outcome is a named state; there is no "load quietly".
 
-P1 of unit W2-1: contract and stubs. Bodies and wiring are W2-1-3's, the floored
-half W2-1-4's (:data:`FLOOR_GLOBS_OWED`, :data:`FLOORED_OBLIGATIONS`).
+The floored half (:data:`FLOOR_GLOBS_OWED`, :data:`FLOORED_OBLIGATIONS`) is
+handed over, not closed here.
 
 The five constraints a later editor would otherwise break:
 
@@ -45,7 +45,8 @@ import threading
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from collections.abc import Mapping
+from typing import Any, Callable, Sequence
 
 #: The instruction trees the review gate EXECUTES, repo-relative. Only the first
 #: is anchored — the genesis records a digest for it alone, and giving the second
@@ -97,8 +98,8 @@ EMPTY_TREE_DIGEST = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b785
 #:     declaration — it refuses a pure-wildcard tail by design — so ``validate``
 #:     still ACCEPTS a P4 row naming the prompt until a rule over
 #:     ``disputed_paths:`` lands beside them;
-#:   * the third entry is THIS MODULE, which decides whether the prompt loads
-#:     once W2-1-3 wires it. It buys the plan-time reach the subtrees do not.
+#:   * the third entry is THIS MODULE, which decides whether the prompt loads.
+#:     It buys the plan-time reach the subtrees do not.
 FLOOR_GLOBS_OWED: tuple[str, ...] = (
     "**/src/claude_dispatcher/reviewer_prompts/**",
     "**/src/claude_dispatcher/verifier_prompts/**",
@@ -176,14 +177,30 @@ REMEDY_DISPOSITIONS: tuple[tuple[str, str], ...] = (
 )
 
 #: Call sites that reach ``cross_family_reviewer._load_prompt`` without ever
-#: opening a journal. Each owes a :func:`declare_unanchored` call once W2-1-3
-#: wires the gate, or it refuses — which callers are journal-less is the fact
-#: that decides whether constraint 3's default breaks a tool.
+#: opening a journal. Each declares itself with :func:`declare_unanchored` under
+#: its own row (looked up by :func:`entry_point_row`) before the call it names,
+#: or the load refuses. ``<file>:<line> <symbol>``; the line is where the named
+#: call STARTS, and it is checked against the file's AST by the registry seal,
+#: so moving the call without moving the row is a red seal, not a silent rot.
 UNANCHORED_ENTRY_POINTS: tuple[str, ...] = (
-    "src/claude_dispatcher/bakeoff.py:384 cfr.run_panel",
-    "tools/cross_family_panel.py:110 cfr.run_panel",
-    "tools/retroactive_sweep.py:114 cfr.run_panel",
+    "src/claude_dispatcher/bakeoff.py:393 cfr.run_panel",
+    "tools/cross_family_panel.py:144 cfr.run_panel",
+    "tools/retroactive_sweep.py:121 cfr.run_panel",
+    "src/claude_dispatcher/reviewer_bakeoff.py:195 cfr.run_panel",
 )
+
+
+def entry_point_row(entry_file: str) -> str:
+    """The registry row for ``entry_file`` (repo-relative), for the entry point
+    to declare itself under. Exactly one row per file; anything else raises,
+    so a caller cannot declare under a row that is not there."""
+    rows = [r for r in UNANCHORED_ENTRY_POINTS if r.startswith(entry_file + ":")]
+    if len(rows) != 1:
+        raise PromptProvenanceError(
+            f"{entry_file} has {len(rows)} rows in UNANCHORED_ENTRY_POINTS, "
+            "not one; a journal-less entry point must be registered exactly once"
+        )
+    return rows[0]
 
 
 class PromptProvenanceError(RuntimeError):
@@ -547,34 +564,36 @@ def integrity_of(
 ) -> PromptIntegrity:
     """Classify a tree's digest against what this process holds.
 
-    STUB — W2-1-3's body. The ruled mechanics, in this precedence, so it
-    transcribes rather than designs and W2-1-2 seals each row separately:
+    Precedence, and each step is load-bearing:
 
-    * any :class:`AnchorFailure` → :attr:`~PromptIntegrity.ANCHOR_FAILED`. It
-      wins over pins and over a declaration: a genesis here could not be
-      anchored, and this seam cannot tell whether this load is that run's. It is
-      therefore sticky for the process, and the recovery is
-      :func:`release_anchor` on that key, not a later good publish;
-    * else the DISTINCT digests of the live pins decide. Two or more →
-      :attr:`~PromptIntegrity.ANCHOR_AMBIGUOUS`. Exactly one →
-      :attr:`~PromptIntegrity.ANCHORED` if ``observed_digest`` equals it, else
-      :attr:`~PromptIntegrity.DRIFTED`. Agreement suffices because the answer
-      does not depend on which run this load belongs to; disagreement does not,
-      because it does, and threading a run identity here is ``orchestrator.py``,
-      floor glob 17;
-    * no anchors → :attr:`~PromptIntegrity.UNANCHORED_DECLARED` when
-      ``declaration`` is not None, else :attr:`~PromptIntegrity.UNANCHORED`.
+    * any :class:`AnchorFailure` → ANCHOR_FAILED, over pins and over a
+      declaration. Sticky: the recovery is :func:`release_anchor` on its key,
+      never a later good publish, because this seam cannot tell whose load this
+      is;
+    * else the DISTINCT digests of the live pins decide: two or more →
+      ANCHOR_AMBIGUOUS (no run identity reaches here to choose); exactly one →
+      ANCHORED on equality, else DRIFTED. A blank ``observed_digest`` is
+      DRIFTED, never a match;
+    * no anchors → UNANCHORED_DECLARED under a declaration, else UNANCHORED.
 
-    A BLANK ``observed_digest`` — what a caller passes when it has bytes but no
-    digest — is DRIFTED against a pin, never a match: "I could not digest the
-    tree" must not answer "the tree is fine".
-
-    Pure by construction: no process state, no filesystem, so a seal drives every
-    row without a journal.
+    Pure: no process state, no filesystem.
     """
-    raise NotImplementedError(
-        "W2-1-3 lands the classification; this scaffold fixes the contract (W2-1-1)"
-    )
+    pins: list[PromptPin] = []
+    for anchor in anchors:
+        if isinstance(anchor, AnchorFailure):
+            return PromptIntegrity.ANCHOR_FAILED
+        if not isinstance(anchor, PromptPin):
+            raise TypeError(f"integrity_of takes Anchors, got {type(anchor).__name__}")
+        pins.append(anchor)
+    attested = {pin.digest for pin in pins}
+    if len(attested) > 1:
+        return PromptIntegrity.ANCHOR_AMBIGUOUS
+    if attested:
+        (digest,) = attested
+        return PromptIntegrity.ANCHORED if observed_digest == digest else PromptIntegrity.DRIFTED
+    if declaration is not None:
+        return PromptIntegrity.UNANCHORED_DECLARED
+    return PromptIntegrity.UNANCHORED
 
 
 # --- the process's anchors ---------------------------------------------------
@@ -622,6 +641,13 @@ def live_anchors() -> tuple[Anchor, ...]:
         return tuple(_anchors)
 
 
+def _held() -> tuple[tuple[Anchor, ...], UnanchoredDeclaration | None]:
+    """Both facts under one lock, so a load cannot see the anchors of one
+    moment beside the declaration of another."""
+    with _anchor_lock:
+        return tuple(_anchors), _declaration
+
+
 def release_anchor(run_nonce: str) -> int:
     """Drop every anchor under ``run_nonce``; returns how many.
 
@@ -642,11 +668,11 @@ def release_anchor(run_nonce: str) -> int:
 def clear_anchors() -> None:
     """Reset every process fact this module holds. TEST FIXTURE ONLY.
 
-    Owned by the autouse fixture W2-1-2 lands in ``tests/conftest.py``; a single
-    known caller is what keeps those seals from being order-dependent. Production
-    code uses :func:`release_anchor`. Not a fail-open switch under constraint 3 —
-    clearing leaves UNANCHORED, which refuses — but it drops the declaration too,
-    so a journal-less tool that calls it stops loading.
+    Called by ``tests/conftest.py``'s autouse fixture and by the seal files'
+    stub probes; production code uses :func:`release_anchor`. Not a fail-open
+    switch under constraint 3 — clearing leaves UNANCHORED, which refuses — but
+    it drops the declaration too, so a journal-less tool that calls it stops
+    loading.
     """
     global _declaration
     with _anchor_lock:
@@ -690,52 +716,62 @@ def live_declaration() -> UnanchoredDeclaration | None:
 def publish_pin_from_genesis(
     payload: Mapping[str, Any], *, source: PinSource, detail: str
 ) -> PromptPin | None:
-    """Read the anchor out of a genesis payload and publish it. Total; never raises.
+    """Read the anchor out of a genesis payload and publish it.
 
-    STUB — W2-1-3's body, landing with its two call sites in one commit. The
-    ruled mechanics:
+    Total over the PAYLOAD: a missing, blank or malformed value under
+    :data:`GENESIS_DIGEST_KEY` or :data:`GENESIS_NONCE_KEY` publishes an
+    :class:`AnchorFailure` (which refuses every load until released), warns to
+    stderr quoting the RAW value, and returns None. It never raises on the
+    payload's account and callers must not wrap it in ``except Exception:
+    pass``; a blank ``detail`` or a non-``PinSource`` is a caller bug and does
+    raise.
 
-    * read :data:`GENESIS_DIGEST_KEY` and :data:`GENESIS_NONCE_KEY`, build a
-      :class:`PromptPin` with ``source`` and ``detail``, publish it with
-      :func:`record_anchor`, return it;
-    * a missing, blank or malformed value of EITHER key publishes an
-      :class:`AnchorFailure` instead, warns to stderr quoting the RAW value, and
-      returns None. Raw, not coerced: an absent key and a non-string both render
-      as ``''`` otherwise. Where the NONCE is the unusable field, key the failure
-      ``f"unknown:{journal_path}"``;
-    * it does not raise, and callers must not wrap it in
-      ``except Exception: pass``. A journal is never a precondition for a run, so
-      a bad anchor must not take down a dispatch; constraint 5 is that it must
-      not be invisible either.
-
-    THE TWO CALL SITES IT IS OWED, both in ``journal.py`` (unfloored), neither
-    wired here because a stub on the live path breaks every run that opens a
-    journal:
-
-    * ``Journal.create``, AFTER the genesis append and its ``fsync``, with
-      ``source=PinSource.RUN_START`` — so a genesis that failed to write leaves
-      no anchor claiming it succeeded;
-    * ``Journal.resume``, from the genesis event the chain already verified, with
-      ``source=PinSource.RESUMED_GENESIS``. Anchoring only in ``create`` leaves
-      every RESUMED run unanchored, and a resume is exactly the span in which the
-      installed tree moves without anyone doing anything wrong (an operator
-      reinstall). In ``Journal.resume`` rather than ``resume.execute`` so
-      ``merge_prs``'s own call gets it too.
-
-    A tree that moved across that interruption is REFUSE_DRIFTED for that run's
-    life. That is the ruling: the remedy is a NEW run, recording the new tree on
-    a new chain an operator can see. Re-anchoring a resumed run against the tree
-    in front of it is the laundering constraint 4 forbids.
-
-    NOT owed a call site: ``orchestrator._open_journal``'s ``except`` branch. It
-    returns None and publishes nothing, so the run holds no anchor and every load
-    REFUSES as UNANCHORED. Were absence a load, that branch would be the live way
-    to switch this gate off and would need a floored edit to close.
+    Where the nonce is the unusable field the failure is keyed
+    ``"unknown:<detail>"``: this signature carries no journal path, and both
+    call sites (``Journal.create`` / ``Journal.resume``) build ``detail`` from
+    the run id and the journal path alone, so repeats on one journal collapse
+    and two journals do not.
     """
-    raise NotImplementedError(
-        "W2-1-3 lands the parser and its two journal call sites; this scaffold "
-        "fixes the contract (W2-1-1)"
+    raw_digest = payload.get(GENESIS_DIGEST_KEY, _ABSENT) if isinstance(payload, Mapping) else _ABSENT
+    raw_nonce = payload.get(GENESIS_NONCE_KEY, _ABSENT) if isinstance(payload, Mapping) else _ABSENT
+    faults: list[str] = []
+    nonce: str | None = None
+    digest: str | None = None
+    try:
+        nonce = _require_text(raw_nonce, GENESIS_NONCE_KEY)
+    except ValueError:
+        faults.append(f"{GENESIS_NONCE_KEY} is {_raw(raw_nonce)}")
+    try:
+        digest = _require_hex64(raw_digest, GENESIS_DIGEST_KEY)
+    except ValueError:
+        faults.append(f"{GENESIS_DIGEST_KEY} is {_raw(raw_digest)}, not a 64-hex SHA-256")
+    if digest is not None and nonce is not None:
+        pin = PromptPin(digest=digest, run_nonce=nonce, source=source, detail=detail)
+        record_anchor(pin)
+        return pin
+    failure = AnchorFailure(
+        run_nonce=nonce if nonce is not None else f"unknown:{detail}",
+        reason="; ".join(faults),
+        detail=detail,
     )
+    record_anchor(failure)
+    sys.stderr.write(
+        f"warning: prompt anchor NOT published for {detail} ({source.value}): "
+        f"{failure.reason}; every reviewer prompt load in this process refuses "
+        f"as {PromptLoad.REFUSE_ANCHOR_FAILED.value} until "
+        f"release_anchor({failure.run_nonce!r})\n"
+    )
+    return None
+
+
+#: Distinguishes "the key is absent" from "the key is None" in a genesis.
+_ABSENT = object()
+
+
+def _raw(value: object) -> str:
+    """A genesis value as the warning quotes it: the key's absence is said, and
+    a present value is repr'd so ``None`` and ``''`` do not both read as blank."""
+    return "missing" if value is _ABSENT else repr(value)
 
 
 # --- reporting the decision --------------------------------------------------
@@ -804,33 +840,83 @@ def report_load(record: PromptLoadRecord) -> None:
 def check_prompt_tree(loaded: TreeSnapshot) -> PromptLoad:
     """Gate one prompt-tree load against this process's anchors.
 
-    STUB — W2-1-3's body, wired into ``cross_family_reviewer._load_prompt`` in
-    the SAME commit. The ruled mechanics:
+    Digests ``loaded.members`` — the bytes the caller holds and will render —
+    never a second walk of ``loaded.tree_dir`` (constraint 1). Every decision
+    is reported through :func:`report_load` BEFORE it is returned or raised,
+    and a reporter's exception propagates: it is not grounds to skip the gate.
+    A refusing decision raises :class:`PromptRefusal` naming the tree, its
+    members and, for a drift, both digests with the anchor's detail and source,
+    because a refusal an operator cannot diagnose gets worked around.
 
-    * digest ``loaded.members`` with :func:`digest_of_snapshot` — the bytes the
-      caller already holds, never a second walk of ``loaded.tree_dir``. That is
-      constraint 1, and the reason this takes a snapshot and not a path;
-    * ``decision = load_decision(integrity_of(live_anchors(), digest,
-      declaration=live_declaration()))``;
-    * build a :class:`PromptLoadRecord` and :func:`report_load` it for EVERY
-      decision, before returning or raising;
-    * :attr:`~PromptLoad.refuses` → raise :class:`PromptRefusal` carrying the
-      decision and naming ``loaded.what``, ``loaded.tree_dir``, the member names
-      and — for a drift — BOTH digests with the anchor's ``detail`` and
-      ``source``. This refusal can block a whole wave, and one an operator cannot
-      diagnose gets worked around;
-    * otherwise return the decision. The caller renders from ``loaded`` — the
-      object that was hashed — and must not re-read the directory.
-
-    An ABSENT tree does not raise here: it digests to :data:`EMPTY_TREE_DIGEST`
-    and compares normally. Existence is the loader's question.
+    An ABSENT tree does not raise: it digests to :data:`EMPTY_TREE_DIGEST` and
+    compares like any other. Existence is the loader's question.
     """
-    raise NotImplementedError(
-        "W2-1-3 lands the drift check and its wiring into "
-        "cross_family_reviewer._load_prompt; this scaffold fixes the contract "
-        "(W2-1-1). The floored half — FLOOR_GLOBS_OWED and FLOORED_OBLIGATIONS "
-        "— is W2-1-4's handover and is NOT closed here"
+    if not isinstance(loaded, TreeSnapshot):
+        raise TypeError(f"check_prompt_tree takes a TreeSnapshot, got {type(loaded).__name__}")
+    digest = digest_of_snapshot(loaded.members)
+    anchors, declaration = _held()
+    integrity = integrity_of(anchors, digest, declaration=declaration)
+    decision = load_decision(integrity)
+    pins = [a for a in anchors if isinstance(a, PromptPin)]
+    failures = [a for a in anchors if isinstance(a, AnchorFailure)]
+
+    anchor_digest: str | None = None
+    anchor_detail: str | None = None
+    if integrity is PromptIntegrity.ANCHOR_FAILED:
+        anchor_detail = "; ".join(f"{f.detail}: {f.reason}" for f in failures)
+    elif integrity in (PromptIntegrity.ANCHORED, PromptIntegrity.DRIFTED):
+        anchor_digest = pins[0].digest
+        anchor_detail = "; ".join(dict.fromkeys(p.detail for p in pins))
+    elif integrity is PromptIntegrity.ANCHOR_AMBIGUOUS:
+        anchor_detail = "; ".join(f"{p.digest} from {p.detail} ({p.source.value})" for p in pins)
+    elif integrity is PromptIntegrity.UNANCHORED_DECLARED:
+        assert declaration is not None
+        anchor_detail = declaration.reason
+
+    record = PromptLoadRecord(
+        decision=decision,
+        what=loaded.what,
+        tree_dir=loaded.tree_dir,
+        observed_digest=digest,
+        anchor_digest=anchor_digest,
+        anchor_detail=anchor_detail,
+        members=tuple(name for name, _ in loaded.members),
     )
+    report_load(record)
+    if not decision.refuses:
+        return decision
+
+    members = ", ".join(record.members) or "(none)"
+    head = (
+        f"{decision.value}: refusing to load {loaded.what} from {loaded.tree_dir} "
+        f"(members: {members}; state {integrity.value}). "
+    )
+    if integrity is PromptIntegrity.DRIFTED:
+        why = (
+            f"The tree moved: observed digest {digest}, anchored digest "
+            f"{anchor_digest} from {anchor_detail} "
+            f"({', '.join(dict.fromkeys(p.source.value for p in pins))}). "
+            "A run is judged by the tree it started with; start a new run to "
+            "record the tree now installed."
+        )
+    elif integrity is PromptIntegrity.ANCHOR_FAILED:
+        why = (
+            f"A genesis in this process could not be anchored — {anchor_detail}. "
+            f"Recovery is release_anchor on {', '.join(repr(f.run_nonce) for f in failures)}."
+        )
+    elif integrity is PromptIntegrity.ANCHOR_AMBIGUOUS:
+        why = (
+            f"Live anchors disagree about this tree and no run identity reaches "
+            f"this load to choose between them: {anchor_detail}."
+        )
+    else:
+        why = (
+            "No anchor in this process and no entry point declared itself "
+            "journal-less. A run anchors by opening its journal; a tool with no "
+            "journal declares with declare_unanchored under its row in "
+            "UNANCHORED_ENTRY_POINTS."
+        )
+    raise PromptRefusal(decision, head + why)
 
 
 def _require_text(value: object, what: str) -> str:

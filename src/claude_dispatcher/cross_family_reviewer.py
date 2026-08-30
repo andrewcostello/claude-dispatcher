@@ -52,6 +52,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable, Iterable
 
+from . import prompt_provenance
+
 # --- constants --------------------------------------------------------------
 
 # Labels that force the cross-family panel to run. Matched case-insensitively
@@ -536,75 +538,63 @@ _PROMPTS_DIR = Path(__file__).parent / "reviewer_prompts"
 
 
 def _load_prompt(family: str, domain: str | None = None) -> str:
-    """Concatenate the family preamble, the shared template, and a DOMAIN block.
+    """Render the family preamble, ``_shared.md`` and a domain block from ONE
+    snapshot of the prompt tree, gated by ``check_prompt_tree`` before any
+    member is rendered.
 
-    The domain used to be hardcoded into `_shared.md`. It described one specific
-    product, and every review of every other project inherited it — including an
-    explicit instruction not to raise "financial-ledger, double-entry, or
-    gambling-compliance requirements". Eleven consecutive panel rounds on a
-    double-entry gambling wallet were reviewed as a dog-health app because of it,
-    and one reviewer correctly filed the entire design as a CRITICAL domain error.
-    Found 2026-08-22.
+    Read-then-verify (prompt_provenance constraint 1): the bytes digested are
+    the bytes rendered, and nothing re-reads ``_PROMPTS_DIR`` after the
+    snapshot. The digest covers the whole tree — every ``domains/*.md``, not
+    the one this call picks — because the domain is selected per call. Member
+    EXISTENCE is answered from the snapshot's names before the gate, so a
+    packaging error is reported as one (``FileNotFoundError``) whatever the
+    process's anchors say; no bytes leave the snapshot until the gate permits.
 
-    `domain` names a file under `reviewer_prompts/domains/`. Unset falls back to
-    `_default.md`, which tells the reviewer to infer the domain from the repo and
-    to report uncertainty rather than assume.
-
-    **The prompt-tree drift seam (unit W2-1) is OWED HERE, and W2-1-3 wires it.**
-    ``_PROMPTS_DIR`` resolves inside the RUNNING package, so these bytes are
-    whatever the last install put there, and the run's genesis already records
-    ``hash_tree`` of this directory as ``reviewer_prompts_hash`` — which nothing
-    compares to anything today. The wiring is ``snap =
-    prompt_provenance.snapshot_tree(_PROMPTS_DIR, "reviewer prompts")``, then
-    ``check_prompt_tree(snap)``, then ``snap.render(f"{family}.md",
-    "_shared.md")``: read once, digest those bytes, render the same object. That
-    ORDER is the contract, so it is not "add one line before the reads", and the
-    two ``exists()`` checks become ``render``'s missing-member refusal. NOT added
-    by this scaffold on purpose — ``check_prompt_tree`` is a stub and a wired
-    stub breaks every panel; body and wiring land in one commit.
-
-    NOTE for that wiring: the domain block is a THIRD member of the render, and
-    it is selected at call time rather than fixed, so the digest must cover the
-    whole ``domains/`` directory rather than the one file this call happened to
-    pick. A digest over only the selected file would let an unselected domain be
-    rewritten silently.
-
-    It does not close the headline hole. An ADJUDICATE row may still declare
-    ``_shared.md`` in ``disputed_paths:`` and rewrite it; that remedy is on
-    ``role_protocol.FLOOR_GLOBS`` — floored, handed over by W2-1-4. See
-    :data:`~claude_dispatcher.prompt_provenance.FLOOR_GLOBS_OWED`.
+    ``domain`` names a file under ``reviewer_prompts/domains/``; unset falls
+    back to ``_default.md``, which tells the reviewer to infer the domain and
+    report uncertainty rather than assume one (a hardcoded product in
+    ``_shared.md`` once had eleven rounds on a money ledger reviewed as a
+    dog-health app).
     """
-    fam_path = _PROMPTS_DIR / f"{family}.md"
-    shared_path = _PROMPTS_DIR / "_shared.md"
-    if not fam_path.exists():
-        raise FileNotFoundError(f"reviewer prompt missing: {fam_path}")
-    if not shared_path.exists():
-        raise FileNotFoundError(f"shared reviewer prompt missing: {shared_path}")
-    dom_path = _PROMPTS_DIR / "domains" / f"{domain or '_default'}.md"
-    if not dom_path.exists():
-        raise FileNotFoundError(
-            f"domain context missing: {dom_path}. Available: "
-            + ", ".join(sorted(p.stem for p in (_PROMPTS_DIR / "domains").glob("*.md")))
+    snap = prompt_provenance.snapshot_tree(_PROMPTS_DIR, "reviewer prompts")
+    names = {name for name, _ in snap.members}
+    fam_name = f"{family}.md"
+    shared_name = "_shared.md"
+    dom_name = f"domains/{domain or '_default'}.md"
+    if fam_name not in names:
+        raise FileNotFoundError(f"reviewer prompt missing: {_PROMPTS_DIR / fam_name}")
+    if shared_name not in names:
+        raise FileNotFoundError(f"shared reviewer prompt missing: {_PROMPTS_DIR / shared_name}")
+    if dom_name not in names:
+        available = sorted(
+            Path(n).stem for n in names
+            if Path(n).parent.as_posix() == "domains" and n.endswith(".md")
         )
+        raise FileNotFoundError(
+            f"domain context missing: {_PROMPTS_DIR / dom_name}. Available: "
+            + ", ".join(available)
+        )
+
+    prompt_provenance.check_prompt_tree(snap)
+
     # The domain file carries THREE sections: the context, the Compliance rubric
-    # row, and the CRITICAL severity examples. All three were hardcoded to one
-    # product, so extracting only the first would have left the scoring rubric
-    # still asserting that "money-ledger concerns apply ONLY to billing paths"
-    # while reviewing a money ledger. Audited 2026-08-22.
-    raw = dom_path.read_text(encoding="utf-8")
+    # row, and the CRITICAL severity examples. Extracting only the first would
+    # leave the scoring rubric asserting whatever product it was written for.
+    raw = snap.render(dom_name)
     ctx, _, rest = raw.partition("<!-- COMPLIANCE -->")
     comp, _, crit = rest.partition("<!-- CRITICAL -->")
     if not comp.strip() or not crit.strip():
         raise ValueError(
-            f"{dom_path} must contain <!-- COMPLIANCE --> and <!-- CRITICAL --> "
-            "sections; a domain that supplies only context leaves the scoring "
-            "rubric pointed at whatever product it was written for"
+            f"{_PROMPTS_DIR / dom_name} must contain <!-- COMPLIANCE --> and "
+            "<!-- CRITICAL --> sections; a domain that supplies only context "
+            "leaves the scoring rubric pointed at whatever product it was "
+            "written for"
         )
-    shared = (shared_path.read_text(encoding="utf-8")
+    shared = (snap.render(shared_name)
               .replace("{DOMAIN_CONTEXT}", ctx.strip())
               .replace("{DOMAIN_COMPLIANCE}", " ".join(comp.split()))
               .replace("{DOMAIN_CRITICAL}", " ".join(crit.split())))
-    return f"{fam_path.read_text(encoding='utf-8')}\n\n{shared}"
+    return f"{snap.render(fam_name)}\n\n{shared}"
 
 
 # Same notice the verifier carries: the diff EXCLUDES generated artifacts

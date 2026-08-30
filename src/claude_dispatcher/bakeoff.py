@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import cross_family_reviewer as cfr
+from . import prompt_provenance
 from . import mechanical_verify as mv
 from . import plan as plan_mod
 from . import repo_config as repo_config_mod
@@ -381,6 +382,14 @@ def run_cell(
         try:
             summary_md = (summary_path.read_text() if summary_path.exists()
                           else f"# {task.key}\n**Status:** Done\n")
+            # A bake-off cell opens no journal, so the prompt gate has nothing
+            # to anchor to: say so, under this file's registry row, or the
+            # load refuses. Raises if this process holds an anchor — a cell
+            # run inside a journalled process is judged by that run's tree.
+            prompt_provenance.declare_unanchored(
+                prompt_provenance.entry_point_row("src/claude_dispatcher/bakeoff.py"),
+                "bake-off cell: no run journal, no genesis to anchor the prompt to",
+            )
             panel = cfr.run_panel(
                 ticket_key=task.key, ticket_summary=task.summary,
                 summary_md=summary_md, diff=diff, branch=branch,
