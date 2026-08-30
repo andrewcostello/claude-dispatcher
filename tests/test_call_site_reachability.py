@@ -2924,9 +2924,16 @@ def test_check_tree_refuses_a_subject_record_a_second_constructor_built(
     through the same tree and produce a report with findings, so a body that
     raises on every subject does not pass.
 
-    GREEN at HEAD, mutation-verified. Reddens under a body on: deleting the
-    ``_validate_subject(subject)`` call in :func:`check_tree`. Measured: that
-    mutation reddens this row and no other in the file.
+    GREEN at HEAD, mutation-verified. Measured under: making
+    :func:`_validate_subject` a no-op (``ml-449b3bae5f30``, re-derived
+    ``held`` at ``1040809``, 2026-08-29) — the superset of the deletion below,
+    since the no-op blanks both of the callee's call sites — reddens this row
+    and no other in the file. Predicted (unmeasured) under: deleting only the
+    ``_validate_subject(subject)`` call in :func:`check_tree`
+    (prediction record owed — ``docs/rulings/W2-3.md``, ruling 3: the SEALS
+    row records it with ``predict --reason no_applicable_operator`` and puts
+    the id here). Measured by hand at ``4e66a01``; no operator in the closed
+    set deletes one call statement.
     """
     tree = _tree(tmp_path)
     monkeypatch.setattr(csr, "ANALYZERS", (_go(),))
@@ -3046,11 +3053,19 @@ def test_root_kind_is_derived_from_the_kind_and_never_asserted_by_the_row(
     :class:`Root` an analyzer produces goes through this validator, and the
     values come from a Go helper's JSON, not from a Python literal.
 
-    GREEN at HEAD, mutation-verified. Reddens under a body on: making
-    :func:`_validate_root` a no-op. Measured: that mutation reddens this row
-    and its sibling
+    GREEN at HEAD, mutation-verified. Measured under: making
+    :func:`_validate_root` a no-op (``ml-c3420ec3a18c``, re-derived ``held``
+    at ``1040809``, 2026-08-29). That mutation reddens this row, its sibling
     :func:`test_a_root_that_disagrees_with_its_own_file_or_names_no_kind_is_refused`,
-    and no other row in the file. A DEFAULT on ``_ROOT_KIND_BY_ENTRYPOINT``
+    and the two rows ``seals(D5)`` ``3eedd07`` added after this clause was
+    written —
+    :func:`test_a_test_function_outside_the_tests_is_refused_in_both_spellings`
+    and
+    :func:`test_root_kind_derives_from_the_kind_and_the_declaring_file_together`
+    — and no other row in the file. The clause used to say "this row and its
+    sibling, and no other"; the scope is amended by the W2-3 ruling
+    (``docs/rulings/W2-3.md``, ruling 4), because the file grew after the
+    count was taken. A DEFAULT on ``_ROOT_KIND_BY_ENTRYPOINT``
     does NOT redden this row and is measured as reddening the sibling only —
     recorded here rather than claimed, because the table still names all eight
     members and this sweep cannot see past them. That is the sibling's job.
@@ -3182,13 +3197,23 @@ def test_a_root_that_disagrees_with_its_own_file_or_names_no_kind_is_refused(
     The control is the sweep above, and one is judged here too: the same
     analyzer with the well-formed pair returns both roots.
 
-    GREEN at HEAD, mutation-verified, three mutations. Reddens under a body on:
-    making :func:`_validate_root` a no-op; giving ``_ROOT_KIND_BY_ENTRYPOINT``
-    a default (``.get(root.kind, root.root_kind)``, the shape that lets a row
-    assert its own answer for a kind nobody classified); dropping the
-    ``is_test_path`` cross-check and trusting ``kind`` alone. Measured: the
-    second and third redden this row and no other in the file; the first
-    reddens this row and the sweep above.
+    GREEN at HEAD, mutation-verified, three mutations. Measured under: making
+    :func:`_validate_root` a no-op (``ml-02d29bf4548e``, re-derived ``held``
+    at ``1040809``, 2026-08-29) — reddens this row, the sweep above, and the
+    two rows ``seals(D5)`` ``3eedd07`` added after this clause was written
+    (:func:`test_a_test_function_outside_the_tests_is_refused_in_both_spellings`,
+    :func:`test_root_kind_derives_from_the_kind_and_the_declaring_file_together`),
+    and no other row in the file; the clause used to say "this row and the
+    sweep above", and the scope is amended by the W2-3 ruling
+    (``docs/rulings/W2-3.md``, ruling 4). Predicted (unmeasured) under:
+    giving ``_ROOT_KIND_BY_ENTRYPOINT`` a default (``.get(root.kind,
+    root.root_kind)``, the shape that lets a row assert its own answer for a
+    kind nobody classified) (``mlp-8bb04cc4459c``); dropping the
+    ``is_test_path`` cross-check and trusting ``kind`` alone
+    (``mlp-49359d103c74``). Both were measured by hand at ``4e66a01`` as
+    reddening this row and no other; the subject's bytes have moved since,
+    and no operator in the closed set re-runs either, so they are predictions
+    until one does.
     """
     tree = _tree(tmp_path)
 
@@ -3468,9 +3493,20 @@ def test_check_tree_validates_a_finding_check_subject_never_built(
     ABSTAIN for the unnameable seal. So the refusal below is about the record's
     shape and not about the tree, the seal, or the substitution.
 
-    GREEN at HEAD, mutation-verified. Reddens under a body on: deleting the
-    ``_validate_finding(finding)`` call in :func:`check_tree`'s disposition
-    loop. Measured: that mutation reddens this row and no other in the file.
+    GREEN at HEAD, mutation-verified. Measured under: making
+    :func:`_validate_finding` a no-op (``ml-7bd51349df46``, re-derived
+    ``held`` at ``1040809``, 2026-08-29) — the superset of the deletion below,
+    since the no-op blanks all seven call sites — reddens this row and no
+    other in the file. It leaves
+    :func:`test_check_subject_validates_every_finding_it_returns` green (that
+    row records calls through a wrapper, so a blanked callee is still called),
+    which is why the deletion below does not inherit this citation. Predicted
+    (unmeasured) under: deleting only the ``_validate_finding(finding)`` call
+    in :func:`check_tree`'s disposition loop (prediction record owed —
+    ``docs/rulings/W2-3.md``, ruling 3: the SEALS row records it with
+    ``predict --reason no_applicable_operator`` and puts the id here).
+    Measured by hand at ``4e66a01``; no operator in the closed set deletes
+    one call statement.
     """
     tree = _tree(tmp_path)
     mystery = Seal(
