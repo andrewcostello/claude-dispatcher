@@ -916,11 +916,16 @@ def test_a_clean_branch_records_what_it_actually_checked() -> None:
         # role that legitimately writes `src/` is the one for which this glob is
         # the only thing standing between a body agent and the reviewer prompt
         # that is about to judge it.
+        # W2-1-4 ruling (2026-08-29): both prompt trees are now on the FLOOR,
+        # and per path the floor WINS (`_union_with_floor`), so the glob a
+        # BODIES branch is refused by is the floor's. The table's own
+        # `**/reviewer_prompts/**` deny is unchanged and is pinned as data in
+        # `test_role_protocol_table.py`; this row pins what the gate ANSWERS.
         (Role.BODIES, "src/claude_dispatcher/reviewer_prompts/_shared.md",
-         "**/reviewer_prompts/**", RuleKind.DENY_GLOBS),
+         "**/src/claude_dispatcher/reviewer_prompts/**", RuleKind.DENY_GLOBS),
         # The twin hole, sealed for the same reason and by the same argument.
         (Role.BODIES, "src/claude_dispatcher/verifier_prompts/verifier.md",
-         "**/verifier_prompts/**", RuleKind.DENY_GLOBS),
+         "**/src/claude_dispatcher/verifier_prompts/**", RuleKind.DENY_GLOBS),
         # P1 must not write the seals it will be judged by.
         (Role.SCAFFOLD, "tests/test_role_protocol_table.py", "**/tests/**",
          RuleKind.DENY_GLOBS),

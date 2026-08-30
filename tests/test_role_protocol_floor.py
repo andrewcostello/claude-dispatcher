@@ -891,6 +891,57 @@ _FLOOR_ROWS: tuple[tuple[str, str], ...] = (
         "**/src/claude_dispatcher/branch_surface.py",
         "sub/project/src/claude_dispatcher/branch_surface.py",
     ),
+    # The instruction trees the review gate executes, and the module that
+    # decides whether they load (W2-1-4 ruling, 2026-08-29). Four rows per
+    # subtree on the fingerprinter pattern: two pin the path qualification, two
+    # pin the SUBTREE half — `_shared.md` reaches every reviewer seat and a
+    # domain file is selected per call, so a spelling that named the family
+    # files alone would leave both writable by the branch being judged.
+    (
+        "**/src/claude_dispatcher/reviewer_prompts/**",
+        "src/claude_dispatcher/reviewer_prompts/claude.md",
+    ),
+    (
+        "**/src/claude_dispatcher/reviewer_prompts/**",
+        "sub/project/src/claude_dispatcher/reviewer_prompts/claude.md",
+    ),
+    (
+        "**/src/claude_dispatcher/reviewer_prompts/**",
+        "src/claude_dispatcher/reviewer_prompts/_shared.md",
+    ),
+    (
+        "**/src/claude_dispatcher/reviewer_prompts/**",
+        "src/claude_dispatcher/reviewer_prompts/domains/walletv2.md",
+    ),
+    (
+        "**/src/claude_dispatcher/verifier_prompts/**",
+        "src/claude_dispatcher/verifier_prompts/verifier.md",
+    ),
+    (
+        "**/src/claude_dispatcher/verifier_prompts/**",
+        "sub/project/src/claude_dispatcher/verifier_prompts/verifier.md",
+    ),
+    # The verifier tree holds one file today; these two probes are the members
+    # it would grow next (a shared preamble, a domain block) and pin the SUBTREE
+    # half the way the Go rows pin `internal/parse/decl.go` — nothing here
+    # depends on the file existing.
+    (
+        "**/src/claude_dispatcher/verifier_prompts/**",
+        "src/claude_dispatcher/verifier_prompts/_shared.md",
+    ),
+    (
+        "**/src/claude_dispatcher/verifier_prompts/**",
+        "src/claude_dispatcher/verifier_prompts/domains/walletv2.md",
+    ),
+    # The gate module: a check a branch can edit is not a check.
+    (
+        "**/src/claude_dispatcher/prompt_provenance.py",
+        "src/claude_dispatcher/prompt_provenance.py",
+    ),
+    (
+        "**/src/claude_dispatcher/prompt_provenance.py",
+        "sub/project/src/claude_dispatcher/prompt_provenance.py",
+    ),
 )
 
 
@@ -1040,7 +1091,9 @@ def test_the_floor_is_exactly_the_written_out_set_of_globs() -> None:
     # difference + per-row match + this bound is the whole coverage — the closure
     # test walks the ROLE gate and cannot reach the mechanical-gate path.
     # 44 -> 46: the declared-holes checker's two rows.
-    assert len(_FLOOR_ROWS) >= 46, _FLOOR_ROWS
+    # 46 -> 56 (W2-1-4 ruling, 2026-08-29): the two instruction-tree subtrees
+    # (four rows each) and the prompt gate module (two).
+    assert len(_FLOOR_ROWS) >= 56, _FLOOR_ROWS
 
 
 def test_every_floor_glob_the_ruling_wrote_out_is_in_the_constant() -> None:
@@ -1673,6 +1726,30 @@ _DECLARATIONS_THAT_NAME_THE_FLOOR: tuple[tuple[tuple[str, ...], str], ...] = (
         "the gate library, named exactly",
     ),
     (("scripts/check_body_branch.sh",), "the gate entrypoint, named exactly"),
+    # W2-1-4 ruling, 2026-08-29: a declaration INSIDE a floored subtree, or the
+    # subtree itself, is refused at plan time — every path it could grant is
+    # refused at diff time, so the task could never land. The upper bound is
+    # unmoved: `src/claude_dispatcher/**` still parses (the control below).
+    (
+        ("src/claude_dispatcher/reviewer_prompts/_shared.md",),
+        "the reviewer prompt every seat reads, named exactly",
+    ),
+    (
+        ("src/claude_dispatcher/reviewer_prompts/**",),
+        "the reviewer prompt subtree itself",
+    ),
+    (
+        ("src/claude_dispatcher/verifier_prompts/verifier.md",),
+        "the verifier prompt, named exactly",
+    ),
+    (
+        ("src/claude_dispatcher/prompt_provenance.py",),
+        "the prompt gate module, named exactly",
+    ),
+    (
+        ("src/claude_dispatcher/go_signature_fingerprint/main.go",),
+        "a file inside an older subtree floor",
+    ),
 )
 
 

@@ -1038,6 +1038,12 @@ _GLOB_METACHARACTERS = "*?[]"
 #: entries: the closure walk proves nothing about callers, and a caller that
 #: turns a VIOLATION into a control-flow decision has to be named by hand.
 #:
+#: **W2-1-4 (2026-08-29): the "subtree globs are diff-time only" split below is
+#: HISTORY.** :func:`_floor_glob_named_by` now also reads the declaration as a
+#: path, so a declaration inside a floored subtree is refused at plan time; a
+#: subtree that merely CONTAINS a floor path (``src/claude_dispatcher/**``)
+#: still parses. The counts below are left as the record they were.
+#:
 #: **FOURTEEN globs as of unit D7 (2026-08-12): ELEVEN FILE globs, refused at
 #: plan time as well as at diff time, and THREE subtree globs, diff-time
 #: only.** The D7 entry is the eleventh basename and it is the first one added
@@ -1421,6 +1427,16 @@ FLOOR_GLOBS: tuple[str, ...] = (
     # the gate path from the commit that adds the call above, and a check a
     # branch can edit is not a check.
     "**/src/claude_dispatcher/branch_surface.py",
+    # The instruction trees the review gate EXECUTES, and the module that
+    # decides whether they load (W2-1-4 ruling, 2026-08-29, operator commit;
+    # spelled by `prompt_provenance.FLOOR_GLOBS_OWED`). The anchor attests
+    # unchanged-since-genesis, not correct: a tree rewritten before the genesis
+    # is hashed is attested by its own drift, and only a write denial closes
+    # that. Subtrees, so plan-time reach comes from the path read in
+    # `_floor_glob_named_by`, not from the basename probe.
+    "**/src/claude_dispatcher/reviewer_prompts/**",
+    "**/src/claude_dispatcher/verifier_prompts/**",
+    "**/src/claude_dispatcher/prompt_provenance.py",
 )
 
 #: What a floor violation prints, and deliberately NOT the violated role's own
@@ -1685,6 +1701,11 @@ def _floor_glob_named_by(entry: str) -> str | None:
     ``**/.dispatcher.yaml``, ``sub/project/.dispatcher.yaml``,
     ``.dispatcher.*`` and ``**/.dispatcher.yam?`` all name it.
 
+    Since W2-1-4 (2026-08-29) it asks a second question first — *does this
+    declaration, read as a path, lie ON the floor?* — so a file inside a
+    floored subtree (``src/claude_dispatcher/reviewer_prompts/_shared.md``) or
+    the subtree itself (``.../reviewer_prompts/**``) is a hit too.
+
     What it deliberately does NOT answer is "could this declaration CONTAIN a
     floor path", which is why a tail that is nothing but wildcards (``docs/**``,
     ``src/claude_dispatcher/**``, ``sub/**``) is not a hit: such a glob names a
@@ -1720,6 +1741,17 @@ def _floor_glob_named_by(entry: str) -> str | None:
     candidate = entry.strip().rstrip("/")
     if not candidate:
         return None
+    # The path read (W2-1-4 ruling, 2026-08-29): the declaration's own text,
+    # read as a path, on the floor. This is what gives a SUBTREE floor plan-time
+    # reach — `reviewer_prompts/_shared.md` or `reviewer_prompts/**` is inside
+    # the floored tree, so every path it could grant is refused at diff time
+    # and the task could never land. It is NOT the "could contain" question:
+    # `src/claude_dispatcher/**`, `docs/**` and `sub/**` match no floor glob as
+    # text and still parse. Same lens as `_floor_violations`, so the two
+    # enforcement points cannot disagree about what is on the floor.
+    on_floor = first_matching_glob(candidate, FLOOR_GLOBS)
+    if on_floor is not None:
+        return on_floor
     basename = candidate.rsplit("/", 1)[-1]
     if not basename.strip("*?[]"):
         # A tail of pure wildcards names a tree, not a file — see above.

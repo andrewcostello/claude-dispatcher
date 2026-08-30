@@ -5,8 +5,9 @@ genesis already records ``hash_tree`` of that directory as
 ``reviewer_prompts_hash`` — a fact nothing compares to anything. This module is
 that comparison. Every outcome is a named state; there is no "load quietly".
 
-The floored half (:data:`FLOOR_GLOBS_OWED`, :data:`FLOORED_OBLIGATIONS`) is
-handed over, not closed here.
+The floored half: :data:`FLOOR_GLOBS_OWED` landed by operator commit on the
+W2-1-4 ruling (2026-08-29); :data:`FLOORED_OBLIGATIONS` entries 2 and 3 are
+still owed.
 
 The five constraints a later editor would otherwise break:
 
@@ -28,8 +29,9 @@ The five constraints a later editor would otherwise break:
    not raise, and its call sites must not wrap it in ``except Exception: pass``;
    a failure it records is constraint 3's refusal.
 
-What this does NOT close: an ADJUDICATE row may still declare ``_shared.md`` in
-``disputed_paths:`` and rewrite it. That remedy is floored and handed over. Why
+What this does NOT close by itself: an ADJUDICATE row declaring ``_shared.md``
+in ``disputed_paths:``. That is the write denial in ``role_protocol.FLOOR_GLOBS``,
+landed 2026-08-29 on the W2-1-4 ruling. Why
 this remedy and not the two unfloored alternatives — including reading the prompt
 from the BASE revision, which this unit could have built and did not — is
 :data:`REMEDY_DISPOSITIONS`. What is NOT in the class, and on what measurement,
@@ -88,10 +90,11 @@ GENESIS_NONCE_KEY = "run_nonce"
 #: existence; it answers only "did the prompt move".
 EMPTY_TREE_DIGEST = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
-#: The floored half, spelled so W2-1-4 transcribes rather than re-derives it. NOT
-#: installed — ``role_protocol.FLOOR_GLOBS`` is glob 3 of its own tuple. Rejected
-#: spellings and their probe counts are in this commit's message; two properties
-#: a transcription would lose:
+#: The floored half, spelled so W2-1-4 transcribes rather than re-derives it.
+#: INSTALLED in ``role_protocol.FLOOR_GLOBS`` by operator commit, 2026-08-29, on
+#: the W2-1-4 ruling — with the path read in ``_floor_glob_named_by`` that gives
+#: the subtrees plan-time reach. Rejected spellings and their probe counts are in
+#: the W2-1-1 commit message; two properties a transcription would have lost:
 #:
 #:   * the SUBTREE entries buy DIFF-TIME enforcement only. Measured with both
 #:     appended, ``_floor_glob_named_by`` returns None for every spelling of the
@@ -109,8 +112,9 @@ FLOOR_GLOBS_OWED: tuple[str, ...] = (
 #: Obligations this unit cannot discharge because they land in a floored file.
 #: Data, not prose, so W2-1-4 transcribes a list and a grep finds them.
 FLOORED_OBLIGATIONS: tuple[str, ...] = (
-    "role_protocol.py: install FLOOR_GLOBS_OWED, plus a rule over "
-    "disputed_paths: — the subtree globs alone do not reach plan time.",
+    "DISCHARGED 2026-08-29 (W2-1-4 ruling, operator commit): role_protocol.py "
+    "carries FLOOR_GLOBS_OWED, and _floor_glob_named_by reads a disputed_paths: "
+    "entry as a path so the subtree globs reach plan time.",
     "orchestrator.py: install a journal-backed reporter via set_load_reporter, "
     "so a load decision lands on the run's own chain and not only on stderr. "
     "Until then the default reporter is all there is.",
@@ -126,14 +130,15 @@ FLOORED_OBLIGATIONS: tuple[str, ...] = (
 REMEDY_DISPOSITIONS: tuple[tuple[str, str], ...] = (
     (
         "prompt trees join role_protocol.FLOOR_GLOBS",
-        "OWED, floored. Spelled at FLOOR_GLOBS_OWED for W2-1-4. It is the only "
+        "LANDED 2026-08-29 (W2-1-4 ruling, operator commit). It is the only "
         "remedy that denies the WRITE, and so the only one that survives a tree "
         "drifted BEFORE a run starts — see the chosen remedy's limit below.",
     ),
     (
         "ADJUDICATE gains a deny row for the two prompt trees",
-        "OWED, floored. FLOORED_OBLIGATIONS entry 1, together with the rule "
-        "over `disputed_paths:` without which the globs do not reach plan time.",
+        "LANDED 2026-08-29 with the first: not a deny row on the ADJUDICATE "
+        "rule (a deny cannot be expressed in an allow-only rule) but the floor, "
+        "which binds ADJUDICATE too, plus the path read that reaches plan time.",
     ),
     (
         "resolve the prompt from the BASE revision, as scripts/check_body_"
@@ -282,9 +287,10 @@ class AnchorFailure:
     needs somewhere to put the answer, and the alternative is a silent skip.
     """
 
-    #: The genesis ``run_nonce``, or ``"unknown:<journal path>"`` when the nonce
-    #: is itself the unusable field — keyed by path so repeated failures on one
-    #: journal collapse and two journals do not.
+    #: The genesis ``run_nonce``, or ``"unknown:<detail>"`` when the nonce is
+    #: itself the unusable field (W2-1-4 ratified the indirection): both call
+    #: sites build ``detail`` from the run id and the journal path only, so
+    #: repeated failures on one journal collapse and two journals do not.
     run_nonce: str
     #: Why the anchor is unusable, in operator words.
     reason: str
