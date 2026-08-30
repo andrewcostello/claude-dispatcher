@@ -200,7 +200,17 @@ here at its target-relative path:
 ```
 features/dogfood-go/GO-2/claude-workflow/cmd/artifacts/go.mod
 features/dogfood-go/GO-2/claude-workflow/cmd/artifacts/main.go
+features/dogfood-go/GO-2/claude-workflow/cmd/artifacts/main_test.go   (GO-2-2 seals)
 ```
+
+The seals need the checker's own precondition: **full history**. `git log
+rev..HEAD` and `merge-base --is-ancestor` are meaningless in a shallow clone,
+and the §5 oracle replays `1db2d41` in a throwaway clone of the enclosing
+repository. In `gates.yml` the `artifacts` job must check out with
+`fetch-depth: 0`. The real-tree and oracle seals locate the repository via
+`git rev-parse --show-toplevel` (override: `ARTIFACTS_REPO`) and **fail, never
+skip**, when it is not claude-workflow — a seal over an empty set is the
+measurement trap in test form.
 
 To land it: `cp -r features/dogfood-go/GO-2/claude-workflow/. ~/Project/claude-workflow/`
 on a `claude-workflow` branch off `docs/explicit-state`, add `artifacts` to
