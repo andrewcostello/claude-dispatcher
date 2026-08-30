@@ -1977,5 +1977,11 @@ def test_a_parse_failed_seat_is_not_named_as_a_dissenter() -> None:
 
 @pytest.fixture(autouse=True)
 def _journal_less_test_process():
+    """Declares this module a journal-less caller of ``_load_prompt``, PER
+    MODULE. Do not hoist this into ``conftest.py``: a blanket declaration would
+    make every seal that starts from "no anchor, no declaration" permissive.
+    Every test in this module loads under this declaration;
+    ``conftest._no_prompt_anchors`` clears it after each test so it cannot
+    leak past this module."""
     from claude_dispatcher import prompt_provenance as pp
     pp.declare_unanchored("tests/test_cross_family_reviewer.py", "test process: no run journal")
