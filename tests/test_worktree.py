@@ -329,3 +329,63 @@ def test_an_unresolvable_ref_reports_none_rather_than_zero(tmp_path) -> None:
     explanation on exactly the repos where git is unhappy."""
     repo = _repo_with_stale_branch(tmp_path)
     assert wt.commits_behind(repo, "no-such-branch", "main") is None
+
+
+# ── two repos sharing a parent collide on worktree paths ───────────────────
+# A worktree path is `<repo_root.parent>/worktree-<KEY>` on a host, so every
+# repository under ~/Project produces the SAME path for the same task key.
+# Measured 2026-08-30: a killed run against claude-dispatcher left
+# `worktree-GO-4-1` behind and the next run, against claude-workflow, reused
+# it. The task looked for its branch in a checkout of the wrong repository and
+# escalated. The reuse path exists to preserve THIS repo's work; a directory
+# owned by another repo holds none of it.
+
+
+def _linked_worktree(tmp_path, owner_name: str, wt_name: str):
+    """A directory shaped like git's linked worktree, owned by `owner_name`."""
+    owner = tmp_path / owner_name
+    (owner / ".git" / "worktrees" / wt_name).mkdir(parents=True)
+    linked = tmp_path / wt_name
+    linked.mkdir()
+    (linked / ".git").write_text(
+        f"gitdir: {owner}/.git/worktrees/{wt_name}\n", encoding="utf-8")
+    return owner, linked
+
+
+def test_owning_repo_reads_the_worktree_gitdir_pointer(tmp_path) -> None:
+    owner, linked = _linked_worktree(tmp_path, "repo-a", "worktree-T-1")
+    assert wt.owning_repo(linked) == owner
+
+
+def test_owning_repo_is_none_for_an_ordinary_directory(tmp_path) -> None:
+    """A normal checkout has `.git` as a DIRECTORY, not a pointer file. None
+    means "not a linked worktree", and must not be confused with "owned by
+    somebody else" — the caller only refuses on a positive mismatch."""
+    plain = tmp_path / "plain"
+    (plain / ".git").mkdir(parents=True)
+    assert wt.owning_repo(plain) is None
+
+
+def test_create_refuses_a_worktree_owned_by_another_repo(tmp_path) -> None:
+    _owner, _wt = _linked_worktree(tmp_path, "repo-a", "worktree-T-1")
+    mine = tmp_path / "repo-b"
+    mine.mkdir()
+
+    with pytest.raises(wt.WorktreeError) as ei:
+        wt.create(mine, "T-1", "feat/t-1", base_path=tmp_path)
+    assert "DIFFERENT repository" in str(ei.value)
+    assert "repo-a" in str(ei.value)
+
+
+def test_create_still_reuses_a_worktree_this_repo_owns(tmp_path) -> None:
+    """The refusal must not cost the reuse property, which is what preserves
+    commits an unblocked task already made."""
+    owner, _wt = _linked_worktree(tmp_path, "repo-a", "worktree-T-1")
+    # Same repo: no refusal. It fails later for unrelated reasons (this is not
+    # a real git repo), but NOT with the cross-repo message.
+    try:
+        wt.create(owner, "T-1", "feat/t-1", base_path=tmp_path)
+    except wt.WorktreeError as e:
+        assert "DIFFERENT repository" not in str(e)
+    except Exception:
+        pass

@@ -266,6 +266,33 @@ def commits_behind(repo_root: Path, branch: str, base_branch: str) -> int | None
         return None
 
 
+def owning_repo(wt_path: Path) -> Path | None:
+    """The repository a worktree directory belongs to, or None.
+
+    A linked worktree's ``.git`` is a FILE reading
+    ``gitdir: <repo>/.git/worktrees/<name>``, so the owner is recoverable
+    without asking git anything.
+    """
+    dot_git = wt_path / ".git"
+    try:
+        if not dot_git.is_file():
+            return None
+        text = dot_git.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    # `partition`, not `startswith`: this module carries an acceptance row
+    # forbidding string-prefix checks (Phase 0), and a blunt rule is worth more
+    # than an exception for a case that happens not to be a path.
+    head, sep, gitdir = text.partition("gitdir:")
+    if not sep or head.strip():
+        return None
+    gitdir = gitdir.strip()
+    marker = "/.git/worktrees/"
+    if marker not in gitdir:
+        return None
+    return Path(gitdir.split(marker, 1)[0])
+
+
 def create(
     repo_root: Path,
     task_key: str,
@@ -280,6 +307,26 @@ def create(
     """
     base = base_path or worktree_base(repo_root)
     wt_path = worktree_path(base, task_key)
+
+    # A worktree path is `<repo_root.parent>/worktree-<KEY>` on a host, so TWO
+    # REPOSITORIES THAT SHARE A PARENT DIRECTORY COLLIDE on it — and every repo
+    # in ~/Project does. Measured 2026-08-30: a killed run against
+    # claude-dispatcher left `worktree-GO-4-1` behind, and the next run, against
+    # claude-workflow, reused it. The task then looked for its branch in a
+    # checkout of the wrong repository and escalated ("the dispatcher reused
+    # the stale claude-dispatcher worktree ... worktree creation should refuse,
+    # not reuse, a path that belongs to another repository"). It is right: the
+    # reuse path below exists to preserve THIS repo's work, and a directory
+    # owned by another repo holds none of it.
+    owner = owning_repo(wt_path)
+    if owner is not None and owner.resolve() != repo_root.resolve():
+        raise WorktreeError(
+            f"worktree path {wt_path} belongs to a DIFFERENT repository "
+            f"({owner}), not {repo_root}. Two repos sharing a parent directory "
+            f"collide here. Remove it (`git -C {owner} worktree remove "
+            f"{wt_path}`) or pass --worktree-base to separate them."
+        )
+
     if wt_path.exists() and (wt_path / ".git").exists():
         # Provision on REUSE too (D-61, corrected). A re-dispatched task —
         # after an unblock, a resume, or a run stopped mid-flight — takes this
