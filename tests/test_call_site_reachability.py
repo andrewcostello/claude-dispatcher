@@ -2929,9 +2929,11 @@ def test_check_tree_refuses_a_subject_record_a_second_constructor_built(
     ``held`` at ``1040809``, 2026-08-29) — the superset of the deletion below,
     since the no-op blanks both of the callee's call sites — reddens this row
     and no other in the file. Predicted (unmeasured) under: deleting only the
-    ``_validate_subject(subject)`` call in :func:`check_tree` — measured by
-    hand at ``4e66a01``, and not re-runnable until a delete-call operator
-    exists (``docs/rulings/W2-3.md``, ruling 3).
+    ``_validate_subject(subject)`` call in :func:`check_tree`
+    (prediction record owed — ``docs/rulings/W2-3.md``, ruling 3: the SEALS
+    row records it with ``predict --reason no_applicable_operator`` and puts
+    the id here). Measured by hand at ``4e66a01``; no operator in the closed
+    set deletes one call statement.
     """
     tree = _tree(tmp_path)
     monkeypatch.setattr(csr, "ANALYZERS", (_go(),))
@@ -3500,9 +3502,11 @@ def test_check_tree_validates_a_finding_check_subject_never_built(
     row records calls through a wrapper, so a blanked callee is still called),
     which is why the deletion below does not inherit this citation. Predicted
     (unmeasured) under: deleting only the ``_validate_finding(finding)`` call
-    in :func:`check_tree`'s disposition loop — measured by hand at
-    ``4e66a01``, and not re-runnable until a delete-call operator exists
-    (``docs/rulings/W2-3.md``, ruling 3).
+    in :func:`check_tree`'s disposition loop (prediction record owed —
+    ``docs/rulings/W2-3.md``, ruling 3: the SEALS row records it with
+    ``predict --reason no_applicable_operator`` and puts the id here).
+    Measured by hand at ``4e66a01``; no operator in the closed set deletes
+    one call statement.
     """
     tree = _tree(tmp_path)
     mystery = Seal(
