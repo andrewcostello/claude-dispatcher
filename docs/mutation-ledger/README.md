@@ -4,7 +4,7 @@ One JSON Lines file per subject module, named
 `claude_dispatcher.<module>.jsonl` (`mutation_ledger.ledger_path_for`).
 `claude_dispatcher.call_site_reachability.jsonl` is the first ledger, built
 by W2-3-3 on 2026-08-28 — see *What the ledger holds so far* below for its
-five records and the handover to W2-3-5.
+five records, and *The population is recorded* for the 64 W2-3-5 added on 2026-08-29.
 
 ## The two kinds of record
 
@@ -597,3 +597,64 @@ operator — *delete one call statement in the anchor* — would reach three
 more rows (four sentences) with real runs; the contract says such an
 amendment must arrive **with an observation that exercises it**, which makes
 it W2-3-5's to propose with a measurement, or W2-3-4's to rule out.
+
+## The population is recorded (W2-3-5, 2026-08-29)
+
+Sixty-nine records over all 40 rows: 5 observations and 64 predictions, one
+record per clause **sentence** (a header is a semicolon list, and each
+sentence is its own claim). Every record was made by the ledger's own
+admission paths at the branch's then-HEAD (`59b6e10`, `6286e29`, `8d75135`, `871c235`; the subject
+digest is the same at each) and none was transcribed: each prediction's
+`note` states what the shipped body does where the sentence would change it
+and which operator was tried against it. Committed in four batches, one per
+commit, so a session ending mid-way loses one batch and not the loop.
+
+| kind | count | reason | rows |
+| --- | --- | --- | --- |
+| observation | 3 (W2-3-3) + 2 | — | `discover_roots`, `_validate_root` ×2, `_validate_subject`, `_validate_finding` |
+| prediction | 54 | `reference_implementation_discarded` | the 28 rows that were `RED at HEAD` when their clause was written, plus `test_adjudicate_is_total_over_the_grid` (W2-3-3) |
+| prediction | 10 | `no_applicable_operator` | the `GREEN at HEAD, mutation-verified` rows whose edit the closed set does not express |
+
+`fates` at `89250f9`: all five observations `held` → `cite_claim`; all 64
+predictions → `relabel_predicted`. `citations` exits 0.
+
+**The two new observations are a superset of their clauses, and are flagged
+for W2-3-4.** `test_check_tree_refuses_a_subject_record_a_second_constructor_built`
+says "deleting the `_validate_subject(subject)` call in `check_tree`" and
+`test_check_tree_validates_a_finding_check_subject_never_built` says
+"deleting the `_validate_finding(finding)` call in `check_tree`'s disposition
+loop". The set has no delete-call member, so each callee was made a no-op
+(`body_to_no_op`) — which blanks every call, not one. Measured: each reddens
+exactly the clause's row and no other, so the superset's reach over this file
+is the clause's. They are recorded as observations (`ml-449b3bae5f30`,
+`ml-7bd51349df46`) rather than predictions because they are re-runnable and a
+note is not; whether a callee no-op may be cited by a delete-one-call clause
+is a ruling, not a measurement, and it is W2-3-4's.
+
+**Measured against that ruling:** the same `_validate_finding` no-op leaves
+`test_check_subject_validates_every_finding_it_returns` GREEN. That row
+records *calls* through a monkeypatched wrapper, so a blanked callee is still
+"called" and the row cannot see it; only a deleted statement would redden it.
+Its two sentences are predictions, and the finding fixes the design of any
+fifth operator: it must delete the call statement, not blank the callee. No
+operator was added on this task — the contract makes that an amendment that
+arrives with its own observation, and the population task is not the place to
+change a shared contract.
+
+**Re-tried and refused at HEAD, recorded in the notes rather than claimed:**
+`add_default_branch` on `adjudicate` (0 else-less chains; it dispatches
+through `_RULINGS.get`) and on `_validate_root` (0 chains); `return_constant`
+on `_chain_quality` (`PathQuality.NOT_APPLICABLE` is not a literal);
+`raise_to_continue` on `check_tree`/`AnalyzerUnavailable` (no handler),
+`build_call_graph`/`AnalyzerUnavailable` (no handler) and
+`build_call_graph`/`SourceUnreadable` (the handler records; it holds no
+raise). Two applications that *do* apply but are not the clause's mutation:
+`add_default_branch` on `_chain_quality` appends `else: return None` after a
+single-arm `if`, shadowing the existing fall-through return — the operator
+accepts a shape that is not a total dispatch, which is worth a look by whoever
+owns `_return_chain`; and `return_constant ()` on `discover_seals`, which
+returns no seals rather than sorted ones.
+
+W2-3-3's three observations re-derive `held`, no drift, at `59b6e10`; they
+were not superseded, because a `--record` over live entries writes three new
+records per invocation and nothing about them had changed.
