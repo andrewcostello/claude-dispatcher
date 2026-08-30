@@ -49,6 +49,36 @@ Rules for agents working under this experiment:
    feature's plan doc — read it before filling bodies, and don't reshape the
    established seams to fit a body you find easier to write.
 
+## Attribution: none, in commits or in names
+
+No `Co-Authored-By`, no author names in file headers or docs, and no class or
+function named after whoever wrote it — human or model. Code belongs to the
+team; attribution creates silos and a false sense of ownership.
+
+Naming a symbol after what it INTEGRATES WITH is not attribution and stays:
+`ClaudeReviewer` names the CLI it drives, as `PostgresStore` would name a
+database.
+
+**Keep the provenance, drop the credit.** What the trailer was buying is the
+ability to ask later *how* a change was produced — dispatched under a panel, or
+hand-edited — an audit question, not a credit one. Record the process instead:
+
+```
+type(scope): short description [TASK-KEY]
+
+Dispatched-Task: TASK-KEY
+Dispatcher-Run: <run id>
+```
+
+The bracketed key is load-bearing, not decoration: `dispatcher audit`'s
+`landed-by-message` route greps for the bracketed form (`--fixed-strings`) to
+distinguish a landed-and-pruned branch from work that went missing. Bare
+mentions are noise — `W2-1-1` appears in 16 commit messages on main and
+`[W2-1-1]` in 3 — so keep the brackets.
+
+Commits before 2026-08-30 carry a `Co-Authored-By` trailer. They are left
+alone: rewriting published history to remove a line costs more than the line.
+
 ## Comments: purpose and constraints, not rationale
 
 Measured 2026-08-17 across this package: the established modules run about
