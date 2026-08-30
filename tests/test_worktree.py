@@ -277,3 +277,55 @@ def test_worktree_error_str_includes_git_stderr() -> None:
 
 def test_worktree_error_str_without_stderr_is_unchanged() -> None:
     assert str(wt.WorktreeError("plain message")) == "plain message"
+
+
+# ── explaining a dependency-merge conflict ──────────────────────────────────
+# `create` REUSES an existing branch rather than resetting it to the base —
+# that is deliberate and has recovered real work four times. The cost is that a
+# task re-dispatched long after its first attempt merges its dependencies into
+# a tree that predates them. Measured on W2-1-3 (2026-08-29): 152 commits
+# behind main, and the conflict named five files its dependency never opened.
+
+
+def _repo_with_stale_branch(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo,
+                   check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo,
+                   check=True, capture_output=True)
+
+    def commit(name: str) -> None:
+        (repo / name).write_text(name, encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", name], cwd=repo,
+                       check=True, capture_output=True)
+
+    commit("base")
+    subprocess.run(["git", "branch", "stale"], cwd=repo, check=True,
+                   capture_output=True)
+    for i in range(3):
+        commit(f"later-{i}")
+    return repo
+
+
+def test_commits_behind_counts_what_the_branch_is_missing(tmp_path) -> None:
+    repo = _repo_with_stale_branch(tmp_path)
+    assert wt.commits_behind(repo, "stale", "main") == 3
+
+
+def test_a_current_branch_is_zero_behind(tmp_path) -> None:
+    """Zero is falsy and the caller uses that to stay silent, so a fresh branch
+    must report 0 and not None."""
+    repo = _repo_with_stale_branch(tmp_path)
+    assert wt.commits_behind(repo, "main", "main") == 0
+
+
+def test_an_unresolvable_ref_reports_none_rather_than_zero(tmp_path) -> None:
+    """None and 0 must not be conflated: 0 means "current", None means "could
+    not tell", and reporting the second as the first would silently drop the
+    explanation on exactly the repos where git is unhappy."""
+    repo = _repo_with_stale_branch(tmp_path)
+    assert wt.commits_behind(repo, "no-such-branch", "main") is None

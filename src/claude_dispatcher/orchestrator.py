@@ -1188,9 +1188,25 @@ def _run_task(
         # merge failure (e.g. missing committer identity); the task_started
         # event above already journaled the detail.
         c = merge_result.conflict
+        # Name the staleness when there is any. `wt_mod.create` REUSES an
+        # existing branch rather than resetting it to the base, so a task
+        # re-dispatched long after its first attempt merges dependencies into a
+        # tree that predates them and the conflict lists files neither side
+        # deliberately touched. Measured on W2-1-3: 152 commits behind main,
+        # conflicting on five files its dependency never opened. Without this
+        # the operator reads a content conflict and starts merging by hand.
+        behind = wt_mod.commits_behind(repo_root, wt.branch, cfg.base_branch)
+        stale = ""
+        if behind:
+            stale = (
+                f" — note {wt.branch} is {behind} commit(s) behind "
+                f"{cfg.base_branch}, which is the usual cause; "
+                f"`dispatcher requeue <tasks.yaml> {snap.key}` archives the "
+                "branch and starts the task from the base"
+            )
         _mark_blocked(
             cfg, snap.batch_keys or snap.key,
-            reason=f"{c.reason}: {c.key} ({c.branch}): {c.detail}",
+            reason=f"{c.reason}: {c.key} ({c.branch}): {c.detail}{stale}",
         )
         return plan_mod.BLOCKED
 

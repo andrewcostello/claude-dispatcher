@@ -243,6 +243,29 @@ def _checked_out_branch(wt_path: Path, fallback: str) -> str:
     return branch if branch and branch != "HEAD" else fallback
 
 
+def commits_behind(repo_root: Path, branch: str, base_branch: str) -> int | None:
+    """How many commits on ``base_branch`` are not on ``branch``.
+
+    None when either ref does not resolve. Used to explain a dependency-merge
+    conflict: `create` deliberately REUSES an existing branch rather than
+    resetting it to the base (that is what has recovered real work four times),
+    so a task re-dispatched months later merges its dependencies into a tree
+    that predates them, and the conflict names files neither side deliberately
+    touched.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-list", "--count",
+             f"{branch}..{base_branch}"],
+            capture_output=True, text=True, check=False, timeout=30,
+        )
+        if proc.returncode != 0:
+            return None
+        return int(proc.stdout.strip())
+    except (ValueError, OSError, subprocess.SubprocessError):
+        return None
+
+
 def create(
     repo_root: Path,
     task_key: str,
