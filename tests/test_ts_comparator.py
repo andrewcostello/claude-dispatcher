@@ -2381,6 +2381,14 @@ def test_the_request_encoder_is_the_documented_document() -> None:
 # down where the next reader meets it. That is the honest instrument, and it is
 # the one that reddens if someone quietly "fixes" the bypass without saying so
 # — because then the recorded text and the behaviour disagree.
+#
+# THEY DISAGREE NOW, AND HERE IS WHERE IT IS SAID. W2-2 closed the
+# `declare module` spelling one level up (`branch_surface`, reached from
+# `_compare_branch_signatures` since W2-2-5); `declare global` and script
+# files read UNDETERMINED, never clean. The per-file rule below is unchanged
+# and still the mechanism; the D4 header's headline is a floored operator
+# amendment named in `docs/rulings/W2-2.md`. The move/rename boundary that
+# closure created is ruled there and pinned by the row after the next.
 # --------------------------------------------------------------------------- #
 
 
@@ -2426,6 +2434,47 @@ def test_the_new_file_bypass_is_real_and_is_measured_on_the_comparator_that_exis
     assert removed.changes, "a removed symbol IS a change"
 
 
+def test_a_moved_typescript_declaration_is_answered_as_a_removal_from_the_file_it_left(
+    compare_ts,
+) -> None:
+    """The move/rename boundary, per-file half. W2-2-4 ruling, 2026-08-29.
+
+    A sealed declaration MOVED into another file and one WIDENED from another
+    file are one event to a per-file comparator. `docs/rulings/W2-2.md` rules
+    that the gate may be wrong about the move, and only toward refusal. This
+    row is that refusal: the file the declaration left reports it with `after`
+    None, whether the file is deleted or keeps a re-export pointing at the new
+    home. The fold is silent on a pure move (clause 3, sealed in
+    `test_branch_surface.py`), so this per-file answer is the WHOLE of the
+    refusal — forgiving it would make move-then-widen CLEAN, because the moved
+    declaration is a new key with no base for the fold to compare against.
+
+    Green when: both heads are CHECKED and report `i:Bet` with `after` None.
+    Falsify: pair a deletion with an identical addition elsewhere and drop the
+    removal — this reddens, and so does the Go row
+    `test_a_new_go_file_has_nothing_to_preserve_and_a_deleted_one_loses_all_of_it`.
+    """
+    sealed = "interface Bet {\n  id: string;\n}\nexport type { Bet };\n"
+    key = ts_symbol_key([("i", "Bet")])
+
+    for label, head in (
+        ("deleted", None),
+        ("re-exported", "export type { Bet } from './bet2';\n"),
+    ):
+        result = compare_ts(sealed, head)
+        assert result.status is SignatureCheckStatus.CHECKED, (
+            f"{_NO_PARSER}: ({label}) status={result.status.name} "
+            f"detail={result.detail!r}. The comparator never reached the "
+            "question this seal asks."
+        )
+        after = {c.symbol: c.after for c in result.changes}
+        assert key in after and after[key] is None, (
+            f"({label}) the sealed declaration left {_TS} and the per-file "
+            f"loop did not report it removed: {after}. This is the whole of "
+            "the move refusal"
+        )
+
+
 def test_the_limits_of_this_design_are_still_written_down() -> None:
     """The named gaps are still named, in the module, where the next reader is.
 
@@ -2450,6 +2499,16 @@ def test_the_limits_of_this_design_are_still_written_down() -> None:
     Falsify: delete the cross-file paragraph from the D4 header — the first
     assertion reddens, and that is the point: if the bypass is ever closed, the
     paragraph changes and this seal is where somebody has to say so out loud.
+
+    SAID OUT LOUD, W2-2-4 (2026-08-29): the bypass IS closed for the
+    `declare module` spelling, by `branch_surface` behind the whole-diff
+    comparison this paragraph asked for. The two sentences pinned below stayed
+    true — the per-file rule is still the mechanism and the closure is where
+    the paragraph said it belonged — so they stay pinned. The paragraph's
+    HEADLINE ("is invisible, and it is a real bypass") is now stale in a
+    floored file; the operator amendment is requested in
+    `docs/rulings/W2-2.md` and is not pinned here, because a seal on prose
+    that does not exist yet is D-65.
     """
     source = _prose(_role_protocol_source())
 
