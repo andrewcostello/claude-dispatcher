@@ -109,13 +109,20 @@ def test_dry_run_reports_operator_override_financial_paths(
 def test_dry_run_reports_default_iteration_cap(
     three_task_yaml: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The default max-iterations is 4 — iteration-protocol.md's ceiling."""
+    """The default max-iterations is 8.
+
+    Raised from iteration-protocol.md's 4 on 2026-08-29, for headroom only. It
+    was NOT the constraint that stalled three W2 tasks: each recorded
+    iterations=0 and exited code=0 over an unfinished summary, so the agent
+    stopped on its own budget rather than on this ceiling. The dry run prints
+    the number because an operator sizing a run needs to see it.
+    """
     rc, out, _ = _invoke(
         ["run", str(three_task_yaml), "--mode", "dry-run"],
         capsys,
     )
     assert rc == 0
-    assert "Max iterations: 4" in out
+    assert "Max iterations: 8" in out
 
 
 def test_dry_run_with_skip_design_surfaces_in_env_handoff(

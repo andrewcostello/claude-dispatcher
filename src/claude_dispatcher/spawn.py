@@ -125,6 +125,24 @@ subagents, or open pull requests.
 - FINANCIAL_PATHS={financial_paths}
 {optional_env_lines}
 
+## The summary is evidence, and it is written LAST
+
+Write `{summary_path}` EARLY and keep it true as you go. It is the artifact the
+dispatcher judges, and a session that spends its whole budget on the work and
+then stops reports over an unfinished file — measured three times in one day,
+each with the work committed and the tree clean.
+
+Two rules:
+- NEVER leave a token where a result belongs. `WHOLE_SUITE_PLACEHOLDER` in a
+  Tests line is a claim nobody made. If you did not run it, write that you did
+  not run it.
+- "Session in progress", "suites in flight" and "pending" are session states,
+  not outcomes. A summary carrying one is rejected as unfinished whatever its
+  Status line says.
+
+Reporting a real failure is fine and costs you nothing. Reporting nothing is
+what fails.
+
 ## Task
 - Key:     {task_key}
 - Summary: {task_summary}

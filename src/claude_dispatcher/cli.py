@@ -127,8 +127,15 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--max-iterations",
         type=int,
-        default=4,
-        help="Tasker iteration ceiling (default: 4, per iteration-protocol.md)",
+        default=8,
+        help=(
+            "Tasker iteration ceiling (default: 8). Raised from 4 on "
+            "2026-08-29 for headroom. Note it was NOT the binding constraint "
+            "on the W2 stalls: every one of those recorded iterations=0 and "
+            "exited code=0 with an unfinished summary, so the agent stopped on "
+            "its own budget. The fix for that is the summary contract in the "
+            "implementer prompt plus summary.py's unfinished-file check."
+        ),
     )
     run.add_argument(
         "--lock-timeout-seconds",

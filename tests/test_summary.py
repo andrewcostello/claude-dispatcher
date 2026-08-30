@@ -263,3 +263,63 @@ def test_handles_missing_optional_sections() -> None:
     assert s.deferred_findings == []
     assert s.files_changed == []
     assert s.review_consensus == []
+
+
+# ── an unfinished summary is not evidence ───────────────────────────────────
+# The summary is written LAST and is the artifact the dispatcher judges, so a
+# session that spends its budget on the work reports over an unfinished file.
+# Measured across W2-3-5, W2-1-3 and W2-1-4 (2026-08-29): all three declared a
+# status with their work COMMITTED and their tree CLEAN, and each blocked with
+# no stated reason at all — leaving the operator to open the file to find out
+# why. W2-1-4 spent two rounds and ~$25 that way.
+
+
+def test_an_unfilled_placeholder_token_is_malformed() -> None:
+    """W2-1-4 shipped this literal token where its whole-suite result belonged.
+    What caught it was a panel seat opening the file — a HIGH finding that cost
+    a three-seat review. A regex is cheaper and always runs."""
+    s = summary.parse_text(
+        "# T\n**Status:** Blocked\n\n## Tests\n- whole suite: WHOLE_SUITE_PLACEHOLDER\n"
+    )
+    assert s.malformed
+    assert any("WHOLE_SUITE_PLACEHOLDER" in p for p in s.problems)
+
+
+def test_a_bare_placeholder_token_is_malformed() -> None:
+    s = summary.parse_text("# T\n**Status:** Done\n\n## Tests\n- PLACEHOLDER\n")
+    assert s.malformed
+
+
+def test_the_word_placeholder_in_prose_is_not_a_placeholder() -> None:
+    """The check must not fire on a summary that TALKS about placeholders.
+    Flagging honest prose would teach agents to avoid the word rather than the
+    practice."""
+    s = summary.parse_text(
+        "# T\n**Status:** Done\n\n## Tests\n"
+        "- 10 passed; no placeholder rows remain in the ledger\n"
+    )
+    assert not s.malformed, s.problems
+
+
+def test_a_summary_that_reports_its_own_session_as_unfinished_is_malformed() -> None:
+    """"Session in progress" is a session state, not an outcome. The work may
+    well be complete — W2-1-4's was, committed and clean — but this file is not
+    evidence of it, and the operator is owed that distinction by name."""
+    s = summary.parse_text(
+        "# T\n**Status:** Blocked\n\n## Tests\n"
+        "- (suites in flight — rewritten with the real numbers later)\n\n"
+        "## Escalation reason\nSession in progress.\n"
+    )
+    assert s.malformed
+    assert any("unfinished" in p for p in s.problems)
+
+
+def test_a_finished_summary_reporting_a_real_failure_is_not_malformed() -> None:
+    """The check is about UNFINISHED, not about bad news. A summary that says
+    the suite failed is complete evidence and must pass."""
+    s = summary.parse_text(
+        "# T\n**Status:** Blocked\n\n## Tests\n"
+        "- whole suite: 3 failed, 3708 passed\n\n"
+        "## Escalation reason\nThe three rows need a ruling I cannot make.\n"
+    )
+    assert not s.malformed, s.problems

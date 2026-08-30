@@ -159,6 +159,45 @@ def parse_text(text: str) -> Summary:
             "likely a truncated summary file)"
         )
 
+    # A summary is EVIDENCE, and it is written LAST — so a session that spends
+    # its budget on the work reports over an unfinished file. Measured across
+    # W2-3-5, W2-1-3 and W2-1-4 (2026-08-29): all three declared a status with
+    # their work committed and their tree clean, and each blocked with NO
+    # stated reason, leaving the operator to open the file to find out why.
+    #
+    # An unfilled placeholder is the sharper case. W2-1-4 shipped the literal
+    # token WHOLE_SUITE_PLACEHOLDER where its whole-suite result belonged, and
+    # what caught it was a panel seat opening the file — a HIGH finding that
+    # cost a full three-seat review to produce. A regex is cheaper and always
+    # runs.
+    placeholders = sorted(set(
+        re.findall(r"\b[A-Z0-9_]*PLACEHOLDER[A-Z0-9_]*\b", text)
+    ))
+    if placeholders:
+        s.add_problem(
+            "unfilled placeholder where a result belongs: "
+            + ", ".join(placeholders)
+            + " — a summary reports what happened or says it does not know; it "
+            "never carries the token that was meant to be replaced"
+        )
+
+    # The same failure in prose. These are session-state phrases, not outcomes:
+    # a summary saying the work is still happening was never finished.
+    unfinished = [
+        phrase for phrase in (
+            "session in progress", "suites in flight", "in flight —",
+            "(pending —", "not run yet", "see final version",
+            "in progress — retry",
+        )
+        if phrase in text.lower()
+    ]
+    if unfinished:
+        s.add_problem(
+            "summary reports its own session as unfinished ("
+            + "; ".join(unfinished)
+            + ") — the work may be complete, but this file is not evidence of it"
+        )
+
     s.what_landed = _extract_section(text, "What landed").strip()
     s.key_decisions = _extract_section(text, "Key decisions").strip()
     s.escalation_reason = _extract_section(
