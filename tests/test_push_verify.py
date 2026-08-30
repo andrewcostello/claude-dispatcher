@@ -694,3 +694,96 @@ def test_prune_never_lists_an_unverifiable_branch_as_landed():
     landed, held = pv.landed_branches(cwd=Path("."), run=run)
     assert landed == []
     assert held and held[0][1].status == "error"
+
+
+# ── a pruned branch is the tidy end state, not a missing one ────────────────
+# `prune-branches` DELETES a branch once its work is on the base, so the more
+# diligently an operator tidies, the more `no-branch` rows the audit produced.
+# Measured 2026-08-29 on dogfood-w2: 4 of 16 Done tasks flagged for REVIEW,
+# every one of them landed-and-pruned. A gate that cries wolf at that rate gets
+# switched off, and then it catches nothing.
+
+
+def _git_with_log(answers, log_out=""):
+    """`_git`, plus an answer for the `git log --grep` the key lookup runs."""
+    def run(cmd, cwd):
+        if cmd[:2] == ["git", "log"]:
+            return (0, log_out, "")
+        if cmd[:2] == ["git", "rev-parse"]:
+            ref = cmd[-1]
+            return answers.get(("rev-parse", ref), (0, "abc123def456\n", ""))[:3]
+        if cmd[:2] == ["git", "merge-base"]:
+            return answers.get(("merge-base",), (0, "", ""))
+        return (0, "", "")
+    return run
+
+
+_GONE = {
+    ("rev-parse", "feat/x"): (1, "", ""),
+    ("rev-parse", "refs/remotes/origin/feat/x"): (1, "", ""),
+}
+
+
+def test_a_pruned_branch_whose_key_is_claimed_on_base_is_not_review():
+    r = pv.verify_landed(
+        "feat/x", cwd=Path("."), task_key="W2-1-1",
+        run=_git_with_log(_GONE, log_out="ba25e5ea8\nfaaf7dbe1\n"),
+    )
+    assert r.status == "landed-by-message"
+    assert not r.needs_review
+    assert "2 commit(s)" in r.detail
+
+
+def test_the_message_route_names_its_own_weakness():
+    """A commit message is a claim somebody wrote, not an ancestry proof. The
+    row must say so, or a weaker check quietly reads as the strong one."""
+    r = pv.verify_landed(
+        "feat/x", cwd=Path("."), task_key="W2-1-1",
+        run=_git_with_log(_GONE, log_out="ba25e5ea8\n"),
+    )
+    assert "corroboration, not ancestry" in r.detail
+
+
+def test_a_pruned_branch_with_nothing_claiming_it_still_needs_review():
+    """The route must not turn every missing branch green. W2-2-5 has no
+    bracketed commit on the base and stays flagged, which is correct: its work
+    was folded into somebody else's commit and cannot be verified this way."""
+    r = pv.verify_landed(
+        "feat/x", cwd=Path("."), task_key="W2-2-5",
+        run=_git_with_log(_GONE, log_out=""),
+    )
+    assert r.status == "no-branch"
+    assert r.needs_review
+
+
+def test_the_key_lookup_matches_the_bracketed_form_only():
+    """`W2-1-1` appears in 16 commit messages on this repo and `[W2-1-1]` in 3,
+    because operator commits discuss keys in prose constantly. Matching the
+    loose form would report a task as landed the moment somebody wrote about
+    it."""
+    seen: list[list[str]] = []
+
+    def run(cmd, cwd):
+        if cmd[:2] == ["git", "log"]:
+            seen.append(cmd)
+            return (0, "", "")
+        if cmd[:2] == ["git", "rev-parse"]:
+            return _GONE.get(("rev-parse", cmd[-1]), (0, "abc\n", ""))[:3]
+        return (0, "", "")
+
+    pv.verify_landed("feat/x", cwd=Path("."), task_key="W2-1-1", run=run)
+    assert seen, "the key lookup did not run"
+    assert any("--grep=[W2-1-1]" in arg for arg in seen[0])
+    assert "--fixed-strings" in seen[0], (
+        "brackets are regex metacharacters; without --fixed-strings the grep "
+        "matches a bare mention"
+    )
+
+
+def test_a_task_with_no_key_does_not_search():
+    """No key, no lookup — searching for `[]` would match everything."""
+    r = pv.verify_landed(
+        "feat/x", cwd=Path("."), task_key=None,
+        run=_git_with_log(_GONE, log_out="deadbeef\n"),
+    )
+    assert r.status == "no-branch"

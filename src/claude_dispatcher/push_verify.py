@@ -221,7 +221,17 @@ def _pr_open(
 #                       exists for the branch — a squash or rebase merge, whose
 #                       result is a different sha carrying the same work.
 #   - "unlanded"      : neither. Needs review; see the caveat below.
-#   - "no-branch"     : no ref exists locally or on the remote.
+#   - "no-branch"     : no ref exists locally or on the remote, and nothing on
+#                       the base claims the key either.
+#   - "landed-by-message" : the ref is gone, but commits on the base carry the
+#                       task key in the project's `[KEY]` form. WEAKER than
+#                       `landed`: a message is a claim somebody wrote, not an
+#                       ancestry proof, and the detail says so. It exists
+#                       because `prune-branches` DELETES a branch once its work
+#                       is on the base — so the tidier an operator is, the more
+#                       false REVIEW rows this check produced. Measured
+#                       2026-08-29 on dogfood-w2: 4 of 16 Done tasks flagged,
+#                       every one of them landed-and-pruned.
 #   - "skipped"       : no branch to check (never dispatched, or an
 #                       auto-integrate run committing straight to the base).
 #   - "error"         : a git read failed. NEVER treated as a problem — an
@@ -255,6 +265,26 @@ class LandedResult:
         return self.status in _NEEDS_REVIEW
 
 
+def _commits_claiming_key(task_key: str, base_ref: str, *, cwd: Path, r) -> list[str]:
+    """Commits on ``base_ref`` whose message carries ``[task_key]``.
+
+    The BRACKETED form only. Bare mentions are noise — measured on this repo,
+    `W2-1-1` appears in 16 commit messages and `[W2-1-1]` in 3, because
+    operator commits discuss keys in prose all the time. Matching the loose
+    form would report every task as landed the moment somebody wrote about it.
+    """
+    if not task_key:
+        return []
+    code, out, _ = r(
+        ["git", "log", base_ref, "--format=%H", f"--grep=[{task_key}]",
+         "--fixed-strings"],
+        cwd,
+    )
+    if code != 0:
+        return []
+    return [ln.strip() for ln in out.splitlines() if ln.strip()]
+
+
 def _merged_pr_exists(branch: str, *, cwd: Path, r) -> bool:
     """Did a pull request for ``branch`` merge?
 
@@ -281,6 +311,7 @@ def verify_landed(
     *,
     cwd: Path,
     base: str = "main",
+    task_key: str | None = None,
     run: Callable[[list[str], Path], tuple[int, str, str]] | None = None,
 ) -> LandedResult:
     """Is ``branch``'s work on ``base``?
@@ -305,6 +336,28 @@ def verify_landed(
             tip = out.strip()
             break
     if tip is None:
+        # The branch is gone. Before calling this a problem, ask the base
+        # whether anything there claims the key — `prune-branches` exists to
+        # delete branches whose work has landed, so a missing ref is the
+        # EXPECTED end state of a tidy repo, not evidence of loss.
+        base_for_grep = None
+        for ref in (base, f"refs/remotes/origin/{base}"):
+            code, out, _ = r(["git", "rev-parse", "--verify", "--quiet", ref], cwd)
+            if code == 0 and out.strip():
+                base_for_grep = ref
+                break
+        claims = (
+            _commits_claiming_key(task_key or "", base_for_grep, cwd=cwd, r=r)
+            if base_for_grep else []
+        )
+        if claims:
+            return LandedResult(
+                "landed-by-message",
+                f"no ref for {branch!r}, but {len(claims)} commit(s) on {base} "
+                f"carry [{task_key}], first {claims[0][:9]} — a message is "
+                "corroboration, not ancestry",
+                branch, base,
+            )
         return LandedResult(
             "no-branch", f"no local or remote ref for {branch!r}", branch, base
         )
@@ -367,7 +420,8 @@ def audit_done_tasks(
         if str(t.get("status", "")).strip().lower() not in _CLAIMS_FINISHED:
             continue
         key = str(t.get("key", "?"))
-        rows.append((key, verify_landed(t.get("branch"), cwd=cwd, base=base, run=run)))
+        rows.append((key, verify_landed(
+            t.get("branch"), cwd=cwd, base=base, run=run, task_key=key)))
     rows.sort(key=lambda kv: (not kv[1].needs_review, kv[0]))
     return rows
 
