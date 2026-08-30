@@ -3,6 +3,49 @@
 Written 2026-06-10. Reconciled against main 2026-08-25 — see the status section
 below, which supersedes the phases where they disagree.
 
+## v1 acceptance — 2026-08-29
+
+The status section below says every phase has machinery on main, and says
+plainly that nobody had confirmed the acceptance criteria hold. That confirmation
+now exists as a file rather than an audit: `tests/test_v1_acceptance.py`, one row
+per named deliverable, each exercising behaviour rather than importing a name. It
+reddens when a v1 claim stops being true.
+
+**Checked and holding.** Phase 1 (append-only journal an agent can tail, `status
+--json`, resume from the genesis run_config), Phase 1a (`doctor`, and preflight
+refusing BEFORE spend), Phase 2 (a Done row carries the run that produced it and
+the gate's verdict), Phase 3 (dependency merge is mechanical, and the risk
+classifier fails closed on an unmatched path), Phase 4 (the cheap deterministic
+gate runs before the expensive probabilistic one; a dirty worktree is not
+evidence), Phase 5/6 (a risk label raises the gate; a repo can route task classes
+to models), Phase 8 (findings get recorded dispositions).
+
+**Named in the plan and NOT on main**, listed in `KNOWN_ABSENT` so shipping
+without them is a decision somebody made:
+
+| deliverable | state |
+|---|---|
+| Phase 9 — command inbox | not implemented |
+| Phase 9 — compressed conversation log | not implemented |
+| Phase 10 — remote executors | single-orchestrator only; `docs/architecture/single-orchestrator.md` is the architecture that exists |
+| Phase 11 — `dispatcher evidence <feature>` | subcommand absent |
+
+That row fails in both directions on purpose: implement one and its line must
+leave the list, or the plan starts lying in the other direction.
+
+**Two facts the acceptance pass surfaced about Done rows**, both now pinned:
+`W2-2-3` reached Done with no gate verdict of its own because it was BATCHED —
+the dispatcher runs a batch as one unit and stamps the gate on the key it ran —
+and `W2-2-5` has no run id at all because an operator performed it by hand
+against the floor. Both are legitimate; neither was written down before.
+
+**The known-red register is empty**, and a row enforces it. Every full-suite
+figure in this project's recent history read "18 failures, all registered
+known-red" — a green conditional on a standing suppression with no landing date.
+It is now unconditional.
+
+---
+
 ## Status — reconciled 2026-08-25
 
 **Read this before the phases below. They are no longer the map.**
