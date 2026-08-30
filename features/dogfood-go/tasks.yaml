@@ -1,5 +1,10 @@
 project: claude-dispatcher
 epic: Dogfood — the four Go defects, in claude-workflow
+# Machine-readable, and enforced by preflight. The capitalised header
+# below was a comment, and on 2026-08-30 this file was dispatched against
+# claude-dispatcher anyway. A run against the wrong repo now refuses at
+# exit 2 before spending anything.
+target_repo: claude-workflow
 
 # READ THIS FIRST: THIS FILE TARGETS A DIFFERENT REPOSITORY.
 #

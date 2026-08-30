@@ -143,6 +143,7 @@ def run_preflight(
     verifier_agent: str | None = None,
     design_agent: str | None = None,
     enable_design_stage: bool = False,
+    target_repo: str | None = None,
 ) -> PreflightResult:
     """Run preflight checks and aggregate their verdicts.
 
@@ -225,6 +226,7 @@ def run_preflight(
         checks["fleet_binaries"] = fleet_bins
 
     _check_dispatcher_staleness(repo_root, warnings, checks)
+    _check_target_repo(repo_root, target_repo, failures, checks)
     _check_base_branch(repo_root, base_branch, failures, checks)
     _check_risk_table(repo_root, base_branch, warnings, checks)
     _check_role_file(
@@ -577,6 +579,48 @@ def _check_risk_table(
         f"classifies as unmatched and fails closed to HIGH risk — each task "
         f"will run a full cross-family panel. Add the table to classify paths "
         f"and reserve the panel for changes that need it."
+    )
+
+
+# --- check 8: the tasks file is being run against the repo it targets --------
+
+
+def _check_target_repo(
+    repo_root: Path,
+    target_repo: str | None,
+    failures: list[str],
+    checks: dict[str, Any],
+) -> None:
+    """A tasks file may name the repository its paths live in. Run it anywhere
+    else and every task is asked to edit files that are not there.
+
+    Measured 2026-08-30: `features/dogfood-go/tasks.yaml` opens with
+    "THIS FILE TARGETS A DIFFERENT REPOSITORY" in capitals and was dispatched
+    against the wrong one anyway, because the header is a COMMENT and nothing
+    read it. Two scaffolds diagnosed it from inside the worktree and refused;
+    two others built a mirror of the target tree in the wrong repo and reported
+    Done. The task file's `project:` key did not help — it said
+    `claude-dispatcher` while the epic line said "in claude-workflow".
+
+    Matches on the directory NAME, not the full path, so a worktree or a clone
+    at a different location still satisfies it.
+    """
+    entry: dict[str, Any] = {"ok": True, "declared": target_repo,
+                             "actual": repo_root.name}
+    checks["target_repo"] = entry
+    if not target_repo:
+        return  # no declaration, no opinion
+
+    declared = Path(str(target_repo).strip().rstrip("/")).name
+    if declared == repo_root.name:
+        return
+
+    entry["ok"] = False
+    failures.append(
+        f"this tasks file declares `target_repo: {target_repo}` and the run is "
+        f"against {repo_root.name!r} ({repo_root}). Every path in it would "
+        f"resolve into the wrong tree. Point the run at the declared repo, or "
+        f"correct the declaration."
     )
 
 

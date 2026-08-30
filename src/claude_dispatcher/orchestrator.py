@@ -538,6 +538,7 @@ def execute(args: argparse.Namespace) -> int:
             verifier_agent=cfg.verifier_agent,
             design_agent=cfg.design_agent,
             enable_design_stage=cfg.enable_design_stage,
+            target_repo=doc.get("target_repo"),
         )
         pf_skipped = False
         if not pf.ok:

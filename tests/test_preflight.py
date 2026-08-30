@@ -679,3 +679,38 @@ def test_an_untracked_risk_table_still_warns(bare_repo: Path) -> None:
     res = _pf(bare_repo)
     assert res.checks["risk_table"]["ok"] is False
     assert any("fails closed to HIGH risk" in w for w in res.warnings)
+
+
+# --- check 8: the tasks file is run against the repo it targets --------------
+
+
+def test_a_tasks_file_run_against_the_wrong_repo_is_refused(repo: Path) -> None:
+    """`features/dogfood-go/tasks.yaml` opens with "THIS FILE TARGETS A
+    DIFFERENT REPOSITORY" in capitals and was dispatched against the wrong one
+    anyway (2026-08-30), because a header is a COMMENT and nothing read it.
+    Two scaffolds diagnosed it from inside the worktree and refused; two others
+    built a mirror of the target tree in the wrong repo and reported Done."""
+    res = _pf(repo, target_repo="claude-workflow")
+    assert not res.ok
+    assert any("would resolve into the wrong tree" in f for f in res.failures)
+    assert res.checks["target_repo"]["ok"] is False
+
+
+def test_the_matching_repo_passes(repo: Path) -> None:
+    res = _pf(repo, target_repo=repo.name)
+    assert res.checks["target_repo"]["ok"] is True
+    assert all("wrong tree" not in f for f in res.failures)
+
+
+def test_a_declaration_may_be_a_path_and_matches_on_its_name(repo: Path) -> None:
+    """A worktree or a clone lives somewhere else. Matching the full path would
+    refuse a legitimate checkout, so only the directory NAME is compared."""
+    res = _pf(repo, target_repo=f"/somewhere/else/{repo.name}/")
+    assert res.checks["target_repo"]["ok"] is True
+
+
+def test_no_declaration_means_no_opinion(repo: Path) -> None:
+    """Back-compat: every existing tasks file omits the key and must still run."""
+    res = _pf(repo)
+    assert res.checks["target_repo"]["ok"] is True
+    assert res.ok, res.failures
