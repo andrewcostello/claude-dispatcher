@@ -67,7 +67,7 @@ tasks:
     agent: claude
     model: claude-opus-4-8
 
-    status: Awaiting Review
+    status: Superseded
     started_at: '2026-06-18T23:37:57-07:00'
     dispatcher_run_id: 2026-06-19T06-37-56Z-tasks
     summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-19T06-37-56Z-tasks/DISP-2/summary.md
@@ -91,6 +91,7 @@ tasks:
     num_turns: 18
     dispatcher_version: 0.1.0
     agent_version: 2.1.183 (Claude Code)
+    mechanical_verification_detail: 'The FEATURE landed; this task''s branch did not, and never will. main carries a later, fuller implementation than the branch — the branch still holds NotImplementedError stubs that main has none of — so the branch tip is not an ancestor of main and there is no merged PR. Verified 2026-08-30: the named symbols resolve on main and the 19 rows in test_disposition.py + test_prd_field.py pass. Superseded is the accurate status (precedent: W2-1-2); Merged would assert a branch relationship that does not exist.'
   - key: PRD-1
     summary: "implement plan.feature_prd + add a PRD template doc + un-skip tests"
     description: |
@@ -109,7 +110,7 @@ tasks:
     labels: [size:M, area:dispatcher, area:docs]
     agent: claude
     model: claude-opus-4-8
-    status: Awaiting Review
+    status: Superseded
     started_at: '2026-06-18T23:40:12-07:00'
     dispatcher_run_id: 2026-06-19T06-37-56Z-tasks
     summary_path: /home/andrew/Project/claude-dispatcher/docs/runs/2026-06-19T06-37-56Z-tasks/PRD-1/summary.md
@@ -133,3 +134,4 @@ tasks:
     num_turns: 24
     dispatcher_version: 0.1.0
     agent_version: 2.1.183 (Claude Code)
+    mechanical_verification_detail: 'The FEATURE landed; this task''s branch did not, and never will. main carries a later, fuller implementation than the branch — the branch still holds NotImplementedError stubs that main has none of — so the branch tip is not an ancestor of main and there is no merged PR. Verified 2026-08-30: the named symbols resolve on main and the 19 rows in test_disposition.py + test_prd_field.py pass. Superseded is the accurate status (precedent: W2-1-2); Merged would assert a branch relationship that does not exist.'
