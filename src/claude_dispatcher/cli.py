@@ -543,6 +543,24 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Actually delete. Without it, nothing is changed.")
     pb.set_defaults(func=prune_branches)
 
+    it = sub.add_parser(
+        "init",
+        help=("Prove this machine can run a dispatch: round-trip each reviewer "
+              "family and each Claude config dir, and report what actually "
+              "works. `doctor` answers what is INSTALLED; this answers what "
+              "WORKS, which is what decides whether a first run succeeds. "
+              "Spends a little quota — run it once, not per dispatch."),
+    )
+    it.add_argument("--repo", default=".", help="Repository (default: cwd)")
+    it.add_argument("--write", action="store_true",
+                    help=("Create a starter .dispatcher.yaml and "
+                          ".agent/risk-paths.json if absent. Never overwrites."))
+    it.add_argument("--skip-accounts", action="store_true",
+                    help="Do not probe ~/.claude* config directories")
+    it.add_argument("--timeout", type=int, default=90,
+                    help="Per-probe timeout in seconds (default: 90)")
+    it.set_defaults(func=init_cmd)
+
     rb = sub.add_parser(
         "reviewer-bakeoff",
         help=("Score each reviewer family against a corpus of seeded defects. "
@@ -880,6 +898,33 @@ def reviewer_bakeoff_cmd(args) -> int:
     print(f"written to {out_dir}/results.json and {out_dir}/REPORT.md")
     # A family that could not be reached did not pass; say so in the exit code.
     return 1 if any(s["unavailable"] for s in result["scores"].values()) else 0
+
+
+def init_cmd(args) -> int:
+    """`dispatcher init` — what works, not what is installed."""
+    from . import first_run
+
+    repo_root = Path(args.repo).resolve()
+    report = first_run.FirstRunReport()
+
+    print("probing reviewer families (this spends a little quota)...",
+          file=sys.stderr)
+    report.families = first_run.probe_families(timeout_seconds=args.timeout)
+
+    if not args.skip_accounts:
+        dirs = first_run.discover_claude_accounts()
+        if dirs:
+            print(f"probing {len(dirs)} claude config director"
+                  f"{'y' if len(dirs) == 1 else 'ies'}...", file=sys.stderr)
+            report.accounts = first_run.probe_accounts(dirs)
+
+    if args.write:
+        report.wrote = first_run.write_starter_config(repo_root)
+
+    print(first_run.render(report, repo_root=repo_root))
+    # Exit 3 when no panel can be seated: alertable, same convention as
+    # `blocked` and `audit`, and it is the condition that blocks every task.
+    return 0 if report.can_seat_a_panel else 3
 
 
 def _watch_entry(args: argparse.Namespace) -> int:
