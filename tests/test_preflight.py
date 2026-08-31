@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from unittest import mock
 from pathlib import Path
 
 import pytest
@@ -714,3 +715,64 @@ def test_no_declaration_means_no_opinion(repo: Path) -> None:
     res = _pf(repo)
     assert res.checks["target_repo"]["ok"] is True
     assert res.ok, res.failures
+
+
+# --- check 9: the panel can reach a verdict at all ---------------------------
+# `aggregate` needs >= 2 VALID seats before it will say "approve"; with one it
+# returns "incomplete", which the orchestrator treats as a block. A machine with
+# a single reviewer CLI therefore blocks EVERY task — deterministically, and
+# only after each has paid for its implementer spawn and its gate. Nothing said
+# so before this: `doctor` reports a green tick per installed binary, and
+# presence is not the same as a panel that can conclude.
+
+
+def _seats(repo: Path, present: list[str], count=None, panel="auto"):
+    with mock.patch(
+        "claude_dispatcher.preflight.shutil.which",
+        side_effect=lambda b: f"/usr/bin/{b}" if b in present else None,
+    ):
+        return _pf(repo, reviewer_count=count, panel_mode=panel)
+
+
+def test_a_single_reviewer_family_is_refused_before_any_spend(repo: Path) -> None:
+    res = _seats(repo, ["claude"])
+    assert not res.ok
+    assert any("TWO reachable reviewer families" in f for f in res.failures)
+    assert res.checks["reviewer_seats"]["ok"] is False
+
+
+def test_the_refusal_names_the_escape_and_what_is_missing(repo: Path) -> None:
+    """An operator with one CLI has two ways out and must be told both, or the
+    check just stops them."""
+    res = _seats(repo, ["claude"])
+    failure = next(f for f in res.failures if "reviewer families" in f)
+    assert "--reviewer-count 1" in failure
+    assert "codex" in failure and "grok" in failure
+
+
+def test_two_families_are_enough(repo: Path) -> None:
+    """Two is the bar `aggregate` actually sets, not three."""
+    res = _seats(repo, ["claude", "codex"])
+    assert res.checks["reviewer_seats"]["ok"] is True
+    assert all("reviewer families" not in f for f in res.failures)
+
+
+def test_a_deliberate_single_seat_passes(repo: Path) -> None:
+    """`--reviewer-count 1` is what makes aggregate treat one valid seat as
+    sufficient, so asking for it is a supported configuration, not a defect."""
+    res = _seats(repo, ["claude"], count=1)
+    assert res.checks["reviewer_seats"]["ok"] is True
+
+
+def test_no_check_when_the_panel_is_disabled(repo: Path) -> None:
+    """`--cross-family-panel never` runs no panel, so seat arithmetic is moot
+    and refusing would block a legitimate configuration."""
+    res = _seats(repo, ["claude"], panel="never")
+    assert res.checks["reviewer_seats"]["ok"] is True
+    assert "panel disabled" in res.checks["reviewer_seats"]["detail"]
+
+
+def test_zero_families_is_also_refused(repo: Path) -> None:
+    res = _seats(repo, [])
+    assert not res.ok
+    assert res.checks["reviewer_seats"]["present"] == []

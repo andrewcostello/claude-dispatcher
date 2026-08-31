@@ -144,6 +144,8 @@ def run_preflight(
     design_agent: str | None = None,
     enable_design_stage: bool = False,
     target_repo: str | None = None,
+    reviewer_count: int | None = None,
+    panel_mode: str | None = None,
 ) -> PreflightResult:
     """Run preflight checks and aggregate their verdicts.
 
@@ -227,6 +229,7 @@ def run_preflight(
 
     _check_dispatcher_staleness(repo_root, warnings, checks)
     _check_target_repo(repo_root, target_repo, failures, checks)
+    _check_reviewer_seats(reviewer_count, panel_mode, failures, checks)
     _check_base_branch(repo_root, base_branch, failures, checks)
     _check_risk_table(repo_root, base_branch, warnings, checks)
     _check_role_file(
@@ -621,6 +624,59 @@ def _check_target_repo(
         f"against {repo_root.name!r} ({repo_root}). Every path in it would "
         f"resolve into the wrong tree. Point the run at the declared repo, or "
         f"correct the declaration."
+    )
+
+
+# --- check 9: the panel can reach a verdict at all ---------------------------
+
+
+def _check_reviewer_seats(
+    reviewer_count: int | None,
+    panel_mode: str | None,
+    failures: list[str],
+    checks: dict[str, Any],
+) -> None:
+    """A multi-seat panel needs TWO reachable families or it can never approve.
+
+    `aggregate` requires >= 2 VALID seats before it will say "approve"; with one
+    it returns "incomplete", which the orchestrator treats as a block. So a
+    machine with a single reviewer CLI blocks EVERY task — deterministically,
+    and only after each one has paid for its implementer spawn and its gate.
+
+    Measured 2026-08-31: `doctor` reports three green ticks for three installed
+    binaries, so nothing before this told an operator their panel could not
+    reach a verdict. A deliberate single seat is fine and supported; it just has
+    to be asked for, because `--reviewer-count 1` is what makes `aggregate`
+    treat one valid seat as sufficient.
+    """
+    from . import cross_family_reviewer as cfr_mod
+
+    entry: dict[str, Any] = {"ok": True, "reviewer_count": reviewer_count}
+    checks["reviewer_seats"] = entry
+
+    if (panel_mode or "").strip().lower() == "never":
+        entry["detail"] = "panel disabled for this run"
+        return
+
+    present, missing = [], []
+    for reviewer in cfr_mod.default_reviewers():
+        (present if shutil.which(reviewer.cli_bin) else missing).append(
+            reviewer.family)
+    entry["present"] = present
+    entry["missing"] = missing
+
+    if len(present) >= 2 or reviewer_count == 1:
+        return
+
+    entry["ok"] = False
+    have = ", ".join(present) or "none"
+    failures.append(
+        f"the cross-family panel needs TWO reachable reviewer families and this "
+        f"machine has {len(present)} ({have}); missing: "
+        f"{', '.join(missing) or 'none'}. A one-seat panel returns "
+        f"'incomplete', which blocks the task, so EVERY task in this run would "
+        f"block after paying for its implementer. Install one of the missing "
+        f"CLIs, or pass --reviewer-count 1 to run a deliberate single seat."
     )
 
 

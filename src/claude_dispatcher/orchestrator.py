@@ -539,6 +539,8 @@ def execute(args: argparse.Namespace) -> int:
             design_agent=cfg.design_agent,
             enable_design_stage=cfg.enable_design_stage,
             target_repo=doc.get("target_repo"),
+            reviewer_count=getattr(args, "reviewer_count", None),
+            panel_mode=getattr(cfg, "cross_family_panel", None),
         )
         pf_skipped = False
         if not pf.ok:
