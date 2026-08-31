@@ -125,6 +125,18 @@ def build_parser() -> argparse.ArgumentParser:
     # 4 is iteration-protocol.md's ceiling. The old default of 2 conflated the
     # iteration ceiling with the linter-cycle cap.
     run.add_argument(
+        "--claude-account-failover",
+        action="store_true",
+        help=(
+            "On a QUOTA refusal (429), fail the run over to another "
+            "authenticated ~/.claude* account and retry on the same rung, "
+            "instead of blocking the task. Only on quota — an auth failure "
+            "still blocks, because rotating on a bad token spreads one error "
+            "across every account. Off by default: it spends accounts the run "
+            "was not otherwise going to touch."
+        ),
+    )
+    run.add_argument(
         "--max-iterations",
         type=int,
         default=8,

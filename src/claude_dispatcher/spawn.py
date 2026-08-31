@@ -408,14 +408,22 @@ def build_env(
     skip_design: bool = False,
     skip_security_linter: bool = False,
     reviewer_count: int | None = None,
+    claude_config_dir: str | None = None,
 ) -> dict[str, str]:
-    """Construct the env dict the Claude subprocess inherits."""
+    """Construct the env dict the Claude subprocess inherits.
+
+    `claude_config_dir` selects WHICH account the spawn spends. Left None the
+    child inherits the ambient one, which is the normal case; it is set only
+    when a run has failed over after a quota refusal.
+    """
     env = dict(base_env if base_env is not None else os.environ)
     env["TASK_KEY"] = task_key
     env["SUMMARY_PATH"] = str(summary_path)
     env["DISPATCHER_RUN_ID"] = run_id
     env["MAX_ITERATIONS"] = str(max_iterations)
     env["FINANCIAL_PATHS"] = financial_paths
+    if claude_config_dir:
+        env["CLAUDE_CONFIG_DIR"] = claude_config_dir
     if skip_design:
         env["SKIP_DESIGN"] = "1"
     if skip_security_linter:

@@ -46,6 +46,7 @@ from . import money_net as money_net_mod
 from . import notify as notify_mod
 from . import plan as plan_mod
 from . import pr as pr_mod
+from . import accounts as accounts_mod
 from . import preflight as preflight_mod
 from . import push_verify as pv_mod
 from . import design as design_mod
@@ -585,6 +586,29 @@ def execute(args: argparse.Namespace) -> int:
     if integ_err is not None:
         print(f"error: {integ_err}", file=sys.stderr)
         return 2
+
+    # Account failover (opt-in). Built once per run so an account spent by one
+    # task is not retried by the next — a quota resets on the provider's clock,
+    # not ours, so re-probing costs a spawn to learn what the last one settled.
+    cfg.account_rotation = None
+    if getattr(args, "claude_account_failover", False):
+        from . import first_run as first_run_mod
+
+        ambient = os.environ.get("CLAUDE_CONFIG_DIR")
+        rotation = accounts_mod.build(
+            first_run_mod.discover_claude_accounts(),
+            ambient=Path(ambient) if ambient else None,
+        )
+        cfg.account_rotation = rotation
+        if rotation.enabled:
+            _log(log_path,
+                 f"account failover armed: {len(rotation.candidates)} accounts "
+                 f"({', '.join(c.name for c in rotation.candidates)})")
+        else:
+            _log(log_path,
+                 "account failover requested but only "
+                 f"{len(rotation.candidates)} account found — nothing to fail "
+                 "over to")
 
     # Budget baseline (BUDGET-1): cost_usd already on the rows from PRIOR runs of
     # this YAML is not this run's spend. Capture it now (before any task runs) so
@@ -1232,6 +1256,12 @@ def _run_task(
         skip_design=cfg.skip_design,
         skip_security_linter=cfg.skip_security_linter,
         reviewer_count=cfg.reviewer_count,
+        claude_config_dir=(
+            str(rot.active)
+            if (rot := getattr(cfg, "account_rotation", None)) is not None
+            and rot.active is not None
+            else None
+        ),
     )
     # Snapshot base_branch's tip SHA BEFORE any cascade spawn. Discriminator
     # for the direct-to-base workflow (see _has_commits_on_branch).
@@ -1502,6 +1532,44 @@ def _run_task(
             )
             if (transient.retry is not spawn_failure_mod.Retry.NOW
                     or infra_retries >= INFRA_RETRY_LIMIT):
+                # Before giving up: a QUOTA refusal is not a fact about the
+                # work, it is a fact about ONE ACCOUNT. Every spawn inherits the
+                # ambient CLAUDE_CONFIG_DIR, so one subscription is the whole
+                # ceiling for a run — and on 2026-08-30 that ceiling blocked
+                # GO-4-1 while four other authenticated accounts sat unused.
+                # Fail over and retry on the SAME rung: this is not weak work,
+                # so it must not spend a cascade rung or bump effort.
+                #
+                # Only on 429. An auth failure means the account is
+                # misconfigured, and rotating on a bad token turns one clear
+                # error into one per account.
+                rotation = getattr(cfg, "account_rotation", None)
+                if (rotation is not None and rotation.enabled
+                        and accounts_mod.should_rotate(
+                            transient.api_error_status)):
+                    spent = rotation.active
+                    rotation.mark_exhausted(spent)
+                    nxt = rotation.advance()
+                    if nxt is not None:
+                        env["CLAUDE_CONFIG_DIR"] = str(nxt)
+                        _log(log_path,
+                             f"  {snap.key} account {spent.name if spent else '(ambient)'}"
+                             f" is out of quota — failing over to {nxt.name} "
+                             f"({len(rotation.remaining())} left)")
+                        _emit_event(
+                            cfg, journal_mod.EventType.task_spawn_finished, {
+                                "spawn_kind": "implementer",
+                                "failure_kind": transient.kind.value,
+                                "retry": transient.retry.value,
+                                "api_error_status": transient.api_error_status,
+                                "account_exhausted": str(spent) if spent else None,
+                                "account_next": str(nxt),
+                                "accounts_remaining": len(rotation.remaining()),
+                            }, task_key=snap.key)
+                        continue
+                    _log(log_path,
+                         f"  {snap.key} every account is out of quota "
+                         f"({len(rotation.candidates)} tried)")
                 break
             infra_retries += 1
             _log(log_path,
