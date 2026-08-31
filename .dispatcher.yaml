@@ -29,7 +29,21 @@ test_exclusion: pytest-deselect
 
 # Cross-family panel: probationary advisory seats (VG-5).
 panel:
-  advisory: [grok]
+  # No advisory seat. `advisory:` exists to trial a PROBATIONARY family — it
+  # runs, is journaled for the scorecard, and by design cannot affect the
+  # consensus. grok was promoted to the authoritative roster and this entry was
+  # never removed, so every panel reviewed the same diff with grok TWICE:
+  #
+  #   panel[W2-3-4] grok (advisory): APPROVE 301.8s
+  #   panel[W2-3-4] grok:            APPROVE 315.7s
+  #
+  # Measured 2026-08-31 over this session's runs: 23 duplicate reviews, 125
+  # minutes of reviewer wall-clock that could not change any verdict. Panels
+  # are the most subagent-heavy part of a run, and subagent-heavy sessions are
+  # where the account's usage actually goes.
+  #
+  # Re-add ONLY for a family that is not already seated.
+  advisory: []
 
 # Fleet defaults (Phase 7): leave implementer unpinned in YAML for routing.py
 # cheap-first (grok on leaves; claude on hard). Dogfood: --no-claude.
