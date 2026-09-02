@@ -273,3 +273,34 @@ def test_every_attempt_including_a_retry_is_billed() -> None:
     at = src.index("infra_retries = 0")
     block = src[at:src.index("if result is None:", at)]
     assert "_account_spawn(cfg, snap.key, result, kind=\"implementer\")" in block
+
+
+def test_stay_in_family_drops_the_terminal_rung() -> None:
+    """Measuring an agent requires that no other family finishes its work.
+
+    The cascade RESETS the worktree before the next rung, so a cross-family
+    closer does not amend the arm's output — it replaces it, and the row is
+    then scored under the pinned agent's name. Measured 2026-09-02: all three
+    non-claude arms of the model matrix spawned cleanly, were blocked by the
+    panel, and had their work overwritten by the terminal family before it
+    could be compared.
+    """
+    from claude_dispatcher import orchestrator as o
+
+    snap = type("S", (), {"agent": "grok", "effort": "high", "key": "K",
+                          "labels": [], "estimate": "3h", "summary": ""})()
+    assert o._implementer_cascade(snap) == [("grok", "high"), ("claude", "high")]
+    assert o._implementer_cascade(snap, stay_in_family=True) == [("grok", "high")]
+
+
+def test_stay_in_family_still_escalates_effort_within_the_family() -> None:
+    """The flag must not become "no escalation at all": an effort bump inside
+    the pinned agent is still the same model answering, so it is still a
+    measurement of that model."""
+    from claude_dispatcher import orchestrator as o
+
+    snap = type("S", (), {"agent": "codex", "effort": "low", "key": "K",
+                          "labels": [], "estimate": "3h", "summary": ""})()
+    rungs = o._implementer_cascade(snap, stay_in_family=True)
+    assert rungs == [("codex", "low"), ("codex", "high")]
+    assert all(a == "codex" for a, _ in rungs)

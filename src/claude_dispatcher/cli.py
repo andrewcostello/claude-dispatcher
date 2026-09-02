@@ -292,6 +292,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument(
+        "--stay-in-family", action="store_true",
+        help="Never finish a task with a different agent family. Effort still "
+             "escalates within the pinned agent, but a quality failure does not "
+             "hand the work to the cascade terminal. Required when MEASURING an "
+             "agent: the cascade resets the worktree, so a cross-family closer "
+             "replaces the arm's work rather than amending it, and the row is "
+             "then scored under the pinned agent's name.")
+    run.add_argument(
         "--cascade-terminal",
         choices=["claude", "grok"],
         default=None,

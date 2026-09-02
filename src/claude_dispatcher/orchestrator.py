@@ -167,6 +167,8 @@ class RunConfig:
     # Quality cascade terminal agent: "claude" (default closer) or "grok"
     # (dogfood / no-Claude fleets). Never append a rung after this family.
     cascade_terminal: str = "claude"
+    #: Never close a task with another family. See _implementer_cascade.
+    stay_in_family: bool = False
     # When True: no Claude binary required; default implementer grok; cascade
     # terminal grok; haiku off; LLM verifier uses grok (not Claude).
     no_claude: bool = False
@@ -1064,6 +1066,7 @@ def _implementer_cascade(
     snap: TaskSnapshot,
     *,
     cascade_terminal: str = "claude",
+    stay_in_family: bool = False,
 ) -> list[tuple[str, str | None]]:
     """Ordered (agent, effort) rungs for spawn- and quality-cascade.
 
@@ -1075,6 +1078,14 @@ def _implementer_cascade(
 
     Each rung is tried on spawn death OR quality failure (gate-red / panel
     block / verifier incomplete).
+
+    `stay_in_family` drops the terminal rung: effort still escalates within the
+    pinned agent, but no other family finishes its work. For a COMPARISON this
+    is required, not a preference — the cascade resets the worktree, so a
+    cross-family closer does not amend the arm's work, it REPLACES it, and the
+    row is then scored under the pinned agent's name. Measured 2026-09-02: all
+    three non-claude arms of the model matrix spawned cleanly, were blocked by
+    the panel, and had their output overwritten by the terminal family.
     """
     terminal = (cascade_terminal or "claude").strip().lower()
     if terminal not in ("claude", "grok"):
@@ -1095,7 +1106,7 @@ def _implementer_cascade(
 
     # Non-claude primary: effort bump, then optional terminal closer.
     rungs = _with_effort_bump(primary, base_effort)
-    if terminal != primary:
+    if terminal != primary and not stay_in_family:
         rungs.append((terminal, "high"))
     return _dedupe_cascade_rungs(rungs)
 
@@ -1334,6 +1345,7 @@ def _run_task(
     #   from the same pre-spawn worktree; prior failure context is prepended.
     cascade = _implementer_cascade(
         snap, cascade_terminal=getattr(cfg, "cascade_terminal", "claude") or "claude",
+        stay_in_family=bool(getattr(cfg, "stay_in_family", False)),
     )
     original_primary = snap.agent or "claude"
     pre_spawn_sha = _branch_sha(repo_root, wt.branch, log_path, snap.key)
@@ -5687,6 +5699,7 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
         gh_bin=getattr(args, "gh_bin", "gh"),
         implementer=implementer,
         cascade_terminal=cascade_terminal,
+        stay_in_family=bool(getattr(args, "stay_in_family", False)),
         no_claude=no_claude,
         verifier_agent=verifier_agent,
         design_agent=design_agent,
