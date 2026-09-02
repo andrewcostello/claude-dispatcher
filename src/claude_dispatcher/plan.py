@@ -43,7 +43,24 @@ KNOWN_AGENTS = frozenset(
 
 # Per-task reasoning/effort knob (maps to claude --effort, grok --effort,
 # codex model_reasoning_effort). gemini/agy has no flag and ignores it.
-KNOWN_EFFORTS = frozenset({"low", "medium", "high"})
+#
+# THE SETS DIFFER PER AGENT and the union is what a row may carry. Measured
+# 2026-09-02 by probing each CLI: codex accepts low|medium|high|xhigh|max|ultra
+# and rejects anything else, so a global three-value set silently DOWNGRADED
+# every codex row — an operator whose config asks for xhigh had it validated
+# down to high, losing two reasoning tiers with only a validation error to
+# explain it. `low` is also codex's own default, not medium.
+KNOWN_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max", "ultra"})
+
+#: What each family actually accepts. An effort outside its agent's set is a
+#: refusal rather than a downgrade: passing an unknown value to the CLI fails
+#: the spawn, and quietly substituting a different tier makes the row's
+#: recorded effort a lie.
+AGENT_EFFORTS: dict[str, frozenset[str]] = {
+    "claude": frozenset({"low", "medium", "high"}),
+    "codex": frozenset({"low", "medium", "high", "xhigh", "max", "ultra"}),
+    "grok": frozenset({"low", "medium", "high"}),
+}
 
 # Per-task quality intensity sets: KNOWN_VERIFY / KNOWN_PANEL imported above.
 
@@ -192,6 +209,14 @@ def load_tasks(doc: Any) -> list[Task]:
                 f"tasks[{idx}] ({key}) has unknown effort {effort!r}; "
                 f"must be one of {', '.join(sorted(KNOWN_EFFORTS))}"
             )
+        elif effort is not None:
+            allowed = AGENT_EFFORTS.get(agent or "claude")
+            if allowed is not None and effort not in allowed:
+                raise ValidationError(
+                    f"tasks[{idx}] ({key}) has effort {effort!r}, which "
+                    f"{agent or 'claude'} does not accept; it takes "
+                    f"{', '.join(sorted(allowed))}"
+                )
         batch_id_val = row.get("batch_id")
         batch_id = str(batch_id_val).strip() if batch_id_val else None
         if batch_id == "":

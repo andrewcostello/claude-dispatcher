@@ -304,3 +304,33 @@ def test_stay_in_family_still_escalates_effort_within_the_family() -> None:
     rungs = o._implementer_cascade(snap, stay_in_family=True)
     assert rungs == [("codex", "low"), ("codex", "high")]
     assert all(a == "codex" for a, _ in rungs)
+
+
+def test_codex_accepts_efforts_the_dispatcher_used_to_reject() -> None:
+    """Probed against the CLI 2026-09-02: codex takes six reasoning levels and
+    rejects garbage, so it validates its own input. A global three-value set
+    therefore did not protect anything — it silently cost every codex row two
+    tiers, because an operator config asking for xhigh was validated down to
+    high and the row recorded the downgrade as if it were the intent."""
+    from claude_dispatcher import plan
+
+    assert plan.AGENT_EFFORTS["codex"] >= {"xhigh", "max", "ultra"}
+    assert "xhigh" in plan.KNOWN_EFFORTS
+
+
+def test_an_effort_the_agent_cannot_take_is_refused_not_downgraded() -> None:
+    """claude has no xhigh. Substituting `high` would make the row's recorded
+    effort a lie, and passing xhigh through would fail the spawn — so it is a
+    validation refusal naming what that agent does accept."""
+    import pytest
+
+    from claude_dispatcher import plan
+
+    with pytest.raises(plan.ValidationError) as e:
+        plan.load_tasks({"tasks": [{
+            "key": "T-1", "summary": "s", "description": "d", "type": "Task",
+            "estimate": "1h", "labels": ["size:S"], "status": "To Do",
+            "agent": "claude", "effort": "xhigh",
+        }]})
+    assert "claude does not accept" in str(e.value)
+    assert "high, low, medium" in str(e.value)
