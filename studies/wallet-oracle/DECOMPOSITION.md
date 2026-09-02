@@ -135,3 +135,82 @@ cost — a natural experiment with real stakes rather than a synthetic bake-off.
 Recorded caveat: the rows are NOT randomly assigned. Critical rows get the
 stronger models by design, so any cross-row comparison confounds model with
 task difficulty. The bake-off row is the only clean comparison in the plan.
+
+---
+
+# REVISION — split finer. The measured reason.
+
+`GO-1-1`'s contract was **315 lines and converged in 5 rounds**. `GO-2-1`'s was
+**974 lines and took 32** — 7 dispatched plus ~25 by hand — with the same
+protocol, the same reviewers and the same author. Size was the only variable
+that mattered.
+
+So the sizing rule is not a preference: **split until each scaffold's contract
+is ~300 lines.** W-1 as first written carried double-entry writing, balanced
+legs, append-only enforcement, gapless sequencing AND the hash chain — a
+974-line contract waiting to happen.
+
+Second rule from the same evidence: **split by DEPENDENCY, not by size.** When
+GO-2-1's 974 lines were finally split into six files, every pair that had broken
+each other went in the SAME file (Recipe with CanonicalBuild, Report.Stamp with
+Examine's walk). Splitting those apart would have recreated the distance that
+caused the failures.
+
+## W-1 ledger core → three units
+
+* **W-1a — transaction + entry write path.** Balanced legs, per-currency
+  zero-sum, the `routing_account_key` and `jurisdiction` semantics. The
+  narrowest possible core; everything else depends on it.
+* **W-1b — append-only enforcement.** No UPDATE, no DELETE, and correction
+  strictly by a new transaction citing `corrects_transaction_key`. Kept together
+  because "you cannot edit" and "so here is how you fix a mistake" are one rule
+  stated twice — separating them is how a body implements the prohibition and
+  leaves no remedy.
+* **W-1c — per-account sequence + hash chain.** `sequence_number` gapless and
+  unique, `prev_entry_hash`/`entry_hash` chained. Together because the chain is
+  meaningless without the ordering it hashes over.
+
+## W-2 reserve/settle → three units
+
+* **W-2a — reserve.** Hold creation, insufficient-balance refusal, `expires_at`.
+  Nothing moves.
+* **W-2b — settle.** THE bake-off row. Exact-amount settlement, the PRD's named
+  100-settled-500-debited defect, over-settle refusal, double-settle refusal,
+  partial settle releasing the remainder.
+* **W-2c — expire.** The sweeper: restore spending power, move nothing, and be
+  idempotent against a hold that settled a millisecond earlier.
+
+## W-9 — currency conversion / FX (CRITICAL) — MISSED in the first pass
+
+PRD §11, and `wallet.transaction` carries four FX columns (`fx_rate`,
+`fx_source_currency_abbr`, `fx_rate_source`, `fx_observed_at`) that no unit
+above owns. It is critical for a reason the PRD states plainly: a
+social-to-real conversion "balances to zero per currency and is a cash-out
+wearing another name". Routing: fable scaffold, sol seals/bodies, fable
+adjudicate.
+
+## Revised shape
+
+| unit | rows | criticality |
+|---|---|---|
+| W-0 gate + generate | 1 | PREREQUISITE |
+| W-1a/b/c ledger core | 12 | critical |
+| W-2a/b/c reserve-settle-expire | 12 | critical (W-2b = bake-off) |
+| W-3 balance cache | 4 | critical |
+| W-4 idempotency | 4 | critical |
+| W-5 shadow comparator | 4 | critical |
+| W-9 FX | 4 | critical |
+| W-6 points live | 4 | non-critical |
+| W-7 statements | 4 | non-critical |
+| W-8 corrections | 4 | mixed |
+
+**~53 rows.** More than the first pass, and that is the point: 53 rows of
+~300-line contracts converge, and 32 rows of ~900-line contracts do not. The
+evidence for that is 32 rounds spent on one file.
+
+## What I would NOT decompose further
+
+Diminishing returns below ~300 lines. A unit small enough that its contract is
+50 lines has more protocol overhead (4 rows, 4 panels, 4 adjudications) than
+content, and the scaffold→seals→bodies chain stops earning its keep. W-3 and
+W-4 are already at that floor and stay whole.
