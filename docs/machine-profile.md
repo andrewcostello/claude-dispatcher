@@ -162,8 +162,8 @@ endpoint agents:
   kimi       ✗ probe MODEL ID NOT FOUND: model 'kimi-k2.7-code' rejected (404 not_found_error: model: kimi-k2.7-code) — fix the registry default_model or set model: on the task
   glm        ✗ Z.ai: set ZAI_API_KEY to enable
   glm        - probe skipped: key unset
-  deepseek   ✓ DeepSeek: DEEPSEEK_API_KEY set (model deepseek-v4-pro-max)
-  deepseek   ✓ probe ok: model deepseek-v4-pro-max answered
+  deepseek   ✓ DeepSeek: DEEPSEEK_API_KEY set (model deepseek-v4-pro)
+  deepseek   ✓ probe ok: model deepseek-v4-pro answered
 ```
 
 Each probe is exactly one `POST <base_url>/v1/messages` with `max_tokens: 1`

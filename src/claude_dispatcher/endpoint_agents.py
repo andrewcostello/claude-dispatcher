@@ -62,7 +62,7 @@ ENDPOINT_AGENTS: dict[str, EndpointAgentSpec] = {
     "deepseek": EndpointAgentSpec(
         name="deepseek", provider="DeepSeek",
         base_url="https://api.deepseek.com/anthropic",
-        key_env="DEEPSEEK_API_KEY", default_model="deepseek-v4-pro-max",
+        key_env="DEEPSEEK_API_KEY", default_model="deepseek-v4-pro",
     ),
 }
 

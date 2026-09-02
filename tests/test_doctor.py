@@ -430,7 +430,7 @@ def test_probe_flag_reports_auth_and_model_failures_distinctly_and_exits_1(
     assert cli.main(["doctor", "--probe-endpoints"]) == 1
     captured = capsys.readouterr()
     assert "kimi       ✗ probe AUTH FAILED: 401 authentication_error" in captured.out
-    assert "deepseek   ✗ probe MODEL ID NOT FOUND: model 'deepseek-v4-pro-max' rejected" in captured.out
+    assert "deepseek   ✗ probe MODEL ID NOT FOUND: model 'deepseek-v4-pro' rejected" in captured.out
     assert "default_model" in captured.out
     assert "endpoints not ok: kimi (auth), deepseek (model)" in captured.err
     # the profile is still written; probe failures gate only the exit code
