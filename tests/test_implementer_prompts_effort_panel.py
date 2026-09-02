@@ -166,9 +166,12 @@ def test_cascade_respects_configured_high_effort():
         key="T", summary="s", description="d", type="Task",
         labels=["size:S"], agent="grok", effort="high",
     )
-    # Already high — no effort-bump rung
+    # high is NOT grok's ceiling: it takes xhigh. Probed 2026-09-02 — the CLI
+    # names its own set in its refusal ("use one of: xhigh, high, medium, low"),
+    # and AGENT_EFFORTS had wrongly assumed grok looked like claude. So the bump
+    # rung is grok@xhigh, and the family switch comes only after it.
     assert orchestrator._implementer_cascade(snap) == [
-        ("grok", "high"), ("claude", "high"),
+        ("grok", "high"), ("grok", "xhigh"), ("claude", "high"),
     ]
 
 
