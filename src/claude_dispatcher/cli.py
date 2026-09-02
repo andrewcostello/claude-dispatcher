@@ -292,6 +292,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument(
+        "--pin-effort", action="store_true",
+        help="Never bump the effort tier on a quality failure; the row runs at "
+             "exactly the tier it was authored with. Required when EFFORT is the "
+             "variable being measured — an escalated row is no longer a "
+             "measurement of its pinned tier. Narrower than --stay-in-family, "
+             "which only prevents the FAMILY switch.")
+    run.add_argument(
         "--stay-in-family", action="store_true",
         help="Never finish a task with a different agent family. Effort still "
              "escalates within the pinned agent, but a quality failure does not "

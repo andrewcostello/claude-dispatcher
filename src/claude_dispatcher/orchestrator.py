@@ -169,6 +169,8 @@ class RunConfig:
     cascade_terminal: str = "claude"
     #: Never close a task with another family. See _implementer_cascade.
     stay_in_family: bool = False
+    #: Never bump the effort tier either. Required when effort is the variable.
+    pin_effort: bool = False
     # When True: no Claude binary required; default implementer grok; cascade
     # terminal grok; haiku off; LLM verifier uses grok (not Claude).
     no_claude: bool = False
@@ -940,6 +942,12 @@ def _maybe_merge_pass(
 # Agents that expose an effort / reasoning-level CLI flag. gemini/agy does not.
 _EFFORT_CAPABLE_AGENTS = frozenset({"claude", "codex", "grok"})
 
+#: Reasoning tiers in ascending order. An escalation moves UP this list; the
+#: agent's own AGENT_EFFORTS decides which rungs it has. Ordered because
+#: "escalate" is meaningless over an unordered set — and treating "high" as the
+#: ceiling silently downgraded every xhigh row until 2026-09-02.
+EFFORT_LADDER: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max", "ultra")
+
 
 def _effective_implementer(cfg: RunConfig) -> str:
     """The agent family a row with no ``agent:`` will actually be run by.
@@ -1067,6 +1075,7 @@ def _implementer_cascade(
     *,
     cascade_terminal: str = "claude",
     stay_in_family: bool = False,
+    pin_effort: bool = False,
 ) -> list[tuple[str, str | None]]:
     """Ordered (agent, effort) rungs for spawn- and quality-cascade.
 
@@ -1079,8 +1088,11 @@ def _implementer_cascade(
     Each rung is tried on spawn death OR quality failure (gate-red / panel
     block / verifier incomplete).
 
-    `stay_in_family` drops the terminal rung: effort still escalates within the
-    pinned agent, but no other family finishes its work. For a COMPARISON this
+    `stay_in_family` drops the terminal rung: no other family finishes the work.
+    `pin_effort` additionally drops the effort bump, so the row runs at exactly
+    the tier it was authored with. Required when EFFORT is the variable — an
+    escalated row is no longer a measurement of the tier it was pinned to, which
+    is a narrower claim than stay_in_family makes and needs its own flag. For a COMPARISON this
     is required, not a preference — the cascade resets the worktree, so a
     cross-family closer does not amend the arm's work, it REPLACES it, and the
     row is then scored under the pinned agent's name. Measured 2026-09-02: all
@@ -1094,9 +1106,34 @@ def _implementer_cascade(
     base_effort = snap.effort  # None = CLI default
 
     def _with_effort_bump(agent: str, effort: str | None) -> list[tuple[str, str | None]]:
+        """Add ONE rung at the next effort tier up, if there is one.
+
+        Previously this appended "high" whenever effort != "high", which was
+        correct while the known set was {low, medium, high} and became a
+        DOWNGRADE once codex's xhigh/max/ultra were admitted: an xhigh row
+        cascaded to high and the escalation ran backwards. Measured 2026-09-02
+        on the codex-family study, where every xhigh arm was normalised to high
+        and the effort comparison it existed to make was destroyed.
+
+        So the ladder is ordered and the next rung is strictly higher. A row
+        already at its agent's top tier gets no bump.
+        """
         out: list[tuple[str, str | None]] = [(agent, effort)]
-        if agent in _EFFORT_CAPABLE_AGENTS and effort != "high":
-            out.append((agent, "high"))
+        if pin_effort or agent not in _EFFORT_CAPABLE_AGENTS:
+            return out
+        ladder = [e for e in EFFORT_LADDER
+                  if e in plan_mod.AGENT_EFFORTS.get(agent, frozenset())]
+        if not ladder:
+            return out
+        # No effort pinned: today's behaviour was a single "high" rung.
+        if effort is None:
+            if "high" in ladder:
+                out.append((agent, "high"))
+            return out
+        if effort in ladder:
+            i = ladder.index(effort)
+            if i + 1 < len(ladder):
+                out.append((agent, ladder[i + 1]))
         return out
 
     # Pinned claude: single-family chain (maybe effort high on HARD).
@@ -1346,6 +1383,7 @@ def _run_task(
     cascade = _implementer_cascade(
         snap, cascade_terminal=getattr(cfg, "cascade_terminal", "claude") or "claude",
         stay_in_family=bool(getattr(cfg, "stay_in_family", False)),
+        pin_effort=bool(getattr(cfg, "pin_effort", False)),
     )
     original_primary = snap.agent or "claude"
     pre_spawn_sha = _branch_sha(repo_root, wt.branch, log_path, snap.key)
@@ -5700,6 +5738,7 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
         implementer=implementer,
         cascade_terminal=cascade_terminal,
         stay_in_family=bool(getattr(args, "stay_in_family", False)),
+        pin_effort=bool(getattr(args, "pin_effort", False)),
         no_claude=no_claude,
         verifier_agent=verifier_agent,
         design_agent=design_agent,

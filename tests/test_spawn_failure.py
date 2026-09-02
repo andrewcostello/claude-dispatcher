@@ -293,17 +293,57 @@ def test_stay_in_family_drops_the_terminal_rung() -> None:
     assert o._implementer_cascade(snap, stay_in_family=True) == [("grok", "high")]
 
 
-def test_stay_in_family_still_escalates_effort_within_the_family() -> None:
+def test_stay_in_family_escalates_effort_one_tier_UP() -> None:
     """The flag must not become "no escalation at all": an effort bump inside
-    the pinned agent is still the same model answering, so it is still a
-    measurement of that model."""
+    the pinned agent is still the same model answering.
+
+    The earlier version of this row asserted low -> HIGH, which encoded the
+    defect rather than the rule. `_with_effort_bump` appended "high" whenever
+    effort != "high" — correct while the set was {low, medium, high}, and a
+    DOWNGRADE once codex's xhigh/max/ultra were admitted. Measured 2026-09-02:
+    every xhigh arm of the codex-family study cascaded to high, normalising away
+    the exact variable the study existed to measure.
+    """
     from claude_dispatcher import orchestrator as o
 
     snap = type("S", (), {"agent": "codex", "effort": "low", "key": "K",
                           "labels": [], "estimate": "3h", "summary": ""})()
-    rungs = o._implementer_cascade(snap, stay_in_family=True)
-    assert rungs == [("codex", "low"), ("codex", "high")]
-    assert all(a == "codex" for a, _ in rungs)
+    assert o._implementer_cascade(snap, stay_in_family=True) == [
+        ("codex", "low"), ("codex", "medium")]
+
+
+def test_an_effort_bump_never_moves_DOWN_the_ladder() -> None:
+    """The defect, sealed by name. xhigh, max and ultra all sit ABOVE high."""
+    from claude_dispatcher import orchestrator as o
+
+    for eff, nxt in (("high", "xhigh"), ("xhigh", "max"), ("max", "ultra")):
+        snap = type("S", (), {"agent": "codex", "effort": eff, "key": "K",
+                              "labels": [], "estimate": "3h", "summary": ""})()
+        assert o._implementer_cascade(snap, stay_in_family=True) == [
+            ("codex", eff), ("codex", nxt)], f"{eff} must escalate to {nxt}"
+
+
+def test_the_top_tier_gets_no_bump() -> None:
+    """A row already at its agent's ceiling has nowhere to escalate, and
+    inventing a rung would spawn against an effort the CLI rejects."""
+    from claude_dispatcher import orchestrator as o
+
+    for agent, top in (("codex", "ultra"), ("claude", "high")):
+        snap = type("S", (), {"agent": agent, "effort": top, "key": "K",
+                              "labels": [], "estimate": "3h", "summary": ""})()
+        assert o._implementer_cascade(snap, stay_in_family=True) == [(agent, top)]
+
+
+def test_pin_effort_drops_the_bump_entirely() -> None:
+    """Required when EFFORT is the variable: an escalated row is no longer a
+    measurement of the tier it was pinned to. Narrower than stay_in_family,
+    which only prevents the family switch."""
+    from claude_dispatcher import orchestrator as o
+
+    snap = type("S", (), {"agent": "codex", "effort": "low", "key": "K",
+                          "labels": [], "estimate": "3h", "summary": ""})()
+    assert o._implementer_cascade(
+        snap, stay_in_family=True, pin_effort=True) == [("codex", "low")]
 
 
 def test_codex_accepts_efforts_the_dispatcher_used_to_reject() -> None:
