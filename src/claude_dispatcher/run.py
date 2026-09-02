@@ -22,6 +22,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from . import endpoint_agents
 from . import plan as plan_mod
 from . import yaml_io
 from . import dispatch_plan
@@ -57,6 +58,25 @@ def execute(args: argparse.Namespace) -> int:
     )
 
     selected = plan_mod.filter_tasks(tasks, label_filter, only)
+
+    # An endpoint agent with no key fails INSIDE the cell, which burns a cascade
+    # rung and lands the task on the terminal family under another model's name.
+    # Checked here so dry-run surfaces it too: catching it before anything is
+    # spent is the whole point of a dry run.
+    unkeyed = sorted({
+        t.agent for t in tasks
+        if t.agent in endpoint_agents.ENDPOINT_AGENTS
+        and not (os.environ.get(
+            endpoint_agents.ENDPOINT_AGENTS[t.agent].key_env) or "").strip()
+    })
+    if unkeyed:
+        missing = ", ".join(
+            f"{a} (needs {endpoint_agents.ENDPOINT_AGENTS[a].key_env})"
+            for a in unkeyed)
+        print(f"error: task(s) pin endpoint agent(s) with no API key in the "
+              f"environment: {missing}. Export the key or re-pin the tasks.",
+              file=sys.stderr)
+        return 2
 
     if args.mode == "dry-run":
         # Resolve base_branch from CLI or YAML top-level for the dry-run display

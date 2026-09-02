@@ -459,19 +459,23 @@ def execute(args: argparse.Namespace) -> int:
         print(f"error: invalid tasks YAML: {e}", file=sys.stderr)
         return 2
 
-    # Endpoint agents (kimi/glm/deepseek) are a validated schema but
-    # spawn_endpoint_agent is still an EPA-5 stub — a pinned row would burn a
-    # cascade rung on NotImplementedError and silently land on the terminal
-    # family. Fail loudly at run start until the body-fill lands.
-    stub_pins = sorted({
+    # Endpoint agents (kimi/glm/deepseek) run as a re-pointed claude Tasker.
+    # What must fail loudly at run start is a MISSING KEY: resolve_endpoint_agent
+    # raises inside the cell otherwise, which burns a cascade rung and lands the
+    # task on the terminal family under another model's name.
+    unkeyed = sorted({
         t.agent for t in plan_mod.load_tasks(doc)
         if t.agent in endpoint_agents_mod.ENDPOINT_AGENTS
+        and not (os.environ.get(
+            endpoint_agents_mod.ENDPOINT_AGENTS[t.agent].key_env) or "").strip()
     })
-    if stub_pins:
+    if unkeyed:
+        missing = ", ".join(
+            f"{a} (needs {endpoint_agents_mod.ENDPOINT_AGENTS[a].key_env})"
+            for a in unkeyed)
         print(
-            f"error: task(s) pin endpoint agent(s) {', '.join(stub_pins)} "
-            f"but endpoint spawning is not implemented yet (EPA-5). Re-pin "
-            f"the tasks or land the endpoint body-fill first.",
+            f"error: task(s) pin endpoint agent(s) with no API key in the "
+            f"environment: {missing}. Export the key or re-pin the tasks.",
             file=sys.stderr)
         return 2
 
