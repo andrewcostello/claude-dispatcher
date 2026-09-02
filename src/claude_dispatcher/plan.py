@@ -59,7 +59,10 @@ KNOWN_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max", "ultra"})
 AGENT_EFFORTS: dict[str, frozenset[str]] = {
     "claude": frozenset({"low", "medium", "high"}),
     "codex": frozenset({"low", "medium", "high", "xhigh", "max", "ultra"}),
-    "grok": frozenset({"low", "medium", "high"}),
+    # Probed 2026-09-02: grok's own refusal names its set — "unknown effort
+    # level 'max'; use one of: xhigh, high, medium, low". It takes xhigh and not
+    # max/ultra, so it sits between claude and codex rather than beside either.
+    "grok": frozenset({"low", "medium", "high", "xhigh"}),
 }
 
 # Per-task quality intensity sets: KNOWN_VERIFY / KNOWN_PANEL imported above.

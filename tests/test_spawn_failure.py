@@ -289,8 +289,14 @@ def test_stay_in_family_drops_the_terminal_rung() -> None:
 
     snap = type("S", (), {"agent": "grok", "effort": "high", "key": "K",
                           "labels": [], "estimate": "3h", "summary": ""})()
-    assert o._implementer_cascade(snap) == [("grok", "high"), ("claude", "high")]
-    assert o._implementer_cascade(snap, stay_in_family=True) == [("grok", "high")]
+    # grok@high escalates to its OWN xhigh before any family switch — it takes
+    # xhigh, which the effort set was wrong about until 2026-09-02.
+    assert o._implementer_cascade(snap) == [
+        ("grok", "high"), ("grok", "xhigh"), ("claude", "high")]
+    assert o._implementer_cascade(snap, stay_in_family=True) == [
+        ("grok", "high"), ("grok", "xhigh")]
+    assert o._implementer_cascade(
+        snap, stay_in_family=True, pin_effort=True) == [("grok", "high")]
 
 
 def test_stay_in_family_escalates_effort_one_tier_UP() -> None:
@@ -374,3 +380,15 @@ def test_an_effort_the_agent_cannot_take_is_refused_not_downgraded() -> None:
         }]})
     assert "claude does not accept" in str(e.value)
     assert "high, low, medium" in str(e.value)
+
+
+def test_grok_takes_xhigh_but_not_max() -> None:
+    """Probed against the CLI 2026-09-02. grok's own refusal names its set:
+    "unknown effort level 'max'; use one of: xhigh, high, medium, low". So it
+    sits BETWEEN claude (tops at high) and codex (max/ultra) rather than beside
+    either — which is why AGENT_EFFORTS is per-agent and not two buckets."""
+    from claude_dispatcher import plan
+
+    assert plan.AGENT_EFFORTS["grok"] == {"low", "medium", "high", "xhigh"}
+    assert "max" not in plan.AGENT_EFFORTS["grok"]
+    assert plan.AGENT_EFFORTS["claude"] == {"low", "medium", "high"}
