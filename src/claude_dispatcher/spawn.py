@@ -284,6 +284,42 @@ def parse_usage_from_json(stdout: str) -> SpawnUsage:
     )
 
 
+def parse_codex_usage(stdout: str) -> SpawnUsage:
+    """Token usage from `codex exec --json` JSONL.
+
+    codex emits one JSON object per line and reports usage only on
+    `turn.completed`, cumulatively per turn — so the LAST such event holds the
+    session total. It reports TOKENS AND NEVER DOLLARS, unlike claude's
+    total_cost_usd, so cost_usd stays None here: a comparison across families
+    has to price the tokens itself rather than pretend the CLIs are
+    commensurable. Never raises.
+    """
+    if not stdout or not stdout.strip():
+        return SpawnUsage()
+    last: dict | None = None
+    turns = 0
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            doc = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if doc.get("type") == "turn.completed" and isinstance(doc.get("usage"), dict):
+            last = doc["usage"]
+            turns += 1
+    if last is None:
+        return SpawnUsage()
+    return SpawnUsage(
+        input_tokens=last.get("input_tokens"),
+        output_tokens=last.get("output_tokens"),
+        cache_read_input_tokens=last.get("cached_input_tokens"),
+        cache_creation_input_tokens=last.get("cache_write_input_tokens"),
+        num_turns=turns or None,
+    )
+
+
 def parse_grok_usage(stdout: str) -> SpawnUsage:
     """Best-effort usage extract from `grok --output-format json` stdout.
 
@@ -653,7 +689,12 @@ def _agent_argv(
         # trusted-projects list, so without this codex exits 1 ("Not inside a trusted
         # directory and --skip-git-repo-check was not specified") before doing any work.
         # The reviewer codex already passes it (cross_family_reviewer.py).
-        cmd = [bin_, "exec", "--sandbox", "workspace-write", "--skip-git-repo-check"]
+        # --json: codex prints JSONL events, and `turn.completed` is the only
+        # place it reports token usage. Without it every codex row records
+        # cost=None — measured 2026-09-02, when a convergence arm iterated eight
+        # times and its cost column held only the Claude verifier's $0.41.
+        cmd = [bin_, "exec", "--json", "--sandbox", "workspace-write",
+               "--skip-git-repo-check"]
         if model:
             cmd += ["--model", model]
         if effort:
@@ -851,12 +892,13 @@ def spawn_agent(
     # through to the orchestrator's no-commits handling.
     exit_code = 0 if (rc == 0 or committed) else rc
     usage = SpawnUsage(model=safe_model or agent)
-    if agent == "grok":
-        gusage = parse_grok_usage(out)
+    if agent in ("grok", "codex"):
+        parsed = (parse_grok_usage(out) if agent == "grok"
+                  else parse_codex_usage(out))
         # Prefer parsed fields; keep model tag if parser left it empty.
-        if gusage.model is None:
-            gusage.model = safe_model or agent
-        usage = gusage
+        if parsed.model is None:
+            parsed.model = safe_model or agent
+        usage = parsed
     return SpawnResult(
         exit_code=exit_code, summary_path=summary_path,
         stdout=out, stderr=err, usage=usage,
