@@ -38,6 +38,11 @@ _AUTH = frozenset({401, 403})
 class FailureKind(str, Enum):
     QUALITY = "quality"
     INFRASTRUCTURE = "infrastructure"
+    #: The dispatch itself was misconfigured — a model id the CLI does not
+    #: know, an unparseable flag. Not the agent's fault and not the provider's,
+    #: and the one kind a stronger rung cannot fix: the next agent runs with a
+    #: DIFFERENT pin and produces work recorded under the failed agent's name.
+    CONFIG = "configuration"
 
 
 class Retry(str, Enum):
@@ -67,6 +72,17 @@ class FailureClassification:
     @property
     def is_infrastructure(self) -> bool:
         return self.kind is FailureKind.INFRASTRUCTURE
+
+    @property
+    def blocks_cascade(self) -> bool:
+        """True when advancing a rung cannot help and would mislead.
+
+        INFRASTRUCTURE: a stronger model does not fix a 529 or a dead token.
+        CONFIG: the next rung runs a DIFFERENT pin, so its output would be
+        recorded under the failed agent's name — the substitution that made the
+        2026-09-01 bakeoff unreadable.
+        """
+        return self.kind in (FailureKind.INFRASTRUCTURE, FailureKind.CONFIG)
 
 
 def _looks_like_result(obj: object) -> bool:
@@ -180,6 +196,21 @@ def _scavenge(text: str) -> dict:
     return out
 
 
+#: Plain-text signatures of a MISCONFIGURED dispatch, matched case-insensitively
+#: against a cross-family CLI's own output. Each says the pin is wrong, not that
+#: the work is: retrying or escalating runs a different model and records it
+#: under the pinned agent's name.
+_CONFIG_SIGNATURES: tuple[str, ...] = (
+    "unknown model id",
+    "couldn't set model",
+    "could not set model",
+    "unrecognized_model",
+    "unrecognised model",
+    "model not found",
+    "invalid model",
+)
+
+
 def classify(exit_code: int, stdout: str = "", stderr: str = "") -> FailureClassification:
     """What kind of failure this was, and what to do about it.
 
@@ -187,6 +218,22 @@ def classify(exit_code: int, stdout: str = "", stderr: str = "") -> FailureClass
     as infrastructure. An unrecognised failure must keep the existing handling
     rather than silently stop cascading.
     """
+    # A cross-family CLI reports a bad pin in plain text, not an Anthropic
+    # envelope, so this must run BEFORE the envelope parse or it falls through
+    # to QUALITY/CASCADE. Measured 2026-09-01: `grok-build` is the [models]
+    # default in ~/.grok/config.toml but not an API model id, and the run
+    # cascaded to claude-opus-5[1m] and scored the result as grok's.
+    blob = f"{stdout}\n{stderr}"
+    for probe in _CONFIG_SIGNATURES:
+        if probe in blob.lower():
+            line = next(
+                (ln.strip() for ln in blob.splitlines()
+                 if probe in ln.lower()), probe)
+            return FailureClassification(
+                kind=FailureKind.CONFIG, retry=Retry.NEVER,
+                reason=f"misconfigured dispatch — {line[:300]}",
+            )
+
     env = (_envelope(stdout) or _envelope(stderr)
            or _scavenge(stdout) or _scavenge(stderr))
     status = env.get("api_error_status")

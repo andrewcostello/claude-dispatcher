@@ -1598,8 +1598,8 @@ def _run_task(
             failure = spawn_failure_mod.classify(
                 result.exit_code, result.stdout or "", result.stderr or "",
             )
-            if failure.is_infrastructure:
-                _log(log_path, f"  {snap.key} spawn failed (infrastructure): "
+            if failure.blocks_cascade:
+                _log(log_path, f"  {snap.key} spawn failed ({failure.kind.value}): "
                                f"{failure.reason[:200]}")
                 _emit_event(cfg, journal_mod.EventType.task_spawn_finished, {
                     "spawn_kind": "implementer",

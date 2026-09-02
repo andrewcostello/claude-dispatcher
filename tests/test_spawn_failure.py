@@ -160,9 +160,14 @@ def test_stderr_is_read_when_stdout_is_empty() -> None:
 
 
 def test_the_orchestrator_breaks_rather_than_cascading(tmp_path: Path) -> None:
-    """The wiring, and the whole point: infrastructure must NOT advance a cascade
-    rung, because the next rung begins by resetting the worktree and is spent
-    against the same server condition.
+    """The wiring, and the whole point: a failure a stronger rung cannot fix must
+    NOT advance the cascade.
+
+    INFRASTRUCTURE, because the next rung resets the worktree and is spent
+    against the same server condition. CONFIG, because the next rung runs a
+    DIFFERENT model and its output is then recorded under the failed agent's
+    name — measured 2026-09-01, when `grok-build` was rejected as an unknown
+    model id and claude-opus-5[1m]'s work was scored as grok's.
 
     Measured under: change the `break` to `continue` and this reddens.
     """
@@ -170,9 +175,31 @@ def test_the_orchestrator_breaks_rather_than_cascading(tmp_path: Path) -> None:
     src = Path(orchestrator.__file__).read_text()
     at = src.index("failure = spawn_failure_mod.classify(")
     block = src[at:at + 1400]
-    assert "if failure.is_infrastructure:" in block
-    assert "break" in block.split("if failure.is_infrastructure:")[1].split("fail_reason")[0]
+    assert "if failure.blocks_cascade:" in block
+    assert "break" in block.split("if failure.blocks_cascade:")[1].split("fail_reason")[0]
     assert "final_blocked_reason = failure.reason" in block
+
+
+def test_a_bad_model_pin_is_config_and_never_cascades() -> None:
+    """A cross-family CLI reports a bad pin in plain text, not an Anthropic
+    envelope, so it used to fall through to QUALITY/CASCADE and be hidden behind
+    whatever model the next rung ran."""
+    c = sf.classify(
+        1, "Error: Couldn't set model 'grok-build': Invalid params: "
+           '"unknown model id". Run \'grok models\' to see available models.')
+    assert c.kind is sf.FailureKind.CONFIG
+    assert c.retry is sf.Retry.NEVER
+    assert c.blocks_cascade is True
+    assert "grok-build" in c.reason
+
+
+def test_an_ordinary_failure_still_cascades() -> None:
+    """The guard must not become "nothing ever escalates": only the named
+    misconfiguration signatures stop the cascade."""
+    c = sf.classify(1, "the tests did not pass")
+    assert c.kind is sf.FailureKind.QUALITY
+    assert c.retry is sf.Retry.CASCADE
+    assert c.blocks_cascade is False
 
 
 def test_the_quality_path_still_sets_a_cascade_reason() -> None:
