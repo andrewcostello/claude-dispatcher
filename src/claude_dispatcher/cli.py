@@ -137,6 +137,19 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument(
+        "--claude-account-rotate",
+        action="store_true",
+        help=(
+            "Spread the run across every authenticated ~/.claude* account, "
+            "one per task in turn, instead of burning the ambient account to "
+            "its ceiling first. Blind round-robin: no usage figure is "
+            "readable (auth status reports loggedIn for an account that is "
+            "over its limit, and /usage never reaches disk), and a cursor "
+            "needs none. Implies --claude-account-failover, and a capped "
+            "account rejoins the rotation when its cooldown expires."
+        ),
+    )
+    run.add_argument(
         "--max-iterations",
         type=int,
         default=8,
