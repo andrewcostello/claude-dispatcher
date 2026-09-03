@@ -613,3 +613,61 @@ def test_a_repo_may_declare_the_vitest_style(tmp_path):
     cfg = repo_config.load(tmp_path)
     assert cfg.test_exclusion == "vitest-name-pattern"
     assert kr.ExclusionStyle(cfg.test_exclusion) is kr.ExclusionStyle.VITEST_NAME_PATTERN
+
+
+# --- Go: `go test -skip` ----------------------------------------------------
+#
+# Until now a Go repo with active entries was UNSUPPORTED_STYLE and blocked.
+# Measured 2026-09-03 on evenplay-mono's wallet v2 build: 13 units' red-first
+# seals sat on the integration branch, so every BODIES task -- whose suite
+# expectation is GREEN -- failed on other units' seals it structurally cannot
+# fix. WAL-LEDGER-3 blocked twice for tests belonging to WAL-CORRECT and
+# WAL-APPEND.
+
+
+def test_go_skip_is_a_supported_style() -> None:
+    assert kr.ExclusionStyle("go-skip") is kr.ExclusionStyle.GO_SKIP
+
+
+def test_go_skip_payload_is_one_anchored_regex(tmp_path) -> None:
+    """`go test -skip` takes ONE regex, not one argument per row -- so the
+    payload is a ready-built pattern, as vitest's is, rather than a line per
+    row. A per-row payload would parse fine and skip nothing: a silent
+    fail-open, which is what this register exists to refuse."""
+    out = kr.rows_payload(
+        ["TestCorrect_UnknownTargetIsRefusedByName", "TestAppendGuard_VerifyRoundTrip"],
+        style=kr.ExclusionStyle.GO_SKIP,
+    )
+    assert out.count("\n") == 1, "must be a single line"
+    pat = out.strip()
+    assert pat.startswith("^(") and pat.endswith(")$"), pat
+
+
+def test_go_skip_anchors_each_row_exactly() -> None:
+    """Go matches -skip against the test name unanchored, so an unanchored
+    pattern for `TestBet` would also skip `TestBetAdjust` -- suppressing a row
+    nobody registered."""
+    import re
+    pat = kr.rows_payload(
+        ["TestBet"], style=kr.ExclusionStyle.GO_SKIP).strip()
+    rx = re.compile(pat)
+    assert rx.search("TestBet")
+    assert not rx.search("TestBetAdjust"), "must not skip an unregistered row"
+
+
+def test_go_skip_escapes_regex_metacharacters() -> None:
+    """Go subtest names carry slashes and can carry metacharacters; an
+    unescaped row would either fail to compile or match too much."""
+    import re
+    pat = kr.rows_payload(
+        ["TestX/sub+case", "TestY.other"],
+        style=kr.ExclusionStyle.GO_SKIP).strip()
+    rx = re.compile(pat)          # must compile at all
+    assert rx.search("TestX/sub+case")
+    assert not rx.search("TestYxother"), "unescaped '.' would match this"
+
+
+def test_go_skip_empty_register_is_empty_payload() -> None:
+    """No entries must yield an EMPTY payload, never a pattern that matches
+    everything -- a `-skip ^()$` style artifact could silently skip the suite."""
+    assert kr.rows_payload([], style=kr.ExclusionStyle.GO_SKIP) == ""

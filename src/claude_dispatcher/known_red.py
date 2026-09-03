@@ -24,6 +24,8 @@ suppression nobody read.
 
 from __future__ import annotations
 
+import re
+
 import shlex
 from dataclasses import dataclass
 from enum import Enum
@@ -49,16 +51,22 @@ ROWS_FILENAME = "known-red-rows.txt"
 class ExclusionStyle(str, Enum):
     """How a repo spells "run the suite but not these rows".
 
-    `go test` needs its own member (a `-run` regex, not per-row); until it has
-    one, a Go repo with active entries is UNSUPPORTED_STYLE, never a no-op.
-
-    The two members deliver DIFFERENT FILE CONTENTS, because the runners differ
-    in what they can be handed (see `rows_payload`): pytest takes one node id
-    per row, vitest takes a single pattern covering all of them.
+    The members deliver DIFFERENT FILE CONTENTS, because the runners differ in
+    what they can be handed (see `rows_payload`): pytest takes one node id per
+    row, while vitest and `go test` each take a single pattern covering all of
+    them.
     """
 
     PYTEST_DESELECT = "pytest-deselect"
     VITEST_NAME_PATTERN = "vitest-name-pattern"
+
+    #: `go test -skip <regex>` (Go 1.20+). One regex, not one flag per row.
+    #: Added 2026-09-03: a Go repo with active entries used to be
+    #: UNSUPPORTED_STYLE and therefore BLOCKED, which is what evenplay-mono's
+    #: wallet v2 build hit -- 13 units' red-first seals on the integration
+    #: branch failed every BODIES task, whose suite expectation is GREEN, for
+    #: tests belonging to other units.
+    GO_SKIP = "go-skip"
 
 
 class RegisterFault(str, Enum):
@@ -242,6 +250,9 @@ def rows_payload(rows: Iterable[str], *, style: ExclusionStyle) -> str:
         pattern and building that pattern means regex-escaping arbitrary test
         names. A repo cannot do that safely in shell, so the dispatcher renders
         it and the repo only interpolates.
+      * GO_SKIP — ONE ready-built regex, for the same reason: `go test -skip`
+        takes a pattern, and Go test names carry `/` for subtests and can carry
+        regex metacharacters. Rendered here so the repo only interpolates.
 
     ``style`` is required: a payload written in the other style parses as a
     valid file and excludes nothing, which is a silent fail-open.
@@ -251,6 +262,8 @@ def rows_payload(rows: Iterable[str], *, style: ExclusionStyle) -> str:
         return ""
     if style is ExclusionStyle.VITEST_NAME_PATTERN:
         return f"{name_pattern(rows)}\n"
+    if style is ExclusionStyle.GO_SKIP:
+        return f"{go_skip_pattern(rows)}\n"
     body = "\n".join(rows)
     return f"{body}\n"
 
@@ -301,6 +314,25 @@ def name_pattern(rows: Iterable[str]) -> str:
     """
     alternatives = "|".join(_js_regex_escape(r) for r in rows)
     return f"^(?!(?:{alternatives})$)"
+
+
+def go_skip_pattern(rows: Iterable[str]) -> str:
+    """Render ``rows`` as one ``go test -skip`` regex.
+
+    A row is a Go test name -- ``TestFoo``, or ``TestFoo/sub_case`` for a
+    subtest.
+
+    Anchored with ``^...$`` because Go matches ``-skip`` as an unanchored
+    search: an unanchored ``TestBet`` would also skip ``TestBetAdjust``,
+    hiding a row nobody registered. That is the fail-open this register exists
+    to refuse.
+
+    Note Go splits the pattern on ``/`` and applies each element to the
+    corresponding name segment, so an anchored alternation of full names skips
+    the named tests and nothing else.
+    """
+    alternatives = "|".join(re.escape(r) for r in rows)
+    return f"^({alternatives})$"
 
 
 def resolve(
