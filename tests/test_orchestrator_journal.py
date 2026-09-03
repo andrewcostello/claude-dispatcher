@@ -18,6 +18,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import textwrap
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -521,3 +522,26 @@ def test_a_rows_jira_key_reaches_the_dispatched_branch(repo: Path, monkeypatch) 
     assert branch, f"no branch stamped on the row: {dict(row)}"
     assert branch.startswith("feat/SMG-4257-"), branch
     assert "SMOKE-A" in branch, "the dispatcher key must survive for audit"
+
+
+# --- the operator's pin survives the run's observations --------------------
+
+
+def test_requeue_keeps_the_pin_and_drops_the_observation() -> None:
+    """`requeue` clears run state so the next attempt is fresh. The authored
+    `model:` is NOT run state -- clearing it dispatches unpinned, which is how
+    WAL-LEDGER-3 lost its routing three times.
+
+    NOTE ON COVERAGE. The other half of this change -- the usage write-back
+    recording `model_used` instead of overwriting `model` -- has NO test. It
+    lives in an inline `_apply(row)` closure that cannot be called directly,
+    and the fake CLI reports no usage, so the end-to-end fixture never reaches
+    it. An assertion there passes whatever the code does, which is worse than
+    no assertion; it was written, found vacuous, and removed rather than kept
+    as false coverage. Verified by inspection only.
+    """
+    from claude_dispatcher import unblock
+    assert "model" not in unblock.RUN_STATE_FIELDS, \
+        "clearing the authored pin makes the next dispatch unpinned"
+    assert "model_used" in unblock.RUN_STATE_FIELDS, \
+        "the observed model IS run state and must be cleared"
