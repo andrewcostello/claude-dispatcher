@@ -844,3 +844,30 @@ def test_wiring_a_merged_body_retires_the_entry(tmp_path) -> None:
     repo = _kr_repo(tmp_path, body_status="Merged")
     excl = _kr_call(repo, tmp_path)
     assert excl.rows == (), excl.rows
+
+
+def test_a_task_is_never_denied_its_own_rows() -> None:
+    """A row claimed by TWO units must stay visible to BOTH.
+
+    Go test names are not unique across packages — `TestValidate_Shape` exists
+    independently in v2/hold, v2/idem and v2/settle — so one name can be the
+    deliverable of several units. `applies_to` is per-entry and answers "am I
+    this entry's body?", so a sibling's entry happily hid a row the task itself
+    owns. Measured 2026-09-03: 6 of 13 wallet units had their own rows hidden,
+    which is the fail-open this register exists to refuse.
+    """
+    reg = kr.Register(entries=(
+        kr.KnownRedEntry(rows=("TestShared", "TestHoldOnly"),
+                         seals_task="HOLD-2", body_task="HOLD-3", reason="r"),
+        kr.KnownRedEntry(rows=("TestShared", "TestIdemOnly"),
+                         seals_task="IDEM-2", body_task="IDEM-3", reason="r"),
+    ))
+    hold = kr.rows_for_task(reg, task_key="HOLD-3", done_keys=frozenset())
+    assert "TestShared" not in hold, "HOLD-3 owns TestShared; it must see it"
+    assert "TestIdemOnly" in hold
+    idem = kr.rows_for_task(reg, task_key="IDEM-3", done_keys=frozenset())
+    assert "TestShared" not in idem, "IDEM-3 owns TestShared too"
+    assert "TestHoldOnly" in idem
+    # An unrelated task still has everything hidden.
+    other = kr.rows_for_task(reg, task_key="OTHER-3", done_keys=frozenset())
+    assert set(other) == {"TestShared", "TestHoldOnly", "TestIdemOnly"}
