@@ -2396,7 +2396,14 @@ def _run_task(
         if u.num_turns is not None:
             row["num_turns"] = u.num_turns
         if u.model is not None:
-            row["model"] = u.model
+            # The OBSERVED model, in its own field. `model:` is the operator's
+            # CHOICE and is never overwritten by it -- same reasoning as D-64
+            # for effort: a value the RUN chose is a consequence, not a choice,
+            # and must not outlive its cause. Writing it onto `model:` left 20
+            # wallet rows pinned to haiku and one to `claude-opus-5[1m]`, an id
+            # nobody authored; `requeue` then cleared it as run state and the
+            # next dispatch ran UNPINNED.
+            row["model_used"] = u.model
         # Agent/version provenance (OPS-4): actual implementer family, not a
         # hard-coded "claude" string (Grok/codex/gemini dogfood depends on this).
         row.update(_agent_meta(cfg, agent=snap.agent or cfg.implementer))

@@ -204,7 +204,7 @@ RUN_STATE_FIELDS = (
     "deferred_findings_count", "pr_not_raised_reason", "mechanical_verification",
     "verified", "verification_iterations", "input_tokens", "output_tokens",
     "cache_read_input_tokens", "cache_creation_input_tokens", "duration_ms",
-    "num_turns", "model", "dispatcher_version", "agent_version",
+    "num_turns", "model_used", "dispatcher_version", "agent_version",
     "blocked_reason", "blocked_at", "unblocked_at", "needs_push",
     "pr_url", "pr_number", "pr_approved_by", "merged_sha",
 )
