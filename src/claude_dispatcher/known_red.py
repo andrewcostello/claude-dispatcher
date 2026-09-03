@@ -342,13 +342,25 @@ def resolve(
     done_keys: Iterable[str] = (),
     style: ExclusionStyle | None,
     test_command: str | None,
+    command_texts: Iterable[str] = (),
     rows_dir: Path | None = None,
 ) -> Exclusions:
     """Decide what one task's gate should exclude, or name why it cannot.
 
-    ``style`` is None when the repo declared none. ``test_command`` must PLACE
+    ``style`` is None when the repo declared none. The gate must PLACE
     :data:`EXCLUSION_ENV` itself — the dispatcher cannot inject into arbitrary
     shell safely.
+
+    ``command_texts`` are the contents of any in-repo script ``test_command``
+    execs, so a repo that EXTRACTED its gate can place the variable in the
+    script instead of in ``test:``. Judging the command string alone reported
+    COMMAND_IGNORES_EXCLUSIONS for exactly the repos that do support
+    exclusions — measured 2026-09-03 against both this repo's own
+    ``.dispatcher.yaml`` and evenplay-mono's, each of which is
+    ``exec bash .../scripts/*.sh``. Extraction is the recommended shape
+    (it stops ``make test`` and the dispatcher gate drifting), so the check
+    follows it rather than punishing it. Empty by default, and then behaviour
+    is byte-identical to judging the command alone.
     """
     rows = rows_for_task(register, task_key=task_key, done_keys=done_keys)
     if not rows:
@@ -370,13 +382,17 @@ def resolve(
             ),
         )
 
-    if not test_command or EXCLUSION_ENV not in test_command:
+    places_env = bool(test_command) and EXCLUSION_ENV in (test_command or "")
+    if not places_env:
+        places_env = any(EXCLUSION_ENV in (t or "") for t in command_texts)
+    if not places_env:
         return Exclusions(
             rows=rows,
             fault=RegisterFault.COMMAND_IGNORES_EXCLUSIONS,
             detail=(
                 f"`.dispatcher.yaml` declares `test_exclusion: {style.value}` "
-                f"but its `test:` command never references ${EXCLUSION_ENV}, "
+                f"but neither its `test:` command nor any script that "
+                f"command runs references ${EXCLUSION_ENV}, "
                 f"so the {len(rows)} registered exclusion(s) would be silently "
                 "dropped and the gate would go red on rows this task cannot "
                 "fix. Place the variable in the test command."

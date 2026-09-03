@@ -671,3 +671,59 @@ def test_go_skip_empty_register_is_empty_payload() -> None:
     """No entries must yield an EMPTY payload, never a pattern that matches
     everything -- a `-skip ^()$` style artifact could silently skip the suite."""
     assert kr.rows_payload([], style=kr.ExclusionStyle.GO_SKIP) == ""
+
+
+# --- the command may DELEGATE the reference to a script it execs ------------
+
+
+def test_a_script_that_references_the_env_satisfies_the_check() -> None:
+    """A repo whose gate is extracted to a script places the env var IN THE
+    SCRIPT, not in `test:`. Judging only the command string then reports
+    COMMAND_IGNORES_EXCLUSIONS and BLOCKS a gate that would have worked.
+
+    Measured 2026-09-03: this is true of claude-dispatcher's own
+    `.dispatcher.yaml` (`test: exec bash .../scripts/test.sh`) and of
+    evenplay-mono's, so the check refuses both repos that actually support
+    exclusions. Extraction is the recommended shape -- it stops `make test` and
+    the dispatcher gate drifting -- so the check must follow it.
+    """
+    reg = kr.Register(entries=(kr.KnownRedEntry(
+        rows=("TestFoo",), seals_task="U-2", body_task="U-3", reason="r"),))
+    ex = kr.resolve(
+        reg, task_key="U-1",
+        style=kr.ExclusionStyle.GO_SKIP,
+        test_command='exec bash "$(git rev-parse --show-toplevel)/scripts/gate.sh"',
+        command_texts=('if [ -n "${DISPATCHER_KNOWN_RED_FILE:-}" ]; then :; fi',),
+    )
+    assert ex.fault is None, ex.detail
+
+
+def test_a_script_that_ignores_the_env_still_faults() -> None:
+    """The check must still catch a gate that genuinely drops exclusions --
+    following into the script must not become a rubber stamp."""
+    reg = kr.Register(entries=(kr.KnownRedEntry(
+        rows=("TestFoo",), seals_task="U-2", body_task="U-3", reason="r"),))
+    ex = kr.resolve(
+        reg, task_key="U-1",
+        style=kr.ExclusionStyle.GO_SKIP,
+        test_command='exec bash "$(git rev-parse --show-toplevel)/scripts/gate.sh"',
+        command_texts=("go test -race ./...",),
+    )
+    assert ex.fault is kr.RegisterFault.COMMAND_IGNORES_EXCLUSIONS, ex.detail
+
+
+def test_no_script_texts_falls_back_to_the_command_alone() -> None:
+    """Absent script contents, behaviour is byte-identical to before: the
+    command string alone decides."""
+    reg = kr.Register(entries=(kr.KnownRedEntry(
+        rows=("TestFoo",), seals_task="U-2", body_task="U-3", reason="r"),))
+    inline = kr.resolve(
+        reg, task_key="U-1", style=kr.ExclusionStyle.GO_SKIP,
+        test_command='go test -skip "$(cat $DISPATCHER_KNOWN_RED_FILE)" ./...',
+    )
+    assert inline.fault is None
+    bare = kr.resolve(
+        reg, task_key="U-1", style=kr.ExclusionStyle.GO_SKIP,
+        test_command="go test ./...",
+    )
+    assert bare.fault is kr.RegisterFault.COMMAND_IGNORES_EXCLUSIONS
