@@ -245,6 +245,47 @@ def _coerce_float(v) -> float | None:
         return None
 
 
+def _busiest_model(model_usage: dict) -> str | None:
+    """Which model in a ``modelUsage`` map actually did the work.
+
+    The map is keyed by model id and routinely holds MORE THAN ONE: the CLI
+    bills a small auxiliary call (a title, a summary) to a cheap model
+    alongside the pinned one. Taking the first key recorded whichever the CLI
+    logged first, and that is usually the auxiliary one.
+
+    Measured 2026-09-03: 20 of 26 wallet tasks were journaled as haiku while
+    costing $0.110 per 1k output tokens -- about 20x Haiku's list price, so a
+    premium model plainly did the work. The wrong label is written back onto
+    the task row, so it also corrupted the routing record and raised a false
+    seals/bodies family-collision warning on the next run.
+
+    COST decides, not token count. From a real probe the auxiliary haiku call
+    had MORE output tokens (8) than the model that answered (4) and cost 5x
+    less, so tokens pick the wrong one. Cost captures tier and volume together.
+    Output tokens are the fallback for CLI versions that omit costUSD, and map
+    order is the last resort -- still the old behaviour, but only when nothing
+    measurable is present.
+    """
+    if not model_usage:
+        return None
+    if len(model_usage) == 1:
+        return next(iter(model_usage))
+
+    def by(field: str):
+        best, best_val = None, None
+        for name, u in model_usage.items():
+            if not isinstance(u, dict):
+                continue
+            val = u.get(field)
+            if not isinstance(val, (int, float)):
+                continue
+            if best_val is None or val > best_val:
+                best, best_val = name, val
+        return best
+
+    return by("costUSD") or by("outputTokens") or next(iter(model_usage))
+
+
 def parse_usage_from_json(stdout: str) -> SpawnUsage:
     """Pull usage data out of a Claude CLI `--output-format=json` blob.
 
@@ -266,8 +307,7 @@ def parse_usage_from_json(stdout: str) -> SpawnUsage:
 
     usage_obj = doc.get("usage") or {}
     model_usage = doc.get("modelUsage") or {}
-    # modelUsage is keyed by model id; for a single-model run there's one key.
-    primary_model = next(iter(model_usage), None) if model_usage else None
+    primary_model = _busiest_model(model_usage)
 
     return SpawnUsage(
         cost_usd=_coerce_float(doc.get("total_cost_usd")),
