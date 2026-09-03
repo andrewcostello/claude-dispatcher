@@ -340,6 +340,10 @@ class TaskSnapshot:
     effort: str | None = None
     batch_id: str | None = None
     batch_keys: list[str] = field(default_factory=list)
+    #: The tracker's key for this row, when it differs from `key`. Threaded
+    #: into the branch name, PR title and commit trailer for CI gates that
+    #: require the ticket to be named.
+    jira_key: str | None = None
     # Per-task quality intensity (Phase 4); None → resolve at gate time.
     verify: str | None = None
     panel: str | None = None
@@ -1251,7 +1255,8 @@ def _run_task(
     """
     _log(log_path, f"  {snap.key} starting")
 
-    branch = wt_mod.branch_name(snap.type, snap.key, snap.summary)
+    branch = wt_mod.branch_name(
+        snap.type, snap.key, snap.summary, jira_key=snap.jira_key)
     try:
         wt = wt_mod.create(repo_root, snap.key, branch,
                            base_branch=cfg.base_branch, base_path=cfg.worktree_base)
@@ -1532,6 +1537,7 @@ def _run_task(
                 f"{snap.design_spec[:8000]}\n"
             )
         prompt = spawn_mod.build_prompt(
+        jira_key=getattr(snap, 'jira_key', None),
             task_key=snap.key,
             task_summary=snap.summary,
             task_type=snap.type,
@@ -3050,6 +3056,7 @@ def _dispatch_drain(
                     effort=primary.effort,
                     batch_id=primary.batch_id,
                     batch_keys=batch_keys,
+                    jira_key=(primary.raw or {}).get("jira_key"),
                     verify=verify,
                     panel=panel,
                     design=primary.design if hasattr(primary, "design") else None,
@@ -3215,6 +3222,7 @@ def _spawn_panel_iterate(
         iterations_left=iterations_left - 1,
     )
     iter_prompt += spawn_mod.build_prompt(
+        jira_key=getattr(snap, 'jira_key', None),
         task_key=snap.key,
         task_summary=snap.summary,
         task_type=snap.type,
@@ -3650,6 +3658,7 @@ def _spawn_verifier_iterate(
                          else cfg.max_verify_iterations) - iteration_n,
     )
     iter_prompt += spawn_mod.build_prompt(
+        jira_key=getattr(snap, 'jira_key', None),
         task_key=snap.key,
         task_summary=snap.summary,
         task_type=snap.type,
@@ -4374,6 +4383,7 @@ def _retry_for_commit(cfg: RunConfig, snap: TaskSnapshot, wt: wt_mod.Worktree,
     """
     prompt = _COMMIT_RETRY_PROMPT_PREFIX.format(base_branch=cfg.base_branch)
     prompt += spawn_mod.build_prompt(
+        jira_key=getattr(snap, 'jira_key', None),
         task_key=snap.key,
         task_summary=snap.summary,
         task_type=snap.type,
@@ -4473,6 +4483,9 @@ def _generated_pr_title(snap: TaskSnapshot) -> str:
     task type via the same map :func:`worktree.branch_name` uses.
     """
     prefix = wt_mod.BRANCH_PREFIX_BY_TYPE.get((snap.type or "").lower(), "feat")
+    jira = (snap.jira_key or "").strip()
+    if jira and jira != snap.key:
+        return f"{prefix}: {jira} [{snap.key}] {snap.summary}"
     return f"{prefix}: [{snap.key}] {snap.summary}"
 
 
@@ -4767,6 +4780,7 @@ def _retry_for_push(
         final_step=final_step,
     )
     prompt += spawn_mod.build_prompt(
+        jira_key=getattr(snap, 'jira_key', None),
         task_key=snap.key,
         task_summary=snap.summary,
         task_type=snap.type,
@@ -5466,6 +5480,7 @@ def _retry_for_test_fix(
         task_key=snap.key,
     )
     prompt += spawn_mod.build_prompt(
+        jira_key=getattr(snap, 'jira_key', None),
         task_key=snap.key,
         task_summary=snap.summary,
         task_type=snap.type,
@@ -6338,7 +6353,9 @@ def _resolve_dependency_branches(
             if raw_branch:
                 branch = str(raw_branch)
         if not branch:
-            branch = wt_mod.branch_name(dep.type, dep.key, dep.summary)
+            branch = wt_mod.branch_name(
+                dep.type, dep.key, dep.summary,
+                jira_key=getattr(dep, 'jira_key', None))
         out.append((dep_key, branch))
     return out
 

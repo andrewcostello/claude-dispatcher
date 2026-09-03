@@ -389,3 +389,87 @@ def test_create_still_reuses_a_worktree_this_repo_owns(tmp_path) -> None:
         assert "DIFFERENT repository" not in str(e)
     except Exception:
         pass
+
+
+# --- naming the Jira ticket, for repos whose CI requires it ----------------
+#
+# evenplay-mono's "Jira Keys" check requires a key in the BRANCH, the PR TITLE
+# and EVERY commit in the range, spelled exactly `SMG-1234`. The dispatcher
+# names rows by its own key (`WAL-LEDGER-3`), so every dispatched PR failed it
+# -- 26 of 26 on the wallet v2 run. Rows already carry `jira_key`; these thread
+# it through the three places CI reads.
+#
+# The bracketed dispatcher key STAYS. `dispatcher audit`'s landed-by-message
+# route greps for `[KEY]` with --fixed-strings, so replacing it would break
+# landed-vs-missing detection.
+
+
+def test_branch_name_leads_with_the_jira_key_when_present() -> None:
+    b = wt.branch_name("Task", "WAL-LEDGER-3", "bodies ledger write path",
+                       jira_key="SMG-4257")
+    assert b.startswith("feat/SMG-4257-"), b
+    assert "WAL-LEDGER-3" in b, "the dispatcher key must survive for audit"
+
+
+def test_branch_name_unchanged_without_a_jira_key() -> None:
+    """Byte-identical for every repo that does not use jira_key -- including
+    repos whose task key IS the Jira key, the shape the docstring describes."""
+    assert wt.branch_name("Task", "SMG-9", "do a thing") == \
+        wt.branch_name("Task", "SMG-9", "do a thing", jira_key=None)
+
+
+def test_branch_name_does_not_double_the_key() -> None:
+    """A row whose task key already IS its Jira key must not become
+    feat/SMG-9-SMG-9-...."""
+    b = wt.branch_name("Task", "SMG-9", "do a thing", jira_key="SMG-9")
+    assert b.count("SMG-9") == 1, b
+
+
+def test_the_prompt_requires_a_jira_trailer_on_every_commit() -> None:
+    """The CI gate reads subject+body of EVERY commit in the range, so the
+    brief must ask for a trailer, not just a subject tag."""
+    from claude_dispatcher import spawn
+    prompt = spawn.build_prompt(
+        task_key="WAL-LEDGER-3", jira_key="SMG-4257",
+        summary_path=Path("/tmp/s.md"), run_id="r", max_iterations=1,
+        financial_paths="**", task_summary="s", task_type="Task",
+        task_labels=["size:S"], agent="claude",
+        task_description="d", branch="feat/x", skip_design=True,
+        skip_security_linter=True, reviewer_count=1,
+    )
+    assert "Jira: SMG-4257" in prompt, prompt[-500:]
+    assert "[WAL-LEDGER-3]" in prompt
+
+
+def test_the_prompt_is_unchanged_without_a_jira_key() -> None:
+    from claude_dispatcher import spawn
+    kw = dict(task_key="T-1", summary_path=Path("/tmp/s.md"), run_id="r",
+              max_iterations=1, financial_paths="**", task_summary="s",
+              task_type="Task", task_labels=["size:S"], agent="claude",
+              task_description="d", branch="feat/x", skip_design=True,
+              skip_security_linter=True, reviewer_count=1)
+    assert "Jira:" not in spawn.build_prompt(**kw)
+
+
+def test_the_dispatchers_own_fallback_commit_names_the_ticket() -> None:
+    """When the agent cannot commit, the dispatcher commits for it. That
+    message faces the same gate — one auto-committed task would otherwise
+    redden the check for the whole PR."""
+    from claude_dispatcher import spawn
+    msg = spawn._autocommit_message("WAL-LEDGER-3", "codex", "SMG-4257")
+    assert "Jira: SMG-4257" in msg and "[WAL-LEDGER-3]" in msg
+    assert "Jira:" not in spawn._autocommit_message("T-1", "codex", None)
+
+
+def test_the_snapshot_carries_jira_key_into_the_pr_title() -> None:
+    """End-to-end through the title generator: a row's jira_key must reach the
+    PR title, and the bracketed dispatcher key must survive for audit."""
+    from claude_dispatcher import orchestrator as orch
+    snap = orch.TaskSnapshot(
+        key="WAL-LEDGER-3", summary="bodies ledger", description="d",
+        type="Task", labels=["size:S"], jira_key="SMG-4257")
+    title = orch._generated_pr_title(snap)
+    assert "SMG-4257" in title and "[WAL-LEDGER-3]" in title, title
+    bare = orch.TaskSnapshot(
+        key="T-1", summary="s", description="d", type="Task", labels=[])
+    assert orch._generated_pr_title(bare) == "feat: [T-1] s"
