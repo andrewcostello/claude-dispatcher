@@ -159,7 +159,8 @@ what fails.
    architecture unless the task explicitly requires it.
 3. Run the most relevant tests you can; fix failures you introduce.
 4. Commit your work to the current branch with a conventional-commit message
-   (`type(scope): summary`, include [{task_key}] in the subject). Do NOT push
+   (`type(scope): summary`, include [{task_key}] in the subject).{jira_commit_rule}
+   Do NOT push
    and do NOT open a PR — the dispatcher integrates. If your environment
    cannot run `git commit`, leave the changes in the working tree and the
    dispatcher will commit them for you.
@@ -386,6 +387,7 @@ def parse_grok_usage(stdout: str) -> SpawnUsage:
 def build_prompt(
     *,
     task_key: str,
+    jira_key: str | None = None,
     task_summary: str,
     task_type: str,
     task_labels: list[str],
@@ -417,9 +419,19 @@ def build_prompt(
     optional_env = "\n".join(optional_lines)
     if optional_env:
         optional_env = optional_env + "\n"
+    # A CI gate may require every commit to name the tracker ticket
+    # (evenplay-mono's does, and it reads subject+body, so a trailer counts).
+    # Empty when the row has none, and then the brief is byte-identical.
+    jira_rule = ""
+    if jira_key and jira_key.strip() and jira_key.strip() != task_key:
+        jira_rule = (
+            f"\n   Add a `Jira: {jira_key.strip()}` trailer to EVERY commit — "
+            f"CI requires each one to name the ticket."
+        )
     return IMPLEMENTER_PROMPT_TEMPLATE.format(
         agent=agent_name,
         task_key=task_key,
+        jira_commit_rule=jira_rule,
         summary_path=str(summary_path),
         run_id=run_id,
         max_iterations=max_iterations,
@@ -721,7 +733,23 @@ def _agent_argv(
     raise ValueError(f"no argv builder for agent {agent!r}")
 
 
-def _autocommit_worktree(cwd: Path, task_key: str, agent: str) -> bool:
+def _autocommit_message(task_key: str, agent: str, jira_key: str | None) -> str:
+    """Subject plus, when the row has a tracker key, a `Jira:` trailer.
+
+    The dispatcher's own fallback commit has to satisfy the same CI gate the
+    agents' commits do — otherwise one auto-committed task reddens the check
+    for the whole PR.
+    """
+    subject = f"[{task_key}] {agent} implementation"
+    jira = (jira_key or "").strip()
+    if jira and jira != task_key:
+        return f"{subject}\n\nJira: {jira}\n"
+    return subject
+
+
+def _autocommit_worktree(
+    cwd: Path, task_key: str, agent: str, jira_key: str | None = None,
+) -> bool:
     """Stage + commit any dirty changes in the worktree. Returns True if a
     commit was created (or the agent already committed and the tree is clean
     with new work, which we can't distinguish here — so: True iff we committed).
@@ -735,7 +763,7 @@ def _autocommit_worktree(cwd: Path, task_key: str, agent: str) -> bool:
     subprocess.run(["git", "add", "-A"], cwd=str(cwd),
                    capture_output=True, text=True)
     commit = subprocess.run(
-        ["git", "commit", "-m", f"[{task_key}] {agent} implementation"],
+        ["git", "commit", "-m", _autocommit_message(task_key, agent, jira_key)],
         cwd=str(cwd), capture_output=True, text=True,
     )
     return commit.returncode == 0

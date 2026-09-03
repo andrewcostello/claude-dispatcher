@@ -484,3 +484,40 @@ def test_emit_event_swallows_append_failure(repo: Path, monkeypatch, capsys) -> 
     rc = orchestrator.execute(_args(repo, only="SMOKE-A"))
     assert rc == 0, "append failures must never crash the run"
     assert "journal append failed" in capsys.readouterr().err
+
+
+def test_a_rows_jira_key_reaches_the_dispatched_branch(repo: Path, monkeypatch) -> None:
+    """END TO END: a row's `jira_key` must reach the branch the dispatcher
+    actually creates.
+
+    Sealed here rather than on TaskSnapshot because deleting the row->snapshot
+    population SURVIVED a unit test that built the snapshot itself — the same
+    correct-but-inert shape as the account rotation that never rotated and the
+    known-red check nobody fed. evenplay-mono's CI requires the branch, the PR
+    title and every commit to name the ticket; 26 of 26 dispatched PRs failed
+    it.
+    """
+    monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "awaiting-human-pr")
+    _patch_spawn(monkeypatch)
+    _seed_yaml(repo, textwrap.dedent("""\
+        project: SMOKE
+        tasks:
+          - key: SMOKE-A
+            summary: smoke test
+            description: d
+            type: Task
+            labels: [size:S]
+            jira_key: SMG-4257
+            status: To Do
+        """))
+    orchestrator.execute(_args(repo, only="SMOKE-A"))
+    # The DISPATCHER-computed branch, stamped back on the row. Deliberately
+    # not the pr_gate `pr_branch`: that is the agent's own proposal out of its
+    # summary and would pass this test whatever the dispatcher did.
+    from claude_dispatcher import yaml_io
+    doc = yaml_io.load(repo / "tasks.yaml")
+    row = next(t for t in doc["tasks"] if t["key"] == "SMOKE-A")
+    branch = row.get("branch")
+    assert branch, f"no branch stamped on the row: {dict(row)}"
+    assert branch.startswith("feat/SMG-4257-"), branch
+    assert "SMOKE-A" in branch, "the dispatcher key must survive for audit"

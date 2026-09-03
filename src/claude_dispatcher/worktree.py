@@ -103,15 +103,31 @@ def worktree_base(repo_root: Path, override: str | None = None) -> Path:
     return repo_root.parent
 
 
-def branch_name(task_type: str, task_key: str, summary: str) -> str:
+def branch_name(
+    task_type: str, task_key: str, summary: str, jira_key: str | None = None,
+) -> str:
     """Build a branch name from task type, ticket key, and summary.
 
     Type is matched case-insensitively against BRANCH_PREFIX_BY_TYPE; unknown
     types fall back to `feat`. Summary is slugified to <= 5 kebab-cased words.
+
+    ``jira_key`` LEADS when the row carries one that differs from its task key,
+    giving ``feat/SMG-1234-WAL-LEDGER-3-...`` — the shape this docstring always
+    described, for repos whose task keys are their own rather than the
+    tracker's. Some CI gates require the branch to name the ticket
+    (evenplay-mono's does), and 26 of 26 dispatched PRs failed that check.
+
+    The task key is KEPT, not replaced: `dispatcher audit`'s landed-by-message
+    route greps for the bracketed key, and dependency merges regenerate branch
+    names through this same function, so both must stay derivable. Omitted when
+    it would duplicate the task key.
     """
     prefix = BRANCH_PREFIX_BY_TYPE.get(task_type.lower(), "feat")
     slug = _slugify(summary)
-    return f"{prefix}/{task_key}-{slug}" if slug else f"{prefix}/{task_key}"
+    stem = task_key
+    if jira_key and jira_key.strip() and jira_key.strip() != task_key:
+        stem = f"{jira_key.strip()}-{task_key}"
+    return f"{prefix}/{stem}-{slug}" if slug else f"{prefix}/{stem}"
 
 
 def _slugify(summary: str) -> str:
