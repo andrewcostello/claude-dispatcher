@@ -545,3 +545,53 @@ def test_requeue_keeps_the_pin_and_drops_the_observation() -> None:
         "clearing the authored pin makes the next dispatch unpinned"
     assert "model_used" in unblock.RUN_STATE_FIELDS, \
         "the observed model IS run state and must be cleared"
+
+
+# --- inheriting another model's work: fix it, or start over? ---------------
+
+
+def test_cascade_context_offers_the_fix_or_restart_judgement() -> None:
+    """A cascading model inherits the previous model's WORKTREE (created once,
+    before the cascade loop) plus the review of it. So it is already in the
+    position of a senior picking up junior work -- but the prompt only ever
+    said "this was blocked, here are the findings", which reads as an
+    instruction to patch.
+
+    A model handed genuinely bad foundations then has no sanctioned way to say
+    so, and patches around them instead. That is the force-fit the deviation
+    model exists to prevent, so the choice has to be offered explicitly.
+
+    Asserted over EVERY cascade-context builder, because the judgement is
+    needed at each boundary -- a mechanical failure, a panel block, a verifier
+    refusal -- not just the one that happened to be edited.
+    """
+    import inspect, re
+    from claude_dispatcher import orchestrator as orch
+    src = inspect.getsource(orch)
+    builders = re.findall(
+        r"cascade_context = \(\n(.*?)\n\s*\)", src, re.DOTALL)
+    assert len(builders) >= 4, f"expected every builder, found {len(builders)}"
+    missing = [i for i, b in enumerate(builders)
+               if "CASCADE_JUDGEMENT" not in b]
+    assert not missing, (
+        f"{len(missing)} of {len(builders)} cascade-context builders do not "
+        "offer the fix-or-restart judgement"
+    )
+
+
+def test_the_judgement_names_both_options_and_the_deviation_route() -> None:
+    """It must be a real choice: keep and fix, or discard and rewrite -- and
+    say that discarding is legitimate, since the default reading of 'here are
+    the findings' is 'patch them'."""
+    from claude_dispatcher import orchestrator as orch
+    t = orch.CASCADE_JUDGEMENT.lower()
+    assert "start over" in t or "rewrite" in t or "discard" in t
+    assert "fix" in t or "keep" in t
+    # Seal the ACTIONABLE clauses, which is where the force is. Renaming the
+    # classification word alone is an equivalent mutant: "record it under
+    # `## Deviation`" and "do not force-fit" both survive it and both carry
+    # the instruction, so it changes nothing a model would do.
+    assert "contract is wrong" in t, \
+        "must tell the model that a wrong CONTRACT is not a code defect"
+    assert "## deviation" in t, "must name the heading to record it under"
+    assert "force-fit" in t, "must forbid patching around a wrong contract"
