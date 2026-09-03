@@ -727,3 +727,120 @@ def test_no_script_texts_falls_back_to_the_command_alone() -> None:
         test_command="go test ./...",
     )
     assert bare.fault is kr.RegisterFault.COMMAND_IGNORES_EXCLUSIONS
+
+
+# --- the wiring: a resolver nobody feeds is inert ---------------------------
+
+
+def test_gate_script_texts_are_read_from_the_repo(tmp_path) -> None:
+    """The orchestrator must FEED resolve() the gate script's contents.
+    Without that, `command_texts` defaults to empty and the fix that follows
+    delegation into a script never fires -- correct code, wired to nothing."""
+    from claude_dispatcher import orchestrator as orch
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "gate.sh").write_text(
+        'echo "${DISPATCHER_KNOWN_RED_FILE:-}"\n', encoding="utf-8")
+    texts = orch._gate_command_texts(
+        tmp_path, 'exec bash "$(git rev-parse --show-toplevel)/scripts/gate.sh"')
+    assert any(kr.EXCLUSION_ENV in t for t in texts), texts
+
+
+def test_missing_gate_script_yields_no_texts(tmp_path) -> None:
+    """A named script that is absent must yield nothing rather than raise --
+    this runs while deciding a gate, and preflight already refuses that case
+    with a clear message."""
+    from claude_dispatcher import orchestrator as orch
+    assert orch._gate_command_texts(
+        tmp_path, 'exec bash "$(git rev-parse --show-toplevel)/scripts/gone.sh"') == ()
+
+
+def test_an_inline_command_needs_no_script_read(tmp_path) -> None:
+    from claude_dispatcher import orchestrator as orch
+    assert orch._gate_command_texts(tmp_path, "go test ./...") == ()
+
+
+def test_a_merged_body_retires_its_entry() -> None:
+    """In pr mode a landed body is `Merged`, not `Done`. An entry that only
+    retires on Done keeps hiding rows that are already green, so later tasks
+    stop being judged on work that shipped."""
+    e = kr.KnownRedEntry(rows=("TestFoo",), seals_task="U-2", body_task="U-3",
+                         reason="r")
+    assert e.applies_to("OTHER-1", done_keys=frozenset()) is True
+    assert e.applies_to("OTHER-1", done_keys=frozenset({"U-3"})) is False
+
+
+def _kr_repo(tmp_path, *, body_status="To Do"):
+    """A repo whose gate is EXTRACTED to a script that consumes the register,
+    with one entry whose body carries `body_status`."""
+    import subprocess, textwrap
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    (repo / "config").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    (repo / "scripts" / "gate.sh").write_text(
+        'echo "${DISPATCHER_KNOWN_RED_FILE:-}"\ngo test ./...\n', encoding="utf-8")
+    (repo / "config" / "known-red.yaml").write_text(textwrap.dedent("""\
+        entries:
+          - rows: [TestOther_Seal]
+            seals_task: OTHER-2
+            body_task: OTHER-3
+            reason: red first
+        """), encoding="utf-8")
+    (repo / "tasks.yaml").write_text(textwrap.dedent(f"""\
+        project: T
+        tasks:
+          - key: ME-1
+            summary: me
+            description: me
+            type: Task
+            labels: [size:S]
+            status: To Do
+          - key: OTHER-3
+            summary: other body
+            description: other body
+            type: Task
+            labels: [size:S]
+            status: {body_status}
+        """), encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
+    return repo
+
+
+def _kr_call(repo, tmp_path, task_key="ME-1"):
+    from claude_dispatcher import orchestrator as orch
+    from claude_dispatcher import repo_config as rc
+    cfg = orch.RunConfig(
+        tasks_path=repo / "tasks.yaml",
+        runs_dir=tmp_path / "runs",
+        run_id="r1",
+        mode="unattended", max_parallel=1, max_iterations=1, reviewer_count=1,
+        skip_design=True, skip_security_linter=True, financial_paths="**",
+        claude_bin="claude", worktree_base=tmp_path / "wt",
+        label_filter=None, only_keys=None,
+    )
+    repo_cfg = rc.RepoConfig(
+        test='exec bash "$(git rev-parse --show-toplevel)/scripts/gate.sh"',
+        test_exclusion="go-skip",
+    )
+    snap = type("S", (), {"key": task_key})()
+    return orch._known_red_exclusions(cfg, snap, repo_cfg, tmp_path / "log.txt")
+
+
+def test_wiring_an_extracted_gate_applies_the_register(tmp_path) -> None:
+    """END TO END through the orchestrator. Sealing `_gate_command_texts` alone
+    left the actual call unsealed, and dropping `command_texts=` from it
+    survived mutation -- correct code wired to nothing."""
+    repo = _kr_repo(tmp_path)
+    excl = _kr_call(repo, tmp_path)
+    assert excl.fault is None, excl.detail
+    assert excl.rows == ("TestOther_Seal",), excl.rows
+    assert excl.applied, excl.detail
+
+
+def test_wiring_a_merged_body_retires_the_entry(tmp_path) -> None:
+    """A body that landed as Merged (pr mode) must retire its entry through the
+    orchestrator's Done-set, not just through `applies_to`."""
+    repo = _kr_repo(tmp_path, body_status="Merged")
+    excl = _kr_call(repo, tmp_path)
+    assert excl.rows == (), excl.rows
