@@ -120,6 +120,48 @@ merged.
   in it, and this reconciliation does not invent them — see the merge history in
   git for what actually landed.
 
+### Proposed: run profiles, because the defaults are wrong for a financial epic
+
+Raised by the operator 2026-09-03, after a day in which the wallet v2 run was
+misconfigured three separate times by flags nobody chose — each default is
+individually defensible and the combination is wrong for money code.
+
+What was wrong, and what it cost:
+
+| flag | default | consequence on SMG-4240 |
+|---|---|---|
+| `--cross-family-panel-iterate` | `0` | a panel block went straight to cascade, so no agent ever fixed its own findings. Three rungs, three independent first attempts, 12 -> 13 findings, read by me as non-convergence when nobody had iterated at all |
+| `--enable-role-loop-gate` | off | the bodies agent rewrote the seals that judge it and said in its summary that it had not. Caught by the panel three times, at ~10 minutes a round, when the gate catches it in seconds |
+| `--claude-account-rotate` | off | one subscription was the whole ceiling; it is what ended GO-4-1 |
+| `--auto-integrate` | off | correct here, and worth stating: it merges into `--base-branch`, so with the base at `main` it would push wallet code to main task by task |
+
+Every one of those defaults is right for a small exploratory run and wrong for a
+73-row epic on a double-entry ledger. The failure mode is not a bad default, it
+is that the operator must know four unrelated flags interact and set them
+coherently from memory, at launch, once.
+
+The proposal is `--profile <name>`: a named, reviewable bundle of run settings,
+overridable per flag.
+
+* `financial` — panel iterate ~5, role loop gate ON, account rotation ON,
+  auto-integrate OFF, panel `always`, nothing below Opus. Iterate 5 rather than
+  3 is measured: in the 2026-09-02 convergence study the arms that DID converge
+  needed 0, 2, 4 and 15 rounds, so a cap of 3 truncates half of them one round
+  short.
+* `exploratory` — today's defaults, unchanged.
+
+Two properties matter more than the bundling:
+
+* A profile is REVIEWABLE. Four flags chosen at a shell prompt leave no
+  artifact; a named profile can be read, diffed and argued with before a run
+  spends money.
+* The run must JOURNAL the resolved settings and their source (profile vs
+  explicit flag). Three of the four mistakes above were invisible until a
+  failure exposed them — `role loop gate: not_enabled` was in the log all along
+  and nobody was looking for a line that says nothing is happening.
+
+Not built. Recorded so the next 73-row run does not rediscover it.
+
 ### Recovering it, 2026-08-25 — two corrections worth keeping
 
 **Clearing the `branch:` field does not give a task a fresh branch.**
