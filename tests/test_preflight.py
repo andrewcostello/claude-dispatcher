@@ -776,3 +776,85 @@ def test_zero_families_is_also_refused(repo: Path) -> None:
     res = _seats(repo, [])
     assert not res.ok
     assert res.checks["reviewer_seats"]["present"] == []
+
+
+# --- gate script resolvable at the base branch -------------------------------
+
+
+def _seed_gate(repo: Path, command: str, *, script: str | None = None) -> None:
+    """Commit a .dispatcher.yaml whose `test:` is `command`, optionally with a
+    tracked gate script alongside it."""
+    (repo / ".dispatcher.yaml").write_text(
+        f"test: |\n  {command}\n", encoding="utf-8",
+    )
+    paths = [".dispatcher.yaml"]
+    if script is not None:
+        sd = repo / "scripts"
+        sd.mkdir(exist_ok=True)
+        (sd / "gate.sh").write_text(script, encoding="utf-8")
+        paths.append("scripts/gate.sh")
+    _git(repo, "add", *paths)
+    _git(repo, "commit", "-q", "-m", "gate")
+
+
+def test_gate_script_absent_from_base_is_refused(repo: Path) -> None:
+    """A gate that execs a repo script absent from the base branch fails in
+    EVERY task worktree — they fork from the base, so none of them has the
+    file. Provable whole-run waste, so a FAILURE rather than a warning.
+
+    This is the WAL-GATE trap: the gate lived on a feature branch while the
+    run forked from main.
+    """
+    _seed_gate(repo, 'exec bash "$(git rev-parse --show-toplevel)/scripts/gate.sh"')
+    res = _pf(repo)
+    assert not res.ok
+    assert any("scripts/gate.sh" in f for f in res.failures), res.failures
+    assert any("main" in f for f in res.failures), res.failures
+
+
+def test_gate_script_present_on_base_passes(repo: Path) -> None:
+    """The same gate passes once the script is tracked on the base branch."""
+    _seed_gate(
+        repo, 'exec bash "$(git rev-parse --show-toplevel)/scripts/gate.sh"',
+        script="#!/usr/bin/env bash\nexit 0\n",
+    )
+    res = _pf(repo)
+    assert not any("gate.sh" in f for f in res.failures), res.failures
+
+
+def test_inline_gate_command_is_not_probed(repo: Path) -> None:
+    """An inline gate references no repo script, so there is nothing to
+    resolve and the check must stay silent -- it must not invent a path out of
+    a command that merely mentions test tooling."""
+    _seed_gate(repo, "go test -race ./... && pytest tests/")
+    res = _pf(repo)
+    assert not any("gate" in f.lower() and ".sh" in f for f in res.failures), res.failures
+
+
+def test_gate_script_on_head_but_not_base_is_refused(repo: Path) -> None:
+    """The check must read the BASE BRANCH, not the dispatching checkout.
+
+    This is the WAL-GATE trap exactly: the gate script was committed to a
+    feature branch and `git rev-parse --show-toplevel`/HEAD resolved it fine
+    where the dispatcher ran, while `base_branch` was still `main` -- which
+    is what every task worktree forks from. A check that probes HEAD reports
+    green and the whole run still dies.
+    """
+    (repo / ".dispatcher.yaml").write_text(
+        'test: |\n  exec bash "$(git rev-parse --show-toplevel)/scripts/gate.sh"\n',
+        encoding="utf-8",
+    )
+    _git(repo, "add", ".dispatcher.yaml")
+    _git(repo, "commit", "-q", "-m", "gate command on main")
+
+    _git(repo, "checkout", "-q", "-b", "feature")
+    sd = repo / "scripts"
+    sd.mkdir(exist_ok=True)
+    (sd / "gate.sh").write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    _git(repo, "add", "scripts/gate.sh")
+    _git(repo, "commit", "-q", "-m", "gate script on feature only")
+
+    # Present at HEAD (feature), absent at the base every worktree forks from.
+    res = _pf(repo, base_branch="main")
+    assert not res.ok, "probing HEAD would pass this and the run would still die"
+    assert any("scripts/gate.sh" in f for f in res.failures), res.failures

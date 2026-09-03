@@ -87,6 +87,7 @@ from pathlib import Path
 from typing import Any
 
 from . import doctor
+from . import repo_config
 from . import worktree as wt_mod
 
 
@@ -232,6 +233,7 @@ def run_preflight(
     _check_reviewer_seats(reviewer_count, panel_mode, failures, checks)
     _check_base_branch(repo_root, base_branch, failures, checks)
     _check_risk_table(repo_root, base_branch, warnings, checks)
+    _check_gate_script(repo_root, base_branch, failures, checks)
     _check_role_file(
         repo_root, base_branch, role_file, failures, warnings, checks,
         worktree_base=worktree_base,
@@ -583,6 +585,97 @@ def _check_risk_table(
         f"will run a full cross-family panel. Add the table to classify paths "
         f"and reserve the panel for changes that need it."
     )
+
+
+# --- check: the gate's own script exists where task worktrees will look ------
+
+
+# Repo-relative paths a gate command execs. `$(git rev-parse --show-toplevel)`
+# is how a gate names the worktree root it is running in, so it is stripped to
+# recover the path as git stores it.
+_TOPLEVEL_SUBST = "$(git rev-parse --show-toplevel)"
+_SCRIPT_TOKEN_RE = re.compile(r"[A-Za-z0-9_./$()\- ]*?([A-Za-z0-9_./\-]+\.(?:sh|bash))")
+
+
+def _gate_script_paths(command: str) -> list[str]:
+    """Repo-relative script paths `command` runs, in order, deduplicated.
+
+    Conservative by design: a token is only returned when it resolves to a
+    repo-relative path. An absolute path outside the repo, or anything this
+    cannot parse, yields nothing -- a check that guesses would refuse valid
+    runs, which is worse than not checking.
+    """
+    out: list[str] = []
+    for raw in _SCRIPT_TOKEN_RE.findall(command):
+        token = raw.strip().strip("\"'")
+        if _TOPLEVEL_SUBST in command:
+            token = token.lstrip("/")
+        if token.startswith("/") or token.startswith("~"):
+            continue
+        token = token.removeprefix("./")
+        if token and token not in out:
+            out.append(token)
+    return out
+
+
+def _check_gate_script(
+    repo_root: Path,
+    base_branch: str,
+    failures: list[str],
+    checks: dict[str, Any],
+) -> None:
+    """The gate COMMAND is read from the dispatching checkout, but a script it
+    execs is resolved inside each task worktree -- and worktrees fork from the
+    base branch. So a gate extracted to a script that has not landed on the
+    base fails in every task worktree at once, for a reason that reads as the
+    task's fault.
+
+    Measured 2026-09-02 (WAL-GATE): the wallet gate was committed to a feature
+    branch while `base_branch` still resolved to `main`. Every one of 73 rows
+    would have gone red on a missing file. Provable whole-run waste, hence a
+    FAILURE -- unlike the risk-table check, there is nothing to guess.
+    """
+    entry: dict[str, Any] = {"ok": True, "scripts": []}
+    checks["gate_script"] = entry
+
+    try:
+        cfg = repo_config.load(repo_root)
+    except Exception as exc:  # noqa: BLE001 - a probe failure is not a verdict
+        entry["detail"] = f"could not read repo config: {exc}"
+        return
+    command = (getattr(cfg, "test", None) or "").strip()
+    if not command:
+        entry["detail"] = "no gate command configured"
+        return
+
+    scripts = _gate_script_paths(command)
+    entry["scripts"] = scripts
+    if not scripts:
+        entry["detail"] = "gate runs no repo script"
+        return
+
+    for rel in scripts:
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(repo_root), "cat-file", "-e",
+                 f"{base_branch}:{rel}"],
+                capture_output=True, text=True, check=False,
+                timeout=GIT_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:  # noqa: BLE001
+            entry["detail"] = f"could not probe {rel}: {exc}"
+            return
+        if proc.returncode != 0:
+            entry["ok"] = False
+            entry["missing"] = rel
+            failures.append(
+                f"the gate runs {rel!r}, which is not tracked at "
+                f"{base_branch!r} — task worktrees fork from there, so every "
+                f"task's verification would fail on a missing file. Land the "
+                f"script on {base_branch!r}, or point --base-branch at a "
+                f"branch that has it."
+            )
+            return
 
 
 # --- check 8: the tasks file is being run against the repo it targets --------
