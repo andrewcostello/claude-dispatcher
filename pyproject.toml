@@ -64,7 +64,11 @@ where = ["src"]
 # and go.mod; there is deliberately no built binary to ship, and the reason is
 # at GO_REACHABILITY_ANALYZER in go_reachability.py.
 claude_dispatcher = [
-    "*_prompts/*.md",
+    # Recursive: reviewer_prompts/domains/*.md is a second level, and a
+    # one-level glob shipped none of it. A pipx install then failed every
+    # cross-family panel with "domain context missing: .../domains/_default.md.
+    # Available:" -- an empty list, because the directory was empty.
+    "*_prompts/**/*.md",
     "go_signature_fingerprint/*",
     "ts_signature_fingerprint/*",
     "go_call_reachability/*",
