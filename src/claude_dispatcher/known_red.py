@@ -224,17 +224,35 @@ def rows_for_task(
 ) -> tuple[str, ...]:
     """Rows to hide from ``task_key``'s gate, de-duplicated. Order is stable
     (first registration wins) so journal payloads diff across runs.
+
+    OWNERSHIP WINS OVER A SIBLING'S CLAIM. A row this task's own entry lists is
+    never hidden, even when another entry also lists it. `applies_to` is
+    per-entry and can only answer "am I this entry's body?", so without this a
+    sibling's entry hides a row the task itself must deliver — and the task is
+    then judged green on work it never did, or fails with the row invisible.
+
+    Not hypothetical: a Go test name is unique only within its package, so
+    `TestValidate_Shape` exists independently in three wallet v2 packages owned
+    by three different units. Measured 2026-09-03: 6 of 13 units had their own
+    rows hidden by a sibling.
     """
     done = frozenset(done_keys)
+    own = {
+        row
+        for entry in register.entries
+        if entry.body_task == task_key
+        for row in entry.rows
+    }
     seen: set[str] = set()
     out: list[str] = []
     for entry in register.entries:
         if not entry.applies_to(task_key, done_keys=done):
             continue
         for row in entry.rows:
-            if row not in seen:
-                seen.add(row)
-                out.append(row)
+            if row in own or row in seen:
+                continue
+            seen.add(row)
+            out.append(row)
     return tuple(out)
 
 
