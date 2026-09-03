@@ -613,3 +613,117 @@ def test_a_repo_may_declare_the_vitest_style(tmp_path):
     cfg = repo_config.load(tmp_path)
     assert cfg.test_exclusion == "vitest-name-pattern"
     assert kr.ExclusionStyle(cfg.test_exclusion) is kr.ExclusionStyle.VITEST_NAME_PATTERN
+
+
+# --- Go: `go test -skip` ----------------------------------------------------
+#
+# Until now a Go repo with active entries was UNSUPPORTED_STYLE and blocked.
+# Measured 2026-09-03 on evenplay-mono's wallet v2 build: 13 units' red-first
+# seals sat on the integration branch, so every BODIES task -- whose suite
+# expectation is GREEN -- failed on other units' seals it structurally cannot
+# fix. WAL-LEDGER-3 blocked twice for tests belonging to WAL-CORRECT and
+# WAL-APPEND.
+
+
+def test_go_skip_is_a_supported_style() -> None:
+    assert kr.ExclusionStyle("go-skip") is kr.ExclusionStyle.GO_SKIP
+
+
+def test_go_skip_payload_is_one_anchored_regex(tmp_path) -> None:
+    """`go test -skip` takes ONE regex, not one argument per row -- so the
+    payload is a ready-built pattern, as vitest's is, rather than a line per
+    row. A per-row payload would parse fine and skip nothing: a silent
+    fail-open, which is what this register exists to refuse."""
+    out = kr.rows_payload(
+        ["TestCorrect_UnknownTargetIsRefusedByName", "TestAppendGuard_VerifyRoundTrip"],
+        style=kr.ExclusionStyle.GO_SKIP,
+    )
+    assert out.count("\n") == 1, "must be a single line"
+    pat = out.strip()
+    assert pat.startswith("^(") and pat.endswith(")$"), pat
+
+
+def test_go_skip_anchors_each_row_exactly() -> None:
+    """Go matches -skip against the test name unanchored, so an unanchored
+    pattern for `TestBet` would also skip `TestBetAdjust` -- suppressing a row
+    nobody registered."""
+    import re
+    pat = kr.rows_payload(
+        ["TestBet"], style=kr.ExclusionStyle.GO_SKIP).strip()
+    rx = re.compile(pat)
+    assert rx.search("TestBet")
+    assert not rx.search("TestBetAdjust"), "must not skip an unregistered row"
+
+
+def test_go_skip_escapes_regex_metacharacters() -> None:
+    """Go subtest names carry slashes and can carry metacharacters; an
+    unescaped row would either fail to compile or match too much."""
+    import re
+    pat = kr.rows_payload(
+        ["TestX/sub+case", "TestY.other"],
+        style=kr.ExclusionStyle.GO_SKIP).strip()
+    rx = re.compile(pat)          # must compile at all
+    assert rx.search("TestX/sub+case")
+    assert not rx.search("TestYxother"), "unescaped '.' would match this"
+
+
+def test_go_skip_empty_register_is_empty_payload() -> None:
+    """No entries must yield an EMPTY payload, never a pattern that matches
+    everything -- a `-skip ^()$` style artifact could silently skip the suite."""
+    assert kr.rows_payload([], style=kr.ExclusionStyle.GO_SKIP) == ""
+
+
+# --- the command may DELEGATE the reference to a script it execs ------------
+
+
+def test_a_script_that_references_the_env_satisfies_the_check() -> None:
+    """A repo whose gate is extracted to a script places the env var IN THE
+    SCRIPT, not in `test:`. Judging only the command string then reports
+    COMMAND_IGNORES_EXCLUSIONS and BLOCKS a gate that would have worked.
+
+    Measured 2026-09-03: this is true of claude-dispatcher's own
+    `.dispatcher.yaml` (`test: exec bash .../scripts/test.sh`) and of
+    evenplay-mono's, so the check refuses both repos that actually support
+    exclusions. Extraction is the recommended shape -- it stops `make test` and
+    the dispatcher gate drifting -- so the check must follow it.
+    """
+    reg = kr.Register(entries=(kr.KnownRedEntry(
+        rows=("TestFoo",), seals_task="U-2", body_task="U-3", reason="r"),))
+    ex = kr.resolve(
+        reg, task_key="U-1",
+        style=kr.ExclusionStyle.GO_SKIP,
+        test_command='exec bash "$(git rev-parse --show-toplevel)/scripts/gate.sh"',
+        command_texts=('if [ -n "${DISPATCHER_KNOWN_RED_FILE:-}" ]; then :; fi',),
+    )
+    assert ex.fault is None, ex.detail
+
+
+def test_a_script_that_ignores_the_env_still_faults() -> None:
+    """The check must still catch a gate that genuinely drops exclusions --
+    following into the script must not become a rubber stamp."""
+    reg = kr.Register(entries=(kr.KnownRedEntry(
+        rows=("TestFoo",), seals_task="U-2", body_task="U-3", reason="r"),))
+    ex = kr.resolve(
+        reg, task_key="U-1",
+        style=kr.ExclusionStyle.GO_SKIP,
+        test_command='exec bash "$(git rev-parse --show-toplevel)/scripts/gate.sh"',
+        command_texts=("go test -race ./...",),
+    )
+    assert ex.fault is kr.RegisterFault.COMMAND_IGNORES_EXCLUSIONS, ex.detail
+
+
+def test_no_script_texts_falls_back_to_the_command_alone() -> None:
+    """Absent script contents, behaviour is byte-identical to before: the
+    command string alone decides."""
+    reg = kr.Register(entries=(kr.KnownRedEntry(
+        rows=("TestFoo",), seals_task="U-2", body_task="U-3", reason="r"),))
+    inline = kr.resolve(
+        reg, task_key="U-1", style=kr.ExclusionStyle.GO_SKIP,
+        test_command='go test -skip "$(cat $DISPATCHER_KNOWN_RED_FILE)" ./...',
+    )
+    assert inline.fault is None
+    bare = kr.resolve(
+        reg, task_key="U-1", style=kr.ExclusionStyle.GO_SKIP,
+        test_command="go test ./...",
+    )
+    assert bare.fault is kr.RegisterFault.COMMAND_IGNORES_EXCLUSIONS
