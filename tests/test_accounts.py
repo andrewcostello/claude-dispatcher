@@ -324,3 +324,76 @@ def test_a_rate_limit_still_uses_the_short_stopwatch(tmp_path) -> None:
                   provider_message="rate limit exceeded")
     assert cs[1] in r.available(
         now=_epoch(2026, 9, 28) + accounts.DEFAULT_COOLDOWN_SECONDS + 1)
+
+
+# --- three tiers, and the provider's own answer when it gives one -----------
+#
+# Measured limit tiers (support.claude.com, checked 2026-09-02): a ~5-hour
+# session window, a weekly limit that resets at a fixed time ASSIGNED TO THE
+# ACCOUNT, and monthly spend caps. Only the monthly one is a calendar boundary
+# we can compute; the weekly reset day is not knowable from here.
+
+
+def test_a_weekly_cap_is_probed_daily_not_held_for_a_week(tmp_path) -> None:
+    """A weekly limit resets on a fixed day/time assigned to the account, which
+    the dispatcher cannot know. Holding a full 7 days errs late and wastes up
+    to a week; probing daily errs early, and erring early costs one spawn that
+    re-caps itself."""
+    r, cs = _rot(tmp_path)
+    r.mark_capped(cs[1], now=0.0, provider_message="weekly limit reached")
+    assert cs[1] not in r.available(now=accounts.DEFAULT_COOLDOWN_SECONDS + 1)
+    assert cs[1] not in r.available(now=23 * 3600)
+    assert cs[1] in r.available(now=25 * 3600)
+
+
+def test_a_stated_reset_time_beats_every_inference(tmp_path) -> None:
+    """When the provider names the reset, use it. Inference exists only for
+    refusals that do not say -- guessing over a stated fact is never right."""
+    r, cs = _rot(tmp_path)
+    now = _epoch(2026, 9, 2, 10)
+    r.mark_capped(cs[1], now=now,
+                  provider_message="limit reached, resets at 2026-09-02T14:00:00Z")
+    assert cs[1] not in r.available(now=_epoch(2026, 9, 2, 13))
+    assert cs[1] in r.available(now=_epoch(2026, 9, 2, 15))
+
+
+def test_a_stated_reset_overrides_the_monthly_calendar(tmp_path) -> None:
+    """A monthly-sounding refusal that also states a reset uses the STATED
+    time, not the calendar boundary. The signature is a fallback, not a
+    priority."""
+    r, cs = _rot(tmp_path)
+    now = _epoch(2026, 9, 2, 10)
+    r.mark_capped(cs[1], now=now, provider_message=(
+        "You've hit your monthly spend limit, resets at 2026-09-02T18:00:00Z"))
+    assert cs[1] in r.available(now=_epoch(2026, 9, 2, 19))
+
+
+def test_an_unparseable_reset_falls_back_to_inference(tmp_path) -> None:
+    """The message format is not contractual. Anything unparseable must fall
+    through to the tier inference rather than crash or return a bogus time."""
+    r, cs = _rot(tmp_path)
+    assert accounts.parse_reset_time("resets at half past whenever", now=0.0) is None
+    r.mark_capped(cs[1], now=0.0, provider_message="resets at some point, monthly limit")
+    assert cs[1] in r.available(now=accounts.next_month_start(0.0) + 1)
+
+
+def test_a_stated_reset_in_the_past_is_not_trusted(tmp_path) -> None:
+    """A parsed time already behind us would un-cap the account instantly and
+    spin: refuse, re-parse, refuse. Treated as unparseable."""
+    assert accounts.parse_reset_time(
+        "resets at 2026-09-02T08:00:00Z", now=_epoch(2026, 9, 2, 10)) is None
+
+
+def test_a_shaped_but_impossible_timestamp_degrades(tmp_path) -> None:
+    """Reaches the parse, not just the regex. "2026-13-45T99:99Z" satisfies the
+    pattern and is not a date, and this runs INSIDE 429 handling -- raising
+    there would turn a recoverable quota refusal into a crashed run.
+    """
+    assert accounts.parse_reset_time(
+        "limit reached, resets at 2026-13-45T99:99Z", now=0.0) is None
+    r, cs = _rot(tmp_path)
+    r.mark_capped(cs[1], now=0.0,
+                  provider_message="monthly limit, resets at 2026-13-45T99:99Z")
+    # Fell through to the monthly calendar rather than raising.
+    assert cs[1] not in r.available(now=24 * 3600)
+    assert cs[1] in r.available(now=accounts.next_month_start(0.0) + 1)

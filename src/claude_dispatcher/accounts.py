@@ -37,6 +37,7 @@ usage figure nothing exposes, and a cursor needs none.
 from __future__ import annotations
 
 import datetime as dt
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -48,15 +49,80 @@ AUTH_STATUSES = frozenset({401, 403})
 #: How long a capped account sits out. Rolling-window limits clear in hours.
 DEFAULT_COOLDOWN_SECONDS = 3 * 3600
 
-#: A monthly cap does not clear in hours. Matched on the provider's own words
-#: -- GO-4-1's refusal was "You've hit your monthly spend limit."
+#: Measured tiers (support.claude.com, checked 2026-09-02): a ~5-hour session
+#: window, a weekly limit resetting at a fixed time ASSIGNED TO THE ACCOUNT,
+#: and monthly spend caps. Only the monthly one is a boundary computable from
+#: here -- the weekly reset day is account-specific and not exposed.
 _MONTHLY_SIGNATURES = ("monthly spend limit", "monthly limit", "spend limit")
+_WEEKLY_SIGNATURES = ("weekly limit", "weekly usage limit", "weekly cap")
+
+#: A weekly cap is re-probed daily rather than held for seven days. The reset
+#: day is fixed but unknowable here, so any fixed hold is a guess; a daily
+#: probe bounds the waste at a day and costs at most seven spawns to find the
+#: reset, where a 7-day hold can idle an account that came back on day one.
+WEEKLY_PROBE_SECONDS = 24 * 3600
+
+#: "limit reached, resets at <time>" -- the provider sometimes states the
+#: reset. The format is NOT contractual, so parsing fails closed to inference.
+_RESET_ISO_RE = re.compile(
+    r"resets?\s+(?:at|on)\s+(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?\s*Z?)",
+    re.IGNORECASE,
+)
+_RESET_CLOCK_RE = re.compile(
+    r"resets?\s+(?:at|on)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b",
+    re.IGNORECASE,
+)
 
 
 def is_monthly(provider_message: str = "") -> bool:
-    """Whether the refusal names a monthly cap rather than a rolling window."""
+    """Whether the refusal names a monthly cap rather than a shorter window."""
     haystack = (provider_message or "").lower()
     return any(sig in haystack for sig in _MONTHLY_SIGNATURES)
+
+
+def is_weekly(provider_message: str = "") -> bool:
+    haystack = (provider_message or "").lower()
+    return any(sig in haystack for sig in _WEEKLY_SIGNATURES)
+
+
+def parse_reset_time(provider_message: str, *, now: float) -> float | None:
+    """The reset the provider STATED, or None when it stated none.
+
+    A stated reset beats every inference below it: inference exists for
+    refusals that do not say, and guessing over a stated fact is never right.
+
+    Fails closed. An unrecognised format, or a time already behind `now`,
+    returns None -- a past reset would un-cap the account immediately and spin
+    refuse/re-parse/refuse. The message format is not part of any contract, so
+    this must degrade rather than break when it changes.
+    """
+    if not provider_message:
+        return None
+    m = _RESET_ISO_RE.search(provider_message)
+    if m:
+        raw = m.group(1).strip().replace(" ", "T").rstrip("Z")
+        try:
+            parsed = dt.datetime.fromisoformat(raw).replace(tzinfo=dt.timezone.utc)
+        except ValueError:
+            return None
+        return parsed.timestamp() if parsed.timestamp() > now else None
+    m = _RESET_CLOCK_RE.search(provider_message)
+    if m:
+        hour, minute, meridiem = int(m.group(1)), int(m.group(2) or 0), m.group(3)
+        if meridiem:
+            meridiem = meridiem.lower()
+            if hour == 12:
+                hour = 0 if meridiem == "am" else 12
+            elif meridiem == "pm":
+                hour += 12
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            return None
+        base = dt.datetime.fromtimestamp(now, tz=dt.timezone.utc)
+        target = base.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if target.timestamp() <= now:
+            target += dt.timedelta(days=1)
+        return target.timestamp()
+    return None
 
 
 def next_month_start(now: float) -> float:
@@ -83,8 +149,13 @@ def eligible_at(now: float, provider_message: str = "") -> float:
     Erring early is the cheap direction -- a premature retry costs one spawn
     and re-caps itself, while a late one wastes real capacity.
     """
+    stated = parse_reset_time(provider_message, now=now)
+    if stated is not None:
+        return stated
     if is_monthly(provider_message):
         return next_month_start(now)
+    if is_weekly(provider_message):
+        return now + WEEKLY_PROBE_SECONDS
     return now + DEFAULT_COOLDOWN_SECONDS
 
 
