@@ -5318,6 +5318,28 @@ def _forget_escalated_effort(row: dict, final_status: str) -> None:
         row.pop("effort", None)
 
 
+def _gate_command_texts(repo_root: Path, test_command: str | None) -> tuple[str, ...]:
+    """Contents of any in-repo script ``test_command`` execs.
+
+    The known-red check must see the variable wherever the repo places it, and a
+    repo that extracted its gate places it in the script. Reuses preflight's
+    path parser so "which scripts does the gate run" is answered in ONE place.
+
+    Returns empty for an inline command, an absent file, or an unreadable one:
+    this runs while deciding a gate, and preflight already refuses a missing
+    gate script with a message that names it.
+    """
+    if not test_command:
+        return ()
+    out: list[str] = []
+    for rel in preflight_mod._gate_script_paths(test_command):
+        try:
+            out.append((repo_root / rel).read_text(encoding="utf-8"))
+        except OSError:
+            continue
+    return tuple(out)
+
+
 def _known_red_exclusions(
     cfg: RunConfig,
     snap: TaskSnapshot,
@@ -5341,9 +5363,14 @@ def _known_red_exclusions(
     if register.is_empty:
         return known_red_mod.Exclusions()
 
+    # Done OR Merged: in pr mode a landed body is Merged, and an entry that
+    # only retires on Done would keep hiding rows that are already green.
+    # Awaiting Review deliberately does NOT retire — that body's rows are green
+    # on its own branch but still red on the base a sibling forks from.
+    landed = {plan_mod.DONE, plan_mod.MERGED}
     done = {
         t.key for t in _load_tasks_snapshot(cfg)
-        if str(getattr(t, "status", "")).strip() == plan_mod.DONE
+        if str(getattr(t, "status", "")).strip() in landed
     }
     style = None
     if repo_cfg.test_exclusion:
@@ -5354,6 +5381,7 @@ def _known_red_exclusions(
         done_keys=done,
         style=style,
         test_command=repo_cfg.test,
+        command_texts=_gate_command_texts(repo_root, repo_cfg.test),
         # Beside the task's run artifacts: not in the worktree (the tree under
         # judgement) and not /tmp (inode exhaustion, D-60).
         rows_dir=cfg.runs_dir / cfg.run_id / snap.key,
