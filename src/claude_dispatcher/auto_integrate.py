@@ -340,17 +340,62 @@ def _services_touched(repo_root: Path, base: str, feat: str) -> set[str]:
     return touched
 
 
+def _sqlc_input_dirs(service_dir: Path) -> list[str] | None:
+    """The `queries` and `schema` paths sqlc.yaml declares, relative to
+    `service_dir`. Returns None if they cannot be determined.
+
+    None means "assume any .sql here is an input" — callers must regen rather
+    than skip. A service whose config we cannot read is the case where a wrong
+    guess is most costly: skipping ships a query whose gitignored generated
+    code was never rebuilt, and nothing downstream notices.
+    """
+    try:
+        cfg = yaml_io.load(service_dir / "sqlc.yaml")
+    except Exception:
+        return None
+    if not isinstance(cfg, dict):
+        return None
+    blocks = cfg.get("sql")
+    if isinstance(blocks, dict):
+        blocks = [blocks]
+    if not isinstance(blocks, list) or not blocks:
+        return None
+    dirs: list[str] = []
+    for block in blocks:
+        if not isinstance(block, dict):
+            return None
+        for field in ("queries", "schema"):
+            val = block.get(field)
+            entries = val if isinstance(val, list) else [val]
+            for entry in entries:
+                if not isinstance(entry, str) or not entry.strip():
+                    continue
+                rel = entry.strip().lstrip("./").rstrip("/")
+                if rel:
+                    dirs.append(rel)
+    return dirs or None
+
+
 def _maybe_regen_sqlc(
     repo_root: Path, base: str, feat: str, sqlc_bin: str,
     log: Callable[[str], None], task_key: str,
 ) -> list[str]:
-    """If the merge brought new sqlc queries, regen the gitignored generated
-    code. Returns the list of services where regen ran. Safe: sqlc generate
-    writes only to gitignored store/sqlc/ directories.
+    """If the merge touched a .sql file sqlc reads, regen the gitignored
+    generated code. Returns the list of services where regen ran. Safe: sqlc
+    generate writes only to the gitignored out/ directory sqlc.yaml names.
 
-    No regen (empty list) if no store/queries/*.sql files were touched, or no
-    touched service has a sqlc.yaml. The sqlc binary is only discovered when
-    regen is actually required; if it can't be found `_discover_bin` raises.
+    Services are located by walking up from each changed .sql to the nearest
+    sqlc.yaml, then filtered by the `queries`/`schema` paths that file
+    declares. Directory layout is therefore NOT a convention here: bay-session
+    keeps queries in `store/queries/` and the wallet in `db/queries/` with its
+    schema in `db/migration/`, and both are governed by a service-root
+    sqlc.yaml. Migrations count -- sqlc's output structs are derived from the
+    schema, so a new column changes generated code just as a new query does.
+
+    No regen (empty list) if no .sql files were touched, or none of the touched
+    ones is an input to the sqlc.yaml above it. The sqlc binary is only
+    discovered when regen is actually required; if it can't be found
+    `_discover_bin` raises.
     """
     rc, out, _ = _run(
         ["git", "diff", "--name-only", f"{base}...{feat}"], cwd=repo_root,
@@ -360,12 +405,19 @@ def _maybe_regen_sqlc(
     regen_services = set()
     for path in out.splitlines():
         path = path.strip()
-        parts = path.split("/")
-        if "store" in parts and "queries" in parts and path.endswith(".sql"):
-            store_idx = parts.index("store")
-            svc = "/".join(parts[:store_idx])
-            if svc and (repo_root / svc / "sqlc.yaml").exists():
-                regen_services.add(svc)
+        if not path.endswith(".sql"):
+            continue
+        cur = Path(path).parent
+        while str(cur) not in (".", "/"):
+            if (repo_root / cur / "sqlc.yaml").exists():
+                declared = _sqlc_input_dirs(repo_root / cur)
+                rel = Path(path).relative_to(cur).as_posix()
+                if declared is None or any(
+                    rel == d or rel.startswith(f"{d}/") for d in declared
+                ):
+                    regen_services.add(str(cur))
+                break
+            cur = cur.parent
     if not regen_services:
         return []
     bin_path = sqlc_bin or _discover_bin("sqlc", SQLC_BIN_ENV)

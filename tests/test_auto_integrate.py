@@ -310,3 +310,101 @@ def test_explicit_bin_arg_bypasses_discovery(monkeypatch, repo: Path):
     )
     assert result.status == "integrated", result.detail
     assert result.sqlc_regen == ["svc"]
+
+
+def test_regen_fires_for_queries_dir_outside_store(monkeypatch, repo: Path):
+    """sqlc regen must key on the sqlc.yaml that governs a changed query, not
+    on one hardcoded directory name. The wallet keeps its queries in
+    `db/queries/` rather than bay-session's `store/queries/`; both are
+    configured by a service-root sqlc.yaml, so both must regen.
+
+    Discriminator: with no sqlc binary discoverable, a REQUIRED regen reverts
+    the merge (`skipped-codegen-fail`). A layout the scanner fails to
+    recognise merges clean as `integrated` -- which would ship a wallet query
+    whose gitignored generated code was never rebuilt.
+    """
+    monkeypatch.delenv("DISPATCHER_SQLC_BIN", raising=False)
+    monkeypatch.setattr(ai.shutil, "which", lambda name: None)
+    _make_feat_branch(repo, "feat/wallet-query", {
+        "svc/sqlc.yaml": "version: '2'\n",
+        "svc/db/queries/bonus.sql": "-- name: GetBonus :one\nSELECT 1;\n",
+    }, "add wallet-layout query")
+    head_before = _git(["rev-parse", "main"], cwd=repo).strip()
+    _, log = _logs()
+    result = ai.integrate(
+        repo_root=repo, yaml_path=repo / "bay-session-tasks.yaml",
+        base_branch="main", feat_branch="feat/wallet-query",
+        task_key="WAL-GATE-1", log=log,
+    )
+    assert result.status == "skipped-codegen-fail", result.detail
+    assert _git(["rev-parse", "main"], cwd=repo).strip() == head_before
+
+
+def test_regen_fires_for_schema_migration_change(monkeypatch, repo: Path):
+    """A migration is a sqlc INPUT, not just a runtime artifact: the generated
+    structs come from the schema, so adding a column changes generated code
+    exactly as adding a query does. The wallet declares
+    `schema: ./db/migration/`, so a change there must regen.
+    """
+    monkeypatch.delenv("DISPATCHER_SQLC_BIN", raising=False)
+    monkeypatch.setattr(ai.shutil, "which", lambda name: None)
+    _make_feat_branch(repo, "feat/migration", {
+        "svc/sqlc.yaml": (
+            "version: '2'\nsql:\n  - engine: postgresql\n"
+            "    queries: ./db/queries/\n    schema: ./db/migration/\n"
+        ),
+        "svc/db/migration/002_add_col.sql": "ALTER TABLE w ADD COLUMN c int;\n",
+    }, "add migration")
+    _, log = _logs()
+    result = ai.integrate(
+        repo_root=repo, yaml_path=repo / "bay-session-tasks.yaml",
+        base_branch="main", feat_branch="feat/migration",
+        task_key="WAL-GATE-2", log=log,
+    )
+    assert result.status == "skipped-codegen-fail", result.detail
+
+
+def test_regen_skipped_for_sql_outside_declared_inputs(monkeypatch, repo: Path):
+    """Scoping still holds: a .sql file under a sqlc-governed service that the
+    config does NOT declare as an input (a seed fixture, an ad-hoc report) is
+    not a sqlc input and must not trigger regen -- otherwise every service
+    with a stray .sql pays for codegen it does not need.
+    """
+    monkeypatch.delenv("DISPATCHER_SQLC_BIN", raising=False)
+    monkeypatch.setattr(ai.shutil, "which", lambda name: None)
+    _make_feat_branch(repo, "feat/seed", {
+        "svc/sqlc.yaml": (
+            "version: '2'\nsql:\n  - engine: postgresql\n"
+            "    queries: ./db/queries/\n    schema: ./db/migration/\n"
+        ),
+        "svc/testdata/seed.sql": "INSERT INTO w VALUES (1);\n",
+    }, "add seed fixture")
+    _, log = _logs()
+    result = ai.integrate(
+        repo_root=repo, yaml_path=repo / "bay-session-tasks.yaml",
+        base_branch="main", feat_branch="feat/seed",
+        task_key="WAL-GATE-3", log=log,
+    )
+    assert result.status == "integrated", result.detail
+    assert result.sqlc_regen == []
+
+
+def test_unreadable_sqlc_config_regens_rather_than_skips(monkeypatch, repo: Path):
+    """A sqlc.yaml we cannot parse must regen, not skip. Skipping is the
+    silent-corruption direction: it ships a query whose generated code was
+    never rebuilt and nothing downstream notices. Regenerating a service that
+    did not need it only costs time.
+    """
+    monkeypatch.delenv("DISPATCHER_SQLC_BIN", raising=False)
+    monkeypatch.setattr(ai.shutil, "which", lambda name: None)
+    _make_feat_branch(repo, "feat/broken-cfg", {
+        "svc/sqlc.yaml": "version: '2'\nsql: [[[not valid\n",
+        "svc/anywhere/q.sql": "-- name: GetX :one\nSELECT 1;\n",
+    }, "add query beside unparseable config")
+    _, log = _logs()
+    result = ai.integrate(
+        repo_root=repo, yaml_path=repo / "bay-session-tasks.yaml",
+        base_branch="main", feat_branch="feat/broken-cfg",
+        task_key="WAL-GATE-4", log=log,
+    )
+    assert result.status == "skipped-codegen-fail", result.detail
