@@ -36,6 +36,7 @@ usage figure nothing exposes, and a cursor needs none.
 
 from __future__ import annotations
 
+import datetime as dt
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -47,23 +48,44 @@ AUTH_STATUSES = frozenset({401, 403})
 #: How long a capped account sits out. Rolling-window limits clear in hours.
 DEFAULT_COOLDOWN_SECONDS = 3 * 3600
 
-#: A monthly cap does not clear in hours, so the short cooldown would spend a
-#: spawn to learn what the last one established. Matched on the provider's own
-#: words -- GO-4-1's refusal was "You've hit your monthly spend limit."
-MONTHLY_COOLDOWN_SECONDS = 32 * 24 * 3600
+#: A monthly cap does not clear in hours. Matched on the provider's own words
+#: -- GO-4-1's refusal was "You've hit your monthly spend limit."
 _MONTHLY_SIGNATURES = ("monthly spend limit", "monthly limit", "spend limit")
 
 
-def cooldown_for(provider_message: str = "") -> float:
-    """Seconds a capped account sits out, from the refusal text.
-
-    Unrecognised text takes the SHORT cooldown: guessing "monthly" from silence
-    would retire an account for the run over a rate limit that clears in hours.
-    """
+def is_monthly(provider_message: str = "") -> bool:
+    """Whether the refusal names a monthly cap rather than a rolling window."""
     haystack = (provider_message or "").lower()
-    if any(sig in haystack for sig in _MONTHLY_SIGNATURES):
-        return MONTHLY_COOLDOWN_SECONDS
-    return DEFAULT_COOLDOWN_SECONDS
+    return any(sig in haystack for sig in _MONTHLY_SIGNATURES)
+
+
+def next_month_start(now: float) -> float:
+    """The start of the calendar month after `now`, in UTC.
+
+    A monthly allowance resets on the calendar, not on a stopwatch started when
+    it ran out. A fixed delta gets this wrong in the expensive direction: an
+    account capped on the 28th would idle until the 30th of the NEXT month for
+    a limit that cleared on the 1st.
+    """
+    d = dt.datetime.fromtimestamp(now, tz=dt.timezone.utc)
+    year, month = (d.year + 1, 1) if d.month == 12 else (d.year, d.month + 1)
+    return dt.datetime(year, month, 1, tzinfo=dt.timezone.utc).timestamp()
+
+
+def eligible_at(now: float, provider_message: str = "") -> float:
+    """When a capped account may be tried again.
+
+    A rolling-window limit is a DURATION from the refusal; a monthly cap is a
+    calendar BOUNDARY, so the two cannot share a unit.
+
+    Unrecognised text takes the short duration: inferring "monthly" from
+    silence would idle an account for weeks over a limit that clears in hours.
+    Erring early is the cheap direction -- a premature retry costs one spawn
+    and re-caps itself, while a late one wastes real capacity.
+    """
+    if is_monthly(provider_message):
+        return next_month_start(now)
+    return now + DEFAULT_COOLDOWN_SECONDS
 
 
 @dataclass
@@ -128,7 +150,7 @@ class AccountRotation:
         """
         if account is None:
             return
-        self.cooling[account] = now + cooldown_for(provider_message)
+        self.cooling[account] = eligible_at(now, provider_message)
 
     def next_account(self, *, now: float) -> Path | None:
         """The next uncapped account in turn, or None when all are capped.

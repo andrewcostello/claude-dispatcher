@@ -277,3 +277,50 @@ def test_all_capped_falls_back_to_ambient_rather_than_stalling(tmp_path) -> None
     for c in cs:
         r.mark_capped(c, now=1e12)
     assert orch._account_for_task(_Cfg(r, rotate=True), "T", _logp(tmp_path)) is None
+
+
+# --- a monthly cap clears on the calendar, not on a stopwatch ---------------
+
+import datetime as _dt
+
+
+def _epoch(y, m, d, h=0) -> float:
+    return _dt.datetime(y, m, d, h, tzinfo=_dt.timezone.utc).timestamp()
+
+
+def test_a_monthly_cap_clears_at_the_start_of_next_month(tmp_path) -> None:
+    """Capped on 2 Sept, eligible 1 Oct -- not 32 days later on 4 Oct."""
+    r, cs = _rot(tmp_path)
+    r.mark_capped(cs[1], now=_epoch(2026, 9, 2),
+                  provider_message="You've hit your monthly spend limit.")
+    assert cs[1] not in r.available(now=_epoch(2026, 9, 30, 23))
+    assert cs[1] in r.available(now=_epoch(2026, 10, 1))
+
+
+def test_a_late_month_cap_does_not_wait_a_further_month(tmp_path) -> None:
+    """THE discriminator against a fixed 32-day delta. Capped on 28 Sept, the
+    limit clears on 1 Oct; a stopwatch would idle the account until 30 Oct and
+    throw away a month of capacity."""
+    r, cs = _rot(tmp_path)
+    r.mark_capped(cs[1], now=_epoch(2026, 9, 28),
+                  provider_message="monthly spend limit reached")
+    assert cs[1] in r.available(now=_epoch(2026, 10, 1))
+
+
+def test_a_december_cap_rolls_into_january(tmp_path) -> None:
+    """Year rollover: December's next month is January of the NEXT year."""
+    r, cs = _rot(tmp_path)
+    r.mark_capped(cs[1], now=_epoch(2026, 12, 15),
+                  provider_message="monthly limit")
+    assert cs[1] not in r.available(now=_epoch(2026, 12, 31, 23))
+    assert cs[1] in r.available(now=_epoch(2027, 1, 1))
+
+
+def test_a_rate_limit_still_uses_the_short_stopwatch(tmp_path) -> None:
+    """A rolling window is a duration, not a calendar boundary -- capping late
+    in the month must not make a 3-hour limit wait for the 1st."""
+    r, cs = _rot(tmp_path)
+    r.mark_capped(cs[1], now=_epoch(2026, 9, 28),
+                  provider_message="rate limit exceeded")
+    assert cs[1] in r.available(
+        now=_epoch(2026, 9, 28) + accounts.DEFAULT_COOLDOWN_SECONDS + 1)
