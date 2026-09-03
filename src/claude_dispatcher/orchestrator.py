@@ -981,6 +981,39 @@ _EFFORT_CAPABLE_AGENTS = frozenset({"claude", "codex", "grok"})
 #: agent's own AGENT_EFFORTS decides which rungs it has. Ordered because
 #: "escalate" is meaningless over an unordered set — and treating "high" as the
 #: ceiling silently downgraded every xhigh row until 2026-09-02.
+#: Offered to a model that INHERITS another model's work on a cascade.
+#:
+#: The worktree is created once, before the cascade loop, so a later rung sees
+#: the earlier rung's commits — it is picking up someone else's half-finished
+#: work, with the review of it. The context used to say only "this was blocked,
+#: here are the findings", which reads as an instruction to patch.
+#:
+#: A model handed genuinely bad foundations then has no sanctioned way to say
+#: so and patches around them, which is the force-fit the deviation model
+#: exists to prevent. Operator ruling 2026-09-03: "As a senior engineer I
+#: sometimes just fix junior work. I don't always start over" — so the choice
+#: is offered rather than assumed in either direction.
+CASCADE_JUDGEMENT = """\
+FIRST, DECIDE WHETHER TO KEEP THIS WORK.
+
+The worktree already holds a previous attempt's commits, and the review above
+is of THAT code. You are picking up someone else's unfinished work.
+
+Judge it before you touch it, and say which you chose in your summary:
+
+  KEEP AND FIX — the shape is right and the findings are addressable. Usually
+  correct: most blocked work is close, and rewriting loses what the reviewers
+  already validated.
+
+  DISCARD AND REWRITE — the approach is wrong, not incomplete. Legitimate, and
+  sometimes the honest answer. Say WHY in one or two sentences, then start from
+  the contract rather than from the code.
+
+If the findings show the CONTRACT is wrong rather than the code, that is a
+DEVIATION — record it under `## Deviation` and do not force-fit around it.
+"""
+
+
 EFFORT_LADDER: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max", "ultra")
 
 
@@ -1932,6 +1965,7 @@ def _run_task(
                     f"Mechanical gate FAILED after {attempt_agent}"
                     f"@{attempt_effort or 'default'}:\n"
                     f"{(mech_detail or '')[:2000]}"
+                        + "\n\n" + CASCADE_JUDGEMENT
                 )
                 fail_reason = "mechanical_verification_failed"
                 continue
@@ -1956,6 +1990,7 @@ def _run_task(
                         f"{attempt_agent}@{attempt_effort or 'default'} — new "
                         f"tests must FAIL with the fix reverted:\n"
                         f"{(seal_detail or '')[:2000]}"
+                        + "\n\n" + CASCADE_JUDGEMENT
                     )
                     fail_reason = "seal_verification_failed"
                     continue
@@ -2029,6 +2064,7 @@ def _run_task(
                         f"LLM verifier INCOMPLETE after {attempt_agent}"
                         f"@{attempt_effort or 'default'}:\n"
                         f"{(verification_detail or vout.blocked_reason)[:2000]}"
+                        + "\n\n" + CASCADE_JUDGEMENT
                     )
                     fail_reason = vout.blocked_reason
                     continue
@@ -2135,6 +2171,7 @@ def _run_task(
                         f"Cross-family panel BLOCKED after {attempt_agent}"
                         f"@{attempt_effort or 'default'}:\n"
                         f"{panel_verdict.summary}\n\n{findings_txt[:3000]}"
+                        + "\n\n" + CASCADE_JUDGEMENT
                     )
                     fail_reason = "cross_family_panel_block"
                     continue
@@ -2459,6 +2496,8 @@ def _run_task(
         ), task_key=snap.key)
 
     return final_status
+
+
 
 
 def _resolved_quality(cfg: RunConfig, snap: TaskSnapshot) -> ql_mod.QualityLevels:
