@@ -140,3 +140,140 @@ def test_the_bot_accounts_are_not_candidates(tmp_path) -> None:
 
     rot = accounts.build(first_run.discover_claude_accounts(tmp_path))
     assert [c.name for c in rot.candidates] == [".claude", ".claude-work"]
+
+
+# --- blind round-robin, and a cap that expires ------------------------------
+#
+# Failover alone still burns one account to its ceiling before moving. Blind
+# round-robin spreads a run across every account instead, and needs no usage
+# figure to do it — which matters because none is readable: `claude auth
+# status` says loggedIn for an account that is over its limit, and /usage is
+# computed in-session and never written to disk.
+
+
+def _rot(tmp_path, n=3):
+    cs = [tmp_path / f"a{i}" for i in range(n)]
+    for c in cs:
+        c.mkdir()
+    return accounts.build(cs, ambient=cs[0]), cs
+
+
+def test_round_robin_hands_out_each_account_in_turn(tmp_path) -> None:
+    """Consecutive tasks get different accounts, cycling back around."""
+    r, cs = _rot(tmp_path)
+    got = [r.next_account(now=0.0) for _ in range(6)]
+    assert got == [cs[0], cs[1], cs[2], cs[0], cs[1], cs[2]], got
+
+
+def test_a_capped_account_is_skipped_until_its_cooldown_expires(tmp_path) -> None:
+    """A 429 pulls an account out for a few hours, not for the whole run: a
+    long run outlives a rolling window, so retiring it permanently throws away
+    capacity that came back."""
+    r, cs = _rot(tmp_path)
+    r.mark_capped(cs[1], now=1000.0)
+    assert cs[1] not in r.available(now=1000.0)
+    assert cs[1] not in r.available(now=1000.0 + accounts.DEFAULT_COOLDOWN_SECONDS - 1)
+    assert cs[1] in r.available(now=1000.0 + accounts.DEFAULT_COOLDOWN_SECONDS + 1)
+
+
+def test_a_monthly_cap_outlasts_the_short_cooldown(tmp_path) -> None:
+    """The refusal text decides the cooldown. A monthly spend limit cannot
+    clear in hours, so re-probing it on the short cooldown spends a spawn to
+    learn what the last one already established — GO-4-1's measured case."""
+    r, cs = _rot(tmp_path)
+    r.mark_capped(cs[1], now=0.0,
+                  provider_message="You've hit your monthly spend limit.")
+    assert cs[1] not in r.available(now=accounts.DEFAULT_COOLDOWN_SECONDS + 1)
+    assert cs[1] not in r.available(now=24 * 3600)
+
+
+def test_a_rate_limit_takes_the_short_cooldown(tmp_path) -> None:
+    """A rolling-window limit does clear in hours, so it must not be treated
+    like a monthly cap."""
+    r, cs = _rot(tmp_path)
+    r.mark_capped(cs[1], now=0.0,
+                  provider_message="rate limit exceeded, please try again later")
+    assert cs[1] in r.available(now=accounts.DEFAULT_COOLDOWN_SECONDS + 1)
+
+
+def test_round_robin_never_hands_out_a_capped_account(tmp_path) -> None:
+    """The load-bearing property: whatever the cursor is doing, a capped
+    account is never returned while it is still capped."""
+    r, cs = _rot(tmp_path)
+    r.mark_capped(cs[1], now=0.0)
+    got = [r.next_account(now=100.0) for _ in range(8)]
+    assert cs[1] not in got, got
+    assert set(got) == {cs[0], cs[2]}
+
+
+def test_every_account_capped_returns_none(tmp_path) -> None:
+    """No account available is a real state the caller must handle, not a
+    silent fallback to a capped one."""
+    r, cs = _rot(tmp_path)
+    for c in cs:
+        r.mark_capped(c, now=0.0)
+    assert r.next_account(now=100.0) is None
+    assert r.available(now=100.0) == []
+
+
+def test_capacity_returns_after_the_window(tmp_path) -> None:
+    """All capped, then the window passes: the run continues rather than
+    ending. This is the whole reason the cap expires."""
+    r, cs = _rot(tmp_path)
+    for c in cs:
+        r.mark_capped(c, now=0.0)
+    assert r.next_account(now=100.0) is None
+    later = accounts.DEFAULT_COOLDOWN_SECONDS + 1
+    assert r.next_account(now=later) in cs
+
+
+# --- the wiring: rotation is inert unless something advances it per task -----
+
+
+class _Cfg:
+    def __init__(self, rotation, rotate):
+        self.account_rotation = rotation
+        self.rotate_accounts = rotate
+
+
+def _logp(tmp_path):
+    """A real log path: `_log` appends to it, as it does in a run."""
+    return tmp_path / "run.log"
+
+
+def test_round_robin_off_keeps_the_ambient_account(tmp_path) -> None:
+    """The default must be untouched: failover-only runs stay on the account
+    they started on until something refuses."""
+    from claude_dispatcher import orchestrator as orch
+    r, cs = _rot(tmp_path)
+    cfg = _Cfg(r, rotate=False)
+    got = [orch._account_for_task(cfg, "T", _logp(tmp_path)) for _ in range(3)]
+    assert got == [str(cs[0])] * 3, got
+
+
+def test_round_robin_on_advances_every_task(tmp_path) -> None:
+    """With rotation on, consecutive TASKS land on different accounts. Without
+    this per-task advance the module is inert -- failover alone only moves
+    after a refusal, so one account still absorbs the whole run."""
+    from claude_dispatcher import orchestrator as orch
+    r, cs = _rot(tmp_path)
+    cfg = _Cfg(r, rotate=True)
+    got = [orch._account_for_task(cfg, "T", _logp(tmp_path)) for _ in range(4)]
+    assert got == [str(cs[0]), str(cs[1]), str(cs[2]), str(cs[0])], got
+
+
+def test_no_rotation_configured_means_ambient(tmp_path) -> None:
+    """No rotation object at all -- neither flag passed -- returns None so the
+    spawn inherits the ambient CLAUDE_CONFIG_DIR."""
+    from claude_dispatcher import orchestrator as orch
+    assert orch._account_for_task(_Cfg(None, rotate=True), "T", _logp(tmp_path)) is None
+
+
+def test_all_capped_falls_back_to_ambient_rather_than_stalling(tmp_path) -> None:
+    """Every account capped: attempt the ambient one instead of stalling. The
+    caller cannot conjure quota, and the 429 path handles the refusal."""
+    from claude_dispatcher import orchestrator as orch
+    r, cs = _rot(tmp_path)
+    for c in cs:
+        r.mark_capped(c, now=1e12)
+    assert orch._account_for_task(_Cfg(r, rotate=True), "T", _logp(tmp_path)) is None

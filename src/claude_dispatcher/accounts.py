@@ -20,9 +20,18 @@ This is REACTIVE FAILOVER, deliberately not weighted rotation:
     for an account that is over its limit, and the `/usage` percentages are
     computed inside an interactive session and never written to disk. A
     denominator nobody can read is not a denominator to schedule on.
-  * An exhausted account stays exhausted FOR THE RUN. A quota resets on the
-    provider's clock, not ours, so re-probing it per task would spend a spawn
-    to learn what the last one already established.
+  * A capped account is pulled out for a COOLDOWN, not for the run. The
+    original reasoning here -- that re-probing spends a spawn to learn what the
+    last one established -- held for short runs and stops holding for long
+    ones: a 73-task run outlives a rolling window, so retiring an account
+    permanently throws away capacity that came back. Re-probing costs at most
+    one spawn per account per window, and the refusal text keeps even that
+    off the case where it cannot help.
+
+BLIND ROUND-ROBIN sits on top of the same structure. Each task takes the next
+account in turn, which spreads a run across every subscription instead of
+burning one to its ceiling first. It is blind deliberately -- weighting needs a
+usage figure nothing exposes, and a cursor needs none.
 """
 
 from __future__ import annotations
@@ -34,6 +43,27 @@ from pathlib import Path
 #: safety property of this module: only the first list may rotate.
 QUOTA_STATUSES = frozenset({429})
 AUTH_STATUSES = frozenset({401, 403})
+
+#: How long a capped account sits out. Rolling-window limits clear in hours.
+DEFAULT_COOLDOWN_SECONDS = 3 * 3600
+
+#: A monthly cap does not clear in hours, so the short cooldown would spend a
+#: spawn to learn what the last one established. Matched on the provider's own
+#: words -- GO-4-1's refusal was "You've hit your monthly spend limit."
+MONTHLY_COOLDOWN_SECONDS = 32 * 24 * 3600
+_MONTHLY_SIGNATURES = ("monthly spend limit", "monthly limit", "spend limit")
+
+
+def cooldown_for(provider_message: str = "") -> float:
+    """Seconds a capped account sits out, from the refusal text.
+
+    Unrecognised text takes the SHORT cooldown: guessing "monthly" from silence
+    would retire an account for the run over a rate limit that clears in hours.
+    """
+    haystack = (provider_message or "").lower()
+    if any(sig in haystack for sig in _MONTHLY_SIGNATURES):
+        return MONTHLY_COOLDOWN_SECONDS
+    return DEFAULT_COOLDOWN_SECONDS
 
 
 @dataclass
@@ -47,6 +77,10 @@ class AccountRotation:
     candidates: list[Path] = field(default_factory=list)
     exhausted: set[Path] = field(default_factory=set)
     active: Path | None = None
+    #: account -> the time it becomes eligible again.
+    cooling: dict[Path, float] = field(default_factory=dict)
+    #: Round-robin position. Advances per task, never per retry.
+    cursor: int = 0
 
     @property
     def enabled(self) -> bool:
@@ -74,6 +108,42 @@ class AccountRotation:
             if candidate not in self.exhausted:
                 self.active = candidate
                 return candidate
+        self.active = None
+        return None
+
+    def available(self, *, now: float) -> list[Path]:
+        """Candidates not capped at `now`, in rotation order."""
+        return [
+            c for c in self.candidates
+            if c not in self.exhausted and self.cooling.get(c, 0.0) <= now
+        ]
+
+    def mark_capped(
+        self, account: Path | None, *, now: float, provider_message: str = "",
+    ) -> None:
+        """Pull `account` out until its cooldown expires.
+
+        Unlike `mark_exhausted` this is reversible, which is the point: the
+        account is expected back.
+        """
+        if account is None:
+            return
+        self.cooling[account] = now + cooldown_for(provider_message)
+
+    def next_account(self, *, now: float) -> Path | None:
+        """The next uncapped account in turn, or None when all are capped.
+
+        Advances the cursor over `candidates` so the sequence is stable, and
+        skips capped accounts rather than stalling on them.
+        """
+        n = len(self.candidates)
+        for step in range(n):
+            candidate = self.candidates[(self.cursor + step) % n]
+            if candidate in self.exhausted or self.cooling.get(candidate, 0.0) > now:
+                continue
+            self.cursor = (self.cursor + step + 1) % n
+            self.active = candidate
+            return candidate
         self.active = None
         return None
 

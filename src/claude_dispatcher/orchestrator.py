@@ -20,6 +20,7 @@ import datetime as dt
 import os
 import sys
 import threading
+import time
 from concurrent.futures import (
     FIRST_COMPLETED,
     Future,
@@ -599,7 +600,8 @@ def execute(args: argparse.Namespace) -> int:
     # task is not retried by the next — a quota resets on the provider's clock,
     # not ours, so re-probing costs a spawn to learn what the last one settled.
     cfg.account_rotation = None
-    if getattr(args, "claude_account_failover", False):
+    cfg.rotate_accounts = bool(getattr(args, "claude_account_rotate", False))
+    if getattr(args, "claude_account_failover", False) or cfg.rotate_accounts:
         from . import first_run as first_run_mod
 
         ambient = os.environ.get("CLAUDE_CONFIG_DIR")
@@ -609,8 +611,9 @@ def execute(args: argparse.Namespace) -> int:
         )
         cfg.account_rotation = rotation
         if rotation.enabled:
+            policy = "round-robin" if cfg.rotate_accounts else "failover"
             _log(log_path,
-                 f"account failover armed: {len(rotation.candidates)} accounts "
+                 f"account {policy} armed: {len(rotation.candidates)} accounts "
                  f"({', '.join(c.name for c in rotation.candidates)})")
         else:
             _log(log_path,
@@ -895,6 +898,34 @@ def _run_loop(
     # A budget hold is an incomplete run needing a human — exit non-zero even
     # when nothing is formally Blocked/Escalated (tasks are parked To Do).
     return 1 if (blocked or escalated or budget_tripped) else 0
+
+
+
+def _account_for_task(cfg, task_key: str, log_path) -> str | None:
+    """The `CLAUDE_CONFIG_DIR` this task's spawns should use.
+
+    None means the ambient account, which is the default and must keep working
+    untouched. With round-robin on, each task takes the next uncapped account
+    in turn -- that per-task advance is what makes this a rotation rather than
+    a fallback, since failover alone only moves after a refusal.
+
+    A run with every account capped keeps going on the ambient account: the
+    caller cannot conjure quota, and the 429 path already handles the refusal
+    that follows. Better to attempt and be refused than to stall a task on a
+    prediction.
+    """
+    rot = getattr(cfg, "account_rotation", None)
+    if rot is None:
+        return None
+    if getattr(cfg, "rotate_accounts", False) and rot.enabled:
+        chosen = rot.next_account(now=time.time())
+        if chosen is not None:
+            _log(log_path, f"  {task_key} account {chosen.name}")
+            return str(chosen)
+        _log(log_path,
+             f"  {task_key} every account is capped — trying the ambient one")
+        return None
+    return str(rot.active) if rot.active is not None else None
 
 
 def _maybe_merge_pass(
@@ -1308,12 +1339,7 @@ def _run_task(
         skip_design=cfg.skip_design,
         skip_security_linter=cfg.skip_security_linter,
         reviewer_count=cfg.reviewer_count,
-        claude_config_dir=(
-            str(rot.active)
-            if (rot := getattr(cfg, "account_rotation", None)) is not None
-            and rot.active is not None
-            else None
-        ),
+        claude_config_dir=_account_for_task(cfg, snap.key, log_path),
     )
     # Snapshot base_branch's tip SHA BEFORE any cascade spawn. Discriminator
     # for the direct-to-base workflow (see _has_commits_on_branch).
@@ -1602,8 +1628,12 @@ def _run_task(
                         and accounts_mod.should_rotate(
                             transient.api_error_status)):
                     spent = rotation.active
-                    rotation.mark_exhausted(spent)
-                    nxt = rotation.advance()
+                    now = time.time()
+                    rotation.mark_capped(
+                        spent, now=now,
+                        provider_message=transient.provider_message,
+                    )
+                    nxt = rotation.next_account(now=now)
                     if nxt is not None:
                         env["CLAUDE_CONFIG_DIR"] = str(nxt)
                         _log(log_path,
