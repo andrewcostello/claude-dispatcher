@@ -428,6 +428,7 @@ def build_prompt(
     *,
     task_key: str,
     jira_key: str | None = None,
+    role: str | None = None,
     task_summary: str,
     task_type: str,
     task_labels: list[str],
@@ -462,6 +463,26 @@ def build_prompt(
     # A CI gate may require every commit to name the tracker ticket
     # (evenplay-mono's does, and it reads subject+body, so a trailer counts).
     # Empty when the row has none, and then the brief is byte-identical.
+    # A BODIES task is judged by `role_diff_loop_gate`, which treats a
+    # RENAMED PARAMETER as a changed scaffolded signature (see
+    # role_protocol.SignatureChange). The brief said nothing about signatures,
+    # so an agent was blocked by a rule it had never been given — measured
+    # 2026-09-03, WAL-LEDGER-3 renamed `c` to `credit` while moving two
+    # functions and lost a whole task cycle to it.
+    role_rule = ""
+    if (role or "").strip().lower() == "bodies":
+        role_rule = (
+            "\n\nSCAFFOLDED SIGNATURES ARE FIXED, PARAMETER NAMES INCLUDED.\n"
+            "You fill bodies; you do not restyle the contract. The gate compares "
+            "signatures and counts a renamed parameter as a changed signature, so "
+            "`c` -> `credit` blocks the task even though callers cannot see it. "
+            "Moving a function between files of the same package is fine — "
+            "renaming its parameters on the way is not.\n"
+            "If a signature is genuinely wrong or insufficient, that is a "
+            "DEVIATION: record it under `## Deviation` in your summary and leave "
+            "the signature alone. Do not force-fit around it, and do not "
+            "improve it silently."
+        )
     jira_rule = ""
     if jira_key and jira_key.strip() and jira_key.strip() != task_key:
         jira_rule = (
@@ -471,7 +492,7 @@ def build_prompt(
     return IMPLEMENTER_PROMPT_TEMPLATE.format(
         agent=agent_name,
         task_key=task_key,
-        jira_commit_rule=jira_rule,
+        jira_commit_rule=jira_rule + role_rule,
         summary_path=str(summary_path),
         run_id=run_id,
         max_iterations=max_iterations,
