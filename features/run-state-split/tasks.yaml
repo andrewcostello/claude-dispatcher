@@ -1,0 +1,192 @@
+project: claude-dispatcher
+epic: run-state-split
+base_branch: main
+
+# Binding design: docs/improvement-plan.md "Phase 14 — Split run state out of
+# tasks.yaml". Read it before starting any row; it carries the field split, the
+# four refinements, and the reasoning that decided them.
+#
+# The tasks file holds two things with two different owners. Definitions are
+# authored by a human in a pull request; state is produced only by a run. Both
+# live in a git-tracked file, so `git reset --hard`, `git checkout <ref> -- .`
+# or `git clean` silently discards the dispatcher's memory of a live run — and
+# nothing errors. It has destroyed run state twice on awevoke/slot-games; the
+# second time a row whose PR was already merged reverted to To Do and was
+# re-dispatched at high effort, panel and redundant PR included.
+
+tasks:
+  - key: ST-1
+    summary: 'state.py: the run-state store, keyed by repo+epic, with the definition/state split'
+    description: |
+      LAW / contract first: docs/improvement-plan.md "Phase 14", and
+      `unblock.RUN_STATE_FIELDS` — 35 fields that already enumerate this split.
+
+      Scope:
+        1. New `state.py` with `load(repo, epic, runs_dir)`,
+           `update(repo, epic, runs_dir, key, **fields)`, and
+           `merge(defs_doc, state)`. `merge` returns the combined view every
+           existing caller already expects, so most call sites keep their shape.
+        2. State lives at `<runs-dir>/state/<repo>/<epic>.yaml`. Keyed by repo
+           AND epic: "a runs-dir belongs to one repo" is already false — this
+           one holds wallet runs beside dogfood, bakeoff and convergence runs
+           (BK-*, CV-*, CX-*, GO-*, W2-*, TSP-*). NOT keyed by run_id: state
+           persists ACROSS runs of an epic, which `unblock` then `run` depends
+           on.
+        3. The field split. `RUN_STATE_FIELDS` is the starting list and is
+           already correct on the subtle case: `model` is a DEFINITION (the
+           operator's pin) and `model_used` is state (what a cascade chose).
+           They are two different facts wearing one name.
+        4. Keep the `yaml_io.FileLock` discipline, now on the state file, so
+           parallel implementer subprocesses still serialise their writes.
+
+      Out of scope:
+        - Changing any read or write call site (ST-2, ST-3).
+        - The migration path (ST-4) and operator commands (ST-5).
+
+      Acceptance:
+        - `bash scripts/test.sh` green.
+        - `merge()` of a definitions doc and a state doc equals today's
+          combined row for a fixture epic, field for field.
+        - A seal asserting `model` is NOT in the state field set and
+          `model_used` IS — inverting it would let a run overwrite the
+          operator's routing, the class PR #99 fixed.
+        - A seal that two epics with the same name under different repos do
+          not share a state file.
+    type: Task
+    estimate: 6h
+    labels: [size:M, area:state, risk:critical, phase:run-state-split]
+
+  - key: ST-2
+    summary: 'Readers load definitions, then merge state (17 call sites)'
+    description: |
+      LAW / contract first: docs/improvement-plan.md "Phase 14"; `state.merge`
+      from ST-1.
+
+      Scope:
+        1. Seventeen modules call `yaml_io.load` on the tasks path:
+           orchestrator, report, status, resume, merge_engine, auto_integrate,
+           unblock, risk, role_protocol, known_red, branch_reachability,
+           bakeoff, forecast_bridge, doctor, repo_config, run, cli.
+           Each read becomes `merge(load(tasks), state.load(...))`.
+        2. Most of these only read and are otherwise untouched. Do not
+           refactor them beyond the load line.
+
+      Out of scope:
+        - Writers (ST-3). This row must not change what anything writes.
+
+      Acceptance:
+        - `bash scripts/test.sh` green.
+        - `dispatcher status` and `dispatcher report` produce byte-identical
+           output for a fixture epic before and after the change, given the
+           same definitions plus an equivalent state file.
+        - No call site reads state from the tasks path any more: a seal that
+          greps the module set and fails on a bare `yaml_io.load(tasks_path)`
+          whose result is used for a state field.
+    type: Task
+    estimate: 6h
+    labels: [size:M, area:state, risk:critical, phase:run-state-split]
+    blockedBy: [ST-1]
+
+  - key: ST-3
+    summary: 'Writers write state only — and nothing writes tasks.yaml, asserted'
+    description: |
+      LAW / contract first: docs/improvement-plan.md "Phase 14".
+
+      Scope:
+        1. Five modules call `yaml_io.dump` on the tasks path: orchestrator
+           (x3), resume (x2), merge_engine, unblock (x2), forecast_bridge.
+           Each becomes a `state.update(...)`.
+        2. `doctor.py` also dumps YAML, but to the machine profile, not the
+           tasks file. Leave it alone.
+        3. `forecast_bridge.create_missing_tickets` writes `jira_key` back —
+           decide and state which side that is. A minted ticket id is
+           authored-once and belongs in the PR, so it is a DEFINITION; the
+           bridge is then the one sanctioned writer of the tracked file and
+           must say so out loud, or it moves to state and the PR loses the id.
+           Do not leave this undecided.
+
+      Out of scope:
+        - The migration of existing worklists (ST-4).
+
+      Acceptance:
+        - `bash scripts/test.sh` green.
+        - THE INVARIANT: a test that runs a small epic to completion and then
+          asserts `tasks.yaml` is byte-identical to what it was before the run.
+          This is the whole change expressed as a check that can fail.
+        - A seal that no `yaml_io.dump` in `src/claude_dispatcher/` targets a
+          tasks path, with the `forecast_bridge` decision from scope item 3
+          recorded as an explicit, named exception if that is the ruling.
+    type: Task
+    estimate: 6h
+    labels: [size:M, area:state, risk:critical, phase:run-state-split]
+    blockedBy: [ST-2]
+
+  - key: ST-4
+    summary: 'Migration off a stateful tasks.yaml, and `dispatcher state rebuild` from the journal'
+    description: |
+      LAW / contract first: docs/improvement-plan.md "Phase 14", refinement 2.
+
+      Scope:
+        1. On load, if a tasks file still carries state fields and no state
+           file exists, split it: write the state out, and report the tasks
+           file as needing a commit with those fields removed. DO NOT rewrite
+           the git-tracked file automatically — that is the behaviour being
+           removed. Print the diff and let a human commit it. Make the report
+           loud enough that it cannot be ignored.
+        2. `dispatcher state rebuild`: reconstruct the state file from the
+           journal. The journal is append-only and hash-chained (`seq`,
+           `prev_hash`), so it — not the state file — is the authority. This
+           settles which store wins when they disagree, and turns "deleting the
+           state file resets an epic to unstarted" from lost work into a
+           recovery.
+
+      Out of scope:
+        - Park/requeue (ST-5).
+
+      Acceptance:
+        - `bash scripts/test.sh` green.
+        - A fixture legacy tasks.yaml carrying state fields splits correctly,
+          and the tracked file on disk is PROVEN unmodified by the split.
+        - `state rebuild` reproduces a state file from a journal alone, and a
+          seal shows it recovers a DELETED state file for a part-finished epic.
+        - Rebuild refuses a journal whose hash chain does not verify, rather
+          than producing a plausible state from a tampered log.
+    type: Task
+    estimate: 5h
+    labels: [size:M, area:state, risk:high, phase:run-state-split]
+    blockedBy: [ST-1]
+
+  - key: ST-5
+    summary: '`dispatcher park` / `requeue`, so operators stop hand-editing status'
+    description: |
+      LAW / contract first: docs/improvement-plan.md "Phase 14", refinement 3.
+
+      Operators park and requeue rows by editing `status` by hand — 40 rows in
+      one sitting on 2026-09-04, to drain a live run before reinstalling.
+      Moving the field without giving that operation a command does not remove
+      the second writer, it relocates it to a file where it no longer shows up
+      in a diff.
+
+      Scope:
+        1. `dispatcher park <keys...>` — make rows non-runnable without losing
+           why, recording who parked them and when.
+        2. `dispatcher requeue <keys...>` — the exact inverse, restoring the
+           prior status rather than guessing To Do.
+        3. Both write state only, take the state FileLock, and are safe to run
+           while a run is in flight — parking is specifically what an operator
+           does TO a live run.
+
+      Out of scope:
+        - Any change to dispatch ordering or `runnable_now`.
+
+      Acceptance:
+        - `bash scripts/test.sh` green.
+        - Parking N rows makes exactly those rows non-runnable, and
+          `dispatcher run --mode dry-run` reports it.
+        - `requeue` after `park` restores the ORIGINAL status, proven for a row
+          that was Blocked before parking, not just To Do.
+        - `tasks.yaml` is untouched by both commands.
+    type: Task
+    estimate: 4h
+    labels: [size:S, area:state, risk:medium, phase:run-state-split]
+    blockedBy: [ST-3]
