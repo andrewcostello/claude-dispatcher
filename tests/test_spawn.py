@@ -60,3 +60,37 @@ def test_no_cost_falls_back_to_output_tokens() -> None:
 
 def test_an_empty_model_usage_map_records_nothing() -> None:
     assert spawn.parse_usage_from_json(_usage_doc({})).model is None
+
+
+def test_codex_can_write_the_summary_outside_its_workspace() -> None:
+    """codex runs `--sandbox workspace-write`, and SUMMARY_PATH is under the
+    RUNS DIR, outside the worktree. So codex could never write the summary the
+    dispatcher requires, and the dispatcher salvaged a transcript tail instead.
+
+    Measured 2026-09-04, WAL-APPEND-3. The agent had found the scaffold
+    unimplementable (every parameter it must read is the blank identifier `_`)
+    and said so: "I'm now making the required final summary write with a
+    concrete Blocked outcome and the exact deviations" -- then "the sandbox
+    rejected both attempts to write the required external summary.md path
+    because it is outside the writable worktree".
+
+    So a correct, well-reasoned DEVIATION was destroyed by a sandbox
+    permission, and survived only because the transcript happened to be
+    captured. The protocol depends on that record.
+
+    Verified against a real runs-dir path (NOT /tmp, which codex allows by
+    default -- my first probe used /tmp and wrongly cleared the sandbox).
+    """
+    from pathlib import Path as _P
+    argv = spawn._agent_argv(
+        "codex", "codex", _P("/tmp/p.txt"), _P("/tmp/wt"),
+        "gpt-5.6-sol", "prompt", "xhigh",
+        summary_dir="/home/andrew/Project/dispatcher-runs/R/KEY",
+    )
+    joined = " ".join(argv)
+    assert "sandbox_workspace_write.writable_roots" in joined, joined
+    assert "/home/andrew/Project/dispatcher-runs/R/KEY" in joined, joined
+    # Unchanged when no summary dir is supplied.
+    assert "writable_roots" not in " ".join(spawn._agent_argv(
+        "codex", "codex", _P("/tmp/p.txt"), _P("/tmp/wt"),
+        "gpt-5.6-sol", "prompt", "xhigh"))
