@@ -7719,6 +7719,62 @@ def _supported_language_refusal(path: str) -> SignatureComparison | None:
     )
 
 
+def _go_package_fingerprints(
+    repo_root, branch_ref: str, paths, *, run=None,
+) -> dict[str, dict[str, str]]:
+    """Fingerprints of every OTHER ``.go`` file in each package named by
+    ``paths``, at ``branch_ref``.
+
+    Sibling files only — the file a symbol left is not evidence that it landed
+    somewhere. Test files are excluded: a body role may not write them, so a
+    symbol "found" in one is not a move it made.
+
+    Best-effort. A package that cannot be listed or read contributes nothing,
+    which leaves the removal reported — the gate stays fail-closed, and a
+    missing read can only make it stricter.
+
+    That swallow cost an hour on 2026-09-03: the git call was built without
+    ``git`` as argv[0], every listing raised, and the empty result looked
+    exactly like correct conservative behaviour. The end-to-end seal
+    (``test_the_move_reconciliation_is_actually_called``) is what separates
+    "nothing to reconcile" from "the read never worked".
+    """
+    import os
+    out: dict[str, dict[str, str]] = {}
+    support = support_for_path("x.go")
+    if support is None:
+        return out
+    seen_dirs: set[str] = set()
+    for path in paths:
+        d = os.path.dirname(path)
+        if d in seen_dirs:
+            continue
+        seen_dirs.add(d)
+        try:
+            rc, listing, _ = _run_git_capture(
+                ["git", "ls-tree", "-r", "--name-only", branch_ref,
+                 (d + "/") if d else "."],
+                str(repo_root), run,
+            )
+        except Exception:
+            continue
+        if rc != 0:
+            continue
+        for sibling in (listing or "").split():
+            if not sibling.endswith(".go") or sibling.endswith("_test.go"):
+                continue
+            if sibling in paths:
+                continue
+            text = file_text_at(repo_root, branch_ref, sibling, run=run)
+            if text is None:
+                continue
+            try:
+                out[sibling] = support.fingerprinter.fingerprints(sibling, text)
+            except Exception:
+                continue
+    return out
+
+
 def drop_moved_go_symbols(
     changes: "tuple[SignatureChange, ...] | list[SignatureChange]",
     package_now: dict[str, dict[str, str]],
@@ -9389,6 +9445,20 @@ def _compare_branch_signatures(
         status = _worst_signature_status(status, comparison.status)
         if comparison.detail:
             details.append(comparison.detail)
+
+    # A Go symbol MOVED between files of one package is not a signature
+    # change: it redeclares nothing, compiles, and leaves every caller
+    # untouched. The per-file comparison above can only see the deletion, so
+    # the removals are reconciled against the rest of each package HERE, where
+    # every file's result is in hand (2026-09-03, WAL-LEDGER-3 split a
+    # 400-line ledger.go and blocked on four moves).
+    changes = list(drop_moved_go_symbols(
+        tuple(changes),
+        _go_package_fingerprints(
+            repo_root, branch_ref,
+            [c.path for c in changes if c.after is None], run=run,
+        ),
+    ))
 
     # The branch-wide half (W2-2). Everything this could decide is decided in
     # `branch_surface`; nothing but `RoleDiffError` crosses back.

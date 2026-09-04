@@ -59,3 +59,47 @@ def test_only_removals_are_reconciled():
     )
     package_now = {"pkg/ledger/ledger.go": {"Post": "func Post(a) error"}}
     assert len(rp.drop_moved_go_symbols(changes, package_now)) == 1
+
+
+def test_the_move_reconciliation_is_actually_called(tmp_path):
+    """END TO END through check_branch, not the helper in isolation.
+
+    `drop_moved_go_symbols` was merged (PR #93) DEFINED AND NEVER CALLED — the
+    seventh correct-but-inert change in one session. Sealing the helper
+    directly passes whatever the caller does, so this seal drives a real
+    branch: a Go file split in two, every symbol moved intact.
+    """
+    import subprocess
+    from claude_dispatcher import role_protocol as rp
+
+    def git(*a):
+        return subprocess.run(["git", *a], cwd=tmp_path, capture_output=True,
+                              text=True, check=True).stdout
+    git("init", "-q", "-b", "main"); git("config", "user.email", "t@t")
+    git("config", "user.name", "t")
+    pkg = tmp_path / "pkg" / "ledger"; pkg.mkdir(parents=True)
+    (pkg / "ledger.go").write_text(
+        "package ledger\n\n"
+        "func Post(a int) error { return nil }\n\n"
+        "func Validate(a int) error { return nil }\n", encoding="utf-8")
+    git("add", "-A"); git("commit", "-qm", "scaffold")
+    base = git("rev-parse", "HEAD").strip()
+
+    git("checkout", "-q", "-b", "bodies")
+    # The split: Post moves out verbatim, Validate stays.
+    (pkg / "ledger.go").write_text(
+        "package ledger\n\nfunc Validate(a int) error { return nil }\n",
+        encoding="utf-8")
+    (pkg / "post.go").write_text(
+        "package ledger\n\nfunc Post(a int) error { return nil }\n",
+        encoding="utf-8")
+    git("add", "-A"); git("commit", "-qm", "split the file")
+
+    res = rp.check_branch(repo_root=tmp_path, role=rp.Role.BODIES,
+                          base_ref=base, branch_ref="bodies")
+    changed = tuple(res.signature.changes) if res.signature else ()
+    moved = [c.symbol for c in changed if c.symbol == "Post"]
+    assert not moved, (
+        f"a symbol moved intact within its package was reported as changed: "
+        f"{[(c.symbol, c.path, c.after) for c in changed]}"
+    )
