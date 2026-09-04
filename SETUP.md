@@ -1,5 +1,9 @@
 # Setup — macOS (and Linux)
 
+For *how the dispatcher works* and a first trusted run, start at
+**[docs/onboarding/](docs/onboarding/README.md)**. This page is the
+fresh-machine install.
+
 Step-by-step setup for a fresh machine. Three pieces install separately:
 
 1. **`claude-workflow`** — the agent role + skill definitions the Tasker loads

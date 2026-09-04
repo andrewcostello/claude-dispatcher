@@ -23,6 +23,7 @@ get a thin worker brief — see
 
 | Doc | Role |
 |-----|------|
+| [onboarding/README.md](./onboarding/README.md) | How / why / how to use (diagrams) |
 | [contract-first-deviation-model.md](./contract-first-deviation-model.md) | Why skeleton first; deviations |
 | [templates/PRD-template.md](./templates/PRD-template.md) | Feature intent oracle |
 | [templates/planner-prompt.md](./templates/planner-prompt.md) | Paste-this prompt for a planning agent |
@@ -42,6 +43,14 @@ Produce a plan the dispatcher can execute without re-architecting mid-run:
 4. **Quality knobs** — `verify` / `panel` / `effort` / `agent` match risk.
 5. **Sanity** — dry-run plan waves look right before spending tokens.
 
+```mermaid
+flowchart LR
+  A["A. Skeleton"] --> B["B. Task graph"]
+  B --> C["C. batch_id where it earns it"]
+  C --> D["D. PRD + integration mode"]
+  D --> E["E. dry-run"]
+```
+
 Bad YAMLs waste more money than missing CLI flags. Prefer a smaller, sharper
 graph over a long wish-list of 6h mega-tasks.
 
@@ -51,7 +60,13 @@ graph over a long wish-list of 6h mega-tasks.
 
 ### When you need a real skeleton
 
-Ship a skeleton (types + state machine + data-flow + contract tests) when any of:
+For wallet / bay-session / leaderboard-shaped work, the skeleton is not a
+dispatcher task. It is the output of the **design-iteration loop** (SQL +
+decisions + conformance suite + load against the raw store) in a
+pure-design repo. See [onboarding/design-loop.md](./onboarding/design-loop.md).
+The planner starts when that folder has been memorialised.
+
+Ship a (thinner) skeleton inside `tasks.yaml` when any of:
 
 - Shared interfaces multiple tasks will implement against
 - Money / auth / settlement / irreversible side effects

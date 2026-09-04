@@ -1,8 +1,16 @@
 # claude-dispatcher
 
-Orchestrate the Tasker role across many tasks listed in a YAML file. Each task runs in an isolated Claude Code session with fresh context.
+Run a feature as a **graph of tasks** across isolated agent sessions. You
+author the graph (`tasks.yaml`); the dispatcher owns the loop — worktrees,
+dependency order, cheapest-first gates, landing, and the audit journal.
+Agents are workers: they write code in one worktree and a `summary.md`.
+They do not orchestrate.
 
-The dispatcher owns the boring lifecycle bookkeeping — timestamps, iteration counts, PR URLs, gate decisions — so the Tasker can focus on the actual work. Task YAMLs round-trip with all comments, dividers, and ordering preserved.
+New here? **[docs/onboarding/](docs/onboarding/README.md)** — how it works,
+why it works, how to use it (with diagrams). [docs/README.md](docs/README.md)
+is the map of every other doc.
+
+Task YAMLs round-trip with comments, dividers, and ordering preserved.
 
 ---
 
@@ -20,16 +28,20 @@ Requires Python 3.11+ and `ruamel.yaml`. The dispatcher invokes `claude` (for ta
 
 ---
 
-## Start here for a new project
+## Start here
 
-**[docs/new-project-setup.md](docs/new-project-setup.md)** — the shortest path from
-an empty repo to a run you can trust: `.dispatcher.yaml`, a `tasks.yaml` with role
-chains, the floor, declared holes, the known-red register, and which gate answers
-which question. This README is the CLI reference; that page is the setup guide.
+| You | Read |
+|---|---|
+| First time, any role | **[docs/onboarding/](docs/onboarding/README.md)** |
+| Wiring a product repo (`.dispatcher.yaml`, roles, known-red) | [docs/new-project-setup.md](docs/new-project-setup.md) |
+| Authoring `tasks.yaml` / a PRD | [docs/how-to-author-tasks.md](docs/how-to-author-tasks.md) |
+| Fresh machine | [SETUP.md](SETUP.md) |
+| This file | CLI reference, YAML stamps, PR-flow, failure table |
 
-Note that the sections below predate the build protocol (`role:`), so a task list
-written from the README alone gets role-less `legacy` rows — which run, but with
-none of the scaffold/seals/bodies/adjudicate enforcement.
+Note that many sections below predate the build protocol (`role:`), so a
+task list written from the README alone gets role-less `legacy` rows —
+which run, but with none of the scaffold/seals/bodies/adjudicate
+enforcement. Prefer the onboarding + new-project-setup path.
 
 ## Quick start
 
