@@ -470,7 +470,24 @@ def build_prompt(
     # 2026-09-03, WAL-LEDGER-3 renamed `c` to `credit` while moving two
     # functions and lost a whole task cycle to it.
     role_rule = ""
-    if (role or "").strip().lower() == "bodies":
+    if (role or "").strip().lower() == "scaffold":
+        # A hole stubbed with the blank identifier cannot be filled: `_` makes
+        # the value unreachable inside the function, and NAMING it is a
+        # signature change a bodies task may not make. Measured 2026-09-04 —
+        # WAL-APPEND-1 stubbed three holes as `Correct(_ context.Context, _
+        # Correction)` and WAL-APPEND-3 blocked with no commit, correctly.
+        role_rule = (
+            "\n\nNAME EVERY PARAMETER OF A HOLE YOU LEAVE.\n"
+            "A stub whose parameters are the blank identifier `_` is "
+            "UNIMPLEMENTABLE: the body task cannot read a value bound to `_`, "
+            "and naming it is a signature change that task is not allowed to "
+            "make. So `func Correct(_ context.Context, _ Correction) ...` "
+            "blocks the unit outright.\n"
+            "Name them even though your own stub does not use them — Go does "
+            "not warn on an unused parameter, and a linter that does is wrong "
+            "here. Say so in a comment if it helps."
+        )
+    elif (role or "").strip().lower() == "bodies":
         role_rule = (
             "\n\nSCAFFOLDED SIGNATURES ARE FIXED, PARAMETER NAMES INCLUDED.\n"
             "You fill bodies; you do not restyle the contract. The gate compares "
@@ -750,6 +767,7 @@ _agy_model_gate = _AgyModelGate()
 def _agent_argv(
     agent: str, bin_: str, prompt_file: Path, cwd: Path,
     model: str | None, prompt_text: str, effort: str | None = None,
+    summary_dir: str | None = None,
 ) -> list[str]:
     """Build the headless-agentic argv for a cross-family implementer CLI.
 
@@ -768,6 +786,21 @@ def _agent_argv(
         # times and its cost column held only the Claude verifier's $0.41.
         cmd = [bin_, "exec", "--json", "--sandbox", "workspace-write",
                "--skip-git-repo-check"]
+        # workspace-write permits writes inside the worktree only, and
+        # SUMMARY_PATH is under the RUNS DIR — outside it. So codex could never
+        # write the summary the dispatcher requires and a transcript tail was
+        # salvaged instead. Measured 2026-09-04: WAL-APPEND-3 found its scaffold
+        # unimplementable (every parameter it must read is `_`), said "I'm now
+        # making the required final summary write with ... the exact
+        # deviations", and then "the sandbox rejected both attempts". A correct
+        # DEVIATION was destroyed by a permission.
+        #
+        # /tmp is writable by default, so a probe there clears the sandbox
+        # wrongly — verified against a real runs-dir path: BLOCKED without this
+        # root, written with it.
+        if summary_dir:
+            cmd += ["-c",
+                    f'sandbox_workspace_write.writable_roots=["{summary_dir}"]']
         if model:
             cmd += ["--model", model]
         if effort:
@@ -959,7 +992,12 @@ def spawn_agent(
     # Claude Tasker suffix — that was the main quality gap for grok/codex/agy.
     prompt_file = summary_path.parent / f"{task_key}-{agent}-prompt.txt"
     prompt_file.write_text(prompt)
-    argv = _agent_argv(agent, bin_, prompt_file, cwd, safe_model, prompt, effort)
+    # Derived from the very env the agent is told to write to, so the writable
+    # root cannot drift from SUMMARY_PATH.
+    summary_env = env.get("SUMMARY_PATH")
+    summary_dir = str(Path(summary_env).parent) if summary_env else None
+    argv = _agent_argv(agent, bin_, prompt_file, cwd, safe_model, prompt, effort,
+                       summary_dir=summary_dir)
 
     try:
         proc = subprocess.run(

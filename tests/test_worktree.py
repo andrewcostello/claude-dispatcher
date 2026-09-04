@@ -513,3 +513,35 @@ def test_the_orchestrator_passes_the_role_to_the_brief() -> None:
         f"{len(missing)} of {len(calls)} build_prompt call sites do not pass "
         "the role, so the bodies constraint never reaches the agent"
     )
+
+
+def test_a_scaffold_brief_forbids_blank_parameters_in_holes() -> None:
+    """A scaffold that stubs a hole with `_` parameters is unimplementable.
+
+    Measured 2026-09-04. WAL-APPEND-1 wrote three stubs the bodies task had to
+    fill, each with the blank identifier:
+
+        func (c *PostgresCorrector) Correct(_ context.Context, _ Correction) ...
+
+    `_` makes the values unreachable inside the function, and NAMING them is a
+    signature change a bodies task may not make. WAL-APPEND-3 blocked with no
+    commit and was right to. The scaffold brief said nothing about it — the
+    same unstated-rule defect that cost WAL-LEDGER-3 a cycle over a rename.
+
+    Bodies were told about signatures in #95; scaffolds are the other half.
+    """
+    from claude_dispatcher import spawn
+    kw = dict(task_key="T-1", summary_path=Path("/tmp/s.md"), run_id="r",
+              max_iterations=1, financial_paths="**", task_summary="s",
+              task_type="Task", task_labels=["size:S"], agent="claude",
+              task_description="d", branch="feat/x", skip_design=True,
+              skip_security_linter=True, reviewer_count=1)
+    scaffold = spawn.build_prompt(role="scaffold", **kw).lower()
+    assert "blank" in scaffold or "_" in scaffold, scaffold[-400:]
+    assert "unimplementable" in scaffold or "cannot read" in scaffold, scaffold[-400:]
+    # Roles that write no stubs must not be told. Checked on ADJUDICATE, not
+    # bodies: bodies has a rule of its own that overwrites this one, so it
+    # masks a mutation applying the scaffold rule to everything.
+    for other in ("adjudicate", "seals", None):
+        got = spawn.build_prompt(role=other, **kw).lower()
+        assert "unimplementable" not in got, f"role={other} was told: {got[-300:]}"
