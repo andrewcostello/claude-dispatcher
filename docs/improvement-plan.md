@@ -761,6 +761,82 @@ author's absence.
 
 ---
 
+## Phase 14 — Split run state out of `tasks.yaml`
+
+**Status: proposed 2026-09-04, not started. Recommended NEXT after the current
+epic drains.** Origin: an artifact written after run state was destroyed twice
+in one session on `awevoke/slot-games` — the second time a row whose PR was
+already merged reverted to To Do and was re-dispatched (a full high-effort
+implementer run, a panel, and a redundant PR, on files that were already clean).
+
+The tasks file holds two things with two different owners. Definitions are
+authored by a human in a pull request; state is produced only by a run. Because
+both live in a git-tracked file, `git reset --hard`, `git checkout <ref> -- .`
+or `git clean` silently discards the dispatcher's memory of a live run, and
+nothing errors.
+
+**The change:** definitions stay in git; state moves to
+`<runs-dir>/state/<epic>.yaml`; a new `state.py` provides
+`load` / `update` / `merge`, where `merge` returns the combined view existing
+callers already expect. 17 modules read the tasks path and become
+`merge(load(tasks), state.load(...))`; 5 modules write it and become
+`state.update(...)`. The invariant worth asserting is that **nothing writes to
+`tasks.yaml`** — a test that runs a small epic to completion and checks the
+tasks file is byte-identical afterwards.
+
+### Corroboration from the wallet v2 epic (2026-09-04)
+
+Independent of the slot-games incident, this design cost real money and time on
+a 77-row run the same day:
+
+* The dispatcher's own write-back produced rows it would itself refuse —
+  `agent: claude` with `model: gpt-5.6-sol` — four times (WAL-CHAIN-3, then
+  SETTLE-3, EXPIRE-3 and BALANCE-3). Each died as a ~2s exit-1 that spent
+  nothing and read as a dead spawn. Two commits exist solely to hand-repair it.
+* PRs #100 and #101 are MITIGATIONS FOR SYMPTOMS OF THIS DESIGN. #100 refuses a
+  worklist whose rows contradict themselves; #101 stops the run crashing when
+  the file it validates stops validating *because the dispatcher wrote to it*.
+  Neither is needed if the dispatcher does not write to the authored file.
+* Roughly ten commits that day carry state, not work ("landed rows are Merged,
+  not Done", "repair agent/model mismatches the cascade left").
+* Every hand edit needed `yaml_io.FileLock` against the live run — the "cannot
+  edit the epic file while a run is in flight" cost, paid repeatedly.
+
+### Four refinements before building it
+
+1. **`model` is a DEFINITION; `model_used` is state.** The artifact's field list
+   puts `model` on the state side. `unblock.RUN_STATE_FIELDS` already gets this
+   right — 35 fields, `model_used` present, `model` absent — because an authored
+   pin and a cascade's choice are two different facts wearing one name. Getting
+   this backwards would let a run overwrite the operator's routing, which is
+   exactly the class of bug #99 fixed.
+
+2. **Make the state file REBUILDABLE FROM THE JOURNAL.** The journal is already
+   append-only and hash-chained (`seq`, `prev_hash`), so it — not the state
+   file — is the authority. Then "deleting the state file resets an epic to
+   unstarted" stops being an escape hatch that loses work and becomes
+   `dispatcher state rebuild`. This also settles a question the artifact leaves
+   open: adding a third store risks divergence unless one is derived.
+
+3. **Ship park/requeue commands WITH the split, not after.** Operators do park
+   and requeue rows by editing `status` by hand — 40 rows in one sitting on
+   2026-09-04. Move the field without giving that operation a command and the
+   two-writer problem simply moves to the new file, where it is harder to see
+   because it is no longer in a diff.
+
+4. **Key state by repo AND epic.** The artifact offers "or accept that a
+   runs-dir belongs to one repo". That is already false here: this runs-dir
+   holds evenplay-mono wallet runs alongside dogfood, bakeoff and convergence
+   runs (`BK-*`, `CV-*`, `CX-*`, `GO-*`, `W2-*`, `TSP-*`). Take the stricter
+   option.
+
+### Sizing
+
+Mechanical but wide: 17 read sites, 5 write sites, one new module, a migration
+path, and one seal. The migration must NOT rewrite the tracked file
+automatically — print the diff and let a human commit it, since automatic
+rewriting is the behaviour being removed.
+
 ## Sequencing & dependencies
 
 ```
