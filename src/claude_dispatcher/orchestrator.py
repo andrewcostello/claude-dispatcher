@@ -1389,6 +1389,7 @@ def _run_task(
         skip_security_linter=cfg.skip_security_linter,
         reviewer_count=cfg.reviewer_count,
         claude_config_dir=_account_for_task(cfg, snap.key, log_path),
+        jira_key=getattr(snap, "jira_key", None),
     )
     # Snapshot base_branch's tip SHA BEFORE any cascade spawn. Discriminator
     # for the direct-to-base workflow (see _has_commits_on_branch).

@@ -551,6 +551,7 @@ def build_env(
     skip_security_linter: bool = False,
     reviewer_count: int | None = None,
     claude_config_dir: str | None = None,
+    jira_key: str | None = None,
 ) -> dict[str, str]:
     """Construct the env dict the Claude subprocess inherits.
 
@@ -560,6 +561,12 @@ def build_env(
     """
     env = dict(base_env if base_env is not None else os.environ)
     env["TASK_KEY"] = task_key
+    # Carried like TASK_KEY because the dispatcher's FALLBACK commit needs it
+    # too, and that commit is made deep inside `spawn_agent`, which knows only
+    # the env. Threading a parameter would have fixed one call site; this fixes
+    # the one place the key is read.
+    if jira_key and jira_key.strip():
+        env["JIRA_KEY"] = jira_key.strip()
     env["SUMMARY_PATH"] = str(summary_path)
     env["DISPATCHER_RUN_ID"] = run_id
     env["MAX_ITERATIONS"] = str(max_iterations)
@@ -1043,7 +1050,16 @@ def spawn_agent(
         out = (e.stdout.decode() if isinstance(e.stdout, bytes) else (e.stdout or ""))
         err = f"timeout after {timeout_seconds}s"
 
-    committed = _autocommit_worktree(cwd, task_key, agent)
+    # WAS MISSING, and the omission was invisible: `_autocommit_message` has a
+    # jira_key parameter, `_autocommit_worktree` forwards it, and the docstring
+    # says the fallback commit "has to satisfy the same CI gate the agents'
+    # commits do" -- but this, the only call site, never passed one. So every
+    # auto-committed task produced `[KEY] <agent> implementation` with no
+    # `Jira:` trailer and reddened evenplay-mono's check-jira-keys gate.
+    # Measured 2026-09-04 on the four keystone wallet PRs (#1565-#1568), all
+    # four red on it, blocking 38 dependent rows.
+    committed = _autocommit_worktree(
+        cwd, task_key, agent, env.get("JIRA_KEY") or None)
     if not summary_path.exists():
         _write_synthetic_summary(summary_path, task_key, agent, rc, out, committed)
 
