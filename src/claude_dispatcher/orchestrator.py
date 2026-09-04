@@ -1868,7 +1868,15 @@ def _run_task(
             _log(log_path, f"  {snap.key} role loop gate base: {gate_base_reason}")
         role_loop = loop_gate_mod.check_after_implementer(
             enabled=bool(getattr(cfg, "enable_role_loop_gate", False)),
-            repo_root=repo_root,
+            # The WORKTREE, not the main checkout. The reachability sweep reads
+            # a DIRECTORY and needs `branch_ref` materialised as HEAD; the main
+            # checkout sits on the tasks branch, so passing it guaranteed
+            # UNCHECKED_HEAD_NOT_CHECKED_OUT and the gate blocked every task on
+            # a state that says "I could not look" (2026-09-03, WAL-LEDGER-3's
+            # sixth block, after deny_globs and signatures both passed). A
+            # worktree shares the object store, so blob reads are unaffected —
+            # it is the only tree where both halves can run.
+            repo_root=wt.path,
             base_branch=cfg.base_branch,
             branch_ref=wt.branch,
             pre_spawn_sha=gate_base_sha,
