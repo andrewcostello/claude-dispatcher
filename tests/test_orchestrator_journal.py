@@ -674,3 +674,65 @@ def test_a_cascaded_agent_is_stamped_as_the_cascades_choice() -> None:
     # Only when it actually differs from the author's — an author's own agent
     # carries no stamp and must survive success.
     assert re.search(r"if planned_agent and a != planned_agent:", block), block[-400:]
+
+
+def test_a_cross_family_cascade_drops_the_previous_familys_model() -> None:
+    """A model id belongs to ONE family. Carrying it across a family change
+    hands the new CLI an id it rejects.
+
+    Measured 2026-09-04, WAL-CHAIN-3. Cascade went codex@max -> claude@high
+    while `model` stayed `gpt-5.6-sol`, so the claude CLI was invoked with
+    codex's model. The spawn died in 952ms: exit_code 1, 0 input tokens, 0
+    output tokens, $0.00 -- it never ran a turn. The dispatcher read that as
+    "panel-iterate spawn failed" and left the task Blocked.
+
+    Its verifier had said VERIFIED with 0 gaps sixteen minutes earlier, so the
+    work was sound and the block was entirely this bug. Every cross-family
+    cascade has the same dead rung; WAL-LEDGER-3 escaped only by landing at
+    codex@max before reaching a claude rung.
+
+    Cleared rather than remapped: the cascade carries (agent, effort) and no
+    per-family model table exists, so None is the honest answer -- it lets the
+    new family's own default apply instead of inventing a mapping here.
+    """
+    from claude_dispatcher import orchestrator as orch
+    # Cross-family: the new family's OWN model, not the old one and not None.
+    # Operator ruling 2026-09-04 — fable "was performing well", and it wrote
+    # every scaffold and seal that passed. None would mean "inherit whatever
+    # the CLI defaults to", which is invisible in a run report and is what put
+    # an epic at ~$72/task in July 2026.
+    assert orch._model_for_cascade_rung("codex", "claude", "gpt-5.6-sol") \
+        == "claude-fable-5-1", "a claude rung runs fable, not codex's model"
+    assert orch._model_for_cascade_rung("grok", "claude", "grok-4.6") \
+        == "claude-fable-5-1"
+    assert orch._model_for_cascade_rung("claude", "codex", "claude-fable-5-1") \
+        == "gpt-5.6-sol"
+    # Same family: the pin is the operator's and must be kept.
+    assert orch._model_for_cascade_rung(
+        "codex", "codex", "gpt-5.6-sol") == "gpt-5.6-sol"
+    assert orch._model_for_cascade_rung("claude", "claude", "claude-opus-5") \
+        == "claude-opus-5"
+    # Every mapped model is inside the financial set: fable, sol, grok.
+    for fam, want in orch.CASCADE_FAMILY_MODEL.items():
+        assert any(x in want for x in ("fable", "sol", "grok")), (fam, want)
+
+
+
+def test_the_cascade_actually_applies_the_family_model() -> None:
+    """WIRING, sealed separately. Deleting `model=` from the cascade's
+    `replace(...)` survived the helper's own seal — the same correct-but-inert
+    shape as PR #93. The rung then keeps the previous family's model and dies
+    in under a second."""
+    import inspect, re
+    from claude_dispatcher import orchestrator as orch
+    src = inspect.getsource(orch)
+    # There is more than one `snap = replace(...)`; the CASCADE one is the one
+    # that sets agent=used_agent. Matching the first blindly picked the design
+    # stage's call and passed whatever the cascade did.
+    calls = [c for c in re.findall(r"snap = replace\(\n(.*?)\n\s*\)", src,
+                                   re.DOTALL) if "agent=used_agent" in c]
+    assert len(calls) == 1, f"expected one cascade replace(), found {len(calls)}"
+    assert "_model_for_cascade_rung" in calls[0], (
+        "the cascade must recompute the model for the rung it moves to; "
+        f"got:\n{calls[0]}"
+    )
