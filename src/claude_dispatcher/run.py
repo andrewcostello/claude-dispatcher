@@ -88,6 +88,43 @@ def execute(args: argparse.Namespace) -> int:
     return orchestrator.execute(args)
 
 
+def _dry_run_integration(args: argparse.Namespace, tasks_path: Path) -> str:
+    """The integration mode this run WOULD use.
+
+    Reads the repo config from the tasks file's own repository rather than the
+    process cwd: a worklist is routinely dispatched from elsewhere, and reading
+    the wrong repo's config is how a preview silently disagrees with the run.
+
+    Fails soft to the CLI flag (then "branch"): a malformed or missing
+    `.dispatcher.yaml` must not stop a preview, which spends nothing.
+    """
+    cli_mode = getattr(args, "integration", None)
+    if cli_mode:
+        return str(cli_mode)
+    try:
+        from . import repo_config as repo_config_mod
+        root = _repo_root_of(tasks_path)
+        return str(repo_config_mod.load(root).integration or "branch")
+    except Exception:  # noqa: BLE001 - a preview never fails on config
+        return "branch"
+
+
+def _repo_root_of(tasks_path: Path) -> Path:
+    """The git root containing `tasks_path`, or its parent directory."""
+    import subprocess
+    start = tasks_path.parent if tasks_path.is_file() else tasks_path
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, check=False, timeout=30,
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            return Path(out.stdout.strip())
+    except Exception:  # noqa: BLE001
+        pass
+    return start
+
+
 def _dry_run(
     args: argparse.Namespace,
     all_tasks: list[plan_mod.Task],
@@ -103,7 +140,18 @@ def _dry_run(
     filtered-out dependency.
     """
     waves = plan_mod.plan_waves(all_tasks)
-    runnable_first = plan_mod.runnable_now(all_tasks)
+    # The mode decides DISPATCH ORDERING, so a preview that omits it previews a
+    # different run. Same precedence as orchestrator.execute: CLI flag, then
+    # `.dispatcher.yaml integration:`, then branch.
+    #
+    # Measured 2026-09-04 on the 77-row wallet worklist, whose repo config sets
+    # `integration: pr`: the preview reported 2 runnable and 48 "waiting on
+    # dependency" while the run itself would dispatch 10 — every bodies row
+    # whose seals are Merged. A preview used to decide whether to spend money
+    # cannot be wrong in the direction of "there is nothing to do".
+    runnable_first = plan_mod.runnable_now(
+        all_tasks, integration=_dry_run_integration(args, tasks_path),
+    )
 
     selected_keys = {t.key for t in selected}
     runnable_keys = {t.key for t in runnable_first}
