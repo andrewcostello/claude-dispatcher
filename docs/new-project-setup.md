@@ -1,8 +1,10 @@
 # Using the dispatcher on a new project
 
-Start here. `README.md` is the CLI reference and `how-to-author-tasks.md` is the
-planner's guide; this page is the shortest path from an empty repo to a run you
-can trust, and it covers the build protocol those two predate.
+Conceptual first read: **[onboarding/](./onboarding/README.md)** (how / why /
+how to use, with diagrams). `README.md` is the CLI reference and
+`how-to-author-tasks.md` is the planner's guide; this page is the shortest
+path from an empty repo to a **configured** run you can trust, and it
+covers the build protocol those two predate.
 
 Everything below is measured against the code at `feat/D1-role-protocol`, not
 remembered. Where a number appears (20 floor globs, 13 deny globs) it is printed

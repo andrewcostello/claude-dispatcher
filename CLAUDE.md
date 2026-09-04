@@ -3,6 +3,9 @@
 This file provides guidance for Claude (and dispatched agents) working in this
 repository and running dispatched work through it.
 
+Humans (and agents) onboarding the *system*: start at
+`docs/onboarding/README.md`. Map of the rest: `docs/README.md`.
+
 ---
 
 ## EXPERIMENT (2026-06-18): contract-first decomposition with audited deviations

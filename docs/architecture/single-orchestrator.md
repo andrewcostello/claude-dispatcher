@@ -3,6 +3,8 @@
 Under `dispatcher run`, the **dispatcher is the only orchestrator**. Agents
 are **workers**.
 
+Diagrams of the loop this rule sits in: [../onboarding/how-it-works.md](../onboarding/how-it-works.md).
+
 ## Rule
 
 | Job | Owner |
@@ -40,3 +42,16 @@ Stacking Tasker under the dispatcher creates two orchestrators, double review
 risk, and unfair comparisons (Claude “thick” path vs Grok thin path). Quality
 for batch work belongs in mechanical gates, verifier, and panel — not in
 re-implementing Tasker inside the model.
+
+```mermaid
+flowchart LR
+  subgraph ok["dispatcher run"]
+    D["Dispatcher"] --> I["Implementer worker"]
+    D --> G["Gates / panel / PR"]
+  end
+
+  subgraph bad["do not stack"]
+    D2["Dispatcher"] --> T["Tasker-in-session"]
+    T --> I2["nested agents"]
+  end
+```

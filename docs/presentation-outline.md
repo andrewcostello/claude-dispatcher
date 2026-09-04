@@ -1,5 +1,7 @@
 # Claude for Development — Best Practices + The Dispatcher
 
+Written onboarding (diagrams, not slides): [onboarding/](./onboarding/README.md).
+
 Presentation outline. Two parts that stand on their own:
 
 1. **A fair walkthrough of how people get great results with Claude** — the
