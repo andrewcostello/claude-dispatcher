@@ -804,6 +804,22 @@ a 77-row run the same day:
 
 ### Four refinements before building it
 
+0. **`jira_key` is a DEFINITION — ruled 2026-09-04.** It is the
+   project-management key, it belongs in every pull request, and release notes
+   are built from it (`tools/release-notes` in evenplay-mono greps commit
+   subject + body via `HasJiraKey`). It is authored work, not run output, so it
+   stays in git. The consequence must be stated rather than avoided:
+   `forecast_bridge.create_missing_tickets` becomes the ONE sanctioned writer
+   of `tasks.yaml`, and the invariant names it and scopes it to the tracker-key
+   fields. An unnamed exception voids "nothing writes tasks.yaml"; a
+   field-scoped one is checkable, and ST-3 seals both halves.
+
+   Worth recording because the dispatcher was violating this requirement until
+   PR #104 the same morning: its FALLBACK commit carried the task key but no
+   `Jira:` trailer, so every auto-committed task was invisible to release
+   notes and reddened evenplay-mono's `check-jira-keys` gate — including all
+   four keystone wallet PRs.
+
 1. **`model` is a DEFINITION; `model_used` is state.** The artifact's field list
    puts `model` on the state side. `unblock.RUN_STATE_FIELDS` already gets this
    right — 35 fields, `model_used` present, `model` absent — because an authored
@@ -829,6 +845,25 @@ a 77-row run the same day:
    holds evenplay-mono wallet runs alongside dogfood, bakeoff and convergence
    runs (`BK-*`, `CV-*`, `CX-*`, `GO-*`, `W2-*`, `TSP-*`). Take the stricter
    option.
+
+### Interaction with a second tracker (YouTrack)
+
+The dispatcher treats the tracker key as an OPAQUE STRING — measured
+2026-09-04: no regex, no parsing, no format assumption in any code path, only
+in docstrings. Coupling is 5 modules / 55 references, all of it threading a
+string into branch names, PR titles and commit trailers. The single
+tracker-specific call is `forecast_bridge` shelling out to `forecast jira
+create`; the YouTrack backend itself is a `forecast` change (22 Go files
+mention jira, none mention youtrack).
+
+So supporting YouTrack needs a tracker-neutral FIELD NAME, and that touches the
+same seam as refinement 0. Use the pattern this module already uses for
+dependencies: canonical `tracker_key` with `jira_key` an accepted alias, both
+present is an error, and a near-miss spelling is an ERROR rather than a
+silently-ignored no-op (`_DEP_FIELD_CANONICAL` / `_DEP_FIELD_ALIASES`, which
+exist because a silently-ignored `depends_on` once voided a whole worklist's
+ordering). Do NOT rename in two places at once: ST-3 rules on the field, then
+the tracker work lands on settled ground.
 
 ### Worklist
 

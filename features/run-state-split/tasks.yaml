@@ -98,12 +98,17 @@ tasks:
            Each becomes a `state.update(...)`.
         2. `doctor.py` also dumps YAML, but to the machine profile, not the
            tasks file. Leave it alone.
-        3. `forecast_bridge.create_missing_tickets` writes `jira_key` back —
-           decide and state which side that is. A minted ticket id is
-           authored-once and belongs in the PR, so it is a DEFINITION; the
-           bridge is then the one sanctioned writer of the tracked file and
-           must say so out loud, or it moves to state and the PR loses the id.
-           Do not leave this undecided.
+        3. `jira_key` IS A DEFINITION. Ruled by the operator 2026-09-04: it is
+           the project-management key, it belongs in every PR, and release
+           notes are built from it. It is authored work, not run output, so it
+           stays in the git-tracked file.
+
+           That makes `forecast_bridge.create_missing_tickets` THE ONE
+           SANCTIONED WRITER of tasks.yaml, and the invariant has to name it
+           rather than pretend it does not exist. Name it and SCOPE it: the
+           seal in Acceptance asserts nothing else writes the file AND that the
+           bridge writes only the tracker-key fields. An unnamed exception
+           voids the invariant; a field-scoped one is checkable.
 
       Out of scope:
         - The migration of existing worklists (ST-4).
@@ -114,8 +119,12 @@ tasks:
           asserts `tasks.yaml` is byte-identical to what it was before the run.
           This is the whole change expressed as a check that can fail.
         - A seal that no `yaml_io.dump` in `src/claude_dispatcher/` targets a
-          tasks path, with the `forecast_bridge` decision from scope item 3
-          recorded as an explicit, named exception if that is the ruling.
+          tasks path, with exactly ONE named exception:
+          `forecast_bridge.create_missing_tickets`.
+        - A seal that the exception is FIELD-SCOPED: minting keys against a
+          fixture worklist changes only the tracker-key fields and leaves every
+          other byte of tasks.yaml identical. "One writer" is worth nothing if
+          that writer may rewrite anything.
     type: Task
     estimate: 6h
     labels: [size:M, area:state, risk:critical, phase:run-state-split]
