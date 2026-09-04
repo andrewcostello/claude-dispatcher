@@ -691,9 +691,9 @@ def test_a_cross_family_cascade_drops_the_previous_familys_model() -> None:
     cascade has the same dead rung; WAL-LEDGER-3 escaped only by landing at
     codex@max before reaching a claude rung.
 
-    Cleared rather than remapped: the cascade carries (agent, effort) and no
-    per-family model table exists, so None is the honest answer -- it lets the
-    new family's own default apply instead of inventing a mapping here.
+    Remapped, not cleared: None would mean "inherit whatever the CLI defaults
+    to", which no run report shows -- the invisible-default trap. The map lives
+    in `quality_levels` so `plan`'s declared-floor check reads it too.
     """
     from claude_dispatcher import orchestrator as orch
     # Cross-family: the new family's OWN model, not the old one and not None.
@@ -712,9 +712,17 @@ def test_a_cross_family_cascade_drops_the_previous_familys_model() -> None:
         "codex", "codex", "gpt-5.6-sol") == "gpt-5.6-sol"
     assert orch._model_for_cascade_rung("claude", "claude", "claude-opus-5") \
         == "claude-opus-5"
-    # Every mapped model is inside the financial set: fable, sol, grok.
+    # The floor is "nothing BELOW Opus" -- Opus is IN (operator correction,
+    # 2026-09-04; my first reading excluded it and rewrote ten Opus pins down
+    # to fable). Substring matching is deliberately gone: "sol" matches any id
+    # containing it, so the old check would have passed a model named
+    # "console-mini". Exact ids, and the run-level enforcement of this rule now
+    # lives in plan.model_floor rather than in a comment.
+    financial_floor = {
+        "claude-opus-5", "claude-fable-5-1", "gpt-5.6-sol", "grok-4.6",
+    }
     for fam, want in orch.CASCADE_FAMILY_MODEL.items():
-        assert any(x in want for x in ("fable", "sol", "grok")), (fam, want)
+        assert want in financial_floor, (fam, want)
 
 
 

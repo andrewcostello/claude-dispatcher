@@ -5413,20 +5413,11 @@ def _record_panel_findings(
         _log(log_path, f"  {task_key} findings not recorded: {exc}")
 
 
-#: The model each family runs when a cascade moves ONTO it. A model id belongs
-#: to one family, so the previous rung's id cannot travel; and None would mean
-#: "inherit whatever the CLI defaults to", which is invisible in a run report
-#: and is what put an epic at ~$72/task in July 2026.
-#:
-#: Operator ruling 2026-09-04: claude runs FABLE here — "we should be able to
-#: use claude with Fable, it was performing well" — and it did write every
-#: scaffold and seal that passed. Every entry is inside the financial set
-#: (fable / sol / grok), so a cascade cannot walk out of that rule.
-CASCADE_FAMILY_MODEL: dict[str, str] = {
-    "claude": "claude-fable-5-1",
-    "codex": "gpt-5.6-sol",
-    "grok": "grok-4.6",
-}
+#: The cascade's per-family model map. Relocated to `quality_levels` so
+#: `plan`'s declared-floor check can read it without importing this
+#: 5,000-line module inside a validator; re-exported because the cascade
+#: is this module's concern.
+CASCADE_FAMILY_MODEL = ql_mod.CASCADE_FAMILY_MODEL
 
 
 def _model_for_cascade_rung(

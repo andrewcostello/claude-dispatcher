@@ -184,3 +184,21 @@ def resolve_quality_levels(
         source = "task"
 
     return QualityLevels(verify=verify, panel=panel, source=source)
+
+
+#: The model a cascade rung runs when it changes FAMILY. A model id belongs to
+#: one family, so carrying the old family's id across hands the new CLI an id
+#: it rejects — measured on WAL-CHAIN-3, a 952ms exit-1 spending $0.00.
+#:
+#: Lives here rather than in `orchestrator` so `plan`'s floor check can read it
+#: without importing a 5,000-line module inside a validator.
+#:
+#: Operator ruling 2026-09-04, corrected: the financial floor is "nothing BELOW
+#: Opus" — Opus itself is in. Fable is the claude entry because it was
+#: performing well and wrote every scaffold and seal that passed; both it and
+#: Opus clear the floor, so this is a choice among equals, not a ceiling.
+CASCADE_FAMILY_MODEL: dict[str, str] = {
+    "claude": "claude-fable-5-1",
+    "codex": "gpt-5.6-sol",
+    "grok": "grok-4.6",
+}

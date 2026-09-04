@@ -296,3 +296,130 @@ def test_dependency_field_conflict_rejected():
     import claude_dispatcher.plan as plan_mod
     with pytest.raises(plan_mod.ValidationError):
         plan_mod.load_tasks(_dep_alias_doc({"blockedBy": ["A"], "depends_on": ["A"]}))
+
+
+# --- declared model floor ---------------------------------------------------
+#
+# Operator ruling 2026-09-04, as corrected: the financial floor is "nothing
+# BELOW Opus" — Opus itself is in. My first reading of it excluded Opus and
+# rewrote ten Opus pins down to fable in the wallet worklist. What made that
+# silent is that the rule existed only as a comment and a three-entry seal on
+# the cascade map: nothing read it at load. Haiku scaffolds already cost 32
+# rounds of self-consistency repair on the go dogfood under the same absence.
+
+def _floored(tasks_block: str, allow: str, reason: str = "financial") -> object:
+    import io
+    from ruamel.yaml import YAML
+    y = YAML(typ="rt")
+    return y.load(io.StringIO(
+        f"model_floor:\n  reason: {reason}\n  allow: {allow}\n"
+        "tasks:\n" + tasks_block
+    ))
+
+
+_ROW = (
+    "  - key: A\n"
+    "    summary: x\n"
+    "    description: y\n"
+    "    type: Task\n"
+    "    labels: [size:S]\n"
+)
+_ALL = "[claude-opus-5, claude-fable-5-1, gpt-5.6-sol, grok-4.6]"
+
+
+def test_a_row_inside_the_declared_floor_loads() -> None:
+    """Opus is INSIDE the floor -- the point of the correction. A floor that
+    refused the very model it names as its bar would be the same bug again."""
+    doc = _floored(_ROW + "    model: claude-opus-5\n", _ALL)
+    assert [t.model for t in plan.load_tasks(doc)] == ["claude-opus-5"]
+
+
+def test_a_row_below_the_declared_floor_is_refused() -> None:
+    doc = _floored(_ROW + "    model: claude-haiku-4-5-20251001\n", _ALL)
+    with pytest.raises(plan.ValidationError, match="outside this run's declared"):
+        plan.load_tasks(doc)
+
+
+def test_an_unpinned_row_is_refused_under_a_declared_floor() -> None:
+    """No `model:` means the family CLI's default applies, which no run report
+    shows -- the invisible-default trap that put an epic at ~$72/task. A floor
+    is a claim about spend, so it cannot hold over a model nobody stated."""
+    doc = _floored(_ROW, _ALL)
+    with pytest.raises(plan.ValidationError, match="pins no model"):
+        plan.load_tasks(doc)
+
+
+def test_a_floor_the_cascade_could_step_outside_is_refused() -> None:
+    """The cascade REWRITES the model on a family change, so checking only the
+    authored rows leaves a floor the run can walk out of at rung two."""
+    doc = _floored(_ROW + "    model: claude-opus-5\n", "[claude-opus-5]")
+    with pytest.raises(plan.ValidationError, match="cross-family cascade"):
+        plan.load_tasks(doc)
+
+
+def test_no_declared_floor_means_no_check() -> None:
+    """Every worklist that predates the floor must keep loading, and a dogfood
+    run legitimately spends a cheap model. A floor is opt-in per run."""
+    import io
+    from ruamel.yaml import YAML
+    doc = YAML(typ="rt").load(io.StringIO(
+        "tasks:\n" + _ROW + "    model: claude-haiku-4-5-20251001\n"))
+    assert len(plan.load_tasks(doc)) == 1
+
+
+def test_an_empty_allow_list_is_a_config_error_not_an_open_floor() -> None:
+    """`allow: []` reads as "nothing is permitted"; treating it as "no floor"
+    would silently disable the check that was explicitly asked for."""
+    doc = _floored(_ROW + "    model: claude-opus-5\n", "[]")
+    with pytest.raises(plan.ValidationError, match="declares no 'allow'"):
+        plan.load_tasks(doc)
+
+
+def test_floor_defects_merge_with_the_other_worklist_defects() -> None:
+    """One raise site, so an author fixes routing AND structure in one round
+    trip -- and so the floor cannot be reported as a role-protocol failure."""
+    doc = _floored(
+        _ROW + "    model: claude-haiku-4-5-20251001\n"
+        "  - key: B\n    summary: x\n    description: y\n    type: Task\n"
+        "    labels: [size:S]\n    model: claude-sonnet-5\n", _ALL)
+    with pytest.raises(plan.ValidationError) as exc:
+        plan.load_tasks(doc)
+    msg = str(exc.value)
+    assert "A pins model" in msg and "B pins model" in msg, msg
+    assert "role check" not in msg, "floor defects are not role-protocol errors"
+
+
+# --- agent/model family agreement -------------------------------------------
+
+def _routed(agent: str, model: str) -> object:
+    import io
+    from ruamel.yaml import YAML
+    return YAML(typ="rt").load(io.StringIO(
+        "tasks:\n" + _ROW + f"    agent: {agent}\n    model: {model}\n"))
+
+
+def test_a_cross_family_agent_model_pair_is_refused() -> None:
+    """The pair that killed WAL-CHAIN-3: claude holding codex's model id. The
+    spawn exits 1 in under a second having spent $0.00 and run no turn, which
+    the dispatcher can only report as a dead spawn."""
+    with pytest.raises(plan.ValidationError, match="belongs to the 'codex' family"):
+        plan.load_tasks(_routed("claude", "gpt-5.6-sol"))
+
+
+def test_a_matching_agent_model_pair_loads() -> None:
+    for agent, model in (("claude", "claude-opus-5"), ("codex", "gpt-5.6-sol"),
+                         ("grok", "grok-4.6")):
+        assert len(plan.load_tasks(_routed(agent, model))) == 1, (agent, model)
+
+
+def test_an_unrecognised_model_prefix_is_not_a_defect() -> None:
+    """A new model must be routable the day it exists. Refusing ids this table
+    does not know would make the table a gate on every future model -- the
+    KNOWN_EFFORTS mistake, which silently downgraded every codex row."""
+    assert len(plan.load_tasks(_routed("claude", "some-unreleased-model"))) == 1
+
+
+def test_a_bracketed_context_variant_still_matches_its_family() -> None:
+    """`claude-opus-5[1m]` is a real pin in the wallet worklist; a prefix test
+    that tripped over the suffix would refuse a correct row."""
+    assert len(plan.load_tasks(_routed("claude", "claude-opus-5[1m]"))) == 1
