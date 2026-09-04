@@ -16,7 +16,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
-from .quality_levels import KNOWN_PANEL, KNOWN_VERIFY
+from .quality_levels import CASCADE_FAMILY_MODEL, KNOWN_PANEL, KNOWN_VERIFY
 
 TODO = "To Do"
 IN_PROGRESS = "In Progress"
@@ -305,13 +305,164 @@ def load_tasks(doc: Any) -> list[Task]:
     # exclude rows whose parse failed; each of those carries its own ROW
     # error above, which is why the exclusion masks nothing.
     batch_defects = batch_coherence_mod.batch_errors(tasks, validation.specs)
-    if validation.errors or batch_defects:
-        merged = list(validation.errors) + [d.message for d in batch_defects]
+    # A declared capability floor joins the same raise: a worklist that both
+    # breaks phase order and routes below its floor should report both.
+    floor = model_floor(doc)
+    floor_defects = _model_floor_errors(floor, tasks) if floor else []
+    # Unlike the floor, this one is unconditional: a cross-family (agent, model)
+    # pair is never intentional, so there is nothing for a run to declare.
+    mismatches = _agent_model_mismatches(tasks)
+    if validation.errors or batch_defects or floor_defects or mismatches:
+        merged = (list(validation.errors)
+                  + [d.message for d in batch_defects]
+                  + floor_defects + mismatches)
         raise ValidationError(
-            "the build-protocol role check refused this worklist "
+            "this worklist was refused "
             f"({len(merged)} error(s)):\n  - " + "\n  - ".join(merged)
         )
     return tasks
+
+
+#: Which family owns a model-id prefix. A model id belongs to exactly ONE
+#: family, so an (agent, model) pair from different families is a config error
+#: the CLI can only report as a rejection.
+#:
+#: Deliberately partial: an id matching no prefix is NOT a defect. A new model
+#: must be routable the day it exists, and refusing unknown ids here would make
+#: this table a gate on every future one.
+_MODEL_FAMILY_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("claude-", "claude"),
+    ("gpt-", "codex"),
+    ("o3", "codex"),
+    ("o4", "codex"),
+    ("grok-", "grok"),
+    ("gemini-", "gemini"),
+    ("kimi-", "kimi"),
+    ("glm-", "glm"),
+    ("deepseek-", "deepseek"),
+)
+
+
+def model_family(model: str | None) -> str | None:
+    """The family that owns `model`, or None when no prefix claims it."""
+    if not model:
+        return None
+    lowered = model.strip().lower()
+    for prefix, family in _MODEL_FAMILY_PREFIXES:
+        if lowered.startswith(prefix):
+            return family
+    return None
+
+
+def _agent_model_mismatches(tasks: list[Task]) -> list[str]:
+    """Rows whose `agent` and `model` belong to different families.
+
+    Measured 2026-09-04, WAL-CHAIN-3: the cascade moved codex@max -> claude@high
+    and left `model: gpt-5.6-sol` in place, so the claude CLI was handed codex's
+    id. The spawn exited 1 in 952ms having spent $0.00 and run no turn, and the
+    dispatcher read that as a failed spawn and Blocked the task -- sixteen
+    minutes after its own verifier said VERIFIED with 0 gaps.
+
+    The cascade no longer creates the pair, but a worklist can still carry one:
+    the same run needed a hand-repair commit ("repair agent/model mismatches the
+    cascade left") for rows already written to YAML. Refusing at load makes that
+    unshippable, and costs nothing when the prefix is unrecognised.
+    """
+    errors: list[str] = []
+    for task in tasks:
+        family = model_family(task.model)
+        if family is None or task.agent is None or family == task.agent:
+            continue
+        errors.append(
+            f"{task.key} routes agent {task.agent!r} to model {task.model!r}, "
+            f"which belongs to the {family!r} family; the {task.agent!r} CLI "
+            f"rejects it in under a second, spending nothing and looking like "
+            f"a dead spawn"
+        )
+    return errors
+
+
+def model_floor(doc: Any) -> tuple[frozenset[str], str] | None:
+    """The run's declared model allow-list, or None when it declares none.
+
+    A capability floor is a per-RUN property, not a dispatcher-wide constant: a
+    dogfood run legitimately spends haiku, and a financial run legitimately
+    refuses it. So the run declares its own set and this module enforces it.
+
+    Absent key -> no check, so every existing worklist keeps loading.
+    """
+    if not isinstance(doc, dict) or "model_floor" not in doc:
+        return None
+    val = doc["model_floor"]
+    if val is None:
+        return None
+    if not isinstance(val, dict):
+        raise ValidationError(
+            "'model_floor' must be a mapping with an 'allow' list, got "
+            f"{type(val).__name__}: {val!r}"
+        )
+    allow = _as_str_list(val.get("allow"))
+    if not allow:
+        raise ValidationError(
+            "'model_floor' declares no 'allow' models; remove the key to run "
+            "without a floor rather than declaring an empty one"
+        )
+    reason = str(val.get("reason") or "").strip()
+    return frozenset(allow), reason
+
+
+def _model_floor_errors(
+    floor: tuple[frozenset[str], str], tasks: list[Task],
+) -> list[str]:
+    """Every way this worklist could spend a model outside its declared floor.
+
+    Two routes out of the floor, and only the first is obvious:
+
+    1. A row pins a model below it. An UNPINNED row is the same defect: no
+       `model:` means the family CLI's own default applies, which is invisible
+       in a run report and is what put an epic at ~$72/task in July 2026. A
+       declared floor is a claim about what the run spends, so it cannot hold
+       over rows whose model nobody stated.
+    2. The CASCADE rewrites the model when it changes family, so a floor the
+       cascade can step outside is not a floor. Checked against the map rather
+       than clamped at cascade time: failing at load is one edit, while
+       silently substituting a model mid-run hides the misconfiguration in the
+       place it costs most.
+
+    Returns messages rather than raising so they merge into the single
+    ValidationError at the end of `load_tasks` — one round trip per author.
+    """
+    allow, reason = floor
+    because = f" ({reason})" if reason else ""
+    errors: list[str] = []
+    for task in tasks:
+        if task.model is None:
+            errors.append(
+                f"{task.key} pins no model, but this run declares a "
+                f"model_floor{because}; an unpinned row runs the CLI default, "
+                f"which the floor cannot vouch for. Pin one of: "
+                f"{', '.join(sorted(allow))}"
+            )
+        elif task.model not in allow:
+            errors.append(
+                f"{task.key} pins model {task.model!r}, outside this run's "
+                f"declared model_floor{because}. Allowed: "
+                f"{', '.join(sorted(allow))}"
+            )
+    outside = {
+        family: model
+        for family, model in CASCADE_FAMILY_MODEL.items()
+        if model not in allow
+    }
+    if outside:
+        named = ", ".join(f"{f} -> {m}" for f, m in sorted(outside.items()))
+        errors.append(
+            f"the cross-family cascade would run a model outside this run's "
+            f"declared model_floor{because}: {named}. A cascade rung that "
+            f"leaves the floor makes the floor advisory; add the model to "
+            f"'allow' or change CASCADE_FAMILY_MODEL"
+        )
+    return errors
 
 
 def feature_prd(doc: Any) -> str | None:
