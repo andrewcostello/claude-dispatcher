@@ -1791,7 +1791,11 @@ def _run_task(
                 if planned_agent and a != planned_agent:
                     row[AGENT_ESCALATED_STAMP] = True
             _mutate_row(cfg, snap.batch_keys or snap.key, _stamp_agent_effort)
-            snap = replace(snap, agent=used_agent, effort=used_effort)
+            snap = replace(
+                snap, agent=used_agent, effort=used_effort,
+                model=_model_for_cascade_rung(
+                    snap.agent, used_agent, snap.model),
+            )
 
         s = summary_mod.parse(result.summary_path)
         _emit_event(cfg, journal_mod.EventType.summary_parsed,
@@ -5407,6 +5411,48 @@ def _record_panel_findings(
                  f"dependents at {written}")
     except Exception as exc:  # noqa: BLE001 - context, never a gate
         _log(log_path, f"  {task_key} findings not recorded: {exc}")
+
+
+#: The model each family runs when a cascade moves ONTO it. A model id belongs
+#: to one family, so the previous rung's id cannot travel; and None would mean
+#: "inherit whatever the CLI defaults to", which is invisible in a run report
+#: and is what put an epic at ~$72/task in July 2026.
+#:
+#: Operator ruling 2026-09-04: claude runs FABLE here — "we should be able to
+#: use claude with Fable, it was performing well" — and it did write every
+#: scaffold and seal that passed. Every entry is inside the financial set
+#: (fable / sol / grok), so a cascade cannot walk out of that rule.
+CASCADE_FAMILY_MODEL: dict[str, str] = {
+    "claude": "claude-fable-5-1",
+    "codex": "gpt-5.6-sol",
+    "grok": "grok-4.6",
+}
+
+
+def _model_for_cascade_rung(
+    from_agent: str | None, to_agent: str | None, model: str | None,
+) -> str | None:
+    """The model a cascade rung should run, given the family it moves to.
+
+    A model id belongs to ONE family, so carrying it across a family change
+    hands the new CLI an id it rejects. Measured 2026-09-04 on WAL-CHAIN-3:
+    codex@max -> claude@high with `model` still `gpt-5.6-sol` died in 952ms —
+    exit 1, zero tokens, $0.00, never ran a turn — and the dispatcher read that
+    as "panel-iterate spawn failed" and left the task Blocked. Its verifier had
+    said VERIFIED with 0 gaps sixteen minutes earlier.
+
+    Same family keeps the pin: it is the operator's choice and the only reason
+    to drop it is incompatibility.
+
+    REMAPPED, not cleared, to :data:`CASCADE_FAMILY_MODEL`. Clearing would let
+    the new family's CLI default apply, and an unpinned model is invisible in a
+    run report — the failure that put an epic at ~$72/task in July 2026. A
+    named model is auditable and stays inside the financial fable/sol/grok set.
+    """
+    frm, to = (from_agent or "claude"), (to_agent or "claude")
+    if frm == to:
+        return model
+    return CASCADE_FAMILY_MODEL.get(to)
 
 
 def _forget_escalated_effort(row: dict, final_status: str) -> None:
