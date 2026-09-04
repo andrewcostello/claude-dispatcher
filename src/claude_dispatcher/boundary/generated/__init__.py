@@ -3268,13 +3268,11 @@ class RunContext:
     # `field(default_factory=...)` rather than a bare default. Behaviourally
     # identical: `__post_init__` re-wraps every instance as
     # `MappingProxyType(dict(...))`, so the default's IDENTITY was never
-    # observable and only its value ever mattered. Required because
-    # dataclasses refuses any default whose class is unhashable, and
-    # `mappingproxy.__hash__` is None: on Python 3.11 — the version
-    # `requires-python` declares and CI runs — importing this module raised
-    #     ValueError: mutable default <class 'mappingproxy'> for field anchors
-    # so the whole package was unimportable there. 3.12+ happens to accept it,
-    # which is why it went unnoticed locally.
+    # observable and only its value ever mattered. Required because dataclasses
+    # treats a mappingproxy default as mutable and Python 3.11 — the version
+    # `requires-python` declares and CI runs — refuses it AT CLASS CREATION,
+    # making the whole package unimportable there. 3.12+ accepts it, which is
+    # why it survived on a 3.14 box.
     anchors: Mapping[str, str] = field(default_factory=lambda: _NO_ANCHORS)
 
     def __post_init__(self) -> None:
