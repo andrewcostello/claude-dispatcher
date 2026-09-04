@@ -595,3 +595,25 @@ def test_the_judgement_names_both_options_and_the_deviation_route() -> None:
         "must tell the model that a wrong CONTRACT is not a code defect"
     assert "## deviation" in t, "must name the heading to record it under"
     assert "force-fit" in t, "must forbid patching around a wrong contract"
+
+
+def test_the_role_gate_payload_names_the_signature_changes() -> None:
+    """A gate that BLOCKS must name what it blocked on.
+
+    Measured 2026-09-03: WAL-LEDGER-3's payload was
+    `violations: []` with `detail: "0 forbidden path(s) and 4 changed
+    scaffolded signature(s)"`. `violations` holds PATH violations only, so the
+    four signature changes that actually caused the block appeared nowhere
+    machine-readable — the count lived in a prose string. Neither the operator
+    nor the next agent could tell WHICH four, and reconstructing them took a
+    hand diff.
+    """
+    import inspect
+    from claude_dispatcher import orchestrator as orch
+    src = inspect.getsource(orch)
+    i = src.index('"status": role_loop.status.value')
+    payload = src[i:i + 1400]
+    assert '"signature_changes"' in payload, (
+        "the role-gate payload must carry the signature changes, not only the "
+        "path violations"
+    )
