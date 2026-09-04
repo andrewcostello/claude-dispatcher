@@ -102,6 +102,13 @@ INFRA_RETRY_LIMIT = 1
 #: Marks an `effort:` the CASCADE chose rather than the plan author. Only ever
 #: written beside an escalated effort, and removed with it.
 EFFORT_ESCALATED_STAMP = "effort_escalated"
+#: The cascade's agent, marked as its choice rather than the author's. D-64
+#: ruled this for effort — "an effort the CASCADE chose is a consequence, not a
+#: choice, and it outlived its cause" — and `agent` needed the same and did not
+#: have it: a task that cascaded codex -> claude kept agent=claude forever, and
+#: with the model pin protected separately the row ends up agent=claude /
+#: model=gpt-5.6-sol, which is codex's model on the claude CLI (2026-09-03).
+AGENT_ESCALATED_STAMP = "agent_escalated"
 
 _log_lock = threading.Lock()
 
@@ -1508,6 +1515,7 @@ def _run_task(
     # The effort the PLAN asked for, captured before any rung can overwrite
     # `snap.effort`. Without it, "escalated" and "deliberate" are the same string.
     snap_planned_effort = snap.effort
+    snap_planned_agent = snap.agent
 
     for idx, (attempt_agent, attempt_effort) in enumerate(cascade):
         if idx > 0:
@@ -1760,7 +1768,8 @@ def _run_task(
         if (used_agent != (snap.agent or "claude")
                 or used_effort != snap.effort):
             def _stamp_agent_effort(row, a=used_agent, e=used_effort,
-                                    planned=snap_planned_effort):
+                                    planned=snap_planned_effort,
+                                    planned_agent=snap_planned_agent):
                 row["agent"] = a
                 if e:
                     row["effort"] = e
@@ -1774,6 +1783,13 @@ def _run_task(
                     # never touched.
                     if e != planned:
                         row[EFFORT_ESCALATED_STAMP] = True
+                    # Same rule for the AGENT, placed after the effort
+                    # stamp so the effort seal's source window is
+                    # unchanged. Once written, a cascade-chosen agent
+                    # and an author's deliberate one are the same
+                    # string, so provenance is recorded here too.
+                if planned_agent and a != planned_agent:
+                    row[AGENT_ESCALATED_STAMP] = True
             _mutate_row(cfg, snap.batch_keys or snap.key, _stamp_agent_effort)
             snap = replace(snap, agent=used_agent, effort=used_effort)
 
@@ -5407,6 +5423,10 @@ def _forget_escalated_effort(row: dict, final_status: str) -> None:
         return
     if row.pop(EFFORT_ESCALATED_STAMP, None):
         row.pop("effort", None)
+    # `agent` on the same rule. Left out when D-64 was written, so a task
+    # that cascaded codex -> claude kept agent=claude through SUCCESS.
+    if row.pop(AGENT_ESCALATED_STAMP, None):
+        row.pop("agent", None)
 
 
 def _gate_command_texts(repo_root: Path, test_command: str | None) -> tuple[str, ...]:
