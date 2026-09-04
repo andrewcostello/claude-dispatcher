@@ -52,6 +52,7 @@ from . import preflight as preflight_mod
 from . import push_verify as pv_mod
 from . import design as design_mod
 from . import quality_levels as ql_mod
+from . import scope_excursion as scope_mod
 from . import repo_config as repo_config_mod
 from . import role_protocol as role_protocol_mod
 from . import scaffold_shape as scaffold_shape_mod
@@ -355,6 +356,8 @@ class TaskSnapshot:
     #: the agent that has to obey them. A gate enforcing an unstated rule is
     #: how WAL-LEDGER-3 lost a cycle to a renamed parameter (2026-09-03).
     role_name: str | None = None
+    #: Globs this task owns; a change outside them is a scope excursion.
+    owns: list[str] = field(default_factory=list)
     # Per-task quality intensity (Phase 4); None → resolve at gate time.
     verify: str | None = None
     panel: str | None = None
@@ -1904,6 +1907,46 @@ def _run_task(
             specs=list(snap.role_specs or []),
         )
         gate_base_used = gate_base_sha
+
+        # --- Scope excursion (unit boundary) --------------------------------
+        # Same base and same worktree as the loop gate above, deliberately: the
+        # question is about the diff THIS rung produced, and the next rung's
+        # _reset_worktree discards it.
+        #
+        # A BLOCK is NOT a quality failure and does not advance a rung
+        # (operator ruling 2026-09-04). Escalating would re-implement the same
+        # task three times to arrive at the same question, and if a later rung
+        # happened not to reach outside, the block would clear silently and the
+        # evidence that an agent WANTED to would be gone — which is the signal
+        # the deviation model exists to surface. So: block, name the paths, and
+        # leave it for adjudication.
+        excursion = _scope_excursion_report(
+            repo_root, wt.branch, gate_base_sha, list(snap.owns or []),
+            log_path, snap.key,
+        )
+        if excursion is not None and excursion.severity > scope_mod.Severity.NONE:
+            _log(log_path,
+                 f"  {snap.key} scope: {excursion.severity.name} — "
+                 f"{excursion.reason()[:400]}")
+            _emit_event(cfg, journal_mod.EventType.scope_excursion, {
+                "severity": excursion.severity.name,
+                "excursions": [
+                    {"path": e.path, "change": e.change} for e in excursion.excursions
+                ],
+                "owns": list(snap.owns or []),
+                "base_sha": gate_base_sha,
+            }, task_key=snap.key)
+        if excursion is not None and excursion.severity is scope_mod.Severity.BLOCK:
+            final_status = plan_mod.BLOCKED
+            final_blocked_reason = (
+                "scope excursion: this task changed files it does not own — "
+                + excursion.reason()
+                + ". A foreign DELETE is never taken on the task's own "
+                  "authority; if it is genuinely required, record it as a "
+                  "shared-contract DEVIATION for adjudication."
+            )
+            break
+
         _log(log_path,
              f"  {snap.key} role loop gate: {role_loop.status.value} "
              f"({role_loop.decision.value})"
@@ -3188,6 +3231,7 @@ def _dispatch_drain(
                     batch_keys=batch_keys,
                     jira_key=(primary.raw or {}).get("jira_key"),
                     role_name=str((primary.raw or {}).get("role") or "") or None,
+                    owns=list(primary.owns or []),
                     verify=verify,
                     panel=panel,
                     design=primary.design if hasattr(primary, "design") else None,
@@ -4112,6 +4156,46 @@ def _is_ancestor(repo_root: Path, sha: str, ref: str,
              f"exit={proc.returncode}: {proc.stderr.strip() or '(no stderr)'} "
              f"— treated as NOT an ancestor")
     return False
+
+
+def _scope_excursion_report(
+    repo_root: Path, branch: str, base_sha: str | None,
+    owns: list[str], log_path: Path, task_key: str,
+) -> scope_mod.ExcursionReport | None:
+    """Classify the task's diff against what its row says it owns.
+
+    Returns None when the question cannot be asked — no declared ownership, no
+    base to diff from, or git failed. None is NOT "clean": it means unjudged,
+    and the caller must not block on it. Failing closed here would block every
+    task in a repo whose worklist predates `owns:`.
+
+    `--no-renames` on purpose: a rename reported as R is one path, but as A+D
+    it is two, and the D half is exactly what must be seen when a task moves
+    another unit's file out from under it.
+    """
+    if not owns or not base_sha:
+        return None
+    import subprocess
+    try:
+        proc = subprocess.run(
+            ["git", "diff", "--name-status", "--no-renames",
+             f"{base_sha}...{branch}"],
+            cwd=str(repo_root), capture_output=True, text=True,
+            check=False, timeout=60,
+        )
+    except Exception as e:  # noqa: BLE001 - a probe failure is not a verdict
+        _log(log_path, f"  {task_key} scope check could not run: {e}")
+        return None
+    if proc.returncode != 0:
+        _log(log_path, f"  {task_key} scope check could not run: "
+                       f"{(proc.stderr or '').strip()[:200]}")
+        return None
+    rows: list[tuple[str, str]] = []
+    for line in (proc.stdout or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2 and parts[0].strip():
+            rows.append((parts[0].strip()[:1], parts[-1].strip()))
+    return scope_mod.classify(rows, owns)
 
 
 def _resolve_gate_base(repo_root: Path, snap: "TaskSnapshot", branch: str,
