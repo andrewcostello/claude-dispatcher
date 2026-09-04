@@ -1520,6 +1520,7 @@ def _run_task(
     panel_verdict: cfr_mod.PanelVerdict | None = None
     panel_iterations_used = 0
     panel_blocking_history: list[int] = []
+    panel_stalled = False
     role_loop: loop_gate_mod.LoopGateOutcome | None = None
     # The ref the gate actually diffed from on the rung that produced
     # `role_loop`. Recorded as the retry anchor if this attempt blocks, so the
@@ -1571,6 +1572,7 @@ def _run_task(
         # would escalate it for someone else's churn (operator ruling
         # 2026-09-04).
         panel_blocking_history = []
+        panel_stalled = False
         # A discarded rung's role verdict must not survive onto the terminal
         # row either: the diff it judged was reset away, so the stamp would
         # describe a diff that no longer exists.
@@ -2266,6 +2268,7 @@ def _run_task(
                             for f in panel_verdict.blocking_findings
                         }),
                     }, task_key=snap.key)
+                    panel_stalled = True
                     break
 
                 _log(log_path,
@@ -2294,10 +2297,17 @@ def _run_task(
 
             if panel_verdict is not None and not panel_verdict.is_approve:
                 final_status = plan_mod.BLOCKED
+                # A stall and an exhausted budget both land here, and the
+                # row is what a human reads — #101's lesson. Without this the
+                # two are indistinguishable, and they ask different questions:
+                # "spend a stronger model" versus "this contract may be wrong".
                 final_blocked_reason = (
                     f"cross_family_panel: {panel_verdict.summary}"
                     + (f" (after {panel_iterations_used} iterate attempt(s))"
                        if panel_iterations_used else "")
+                    + (f" — iteration STALLED at {panel_blocking_history}: no "
+                       f"new best blocking count, escalating rather than "
+                       f"re-reviewing" if panel_stalled else "")
                 )
                 _append_panel_findings_to_summary(
                     result.summary_path, panel_verdict, log_path, snap.key,

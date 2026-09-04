@@ -133,3 +133,24 @@ def test_the_stall_carries_the_locations_for_adjudication() -> None:
     payload = src[idx:idx + 900]
     for field in ("history", "patience", "blocking_locations"):
         assert f'"{field}"' in payload, field
+
+
+def test_the_row_says_it_stalled() -> None:
+    """A stall and an exhausted budget both reach the same Blocked branch, and
+    the ROW is what a human reads. Left indistinguishable they ask different
+    questions — "spend a stronger model" versus "this contract may be wrong" —
+    which is the #101 lesson: a silent early stop looks like a normal one."""
+    src = _src()
+    idx = src.index('f"cross_family_panel: {panel_verdict.summary}"')
+    reason = src[idx - 400:idx + 500]
+    assert "panel_stalled" in reason, reason[-300:]
+    assert "STALLED" in reason
+    assert "panel_blocking_history" in reason, "the history must reach the row"
+
+
+def test_the_stall_flag_resets_per_model() -> None:
+    """Same ruling as the history: a rung must not inherit the previous
+    model's stall and report it on its own row."""
+    src = _src()
+    assert src.count("panel_stalled = False") == 2, (
+        "one initialiser plus one per-rung reset expected")
