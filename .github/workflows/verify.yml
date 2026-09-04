@@ -37,6 +37,8 @@ jobs:
             echo "peer unexpectedly resolvable in the peer-absent arm" >&2
             exit 1
           fi
+      - name: Vendor the TypeScript parser (gitignored, absent on a fresh checkout)
+        run: PYTHONPATH=src python -m claude_dispatcher.ts_parser_vendor
       - name: Mechanical gate (scripts/test.sh — same script .dispatcher.yaml runs)
         run: bash scripts/test.sh
 
@@ -70,6 +72,8 @@ jobs:
         env:
           CLAUDE_WORKFLOW_REPO: ${{ github.workspace }}/claude-workflow
         run: python tools/t26_lint.py --probe-peer
+      - name: Vendor the TypeScript parser (gitignored, absent on a fresh checkout)
+        run: PYTHONPATH=src python -m claude_dispatcher.ts_parser_vendor
       - name: make verify (boundary seals + citations-REQUIRED T26)
         working-directory: claude-dispatcher
         env:
