@@ -617,3 +617,60 @@ def test_the_role_gate_payload_names_the_signature_changes() -> None:
         "the role-gate payload must carry the signature changes, not only the "
         "path violations"
     )
+
+
+def test_a_cascaded_agent_is_forgotten_on_success() -> None:
+    """The cascade stamps `agent` and, unlike `effort`, never un-stamps it.
+
+    D-64 already ruled this for effort: "an effort the CASCADE chose is a
+    consequence, not a choice, and it outlived its cause". `agent` needed the
+    same and did not have it, so a task that cascaded codex -> claude kept
+    agent=claude forever — and #89 protects `model`, so the row ends up
+    agent=claude with model=gpt-5.6-sol. That is codex's model on the claude
+    CLI, which fails or silently runs something else. Measured 2026-09-03 on
+    WAL-LEDGER-3; I repaired it by hand three times before fixing it.
+
+    On DONE only, exactly as effort: a task that ended Blocked keeps the
+    escalation, because the next dispatch of something that failed on a
+    weaker family should start on the stronger one.
+    """
+    from claude_dispatcher import orchestrator as orch
+    from claude_dispatcher import plan as plan_mod
+
+    # A cascade-chosen agent, stamped as such, is dropped on success.
+    row = {"agent": "claude", orch.AGENT_ESCALATED_STAMP: True}
+    orch._forget_escalated_effort(row, plan_mod.DONE)
+    assert "agent" not in row, row
+    assert orch.AGENT_ESCALATED_STAMP not in row
+
+    # Blocked keeps it.
+    row = {"agent": "claude", orch.AGENT_ESCALATED_STAMP: True}
+    orch._forget_escalated_effort(row, plan_mod.BLOCKED)
+    assert row["agent"] == "claude"
+
+    # An author's own agent carries no stamp and is never touched.
+    row = {"agent": "codex"}
+    orch._forget_escalated_effort(row, plan_mod.DONE)
+    assert row["agent"] == "codex", "a deliberate agent must survive"
+
+
+def test_a_cascaded_agent_is_stamped_as_the_cascades_choice() -> None:
+    """The forget only fires on a row that was STAMPED, so not stamping is a
+    silent way to keep the cascade's agent forever.
+
+    Sealing `_forget_escalated_effort` alone left that hole: removing the
+    stamp survived mutation, because the forget test hands it a row with the
+    stamp already set. This drives the closure the cascade actually runs.
+    """
+    import inspect, re
+    from claude_dispatcher import orchestrator as orch
+    src = inspect.getsource(orch)
+    i = src.index("def _stamp_agent_effort(")
+    block = src[i:i + 1600]
+    assert "AGENT_ESCALATED_STAMP" in block, (
+        "the cascade must record that IT chose the agent, or the stamp-and-"
+        "forget rule has nothing to forget"
+    )
+    # Only when it actually differs from the author's — an author's own agent
+    # carries no stamp and must survive success.
+    assert re.search(r"if planned_agent and a != planned_agent:", block), block[-400:]
