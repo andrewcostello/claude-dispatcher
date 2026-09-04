@@ -90,7 +90,14 @@ def test_codex_can_write_the_summary_outside_its_workspace() -> None:
     joined = " ".join(argv)
     assert "sandbox_workspace_write.writable_roots" in joined, joined
     assert "/home/andrew/Project/dispatcher-runs/R/KEY" in joined, joined
-    # Unchanged when no summary dir is supplied.
-    assert "writable_roots" not in " ".join(spawn._agent_argv(
+    # No summary dir -> no summary root INVENTED. This clause used to assert
+    # `writable_roots` was absent entirely; the option is now always present
+    # because the shared build cache needs it whether or not a summary dir
+    # exists (an agent that cannot write GOCACHE falls back to /tmp, which is
+    # the tmpfs-exhaustion failure). What the clause was protecting -- that a
+    # runs-dir path is never fabricated -- is asserted directly instead.
+    bare = " ".join(spawn._agent_argv(
         "codex", "codex", _P("/tmp/p.txt"), _P("/tmp/wt"),
         "gpt-5.6-sol", "prompt", "xhigh"))
+    assert "dispatcher-runs" not in bare, bare
+    assert str(spawn.AGENT_BUILD_CACHE) in bare, bare

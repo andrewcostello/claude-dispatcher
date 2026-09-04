@@ -523,6 +523,22 @@ def build_prompt(
     )
 
 
+#: A shared, DISK-BACKED build cache for spawned agents.
+#:
+#: Agents were inventing their own under /tmp -- `cx-luna-go-cache`,
+#: `codex-go-cache-WAL-LEDGER-3`, `wal-settle-3-final-gocache`, one per task --
+#: because the sandbox makes /tmp the only obviously writable place. /tmp is
+#: tmpfs here, so each cold Go build spent thousands of INODES rather than
+#: disk: measured 2026-09-04 at 91% of 1,048,576 used, and a full run once hit
+#: 94%, where the symptom is ~1,100 tests failing on OSError and reading
+#: exactly like a code regression.
+#:
+#: Shared rather than per-task, which also fixes the cost the per-task dirs
+#: imposed: every task paid for a cold cache. Go's build and module caches are
+#: both concurrency-safe, so parallel tasks may share them.
+AGENT_BUILD_CACHE = Path.home() / ".cache" / "dispatcher-build"
+
+
 def build_env(
     *,
     base_env: dict[str, str] | None = None,
@@ -556,6 +572,17 @@ def build_env(
         env["SKIP_SECURITY_LINTER"] = "1"
     if reviewer_count is not None:
         env["REVIEWER_COUNT"] = str(reviewer_count)
+    # Named explicitly so an agent never has to pick a writable location and
+    # land on tmpfs. Set unconditionally: harmless where the repo has no Go,
+    # and conditioning on that would need a language probe this has no business
+    # doing. Pre-created because the sandbox permits writing INSIDE a writable
+    # root, not creating the root itself.
+    go_build = AGENT_BUILD_CACHE / "go-build"
+    go_mod = AGENT_BUILD_CACHE / "go-mod"
+    for d in (go_build, go_mod):
+        d.mkdir(parents=True, exist_ok=True)
+    env["GOCACHE"] = str(go_build)
+    env["GOMODCACHE"] = str(go_mod)
     return env
 
 
@@ -798,9 +825,15 @@ def _agent_argv(
         # /tmp is writable by default, so a probe there clears the sandbox
         # wrongly — verified against a real runs-dir path: BLOCKED without this
         # root, written with it.
+        # The build cache joins the summary dir: without it the sandbox
+        # rejects every write to GOCACHE and the agent goes looking for a
+        # writable path, which is how the per-task /tmp caches got invented.
+        roots = [str(AGENT_BUILD_CACHE)]
         if summary_dir:
-            cmd += ["-c",
-                    f'sandbox_workspace_write.writable_roots=["{summary_dir}"]']
+            roots.insert(0, str(summary_dir))
+        cmd += ["-c",
+                "sandbox_workspace_write.writable_roots=["
+                + ", ".join(f'"{r}"' for r in roots) + "]"]
         if model:
             cmd += ["--model", model]
         if effort:
