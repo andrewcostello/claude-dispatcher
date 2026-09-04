@@ -1917,6 +1917,19 @@ def _run_task(
                     role_loop.result.violations if role_loop.result else ()
                 )
             ],
+            # `violations` holds PATH violations only. A signature change is
+            # the OTHER way this gate blocks, and naming it just as a count in
+            # `detail` left "4 changed scaffolded signature(s)" with nothing
+            # machine-readable behind it — neither the operator nor the next
+            # agent could tell which four (2026-09-03, WAL-LEDGER-3).
+            "signature_changes": [
+                {"path": c.path, "symbol": c.symbol,
+                 "before": c.before, "after": c.after}
+                for c in (
+                    role_loop.result.signature.changes
+                    if role_loop.result and role_loop.result.signature else ()
+                )
+            ],
             "detail": role_loop.detail[:1000],
         }, task_key=snap.key)
         if role_loop.decision is loop_gate_mod.LoopGateDecision.BLOCK:

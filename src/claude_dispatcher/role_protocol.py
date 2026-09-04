@@ -7719,6 +7719,55 @@ def _supported_language_refusal(path: str) -> SignatureComparison | None:
     )
 
 
+def drop_moved_go_symbols(
+    changes: "tuple[SignatureChange, ...] | list[SignatureChange]",
+    package_now: dict[str, dict[str, str]],
+) -> "tuple[SignatureChange, ...]":
+    """Drop removals that are MOVES within one Go package.
+
+    Go's :data:`SURFACE_RULES` row sets ``merges_across_files=False`` because
+    "every cross-file contribution is an ADDED key ... redeclaring an existing
+    key does not compile". That is right about ADDITIONS and silent about
+    MOVES: a symbol deleted from ``ledger.go`` and added to ``post.go``
+    redeclares nothing, compiles, and leaves every caller untouched. The
+    per-file comparison sees only the deletion and calls it a changed
+    scaffolded signature.
+
+    Measured 2026-09-03. WAL-LEDGER-3 split a 400-line ``ledger.go`` into
+    three files, moving four exported functions byte-identically. The gate
+    reported "4 changed scaffolded signature(s)" and blocked. Package-wide:
+    five exported functions before, five after, none changed.
+
+    ``package_now`` is the branch's fingerprints for the OTHER files of the
+    same package, keyed path -> {symbol: fingerprint}.
+
+    Only a REMOVAL (``after is None``) is reconciled, and only against an
+    IDENTICAL fingerprint. Relocating a function AND widening it is still a
+    contract change; so is a symbol that reappears nowhere.
+
+    Not folded into `branch_surface.fold_branch_signatures`, which already
+    compares by namespace and is the better long-term home: its key
+    computation is TypeScript-specific (``ts_symbol_key``, ``declare
+    module``), so routing Go through it needs a Go namespace first. Recorded
+    as the unification this replaces.
+    """
+    if not changes:
+        return tuple(changes)
+    elsewhere: dict[str, set[str]] = {}
+    for path, syms in (package_now or {}).items():
+        for name, fp in (syms or {}).items():
+            elsewhere.setdefault(name, set()).add(fp)
+    kept = []
+    for c in changes:
+        moved = (
+            c.after is None
+            and c.before in elsewhere.get(c.symbol, ())
+        )
+        if not moved:
+            kept.append(c)
+    return tuple(kept)
+
+
 def compare_signatures(
     path: str, base_text: str | None, head_text: str | None
 ) -> SignatureComparison:
