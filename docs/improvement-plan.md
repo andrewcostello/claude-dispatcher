@@ -830,10 +830,20 @@ a 77-row run the same day:
    runs (`BK-*`, `CV-*`, `CX-*`, `GO-*`, `W2-*`, `TSP-*`). Take the stricter
    option.
 
+### Worklist
+
+`features/run-state-split/tasks.yaml` — 5 tasks, 4 waves:
+ST-1 (the store) -> ST-2 (readers) + ST-4 (migration + `state rebuild`)
+-> ST-3 (writers, and the byte-identical invariant) -> ST-5 (park/requeue).
+
 ### Sizing
 
-Mechanical but wide: 17 read sites, 5 write sites, one new module, a migration
-path, and one seal. The migration must NOT rewrite the tracked file
+Mechanical but wide. Counts verified by grep 2026-09-04: 17 reader modules
+call `yaml_io.load` on the tasks path, and 9 writer call sites across 5
+modules call `yaml_io.dump` (orchestrator x3, resume x2, unblock x2,
+merge_engine, forecast_bridge). `doctor.py` also dumps YAML but to the
+machine profile, not the tasks file — leave it alone. Plus one new module, a
+migration path, and one seal. The migration must NOT rewrite the tracked file
 automatically — print the diff and let a human commit it, since automatic
 rewriting is the behaviour being removed.
 
