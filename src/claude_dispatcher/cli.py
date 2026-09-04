@@ -501,6 +501,19 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument(
+        "--panel-convergence-patience",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Escalate when panel iteration goes N rounds with no new best "
+            "blocking-finding count. Default 2; 0 disables. Measured "
+            "2026-09-04: panel-iterate was 60%% of a run's output tokens and "
+            "the blocking counts never converged — WAL-BALANCE-3 ran "
+            "[7,11,9,8,9] and never beat its opening round."
+        ),
+    )
+    run.add_argument(
         "--ntfy-topic",
         default=None,
         metavar="TOPIC",

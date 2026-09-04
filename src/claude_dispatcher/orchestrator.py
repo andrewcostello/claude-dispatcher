@@ -141,6 +141,13 @@ _RETRY_ANCHOR_STAMP = loop_gate_mod.RETRY_ANCHOR_STAMP
 HEARTBEAT_INTERVAL_SECONDS = 30
 
 
+#: Rounds of panel iteration allowed to pass without a new BEST (lowest)
+#: blocking-finding count before the loop gives up and escalates.
+#: 0 disables. Operator ruling 2026-09-04, from the measured churn:
+#: panel-iterate was 60% of a run's output tokens and the blocking
+#: counts never converged.
+PANEL_CONVERGENCE_PATIENCE = 2
+
 @dataclass
 class RunConfig:
     tasks_path: Path
@@ -278,6 +285,9 @@ class RunConfig:
     # stamped on the YAML row is from the FINAL run (which may be approve
     # if the Tasker successfully addressed the findings).
     cross_family_panel_iterate: int = 0
+    #: Rounds of panel iteration allowed with no new best blocking count
+    #: before escalating. 0 disables the rule.
+    panel_convergence_patience: int = PANEL_CONVERGENCE_PATIENCE
     # Step 6: when True, persist each task's transcript + a cheap haiku summary
     # and reference them from the YAML row (audit log; Forecast projects them).
     # Opt-in (off by default) because it shells claude-haiku per task — cost +
@@ -1509,6 +1519,8 @@ def _run_task(
     verifier_cost_total = 0.0
     panel_verdict: cfr_mod.PanelVerdict | None = None
     panel_iterations_used = 0
+    panel_blocking_history: list[int] = []
+    panel_stalled = False
     role_loop: loop_gate_mod.LoopGateOutcome | None = None
     # The ref the gate actually diffed from on the rung that produced
     # `role_loop`. Recorded as the retry anchor if this attempt blocks, so the
@@ -1555,6 +1567,12 @@ def _run_task(
         verifier_cost_total = 0.0
         panel_verdict = None
         panel_iterations_used = 0
+        # Per RUNG, like the iterate budget: a new model earns a fresh set of
+        # rounds, and judging its progress against the previous model's plateau
+        # would escalate it for someone else's churn (operator ruling
+        # 2026-09-04).
+        panel_blocking_history = []
+        panel_stalled = False
         # A discarded rung's role verdict must not survive onto the terminal
         # row either: the diff it judged was reset away, so the stamp would
         # describe a diff that no longer exists.
@@ -2218,7 +2236,39 @@ def _run_task(
                 # not read them. Persist per task so a dependent inherits them.
                 _record_panel_findings(cfg, snap.key, panel_verdict, log_path)
                 _emit_authoritative_finding_events(cfg, panel_verdict, snap.key)
+                panel_blocking_history.append(
+                    len(panel_verdict.blocking_findings))
                 if panel_verdict.is_approve or iterations_remaining <= 0:
+                    break
+                if _panel_convergence_stalled(
+                        panel_blocking_history,
+                        getattr(cfg, "panel_convergence_patience",
+                                PANEL_CONVERGENCE_PATIENCE)):
+                    _log(log_path,
+                         f"  {snap.key} panel iteration stalled — no new best "
+                         f"blocking count in {getattr(cfg, 'panel_convergence_patience', PANEL_CONVERGENCE_PATIENCE)} "
+                         f"round(s) (history {panel_blocking_history}); "
+                         f"escalating instead of re-reviewing")
+                    # The LOCATIONS travel with the stall, because what the
+                    # adjudicator has to decide is whether the CONTRACT is
+                    # wrong, not whether the agent tried hard enough. Measured
+                    # on WAL-BALANCE-3: 101 HIGH/CRITICAL findings, 51 of them
+                    # in one migration, and no single location repeated more
+                    # than 3 times — each round rewrote that file and the panel
+                    # found DIFFERENT real defects in the new version. A stall
+                    # concentrated in one artifact is evidence about the
+                    # design; the bare round count is not.
+                    _emit_event(cfg, journal_mod.EventType.panel_convergence_stalled, {
+                        "history": list(panel_blocking_history),
+                        "patience": getattr(cfg, "panel_convergence_patience",
+                                            PANEL_CONVERGENCE_PATIENCE),
+                        "rounds_this_rung": len(panel_blocking_history),
+                        "blocking_locations": sorted({
+                            (getattr(f, "location", None) or "?")
+                            for f in panel_verdict.blocking_findings
+                        }),
+                    }, task_key=snap.key)
+                    panel_stalled = True
                     break
 
                 _log(log_path,
@@ -2247,10 +2297,17 @@ def _run_task(
 
             if panel_verdict is not None and not panel_verdict.is_approve:
                 final_status = plan_mod.BLOCKED
+                # A stall and an exhausted budget both land here, and the
+                # row is what a human reads — #101's lesson. Without this the
+                # two are indistinguishable, and they ask different questions:
+                # "spend a stronger model" versus "this contract may be wrong".
                 final_blocked_reason = (
                     f"cross_family_panel: {panel_verdict.summary}"
                     + (f" (after {panel_iterations_used} iterate attempt(s))"
                        if panel_iterations_used else "")
+                    + (f" — iteration STALLED at {panel_blocking_history}: no "
+                       f"new best blocking count, escalating rather than "
+                       f"re-reviewing" if panel_stalled else "")
                 )
                 _append_panel_findings_to_summary(
                     result.summary_path, panel_verdict, log_path, snap.key,
@@ -4198,6 +4255,30 @@ def _scope_excursion_report(
     return scope_mod.classify(rows, owns)
 
 
+def _panel_convergence_stalled(history: list[int], patience: int) -> bool:
+    """Whether panel iteration has stopped making progress.
+
+    Patience is measured against the BEST round so far, not against the
+    previous round. Measured on the wallet run: aggregate blocking findings
+    oscillate — WAL-CHAIN-3 ran [7,3,5,3,4,3,4,8,7,8,6] — so a
+    consecutive-decrease rule is reset by every dip and never fires, while
+    "no new best in N rounds" fires on exactly the plateau it should.
+
+    Patience 2 rather than 1 for a measured reason, not caution: WAL-HOLD-3 ran
+    [3,8] and its NEXT round reached 1. At patience 1 that recovery is
+    escalated away one round before it lands.
+    """
+    if patience <= 0 or not history:
+        return False
+    best, stale = history[0], 0
+    for value in history[1:]:
+        if value < best:
+            best, stale = value, 0
+        else:
+            stale += 1
+    return stale >= patience
+
+
 def _resolve_gate_base(repo_root: Path, snap: "TaskSnapshot", branch: str,
                        pre_spawn_sha: str | None,
                        log_path: Path) -> tuple[str | None, str]:
@@ -6106,6 +6187,13 @@ def _build_config(args: argparse.Namespace) -> RunConfig:
         ),
         cross_family_panel_iterate=getattr(
             args, "cross_family_panel_iterate", 0,
+        ),
+        # None from the CLI means "use the measured default", not 0 —
+        # 0 is the explicit opt-OUT and must stay reachable.
+        panel_convergence_patience=(
+            PANEL_CONVERGENCE_PATIENCE
+            if getattr(args, "panel_convergence_patience", None) is None
+            else max(0, int(args.panel_convergence_patience))
         ),
         haiku_summary=haiku_summary,
         feature_review=getattr(args, "feature_review", False),

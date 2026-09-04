@@ -16,7 +16,7 @@ import datetime
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, IntEnum
 from types import MappingProxyType
 from typing import ClassVar, Mapping, Optional, Sequence
@@ -3265,7 +3265,15 @@ class RunContext:
     # anything — which is why it can carry a default where credential_mode
     # cannot. SHARED as a default is permissive on the run-mode gate; an
     # absent anchor is permissive on nothing.
-    anchors: Mapping[str, str] = _NO_ANCHORS
+    # `field(default_factory=...)` rather than a bare default. Behaviourally
+    # identical: `__post_init__` re-wraps every instance as
+    # `MappingProxyType(dict(...))`, so the default's IDENTITY was never
+    # observable and only its value ever mattered. Required because dataclasses
+    # treats a mappingproxy default as mutable and Python 3.11 — the version
+    # `requires-python` declares and CI runs — refuses it AT CLASS CREATION,
+    # making the whole package unimportable there. 3.12+ accepts it, which is
+    # why it survived on a 3.14 box.
+    anchors: Mapping[str, str] = field(default_factory=lambda: _NO_ANCHORS)
 
     def __post_init__(self) -> None:
         if not isinstance(self.credential_mode, CredentialMode):
