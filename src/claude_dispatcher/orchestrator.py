@@ -3018,12 +3018,49 @@ def _dispatch_drain(
     appends). Returns True iff the cost ceiling (BUDGET-1) tripped during this
     drain — the caller then holds the run (and stops further review rounds)."""
     budget_tripped = False
+    worklist_invalid = False
     in_flight: dict[Future[str], str] = {}
     with ThreadPoolExecutor(max_workers=max(cfg.max_parallel, 1)) as exe:
         while True:
-            tasks = _load_tasks_snapshot(cfg)
-            runnable = plan_mod.runnable_now(tasks, integration=cfg.integration)
-            runnable = plan_mod.filter_tasks(runnable, cfg.label_filter, cfg.only_keys)
+            # A worklist that validated at startup can stop validating MID-RUN:
+            # the dispatcher writes agent / effort / model / status back into it,
+            # and has produced a row it would itself refuse (WAL-CHAIN-3 carried
+            # `agent: claude` with `model: gpt-5.6-sol`, written by a cascade).
+            #
+            # Unguarded, the ValidationError leaves this loop and ends the run
+            # from inside the `with`, so every in-flight task is abandoned with
+            # its row still In Progress and its worktree still on disk. That is
+            # the failure that once collapsed a 19-wave plan to 2 — orphaned
+            # rows read as permanently running, so nothing downstream is ever
+            # runnable again. One bad row must not cost the other 72.
+            #
+            # So: same treatment as the budget ceiling. Stop STARTING work, let
+            # in-flight tasks finish and write their own rows back, then leave.
+            # The defect is still fatal to the run, just not to its work.
+            try:
+                tasks = _load_tasks_snapshot(cfg)
+            except plan_mod.ValidationError as exc:
+                if not worklist_invalid:
+                    worklist_invalid = True
+                    holding = sorted(in_flight.values()) if in_flight else []
+                    _log(log_path,
+                         f"WORKLIST: {cfg.tasks_path} no longer validates — "
+                         f"starting no new work; draining "
+                         f"{len(holding)} in-flight task(s) "
+                         f"({holding or 'none'}). Defect(s):\n{exc}")
+                    _emit_event(cfg, journal_mod.EventType.worklist_invalid, {
+                        "phase": "tasks_snapshot",
+                        "error": str(exc),
+                        "in_flight": holding,
+                    })
+                if not in_flight:
+                    break
+                tasks, runnable = [], []
+            else:
+                runnable = plan_mod.runnable_now(
+                    tasks, integration=cfg.integration)
+                runnable = plan_mod.filter_tasks(
+                    runnable, cfg.label_filter, cfg.only_keys)
             # in_flight values are single keys or batch_keys lists — flatten
             # so no member of an in-flight batch is ever re-dispatched.
             in_flight_keys = {
