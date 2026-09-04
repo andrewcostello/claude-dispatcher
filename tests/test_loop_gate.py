@@ -2291,3 +2291,30 @@ def test_the_loop_reaches_the_same_check_branch_the_pr_gate_reaches() -> None:
         "every fixture in this file, and free to disagree on the branch that "
         "matters"
     )
+
+
+def test_the_gate_is_handed_the_tree_that_holds_the_branch() -> None:
+    """The reachability sweep reads a DIRECTORY, not just blobs, so it needs
+    `branch_ref` materialised as HEAD.
+
+    The dispatcher keeps its main checkout on the tasks branch and the task's
+    work in a separate worktree, so passing `repo_root` guaranteed
+    UNCHECKED_HEAD_NOT_CHECKED_OUT and the gate blocked EVERY task on a state
+    that says "I could not look". Measured 2026-09-03: WAL-LEDGER-3's sixth
+    block, after deny_globs and signatures both passed.
+
+    The worktree shares the object store, so blob reads are unaffected; it is
+    the only tree where both halves can run.
+    """
+    import inspect, re
+    from claude_dispatcher import orchestrator as orch
+    src = inspect.getsource(orch)
+    m = re.search(r"loop_gate_mod\.check_after_implementer\(\n(.*?)\n\s*\)",
+                  src, re.DOTALL)
+    assert m, "call site not found"
+    call = m.group(1)
+    assert "repo_root=wt.path" in call.replace(" ", ""), (
+        "the gate must be handed the worktree, which is where branch_ref is "
+        f"checked out; got:\n{call}"
+    )
+    assert "branch_ref=wt.branch" in call.replace(" ", "")

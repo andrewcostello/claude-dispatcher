@@ -103,3 +103,33 @@ def test_the_move_reconciliation_is_actually_called(tmp_path):
         f"a symbol moved intact within its package was reported as changed: "
         f"{[(c.symbol, c.path, c.after) for c in changed]}"
     )
+
+
+def test_a_renamed_go_parameter_IS_a_change_and_here_is_why():
+    """A Go parameter rename counts, and the reason is not obvious.
+
+    Go parameters are positional, so no caller can observe a name, and it is
+    tempting to conclude a rename should not block — I tried exactly that on
+    2026-09-03 after WAL-LEDGER-3 lost a task cycle to `c` -> `credit`, and
+    `tests/test_go_comparator.py` refused it in eight rows.
+
+    THE CATCH IT PAYS FOR: `Move(src, dst string)` -> `Move(dst, src string)`
+    is type-identical, compiles at every call site, and inverts the meaning of
+    every one of them. A syntactic single-file comparison cannot tell that
+    swap from two renames, so both are ruled the same way. On a ledger --
+    `debit, credit`, `from, to` -- that swap is the worst class of defect
+    available, and the parameter name is the only signal that distinguishes it.
+
+    Recorded as a seal so the next reader meets the reasoning rather than
+    rediscovering the cost. The right fix is to TELL the agent (PR #95), not to
+    loosen the check.
+    """
+    from claude_dispatcher import role_protocol as rp
+    fp = rp.support_for_path("x.go").fingerprinter.fingerprints
+    a = fp("a.go", "package p\n\nfunc Move(src, dst string) {}\n")
+    renamed = fp("b.go", "package p\n\nfunc Move(source, target string) {}\n")
+    swapped = fp("c.go", "package p\n\nfunc Move(dst, src string) {}\n")
+    assert a["Move"] != renamed["Move"], "a rename must count"
+    assert a["Move"] != swapped["Move"], (
+        "the swap is the catch the rename false positive pays for"
+    )
