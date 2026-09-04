@@ -100,6 +100,10 @@ class Task:
     # work on Opus). Absent or empty → use whatever the run-level
     # --claude-extra-args supplies (or the CLI's default).
     model: str | None = None
+    #: Globs/directories this task OWNS. A change outside them is a scope
+    #: excursion (see `scope_excursion`). Empty means the row declared no
+    #: ownership, which is opt-in silence, NOT "owns nothing".
+    owns: list[str] = field(default_factory=list)
     # Optional per-task IMPLEMENTER agent override. One of KNOWN_AGENTS;
     # absent/empty -> "claude" (the default Tasker). When set to a cross-family
     # CLI (codex/grok/gemini), the dispatcher spawns that agent's headless
@@ -190,6 +194,7 @@ def load_tasks(doc: Any) -> list[Task]:
         if key in seen_keys:
             raise ValidationError(f"duplicate task key: {key}")
         seen_keys.add(key)
+        owns = _as_str_list(row.get("owns"))
         model_val = row.get("model")
         model = str(model_val).strip() if model_val else None
         if model == "":
@@ -270,6 +275,7 @@ def load_tasks(doc: Any) -> list[Task]:
                 status=str(row.get("status", TODO)),
                 raw=row,
                 model=model,
+                owns=owns,
                 agent=agent,
                 effort=effort,
                 batch_id=batch_id,

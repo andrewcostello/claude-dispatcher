@@ -209,6 +209,7 @@ class EventType(str, Enum):
     notify_sent = "notify_sent"
     budget_exceeded = "budget_exceeded"      # cost ceiling reached → holding the run
     worklist_invalid = "worklist_invalid"    # tasks.yaml stopped validating mid-run → drain, then hold
+    scope_excursion = "scope_excursion"      # task changed files it does not own
     run_complete = "run_complete"
     # Resume lifecycle (DISP-11 / INT-1). These appear only in a journal that
     # `dispatcher resume` has continued; a normal run never emits them.
