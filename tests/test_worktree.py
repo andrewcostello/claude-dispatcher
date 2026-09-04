@@ -473,3 +473,43 @@ def test_the_snapshot_carries_jira_key_into_the_pr_title() -> None:
     bare = orch.TaskSnapshot(
         key="T-1", summary="s", description="d", type="Task", labels=[])
     assert orch._generated_pr_title(bare) == "feat: [T-1] s"
+
+
+def test_a_bodies_brief_states_that_parameter_names_are_part_of_the_signature() -> None:
+    """The gate blocks a bodies task that renames a scaffolded parameter, and
+    the brief never said so.
+
+    Measured 2026-09-03, WAL-LEDGER-3's fifth block: it moved ServiceCredit
+    and CreditCorrection into post.go and renamed `c` -> `credit` on the way.
+    `SignatureChange` is explicit that "a renamed parameter IS a change", so
+    the gate is behaving as designed -- but the implementer brief says nothing
+    about signatures at all, so the agent was blocked by a rule it was never
+    given. Enforcing an unstated rule is the defect, not the rename.
+    """
+    from claude_dispatcher import spawn
+    kw = dict(task_key="T-1", summary_path=Path("/tmp/s.md"), run_id="r",
+              max_iterations=1, financial_paths="**", task_summary="s",
+              task_type="Task", task_labels=["size:S"], agent="claude",
+              task_description="d", branch="feat/x", skip_design=True,
+              skip_security_linter=True, reviewer_count=1)
+    body = spawn.build_prompt(role="bodies", **kw).lower()
+    assert "parameter name" in body, "must say parameter names count"
+    assert "deviation" in body, "a needed signature change is a Deviation"
+    # A scaffold task writes the signatures, so the constraint must not appear.
+    assert "parameter name" not in spawn.build_prompt(role="scaffold", **kw).lower()
+
+
+def test_the_orchestrator_passes_the_role_to_the_brief() -> None:
+    """END TO END wiring, not the helper. A `role=` parameter the orchestrator
+    never fills is inert — which is exactly how PR #93 shipped a fix that did
+    nothing. Every build_prompt call site must carry the role."""
+    import inspect, re
+    from claude_dispatcher import orchestrator as orch
+    src = inspect.getsource(orch)
+    calls = re.findall(r"spawn_mod\.build_prompt\(\n(.*?)\n\s*\)", src, re.DOTALL)
+    assert calls, "no build_prompt call sites found"
+    missing = [i for i, c in enumerate(calls) if "role=" not in c]
+    assert not missing, (
+        f"{len(missing)} of {len(calls)} build_prompt call sites do not pass "
+        "the role, so the bodies constraint never reaches the agent"
+    )

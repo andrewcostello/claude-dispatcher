@@ -344,6 +344,10 @@ class TaskSnapshot:
     #: into the branch name, PR title and commit trailer for CI gates that
     #: require the ticket to be named.
     jira_key: str | None = None
+    #: The row's `role:`, threaded into the brief so a role's constraints reach
+    #: the agent that has to obey them. A gate enforcing an unstated rule is
+    #: how WAL-LEDGER-3 lost a cycle to a renamed parameter (2026-09-03).
+    role_name: str | None = None
     # Per-task quality intensity (Phase 4); None → resolve at gate time.
     verify: str | None = None
     panel: str | None = None
@@ -1571,6 +1575,7 @@ def _run_task(
             )
         prompt = spawn_mod.build_prompt(
         jira_key=getattr(snap, 'jira_key', None),
+        role=getattr(snap, 'role_name', None),
             task_key=snap.key,
             task_summary=snap.summary,
             task_type=snap.type,
@@ -3116,6 +3121,7 @@ def _dispatch_drain(
                     batch_id=primary.batch_id,
                     batch_keys=batch_keys,
                     jira_key=(primary.raw or {}).get("jira_key"),
+                    role_name=str((primary.raw or {}).get("role") or "") or None,
                     verify=verify,
                     panel=panel,
                     design=primary.design if hasattr(primary, "design") else None,
@@ -3282,6 +3288,7 @@ def _spawn_panel_iterate(
     )
     iter_prompt += spawn_mod.build_prompt(
         jira_key=getattr(snap, 'jira_key', None),
+        role=getattr(snap, 'role_name', None),
         task_key=snap.key,
         task_summary=snap.summary,
         task_type=snap.type,
@@ -3718,6 +3725,7 @@ def _spawn_verifier_iterate(
     )
     iter_prompt += spawn_mod.build_prompt(
         jira_key=getattr(snap, 'jira_key', None),
+        role=getattr(snap, 'role_name', None),
         task_key=snap.key,
         task_summary=snap.summary,
         task_type=snap.type,
@@ -4443,6 +4451,7 @@ def _retry_for_commit(cfg: RunConfig, snap: TaskSnapshot, wt: wt_mod.Worktree,
     prompt = _COMMIT_RETRY_PROMPT_PREFIX.format(base_branch=cfg.base_branch)
     prompt += spawn_mod.build_prompt(
         jira_key=getattr(snap, 'jira_key', None),
+        role=getattr(snap, 'role_name', None),
         task_key=snap.key,
         task_summary=snap.summary,
         task_type=snap.type,
@@ -4840,6 +4849,7 @@ def _retry_for_push(
     )
     prompt += spawn_mod.build_prompt(
         jira_key=getattr(snap, 'jira_key', None),
+        role=getattr(snap, 'role_name', None),
         task_key=snap.key,
         task_summary=snap.summary,
         task_type=snap.type,
@@ -5540,6 +5550,7 @@ def _retry_for_test_fix(
     )
     prompt += spawn_mod.build_prompt(
         jira_key=getattr(snap, 'jira_key', None),
+        role=getattr(snap, 'role_name', None),
         task_key=snap.key,
         task_summary=snap.summary,
         task_type=snap.type,
