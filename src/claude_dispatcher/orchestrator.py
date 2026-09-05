@@ -5956,7 +5956,30 @@ def _resolve_summary(
     Handles the awaiting-human-approval branches per mode.
     """
     if not s.awaiting_human_approval:
-        return s.status or plan_mod.BLOCKED, None, None
+        # CARRY THE AGENT'S OWN REASON. `summary.parse` already captures the
+        # `## Escalation reason` section; returning None here discarded it and
+        # the row landed with `blocked_reason: None`.
+        #
+        # Measured 2026-09-04, WAL-APPEND-3: the agent wrote 574 characters
+        # explaining that no migration creates wallet.transaction or
+        # wallet.entry, so an attachment migration would fail every fresh
+        # deployment — the missing-schema defect, found twelve hours before
+        # anyone else noticed it. The row said only "Blocked", so triage read
+        # it as a mystery to retry rather than a finding to act on, and it sat
+        # untouched through two runs.
+        #
+        # A blocked row with no reason is the most expensive row in a worklist:
+        # it costs a full re-dispatch to learn what one line of text already
+        # said.
+        reason = None
+        if (s.status or plan_mod.BLOCKED) in (plan_mod.BLOCKED,
+                                              plan_mod.ESCALATED):
+            # No .strip() here: `_extract_section` already strips, so a
+            # whitespace-only section parses to "" upstream. A defensive
+            # strip would be unreachable — verified by a mutation that
+            # removed it and no test failed.
+            reason = s.escalation_reason or None
+        return s.status or plan_mod.BLOCKED, None, reason
 
     # PR-flow mode (PRF-2): the raise-time human gate is removed — gating moves
     # to the merge step (PRF-4). A Tasker that parked at its own
