@@ -1880,11 +1880,26 @@ def _run_task(
 
         # Commit-retry: Done with no commits is fixable with one corrective
         # spawn (not a cascade-quality failure).
+        # A REQUEUED TASK IS NOT A TASK THAT FORGOT TO COMMIT.
+        # `_has_commits_on_branch` asks "did THIS SPAWN commit?" — correct for
+        # a first attempt, wrong for a re-run. On a requeue the worktree still
+        # holds the task's earlier commits, so `feat_baseline_sha` (the
+        # post-merge tip, captured now) already includes them, and an attempt
+        # that correctly finds nothing left to change looks identical to one
+        # that did nothing.
+        #
+        # Measured 2026-09-05: WAL-FX-4 and WAL-STMT-4, both requeued after a
+        # quota failure. FX-4 had THREE commits on its branch from 09-04, said
+        # so in its summary — "it found nothing left to change, so it added no
+        # commit. Working tree is clean" — and was blocked for producing none.
+        # Its adjudication work was complete and correct.
         if (s.status == "Done"
                 and not _has_commits_on_branch(
                     wt, cfg.base_branch, repo_root,
                     base_sha_before, log_path, snap.key,
-                    feat_baseline_sha=feat_baseline_sha)):
+                    feat_baseline_sha=feat_baseline_sha)
+                and not _task_already_has_own_commits(
+                    wt, cfg.base_branch, snap.key, log_path)):
             _log(log_path,
                  f"  {snap.key} reported Done but no commits on branch — "
                  f"retrying with commit-only prompt")
@@ -4434,6 +4449,39 @@ def _verification_subject_problem(
     if dirty:
         return "verification_subject_changed: uncommitted changes: " + ", ".join(dirty)
     return None
+
+
+def _task_already_has_own_commits(wt, base_branch: str, task_key: str,
+                                  log_path: Path) -> bool:
+    """Whether this task's OWN work is already on its branch from an earlier
+    attempt.
+
+    Identified by the bracketed key in the commit subject, which is already
+    load-bearing for exactly this kind of question: `dispatcher audit`'s
+    landed-by-message route greps the same form with --fixed-strings to tell a
+    landed-and-pruned branch from work that went missing (CLAUDE.md).
+
+    Scoped to `base_branch..HEAD` so a merged DEPENDENCY's commits cannot be
+    read as this task's: they carry the dependency's key, not this one's.
+
+    Fails CLOSED — any git failure returns False, which preserves the existing
+    commit-retry behaviour rather than silently accepting a task that really
+    did forget to commit.
+    """
+    import subprocess
+    try:
+        proc = subprocess.run(
+            ["git", "log", "--format=%s", f"{base_branch}..HEAD"],
+            cwd=str(wt.path), capture_output=True, text=True,
+            check=False, timeout=30,
+        )
+    except Exception as e:  # noqa: BLE001 - a probe failure is not a verdict
+        _log(log_path, f"  {task_key} own-commit probe failed: {e}")
+        return False
+    if proc.returncode != 0:
+        return False
+    marker = f"[{task_key}]"
+    return any(marker in line for line in (proc.stdout or "").splitlines())
 
 
 def _has_commits_on_branch(wt: wt_mod.Worktree, base_branch: str,
