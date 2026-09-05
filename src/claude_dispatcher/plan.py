@@ -171,6 +171,8 @@ def load_tasks(doc: Any) -> list[Task]:
     raw_tasks = doc["tasks"]
     if raw_tasks is None:
         return []
+    if not isinstance(raw_tasks, (list, tuple)):
+        raise ValidationError("'tasks' must be a sequence of task mappings")
 
     tasks: list[Task] = []
     seen_keys: set[str] = set()

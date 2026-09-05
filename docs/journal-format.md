@@ -233,6 +233,15 @@ completed run; an observer that reads it knows the chain is closed.
 | `merged`         | int    | **pr mode only** — tasks whose PR landed (`Merged`). Absent in branch mode. (PRF-5) |
 | `awaiting_review`| int    | **pr mode only** — tasks left `Awaiting Review` (PR raised, merge pending). Absent in branch mode. (PRF-5) |
 | `needs_rebase`   | int    | **pr mode only** — tasks whose PR is held back by a merge conflict (`needs_rebase: true`). Absent in branch mode. (PRF-5) |
+| `worklist_invalid` | bool | Present as `true` when this invocation observed a worklist validation/read failure. The run exits nonzero and counts may be partial; a closed journal is not successful acceptance. |
+
+**`worklist_invalid`** *(run-scoped)* — a worklist read failed validation or
+could not be completed. Payload: `phase: "tasks_snapshot"`, `tasks_path`, and
+`error`. The invocation holds new admissions and drains in-flight work. A later
+successful read does not release that hold. This signal is best-effort like
+other journal events; the runtime hold does not depend on append success.
+Lock timeouts retain their exception semantics and are not reclassified as
+invalid worklist data.
 
 ### Per-task lifecycle
 

@@ -361,6 +361,11 @@ class RunConfig:
     # best-effort, mirroring the notifier policy). Every emit goes through
     # _emit_event(), which is a no-op when this is None. See journal.py.
     journal: journal_mod.Journal | None = None
+    # Sticky within this invocation, shared by the scheduler and its workers.
+    # A repaired file requires an explicit resume before new work is admitted.
+    _worklist_invalid: threading.Event = field(
+        default_factory=threading.Event, init=False, repr=False, compare=False,
+    )
 
 
 @dataclass
@@ -857,6 +862,8 @@ def _run_loop(
             # spend more on review rounds / fix tasks once the human gate fired.
             if _dispatch_drain(cfg, run_dir, log_path, repo_root, merge_state):
                 budget_tripped = True
+            if cfg._worklist_invalid.is_set():
+                break
             # End-of-round merge: the last task(s) to reach Awaiting Review — and
             # any PR eligible only once the final dependency merged — get a pass.
             _maybe_merge_pass(cfg, repo_root, log_path, merge_state)
@@ -878,7 +885,8 @@ def _run_loop(
         stop_heartbeat.set()
         heartbeat.join()
 
-    tasks = _load_tasks_snapshot(cfg)
+    tasks = _load_tasks_for_rollup(cfg)
+    worklist_invalid = cfg._worklist_invalid.is_set()
     # "Done" for the rollup counts every terminal-success status: plain Done
     # (branch mode) plus the pr-mode lifecycle states Awaiting Review / Merged
     # (PRF-2), so a pr-mode run that auto-raised every PR isn't reported as
@@ -902,7 +910,8 @@ def _run_loop(
     _log(log_path, f"end run blocked={len(blocked)} escalated={len(escalated)}"
          + (f" merged={len(merged)} awaiting={len(awaiting)} "
             f"needs_rebase={len(needs_rebase)}" if pr_mode else "")
-         + (" BUDGET-HELD" if budget_tripped else ""))
+         + (" BUDGET-HELD" if budget_tripped else "")
+         + (" WORKLIST-HELD (counts may be partial)" if worklist_invalid else ""))
     # Run-complete rollup notification. Always fires (including on clean
     # runs — knowing the run finished is signal). Best-effort. Sent BEFORE
     # the run_complete journal event so that event stays the terminal record
@@ -913,7 +922,7 @@ def _run_loop(
             (t.key, str(t.raw.get("blocked_reason") or "unknown"))
             for t in blocked + escalated
         ]
-        _send_notification(cfg, notify_mod.run_complete_notification(
+        notification = notify_mod.run_complete_notification(
             run_id=cfg.run_id,
             done=len(done_tasks),
             blocked=len(blocked),
@@ -925,7 +934,17 @@ def _run_loop(
             merged=len(merged) if pr_mode else None,
             awaiting_review=len(awaiting) if pr_mode else None,
             needs_rebase=len(needs_rebase) if pr_mode else None,
-        ))
+        )
+        if worklist_invalid:
+            notification = replace(
+                notification,
+                title="[dispatcher] run held: invalid worklist",
+                body=("Worklist validation failed; counts below may be partial. "
+                      "Repair the worklist and explicitly resume.\n"
+                      + notification.body),
+                urgency="high", tags=["warning", "worklist_invalid"],
+            )
+        _send_notification(cfg, notification)
     except Exception:
         pass
     # Terminal journal event: closes the chain with the run's tallies. An
@@ -949,10 +968,12 @@ def _run_loop(
         run_complete_payload["budget_held"] = True
         run_complete_payload["cost_usd"] = round(
             _run_spend_usd(tasks, cfg.cost_baseline_usd), 4)
+    if worklist_invalid:
+        run_complete_payload["worklist_invalid"] = True
     _emit_event(cfg, journal_mod.EventType.run_complete, run_complete_payload)
     # A budget hold is an incomplete run needing a human — exit non-zero even
     # when nothing is formally Blocked/Escalated (tasks are parked To Do).
-    return 1 if (blocked or escalated or budget_tripped) else 0
+    return 1 if (blocked or escalated or budget_tripped or worklist_invalid) else 0
 
 
 
@@ -997,7 +1018,7 @@ def _maybe_merge_pass(
     Never raises — the merge engine contains every git/gh/journal failure, and
     a guard here means even an unexpected one can't abort the dispatch loop.
     """
-    if cfg.integration != "pr":
+    if cfg.integration != "pr" or cfg._worklist_invalid.is_set():
         return
     feature_branch = cfg.feature_branch or cfg.base_branch
     if not feature_branch:
@@ -3224,49 +3245,33 @@ def _dispatch_drain(
     appends). Returns True iff the cost ceiling (BUDGET-1) tripped during this
     drain — the caller then holds the run (and stops further review rounds)."""
     budget_tripped = False
-    worklist_invalid = False
     in_flight: dict[Future[str], str] = {}
     with ThreadPoolExecutor(max_workers=max(cfg.max_parallel, 1)) as exe:
         while True:
-            # A worklist that validated at startup can stop validating MID-RUN:
-            # the dispatcher writes agent / effort / model / status back into it,
-            # and has produced a row it would itself refuse (WAL-CHAIN-3 carried
-            # `agent: claude` with `model: gpt-5.6-sol`, written by a cascade).
-            #
-            # Unguarded, the ValidationError leaves this loop and ends the run
-            # from inside the `with`, so every in-flight task is abandoned with
-            # its row still In Progress and its worktree still on disk. That is
-            # the failure that once collapsed a 19-wave plan to 2 — orphaned
-            # rows read as permanently running, so nothing downstream is ever
-            # runnable again. One bad row must not cost the other 72.
-            #
-            # So: same treatment as the budget ceiling. Stop STARTING work, let
-            # in-flight tasks finish and write their own rows back, then leave.
-            # The defect is still fatal to the run, just not to its work.
-            try:
-                tasks = _load_tasks_snapshot(cfg)
-            except plan_mod.ValidationError as exc:
-                if not worklist_invalid:
-                    worklist_invalid = True
+            # A worklist failure holds admissions without cancelling workers.
+            # The hold survives later valid snapshots until explicit resume.
+            if cfg._worklist_invalid.is_set():
+                tasks, runnable = [], []
+            else:
+                try:
+                    tasks = _load_tasks_snapshot(cfg)
+                except yaml_io.LockTimeout:
+                    raise
+                except Exception as exc:  # unreadable YAML and invalid rows both hold
+                    if not cfg._worklist_invalid.is_set():
+                        _hold_invalid_worklist(cfg, exc)
                     holding = sorted(in_flight.values()) if in_flight else []
                     _log(log_path,
                          f"WORKLIST: {cfg.tasks_path} no longer validates — "
                          f"starting no new work; draining "
                          f"{len(holding)} in-flight task(s) "
                          f"({holding or 'none'}). Defect(s):\n{exc}")
-                    _emit_event(cfg, journal_mod.EventType.worklist_invalid, {
-                        "phase": "tasks_snapshot",
-                        "error": str(exc),
-                        "in_flight": holding,
-                    })
-                if not in_flight:
-                    break
-                tasks, runnable = [], []
-            else:
-                runnable = plan_mod.runnable_now(
-                    tasks, integration=cfg.integration)
-                runnable = plan_mod.filter_tasks(
-                    runnable, cfg.label_filter, cfg.only_keys)
+                    tasks, runnable = [], []
+                else:
+                    runnable = plan_mod.runnable_now(
+                        tasks, integration=cfg.integration)
+                    runnable = plan_mod.filter_tasks(
+                        runnable, cfg.label_filter, cfg.only_keys)
             # in_flight values are single keys or batch_keys lists — flatten
             # so no member of an in-flight batch is ever re-dispatched.
             in_flight_keys = {
@@ -3304,7 +3309,8 @@ def _dispatch_drain(
                         parked_count=len(parked), tasks_yaml=str(cfg.tasks_path),
                     ))
                 runnable = []  # stop starting new work; drain in-flight
-            while runnable and len(in_flight) < cfg.max_parallel:
+            while (runnable and len(in_flight) < cfg.max_parallel
+                   and not cfg._worklist_invalid.is_set()):
                 group, runnable = _take_batch_group(runnable)
                 primary = group[0]
                 agent = primary.agent or routing_mod.default_implementer(
@@ -6743,76 +6749,53 @@ def _summary_problem_detail(s: summary_mod.Summary) -> str:
 
 
 def _load_tasks_snapshot(cfg: RunConfig) -> list[plan_mod.Task]:
-    """The worklist, or the rows that still parse when it has stopped parsing.
-
-    STRICT AT STARTUP, TOLERANT MID-RUN, and the split exists because the
-    dispatcher writes to the file it validates. A defective row is a real
-    defect and must be refused before a run begins — that is what
-    `_load_tasks_snapshot_strict` and `plan.load_tasks` are for. But once work
-    is in flight, refusing the whole file to punish one row destroys the other
-    72 rows' state.
-
-    Measured 2026-09-04, and this is the second time: all five accounts hit
-    quota, a cascade stamped `agent: claude` onto a grok-pinned row, and the
-    ValidationError escaped from the END-OF-RUN ROLLUP at _run_loop — after
-    every task had finished. The run died counting its own results.
-
-    PR #101 guarded `_dispatch_drain` only. There are SEVEN call sites; that
-    fixed one. Guarding the loader itself is what makes the property hold
-    everywhere, including the five call sites nobody has thought about yet.
-
-    The defect is not hidden: it is logged, journalled, and the run still ends
-    unsuccessfully via the startup check on the next invocation. What changes
-    is that it can no longer take the run's other work with it.
-    """
+    """Read complete decision inputs; a failure holds this invocation."""
     try:
         return _load_tasks_snapshot_strict(cfg)
-    except Exception as exc:  # noqa: BLE001 - see below; nothing may escape
-        # BROAD ON PURPOSE. A ValidationError is the expected shape, but
-        # unparseable YAML raises the parser's own error BEFORE validation
-        # runs — measured, and it escaped the first version of this guard. The
-        # whole point is that NO failure to read this file may end a run whose
-        # work is already in flight, so the catch is the same width as the
-        # promise.
-        # A LOCK TIMEOUT IS NOT A DEFECTIVE WORKLIST. It means another writer
-        # holds the file right now, so the correct answer is to surface it and
-        # let the caller's timeout policy apply — swallowing it would report an
-        # empty worklist while the real file is intact, which is a far worse
-        # lie than the crash this guard replaces. (Caught by
-        # test_lock_timeout_flows_to_filelock, which this widening broke.)
-        if isinstance(exc, (KeyboardInterrupt, SystemExit,
-                            yaml_io.LockTimeout)):
-            raise
+    except yaml_io.LockTimeout:
+        raise
+    except Exception as exc:
+        _hold_invalid_worklist(cfg, exc)
+        raise
+
+
+def _hold_invalid_worklist(cfg: RunConfig, exc: Exception) -> None:
+    """Keep the hold independent of best-effort journals and notifications."""
+    cfg._worklist_invalid.set()
+    _emit_event(cfg, journal_mod.EventType.worklist_invalid, {
+        "phase": "tasks_snapshot", "tasks_path": str(cfg.tasks_path),
+        "error": str(exc)[:2000],
+    })
+    print(f"WORKLIST: {cfg.tasks_path} no longer validates; "
+          f"new work is held.\n{exc}", file=sys.stderr)
+
+
+def _load_tasks_for_rollup(cfg: RunConfig) -> list[plan_mod.Task]:
+    """Recover diagnostic counts only; these rows must not authorize work."""
+    try:
+        return _load_tasks_snapshot(cfg)
+    except yaml_io.LockTimeout:
+        raise
+    except Exception:
         rows = _rows_that_still_parse(cfg)
-        # The JOURNAL, not run.log: RunConfig carries no log path, and a
-        # silent tolerance is worse than the crash it replaces. The journal is
-        # hash-chained, so this cannot be lost or quietly edited afterwards.
-        _emit_event(cfg, journal_mod.EventType.worklist_invalid, {
-            "tasks_path": str(cfg.tasks_path),
-            "error": str(exc)[:2000],
-            "rows_still_parsing": len(rows),
-        })
-        print(f"WORKLIST: {cfg.tasks_path} no longer validates; continuing "
-              f"with {len(rows)} row(s) that still parse.\n{exc}",
-              file=sys.stderr)
+        print(f"WORKLIST: reporting {len(rows)} individually readable row(s); "
+              "counts may be partial.", file=sys.stderr)
         return rows
 
 
 def _rows_that_still_parse(cfg: RunConfig) -> list[plan_mod.Task]:
-    """Every row that individually survives validation.
-
-    A per-row parse, because `load_tasks` is all-or-nothing by design and that
-    design is right at startup. Dropping only the offending row keeps dispatch
-    ordering intact for the rest: a dependent of the dropped row simply finds
-    no dependency and stays unrunnable, which is the honest outcome.
-    """
+    """Diagnostic rows only; graph-dependent rows may be omitted."""
     try:
         with yaml_io.FileLock(cfg.tasks_path,
                               timeout_seconds=cfg.lock_timeout_seconds):
             doc = yaml_io.load(cfg.tasks_path)
-    except Exception:  # noqa: BLE001 - unreadable file: nothing to salvage
+    except yaml_io.LockTimeout:
+        raise
+    except Exception:  # unreadable file: nothing to report
         return []
-    rows = (doc or {}).get("tasks") or []
+    if not isinstance(doc, dict) or not isinstance(doc.get("tasks"), list):
+        return []
+    rows = doc["tasks"]
     out: list[plan_mod.Task] = []
     for row in rows:
         try:

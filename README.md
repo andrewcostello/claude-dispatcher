@@ -302,6 +302,13 @@ still require a trusted execution context. See the
 [Git-reader assurance record](docs/2026-09-04-assurance-git-context-increment.md)
 for the tested toolchain and remaining boundaries.
 
+If the task worklist becomes unreadable or invalid during a run, the dispatcher
+holds new admissions and drains work already in flight. Only the final report
+may recover individually readable rows; scheduling and verification require the
+validated worklist. A held run exits nonzero, marks its counts as potentially
+partial, and requires an explicit resume after repair. See the
+[worklist recovery record](docs/2026-09-05-assurance-worklist-increment.md).
+
 ```yaml
 # The shell command run inside a task worktree for the mechanical gate.
 # Exit 0 = green. Run verbatim (never stripped). Absent → mechanical gate skipped.

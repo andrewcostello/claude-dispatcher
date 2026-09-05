@@ -4,6 +4,8 @@ This continues the [pinned configuration repair](2026-09-04-assurance-policy-inc
 at `e721df26d4dad19600b1a1aab4dc5c7a1d82742d`. It is a bounded repair to the
 existing object-store reader, not the B5 authority channel or C8 cut-over.
 
+Next increment: [worklist recovery and decision separation](2026-09-05-assurance-worklist-increment.md).
+
 ## Reproduced failures
 
 Eleven initial tests failed before the repair, against real disposable Git

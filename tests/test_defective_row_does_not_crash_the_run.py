@@ -1,15 +1,4 @@
-"""One defective row must not destroy a run's other work.
-
-The dispatcher WRITES to the worklist it validates, so a row it produced can
-stop the file parsing mid-run. Measured 2026-09-04, the second occurrence: all
-five accounts hit quota, a cascade stamped `agent: claude` onto a grok-pinned
-row, and the ValidationError escaped from the END-OF-RUN ROLLUP in `_run_loop`
-— after every task had already finished. The run died counting its results.
-
-PR #101 guarded `_dispatch_drain`. There are SEVEN `_load_tasks_snapshot` call
-sites, so that fixed one of them. These seals are on the LOADER, which is what
-makes the property hold at the five call sites nobody has considered yet.
-"""
+"""Damaged rows must not crash reporting; decision inputs remain strict."""
 
 from __future__ import annotations
 
@@ -53,17 +42,17 @@ def _cfg(tmp_path: Path, text: str):
     )
 
 
-def test_a_defective_row_does_not_raise_out_of_the_loader(tmp_path) -> None:
+def test_a_defective_row_does_not_raise_out_of_the_rollup_reader(tmp_path) -> None:
     """The property. A raise here reached _run_loop and ended a run whose work
     was already complete."""
-    tasks = orch._load_tasks_snapshot(_cfg(tmp_path, DEFECTIVE))
+    tasks = orch._load_tasks_for_rollup(_cfg(tmp_path, DEFECTIVE))
     assert [t.key for t in tasks] == ["A-1"]
 
 
 def test_the_healthy_rows_survive(tmp_path) -> None:
     """Refusing the whole file to punish one row destroys the other 72 rows'
     state — which is the cost this seal exists to prevent."""
-    tasks = orch._load_tasks_snapshot(_cfg(tmp_path, DEFECTIVE))
+    tasks = orch._load_tasks_for_rollup(_cfg(tmp_path, DEFECTIVE))
     assert len(tasks) == 1 and tasks[0].agent == "grok"
 
 
@@ -82,7 +71,7 @@ def test_a_valid_worklist_is_unchanged(tmp_path) -> None:
 def test_an_unreadable_file_yields_nothing_rather_than_raising(tmp_path) -> None:
     cfg = _cfg(tmp_path, GOOD)
     cfg.tasks_path.write_text("this: [is not: valid yaml\n")
-    assert orch._load_tasks_snapshot(cfg) == []
+    assert orch._load_tasks_for_rollup(cfg) == []
 
 
 def test_the_startup_path_uses_the_strict_loader() -> None:
