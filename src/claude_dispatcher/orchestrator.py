@@ -680,7 +680,8 @@ def execute(args: argparse.Namespace) -> int:
     # the ceiling caps only what THIS run adds. Persisted in the genesis below so
     # resumes reuse the same baseline (capping total spend across original +
     # resumes), rather than recomputing it from rows this run has since written.
-    cfg.cost_baseline_usd = _cumulative_cost_usd(_load_tasks_snapshot(cfg))
+    # STRICT: a worklist that does not validate must not START a run.
+    cfg.cost_baseline_usd = _cumulative_cost_usd(_load_tasks_snapshot_strict(cfg))
 
     # Open the event journal. Its genesis (run_started, seq 0) event records
     # the run's provenance — dispatcher version, tasks.yaml + reviewer-prompts
@@ -6742,6 +6743,86 @@ def _summary_problem_detail(s: summary_mod.Summary) -> str:
 
 
 def _load_tasks_snapshot(cfg: RunConfig) -> list[plan_mod.Task]:
+    """The worklist, or the rows that still parse when it has stopped parsing.
+
+    STRICT AT STARTUP, TOLERANT MID-RUN, and the split exists because the
+    dispatcher writes to the file it validates. A defective row is a real
+    defect and must be refused before a run begins — that is what
+    `_load_tasks_snapshot_strict` and `plan.load_tasks` are for. But once work
+    is in flight, refusing the whole file to punish one row destroys the other
+    72 rows' state.
+
+    Measured 2026-09-04, and this is the second time: all five accounts hit
+    quota, a cascade stamped `agent: claude` onto a grok-pinned row, and the
+    ValidationError escaped from the END-OF-RUN ROLLUP at _run_loop — after
+    every task had finished. The run died counting its own results.
+
+    PR #101 guarded `_dispatch_drain` only. There are SEVEN call sites; that
+    fixed one. Guarding the loader itself is what makes the property hold
+    everywhere, including the five call sites nobody has thought about yet.
+
+    The defect is not hidden: it is logged, journalled, and the run still ends
+    unsuccessfully via the startup check on the next invocation. What changes
+    is that it can no longer take the run's other work with it.
+    """
+    try:
+        return _load_tasks_snapshot_strict(cfg)
+    except Exception as exc:  # noqa: BLE001 - see below; nothing may escape
+        # BROAD ON PURPOSE. A ValidationError is the expected shape, but
+        # unparseable YAML raises the parser's own error BEFORE validation
+        # runs — measured, and it escaped the first version of this guard. The
+        # whole point is that NO failure to read this file may end a run whose
+        # work is already in flight, so the catch is the same width as the
+        # promise.
+        # A LOCK TIMEOUT IS NOT A DEFECTIVE WORKLIST. It means another writer
+        # holds the file right now, so the correct answer is to surface it and
+        # let the caller's timeout policy apply — swallowing it would report an
+        # empty worklist while the real file is intact, which is a far worse
+        # lie than the crash this guard replaces. (Caught by
+        # test_lock_timeout_flows_to_filelock, which this widening broke.)
+        if isinstance(exc, (KeyboardInterrupt, SystemExit,
+                            yaml_io.LockTimeout)):
+            raise
+        rows = _rows_that_still_parse(cfg)
+        # The JOURNAL, not run.log: RunConfig carries no log path, and a
+        # silent tolerance is worse than the crash it replaces. The journal is
+        # hash-chained, so this cannot be lost or quietly edited afterwards.
+        _emit_event(cfg, journal_mod.EventType.worklist_invalid, {
+            "tasks_path": str(cfg.tasks_path),
+            "error": str(exc)[:2000],
+            "rows_still_parsing": len(rows),
+        })
+        print(f"WORKLIST: {cfg.tasks_path} no longer validates; continuing "
+              f"with {len(rows)} row(s) that still parse.\n{exc}",
+              file=sys.stderr)
+        return rows
+
+
+def _rows_that_still_parse(cfg: RunConfig) -> list[plan_mod.Task]:
+    """Every row that individually survives validation.
+
+    A per-row parse, because `load_tasks` is all-or-nothing by design and that
+    design is right at startup. Dropping only the offending row keeps dispatch
+    ordering intact for the rest: a dependent of the dropped row simply finds
+    no dependency and stays unrunnable, which is the honest outcome.
+    """
+    try:
+        with yaml_io.FileLock(cfg.tasks_path,
+                              timeout_seconds=cfg.lock_timeout_seconds):
+            doc = yaml_io.load(cfg.tasks_path)
+    except Exception:  # noqa: BLE001 - unreadable file: nothing to salvage
+        return []
+    rows = (doc or {}).get("tasks") or []
+    out: list[plan_mod.Task] = []
+    for row in rows:
+        try:
+            out.extend(plan_mod.load_tasks({"tasks": [row]}))
+        except Exception:  # noqa: BLE001 - this row is the defect; skip it
+            continue
+    return out
+
+
+def _load_tasks_snapshot_strict(cfg: RunConfig) -> list[plan_mod.Task]:
     """Acquire the lock, load the YAML, parse into Task list, release.
 
     The Task objects' .raw fields point at the loaded doc — when the next
