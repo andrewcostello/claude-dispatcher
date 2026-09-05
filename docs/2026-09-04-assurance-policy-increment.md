@@ -4,6 +4,9 @@ This continues the [revalidation repair](2026-09-04-assurance-revalidation-incre
 It pins mechanical and seal configuration; it is not the planned complete
 acceptance boundary, production approval or a new quality score.
 
+The [fifth increment](2026-09-04-assurance-git-context-increment.md) addresses
+replace refs and inherited Git settings in the shared object-store reader.
+
 ## Previously completed work, now committed
 
 | Repository | Commit | Scope |

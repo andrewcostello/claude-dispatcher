@@ -29,6 +29,7 @@ skipped; notes flow through return values, never logging.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -443,6 +444,23 @@ _GIT_TIMEOUT_SECONDS = 30
 _GIT_ABSENT_MARKERS = ("does not exist in", "does not exist in the")
 
 
+def _object_read_environment() -> dict[str, str]:
+    """Isolate local object reads without changing the parent environment."""
+    env = {
+        key: value for key, value in os.environ.items()
+        if not key.upper().startswith("GIT_")
+    }
+    env.update({
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_NO_LAZY_FETCH": "1",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_TERMINAL_PROMPT": "0",
+    })
+    return env
+
+
 def _run_git(
     cmd: list[str],
     cwd: str,
@@ -456,9 +474,10 @@ def _run_git(
     neither reading is more correct. Raises whatever the seam raises; callers
     map that to their own error type.
     """
+    env = _object_read_environment()
     if run is None:
         proc = subprocess.run(
-            cmd, cwd=cwd, capture_output=True, timeout=_GIT_TIMEOUT_SECONDS
+            cmd, cwd=cwd, env=env, capture_output=True, timeout=_GIT_TIMEOUT_SECONDS
         )
         stderr = proc.stderr or b""
         return (
@@ -469,6 +488,7 @@ def _run_git(
     result = run(
         cmd,
         cwd=cwd,
+        env=env,
         capture_output=True,
         text=True,
         timeout=_GIT_TIMEOUT_SECONDS,
@@ -508,6 +528,11 @@ def blob_text_at(
 ) -> str | None:
     """One path's UTF-8 text out of ``ref``'s object store, or None when
     ``ref``'s tree does not contain it.
+
+    Inherited Git overrides, global/system config and replace refs do not
+    select the read. Missing objects are not fetched implicitly. Repository
+    discovery, local config and the Git executable still require a trusted
+    execution context; this is not a filesystem sandbox or forge attestation.
 
     Never touches the working copy. Raises :class:`BaseConfigError` when the
     ref does not resolve, the entry is not a regular-file blob (symlink,

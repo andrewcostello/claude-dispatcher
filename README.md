@@ -293,6 +293,15 @@ its corrective passes and cascade rungs. Verification events record
 of falling back to the candidate. Scripts invoked by `test:` still execute
 from the candidate worktree; this pin is not a sandbox or merged-tree proof.
 
+The shared object-store reader gives its Git subprocesses an isolated
+environment: inherited `GIT_*` overrides are discarded, automatic global/system
+configuration is disabled, and replace refs and lazy fetching are disabled.
+Provision required objects before verification, including in partial clones.
+Repository-local configuration, repository discovery and the Git executable
+still require a trusted execution context. See the
+[Git-reader assurance record](docs/2026-09-04-assurance-git-context-increment.md)
+for the tested toolchain and remaining boundaries.
+
 ```yaml
 # The shell command run inside a task worktree for the mechanical gate.
 # Exit 0 = green. Run verbatim (never stripped). Absent → mechanical gate skipped.
