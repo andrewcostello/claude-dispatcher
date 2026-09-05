@@ -148,12 +148,12 @@ Wired by P3 (invariant 7 — each claim here has its call site):
     that module defines no top-level `run`: the entry point is `execute`, so
     the claim named a function that does not exist. Corrected rather than
     deleted — the claim was true about the intent and wrong about the name.
-  * `repo_config.load` → validates a `roles:` section via
+  * `repo_config._from_document` → validates a `roles:` section via
     :func:`role_policy_from_mapping`, so an invalid or narrowing section is a
     load failure rather than a line dropped into `RepoConfig.unknown_keys`.
-    It deliberately does not *use* the parsed policy: `load` reads the
-    working tree, and the gating path takes its policy from the protected
-    base (:func:`load_role_policy_from_base`, invariant 6).
+    Both filesystem and base-config loaders use this validator. It deliberately
+    does not *use* the parsed role policy: the role gate takes its policy from
+    the protected base (:func:`load_role_policy_from_base`, invariant 6).
   * `scripts/check_body_branch.sh` → runs :func:`main` and passes its exit
     code through, so CI, PR time and any hand invocation go through
     :func:`check_branch`. Since 2026-08-09 that script also decides WHICH copy

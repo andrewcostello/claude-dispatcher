@@ -35,8 +35,23 @@ Two install-time facts that have each cost a run:
 
 ## 2. `.dispatcher.yaml` — the per-repo config
 
-Every key is optional; an absent file means "no test gate, no panel". Print what
-the loader actually understood with `dispatcher doctor`.
+Every key is optional; an absent file means no configured mechanical test
+command or advisory seats. Required review is decided separately. Print what
+the local loader understood with `dispatcher doctor`.
+
+Review and commit this file on the configured base before dispatching tasks.
+Mechanical and seal verification read the base commit captured before the
+worker starts, not the worker's copy of `.dispatcher.yaml`. Candidate edits
+cannot change their own test command or exclusion style. A missing command on
+that base is an explicit legacy skip, not proof that tests ran; do not use that
+unconfigured mode as assurance for production-bound financial/game work.
+
+The object-store reader does not use inherited Git redirection or automatic
+global/system Git configuration. Use an appropriately owned/provisioned
+checkout; global `safe.directory` exceptions are not imported into this read.
+Fetch required policy/source objects before starting verification: the reader
+disables Git's implicit lazy fetch. These controls do not replace repository
+isolation or toolchain verification.
 
 ```yaml
 # file: .dispatcher.yaml

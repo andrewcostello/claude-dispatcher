@@ -326,7 +326,13 @@ def test_no_config_skips_and_preserves_done_flow(repo: Path, monkeypatch) -> Non
 
     evs = _mech_events(repo)
     assert len(evs) == 1
-    assert evs[0].payload == {"outcome": "skipped", "reason": "no .dispatcher.yaml"}
+    policy_sha = subprocess.check_output(
+        ["git", "rev-parse", "main"], cwd=repo, text=True, timeout=30,
+    ).strip()
+    assert evs[0].payload == {
+        "outcome": "skipped", "reason": "no .dispatcher.yaml",
+        "policy_base_sha": policy_sha,
+    }
 
     # Lifecycle identical to the pre-gate `done` scenario, plus the mechanical
     # skip event and the VG-4 LLM verifier events (VERIFIED stub) between
@@ -427,29 +433,44 @@ def test_timeout_is_red_and_retried_once(repo: Path, monkeypatch) -> None:
     assert 2 <= len(calls) <= 8
 
 
-def test_fix_retry_spawn_failure_verdict_from_rerun(repo: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("committed", [False, True])
+def test_fix_retry_spawn_failure_verdict_from_rerun(repo: Path, monkeypatch, committed) -> None:
     """A raising fix-retry spawn must not decide the verdict: the test
-    command is re-run regardless, and a green re-run lands Done even though
-    the retry spawn exploded."""
+    command can recover a committed fix even though the retry spawn exploded,
+    but an uncommitted fix cannot supply passing evidence."""
     _write_dispatcher_config(repo, 'test: "test -f tests-green.txt"\n')
     monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "done-tests-red")
 
     def hook(call_n: int, cwd: Path) -> None:
         if call_n == 2:
             # The fix retry: simulate a Tasker that DID fix the suite (the
-            # green file appears in the worktree) but whose session crashed.
+            # green file appears) but whose session crashed.
             (cwd / "tests-green.txt").write_text("fixed\n", encoding="utf-8")
+            if committed:
+                subprocess.run(["git", "add", "tests-green.txt"], cwd=cwd,
+                               check=True, capture_output=True, timeout=30)
+                subprocess.run(["git", "-c", "commit.gpgsign=false", "commit",
+                                "-qm", "committed fix before crash"], cwd=cwd,
+                               check=True, capture_output=True, timeout=30)
             raise RuntimeError("simulated retry-spawn crash")
 
     calls = _patch_spawn(monkeypatch, hook=hook)
 
-    rc = orchestrator.execute(_args(repo))
-    assert rc == 0, "verdict must come from the re-run, not the spawn outcome"
+    args = _args(repo)
+    args.pin_effort = True
+    rc = orchestrator.execute(args)
     row = _row(repo)
+    evs = _mech_events(repo)
+    if not committed:
+        assert rc != 0 and row["status"] == "Blocked", row
+        assert row["mechanical_verification"] == "failed", row
+        assert "uncommitted changes" in row["mechanical_verification_detail"], row
+        assert not any(e.payload["outcome"] == "passed" for e in evs)
+        return
+    assert rc == 0, "a committed fix must be judged by fresh checks"
     assert row["status"] == "Done"
     assert row["mechanical_verification"] == "passed"
 
-    evs = _mech_events(repo)
     assert len(evs) == 2
     assert evs[0].payload["outcome"] == "failed"
     assert evs[1].payload["outcome"] == "passed"

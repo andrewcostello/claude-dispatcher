@@ -292,16 +292,24 @@ decision is reconstructable from the journal alone.
 |-------------------|-----------------|-------|
 | `outcome`         | string          | `passed`, `failed`, or `skipped`. |
 | `command`         | string          | The `test:` command (present on an execution). |
-| `exit_code`       | int \| null     | Process exit code (`null` on the malformed-config failure). |
+| `policy_base_sha` | string          | Base commit captured before the worker starts; source of the verification configuration. Historical events may lack this field. |
+| `exit_code`       | int \| null     | Process exit code (`null` when configuration cannot be loaded). |
 | `duration_seconds`| number          | Execution wall-clock (present on an execution). |
-| `retried`         | bool            | `true` on the post-fix re-run; `false` on the first run / malformed-config. |
+| `retried`         | bool            | `true` on the post-fix re-run; `false` on the first run / configuration failure. |
 | `output_tail`     | string          | Captured output tail (present on an execution; capped). |
 | `reason`          | string          | On `skipped`: `no test command` or `no .dispatcher.yaml`. |
-| `error`           | string          | On the malformed-config `failed`: the parse error (capped). |
+| `error`           | string          | On a configuration failure: the read or parse error (capped). |
 | `unknown_keys`    | array\<str>     | Present (non-empty) when `.dispatcher.yaml` carried forward-compat keys the loader didn't recognise (top-level, or `panel.<key>`). |
 
+**`verification_seal`** — an applicable seal-inversion gate was decided.
+`outcome` is `passed`, `skipped`, `failed` or `error`; `command` and `detail`
+describe an executed inversion, `reason` describes a skip, and `error`
+describes a configuration failure. `policy_base_sha` identifies the same
+captured configuration source as the mechanical gate. A source identifier is
+diagnostic provenance, not proof of protected policy or complete acceptance.
+
 **`verification_started`** *(VG-4)* — the independent LLM verifier was spawned
-(after the mechanical gate passed, before the cross-family panel). One per
+(after the mechanical gate passed or explicitly skipped, before the cross-family panel). One per
 verifier spawn.
 
 | Key         | Type | Notes |

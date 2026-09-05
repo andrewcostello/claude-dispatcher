@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -182,6 +183,17 @@ def integrate(
 
     # 3-10. Do the real merge under the YAML FileLock.
     with yaml_io.FileLock(yaml_path, timeout_seconds=lock_timeout_seconds):
+        try:
+            merged_tree = mt_out.splitlines()[0]
+            collision = _local_addition_conflict(repo_root, base_branch, merged_tree)
+        except (IndexError, OSError, RuntimeError) as e:
+            return IntegrateResult(status="error", detail=f"local-file preflight failed: {e}")
+        if collision is not None:
+            return IntegrateResult(
+                status="skipped-conflict",
+                detail=f"local file would be overwritten: {collision!r}; preserve or relocate it before retrying",
+            )
+
         # Stash the dispatcher's transient YAML edits so they don't
         # conflict with the merge.
         stashed = False
@@ -195,19 +207,10 @@ def integrate(
             )
             stashed = (rc_s == 0)
 
-        # Pristine the working tree before merging. Residue — untracked files
-        # left by a prior aborted merge or by codegen — makes git refuse the
-        # merge ("untracked working tree files would be overwritten by merge").
-        # The YAML is stashed above; tracked files are at base HEAD and
-        # merge-tree already proved no content conflict; any remaining untracked
-        # non-ignored file between integrations is residue, safe to clear. Use
-        # -d (not -x) so gitignored paths (node_modules, docs/runs, the
-        # dispatcher's tasks YAML) are preserved.
-        _run(["git", "clean", "-fd"], cwd=repo_root)
-
-        # Actual merge.
+        # Do not clear untracked files. Keep Git's overwrite protection as an
+        # additional guard after the local-path preflight.
         rc, _, err = _run(
-            ["git", "merge", "--no-ff", "--no-commit", feat_branch],
+            ["git", "merge", "--no-ff", "--no-commit", "--no-overwrite-ignore", feat_branch],
             cwd=repo_root,
         )
         if rc != 0:
@@ -302,6 +305,30 @@ def integrate(
 
 
 # --- internal helpers ------------------------------------------------------
+
+
+def _local_addition_conflict(repo_root: Path, base: str, merged_tree: str) -> str | None:
+    """Refuse additions over existing local paths, without following symlinks."""
+    rc, out, err = _run(
+        ["git", "diff", "--no-renames", "--name-only", "--diff-filter=A", "-z", base, merged_tree, "--"],
+        cwd=repo_root,
+    )
+    if rc != 0:
+        raise RuntimeError(f"cannot enumerate merge additions: {err[-300:]}")
+    for name in out.split("\0"):
+        if not name:
+            continue
+        parts = Path(name).parts
+        path = repo_root
+        for index, part in enumerate(parts):
+            path = path / part
+            try:
+                mode = path.lstat().st_mode
+            except FileNotFoundError:
+                break
+            if index == len(parts) - 1 or not stat.S_ISDIR(mode):
+                return str(path.relative_to(repo_root))
+    return None
 
 
 def _run(cmd: list[str], *, cwd: Path) -> tuple[int, str, str]:

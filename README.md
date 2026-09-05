@@ -79,7 +79,7 @@ dispatcher run <tasks-yaml> [options]
   --reviewer-count {1,2,3}                  override per-tier reviewer count
   --max-iterations N                        default: 4
   --verify-test-timeout SECONDS             default: 600 — wall-clock bound per execution of the .dispatcher.yaml `test:` command (mechanical gate)
-  --max-verify-iterations N                 default: 2 — on LLM-verifier INCOMPLETE, re-spawn Tasker with the gap list, re-run the mechanical gate, re-verify, up to N times
+  --max-verify-iterations N                 default: 2 — corrective verifier spawns per cascade rung; restart acceptance checks after each fix (llm_strict adds one retry)
   --skip-verification                        escape hatch — skip the post-Done LLM verifier entirely (mechanical gate still runs); the skip is journaled
   --lock-timeout-seconds SECONDS            default: 30 — tasks-YAML FileLock wait
   --task-timeout-seconds SECONDS            default: 14400 (4h) — per-task wall-clock budget
@@ -232,35 +232,38 @@ still-`Done` task; a non-Done outcome (Blocked/Escalated) skips them entirely.
 **Mechanical-first ordering.** The two stages run in a fixed order, cheapest
 first:
 
-1. **Mechanical gate (VG-2)** — runs the repo's `.dispatcher.yaml` `test:`
-   command inside the task worktree. Green (exit 0) proceeds; red triggers one
+1. **Mechanical gate (VG-2)** — reads `.dispatcher.yaml` from the base commit
+   captured before the task's worker starts, then runs its `test:` command
+   inside the task worktree. Green (exit 0) proceeds; red triggers one
    "fix-the-tests" re-spawn of the Tasker and a single re-run. Still red →
    `Blocked` with reason `mechanical_verification_failed` (the failing output
    tail lands in `mechanical_verification_detail` on the row). No `test:`
-   command (or no `.dispatcher.yaml`) → the gate is **skipped**, behaviour
+   command (or no `.dispatcher.yaml`) in that base → the gate is **skipped**, behaviour
    unchanged from pre-gate runs. Each execution is bounded by
    `--verify-test-timeout` (default 600s) — a timeout counts as a failure.
-2. **LLM verifier (VG-4)** — spawned only after the mechanical gate passes, so
+2. **LLM verifier (VG-4)** — spawned after mechanical verification passes or
+   explicitly skips, so
    verifier tokens are never spent on a red suite. An independent Claude session
    reads the task, the Tasker's `summary.md`, and the committed diff, and
    returns `VERIFIED` or `INCOMPLETE` (with a gap list). `VERIFIED` proceeds to
    the panel.
 
-**The iterate loop.** On `INCOMPLETE`, the dispatcher re-spawns the Tasker with
-the verifier's gap list as a corrective prompt, **re-runs the mechanical gate**
-(an iterate may have reddened the suite), then re-verifies — up to
-`--max-verify-iterations` times (default 2). This is distinct from
-`--cross-family-panel-iterate`; the verifier runs first, and each iteration is
-one Tasker re-spawn + one mechanical re-run + one verifier re-spawn. If an
-iterate spawn produces no new commit (the Tasker changed nothing), the loop
-short-circuits — re-verifying the same diff would return the same verdict.
+**The iterate loop.** Mechanical, verifier and panel corrections restart the
+configured acceptance stack: fresh summary, role/scope/holes, mechanical and
+applicable seal checks, verifier, then required panel. Earlier passing results
+do not certify the correction. Verifier and panel budgets survive these
+restarts; a new cascade rung receives fresh budgets. `llm_strict` adds one to
+the configured verifier budget. A failed or no-commit verifier/panel correction
+blocks; the dispatcher's own checks, not a worker's success claim, decide
+whether corrected code passes.
 
 **Blocked reasons** the gate can stamp on a row:
 
 | `blocked_reason` | Meaning |
 |------------------|---------|
-| `mechanical_verification_failed` | The `test:` command was still red after the fix-the-tests retry, or `.dispatcher.yaml` was malformed (no retry — a prompt can't fix an unparseable config). Can also fire *during* an LLM-verifier iterate, if the re-run reddens the suite. |
+| `mechanical_verification_failed` | The `test:` command was still red after the fix-the-tests retry, or the base configuration was malformed or unreadable (no corrective spawn can repair pinned policy). Can also fire after a verifier or panel correction reddens the suite. |
 | `verification_incomplete` | The LLM verifier still returned `INCOMPLETE` after exhausting `--max-verify-iterations` (or an iterate produced no new commit). The rendered gaps land in `verification_detail` on the row. |
+| `verification_policy_unavailable: ...` | The base commit could not be captured before worker execution. No candidate-configuration fallback is allowed. |
 
 **Skipping.** `--skip-verification` is an emergency escape hatch that skips the
 LLM verifier entirely (the mechanical gate still runs). The skip is journaled (a
@@ -280,6 +283,24 @@ A repo opts into the verification gate and advisory reviewers through a
 `.dispatcher.yaml` at the repo root (schema introduced in VG-1). All keys are
 optional; an absent file means "no mechanical test command, no advisory seats"
 and is not an error.
+
+Mechanical and seal verification use the configuration at the task's pinned
+base commit, including `test_exclusion`. Commit and review that configuration
+on the configured base before dispatch. A candidate edit, deletion or newly
+added configuration does not change the policy for its own attempt, including
+its corrective passes and cascade rungs. Verification events record
+`policy_base_sha`; an unreadable or invalid base configuration blocks instead
+of falling back to the candidate. Scripts invoked by `test:` still execute
+from the candidate worktree; this pin is not a sandbox or merged-tree proof.
+
+The shared object-store reader gives its Git subprocesses an isolated
+environment: inherited `GIT_*` overrides are discarded, automatic global/system
+configuration is disabled, and replace refs and lazy fetching are disabled.
+Provision required objects before verification, including in partial clones.
+Repository-local configuration, repository discovery and the Git executable
+still require a trusted execution context. See the
+[Git-reader assurance record](docs/2026-09-04-assurance-git-context-increment.md)
+for the tested toolchain and remaining boundaries.
 
 ```yaml
 # The shell command run inside a task worktree for the mechanical gate.
