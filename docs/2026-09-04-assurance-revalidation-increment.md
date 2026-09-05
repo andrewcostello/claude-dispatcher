@@ -8,6 +8,8 @@ and repairs the legacy retry paths identified in
 The interactive and contract-led workflows remain distinct. The staged
 `boundary/` package remains test-only and is not imported by this repair.
 
+Subsequent follow-up: [commits and pinned verification configuration](2026-09-04-assurance-policy-increment.md).
+
 ## What changed
 
 Mechanical, verifier and panel corrections now return to one acceptance loop:

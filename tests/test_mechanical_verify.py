@@ -326,7 +326,13 @@ def test_no_config_skips_and_preserves_done_flow(repo: Path, monkeypatch) -> Non
 
     evs = _mech_events(repo)
     assert len(evs) == 1
-    assert evs[0].payload == {"outcome": "skipped", "reason": "no .dispatcher.yaml"}
+    policy_sha = subprocess.check_output(
+        ["git", "rev-parse", "main"], cwd=repo, text=True, timeout=30,
+    ).strip()
+    assert evs[0].payload == {
+        "outcome": "skipped", "reason": "no .dispatcher.yaml",
+        "policy_base_sha": policy_sha,
+    }
 
     # Lifecycle identical to the pre-gate `done` scenario, plus the mechanical
     # skip event and the VG-4 LLM verifier events (VERIFIED stub) between

@@ -32,6 +32,7 @@ def _run_retry(
     repo, monkeypatch, *, origin, regression=False, foreign_delete=False,
     on_spawn=None, on_stage=None, verify_outcomes=None, panel_outputs=None,
     seal_outcomes=None, run_overrides=None, verifier_cost=None, retry_exit=0,
+    task_overrides=None,
 ):
     _git(repo, "config", "core.hooksPath", "/dev/null")
     (repo / "correctness.txt").write_text("good\n", encoding="utf-8")
@@ -49,6 +50,10 @@ def _run_retry(
         "labels: [size:XS, risk:critical, seal-check]\n"
         "    owns: [correctness.txt, 'implemented-*.txt', correction.txt]",
     )
+    if task_overrides:
+        task_doc = yaml_io.loads(task)
+        task_doc["tasks"][0].update(task_overrides)
+        task = yaml_io.dumps(task_doc)
     _seed_yaml(repo, task)
     monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "done")
     monkeypatch.delenv("FAKE_CLAUDE_KILL_KEY", raising=False)
@@ -412,21 +417,21 @@ def test_verifier_cost_is_charged_once_even_if_reentry_blocks(repo, monkeypatch,
 
 
 def test_unknown_restart_trigger_does_not_mutate_cycle():
-    cycle = orch._VerificationCycle()
+    cycle = orch._VerificationCycle(policy_base_sha="0" * 40)
     with pytest.raises(ValueError, match="unknown verification restart trigger"):
         cycle.restart("typo")
-    assert cycle == orch._VerificationCycle()
+    assert cycle == orch._VerificationCycle(policy_base_sha="0" * 40)
 
 
 def test_retry_cycles_do_not_share_mutable_budgets():
-    first = orch._VerificationCycle(verifier_iterations=2, mechanical_retried=True)
-    second = orch._VerificationCycle()
+    first = orch._VerificationCycle(policy_base_sha="0" * 40, verifier_iterations=2, mechanical_retried=True)
+    second = orch._VerificationCycle(policy_base_sha="1" * 40)
     with pytest.raises(orch._VerificationRestart, match="panel"):
         first.restart("panel")
     assert first.verifier_iterations == 2
     assert first.generation == 1 and first.invalidated
     assert first.mechanical_retried is False
-    assert second == orch._VerificationCycle()
+    assert second == orch._VerificationCycle(policy_base_sha="1" * 40)
 
 
 @pytest.mark.parametrize("mutation", ["none", "dirty", "commit"])

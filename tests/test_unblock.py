@@ -51,7 +51,10 @@ def _row(p: Path, key: str) -> dict:
 
 
 def test_blocked_lists_reasons_and_details(tmp_path: Path, capsys) -> None:
-    p = _write_tasks(tmp_path)
+    # Paths in the suggested command may contain the key of a Done task.
+    project = tmp_path / "ProjectC"
+    project.mkdir()
+    p = _write_tasks(project)
     rc = _run(["blocked", str(p)])
     out = capsys.readouterr().out
     assert rc == 3  # alertable: something is blocked
@@ -59,7 +62,12 @@ def test_blocked_lists_reasons_and_details(tmp_path: Path, capsys) -> None:
     assert "helper.go" in out
     assert "B  [seal_verification_failed]" in out
     assert "GREEN with the fix reverted" in out
-    assert "C" not in out.replace("cleared", "")  # Done rows not listed
+    assert str(p) in out
+    listed_keys = [
+        line.split("  [", 1)[0] for line in out.splitlines()
+        if "  [" in line and not line.startswith(" ")
+    ]
+    assert listed_keys == ["A", "B"]  # Done rows not listed
     assert "2 blocked task(s)" in out
 
 

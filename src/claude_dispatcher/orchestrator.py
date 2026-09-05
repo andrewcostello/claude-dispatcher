@@ -122,12 +122,13 @@ class _VerificationRestart(Exception):
 class _VerificationCycle:
     """Retry budgets survive acceptance restarts, but not cascade rungs."""
 
+    policy_base_sha: str
     generation: int = 0
     mechanical_retried: bool = False
     verifier_iterations: int = 0
     requires_panel: bool = False
     invalidated: bool = False
-    repo_config: repo_config_mod.RepoConfig | None = None
+    base_config: repo_config_mod.BaseRepoConfig | None = None
 
     def restart(self, trigger: str) -> NoReturn:
         if trigger not in ("mechanical", "verifier", "panel"):
@@ -1429,9 +1430,13 @@ def _run_task(
         claude_config_dir=_account_for_task(cfg, snap.key, log_path),
         jira_key=getattr(snap, "jira_key", None),
     )
-    # Snapshot base_branch's tip SHA BEFORE any cascade spawn. Discriminator
-    # for the direct-to-base workflow (see _has_commits_on_branch).
+    # Pin verification configuration before any worker can change the base.
+    # Also discriminates the direct-to-base workflow (_has_commits_on_branch).
     base_sha_before = _branch_sha(repo_root, cfg.base_branch, log_path, snap.key)
+    if base_sha_before is None:
+        _mark_blocked(cfg, snap.batch_keys or snap.key,
+                      reason="verification_policy_unavailable: cannot pin base commit")
+        return plan_mod.BLOCKED
 
     # --- Design stage (Phase 5) ---------------------------------------------
     if (
@@ -1896,7 +1901,7 @@ def _run_task(
         if final_status != plan_mod.DONE:
             break
 
-        cycle = _VerificationCycle()
+        cycle = _VerificationCycle(policy_base_sha=base_sha_before)
         advance_cascade = False
         while True:
             cycle.invalidated = False
@@ -4388,10 +4393,9 @@ def _branch_sha(repo_root: Path, branch: str,
                 log_path: Path, task_key: str) -> str | None:
     """Return the tip SHA of `branch` in `repo_root`, or None on error.
 
-    Used to snapshot base_branch's tip before a spawn so we can later
-    detect a fast-forward advance into base (the direct-to-base workflow
-    pattern). On any git failure returns None — callers treat that as
-    "no snapshot available, fall back to the feat-branch check only."
+    Used for verification coordinates and direct-to-base detection. Git
+    failure returns None; the task must block when its required policy or
+    candidate coordinate cannot be captured.
     """
     import subprocess
     try:
@@ -5242,8 +5246,8 @@ def _verify_seal(
 ) -> tuple[str, str | None]:
     """Run the seal-inversion gate (VG-3) for a fix-shaped task.
 
-    Caller has already checked ``seal_verify.applies``; this loads the repo
-    test command, runs the inversion, journals ONE ``verification_seal``
+    Caller has already checked ``seal_verify.applies``; this loads the pinned
+    base's test command, runs the inversion, journals ONE ``verification_seal``
     event, and returns ``(outcome, detail)`` in the mechanical gate's shape:
     "passed"/"skipped" proceed, "failed"/"error" block. No retry spawn — a
     false-passing seal needs a rethink of the test, not a mechanical nudge,
@@ -5263,18 +5267,20 @@ def _verify_seal(
     cannot parse.
     """
     try:
-        repo_cfg = repo_config_mod.load(wt.path)
+        repo_cfg = repo_config_mod.load_at_base(wt.path, base_sha).config
     except repo_config_mod.RepoConfigError as exc:
         err = str(exc)[:500]
         _log(log_path,
              f"  {snap.key} seal-verify: invalid .dispatcher.yaml: {err}")
         _emit_event(cfg, journal_mod.EventType.verification_seal, {
             "outcome": "error", "error": err,
+            "policy_base_sha": base_sha,
         }, task_key=snap.key)
         return "error", err
     if repo_cfg.test is None:
         _emit_event(cfg, journal_mod.EventType.verification_seal, {
             "outcome": "skipped", "reason": "no test command",
+            "policy_base_sha": base_sha,
         }, task_key=snap.key)
         return "skipped", None
 
@@ -5290,6 +5296,7 @@ def _verify_seal(
         "outcome": res.outcome,
         "detail": res.detail[:mv_mod.TAIL_CHARS],
         "command": repo_cfg.test,
+        "policy_base_sha": base_sha,
     }, task_key=snap.key)
     return res.outcome, res.detail
 
@@ -5311,9 +5318,9 @@ def _verify_mechanical_and_maybe_retry(
     _VerificationRestart regardless of its exit; only fresh gates judge its code.
     """
     try:
-        if cycle.repo_config is None:
-            cycle.repo_config = repo_config_mod.load(wt.path)
-        repo_cfg = cycle.repo_config
+        if cycle.base_config is None:
+            cycle.base_config = repo_config_mod.load_at_base(wt.path, cycle.policy_base_sha)
+        repo_cfg = cycle.base_config.config
     except repo_config_mod.RepoConfigError as exc:
         err = str(exc)[:500]
         _log(log_path,
@@ -5321,6 +5328,7 @@ def _verify_mechanical_and_maybe_retry(
         _emit_event(cfg, journal_mod.EventType.verification_mechanical, {
             "outcome": "failed",
             "error": err,
+            "policy_base_sha": cycle.policy_base_sha,
             "exit_code": None,
             "retried": False,
         }, task_key=snap.key)
@@ -5331,13 +5339,14 @@ def _verify_mechanical_and_maybe_retry(
         # declares no test command" — same skip, different journaled reason.
         reason = (
             "no test command"
-            if (wt.path / repo_config_mod.CONFIG_FILENAME).exists()
+            if cycle.base_config.present
             else "no .dispatcher.yaml"
         )
         _log(log_path, f"  {snap.key} mechanical-verify skipped: {reason}")
         _emit_event(cfg, journal_mod.EventType.verification_mechanical, {
             "outcome": "skipped",
             "reason": reason,
+            "policy_base_sha": cycle.policy_base_sha,
         }, task_key=snap.key)
         return "skipped", None
 
@@ -5356,6 +5365,7 @@ def _verify_mechanical_and_maybe_retry(
         _emit_event(cfg, journal_mod.EventType.verification_mechanical, {
             "outcome": "failed",
             "reason": "uncommitted_changes",
+            "policy_base_sha": cycle.policy_base_sha,
             "files": dirty,
             "retried": False,
         }, task_key=snap.key)
@@ -5381,12 +5391,14 @@ def _verify_mechanical_and_maybe_retry(
         _emit_event(cfg, journal_mod.EventType.verification_mechanical, {
             "outcome": "skipped",
             "reason": "role_suite_state_unjudged",
+            "policy_base_sha": cycle.policy_base_sha,
             "expectation": expectation.value,
         }, task_key=snap.key)
         return "skipped", None
     if expectation is role_protocol_mod.SuiteExpectation.RED_FROM_OWN_ROWS:
         return _verify_seal_redness(
             cfg, snap, wt, repo_cfg, log_path, gate_base_sha=gate_base_sha,
+            policy_base_sha=cycle.policy_base_sha,
         )
 
     # --- D-68: another unit's deliberate red rows are not this task's fault --
@@ -5402,6 +5414,7 @@ def _verify_mechanical_and_maybe_retry(
         _emit_event(cfg, journal_mod.EventType.verification_mechanical, {
             "outcome": "failed",
             "reason": excl.fault.value,
+            "policy_base_sha": cycle.policy_base_sha,
             "known_red_rows": list(excl.rows),
             "detail": excl.detail[:mv_mod.TAIL_CHARS],
             "retried": False,
@@ -5410,7 +5423,7 @@ def _verify_mechanical_and_maybe_retry(
 
     first = _run_mechanical_test(cfg, snap, wt, repo_cfg,
                                  retried=cycle.mechanical_retried, log_path=log_path,
-                                 exclusions=excl)
+                                 exclusions=excl, policy_base_sha=cycle.policy_base_sha)
     if first.passed:
         return "passed", None
 
@@ -5461,6 +5474,7 @@ def _verify_seal_redness(
     log_path: Path,
     *,
     gate_base_sha: str | None,
+    policy_base_sha: str,
 ) -> tuple[str, str | None]:
     """The SEALS branch of the mechanical gate (D-58).
 
@@ -5489,6 +5503,7 @@ def _verify_seal_redness(
         _emit_event(cfg, journal_mod.EventType.verification_mechanical, {
             "outcome": "failed",
             "reason": "no_gate_base",
+            "policy_base_sha": policy_base_sha,
             "expectation": "red_from_own_rows",
             "retried": False,
         }, task_key=snap.key)
@@ -5506,6 +5521,7 @@ def _verify_seal_redness(
     _emit_event(cfg, journal_mod.EventType.verification_mechanical, {
         "outcome": "passed" if res.outcome == "passed" else "failed",
         "seal_redness_outcome": res.outcome,
+        "policy_base_sha": policy_base_sha,
         "expectation": "red_from_own_rows",
         "base": gate_base_sha,
         "detail": res.detail[:mv_mod.TAIL_CHARS],
@@ -5818,6 +5834,7 @@ def _run_mechanical_test(
     *,
     retried: bool,
     log_path: Path,
+    policy_base_sha: str,
     exclusions: known_red_mod.Exclusions | None = None,
 ) -> mv_mod.MechanicalVerifyResult:
     """Execute the repo test command once and journal the execution.
@@ -5841,6 +5858,7 @@ def _run_mechanical_test(
          f"{', retried' if retried else ''})")
     payload: dict[str, Any] = {
         "command": repo_cfg.test,
+        "policy_base_sha": policy_base_sha,
         "exit_code": res.exit_code,
         "duration_seconds": round(res.duration_seconds, 3),
         "retried": retried,

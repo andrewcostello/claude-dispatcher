@@ -146,6 +146,12 @@ Before the implementer starts, every `blockedBy` branch that is not yet
 reachable from `base_branch` is merged into this tree. Dependents build on
 real upstream work, not a stale base.
 
+Before the worker starts, the dispatcher captures the base commit used for
+mechanical and seal configuration. Corrective passes and cascade rungs retain
+that source even if the base branch moves. The command runs against candidate
+code; configuration pinning does not isolate the scripts it invokes or verify
+the eventual merged tree.
+
 ### The implementer is a worker
 
 Every family gets the same brief (`spawn.IMPLEMENTER_PROMPT_TEMPLATE`):
