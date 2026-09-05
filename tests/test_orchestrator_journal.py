@@ -59,12 +59,7 @@ def repo(tmp_path: Path) -> Path:
     roles = repo_dir / ".claude" / "workflow" / "roles"
     roles.mkdir(parents=True)
     (roles / "tasker.md").write_text("stub", encoding="utf-8")
-    # With --auto-integrate, auto_integrate.integrate() pristines the working
-    # tree (`git clean -fd`) before merging; that removes any untracked,
-    # non-ignored path — which would wipe the dispatcher's `_runs/` dir mid-run
-    # and make the next `_log` fail with FileNotFoundError. Production keeps the
-    # runs dir gitignored (see the auto_integrate `git clean -fd` comment, which
-    # lists `docs/runs` among the preserved ignored paths), so mirror that.
+    # Run artifacts stay outside tracked source, matching production layout.
     (repo_dir / ".gitignore").write_text("_runs/\n", encoding="utf-8")
     (repo_dir / "tasks.yaml").write_text(
         (FIXTURE_DIR / "three_task.yaml").read_text(encoding="utf-8"),

@@ -254,6 +254,7 @@ def test_seal_D58_an_unjudged_role_never_runs_the_suite_or_the_respawn(tmp_path)
         cfg, snap, wt_mod.Worktree(path=repo, branch="feat/seals"),
         tmp_path / "summary.md", {}, tmp_path / "gate.log",
         gate_base_sha=_git(repo, "rev-parse", "HEAD"),
+        cycle=orch._VerificationCycle(),
     )
     assert (outcome, detail) == ("skipped", None), (
         f"a SEALS task's suite was judged: got {outcome!r} / {detail!r}. The "

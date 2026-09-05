@@ -187,13 +187,7 @@ def repo(tmp_path: Path) -> Path:
     roles = repo_dir / ".claude" / "workflow" / "roles"
     roles.mkdir(parents=True)
     (roles / "tasker.md").write_text("stub", encoding="utf-8")
-    # The dispatcher writes its run artifacts under `_runs/` inside the repo.
-    # With --auto-integrate, auto_integrate.integrate() pristines the working
-    # tree (`git clean -fd`) before merging; that removes any untracked,
-    # non-ignored path — which would wipe `_runs/` mid-run and make the next
-    # `_log` fail with FileNotFoundError. Production keeps the runs dir
-    # gitignored (see the auto_integrate `git clean -fd` comment, which lists
-    # `docs/runs` among the preserved ignored paths), so mirror that here.
+    # Run artifacts stay outside tracked source, matching production layout.
     (repo_dir / ".gitignore").write_text("_runs/\n", encoding="utf-8")
     src = Path(__file__).parent / "fixtures" / "three_task.yaml"
     (repo_dir / "tasks.yaml").write_text(src.read_text(), encoding="utf-8")
@@ -276,11 +270,12 @@ def test_pushed_branch_lands_done_without_flag(repo: Path, monkeypatch) -> None:
     assert evs[0].payload["retry_attempted"] is False
 
 
-def test_unpushed_done_retries_then_flags_needs_push(repo: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("scenario", ["done-push-retry", "done-no-push"])
+def test_unpushed_done_retries_then_flags_needs_push(repo: Path, monkeypatch, scenario) -> None:
     """The DISP-9 failure mode: Done with commits but never pushed. The retry
     path fires, and because the push still never lands, needs_push surfaces in
     the YAML row AND the journal. (Acceptance 1.)"""
-    monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "done-no-push")
+    monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", scenario)
     _patch_spawn(monkeypatch)
     # Reject ALL pushes at the remote so the mechanical recovery (which
     # would otherwise simply push the branch) fails like the agent did.
@@ -289,10 +284,15 @@ def test_unpushed_done_retries_then_flags_needs_push(repo: Path, monkeypatch) ->
     hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
     hook.chmod(0o755)
     rc = orchestrator.execute(_args(repo))
-    # needs_push is advisory — the task is still Done, run still "clean".
-    assert rc == 0
+    # A push-only failure is advisory. The done-no-push fixture creates a
+    # second commit instead; that invalidates acceptance and must block.
+    changed_code = scenario == "done-no-push"
+    assert rc == (1 if changed_code else 0)
     row = _row(repo)
-    assert row["status"] == "Done"
+    assert row["status"] == ("Blocked" if changed_code else "Done")
+    if changed_code:
+        assert "verification_subject_changed" in row["blocked_reason"], row
+        assert row.get("verified") is not True, row
     assert row.get("needs_push") is True
 
     evs = _push_verify_events(repo)
@@ -303,9 +303,13 @@ def test_unpushed_done_retries_then_flags_needs_push(repo: Path, monkeypatch) ->
     assert p["pre_retry_status"] == "not-pushed"
     assert p["post_retry_status"] == "not-pushed"
 
-    # The terminal task_done event also records the flag.
-    done = next(e for e in _journal_events(repo) if e.event_type == "task_done")
-    assert done.payload["needs_push"] is True
+    # The terminal event agrees with the row; push_verify preserves the flag.
+    terminal_type = "task_blocked" if changed_code else "task_done"
+    terminal = next(e for e in _journal_events(repo) if e.event_type == terminal_type)
+    if changed_code:
+        assert terminal.payload["reason"] == row["blocked_reason"]
+    else:
+        assert terminal.payload["needs_push"] is True
 
     # The branch genuinely never reached the remote.
     bare = repo.parent / "origin.git"

@@ -29,7 +29,7 @@ from concurrent.futures import (
 )
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from . import __version__
 from . import auto_integrate as ai_mod
@@ -112,6 +112,31 @@ EFFORT_ESCALATED_STAMP = "effort_escalated"
 AGENT_ESCALATED_STAMP = "agent_escalated"
 
 _log_lock = threading.Lock()
+
+
+class _VerificationRestart(Exception):
+    """A corrective spawn requires a new pass through the gate stack."""
+
+
+@dataclass
+class _VerificationCycle:
+    """Retry budgets survive acceptance restarts, but not cascade rungs."""
+
+    generation: int = 0
+    mechanical_retried: bool = False
+    verifier_iterations: int = 0
+    requires_panel: bool = False
+    invalidated: bool = False
+    repo_config: repo_config_mod.RepoConfig | None = None
+
+    def restart(self, trigger: str) -> NoReturn:
+        if trigger not in ("mechanical", "verifier", "panel"):
+            raise ValueError(f"unknown verification restart trigger: {trigger}")
+        self.invalidated = True
+        self.generation += 1
+        if trigger != "mechanical":
+            self.mechanical_retried = False
+        raise _VerificationRestart(trigger)
 
 
 # The two row keys the loop role gate (unit D8) writes, UNPACKED from the one
@@ -1516,7 +1541,6 @@ def _run_task(
     verified: bool | None = None
     verification_iterations = 0
     verification_detail: str | None = None
-    verifier_cost_total = 0.0
     panel_verdict: cfr_mod.PanelVerdict | None = None
     panel_iterations_used = 0
     panel_blocking_history: list[int] = []
@@ -1564,7 +1588,6 @@ def _run_task(
         verified = None
         verification_iterations = 0
         verification_detail = None
-        verifier_cost_total = 0.0
         panel_verdict = None
         panel_iterations_used = 0
         # Per RUNG, like the iterate budget: a new model earns a fresh set of
@@ -1873,461 +1896,523 @@ def _run_task(
         if final_status != plan_mod.DONE:
             break
 
-        # --- Role-protocol loop gate (unit D8) ------------------------------
-        # The same `check_branch` the PR gate and CI reach, one build cycle
-        # earlier: HERE, before the mechanical gate, because
-        # `_retry_for_test_fix` (inside it), the verifier iterate and the panel
-        # iterate all COMMIT to this same branch — a gate placed after them
-        # judges a diff several agents wrote while reporting one agent's key.
-        # And INSIDE the cascade loop, because the next rung opens with
-        # _reset_worktree, which discards this rung's diff: a gate outside the
-        # loop would see only the surviving rung, so a rung that committed to
-        # tests/** and was then discarded for an unrelated quality failure
-        # would never be reported at all. The breach is a fact about the agent,
-        # not about the surviving diff.
-        #
-        # The base is `pre_spawn_sha` and NEVER cfg.base_branch: dependency
-        # merges land on this branch before the implementer spawns, and by PO-2
-        # a BODIES task's dependency IS its unit's SEALS task — so a
-        # base-branch diff reports the seal author's tests/** as this branch's
-        # violation on every well-formed unit. The policy comes from
-        # cfg.base_branch instead, through check_branch's own seam, so a branch
-        # that merged an edit to `.dispatcher.yaml` cannot supply the rule that
-        # judges it. Both refs go in through loop_gate.resolve_inputs; neither
-        # is spelled at this call site.
-        # ...with ONE exception, D-54: an adjudicated retry is judged from the
-        # anchor — the base of the attempt that first blocked. Without it the
-        # only compliant act available to the role (deleting the file it must
-        # not have written) is itself a changed path under the same deny glob,
-        # so an unblocked task can never clear the gate. The anchor only ever
-        # moves the base BACKWARDS to a prior pre_spawn_sha, so §4's reasoning
-        # is untouched: it is still never cfg.base_branch, and a dependency's
-        # SEALS commits are still on the far side of it.
-        gate_base_sha, gate_base_reason = _resolve_gate_base(
-            repo_root, snap, wt.branch, pre_spawn_sha, log_path,
-        )
-        if gate_base_sha != pre_spawn_sha:
-            _log(log_path, f"  {snap.key} role loop gate base: {gate_base_reason}")
-        role_loop = loop_gate_mod.check_after_implementer(
-            enabled=bool(getattr(cfg, "enable_role_loop_gate", False)),
-            # The WORKTREE, not the main checkout. The reachability sweep reads
-            # a DIRECTORY and needs `branch_ref` materialised as HEAD; the main
-            # checkout sits on the tasks branch, so passing it guaranteed
-            # UNCHECKED_HEAD_NOT_CHECKED_OUT and the gate blocked every task on
-            # a state that says "I could not look" (2026-09-03, WAL-LEDGER-3's
-            # sixth block, after deny_globs and signatures both passed). A
-            # worktree shares the object store, so blob reads are unaffected —
-            # it is the only tree where both halves can run.
-            repo_root=wt.path,
-            base_branch=cfg.base_branch,
-            branch_ref=wt.branch,
-            pre_spawn_sha=gate_base_sha,
-            specs=list(snap.role_specs or []),
-        )
-        gate_base_used = gate_base_sha
-
-        # --- Scope excursion (unit boundary) --------------------------------
-        # Same base and same worktree as the loop gate above, deliberately: the
-        # question is about the diff THIS rung produced, and the next rung's
-        # _reset_worktree discards it.
-        #
-        # A BLOCK is NOT a quality failure and does not advance a rung
-        # (operator ruling 2026-09-04). Escalating would re-implement the same
-        # task three times to arrive at the same question, and if a later rung
-        # happened not to reach outside, the block would clear silently and the
-        # evidence that an agent WANTED to would be gone — which is the signal
-        # the deviation model exists to surface. So: block, name the paths, and
-        # leave it for adjudication.
-        excursion = _scope_excursion_report(
-            repo_root, wt.branch, gate_base_sha, list(snap.owns or []),
-            log_path, snap.key,
-        )
-        if excursion is not None and excursion.severity > scope_mod.Severity.NONE:
-            _log(log_path,
-                 f"  {snap.key} scope: {excursion.severity.name} — "
-                 f"{excursion.reason()[:400]}")
-            _emit_event(cfg, journal_mod.EventType.scope_excursion, {
-                "severity": excursion.severity.name,
-                "excursions": [
-                    {"path": e.path, "change": e.change} for e in excursion.excursions
-                ],
-                "owns": list(snap.owns or []),
-                "base_sha": gate_base_sha,
-            }, task_key=snap.key)
-        if excursion is not None and excursion.severity is scope_mod.Severity.BLOCK:
-            final_status = plan_mod.BLOCKED
-            final_blocked_reason = (
-                "scope excursion: this task changed files it does not own — "
-                + excursion.reason()
-                + ". A foreign DELETE is never taken on the task's own "
-                  "authority; if it is genuinely required, record it as a "
-                  "shared-contract DEVIATION for adjudication."
-            )
-            break
-
-        _log(log_path,
-             f"  {snap.key} role loop gate: {role_loop.status.value} "
-             f"({role_loop.decision.value})"
-             + (f" — {role_loop.detail[:400]}" if role_loop.detail else ""))
-        # UNCONDITIONAL, including when the run had the gate switched off.
-        #
-        # **Dispute P3-2, ruled by P4 2026-08-12, FOR the emit.** P3 emitted
-        # only when the gate had RUN and escalated the shortfall rather than
-        # hiding it, offering the YAML row stamp plus the run.log line as the
-        # whole of §3's "logged and journaled per task". The argument that
-        # settles it is not the precedent P3 cited — though that runs the same
-        # way, `verification_mechanical` and `verification_skipped` both
-        # journal their own skips and both already sit in the pinned sequences
-        # this amendment touches — it is that the two substitutes offered are
-        # the two records this very unit makes erasable. `unblock._STALE_STAMPS`
-        # POPS both loop-gate stamps (§7(c), measured: unblock.py:148-149), by
-        # design, because unblocking grants a retry and not a waiver. So after
-        # one unblock the row no longer says the gate was off on the attempt
-        # that produced the block, and run.log is an unchained text file. The
-        # journal is hash-chained and append-only and is the only per-task
-        # record that survives the clearing this unit itself performs. A named
-        # state whose only witnesses can be erased by the next command a human
-        # runs is not a named state; it is a silence with a delay on it.
-        #
-        # The amendment this forces is three lines in `tests/**` — one
-        # `"role_diff_loop_gate",` after `"summary_parsed"` in each of
-        # `tests/test_orchestrator_journal.py::
-        # test_full_run_journal_chain_and_sequence`, `::
-        # test_single_task_exact_sequence` and `tests/test_mechanical_verify.py
-        # ::test_no_config_skips_and_preserves_done_flow` — and it lands in the
-        # SAME commit as this edit, because either half alone is red. P3 was
-        # right that it could not make it; it is a seal amendment forced by a
-        # ruling, which is the one thing P4 may write into a seal file.
-        _emit_event(cfg, journal_mod.EventType.role_diff_loop_gate, {
-            "status": role_loop.status.value,
-            "decision": role_loop.decision.value,
-            "verdict": (
-                role_loop.verdict.value
-                if role_loop.verdict is not None else None
-            ),
-            "base_ref": pre_spawn_sha,
-            "branch_ref": wt.branch,
-            "violations": [
-                v.path for v in (
-                    role_loop.result.violations if role_loop.result else ()
-                )
-            ],
-            # `violations` holds PATH violations only. A signature change is
-            # the OTHER way this gate blocks, and naming it just as a count in
-            # `detail` left "4 changed scaffolded signature(s)" with nothing
-            # machine-readable behind it — neither the operator nor the next
-            # agent could tell which four (2026-09-03, WAL-LEDGER-3).
-            "signature_changes": [
-                {"path": c.path, "symbol": c.symbol,
-                 "before": c.before, "after": c.after}
-                for c in (
-                    role_loop.result.signature.changes
-                    if role_loop.result and role_loop.result.signature else ()
-                )
-            ],
-            "detail": role_loop.detail[:1000],
-        }, task_key=snap.key)
-        if role_loop.decision is loop_gate_mod.LoopGateDecision.BLOCK:
-            # Blocked, and deliberately NOT a cascade escalation. The next rung
-            # would begin by resetting the worktree, destroying the very diff a
-            # human is being blocked to read — and a role violation is
-            # out-of-scope work rather than weak work, so the same description
-            # handed to a stronger model has the same scope. `dispatcher
-            # unblock` clears the stamps below and re-runs every gate, which is
-            # the retry this state grants.
-            final_status = plan_mod.BLOCKED
-            final_blocked_reason = loop_gate_mod.blocked_reason(
-                role_loop.status, role_loop.detail,
-            )
-            break
-
-        # --- Declared holes -------------------------------------------------
-        # A SCAFFOLD is contract and stubs; the decision logic its seals will
-        # judge is the body's. Nothing measured that, and all three wave-2
-        # scaffolds filled their own holes (32/32, 18/27, 8/9 functions), which
-        # would have left P2 sealing existing defective code. Checked HERE, after
-        # the role gate and before the suite: a scaffold that over-built has not
-        # produced a sealable contract, so running the suite over it is spending
-        # money on a branch that must be re-scoped anyway.
-        _measure_diff_shape(cfg, snap, wt, gate_base_used, log_path)
-        holes_outcome = _check_declared_holes(cfg, snap, wt, log_path)
-        if holes_outcome is not None:
-            final_status = plan_mod.BLOCKED
-            final_blocked_reason = holes_outcome
-            break
-
-        # --- Mechanical gate ------------------------------------------------
-        # `gate_base_sha` is the D-54-resolved base, threaded in because a
-        # SEALS task's expectation (D-58) is judged by reverting its OWN test
-        # files to that base — the same ref the role gate diffed from, so the
-        # two gates cannot disagree about what "this branch's rows" means.
-        mech_outcome, mech_detail = _verify_mechanical_and_maybe_retry(
-            cfg, snap, wt, summary_path, env, log_path,
-            gate_base_sha=gate_base_sha,
-        )
-        if mech_outcome == "failed":
-            final_status = plan_mod.BLOCKED
-            final_blocked_reason = "mechanical_verification_failed"
-            if idx + 1 < len(cascade):
-                cascade_context = (
-                    f"Mechanical gate FAILED after {attempt_agent}"
-                    f"@{attempt_effort or 'default'}:\n"
-                    f"{(mech_detail or '')[:2000]}"
-                        + "\n\n" + CASCADE_JUDGEMENT
-                )
-                fail_reason = "mechanical_verification_failed"
-                continue
-            break
-
-        # --- Seal-inversion gate (VG-3) ---------------------------------
-        # Fix-shaped work (FIX-* keys, type:fix / seal-check labels) must
-        # prove its new tests fail WITHOUT the fix. Runs only over a green
-        # mechanical gate (an inverted run of a red suite proves nothing)
-        # and a committed-clean tree (seal_verify restores via reset --hard).
-        if (final_status == plan_mod.DONE and mech_outcome == "passed"
-                and base_sha_before
-                and sv_mod.applies(snap.key, snap.labels)):
-            seal_outcome, seal_detail = _verify_seal(
-                cfg, snap, wt, base_sha_before, log_path)
-            if seal_outcome in ("failed", "error"):
-                final_status = plan_mod.BLOCKED
-                final_blocked_reason = "seal_verification_failed"
-                if idx + 1 < len(cascade):
-                    cascade_context = (
-                        f"Seal-inversion gate {seal_outcome.upper()} after "
-                        f"{attempt_agent}@{attempt_effort or 'default'} — new "
-                        f"tests must FAIL with the fix reverted:\n"
-                        f"{(seal_detail or '')[:2000]}"
-                        + "\n\n" + CASCADE_JUDGEMENT
-                    )
-                    fail_reason = "seal_verification_failed"
-                    continue
-                break
-
-        # --- LLM verifier ---------------------------------------------------
-        skeleton = any(str(l).strip().lower() == "skeleton"
-                       for l in (snap.labels or []))
-        qlevels = _resolved_quality(cfg, snap)
-        skip_llm = (
-            skeleton
-            or cfg.skip_verification
-            or qlevels.verify in ("none", "mechanical")
-        )
-        if skip_llm:
-            if skeleton:
-                reason = "skeleton task (intentional stubs/skipped tests)"
-            elif snap.verify in ("none", "mechanical"):
-                reason = f"task verify={snap.verify}"
-            elif cfg.skip_verification:
-                reason = "--skip-verification"
-            else:
-                reason = f"resolved verify={qlevels.verify}"
-            _emit_event(cfg, journal_mod.EventType.verification_skipped,
-                        {"reason": reason, "verify_level": qlevels.verify},
-                        task_key=snap.key)
-            _log(log_path,
-                 f"  {snap.key} LLM verification skipped ({reason})")
-            # Risk ladder first-pass requires verified==True. When the task
-            # planned mechanical-only intensity and the mechanical gate passed,
-            # that *is* first-pass verification — stamp so PR-flow can
-            # self-approve low-risk feature-branch merges (human stays on main).
-            if (
-                mech_outcome == "passed"
-                and qlevels.verify in ("none", "mechanical")
-            ):
-                verified = True
-                verification_iterations = 0
-        else:
-            # llm_strict: one extra incomplete iterate — pass as param so we
-            # never mutate the RunConfig shared across ThreadPoolExecutor workers.
-            max_v_iters = cfg.max_verify_iterations
-            if qlevels.verify == "llm_strict":
-                max_v_iters = cfg.max_verify_iterations + 1
-            vout = _verify_llm_and_maybe_iterate(
-                cfg=cfg, snap=snap, wt=wt, repo_root=repo_root,
-                summary_path=summary_path, env=env, log_path=log_path,
-                base_sha_before=base_sha_before,
-                gate_base_sha=gate_base_sha,
-                max_verify_iterations=max_v_iters,
-            )
-            verified = vout.verified
-            verification_iterations = vout.iterations
-            verification_detail = vout.detail
-            verifier_cost_total = vout.cost_usd_total
-            # Add the verifier's verdict-spawn cost to the row so it lands on the
-            # bill whether the task ends Done or BLOCKED. NO aggregate event —
-            # each verifier spawn already emits task_spawn_finished.
-            _add_task_cost(cfg, snap.key, verifier_cost_total)
-            if vout.mech_outcome is not None:
-                mech_outcome, mech_detail = vout.mech_outcome, vout.mech_detail
-            if vout.blocked_reason is not None:
-                final_status = plan_mod.BLOCKED
-                final_blocked_reason = vout.blocked_reason
-                # Verifier infrastructure failure: do not cascade-escalate
-                # (that would burn rungs×iterations on a dead verifier).
-                if vout.blocked_reason == "verifier_unavailable":
-                    break
-                if idx + 1 < len(cascade):
-                    cascade_context = (
-                        f"LLM verifier INCOMPLETE after {attempt_agent}"
-                        f"@{attempt_effort or 'default'}:\n"
-                        f"{(verification_detail or vout.blocked_reason)[:2000]}"
-                        + "\n\n" + CASCADE_JUDGEMENT
-                    )
-                    fail_reason = vout.blocked_reason
-                    continue
-                break
-
-        # --- Cross-family panel ---------------------------------------------
-        panel_verdict = None
-        panel_iterations_used = 0
-        _should_panel = _panel_should_run(cfg, snap)
-        if final_status == plan_mod.DONE and not _should_panel:
-            # Metadata (labels, type, size) says skip. Before trusting that,
-            # ask what the diff actually TOUCHES. Path evidence may only ever
-            # ADD review, never remove it — PR 1294 shipped a customer-facing
-            # wallet regression because the change was judged by how it was
-            # described rather than by its surface.
-            _gate_cls = _panel_gate_classification(
-                cfg=cfg, snap=snap, wt=wt, repo_root=repo_root,
-                base_sha_before=base_sha_before, log_path=log_path,
-            )
-            if _gate_cls is not None and _gate_cls.requires_full_panel:
-                _should_panel = True
-                _log(log_path,
-                     f"  {snap.key} panel: metadata said skip, but the diff "
-                     f"requires it ({_gate_cls.summary_line()}) — running")
-                _emit_event(cfg, journal_mod.EventType.panel_started, {
-                    "forced_by": "path_classification",
-                    "risk": _gate_cls.risk,
-                    "components": list(_gate_cls.components),
-                    "financial": _gate_cls.financial_paths_touched,
+        cycle = _VerificationCycle()
+        advance_cascade = False
+        while True:
+            cycle.invalidated = False
+            mech_outcome = mech_detail = None
+            seal_outcome = seal_detail = None
+            verified = None
+            verification_iterations = cycle.verifier_iterations
+            verification_detail = None
+            panel_verdict = None
+            role_loop = None
+            if cycle.generation:
+                s = summary_mod.parse(result.summary_path)
+                _emit_event(cfg, journal_mod.EventType.summary_parsed, {
+                    **_summary_parsed_payload(s),
+                    "after_verification_restart": True,
+                    "verification_generation": cycle.generation,
                 }, task_key=snap.key)
-        if final_status == plan_mod.DONE and _should_panel:
-            iterations_remaining = max(0, cfg.cross_family_panel_iterate)
-            while True:
-                _emit_event(cfg, journal_mod.EventType.panel_started, {
-                    "iteration": panel_iterations_used,
-                    "iterations_remaining": iterations_remaining,
-                }, task_key=snap.key)
-                try:
-                    panel_verdict = _run_cross_family_panel(
-                        cfg=cfg, snap=snap, wt=wt,
-                        summary_path=result.summary_path,
-                        repo_root=repo_root,
-                        base_sha_before=base_sha_before,
-                        log_path=log_path,
-                    )
-                except Exception as e:
-                    _log(log_path,
-                         f"  {snap.key} cross-family panel raised: {e}")
-                    _emit_event(cfg, journal_mod.EventType.panel_verdict,
-                                {"error": str(e)[:300]}, task_key=snap.key)
-                    panel_verdict = None
+                if s.malformed:
                     final_status = plan_mod.BLOCKED
-                    final_blocked_reason = f"cross_family_panel_error: {e}"
+                    final_blocked_reason = (
+                        "summary_malformed after corrective spawn: "
+                        + _summary_problem_detail(s)
+                    )
                     break
+                final_status, final_url, final_blocked_reason = _resolve_summary(
+                    cfg, snap, s, wt, log_path,
+                )
+                if final_status != plan_mod.DONE:
+                    break
+            pass_head = _branch_sha(wt.path, "HEAD", log_path, snap.key)
+            if pass_head is None:
+                final_status = plan_mod.BLOCKED
+                final_blocked_reason = "verification_subject_unavailable"
+                break
+            _log(log_path, f"  {snap.key} acceptance pass {cycle.generation} at {pass_head}")
+            try:
+                # --- Role-protocol loop gate (unit D8) ------------------------------
+                # The same `check_branch` the PR gate and CI reach, one build cycle
+                # earlier: HERE, before the mechanical gate, because
+                # `_retry_for_test_fix` (inside it), the verifier iterate and the panel
+                # iterate all COMMIT to this same branch — a gate placed after them
+                # judges a diff several agents wrote while reporting one agent's key.
+                # And INSIDE the cascade loop, because the next rung opens with
+                # _reset_worktree, which discards this rung's diff: a gate outside the
+                # loop would see only the surviving rung, so a rung that committed to
+                # tests/** and was then discarded for an unrelated quality failure
+                # would never be reported at all. The breach is a fact about the agent,
+                # not about the surviving diff.
+                #
+                # The base is `pre_spawn_sha` and NEVER cfg.base_branch: dependency
+                # merges land on this branch before the implementer spawns, and by PO-2
+                # a BODIES task's dependency IS its unit's SEALS task — so a
+                # base-branch diff reports the seal author's tests/** as this branch's
+                # violation on every well-formed unit. The policy comes from
+                # cfg.base_branch instead, through check_branch's own seam, so a branch
+                # that merged an edit to `.dispatcher.yaml` cannot supply the rule that
+                # judges it. Both refs go in through loop_gate.resolve_inputs; neither
+                # is spelled at this call site.
+                # ...with ONE exception, D-54: an adjudicated retry is judged from the
+                # anchor — the base of the attempt that first blocked. Without it the
+                # only compliant act available to the role (deleting the file it must
+                # not have written) is itself a changed path under the same deny glob,
+                # so an unblocked task can never clear the gate. The anchor only ever
+                # moves the base BACKWARDS to a prior pre_spawn_sha, so §4's reasoning
+                # is untouched: it is still never cfg.base_branch, and a dependency's
+                # SEALS commits are still on the far side of it.
+                gate_base_sha, gate_base_reason = _resolve_gate_base(
+                    repo_root, snap, wt.branch, pre_spawn_sha, log_path,
+                )
+                if gate_base_sha != pre_spawn_sha:
+                    _log(log_path, f"  {snap.key} role loop gate base: {gate_base_reason}")
+                role_loop = loop_gate_mod.check_after_implementer(
+                    enabled=bool(getattr(cfg, "enable_role_loop_gate", False)),
+                    # The WORKTREE, not the main checkout. The reachability sweep reads
+                    # a DIRECTORY and needs `branch_ref` materialised as HEAD; the main
+                    # checkout sits on the tasks branch, so passing it guaranteed
+                    # UNCHECKED_HEAD_NOT_CHECKED_OUT and the gate blocked every task on
+                    # a state that says "I could not look" (2026-09-03, WAL-LEDGER-3's
+                    # sixth block, after deny_globs and signatures both passed). A
+                    # worktree shares the object store, so blob reads are unaffected —
+                    # it is the only tree where both halves can run.
+                    repo_root=wt.path,
+                    base_branch=cfg.base_branch,
+                    branch_ref=wt.branch,
+                    pre_spawn_sha=gate_base_sha,
+                    specs=list(snap.role_specs or []),
+                )
+                gate_base_used = gate_base_sha
 
-                _emit_event(cfg, journal_mod.EventType.panel_verdict,
-                            _panel_verdict_payload(panel_verdict),
-                            task_key=snap.key)
-                _emit_advisory_finding_events(cfg, panel_verdict, snap.key)
-                # D-56: the journal already had these, and the next author could
-                # not read them. Persist per task so a dependent inherits them.
-                _record_panel_findings(cfg, snap.key, panel_verdict, log_path)
-                _emit_authoritative_finding_events(cfg, panel_verdict, snap.key)
-                panel_blocking_history.append(
-                    len(panel_verdict.blocking_findings))
-                if panel_verdict.is_approve or iterations_remaining <= 0:
-                    break
-                if _panel_convergence_stalled(
-                        panel_blocking_history,
-                        getattr(cfg, "panel_convergence_patience",
-                                PANEL_CONVERGENCE_PATIENCE)):
+                # --- Scope excursion (unit boundary) --------------------------------
+                # Same base and same worktree as the loop gate above, deliberately: the
+                # question is about the diff THIS rung produced, and the next rung's
+                # _reset_worktree discards it.
+                #
+                # A BLOCK is NOT a quality failure and does not advance a rung
+                # (operator ruling 2026-09-04). Escalating would re-implement the same
+                # task three times to arrive at the same question, and if a later rung
+                # happened not to reach outside, the block would clear silently and the
+                # evidence that an agent WANTED to would be gone — which is the signal
+                # the deviation model exists to surface. So: block, name the paths, and
+                # leave it for adjudication.
+                excursion = _scope_excursion_report(
+                    repo_root, wt.branch, gate_base_sha, list(snap.owns or []),
+                    log_path, snap.key,
+                )
+                if excursion is not None and excursion.severity > scope_mod.Severity.NONE:
                     _log(log_path,
-                         f"  {snap.key} panel iteration stalled — no new best "
-                         f"blocking count in {getattr(cfg, 'panel_convergence_patience', PANEL_CONVERGENCE_PATIENCE)} "
-                         f"round(s) (history {panel_blocking_history}); "
-                         f"escalating instead of re-reviewing")
-                    # The LOCATIONS travel with the stall, because what the
-                    # adjudicator has to decide is whether the CONTRACT is
-                    # wrong, not whether the agent tried hard enough. Measured
-                    # on WAL-BALANCE-3: 101 HIGH/CRITICAL findings, 51 of them
-                    # in one migration, and no single location repeated more
-                    # than 3 times — each round rewrote that file and the panel
-                    # found DIFFERENT real defects in the new version. A stall
-                    # concentrated in one artifact is evidence about the
-                    # design; the bare round count is not.
-                    _emit_event(cfg, journal_mod.EventType.panel_convergence_stalled, {
-                        "history": list(panel_blocking_history),
-                        "patience": getattr(cfg, "panel_convergence_patience",
-                                            PANEL_CONVERGENCE_PATIENCE),
-                        "rounds_this_rung": len(panel_blocking_history),
-                        "blocking_locations": sorted({
-                            (getattr(f, "location", None) or "?")
-                            for f in panel_verdict.blocking_findings
-                        }),
+                         f"  {snap.key} scope: {excursion.severity.name} — "
+                         f"{excursion.reason()[:400]}")
+                    _emit_event(cfg, journal_mod.EventType.scope_excursion, {
+                        "severity": excursion.severity.name,
+                        "excursions": [
+                            {"path": e.path, "change": e.change} for e in excursion.excursions
+                        ],
+                        "owns": list(snap.owns or []),
+                        "base_sha": gate_base_sha,
                     }, task_key=snap.key)
-                    panel_stalled = True
+                if excursion is not None and excursion.severity is scope_mod.Severity.BLOCK:
+                    final_status = plan_mod.BLOCKED
+                    final_blocked_reason = (
+                        "scope excursion: this task changed files it does not own — "
+                        + excursion.reason()
+                        + ". A foreign DELETE is never taken on the task's own "
+                          "authority; if it is genuinely required, record it as a "
+                          "shared-contract DEVIATION for adjudication."
+                    )
                     break
 
                 _log(log_path,
-                     f"  {snap.key} cross-family panel block — iterating "
-                     f"({iterations_remaining} attempt(s) left)")
-                corrective_ok = _spawn_panel_iterate(
-                    cfg=cfg, snap=snap, wt=wt, repo_root=repo_root,
-                    summary_path=result.summary_path,
-                    env=env, log_path=log_path,
-                    panel=panel_verdict,
-                    iterations_left=iterations_remaining,
-                )
-                panel_iterations_used += 1
-                iterations_remaining -= 1
-                _emit_event(cfg, journal_mod.EventType.panel_iterate, {
-                    "iteration": panel_iterations_used,
-                    "iterations_remaining": iterations_remaining,
-                    "corrective_spawn_ok": bool(corrective_ok),
-                    "blocking_findings": len(panel_verdict.blocking_findings),
+                     f"  {snap.key} role loop gate: {role_loop.status.value} "
+                     f"({role_loop.decision.value})"
+                     + (f" — {role_loop.detail[:400]}" if role_loop.detail else ""))
+                # UNCONDITIONAL, including when the run had the gate switched off.
+                #
+                # **Dispute P3-2, ruled by P4 2026-08-12, FOR the emit.** P3 emitted
+                # only when the gate had RUN and escalated the shortfall rather than
+                # hiding it, offering the YAML row stamp plus the run.log line as the
+                # whole of §3's "logged and journaled per task". The argument that
+                # settles it is not the precedent P3 cited — though that runs the same
+                # way, `verification_mechanical` and `verification_skipped` both
+                # journal their own skips and both already sit in the pinned sequences
+                # this amendment touches — it is that the two substitutes offered are
+                # the two records this very unit makes erasable. `unblock._STALE_STAMPS`
+                # POPS both loop-gate stamps (§7(c), measured: unblock.py:148-149), by
+                # design, because unblocking grants a retry and not a waiver. So after
+                # one unblock the row no longer says the gate was off on the attempt
+                # that produced the block, and run.log is an unchained text file. The
+                # journal is hash-chained and append-only and is the only per-task
+                # record that survives the clearing this unit itself performs. A named
+                # state whose only witnesses can be erased by the next command a human
+                # runs is not a named state; it is a silence with a delay on it.
+                #
+                # The amendment this forces is three lines in `tests/**` — one
+                # `"role_diff_loop_gate",` after `"summary_parsed"` in each of
+                # `tests/test_orchestrator_journal.py::
+                # test_full_run_journal_chain_and_sequence`, `::
+                # test_single_task_exact_sequence` and `tests/test_mechanical_verify.py
+                # ::test_no_config_skips_and_preserves_done_flow` — and it lands in the
+                # SAME commit as this edit, because either half alone is red. P3 was
+                # right that it could not make it; it is a seal amendment forced by a
+                # ruling, which is the one thing P4 may write into a seal file.
+                _emit_event(cfg, journal_mod.EventType.role_diff_loop_gate, {
+                    "status": role_loop.status.value,
+                    "head_sha": pass_head,
+                    "verification_generation": cycle.generation,
+                    "decision": role_loop.decision.value,
+                    "verdict": (
+                        role_loop.verdict.value
+                        if role_loop.verdict is not None else None
+                    ),
+                    "base_ref": pre_spawn_sha,
+                    "branch_ref": wt.branch,
+                    "violations": [
+                        v.path for v in (
+                            role_loop.result.violations if role_loop.result else ()
+                        )
+                    ],
+                    # `violations` holds PATH violations only. A signature change is
+                    # the OTHER way this gate blocks, and naming it just as a count in
+                    # `detail` left "4 changed scaffolded signature(s)" with nothing
+                    # machine-readable behind it — neither the operator nor the next
+                    # agent could tell which four (2026-09-03, WAL-LEDGER-3).
+                    "signature_changes": [
+                        {"path": c.path, "symbol": c.symbol,
+                         "before": c.before, "after": c.after}
+                        for c in (
+                            role_loop.result.signature.changes
+                            if role_loop.result and role_loop.result.signature else ()
+                        )
+                    ],
+                    "detail": role_loop.detail[:1000],
                 }, task_key=snap.key)
-                if not corrective_ok:
-                    _log(log_path,
-                         f"  {snap.key} panel-iterate spawn failed — leaving "
-                         f"last panel verdict in place")
+                if role_loop.decision is loop_gate_mod.LoopGateDecision.BLOCK:
+                    # Blocked, and deliberately NOT a cascade escalation. The next rung
+                    # would begin by resetting the worktree, destroying the very diff a
+                    # human is being blocked to read — and a role violation is
+                    # out-of-scope work rather than weak work, so the same description
+                    # handed to a stronger model has the same scope. `dispatcher
+                    # unblock` clears the stamps below and re-runs every gate, which is
+                    # the retry this state grants.
+                    final_status = plan_mod.BLOCKED
+                    final_blocked_reason = loop_gate_mod.blocked_reason(
+                        role_loop.status, role_loop.detail,
+                    )
                     break
 
-            if panel_verdict is not None and not panel_verdict.is_approve:
-                final_status = plan_mod.BLOCKED
-                # A stall and an exhausted budget both land here, and the
-                # row is what a human reads — #101's lesson. Without this the
-                # two are indistinguishable, and they ask different questions:
-                # "spend a stronger model" versus "this contract may be wrong".
-                final_blocked_reason = (
-                    f"cross_family_panel: {panel_verdict.summary}"
-                    + (f" (after {panel_iterations_used} iterate attempt(s))"
-                       if panel_iterations_used else "")
-                    + (f" — iteration STALLED at {panel_blocking_history}: no "
-                       f"new best blocking count, escalating rather than "
-                       f"re-reviewing" if panel_stalled else "")
-                )
-                _append_panel_findings_to_summary(
-                    result.summary_path, panel_verdict, log_path, snap.key,
-                )
-                if idx + 1 < len(cascade):
-                    findings_txt = cfr_mod.render_findings_markdown(panel_verdict)
-                    cascade_context = (
-                        f"Cross-family panel BLOCKED after {attempt_agent}"
-                        f"@{attempt_effort or 'default'}:\n"
-                        f"{panel_verdict.summary}\n\n{findings_txt[:3000]}"
-                        + "\n\n" + CASCADE_JUDGEMENT
-                    )
-                    fail_reason = "cross_family_panel_block"
-                    continue
-            elif panel_verdict is not None:
-                _append_panel_findings_to_summary(
-                    result.summary_path, panel_verdict, log_path, snap.key,
-                )
+                # --- Declared holes -------------------------------------------------
+                # A SCAFFOLD is contract and stubs; the decision logic its seals will
+                # judge is the body's. Nothing measured that, and all three wave-2
+                # scaffolds filled their own holes (32/32, 18/27, 8/9 functions), which
+                # would have left P2 sealing existing defective code. Checked HERE, after
+                # the role gate and before the suite: a scaffold that over-built has not
+                # produced a sealable contract, so running the suite over it is spending
+                # money on a branch that must be re-scoped anyway.
+                _measure_diff_shape(cfg, snap, wt, gate_base_used, log_path)
+                holes_outcome = _check_declared_holes(cfg, snap, wt, log_path)
+                if holes_outcome is not None:
+                    final_status = plan_mod.BLOCKED
+                    final_blocked_reason = holes_outcome
+                    break
 
-        # Gates passed (or no further cascade). Exit cascade loop.
+                # --- Mechanical gate ------------------------------------------------
+                # `gate_base_sha` is the D-54-resolved base, threaded in because a
+                # SEALS task's expectation (D-58) is judged by reverting its OWN test
+                # files to that base — the same ref the role gate diffed from, so the
+                # two gates cannot disagree about what "this branch's rows" means.
+                mech_outcome, mech_detail = _verify_mechanical_and_maybe_retry(
+                    cfg, snap, wt, summary_path, env, log_path,
+                    gate_base_sha=gate_base_sha, cycle=cycle,
+                )
+                if mech_outcome == "failed":
+                    final_status = plan_mod.BLOCKED
+                    final_blocked_reason = "mechanical_verification_failed"
+                    if idx + 1 < len(cascade):
+                        cascade_context = (
+                            f"Mechanical gate FAILED after {attempt_agent}"
+                            f"@{attempt_effort or 'default'}:\n"
+                            f"{(mech_detail or '')[:2000]}"
+                                + "\n\n" + CASCADE_JUDGEMENT
+                        )
+                        fail_reason = "mechanical_verification_failed"
+                        advance_cascade = True
+                        break
+                    break
+
+                # --- Seal-inversion gate (VG-3) ---------------------------------
+                # Fix-shaped work (FIX-* keys, type:fix / seal-check labels) must
+                # prove its new tests fail WITHOUT the fix. Runs only over a green
+                # mechanical gate (an inverted run of a red suite proves nothing)
+                # and a committed-clean tree (seal_verify restores via reset --hard).
+                if (final_status == plan_mod.DONE and mech_outcome == "passed"
+                        and base_sha_before
+                        and sv_mod.applies(snap.key, snap.labels)):
+                    seal_outcome, seal_detail = _verify_seal(
+                        cfg, snap, wt, base_sha_before, log_path)
+                    if seal_outcome in ("failed", "error"):
+                        final_status = plan_mod.BLOCKED
+                        final_blocked_reason = "seal_verification_failed"
+                        if idx + 1 < len(cascade):
+                            cascade_context = (
+                                f"Seal-inversion gate {seal_outcome.upper()} after "
+                                f"{attempt_agent}@{attempt_effort or 'default'} — new "
+                                f"tests must FAIL with the fix reverted:\n"
+                                f"{(seal_detail or '')[:2000]}"
+                                + "\n\n" + CASCADE_JUDGEMENT
+                            )
+                            fail_reason = "seal_verification_failed"
+                            advance_cascade = True
+                            break
+                        break
+
+                # --- LLM verifier ---------------------------------------------------
+                skeleton = any(str(l).strip().lower() == "skeleton"
+                               for l in (snap.labels or []))
+                qlevels = _resolved_quality(cfg, snap)
+                skip_llm = (
+                    skeleton
+                    or cfg.skip_verification
+                    or qlevels.verify in ("none", "mechanical")
+                )
+                if skip_llm:
+                    if skeleton:
+                        reason = "skeleton task (intentional stubs/skipped tests)"
+                    elif snap.verify in ("none", "mechanical"):
+                        reason = f"task verify={snap.verify}"
+                    elif cfg.skip_verification:
+                        reason = "--skip-verification"
+                    else:
+                        reason = f"resolved verify={qlevels.verify}"
+                    _emit_event(cfg, journal_mod.EventType.verification_skipped,
+                                {"reason": reason, "verify_level": qlevels.verify},
+                                task_key=snap.key)
+                    _log(log_path,
+                         f"  {snap.key} LLM verification skipped ({reason})")
+                    # Risk ladder first-pass requires verified==True. When the task
+                    # planned mechanical-only intensity and the mechanical gate passed,
+                    # that *is* first-pass verification — stamp so PR-flow can
+                    # self-approve low-risk feature-branch merges (human stays on main).
+                    if (
+                        mech_outcome == "passed"
+                        and qlevels.verify in ("none", "mechanical")
+                    ):
+                        verified = True
+                        verification_iterations = 0
+                else:
+                    # llm_strict: one extra incomplete iterate — pass as param so we
+                    # never mutate the RunConfig shared across ThreadPoolExecutor workers.
+                    max_v_iters = cfg.max_verify_iterations
+                    if qlevels.verify == "llm_strict":
+                        max_v_iters = cfg.max_verify_iterations + 1
+                    vout = _verify_llm_and_maybe_iterate(
+                        cfg=cfg, snap=snap, wt=wt, repo_root=repo_root,
+                        summary_path=summary_path, env=env, log_path=log_path,
+                        base_sha_before=base_sha_before,
+                        max_verify_iterations=max_v_iters, cycle=cycle,
+                    )
+                    verified = vout.verified
+                    verification_iterations = vout.iterations
+                    verification_detail = vout.detail
+                    if vout.blocked_reason is not None:
+                        final_status = plan_mod.BLOCKED
+                        final_blocked_reason = vout.blocked_reason
+                        # Verifier infrastructure failure: do not cascade-escalate
+                        # (that would burn rungs×iterations on a dead verifier).
+                        if vout.blocked_reason == "verifier_unavailable":
+                            break
+                        if idx + 1 < len(cascade):
+                            cascade_context = (
+                                f"LLM verifier INCOMPLETE after {attempt_agent}"
+                                f"@{attempt_effort or 'default'}:\n"
+                                f"{(verification_detail or vout.blocked_reason)[:2000]}"
+                                + "\n\n" + CASCADE_JUDGEMENT
+                            )
+                            fail_reason = vout.blocked_reason
+                            advance_cascade = True
+                            break
+                        break
+
+                # --- Cross-family panel ---------------------------------------------
+                _should_panel = cycle.requires_panel or _panel_should_run(cfg, snap)
+                if final_status == plan_mod.DONE and not _should_panel:
+                    # Metadata (labels, type, size) says skip. Before trusting that,
+                    # ask what the diff actually TOUCHES. Path evidence may only ever
+                    # ADD review, never remove it — PR 1294 shipped a customer-facing
+                    # wallet regression because the change was judged by how it was
+                    # described rather than by its surface.
+                    _gate_cls = _panel_gate_classification(
+                        cfg=cfg, snap=snap, wt=wt, repo_root=repo_root,
+                        base_sha_before=base_sha_before, log_path=log_path,
+                    )
+                    if _gate_cls is not None and _gate_cls.requires_full_panel:
+                        _should_panel = True
+                        _log(log_path,
+                             f"  {snap.key} panel: metadata said skip, but the diff "
+                             f"requires it ({_gate_cls.summary_line()}) — running")
+                        _emit_event(cfg, journal_mod.EventType.panel_started, {
+                            "forced_by": "path_classification",
+                            "risk": _gate_cls.risk,
+                            "components": list(_gate_cls.components),
+                            "financial": _gate_cls.financial_paths_touched,
+                        }, task_key=snap.key)
+                if final_status == plan_mod.DONE and _should_panel:
+                    cycle.requires_panel = True
+                    iterations_remaining = max(0, cfg.cross_family_panel_iterate - panel_iterations_used)
+                    while True:
+                        _emit_event(cfg, journal_mod.EventType.panel_started, {
+                            "iteration": panel_iterations_used,
+                            "iterations_remaining": iterations_remaining,
+                        }, task_key=snap.key)
+                        try:
+                            panel_verdict = _run_cross_family_panel(
+                                cfg=cfg, snap=snap, wt=wt,
+                                summary_path=result.summary_path,
+                                repo_root=repo_root,
+                                base_sha_before=base_sha_before,
+                                log_path=log_path,
+                            )
+                        except Exception as e:
+                            _log(log_path,
+                                 f"  {snap.key} cross-family panel raised: {e}")
+                            _emit_event(cfg, journal_mod.EventType.panel_verdict,
+                                        {"error": str(e)[:300]}, task_key=snap.key)
+                            panel_verdict = None
+                            final_status = plan_mod.BLOCKED
+                            final_blocked_reason = f"cross_family_panel_error: {e}"
+                            break
+
+                        _emit_event(cfg, journal_mod.EventType.panel_verdict,
+                                    _panel_verdict_payload(panel_verdict),
+                                    task_key=snap.key)
+                        _emit_advisory_finding_events(cfg, panel_verdict, snap.key)
+                        # D-56: the journal already had these, and the next author could
+                        # not read them. Persist per task so a dependent inherits them.
+                        _record_panel_findings(cfg, snap.key, panel_verdict, log_path)
+                        _emit_authoritative_finding_events(cfg, panel_verdict, snap.key)
+                        panel_blocking_history.append(
+                            len(panel_verdict.blocking_findings))
+                        if panel_verdict.is_approve or iterations_remaining <= 0:
+                            break
+                        if _panel_convergence_stalled(
+                                panel_blocking_history,
+                                getattr(cfg, "panel_convergence_patience",
+                                        PANEL_CONVERGENCE_PATIENCE)):
+                            _log(log_path,
+                                 f"  {snap.key} panel iteration stalled — no new best "
+                                 f"blocking count in {getattr(cfg, 'panel_convergence_patience', PANEL_CONVERGENCE_PATIENCE)} "
+                                 f"round(s) (history {panel_blocking_history}); "
+                                 f"escalating instead of re-reviewing")
+                            # The LOCATIONS travel with the stall, because what the
+                            # adjudicator has to decide is whether the CONTRACT is
+                            # wrong, not whether the agent tried hard enough. Measured
+                            # on WAL-BALANCE-3: 101 HIGH/CRITICAL findings, 51 of them
+                            # in one migration, and no single location repeated more
+                            # than 3 times — each round rewrote that file and the panel
+                            # found DIFFERENT real defects in the new version. A stall
+                            # concentrated in one artifact is evidence about the
+                            # design; the bare round count is not.
+                            _emit_event(cfg, journal_mod.EventType.panel_convergence_stalled, {
+                                "history": list(panel_blocking_history),
+                                "patience": getattr(cfg, "panel_convergence_patience",
+                                                    PANEL_CONVERGENCE_PATIENCE),
+                                "rounds_this_rung": len(panel_blocking_history),
+                                "blocking_locations": sorted({
+                                    (getattr(f, "location", None) or "?")
+                                    for f in panel_verdict.blocking_findings
+                                }),
+                            }, task_key=snap.key)
+                            panel_stalled = True
+                            break
+
+                        _log(log_path,
+                             f"  {snap.key} cross-family panel block — iterating "
+                             f"({iterations_remaining} attempt(s) left)")
+                        cycle.invalidated = True
+                        corrective_ok = _spawn_panel_iterate(
+                            cfg=cfg, snap=snap, wt=wt, repo_root=repo_root,
+                            summary_path=result.summary_path,
+                            env=env, log_path=log_path,
+                            panel=panel_verdict,
+                            iterations_left=iterations_remaining,
+                        )
+                        panel_iterations_used += 1
+                        iterations_remaining -= 1
+                        _emit_event(cfg, journal_mod.EventType.panel_iterate, {
+                            "iteration": panel_iterations_used,
+                            "iterations_remaining": iterations_remaining,
+                            "corrective_spawn_ok": bool(corrective_ok),
+                            "blocking_findings": len(panel_verdict.blocking_findings),
+                        }, task_key=snap.key)
+                        if not corrective_ok:
+                            _log(log_path,
+                                 f"  {snap.key} panel-iterate spawn failed — leaving "
+                                 f"last panel verdict in place")
+                            break
+                        cycle.restart("panel")
+
+                    if panel_verdict is not None and not panel_verdict.is_approve:
+                        final_status = plan_mod.BLOCKED
+                        # A stall and an exhausted budget both land here, and the
+                        # row is what a human reads — #101's lesson. Without this the
+                        # two are indistinguishable, and they ask different questions:
+                        # "spend a stronger model" versus "this contract may be wrong".
+                        final_blocked_reason = (
+                            f"cross_family_panel: {panel_verdict.summary}"
+                            + (f" (after {panel_iterations_used} iterate attempt(s))"
+                               if panel_iterations_used else "")
+                            + (f" — iteration STALLED at {panel_blocking_history}: no "
+                               f"new best blocking count, escalating rather than "
+                               f"re-reviewing" if panel_stalled else "")
+                        )
+                        _append_panel_findings_to_summary(
+                            result.summary_path, panel_verdict, log_path, snap.key,
+                        )
+                        if idx + 1 < len(cascade):
+                            findings_txt = cfr_mod.render_findings_markdown(panel_verdict)
+                            cascade_context = (
+                                f"Cross-family panel BLOCKED after {attempt_agent}"
+                                f"@{attempt_effort or 'default'}:\n"
+                                f"{panel_verdict.summary}\n\n{findings_txt[:3000]}"
+                                + "\n\n" + CASCADE_JUDGEMENT
+                            )
+                            fail_reason = "cross_family_panel_block"
+                            advance_cascade = True
+                            break
+                    elif panel_verdict is not None:
+                        _append_panel_findings_to_summary(
+                            result.summary_path, panel_verdict, log_path, snap.key,
+                        )
+
+                # No approval survives an unrequested change during verification.
+                if final_status == plan_mod.DONE:
+                    subject_problem = _verification_subject_problem(
+                        wt, pass_head, log_path, snap.key,
+                    )
+                    if subject_problem:
+                        cycle.invalidated = True
+                        final_status = plan_mod.BLOCKED
+                        final_blocked_reason = subject_problem
+                        _log(log_path, f"  {snap.key} {subject_problem}")
+                break
+            except _VerificationRestart as restart:
+                _log(log_path,
+                     f"  {snap.key} {restart} correction invalidated prior "
+                     "verification; restarting the acceptance stack")
+                continue
+
+        if cycle.invalidated:
+            mech_outcome = mech_detail = None
+            seal_outcome = seal_detail = None
+            role_loop = None
+            if verified is True:
+                verified = None
+            if panel_verdict is not None and panel_verdict.is_approve:
+                panel_verdict = None
+        if advance_cascade:
+            continue
         break
 
     if used_agent is None or result is None or s is None:
@@ -2440,6 +2525,20 @@ def _run_task(
         needs_push = _verify_push_and_maybe_retry(
             cfg, snap, wt, summary_path, env, log_path, expect_pr=expect_pr,
         )
+        # The legacy push recovery can spawn an agent after acceptance. A
+        # push-only repair may not certify a different or uncommitted tree.
+        subject_problem = _verification_subject_problem(
+            wt, pass_head, log_path, snap.key,
+        )
+        if subject_problem:
+            final_status = plan_mod.BLOCKED
+            final_blocked_reason = subject_problem + " after push recovery"
+            mech_outcome = mech_detail = None
+            seal_outcome = seal_detail = None
+            verified = None
+            panel_verdict = None
+            role_loop = None
+            _log(log_path, f"  {snap.key} {final_blocked_reason}")
 
     def _apply(row):
         row["status"] = final_status
@@ -3571,28 +3670,17 @@ def _resolve_diff_bounds(
 
 @dataclass
 class _LlmVerifyOutcome:
-    """Result of the LLM verification gate for one Done task.
+    """Verifier decision and corrective-spawn count for the current rung.
 
-    ``verified`` is True/False once the gate ran (None only when skipped, but
-    the skip path never builds this object — it short-circuits in _run_task).
-    ``iterations`` counts the INCOMPLETE → re-spawn-the-Tasker cycles
-    performed (0 when VERIFIED on the first try). ``detail`` is the rendered
-    gap list (or the verifier's reason/error when no gaps parsed) for the YAML
-    row on a block, else None. ``blocked_reason`` is the short label that
-    flips the task to Blocked (``verification_incomplete``, or
-    ``mechanical_verification_failed`` when an iterate's re-run went red), or
-    None when the gate passed. ``mech_outcome`` / ``mech_detail`` are non-None
-    only when an iterate re-ran the mechanical gate, so the caller can refresh
-    the row's mechanical_verification stamp.
+    Costs are charged at each invocation, including when a subsequent gate
+    blocks before this helper returns. Mechanical results belong to the
+    enclosing acceptance loop, never to a verifier result.
     """
 
-    verified: bool | None
+    verified: bool
     iterations: int
-    cost_usd_total: float
     detail: str | None = None
     blocked_reason: str | None = None
-    mech_outcome: str | None = None
-    mech_detail: str | None = None
 
 
 # Diff-detail bound for the rendered gap list stamped on a Blocked row. Keeps
@@ -3626,28 +3714,20 @@ def _verify_llm_and_maybe_iterate(
     env: dict,
     log_path: Path,
     base_sha_before: str | None,
-    gate_base_sha: str | None = None,
     max_verify_iterations: int | None = None,
+    cycle: _VerificationCycle,
 ) -> _LlmVerifyOutcome:
-    """Run the LLM verifier; iterate on INCOMPLETE up to the budget.
+    """Run the verifier or request full revalidation after a budgeted fix.
 
-    Each iteration: re-spawn the Tasker with the verifier's gap list, re-run
-    the mechanical gate (ordering rule — never re-verify a red suite), then
-    re-verify. Returns once VERIFIED, the iterate budget is exhausted, an
-    iterate produced no new commit, or an iterate's mechanical re-run went red.
-    Never raises — the verifier is conservative (a spawn/parse failure is
-    INCOMPLETE, never VERIFIED).
-
-    ``max_verify_iterations`` overrides ``cfg.max_verify_iterations`` without
-    mutating the shared RunConfig (thread-safe for llm_strict bumps).
+    Corrective commits raise _VerificationRestart so role, scope, holes,
+    mechanical and seal checks run before another verifier invocation.
     """
     budget = (
         cfg.max_verify_iterations
         if max_verify_iterations is None
         else max_verify_iterations
     )
-    cost_total = 0.0
-    iterations = 0
+    iterations = cycle.verifier_iterations
     while True:
         result = _run_llm_verifier(
             cfg=cfg, snap=snap, wt=wt, repo_root=repo_root,
@@ -3655,11 +3735,11 @@ def _verify_llm_and_maybe_iterate(
             log_path=log_path, iteration=iterations,
         )
         if result.usage and result.usage.cost_usd is not None:
-            cost_total += result.usage.cost_usd
+            _add_task_cost(cfg, snap.key, result.usage.cost_usd)
 
         if result.verdict.verdict == verifier_mod.VerdictKind.VERIFIED:
             return _LlmVerifyOutcome(
-                verified=True, iterations=iterations, cost_usd_total=cost_total,
+                verified=True, iterations=iterations,
             )
 
         # Pure verifier infrastructure failure: do not iterate the implementer
@@ -3670,7 +3750,7 @@ def _verify_llm_and_maybe_iterate(
                  f"  {snap.key} verifier UNAVAILABLE ({detail}) — "
                  f"blocking verifier_unavailable (no iterate/cascade)")
             return _LlmVerifyOutcome(
-                verified=False, iterations=iterations, cost_usd_total=cost_total,
+                verified=False, iterations=iterations,
                 detail=str(detail)[:2000],
                 blocked_reason="verifier_unavailable",
             )
@@ -3683,7 +3763,7 @@ def _verify_llm_and_maybe_iterate(
                  f"exhausted ({iterations}/{budget}) — "
                  f"blocking verification_incomplete")
             return _LlmVerifyOutcome(
-                verified=False, iterations=iterations, cost_usd_total=cost_total,
+                verified=False, iterations=iterations,
                 detail=detail, blocked_reason="verification_incomplete",
             )
 
@@ -3691,6 +3771,7 @@ def _verify_llm_and_maybe_iterate(
         _log(log_path,
              f"  {snap.key} verifier INCOMPLETE — iterating "
              f"({budget - iterations} attempt(s) left)")
+        cycle.invalidated = True
         corrective_ok = _spawn_verifier_iterate(
             cfg=cfg, snap=snap, wt=wt, repo_root=repo_root,
             summary_path=summary_path, env=env, log_path=log_path,
@@ -3698,6 +3779,7 @@ def _verify_llm_and_maybe_iterate(
             budget=budget,
         )
         iterations += 1
+        cycle.verifier_iterations = iterations
         _emit_event(cfg, journal_mod.EventType.verification_iterate, {
             "iteration": iterations,
             "iterations_remaining": budget - iterations,
@@ -3709,26 +3791,11 @@ def _verify_llm_and_maybe_iterate(
                  f"  {snap.key} verifier-iterate spawn produced no new "
                  f"commit — blocking with the last gaps")
             return _LlmVerifyOutcome(
-                verified=False, iterations=iterations, cost_usd_total=cost_total,
+                verified=False, iterations=iterations,
                 detail=detail, blocked_reason="verification_incomplete",
             )
 
-        # Ordering rule: re-run the mechanical gate before re-verifying, so the
-        # verifier never burns tokens on a suite the iterate may have reddened.
-        mech_outcome, mech_detail = _verify_mechanical_and_maybe_retry(
-            cfg, snap, wt, summary_path, env, log_path,
-            gate_base_sha=gate_base_sha,
-        )
-        if mech_outcome == "failed":
-            _log(log_path,
-                 f"  {snap.key} mechanical gate red after verifier-iterate — "
-                 f"blocking mechanical_verification_failed")
-            return _LlmVerifyOutcome(
-                verified=False, iterations=iterations, cost_usd_total=cost_total,
-                detail=detail, blocked_reason="mechanical_verification_failed",
-                mech_outcome=mech_outcome, mech_detail=mech_detail,
-            )
-        # Loop: re-run the verifier against the updated diff.
+        cycle.restart("verifier")
 
 
 def _run_llm_verifier(
@@ -4345,6 +4412,19 @@ def _branch_sha(repo_root: Path, branch: str,
     return sha or None
 
 
+def _verification_subject_problem(
+    wt: wt_mod.Worktree, expected_head: str, log_path: Path, task_key: str,
+) -> str | None:
+    """Detect persistent unrequested revision or worktree changes during gates."""
+    head = _branch_sha(wt.path, "HEAD", log_path, task_key)
+    if head is None or head != expected_head:
+        return "verification_subject_changed: HEAD moved during acceptance checks"
+    dirty = mv_mod.uncommitted_changes(wt.path)
+    if dirty:
+        return "verification_subject_changed: uncommitted changes: " + ", ".join(dirty)
+    return None
+
+
 def _has_commits_on_branch(wt: wt_mod.Worktree, base_branch: str,
                             repo_root: Path,
                             base_sha_before: str | None,
@@ -4564,15 +4644,17 @@ NOT redo the implementation, the review, or the analysis:
    `git log --oneline {base_branch}..HEAD`.
 2. Push the branch to the remote, setting upstream:
    `git push -u origin {branch}`.
-   (If the push is rejected because the remote moved, rebase onto the latest
-   `origin/{base_branch}` first, then push — do NOT force-push over others' work.)
+   Do NOT rebase, merge, amend, create commits, or edit code: acceptance applies
+   to the current revision only. If the remote diverged, leave the branch
+   untouched and report that it needs revalidation. Do NOT force-push.
 {pr_step}{final_step}. Update the `## PR` section of the summary file at $SUMMARY_PATH so it
    reflects reality (the PR URL if one exists, otherwise an honest
    `Not raised: <reason>`). Status stays `Done`.
 
 The dispatcher will re-check the push/PR state after this run. If the branch is
-still unpushed, the task stays Done but its row is flagged `needs_push: true`
-for a human to finish the push.
+still unpushed and the accepted revision is unchanged, the task stays Done but
+its row is flagged `needs_push: true` for a human to finish the push. Changing
+the revision or leaving uncommitted edits blocks the task pending revalidation.
 
 Task context (for reference, do NOT redo):
 """
@@ -5220,33 +5302,18 @@ def _verify_mechanical_and_maybe_retry(
     env: dict,
     log_path: Path,
     gate_base_sha: str | None = None,
+    *,
+    cycle: _VerificationCycle,
 ) -> tuple[str, str | None]:
-    """Run the worktree's `.dispatcher.yaml` `test:` command; retry once on red.
+    """Judge one suite run, or request full revalidation after one test fix.
 
-    Mirrors the commit/push safety nets: a green run is a no-op; a red run
-    triggers ONE corrective fix-the-tests re-spawn, after which the command is
-    re-run REGARDLESS of the spawn's outcome (a clean exit doesn't guarantee a
-    fix, a dirty exit doesn't guarantee no fix — only the re-run's verdict
-    counts). Returns ``(outcome, detail)``:
-
-      ("passed", None)    — green, first try or after the retry.
-      ("skipped", None)   — no `.dispatcher.yaml` or no `test:` key; the gate
-                            does not apply (preserves pre-gate behavior for
-                            unconfigured repos — Done stays Done).
-      ("failed", detail)  — still red after the retry (detail = the failing
-                            output tail) or the config is malformed (detail =
-                            the parse error; no retry, because a fix-the-tests
-                            prompt can't fix a config the dispatcher can't
-                            parse). The caller flips the task to Blocked.
-
-    Every test execution emits one ``verification_mechanical`` journal event;
-    the skip and malformed-config outcomes emit one each, so the gate's
-    decision is reconstructable from the journal alone. RepoConfigError is
-    consumed here, never propagated; unexpected exceptions propagate to the
-    worker's handler as usual.
+    The original command is retained across corrective spawns. A retry raises
+    _VerificationRestart regardless of its exit; only fresh gates judge its code.
     """
     try:
-        repo_cfg = repo_config_mod.load(wt.path)
+        if cycle.repo_config is None:
+            cycle.repo_config = repo_config_mod.load(wt.path)
+        repo_cfg = cycle.repo_config
     except repo_config_mod.RepoConfigError as exc:
         err = str(exc)[:500]
         _log(log_path,
@@ -5342,23 +5409,22 @@ def _verify_mechanical_and_maybe_retry(
         return "failed", excl.detail
 
     first = _run_mechanical_test(cfg, snap, wt, repo_cfg,
-                                 retried=False, log_path=log_path,
+                                 retried=cycle.mechanical_retried, log_path=log_path,
                                  exclusions=excl)
     if first.passed:
         return "passed", None
 
+    if cycle.mechanical_retried:
+        return "failed", first.output_tail
+
     _log(log_path,
          f"  {snap.key} reported Done but the repo test command is red "
          f"(exit={first.exit_code}) — retrying with fix-the-tests prompt")
+    cycle.invalidated = True
+    cycle.mechanical_retried = True
     _retry_for_test_fix(cfg, snap, wt, summary_path, env, log_path,
                         command=repo_cfg.test, first=first)
-    second = _run_mechanical_test(cfg, snap, wt, repo_cfg,
-                                  retried=True, log_path=log_path,
-                                  exclusions=excl)
-    if second.passed:
-        _log(log_path, f"  {snap.key} mechanical-verify recovered after retry")
-        return "passed", None
-    return "failed", second.output_tail
+    cycle.restart("mechanical")
 
 
 def _suite_expectation_for(
@@ -5806,8 +5872,8 @@ def _retry_for_test_fix(
     """Re-spawn the Tasker with a fix-the-tests-only corrective prompt.
 
     Returns whether the spawn exited cleanly (exit code 0). The caller
-    re-runs the test command regardless of this return — same philosophy as
-    the push retry: the re-run's verdict is the only thing that counts.
+    restarts acceptance regardless; only fresh checks over committed code
+    can establish success, not the corrective session's exit status.
     """
     prompt = _TEST_FIX_RETRY_PROMPT_PREFIX.format(
         command=command,

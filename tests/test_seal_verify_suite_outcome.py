@@ -672,6 +672,7 @@ def test_a_config_the_gate_could_not_read_is_not_a_repo_with_no_test_command(
         _run_config(tmp_path, _journal(tmp_path, "mech")), snap,
         wt_mod.Worktree(path=unreadable, branch="fix/seal"),
         tmp_path / "summary.md", {}, tmp_path / "mech.log",
+        cycle=orch_mod._VerificationCycle(),
     )
     assert mech_outcome in _BLOCKING and mech_detail, (
         "the mechanical gate performs the identical read on the identical "

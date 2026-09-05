@@ -119,10 +119,11 @@ def test_the_history_resets_per_model_not_per_task() -> None:
 
 def test_the_iterate_budget_is_per_rung() -> None:
     """Same ruling. A per-task budget would deny a fresh model any rounds at
-    all once an earlier model had spent them."""
+    all once an earlier model had spent them. Acceptance restarts must subtract
+    the rounds spent on THIS rung (behavior covered in verification_reentry)."""
     src = _src()
     assert "cfg.cross_family_panel_iterate - panel_rounds_total" not in src
-    assert src.count("iterations_remaining = max(0, cfg.cross_family_panel_iterate)") == 1
+    assert src.count("iterations_remaining = max(0, cfg.cross_family_panel_iterate - panel_iterations_used)") == 1
 
 
 def test_the_stall_carries_the_locations_for_adjudication() -> None:
